@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/logo.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agentree</title>
+  </head>
+
+  <body>
+    <div id="root">
+      <div id="pre-react-loading" style="display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; font-family: system-ui; gap: 10px;">
+        <div>Loading Agentree...</div>
+        <div id="loading-timer" style="font-size: 12px; color: #666;">0s</div>
+      </div>
+    </div>
+    <script>
+      console.log('[index.html] ' + Date.now() + ' - Inline script running, about to load main.tsx module');
+      window.__APP_START_TIME__ = Date.now();
+
+      // Update loading timer
+      var timerEl = document.getElementById('loading-timer');
+      var startTime = Date.now();
+      var timerInterval = setInterval(function() {
+        var elapsed = Math.floor((Date.now() - startTime) / 1000);
+        if (timerEl) timerEl.textContent = elapsed + 's elapsed';
+        if (elapsed > 60) {
+          timerEl.textContent = elapsed + 's elapsed - JS appears to be blocked!';
+          timerEl.style.color = 'red';
+        }
+      }, 1000);
+
+      // Stop timer when React renders
+      window.__STOP_LOADING_TIMER__ = function() {
+        clearInterval(timerInterval);
+        var loadingEl = document.getElementById('pre-react-loading');
+        if (loadingEl) loadingEl.style.display = 'none';
+      };
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,468 @@
+@import "tw-animate-css";
+/* Keep if used, otherwise remove. tailwindcss-animate plugin is separate */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Animation Design Tokens */
+@layer base {
+  :root {
+    /* Duration tokens */
+    --animation-duration-instant: 100ms;
+    --animation-duration-fast: 150ms;
+    --animation-duration-normal: 200ms;
+    --animation-duration-slow: 300ms;
+    --animation-duration-complex: 400ms;
+    --animation-duration-ambient: 500ms;
+    
+    /* Easing tokens */
+    --animation-easing-default: cubic-bezier(0.4, 0, 0.2, 1);
+    --animation-easing-enter: cubic-bezier(0, 0, 0.2, 1);
+    --animation-easing-exit: cubic-bezier(0.4, 0, 1, 1);
+    --animation-easing-bounce: cubic-bezier(0.68, -0.55, 0.265, 1.55);
+    --animation-easing-ease-out-cubic: cubic-bezier(0.33, 1, 0.68, 1);
+  }
+  
+  /* Reduced motion preferences */
+  @media (prefers-reduced-motion: reduce) {
+    :root {
+      --animation-duration-instant: 0ms;
+      --animation-duration-fast: 0ms;
+      --animation-duration-normal: 0ms;
+      --animation-duration-slow: 0ms;
+      --animation-duration-complex: 0ms;
+      --animation-duration-ambient: 0ms;
+    }
+    
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    /* Brighter white */
+    --foreground: 224 71.4% 4.1%;
+    /* Darker, slightly blueish text */
+    --card: 0 0% 100%;
+    --card-foreground: 224 71.4% 4.1%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 71.4% 4.1%;
+    --primary: 220 75% 55%;
+    /* A more vibrant blue */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 215 27.9% 93.5%;
+    /* Lighter, softer secondary */
+    --secondary-foreground: 224 71.4% 4.1%;
+    --muted: 215 20.2% 93.9%;
+    /* Slightly adjusted muted */
+    --muted-foreground: 215 10% 45%;
+    /* Softer muted text */
+    --accent: 215 27.9% 93.5%;
+    --accent-foreground: 224 71.4% 4.1%;
+    --destructive: 0 75% 55%;
+    /* More vibrant red */
+    --destructive-foreground: 0 0% 100%;
+    --border: 215 20.2% 83.9%;
+    /* Softer border */
+    --input: 215 20.2% 83.9%;
+    --ring: 220 75% 55%;
+    /* Primary color for rings */
+
+    --app-bg: 220 33% 98%;
+    --app-bg-elevated: 0 0% 100%;
+    --app-bg-muted: 220 28% 96%;
+    --app-panel: 0 0% 100%;
+    --app-panel-strong: 220 30% 99%;
+    --app-border: 220 20% 88%;
+    --app-border-strong: 220 18% 78%;
+    --app-text-soft: 221 12% 42%;
+    --app-accent: 220 58% 48%;
+    --app-accent-soft: 220 74% 94%;
+    --app-success: 154 46% 39%;
+    --app-warning: 35 74% 45%;
+    --app-danger: 0 62% 50%;
+    --app-graph-user: 217 68% 58%;
+    --app-graph-agent: 202 56% 45%;
+    --app-graph-commit: 154 44% 38%;
+    --app-graph-summary: 263 42% 50%;
+    --app-graph-external: 34 70% 46%;
+    --app-focus: 220 74% 54%;
+    --app-shadow-soft: 0 14px 38px -26px hsl(220 40% 16% / 0.38);
+    --app-shadow-panel: 0 22px 70px -46px hsl(220 40% 18% / 0.42), 0 1px 0 hsl(0 0% 100% / 0.8) inset;
+    --app-shadow-floating: 0 28px 90px -44px hsl(220 46% 12% / 0.5), 0 1px 0 hsl(0 0% 100% / 0.85) inset;
+
+    --chart-1: 220 75% 55%;
+    --chart-2: 160 70% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 70% 60%;
+    --chart-5: 0 75% 60%;
+
+    --radius: 0.5rem;
+
+    /* Enhanced Shadows */
+    --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.03);
+    --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.05), 0 1px 2px -1px rgb(0 0 0 / 0.04);
+    --shadow: 0 2px 4px -1px rgb(0 0 0 / 0.06), 0 2px 2px -1px rgb(0 0 0 / 0.05);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.08), 0 2px 4px -2px rgb(0 0 0 / 0.06);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.08), 0 4px 6px -4px rgb(0 0 0 / 0.07);
+    --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.08), 0 8px 10px -6px rgb(0 0 0 / 0.07);
+    --shadow-2xl: 0 25px 50px -12px rgb(0 0 0 / 0.15);
+    --shadow-inner: inset 0 2px 4px 0 rgb(0 0 0 / 0.03);
+  }
+
+  .dark {
+    --background: 224 71.4% 4.1%;
+    /* Dark blueish background */
+    --foreground: 210 20% 98%;
+    /* Off-white text */
+    --card: 224 71.4% 6.1%;
+    /* Slightly lighter card background */
+    --card-foreground: 210 20% 98%;
+    --popover: 224 71.4% 6.1%;
+    --popover-foreground: 210 20% 98%;
+    --primary: 220 70% 65%;
+    /* Lighter blue for dark mode primary */
+    --primary-foreground: 224 71.4% 4.1%;
+    --secondary: 215 27.9% 16.9%;
+    /* Darker secondary */
+    --secondary-foreground: 210 20% 98%;
+    --muted: 215 27.9% 16.9%;
+    --muted-foreground: 215 10% 65%;
+    /* Lighter muted text */
+    --accent: 215 27.9% 16.9%;
+    --accent-foreground: 210 20% 98%;
+    --destructive: 0 65% 60%;
+    /* Lighter red for dark mode */
+    --destructive-foreground: 0 0% 100%;
+    --border: 215 27.9% 26.9%;
+    /* Darker border */
+    --input: 215 27.9% 26.9%;
+    --ring: 220 70% 65%;
+
+    --app-bg: 225 26% 8%;
+    --app-bg-elevated: 224 22% 10%;
+    --app-bg-muted: 224 20% 13%;
+    --app-panel: 224 21% 11%;
+    --app-panel-strong: 224 20% 14%;
+    --app-border: 224 16% 22%;
+    --app-border-strong: 224 15% 32%;
+    --app-text-soft: 219 12% 68%;
+    --app-accent: 218 64% 66%;
+    --app-accent-soft: 220 32% 18%;
+    --app-success: 154 42% 54%;
+    --app-warning: 36 74% 58%;
+    --app-danger: 0 70% 64%;
+    --app-graph-user: 217 68% 66%;
+    --app-graph-agent: 202 58% 60%;
+    --app-graph-commit: 154 42% 58%;
+    --app-graph-summary: 263 52% 68%;
+    --app-graph-external: 34 80% 62%;
+    --app-focus: 220 78% 68%;
+    --app-shadow-soft: 0 18px 46px -30px hsl(0 0% 0% / 0.72);
+    --app-shadow-panel: 0 24px 80px -48px hsl(0 0% 0% / 0.78), 0 1px 0 hsl(0 0% 100% / 0.06) inset;
+    --app-shadow-floating: 0 32px 100px -48px hsl(0 0% 0% / 0.86), 0 1px 0 hsl(0 0% 100% / 0.07) inset;
+
+    /* Enhanced Shadows for Dark Mode (subtler) */
+    --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.07), 0 1px 2px -1px rgb(0 0 0 / 0.06);
+    --shadow: 0 2px 4px -1px rgb(0 0 0 / 0.08), 0 2px 2px -1px rgb(0 0 0 / 0.07);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.08);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.09);
+    --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.09);
+    --shadow-2xl: 0 25px 50px -12px rgb(0 0 0 / 0.2);
+    --shadow-inner: inset 0 2px 4px 0 rgb(0 0 0 / 0.05);
+  }
+}
+
+@layer components {
+  .app-shell-background {
+    background:
+      radial-gradient(circle at 12% 0%, hsl(var(--app-accent) / 0.09), transparent 25rem),
+      radial-gradient(circle at 92% 8%, hsl(var(--app-success) / 0.08), transparent 22rem),
+      linear-gradient(180deg, hsl(var(--app-bg-elevated)) 0%, hsl(var(--app-bg)) 42%, hsl(var(--app-bg-muted)) 100%);
+  }
+
+  .app-panel {
+    border: 1px solid hsl(var(--app-border) / 0.78);
+    background: hsl(var(--app-panel) / 0.94);
+    box-shadow: var(--app-shadow-panel);
+    backdrop-filter: blur(18px);
+  }
+
+  .app-toolbar {
+    border-bottom: 1px solid hsl(var(--app-border) / 0.78);
+    background:
+      linear-gradient(180deg, hsl(var(--app-panel-strong) / 0.96), hsl(var(--app-panel) / 0.9));
+    box-shadow: var(--app-shadow-soft);
+    backdrop-filter: blur(18px);
+  }
+
+  .app-side-rail {
+    border-right: 1px solid hsl(var(--app-border) / 0.78);
+    background:
+      linear-gradient(180deg, hsl(var(--app-panel) / 0.82), hsl(var(--app-bg-muted) / 0.72));
+    box-shadow: 1px 0 0 hsl(0 0% 100% / 0.55) inset;
+    backdrop-filter: blur(18px);
+  }
+
+  .dark .app-side-rail {
+    box-shadow: 1px 0 0 hsl(0 0% 100% / 0.04) inset;
+  }
+
+  .app-command-button {
+    border: 1px solid hsl(var(--app-border) / 0.82);
+    background: hsl(var(--app-panel-strong) / 0.76);
+    color: hsl(var(--foreground));
+    box-shadow: 0 1px 0 hsl(0 0% 100% / 0.6) inset;
+    transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease, color 180ms ease;
+  }
+
+  .dark .app-command-button {
+    box-shadow: 0 1px 0 hsl(0 0% 100% / 0.06) inset;
+  }
+
+  .app-command-button:hover {
+    border-color: hsl(var(--app-border-strong) / 0.85);
+    background: hsl(var(--app-accent-soft) / 0.72);
+    transform: translateY(-1px);
+  }
+
+  .app-command-button:active {
+    transform: translateY(0) scale(0.985);
+  }
+
+  .app-focus-ring {
+    outline: none;
+  }
+
+  .app-focus-ring:focus-visible {
+    box-shadow:
+      0 0 0 2px hsl(var(--background)),
+      0 0 0 4px hsl(var(--app-focus) / 0.56);
+  }
+
+  .app-rail-button {
+    position: relative;
+    display: inline-flex;
+    height: 2.5rem;
+    width: 2.75rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.7rem;
+    color: hsl(var(--muted-foreground));
+    transition: background-color 180ms ease, color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+  }
+
+  .app-rail-button:hover {
+    background: hsl(var(--app-panel-strong) / 0.72);
+    color: hsl(var(--foreground));
+    transform: translateY(-1px);
+  }
+
+  .app-rail-button[data-active="true"] {
+    background: hsl(var(--app-accent-soft) / 0.9);
+    color: hsl(var(--app-accent));
+    box-shadow: 0 10px 26px -20px hsl(var(--app-accent) / 0.55);
+  }
+
+  .app-rail-button[data-active="true"]::before {
+    content: "";
+    position: absolute;
+    left: -0.45rem;
+    top: 0.55rem;
+    bottom: 0.55rem;
+    width: 0.18rem;
+    border-radius: 999px;
+    background: hsl(var(--app-accent));
+  }
+
+  .app-skeleton {
+    position: relative;
+    overflow: hidden;
+    border-radius: 0.75rem;
+    background: hsl(var(--muted) / 0.72);
+  }
+
+  .app-skeleton::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, hsl(var(--foreground) / 0.08), transparent);
+    animation: app-skeleton-sweep 1.35s ease-in-out infinite;
+  }
+}
+
+@keyframes app-skeleton-sweep {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* Custom Scrollbar Styles */
+@layer utilities {
+
+  /* For Webkit browsers (Chrome, Safari) */
+  .custom-scrollbar::-webkit-scrollbar {
+    @apply w-1.5 h-1.5;
+    /* Thinner scrollbar */
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    @apply bg-transparent;
+    /* Transparent track */
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-border rounded-full;
+    /* Use border color for thumb, more subtle */
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/50;
+    /* Slightly darker on hover */
+  }
+
+  /* For Firefox */
+  .custom-scrollbar {
+    scrollbar-width: thin;
+    /* "auto" or "thin" */
+    scrollbar-color: hsl(var(--border)) transparent;
+    /* thumb and track color */
+  }
+
+  html.dark .custom-scrollbar {
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+}
+
+
+@layer base {
+  * {
+    @apply border-border;
+    /* Ensure all borders use the CSS variable */
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    /* Add antialiasing */
+    /* Added for better font rendering */
+    font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* React Flow Specific Styles */
+.react-flow__node {
+  transition: opacity 0.15s ease-in-out;
+}
+
+.react-flow__node:focus,
+.react-flow__node.selected {
+  outline: none !important;
+  border: none !important;
+}
+
+.react-flow__edge {
+  /* Default edge style */
+  transition: opacity 0.3s ease-in-out, stroke 0.3s ease-in-out, stroke-width 0.3s ease-in-out;
+  /* Smooth dimming and style changes */
+}
+
+.agentree-graph-canvas,
+.agentree-graph-canvas .react-flow__pane {
+  user-select: none;
+}
+
+.agentree-graph-canvas .agentree-react-flow-root {
+  min-width: 0;
+  min-height: 0;
+  overflow: clip !important;
+  cursor: grab !important;
+}
+
+.agentree-graph-canvas .agentree-react-flow-root > .react-flow__renderer,
+.agentree-graph-canvas .agentree-react-flow-root > .react-flow__renderer > .react-flow__pane {
+  overflow: clip !important;
+}
+
+.agentree-graph-canvas[data-viewport-interacting="true"] .agentree-react-flow-root {
+  cursor: grabbing !important;
+}
+
+.agentree-graph-canvas .react-flow__pane {
+  cursor: grab !important;
+}
+
+.agentree-graph-canvas .react-flow__pane.selection {
+  cursor: grab !important;
+}
+
+.agentree-graph-canvas .react-flow__edge {
+  cursor: grab !important;
+}
+
+.agentree-graph-canvas .react-flow__pane.dragging,
+.agentree-graph-canvas .react-flow__edge.dragging,
+.agentree-graph-canvas[data-viewport-interacting="true"] .react-flow__pane {
+  cursor: grabbing !important;
+}
+
+.agentree-graph-canvas[data-viewport-interacting="true"] .react-flow__edge {
+  cursor: grabbing !important;
+}
+
+.agentree-minimap .react-flow__minimap-edge {
+  stroke: hsl(var(--foreground));
+  stroke-opacity: 0.24;
+  stroke-width: 1.5;
+}
+
+.dark .agentree-minimap .react-flow__minimap-edge {
+  stroke-opacity: 0.32;
+}
+
+.agentree-graph-canvas[data-viewport-interacting="true"] .react-flow__node,
+.agentree-graph-canvas[data-viewport-interacting="true"] .react-flow__edge,
+.agentree-graph-canvas[data-viewport-interacting="true"] .agentree-graph-node-card {
+  transition: none !important;
+}
+
+.agentree-graph-canvas[data-viewport-interacting="true"] .agentree-graph-node-card {
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+/* Dimming effect for elements not in focus path */
+.react-flow__node.opacity-30,
+/* Ensure this class is applied correctly in JS */
+.react-flow__edge.opacity-30 {
+  opacity: 0.3 !important;
+  /* Use important if needed to override other styles */
+}
+
+/* Ensure scroll on ScrollArea viewport */
+[data-radix-scroll-area-viewport] {
+  overflow-y: auto;
+  /* Allow vertical scroll */
+  overflow-x: hidden;
+  /* Prevent horizontal scroll/expansion */
+}
+
+/* Styling for Dagre parent nodes (clusters) */
+.react-flow__node-default.dagre-cluster {
+  /* Target default nodes used as clusters */
+  @apply bg-primary/5 border-primary/20 rounded-xl transition-[background-color,border-color,box-shadow] duration-300;
+}
+
+.dark .react-flow__node-default.dagre-cluster {
+  @apply bg-primary/10 border-primary/30;
+}

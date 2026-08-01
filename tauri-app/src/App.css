@@ -1,0 +1,14 @@
+/* Default Vite styles removed. Use Tailwind utilities and index.css for base styles. */
+/* Add any custom global non-Tailwind CSS here if absolutely necessary */
+
+body {
+  /* Example: Ensure body takes full height if needed for flex layouts */
+   min-height: 100vh;
+}
+
+#root {
+    /* Ensure root also takes full height if needed */
+    min-height: 100vh;
+    display: flex; /* Or appropriate display type for your root layout */
+    flex-direction: column; /* Or row */
+}

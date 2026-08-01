@@ -1,0 +1,278 @@
+use tauri::Manager;
+
+// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+#[tauri::command]
+#[specta::specta]
+fn greet(name: &str) -> String {
+    format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+use agents::AgentState;
+use db::TelemetryDb;
+use merge_review::MergeReviewState;
+use specta_typescript::Typescript;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use tauri_specta::{collect_commands, Builder as SpectaBuilder, ErrorHandlingMode};
+
+mod agents;
+mod auth_callback;
+mod command_guards;
+mod config;
+mod db;
+mod editors;
+mod git_workspace;
+mod graph_snapshot_cache;
+mod logging;
+mod mcp;
+mod merge_review;
+mod runtime_readiness;
+mod runtime_scripts;
+mod skills;
+pub mod types;
+
+#[cfg(all(debug_assertions, unix))]
+fn prepare_pilot_socket() -> bool {
+    use std::io::ErrorKind;
+    use std::os::unix::net::UnixStream;
+    use std::path::Path;
+
+    let socket_path = Path::new("/tmp/tauri-pilot-com.agentree.agentree.sock");
+    if !socket_path.exists() {
+        return true;
+    }
+
+    match UnixStream::connect(socket_path) {
+        Ok(_) => {
+            eprintln!(
+                "[Setup] Tauri Pilot socket is already in use at {}; starting without Pilot plugin.",
+                socket_path.display()
+            );
+            false
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::ConnectionRefused | ErrorKind::NotFound
+            ) =>
+        {
+            match std::fs::remove_file(socket_path) {
+                Ok(_) => {
+                    eprintln!(
+                        "[Setup] Removed stale Tauri Pilot socket at {}.",
+                        socket_path.display()
+                    );
+                    true
+                }
+                Err(remove_error) => {
+                    eprintln!(
+                        "[Setup] Could not remove stale Tauri Pilot socket at {}: {}; starting without Pilot plugin.",
+                        socket_path.display(),
+                        remove_error
+                    );
+                    false
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!(
+                "[Setup] Could not inspect Tauri Pilot socket at {}: {}; starting without Pilot plugin.",
+                socket_path.display(),
+                error
+            );
+            false
+        }
+    }
+}
+
+#[cfg(all(debug_assertions, not(unix)))]
+fn prepare_pilot_socket() -> bool {
+    true
+}
+
+#[macro_export]
+macro_rules! app_log {
+    ($($arg:tt)*) => {{
+        let rendered = format!($($arg)*);
+        let _ = crate::logging::append_backend_line_without_app(&rendered);
+        eprintln!("{}", rendered);
+    }};
+}
+
+fn specta_builder() -> SpectaBuilder<tauri::Wry> {
+    SpectaBuilder::<tauri::Wry>::new()
+        .dangerously_cast_bigints_to_number()
+        .error_handling(ErrorHandlingMode::Throw)
+        .commands(collect_commands![
+            greet,
+            logging::append_frontend_logs,
+            logging::get_log_paths,
+            logging::export_perf_capture_bundle,
+            db::create_session_db,
+            db::record_tool_call,
+            db::kv_set,
+            db::kv_get,
+            db::add_message,
+            db::update_session_status,
+            db::get_session_snapshot,
+            db::get_agent_run_ledger,
+            db::replay_agent_run_events,
+            db::list_local_nodes,
+            db::hydrate_local_nodes_from_server,
+            db::upsert_local_node,
+            db::local_first_delete_branch,
+            db::local_first_delete_workspace,
+            db::list_local_deleted_node_roots,
+            db::list_local_deleted_workspace_ids,
+            db::process_local_sync_events,
+            agents::start_agent_run,
+            agents::stop_agent,
+            agents::get_agent_run_state,
+            runtime_readiness::check_runtime_readiness,
+            runtime_readiness::check_all_runtime_readiness,
+            runtime_readiness::check_codex_readiness,
+            git_workspace::check_local_environment,
+            git_workspace::attach_workspace,
+            git_workspace::init_git_repo,
+            git_workspace::commit_uncommitted,
+            git_workspace::create_base_branch,
+            git_workspace::preview_agent_worktree,
+            git_workspace::checkout_commit_detached,
+            git_workspace::diff_commits,
+            git_workspace::diff_file_between_commits,
+            git_workspace::show_file_at_commit,
+            git_workspace::list_files_at_commit,
+            git_workspace::merge_preview,
+            merge_review::start_merge_review,
+            merge_review::synthesize_merge_resolutions,
+            merge_review::stop_merge_review,
+            merge_review::is_merge_review_running,
+            git_workspace::git_merge_apply,
+            git_workspace::git_compute_blame,
+            git_workspace::create_branch_pointer,
+            git_workspace::delete_branch_pointer,
+            git_workspace::move_branch_pointer,
+            git_workspace::update_git_ref,
+            git_workspace::list_branch_pointers,
+            git_workspace::list_local_refs,
+            git_workspace::snapshot_git_refs,
+            git_workspace::resolve_ref_tip,
+            git_workspace::resolve_current_branch_ref,
+            git_workspace::list_missing_commits,
+            git_workspace::read_commit_metadata,
+            git_workspace::list_addable_commit_candidates,
+            git_workspace::list_addable_commit_range,
+            git_workspace::list_all_commits,
+            editors::get_available_editors,
+            skills::get_skill_store_path,
+            skills::list_installed_skills,
+            skills::search_catalog_skills,
+            skills::install_catalog_skill,
+            skills::delete_installed_skill,
+            mcp::set_mcp_auth_token,
+            mcp::set_mcp_workspace_id,
+            auth_callback::get_auth_callback_base_url,
+            graph_snapshot_cache::read_graph_snapshot_cache,
+            graph_snapshot_cache::write_graph_snapshot_cache,
+            graph_snapshot_cache::delete_graph_snapshot_cache,
+        ])
+}
+
+fn export_specta_bindings(builder: &SpectaBuilder<tauri::Wry>) {
+    let bindings_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/generated/tauri-bindings.ts");
+    if let Some(parent) = bindings_path.parent() {
+        std::fs::create_dir_all(parent).expect("failed to create Tauri Specta bindings directory");
+    }
+    builder
+        .export(Typescript::default(), bindings_path)
+        .expect("failed to export Tauri Specta bindings");
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let specta_builder = specta_builder();
+
+    #[cfg(debug_assertions)]
+    export_specta_bindings(&specta_builder);
+
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init());
+
+    #[cfg(debug_assertions)]
+    {
+        if prepare_pilot_socket() {
+            builder = builder.plugin(tauri_plugin_pilot::init());
+        }
+    }
+
+    builder
+        .manage(AgentState {
+            children: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
+            session_tokens: Mutex::new(HashMap::new()),
+            run_states: Mutex::new(HashMap::new()),
+        })
+        .manage(MergeReviewState::default())
+        .setup({
+            let specta_builder = specta_builder.clone();
+            move |app| {
+                let start = std::time::Instant::now();
+                #[cfg(desktop)]
+                {
+                    let mut updater_builder = tauri_plugin_updater::Builder::new();
+                    if let Ok(pubkey) = std::env::var("TAURI_UPDATER_PUBKEY") {
+                        let trimmed = pubkey.trim();
+                        if !trimmed.is_empty() {
+                            updater_builder = updater_builder.pubkey(trimmed.to_string());
+                        }
+                    }
+                    app.handle().plugin(updater_builder.build())?;
+                }
+                let paths = logging::init_logging(&app.handle().clone())?;
+                crate::app_log!("[Setup] Starting Tauri setup");
+                crate::app_log!(
+                    "[Setup] File logs: frontend={} backend={}",
+                    paths.frontend_log,
+                    paths.backend_log
+                );
+
+                let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+                let telemetry = TelemetryDb::open(&app_data_dir)?;
+                let reconciled_stale_runs = telemetry.reconcile_agent_runs_on_startup()?;
+                if reconciled_stale_runs > 0 {
+                    crate::app_log!(
+                        "[AGENT_RECOVERY] event=startup_reconcile classified_needs_user_action count={}",
+                        reconciled_stale_runs
+                    );
+                }
+                app.manage(telemetry);
+
+                crate::app_log!("[PERF][Setup] Starting MCP server...");
+                auth_callback::start_auth_callback_server(app.handle().clone());
+                mcp::start_mcp_server(app.handle().clone());
+                crate::app_log!(
+                    "[PERF][Setup] MCP server started, total setup time: {:?}",
+                    start.elapsed()
+                );
+                specta_builder.mount_events(app);
+                Ok(())
+            }
+        })
+        .invoke_handler(specta_builder.invoke_handler())
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_tauri_specta_bindings() {
+        export_specta_bindings(&specta_builder());
+    }
+}

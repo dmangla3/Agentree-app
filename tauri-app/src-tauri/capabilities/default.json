@@ -1,0 +1,56 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "dialog:default",
+    "pilot:default",
+    "process:default",
+    "updater:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "open",
+          "cmd": "open",
+          "args": true
+        },
+        {
+          "name": "code",
+          "cmd": "code",
+          "args": true
+        },
+        {
+          "name": "cursor",
+          "cmd": "cursor",
+          "args": true
+        },
+        {
+          "name": "zed",
+          "cmd": "zed",
+          "args": true
+        },
+        {
+          "name": "subl",
+          "cmd": "subl",
+          "args": true
+        },
+        {
+          "name": "atom",
+          "cmd": "atom",
+          "args": true
+        },
+        {
+          "name": "idea",
+          "cmd": "idea",
+          "args": true
+        }
+      ]
+    }
+  ]
+}
