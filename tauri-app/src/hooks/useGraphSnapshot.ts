@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { api } from '../lib/api';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 import { isTauriEnvironment } from './useTauriWorkspace';
-import type { Message, Summary } from '../stores/workspaceStore';
+import type { CommitEntity, CommitObservationEntity, CommitParentEntity, Message, Summary } from '../stores/workspaceStore';
 import { useRunStatusStore } from '../stores/runStatusStore';
 
 const GRAPH_SNAPSHOT_CACHE_PREFIX = 'agentree.graph-snapshot.v2';
@@ -39,8 +39,18 @@ export interface GraphSnapshot {
   workspaceUpdatedAt?: string | null;
   messages: GraphSnapshotMessage[];
   summaries: GraphSnapshotSummary[];
+  commits?: CommitEntity[];
+  commitParents?: CommitParentEntity[];
+  commitObservations?: CommitObservationEntity[];
   cacheWriteDisabled?: boolean;
 }
+
+const normalizeGraphSnapshot = (snapshot: GraphSnapshot): GraphSnapshot => ({
+  ...snapshot,
+  commits: Array.isArray(snapshot.commits) ? snapshot.commits : [],
+  commitParents: Array.isArray(snapshot.commitParents) ? snapshot.commitParents : [],
+  commitObservations: Array.isArray(snapshot.commitObservations) ? snapshot.commitObservations : [],
+});
 
 const cacheKey = (workspaceId: string) => `${GRAPH_SNAPSHOT_CACHE_PREFIX}.${workspaceId}`;
 
@@ -100,7 +110,7 @@ const readCachedGraphSnapshot = (workspaceId: string | null): GraphSnapshot | un
       messageCount: parsed.messages.length,
       summaryCount: Array.isArray(parsed.summaries) ? parsed.summaries.length : null,
     }, { source: 'useGraphSnapshot' });
-    return parsed as GraphSnapshot;
+    return normalizeGraphSnapshot(parsed as GraphSnapshot);
   } catch {
     recordPerfEvent('query.graph-snapshot.cache-miss', {
       elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
@@ -158,7 +168,7 @@ const writeCachedGraphSnapshot = (workspaceId: string, snapshot: GraphSnapshot) 
 const parseCachedGraphSnapshot = (workspaceId: string, raw: string): GraphSnapshot | undefined => {
   const parsed = JSON.parse(raw);
   if (!parsed || parsed.version !== 2 || parsed.workspaceId !== workspaceId || !Array.isArray(parsed.messages)) return undefined;
-  return parsed as GraphSnapshot;
+  return normalizeGraphSnapshot(parsed as GraphSnapshot);
 };
 
 const readNativeCachedGraphSnapshot = async (workspaceId: string): Promise<GraphSnapshot | undefined> => {
@@ -322,7 +332,7 @@ export const useGraphSnapshot = (workspaceId: string | null, cacheResetNonce = 0
         source: 'useGraphSnapshot',
         durationMs: Number((performance.now() - startedAt).toFixed(2)),
       });
-      return response.data;
+      return normalizeGraphSnapshot(response.data);
     },
     enabled: !!workspaceId && (!shouldUseNativeCache || nativeCacheReady),
     initialData: () => localInitialSnapshot,

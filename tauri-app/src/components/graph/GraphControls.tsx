@@ -46,7 +46,8 @@ import {
     Zap,
     RotateCcw,
     User,
-    Layers3
+    Layers3,
+    Leaf,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { Insight, Scope } from '../../stores/workspaceStore';
@@ -67,6 +68,15 @@ export interface GraphSyncStatusItem {
     detail: string;
     enabled: boolean;
     isRefreshing?: boolean;
+}
+
+export interface LeafNodeNavigationItem {
+    id: string;
+    label: string;
+    modelLabel: string;
+    statusLabel: string;
+    statusTone: 'active' | 'success' | 'danger' | 'muted';
+    timestampLabel: string;
 }
 
 export interface GraphControlsProps {
@@ -131,6 +141,8 @@ export interface GraphControlsProps {
     onToggleShowInsightsInGraph: () => void;
 
     // Actions
+    leafNodes: LeafNodeNavigationItem[];
+    onLeafNodeFocus: (id: string) => void;
     onResetLayout: () => void;
     isRefreshingGraph: boolean;
     autoRefreshEligible: boolean;
@@ -212,6 +224,8 @@ export function GraphControls({
     showInsightsInGraph,
     onToggleInsightsVisible,
     onToggleShowInsightsInGraph,
+    leafNodes,
+    onLeafNodeFocus,
     onResetLayout,
     isRefreshingGraph,
     autoRefreshEligible,
@@ -328,6 +342,12 @@ export function GraphControls({
     const iconButtonGhost = "h-8 w-8 hover:bg-gradient-to-br hover:from-muted/80 hover:to-muted/40 hover:shadow-sm hover:shadow-black/5 active:scale-95";
     const iconContainer = "flex items-center justify-center transition-transform duration-200 group-hover:scale-110 group-active:scale-95";
     const iconGlow = "absolute inset-0 rounded-lg bg-gradient-to-br from-primary/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200";
+    const leafStatusToneClass = {
+        active: 'bg-amber-500/12 text-amber-700 dark:bg-amber-400/12 dark:text-amber-300',
+        success: 'bg-emerald-500/12 text-emerald-700 dark:bg-emerald-400/12 dark:text-emerald-300',
+        danger: 'bg-red-500/12 text-red-700 dark:bg-red-400/12 dark:text-red-300',
+        muted: 'bg-slate-500/12 text-slate-600 dark:bg-slate-400/12 dark:text-slate-300',
+    };
 
     return (
         <div
@@ -827,6 +847,78 @@ export function GraphControls({
                             <span className="hidden sm:inline">Timeline</span>
                         </button>
                     </div>
+
+                    {/* Leaf nodes */}
+                    <DropdownMenu>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <DropdownMenuTrigger asChild>
+                                    <button
+                                        type="button"
+                                        className={cn(iconButtonBase, iconButtonGhost)}
+                                        aria-label="Leaf nodes"
+                                    >
+                                        <span className={iconGlow} />
+                                        <span className={iconContainer}>
+                                            <Leaf size={15} strokeWidth={2} />
+                                        </span>
+                                    </button>
+                                </DropdownMenuTrigger>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" align="end">
+                                Leaf nodes
+                            </TooltipContent>
+                        </Tooltip>
+                        <DropdownMenuContent className="w-80 overflow-hidden p-0" align="end">
+                            <div className="border-b border-border/30 bg-gradient-to-b from-muted/30 to-transparent p-3">
+                                <div className="flex items-center gap-2">
+                                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
+                                        <Leaf size={14} />
+                                    </div>
+                                    <div>
+                                        <p className="text-sm font-semibold leading-none">Leaf Nodes</p>
+                                        <p className="mt-1 text-[11px] text-muted-foreground">
+                                            {leafNodes.length} branch endpoints, newest first
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                            {leafNodes.length > 0 ? (
+                                <div
+                                    className="max-h-80 overflow-y-auto overscroll-contain p-1.5 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
+                                    onWheelCapture={stopNestedScrollPropagation}
+                                    onTouchMoveCapture={stopNestedScrollPropagation}
+                                >
+                                    {leafNodes.map((node) => (
+                                        <DropdownMenuItem
+                                            key={node.id}
+                                            onClick={() => onLeafNodeFocus(node.id)}
+                                            className="flex cursor-pointer flex-col items-stretch gap-1.5 rounded-md px-2 py-2"
+                                        >
+                                            <span className="block truncate text-xs font-medium text-foreground">
+                                                {node.label}
+                                            </span>
+                                            <span className="flex min-w-0 items-center gap-1.5">
+                                                <span className="min-w-0 truncate rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
+                                                    {node.modelLabel}
+                                                </span>
+                                                <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none", leafStatusToneClass[node.statusTone])}>
+                                                    {node.statusLabel}
+                                                </span>
+                                                <span className="min-w-0 truncate text-[10px] text-muted-foreground">
+                                                    {node.timestampLabel}
+                                                </span>
+                                            </span>
+                                        </DropdownMenuItem>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+                                    No leaf nodes available
+                                </div>
+                            )}
+                        </DropdownMenuContent>
+                    </DropdownMenu>
 
                     {/* Settings - Modern Icon Button */}
                     <DropdownMenu>

@@ -9,6 +9,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '../../@/components/ui/alert-dialog';
+import { Checkbox } from '../../@/components/ui/checkbox';
 import { formatDeleteBranchPreview, type DeleteBranchPreview } from '../domain/deleteBranchPreview';
 import { cn } from '../lib/utils';
 
@@ -19,9 +20,12 @@ interface DeleteBranchDialogProps {
   title: string;
   preview: DeleteBranchPreview;
   phase: DeleteBranchDialogPhase;
+  removableCommitCount?: number;
+  removeCommitsFromGraph?: boolean;
   onOpenChange: (open: boolean) => void;
   onCancel: () => void;
   onConfirm: () => void;
+  onRemoveCommitsFromGraphChange?: (checked: boolean) => void;
 }
 
 const pluralize = (count: number, singular: string, plural = `${singular}s`) => (
@@ -33,9 +37,12 @@ export function DeleteBranchDialog({
   title,
   preview,
   phase,
+  removableCommitCount = 0,
+  removeCommitsFromGraph = false,
   onOpenChange,
   onCancel,
   onConfirm,
+  onRemoveCommitsFromGraphChange,
 }: DeleteBranchDialogProps) {
   const isDeleting = phase === 'deleting';
   const isSuccess = phase === 'success';
@@ -117,6 +124,26 @@ export function DeleteBranchDialog({
             </div>
           ) : null}
         </div>
+
+        {removableCommitCount > 0 && !isSuccess ? (
+          <label className={cn(
+            'flex items-start gap-3 rounded-md border bg-background/70 p-3 text-sm transition-colors',
+            (isDeleting || isSuccess) && 'opacity-70'
+          )}>
+            <Checkbox
+              checked={removeCommitsFromGraph}
+              disabled={isDeleting || isSuccess}
+              onCheckedChange={(checked) => onRemoveCommitsFromGraphChange?.(checked === true)}
+              className="mt-0.5"
+            />
+            <span className="grid gap-0.5 leading-none">
+              <span className="font-medium text-foreground">Remove commits from graph</span>
+              <span className="text-xs leading-5 text-muted-foreground">
+                Also hide {pluralize(removableCommitCount, 'commit node')} connected to this deletion.
+              </span>
+            </span>
+          </label>
+        ) : null}
 
         <AlertDialogFooter>
           <AlertDialogCancel disabled={isDeleting || isSuccess} onClick={onCancel}>

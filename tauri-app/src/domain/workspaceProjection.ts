@@ -1,13 +1,11 @@
 import type { AgentStatus } from '@shared/agentStatus';
-import type { Message, Scope, Summary } from '../stores/workspaceStore';
+import type { CommitEntity, CommitObservationEntity, CommitParentEntity, Message, Scope, Summary } from '../stores/workspaceStore';
 import { getGraphParentId } from '../lib/graph/lineage';
 import { isRedundantCommitNode } from '../lib/graph/turnUtils';
 import { resolveNodeState } from '../lib/runStateResolver';
 import { buildScopedFocusRoute, isImportedGitMessage, type ScopedFocusRoute } from './scopedFocusRoute';
 import {
   CanonicalNodeEntity,
-  ExternalCommitBatch,
-  buildExternalCommitBatches,
   classifyMessageNodeKind,
   getCommitSha,
   getAssistantCommitCount,
@@ -18,7 +16,6 @@ import {
   getToolCallCount,
   getTurnFocusMessageId,
   getTurnGroupIdForMessage,
-  isManualCommitBatch,
 } from './nodes';
 
 export interface ProjectedNodeEntity extends CanonicalNodeEntity {
@@ -49,24 +46,54 @@ export interface ProjectedTurnGroup {
   sortTs: number;
 }
 
-export interface ProjectedExternalCommitBatch {
-  batchId: string;
-  batch: ExternalCommitBatch;
+export type CommitOwner = 'conversation_turn' | 'imported_only' | 'manual_only' | 'unknown';
+
+export type ProjectedCommitKind =
+  | 'generated_commit'
+  | 'imported_commit'
+  | 'manual_commit'
+  | 'merge_commit'
+  | 'unknown_commit';
+
+export interface ProjectedCommitEntity {
   entityId: string;
-  representativeMessageId: string;
-  representativeEntityId: string;
-  messageIds: string[];
-  entityIds: string[];
-  importedFromRef: string | null;
-  title: string;
-  sourceKind: 'external' | 'manual';
-  commitCount: number;
+  kind: ProjectedCommitKind;
+  sha: string;
+  shortSha: string;
+  subject: string;
+  sourceKind: string;
+  owner: CommitOwner;
+  producedByNodeId: string | null;
+  parentShas: string[];
+  parentRows: CommitParentEntity[];
+  observations: CommitObservationEntity[];
+  commit: CommitEntity;
   sortTs: number;
 }
 
-export type ProjectedTimelineItem =
-  | { type: 'entity'; entityId: string; sortTs: number }
-  | { type: 'external_commit_batch'; batchId: string; sortTs: number };
+export interface ProjectedCommitLaneRow {
+  rowId: string;
+  type: 'commit' | 'group';
+  commitSha?: string;
+  groupId?: string;
+  sortTs: number;
+}
+
+export interface ProjectedCommitGroup {
+  groupId: string;
+  kind: 'layout_derived_commit_group';
+  sourceKind: 'external' | 'manual' | 'unknown';
+  owner: Exclude<CommitOwner, 'conversation_turn'>;
+  commitShas: string[];
+  firstSha: string;
+  lastSha: string;
+  parentSha: string | null;
+  childSha: string | null;
+  sortTs: number;
+  expanded: boolean;
+}
+
+export type ProjectedTimelineItem = { type: 'entity'; entityId: string; sortTs: number };
 
 export type ProjectedChatItem =
   | {
@@ -79,8 +106,7 @@ export type ProjectedChatItem =
     }
   | { type: 'turn_user_only'; userEntityId: string; sortTs: number }
   | { type: 'summary'; entityId: string; bypassedCount: number; sortTs: number }
-  | { type: 'entity'; entityId: string; sortTs: number }
-  | { type: 'external_commit_batch'; batchId: string; sortTs: number };
+  | { type: 'entity'; entityId: string; sortTs: number };
 
 export interface WorkspaceProjection {
   messages: Message[];
@@ -96,10 +122,13 @@ export interface WorkspaceProjection {
   entitiesBySummaryId: Map<string, ProjectedNodeEntity>;
   childEntityIdsByParentEntityId: Map<string, string[]>;
   commitEntityIdsByAssistantEntityId: Map<string, string[]>;
+  commitBySha: Map<string, ProjectedCommitEntity>;
+  commitOwnerBySha: Map<string, CommitOwner>;
+  commitLaneRows: ProjectedCommitLaneRow[];
+  layoutDerivedCommitGroups: ProjectedCommitGroup[];
+  groupIdByCommitSha: Map<string, string>;
   turnGroups: ProjectedTurnGroup[];
   turnGroupById: Map<string, ProjectedTurnGroup>;
-  externalCommitBatches: ProjectedExternalCommitBatch[];
-  externalCommitBatchById: Map<string, ProjectedExternalCommitBatch>;
   originMessage: Message | null;
   originMessageId: string | null;
   branchPathMessageIds: Set<string>;
@@ -112,6 +141,9 @@ interface BuildWorkspaceProjectionInput {
   messages: Message[];
   scopes?: Scope[];
   summaries: Summary[];
+  commits?: CommitEntity[];
+  commitParents?: CommitParentEntity[];
+  commitObservations?: CommitObservationEntity[];
   focusedMessageId: string | null;
   disabledSummaryIds?: Set<string>;
 }
@@ -127,10 +159,13 @@ interface StableWorkspaceProjectionBase {
   entitiesBySummaryId: Map<string, ProjectedNodeEntity>;
   childEntityIdsByParentEntityId: Map<string, string[]>;
   commitEntityIdsByAssistantEntityId: Map<string, string[]>;
+  commitBySha: Map<string, ProjectedCommitEntity>;
+  commitOwnerBySha: Map<string, CommitOwner>;
+  commitLaneRows: ProjectedCommitLaneRow[];
+  layoutDerivedCommitGroups: ProjectedCommitGroup[];
+  groupIdByCommitSha: Map<string, string>;
   turnGroups: ProjectedTurnGroup[];
   turnGroupById: Map<string, ProjectedTurnGroup>;
-  externalCommitBatches: ProjectedExternalCommitBatch[];
-  externalCommitBatchById: Map<string, ProjectedExternalCommitBatch>;
   originMessage: Message | null;
   originMessageId: string | null;
   timelineItems: ProjectedTimelineItem[];
@@ -190,7 +225,38 @@ const getSummaryFingerprint = (summary: Summary): string => (
   ].join('\u001f')
 );
 
-const getStableBaseCacheKey = (messages: Message[], summaries: Summary[]): string => (
+const getCommitFingerprint = (commit: CommitEntity): string => (
+  [
+    commit.sha,
+    commit.subject ?? '',
+    commit.source_kind ?? '',
+    commit.produced_by_node_id ?? '',
+    commit.first_parent_sha ?? '',
+    commit.committed_at ?? '',
+    commit.authored_at ?? '',
+  ].join('\u001f')
+);
+
+const getCommitParentFingerprint = (parent: CommitParentEntity): string => (
+  [parent.child_sha, parent.parent_sha, parent.parent_index].join('\u001f')
+);
+
+const getCommitObservationFingerprint = (observation: CommitObservationEntity): string => (
+  [
+    observation.commit_sha,
+    observation.source_kind ?? '',
+    observation.git_ref ?? '',
+    observation.last_seen_at ?? '',
+  ].join('\u001f')
+);
+
+const getStableBaseCacheKey = (
+  messages: Message[],
+  summaries: Summary[],
+  commits: CommitEntity[] = [],
+  commitParents: CommitParentEntity[] = [],
+  commitObservations: CommitObservationEntity[] = [],
+): string => (
   [
     'messages',
     messages.length,
@@ -198,6 +264,15 @@ const getStableBaseCacheKey = (messages: Message[], summaries: Summary[]): strin
     'summaries',
     summaries.length,
     ...summaries.map(getSummaryFingerprint),
+    'commits',
+    commits.length,
+    ...commits.map(getCommitFingerprint),
+    'commitParents',
+    commitParents.length,
+    ...commitParents.map(getCommitParentFingerprint),
+    'commitObservations',
+    commitObservations.length,
+    ...commitObservations.map(getCommitObservationFingerprint),
   ].join('\u001e')
 );
 
@@ -354,14 +429,207 @@ const getDuplicateAgentCommitMessageIds = (
   return duplicateIds;
 };
 
+const getCommitSortTs = (commit: CommitEntity): number => {
+  const value = commit.committed_at ?? commit.authored_at ?? commit.updatedAt ?? commit.createdAt ?? '';
+  const ts = new Date(value).getTime();
+  return Number.isNaN(ts) ? 0 : ts;
+};
+
+const normalizeSourceKind = (value: string | null | undefined): string => (
+  value === 'external' || value === 'manual' || value === 'agent' || value === 'merge' || value === 'unknown'
+    ? value
+    : 'unknown'
+);
+
+const getCommitOwner = (commit: CommitEntity, observations: CommitObservationEntity[]): CommitOwner => {
+  if (commit.produced_by_node_id) return 'conversation_turn';
+  if (commit.source_kind === 'manual' || observations.some((observation) => observation.source_kind === 'manual')) return 'manual_only';
+  if (commit.source_kind === 'external' || observations.some((observation) => observation.source_kind === 'external')) return 'imported_only';
+  return 'unknown';
+};
+
+const getProjectedCommitKind = (
+  commit: CommitEntity,
+  owner: CommitOwner,
+  parentRows: CommitParentEntity[],
+): ProjectedCommitKind => {
+  if (commit.source_kind === 'merge' || parentRows.length > 1) return 'merge_commit';
+  if (owner === 'conversation_turn' || commit.source_kind === 'agent') return 'generated_commit';
+  if (owner === 'manual_only') return 'manual_commit';
+  if (owner === 'imported_only') return 'imported_commit';
+  return 'unknown_commit';
+};
+
+const buildCommitProjection = (
+  commits: CommitEntity[] = [],
+  commitParents: CommitParentEntity[] = [],
+  commitObservations: CommitObservationEntity[] = [],
+) => {
+  const parentsByChildSha = new Map<string, CommitParentEntity[]>();
+  const childrenByParentSha = new Map<string, string[]>();
+  for (const parent of commitParents) {
+    const childParents = parentsByChildSha.get(parent.child_sha) ?? [];
+    childParents.push(parent);
+    parentsByChildSha.set(parent.child_sha, childParents);
+
+    const children = childrenByParentSha.get(parent.parent_sha) ?? [];
+    children.push(parent.child_sha);
+    childrenByParentSha.set(parent.parent_sha, children);
+  }
+  parentsByChildSha.forEach((parents) => parents.sort((left, right) => left.parent_index - right.parent_index));
+
+  const observationsBySha = new Map<string, CommitObservationEntity[]>();
+  for (const observation of commitObservations) {
+    const observations = observationsBySha.get(observation.commit_sha) ?? [];
+    observations.push(observation);
+    observationsBySha.set(observation.commit_sha, observations);
+  }
+
+  const commitBySha = new Map<string, ProjectedCommitEntity>();
+  const commitOwnerBySha = new Map<string, CommitOwner>();
+
+  for (const commit of commits) {
+    if (!commit.sha) continue;
+    const parentRows: CommitParentEntity[] = (parentsByChildSha.get(commit.sha) ?? commit.parents ?? [])
+      .map((parent) => ({
+        ...parent,
+        child_sha: parent.child_sha ?? commit.sha,
+      }))
+      .sort((left, right) => left.parent_index - right.parent_index);
+    const observations = observationsBySha.get(commit.sha) ?? [];
+    const owner = getCommitOwner(commit, observations);
+    const sourceKind = normalizeSourceKind(commit.source_kind);
+    const projected: ProjectedCommitEntity = {
+      entityId: `commit:${commit.sha}`,
+      kind: getProjectedCommitKind(commit, owner, parentRows),
+      sha: commit.sha,
+      shortSha: commit.sha.slice(0, 8),
+      subject: commit.subject?.trim() || `Commit ${commit.sha.slice(0, 8)}`,
+      sourceKind,
+      owner,
+      producedByNodeId: commit.produced_by_node_id ?? null,
+      parentShas: parentRows.map((parent) => parent.parent_sha),
+      parentRows,
+      observations,
+      commit,
+      sortTs: getCommitSortTs(commit),
+    };
+    commitBySha.set(commit.sha, projected);
+    commitOwnerBySha.set(commit.sha, owner);
+  }
+
+  const sortedCommits = Array.from(commitBySha.values()).sort((left, right) => {
+    if (left.sortTs !== right.sortTs) return left.sortTs - right.sortTs;
+    return left.sha.localeCompare(right.sha);
+  });
+
+  const isGroupable = (commit: ProjectedCommitEntity): boolean => {
+    if (commit.owner === 'conversation_turn') return false;
+    if (!['external', 'manual', 'unknown'].includes(commit.sourceKind)) return false;
+    if (commit.producedByNodeId) return false;
+    if (commit.parentRows.length > 1) return false;
+    return true;
+  };
+
+  const groups: ProjectedCommitGroup[] = [];
+  const groupedShas = new Set<string>();
+  let run: ProjectedCommitEntity[] = [];
+
+  const flushRun = () => {
+    if (run.length >= 3) {
+      const first = run[0];
+      const last = run[run.length - 1];
+      const sourceKind = (first.sourceKind === 'external' || first.sourceKind === 'manual') ? first.sourceKind : 'unknown';
+      const group: ProjectedCommitGroup = {
+        groupId: `commit-group:${sourceKind}:${first.sha}:${last.sha}`,
+        kind: 'layout_derived_commit_group',
+        sourceKind,
+        owner: first.owner === 'imported_only' || first.owner === 'manual_only' ? first.owner : 'unknown',
+        commitShas: run.map((commit) => commit.sha),
+        firstSha: first.sha,
+        lastSha: last.sha,
+        parentSha: first.parentShas[0] ?? null,
+        childSha: null,
+        sortTs: first.sortTs,
+        expanded: false,
+      };
+      groups.push(group);
+      run.forEach((commit) => groupedShas.add(commit.sha));
+    }
+    run = [];
+  };
+
+  for (const commit of sortedCommits) {
+    const previous = run[run.length - 1] ?? null;
+    const childCount = previous ? (childrenByParentSha.get(previous.sha) ?? []).filter((sha) => commitBySha.has(sha)).length : 0;
+    const continuesRun = previous
+      && isGroupable(commit)
+      && isGroupable(previous)
+      && commit.sourceKind === previous.sourceKind
+      && commit.parentShas[0] === previous.sha
+      && childCount <= 1;
+
+    if (!isGroupable(commit)) {
+      flushRun();
+      continue;
+    }
+
+    if (!previous || continuesRun) {
+      run.push(commit);
+    } else {
+      flushRun();
+      run.push(commit);
+    }
+  }
+  flushRun();
+
+  const groupIdByCommitSha = new Map<string, string>();
+  groups.forEach((group) => {
+    group.commitShas.forEach((sha) => groupIdByCommitSha.set(sha, group.groupId));
+  });
+
+  const groupByFirstSha = new Map(groups.map((group) => [group.firstSha, group]));
+  const commitLaneRows: ProjectedCommitLaneRow[] = [];
+  for (const commit of sortedCommits) {
+    const group = groupByFirstSha.get(commit.sha);
+    if (group) {
+      commitLaneRows.push({
+        rowId: group.groupId,
+        type: 'group',
+        groupId: group.groupId,
+        sortTs: group.sortTs,
+      });
+      continue;
+    }
+    if (groupedShas.has(commit.sha)) continue;
+    commitLaneRows.push({
+      rowId: `commit-row:${commit.sha}`,
+      type: 'commit',
+      commitSha: commit.sha,
+      sortTs: commit.sortTs,
+    });
+  }
+
+  return {
+    commitBySha,
+    commitOwnerBySha,
+    commitLaneRows,
+    layoutDerivedCommitGroups: groups,
+    groupIdByCommitSha,
+  };
+};
+
 export function buildWorkspaceProjection({
   messages,
   scopes = [],
   summaries,
+  commits = [],
+  commitParents = [],
+  commitObservations = [],
   focusedMessageId,
   disabledSummaryIds = new Set<string>(),
 }: BuildWorkspaceProjectionInput): WorkspaceProjection {
-  const base = getStableWorkspaceProjectionBase(messages, summaries);
+  const base = getStableWorkspaceProjectionBase(messages, summaries, commits, commitParents, commitObservations);
   const {
     sortedMessages,
     sortedSummaries,
@@ -373,10 +641,13 @@ export function buildWorkspaceProjection({
     entitiesBySummaryId,
     childEntityIdsByParentEntityId,
     commitEntityIdsByAssistantEntityId,
+    commitBySha,
+    commitOwnerBySha,
+    commitLaneRows,
+    layoutDerivedCommitGroups,
+    groupIdByCommitSha,
     turnGroups,
     turnGroupById,
-    externalCommitBatches,
-    externalCommitBatchById,
     originMessage,
     originMessageId,
     timelineItems,
@@ -503,81 +774,35 @@ export function buildWorkspaceProjection({
     !coveredPathMessageIds.has(message.id) &&
     !isAgentMaterializedDuplicateExternalCommit(message, agentCommitShas)
   ));
-  const assistantOnlyPathBatches = new Map<string, Message[]>();
   for (const message of assistantOnlyPathMessages) {
-    const batch = externalCommitBatches.find((candidate) => candidate.messageIds.includes(message.id));
-    if (!batch) {
-      chatItems.push({
-        type: 'entity',
-        entityId: getMessageEntityId(message, messageMap),
-        sortTs: new Date(message.createdAt).getTime(),
-      });
-      continue;
-    }
-    const list = assistantOnlyPathBatches.get(batch.batchId) ?? [];
-    list.push(message);
-    assistantOnlyPathBatches.set(batch.batchId, list);
-  }
-  for (const batchId of assistantOnlyPathBatches.keys()) {
-    const batch = externalCommitBatchById.get(batchId);
-    if (!batch) continue;
     chatItems.push({
-      type: 'external_commit_batch',
-      batchId,
-      sortTs: batch.sortTs,
+      type: 'entity',
+      entityId: getMessageEntityId(message, messageMap),
+      sortTs: new Date(message.createdAt).getTime(),
     });
   }
 
   const focusedMessage = focusedMessageId ? messageMap.get(focusedMessageId) ?? null : null;
   if (focusedMessage && isImportedGitMessage(focusedMessage)) {
-    const focusedBatch = externalCommitBatches.find((candidate) => candidate.messageIds.includes(focusedMessage.id));
-    if (focusedBatch && !chatItems.some((item) => item.type === 'external_commit_batch' && item.batchId === focusedBatch.batchId)) {
+    const focusedEntity = entitiesByMessageId.get(focusedMessage.id);
+    if (focusedEntity && !chatItems.some((item) => item.type === 'entity' && item.entityId === focusedEntity.entityId)) {
       chatItems.push({
-        type: 'external_commit_batch',
-        batchId: focusedBatch.batchId,
-        sortTs: focusedBatch.sortTs,
+        type: 'entity',
+        entityId: focusedEntity.entityId,
+        sortTs: focusedEntity.sortTs,
       });
-    } else if (!focusedBatch) {
-      const focusedEntity = entitiesByMessageId.get(focusedMessage.id);
-      if (focusedEntity && !chatItems.some((item) => item.type === 'entity' && item.entityId === focusedEntity.entityId)) {
-        chatItems.push({
-          type: 'entity',
-          entityId: focusedEntity.entityId,
-          sortTs: focusedEntity.sortTs,
-        });
-      }
     }
   }
 
   const pathIndexByMessageId = new Map<string, number>();
   pathMessages.forEach((message, pathIndex) => pathIndexByMessageId.set(message.id, pathIndex));
   chatItems.sort((left, right) => {
-    const getBatchSortAnchorMessageId = (batchId: string): string | null => {
-      const batch = externalCommitBatchById.get(batchId);
-      if (!batch) return null;
-
-      if (focusedMessageId && batch.messageIds.includes(focusedMessageId)) {
-        return focusedMessageId;
-      }
-
-      let bestMessageId: string | null = null;
-      let bestPathIndex = -1;
-      batch.messageIds.forEach((messageId) => {
-        const pathIndex = pathIndexByMessageId.get(messageId);
-        if (pathIndex === undefined || pathIndex <= bestPathIndex) return;
-        bestPathIndex = pathIndex;
-        bestMessageId = messageId;
-      });
-
-      return bestMessageId ?? batch.representativeMessageId ?? null;
-    };
-
     const getRepresentativeMessageId = (item: ProjectedChatItem): string | null => {
       if (item.type === 'turn') return entitiesById.get(item.userEntityId)?.messageId ?? null;
       if (item.type === 'turn_user_only') return entitiesById.get(item.userEntityId)?.messageId ?? null;
       if (item.type === 'summary') return entitiesById.get(item.entityId)?.summary?.startMessageId ?? null;
       if (item.type === 'entity') return entitiesById.get(item.entityId)?.messageId ?? null;
-      return getBatchSortAnchorMessageId(item.batchId);
+      return null;
     };
 
     const leftIndex = pathIndexByMessageId.get(getRepresentativeMessageId(left) ?? '') ?? 0;
@@ -602,10 +827,13 @@ export function buildWorkspaceProjection({
     entitiesBySummaryId,
     childEntityIdsByParentEntityId,
     commitEntityIdsByAssistantEntityId,
+    commitBySha,
+    commitOwnerBySha,
+    commitLaneRows,
+    layoutDerivedCommitGroups,
+    groupIdByCommitSha,
     turnGroups,
     turnGroupById,
-    externalCommitBatches,
-    externalCommitBatchById,
     originMessage,
     originMessageId,
     branchPathMessageIds,
@@ -617,9 +845,12 @@ export function buildWorkspaceProjection({
 
 function getStableWorkspaceProjectionBase(
   messages: Message[],
-  summaries: Summary[]
+  summaries: Summary[],
+  commits: CommitEntity[] = [],
+  commitParents: CommitParentEntity[] = [],
+  commitObservations: CommitObservationEntity[] = [],
 ): StableWorkspaceProjectionBase {
-  const cacheKey = getStableBaseCacheKey(messages, summaries);
+  const cacheKey = getStableBaseCacheKey(messages, summaries, commits, commitParents, commitObservations);
   const cached = stableBaseCache.get(cacheKey);
   if (cached) {
     stableBaseCache.delete(cacheKey);
@@ -682,6 +913,7 @@ function getStableWorkspaceProjectionBase(
   const entitiesBySummaryId = new Map(summaryEntities.map((entity) => [entity.summary!.id, entity]));
   const childEntityIdsByParentEntityId = new Map<string, string[]>();
   const commitEntityIdsByAssistantEntityId = new Map<string, string[]>();
+  const commitProjection = buildCommitProjection(commits, commitParents, commitObservations);
 
   for (const entity of messageEntities) {
     if (entity.parentEntityId) {
@@ -727,51 +959,13 @@ function getStableWorkspaceProjectionBase(
   const turnGroups = Array.from(turnGroupMap.values()).sort((left, right) => left.sortTs - right.sortTs);
   const turnGroupById = new Map(turnGroups.map((group) => [group.turnGroupId, group]));
 
-  const rawBatches = buildExternalCommitBatches(
-    sortedMessages.filter((message) => !isAgentMaterializedDuplicateExternalCommit(message, agentCommitShas)),
-    messageMap
-  );
-  const externalCommitBatches = rawBatches.map((batch) => {
-    const representative = messageMap.get(batch.representativeMessageId);
-    const meta = representative
-      ? (((representative.execution_data as any)?.meta || {}) as Record<string, any>)
-      : {};
-    const sourceKind = representative && isManualCommitBatch(representative) ? 'manual' : 'external';
-    const manualCommits = Array.isArray(meta.commits) ? meta.commits : [];
-    const importedFromRef = sourceKind === 'external'
-      ? (meta.imported_from_ref as string | undefined) ?? null
-      : null;
-    const commitCount = sourceKind === 'manual'
-      ? (typeof meta.commit_count === 'number' ? meta.commit_count : manualCommits.length || 1)
-      : batch.messages.length;
-    return {
-      batchId: batch.entityId,
-      batch,
-      entityId: batch.entityId,
-      representativeMessageId: batch.representativeMessageId,
-      representativeEntityId: getMessageEntityId(messageMap.get(batch.representativeMessageId)!, messageMap),
-      messageIds: batch.messages.map((message) => message.id),
-      entityIds: batch.messages.map((message) => getMessageEntityId(message, messageMap)),
-      importedFromRef,
-      title: sourceKind === 'manual' ? 'Added Commits' : 'Imported Commits',
-      sourceKind,
-      commitCount,
-      sortTs: batch.sortTs,
-    } satisfies ProjectedExternalCommitBatch;
-  });
-  const externalCommitBatchById = new Map(externalCommitBatches.map((batch) => [batch.batchId, batch]));
-  const batchedMessageIds = new Set(externalCommitBatches.flatMap((batch) => batch.messageIds));
-
   const timelineItems: ProjectedTimelineItem[] = [];
   for (const entity of messageEntities) {
-    if (!entity.messageId || batchedMessageIds.has(entity.messageId)) continue;
+    if (!entity.messageId) continue;
     timelineItems.push({ type: 'entity', entityId: entity.entityId, sortTs: entity.sortTs });
   }
   for (const entity of summaryEntities) {
     timelineItems.push({ type: 'entity', entityId: entity.entityId, sortTs: entity.sortTs });
-  }
-  for (const batch of externalCommitBatches) {
-    timelineItems.push({ type: 'external_commit_batch', batchId: batch.batchId, sortTs: batch.sortTs });
   }
   timelineItems.sort((left, right) => left.sortTs - right.sortTs);
 
@@ -786,10 +980,13 @@ function getStableWorkspaceProjectionBase(
     entitiesBySummaryId,
     childEntityIdsByParentEntityId,
     commitEntityIdsByAssistantEntityId,
+    commitBySha: commitProjection.commitBySha,
+    commitOwnerBySha: commitProjection.commitOwnerBySha,
+    commitLaneRows: commitProjection.commitLaneRows,
+    layoutDerivedCommitGroups: commitProjection.layoutDerivedCommitGroups,
+    groupIdByCommitSha: commitProjection.groupIdByCommitSha,
     turnGroups,
     turnGroupById,
-    externalCommitBatches,
-    externalCommitBatchById,
     originMessage,
     originMessageId,
     timelineItems,

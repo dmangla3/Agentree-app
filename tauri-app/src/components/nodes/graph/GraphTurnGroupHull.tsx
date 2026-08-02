@@ -26,7 +26,7 @@ export const GraphTurnGroupHull = memo(({
         borderColor: withHexAlpha(scopeColor, '15'),
       }}
       className={cn(
-        "rounded-[32px] border-2 border-dashed transition-all duration-500 pointer-events-none z-[-1]",
+        "rounded-[16px] border border-solid transition-all duration-500 pointer-events-none z-[-1]",
       )}
     >
       {data.label && (

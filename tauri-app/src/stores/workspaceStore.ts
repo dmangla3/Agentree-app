@@ -55,6 +55,28 @@ export interface CommitEntity {
   updatedAt?: string;
 }
 
+export interface CommitParentEntity {
+  id?: string;
+  workspace_id?: string;
+  child_sha: string;
+  parent_sha: string;
+  parent_index: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CommitObservationEntity {
+  id?: string;
+  workspace_id?: string;
+  commit_sha: string;
+  git_ref?: string | null;
+  source_kind?: 'external' | 'manual' | 'unknown' | string | null;
+  first_seen_at?: string;
+  last_seen_at?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface BranchPointer {
   id: string;
   workspace_id: string;
@@ -84,7 +106,6 @@ export interface TrackedGitRef {
   display_name: string;
   enabled: boolean;
   last_seen_commit_sha?: string | null;
-  last_seen_node_id?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -202,6 +223,7 @@ interface WorkspaceState {
   lastFocusMetadata: Record<string, unknown> | null;
   selectedMessageIds: string[];
   focusNonce: number;
+  contextPathMessageIds: string[];
   lastFocusedMessageByWorkspace: Record<string, string>;
   recentFocusedMessageIdsByWorkspace: Record<string, string[]>;
   activeScopeId: string | null;
@@ -239,6 +261,7 @@ interface WorkspaceState {
   replaceSelectedMessageIds: (messageIds: string[]) => void;
   toggleSelectedMessageId: (messageId: string) => void;
   clearSelectedMessageIds: () => void;
+  setContextPathMessageIds: (messageIds: string[]) => void;
   setActiveScopeId: (scopeId: string | null) => void;
   setAutoCheckoutOnAgentCommit: (enabled: boolean) => void;
   clearPendingInitialFocusId: () => void;
@@ -270,6 +293,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       lastFocusMetadata: null,
       selectedMessageIds: [],
       focusNonce: 0,
+      contextPathMessageIds: [],
       lastFocusedMessageByWorkspace: {},
       recentFocusedMessageIdsByWorkspace: {},
       activeScopeId: null,
@@ -299,6 +323,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           lastFocusMetadata: null,
           selectedMessageIds: [],
           focusNonce: 0,
+          contextPathMessageIds: [],
           activeScopeId: null,
           activeSendFlowFocus: null,
           insights: [],
@@ -315,6 +340,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             lastFocusMetadata: initialFocusId ? { reason: 'initial-focus' } : null,
             selectedMessageIds: [],
             focusNonce: Date.now(),
+            contextPathMessageIds: [],
             activeScopeId: null,
             insights: [],
           };
@@ -412,6 +438,17 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             : [...state.selectedMessageIds, messageId],
         })),
       clearSelectedMessageIds: () => set({ selectedMessageIds: [] }),
+      setContextPathMessageIds: (messageIds) =>
+        set((state) => {
+          const uniqueIds = Array.from(new Set(messageIds.filter(Boolean)));
+          if (
+            uniqueIds.length === state.contextPathMessageIds.length &&
+            uniqueIds.every((id, index) => id === state.contextPathMessageIds[index])
+          ) {
+            return state;
+          }
+          return { contextPathMessageIds: uniqueIds };
+        }),
       setActiveScopeId: (scopeId) => set({ activeScopeId: scopeId }),
       setAutoCheckoutOnAgentCommit: (enabled) => set({ autoCheckoutOnAgentCommit: enabled }),
       clearPendingInitialFocusId: () => set({ pendingInitialFocusId: null }),

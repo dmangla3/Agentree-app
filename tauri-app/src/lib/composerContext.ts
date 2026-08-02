@@ -52,6 +52,15 @@ export interface ComposerContextManifest {
     volatileTailHash: string;
 }
 
+export interface ComposerContextPathParams {
+    parentId: string | null;
+    messages: Message[];
+    scopeId?: string | null;
+    contextParentId?: string | null;
+    contextPolicy?: 'continue' | 'fresh';
+    contextStartId?: string | null;
+}
+
 const estimateTokens = (text: string) => Math.ceil((text || '').length / 4);
 
 const normalizeText = (value: string | null | undefined) => (value || '').replace(/\s+/g, ' ').trim();
@@ -104,6 +113,47 @@ const computeContextActivityMap = (ancestors: Message[]): Map<string, boolean> =
 
     return activityById;
 };
+
+const buildComposerContextMessages = ({
+    parentId,
+    messages,
+    contextParentId = null,
+    contextPolicy = 'continue',
+    contextStartId = null,
+}: ComposerContextPathParams): Message[] => {
+    if (!parentId || contextPolicy === 'fresh') return [];
+
+    const primaryAncestors = reconstructContext(parentId, messages);
+    const contextAncestors = contextParentId && contextParentId !== parentId
+        ? reconstructContext(contextParentId, messages)
+        : [];
+    const seenAncestorIds = new Set<string>();
+    const ancestors = [...contextAncestors, ...primaryAncestors].filter((message) => {
+        if (seenAncestorIds.has(message.id)) return false;
+        seenAncestorIds.add(message.id);
+        return true;
+    });
+    if (!ancestors.length) return [];
+
+    const startIndex = contextStartId
+        ? ancestors.findIndex((message) => message.id === contextStartId)
+        : -1;
+    const rangedAncestors = startIndex >= 0
+        ? ancestors.slice(startIndex)
+        : ancestors;
+    const messageMap = new Map(messages.map((message) => [message.id, message]));
+    return rangedAncestors.filter((message) => !isFirstClassCommitMessage(message, { messageMap }));
+};
+
+export function buildComposerContextPathIds(params: ComposerContextPathParams): Set<string> {
+    const contextMessages = buildComposerContextMessages(params);
+    const activityById = computeContextActivityMap(contextMessages);
+    return new Set(
+        contextMessages
+            .filter((message) => activityById.get(message.id) === true)
+            .map((message) => message.id)
+    );
+}
 
 const getTimelineEvents = (message: Message): any[] => {
     const timeline = (message.execution_data as { timeline?: any[] } | null | undefined)?.timeline;
@@ -207,7 +257,7 @@ const formatCombinedToolContext = (events: any[]): { summary: string; content: s
 export function buildComposerContextSelection(
     parentId: string | null,
     messages: Message[],
-    scopeId: string | null = null,
+    _scopeId: string | null = null,
     contextParentId: string | null = null,
     contextPolicy: 'continue' | 'fresh' = 'continue',
     contextStartId: string | null = null
@@ -216,28 +266,16 @@ export function buildComposerContextSelection(
         return { turns: [], entries: [], defaultSelectedIds: [], defaultSelectedTokenEstimate: 0 };
     }
 
-    const primaryAncestors = reconstructContext(parentId, messages);
-    const contextAncestors = contextParentId && contextParentId !== parentId
-        ? reconstructContext(contextParentId, messages)
-        : [];
-    const seenAncestorIds = new Set<string>();
-    const ancestors = [...contextAncestors, ...primaryAncestors].filter((message) => {
-        if (seenAncestorIds.has(message.id)) return false;
-        seenAncestorIds.add(message.id);
-        return true;
+    const contextMessages = buildComposerContextMessages({
+        parentId,
+        messages,
+        contextParentId,
+        contextPolicy,
+        contextStartId,
     });
-    if (!ancestors.length) {
+    if (!contextMessages.length) {
         return { turns: [], entries: [], defaultSelectedIds: [], defaultSelectedTokenEstimate: 0 };
     }
-
-    const rangedAncestors = contextStartId
-        ? ancestors.slice(Math.max(0, ancestors.findIndex((message) => message.id === contextStartId)))
-        : ancestors;
-    const scopedAncestors = scopeId
-        ? rangedAncestors.filter((message) => (message.scope_id || null) === scopeId)
-        : rangedAncestors;
-    const messageMap = new Map(messages.map((message) => [message.id, message]));
-    const contextMessages = scopedAncestors.filter((message) => !isFirstClassCommitMessage(message, { messageMap }));
     const activityById = computeContextActivityMap(contextMessages);
     const turns: ComposerContextTurn[] = [];
     let currentTurn: ComposerContextTurn | null = null;

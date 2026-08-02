@@ -28,6 +28,7 @@ import { trackedRefKeys, useTrackedRefs } from '../hooks/useTrackedRefs';
 import { useGitSync } from '../hooks/useGitSync';
 import { getEnabledTrackedGitRefs, getTrackedRefsNeedingSync, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
 import { useScopes } from '../hooks/useScopes';
+import { useLocalNodes } from '../hooks/useLocalNodes';
 import { useGraphMessages } from '../hooks/useLiveMessages';
 import { getPublicShareUrl, useCreateNodePublicShare } from '../hooks/useWorkspacePublicShare';
 
@@ -39,8 +40,10 @@ import { useWorkspaceProjection } from '../hooks/useWorkspaceProjection';
 import { clearCachedGraphSnapshot, graphSnapshotToSummaries, useGraphSnapshot } from '../hooks/useGraphSnapshot';
 // Utils
 import { LlmNodeData, getLlmLegend } from '../lib/graphUtils';
-import { getDeleteBranchPreview, getTopLevelDeleteBranchIds } from '../domain/deleteBranchPreview';
+import { collectDeleteBranchMessageIds, getDeleteBranchPreview, getTopLevelDeleteBranchIds } from '../domain/deleteBranchPreview';
 import { getBranchPointerCommitSha, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
+import { addDeletedGraphCommitShas, readDeletedGraphCommitShas } from '../lib/graph/commitGraphTombstones';
+import { getLeafMessagesByRecency } from '../lib/graph/leafNodes';
 import { collapseRenderedFocusRoute } from '../domain/scopedFocusRoute';
 import { cn } from '../lib/utils';
 import { useDiff } from '../contexts/DiffContext';
@@ -52,10 +55,9 @@ import { agentRunManager } from '../agent-runs/agentRunManager';
 import SummaryEdge from './SummaryEdge';
 import { HorizontalThenVerticalEdge } from './HorizontalThenVerticalEdge';
 import { ContextSmoothStepEdge } from './ContextSmoothStepEdge';
-import { CompactLineageEdge } from './CompactLineageEdge';
 
 // Components - Graph (extracted)
-import { GraphControls, ViewMode } from './graph/GraphControls';
+import { GraphControls, type LeafNodeNavigationItem, ViewMode } from './graph/GraphControls';
 import { GraphLegend } from './graph/GraphLegend';
 import { MiniMapPanel } from './graph/MiniMapPanel';
 import { GraphCanvasIndexPanel, type GraphEdgeLegendId } from './graph/GraphCanvasIndexPanel';
@@ -93,8 +95,9 @@ const nodeTypes = {
     user_message: GraphNodeDispatcher,
     assistant_message: GraphNodeDispatcher,
     commit_message: GraphNodeDispatcher,
+    canonical_commit: GraphNodeDispatcher,
+    layout_derived_commit_group: GraphNodeDispatcher,
     summary_block: GraphNodeDispatcher,
-    external_commit_batch: GraphNodeDispatcher,
     turn_group_hull: GraphTurnGroupHull,
 };
 
@@ -102,7 +105,7 @@ const edgeTypes = {
     summaryEdge: SummaryEdge,
     horizontalThenVertical: HorizontalThenVerticalEdge,
     smoothstep: ContextSmoothStepEdge,
-    compactLineage: CompactLineageEdge,
+    compactLineage: HorizontalThenVerticalEdge,
 };
 
 const EMPTY_MEASURED_NODE_HEIGHTS = new Map<string, number>();
@@ -120,11 +123,93 @@ const VIEWPORT_INTERACTION_STALE_MS = 12_000;
 const ACTIVE_GRAPH_WINDOW_MAX_VISIBLE_NODES = 160;
 const ACTIVE_GRAPH_WINDOW_OVERSCAN_SCREENS = 1.35;
 const ACTIVE_GRAPH_WINDOW_UPDATE_THROTTLE_MS = 80;
-const ACTIVE_GRAPH_WINDOW_FALLBACK_NODE_WIDTH = 260;
+const ACTIVE_GRAPH_WINDOW_FALLBACK_NODE_WIDTH = 120;
 const ACTIVE_GRAPH_WINDOW_FALLBACK_NODE_HEIGHT = 120;
 const ACTIVE_GRAPH_WINDOW_SPATIAL_CELL_SIZE = 900;
 const ACTIVE_GRAPH_RUN_STATUSES = new Set(['pending', 'creating', 'initializing', 'running', 'streaming']);
 const GRAPH_GEOMETRY_DIAGNOSTICS_ENABLED = import.meta.env.VITE_GRAPH_GEOMETRY_DIAGNOSTICS === 'true';
+
+const cleanNodePreview = (value: string | null | undefined): string => (
+    (value || '')
+        .replace(/```[\s\S]*?```/g, '[Code]')
+        .replace(/`[^`]+`/g, '[Code]')
+        .replace(/\[(.*?)\]\(.*?\)/g, '$1')
+        .replace(/#+\s/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+);
+
+const formatLeafTimestamp = (message: Message): string => {
+    const timestamp = message.last_event_at || message.updatedAt || message.createdAt;
+    const date = new Date(timestamp || '');
+
+    if (Number.isNaN(date.getTime())) {
+        return 'unknown time';
+    }
+
+    return date.toLocaleString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+    });
+};
+
+const getLeafModelLabel = (message: Message, agentLabelsById: Map<string, string>): string => {
+    if (message.llmModel) {
+        return message.llmModel.split('/').pop() || message.llmModel;
+    }
+    if (message.agent_id && agentLabelsById.has(message.agent_id)) {
+        return agentLabelsById.get(message.agent_id) || 'Model unknown';
+    }
+    if (message.llmProvider) {
+        return message.llmProvider;
+    }
+    if (message.commit?.sha) {
+        return message.commit.sha.slice(0, 7);
+    }
+    return 'Model unknown';
+};
+
+const getLeafStatusMeta = (message: Message): Pick<LeafNodeNavigationItem, 'statusLabel' | 'statusTone'> => {
+    switch (message.status) {
+        case 'pending':
+        case 'creating':
+        case 'initializing':
+            return { statusLabel: 'Pending', statusTone: 'active' };
+        case 'running':
+        case 'streaming':
+            return { statusLabel: 'Running', statusTone: 'active' };
+        case 'completed':
+            return { statusLabel: 'Done', statusTone: 'success' };
+        case 'error':
+        case 'failed':
+            return { statusLabel: 'Failed', statusTone: 'danger' };
+        case 'cancelled':
+            return { statusLabel: 'Cancelled', statusTone: 'muted' };
+        default:
+            return { statusLabel: message.commit ? 'Committed' : 'No status', statusTone: 'muted' };
+    }
+};
+
+const toLeafNodeNavigationItem = (
+    message: Message,
+    agentLabelsById: Map<string, string>,
+): LeafNodeNavigationItem => {
+    const isCommit = Boolean(message.commit);
+    const fallbackLabel = isCommit ? 'Commit' : message.role === 'user' ? 'User message' : 'Assistant message';
+    const label = cleanNodePreview(message.aiLabel || message.commit?.subject || message.content) || fallbackLabel;
+    const statusMeta = getLeafStatusMeta(message);
+
+    return {
+        id: message.id,
+        label: label.length > 72 ? `${label.slice(0, 69)}...` : label,
+        modelLabel: getLeafModelLabel(message, agentLabelsById),
+        statusLabel: statusMeta.statusLabel,
+        statusTone: statusMeta.statusTone,
+        timestampLabel: formatLeafTimestamp(message),
+    };
+};
 
 type SendFlowGraphDiagnosticFlags = {
     disableGraphSurface: boolean;
@@ -359,6 +444,7 @@ function GraphViewInternal({
     const activeScopeId = useWorkspaceStore(state => state.activeScopeId);
     const disabledSummaryIds = useWorkspaceStore(state => state.disabledSummaryIds);
     const toggleSummaryDisabled = useWorkspaceStore(state => state.toggleSummaryDisabled);
+    const contextPathMessageIds = useWorkspaceStore(state => state.contextPathMessageIds);
 
     // Insights
     const insights = useWorkspaceStore(state => state.insights);
@@ -368,6 +454,7 @@ function GraphViewInternal({
     const toggleShowInsightsInGraph = useWorkspaceStore(state => state.toggleShowInsightsInGraph);
     const dismissInsight = useWorkspaceStore(state => state.dismissInsight);
     const runningCount = useRunStatusStore((state) => state.getRunningCount(selectedWorkspaceId));
+    const contextPathMessageIdSet = useMemo(() => new Set(contextPathMessageIds), [contextPathMessageIds]);
     const activeRunStatusNodeIdKey = useRunStatusStore((state) => (
         Object.values(state.byNodeId)
             .filter((entry) => {
@@ -403,6 +490,7 @@ function GraphViewInternal({
     const graphSnapshotQuery = useGraphSnapshot(selectedWorkspaceId || null, graphResetNonce);
     const shouldHydrateFullMessages = graphSnapshotQuery.isSuccess || graphSnapshotQuery.isError;
     const messagesQuery = useMessages(selectedWorkspaceId || '');
+    const localNodesQuery = useLocalNodes(selectedWorkspaceId || null);
     const summariesQuery = useSummaries(selectedWorkspaceId || '', { enabled: shouldHydrateFullMessages });
     const { data: workspacesData } = useWorkspaces();
     const workspaces = useMemo(() => workspacesData ?? [], [workspacesData]);
@@ -420,11 +508,15 @@ function GraphViewInternal({
     }, [workspaces]);
     // Stable references for messages and summaries
     const snapshotSummaries = useMemo(() => graphSnapshotToSummaries(graphSnapshotQuery.data), [graphSnapshotQuery.data]);
+    const snapshotCommits = useMemo(() => graphSnapshotQuery.data?.commits ?? [], [graphSnapshotQuery.data?.commits]);
+    const snapshotCommitParents = useMemo(() => graphSnapshotQuery.data?.commitParents ?? [], [graphSnapshotQuery.data?.commitParents]);
+    const snapshotCommitObservations = useMemo(() => graphSnapshotQuery.data?.commitObservations ?? [], [graphSnapshotQuery.data?.commitObservations]);
     const persistedGraphMessages = useMemo(() => messagesQuery.data ?? [], [messagesQuery.data]);
-    const storeMessages = useGraphMessages(selectedWorkspaceId, persistedGraphMessages);
+    const storeMessages = useGraphMessages(selectedWorkspaceId, persistedGraphMessages, localNodesQuery.data);
     const summaries = useMemo(() => summariesQuery.data ?? snapshotSummaries, [snapshotSummaries, summariesQuery.data]);
     const graphUsingSnapshot = false;
     const [viewMode, setViewMode] = useState<ViewMode>('branch');
+    const [branchViewActivationNonce, setBranchViewActivationNonce] = useState(0);
     const scopeViewMode = 'project' as const;
 
     const graphFocusedMessageIdRef = useRef<string | null>(storeFocusedMessageId);
@@ -509,6 +601,10 @@ function GraphViewInternal({
             };
         })
     ), [branchPointersByNodeId, messages]);
+    const leafNodeNavigationItems = useMemo(() => (
+        getLeafMessagesByRecency(graphMessages as Message[])
+            .map((message) => toLeafNodeNavigationItem(message, agentLabelsById))
+    ), [agentLabelsById, graphMessages]);
     const activeGraphComputationHold = runningCount > 0 || activeSendFlowFocus?.workspaceId === selectedWorkspaceId;
     const graphComputationMessagesRef = useRef<Message[]>(graphMessages as Message[]);
     const graphComputationMessages = useMemo(() => {
@@ -643,11 +739,17 @@ function GraphViewInternal({
     const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
     const [isIndexVisible, setIsIndexVisible] = useState(true);
     const [previewEdgeType, setPreviewEdgeType] = useState<GraphEdgeLegendId | null>(null);
+    const [visibleEdgeTypes, setVisibleEdgeTypes] = useState<Set<GraphEdgeLegendId>>(
+        () => new Set(['conversation', 'context-break'])
+    );
     const [controlsHeight, setControlsHeight] = useState(0);
     const [measuredNodeHeights, setMeasuredNodeHeights] = useState<Map<string, number>>(() => EMPTY_MEASURED_NODE_HEIGHTS);
     const selectionAnchorIdRef = useRef<string | null>(null);
     const [isBulkDeleteAlertOpen, setIsBulkDeleteAlertOpen] = useState(false);
     const [bulkDeleteIds, setBulkDeleteIds] = useState<string[]>([]);
+    const [bulkDeleteExplicitCommitShas, setBulkDeleteExplicitCommitShas] = useState<string[]>([]);
+    const [removeCommitsFromGraph, setRemoveCommitsFromGraph] = useState(false);
+    const [deletedGraphCommitShas, setDeletedGraphCommitShas] = useState<Set<string>>(() => new Set());
     const [bulkDeletePhase, setBulkDeletePhase] = useState<DeleteBranchDialogPhase>('idle');
     const [scopedContextMenu, setScopedContextMenu] = useState<ScopedContextMenuState | null>(null);
     const [addCommitTargetId, setAddCommitTargetId] = useState<string | null>(null);
@@ -656,6 +758,25 @@ function GraphViewInternal({
     const selectedWorkspace = useMemo(
         () => workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
         [workspaces, selectedWorkspaceId]
+    );
+    useEffect(() => {
+        setDeletedGraphCommitShas(readDeletedGraphCommitShas(selectedWorkspaceId));
+    }, [selectedWorkspaceId]);
+    const visibleSnapshotCommits = useMemo(
+        () => snapshotCommits.filter((commit) => !deletedGraphCommitShas.has(commit.sha)),
+        [deletedGraphCommitShas, snapshotCommits]
+    );
+    const visibleSnapshotCommitShaSet = useMemo(
+        () => new Set(visibleSnapshotCommits.map((commit) => commit.sha)),
+        [visibleSnapshotCommits]
+    );
+    const visibleSnapshotCommitParents = useMemo(
+        () => snapshotCommitParents.filter((parent) => visibleSnapshotCommitShaSet.has(parent.child_sha)),
+        [snapshotCommitParents, visibleSnapshotCommitShaSet]
+    );
+    const visibleSnapshotCommitObservations = useMemo(
+        () => snapshotCommitObservations.filter((observation) => visibleSnapshotCommitShaSet.has(observation.commit_sha)),
+        [snapshotCommitObservations, visibleSnapshotCommitShaSet]
     );
     const repoPath = selectedWorkspace?.git_repo_path ?? selectedWorkspace?.folderPath ?? null;
     const { runSync, isSyncing } = useGitSync(
@@ -709,6 +830,7 @@ function GraphViewInternal({
     // ─────────────────────────────────────────────────────────────────────────
     const controlsRef = useRef<HTMLDivElement | null>(null);
     const centeredFocusIdRef = useRef<string | null>(null);
+    const previousViewModeRef = useRef<ViewMode>(viewMode);
     const layoutNodesRef = useRef<Node<any>[]>([]);
     const layoutEdgesRef = useRef<any[]>([]);
     const measuredNodeHeightsRef = useRef<Map<string, number>>(EMPTY_MEASURED_NODE_HEIGHTS);
@@ -1269,6 +1391,9 @@ function GraphViewInternal({
         focusedMessageId,
         disabledSummaryIdsSet,
         'graph',
+        visibleSnapshotCommits,
+        visibleSnapshotCommitParents,
+        visibleSnapshotCommitObservations,
     );
     const handleMergeSelection = useCallback((selectionIds?: Iterable<string>) => {
         const { setRightPanelTab } = useWorkspaceStore.getState();
@@ -1823,11 +1948,7 @@ function GraphViewInternal({
             return null;
         }
 
-        const targetNode = layoutNodesRef.current.find((node) => {
-            if (node.id === messageId) return true;
-            if (node.type !== 'external_commit_batch') return false;
-            return Boolean((node.data as any)?.batch?.messageIds?.includes(messageId));
-        });
+        const targetNode = layoutNodesRef.current.find((node) => node.id === messageId);
 
         if (!targetNode) return null;
 
@@ -2011,9 +2132,20 @@ function GraphViewInternal({
             normalizeReactFlowLayerGeometry('react-flow-init:600ms');
             captureGraphGeometrySnapshot('react-flow-init:600ms');
         }, 600);
-        if (!focusedMessageId || focusNonce === 0) return;
-        queueFocusedNodeCenter(focusedMessageId, `init:${selectedWorkspaceId ?? 'none'}:${focusNonce}:${focusedMessageId}`);
-    }, [captureGraphGeometrySnapshot, focusNonce, focusedMessageId, normalizeReactFlowLayerGeometry, queueFocusedNodeCenter, selectedWorkspaceId]);
+        if (!focusedMessageId) return;
+        queueFocusedNodeCenter(
+            focusedMessageId,
+            `init:${selectedWorkspaceId ?? 'none'}:${branchViewActivationNonce}:${focusNonce}:${focusedMessageId}`
+        );
+    }, [
+        branchViewActivationNonce,
+        captureGraphGeometrySnapshot,
+        focusNonce,
+        focusedMessageId,
+        normalizeReactFlowLayerGeometry,
+        queueFocusedNodeCenter,
+        selectedWorkspaceId,
+    ]);
 
     const handleFocus = useCallback((id: string, triggerMetrics?: FocusTriggerMetrics) => {
         const message = graphComputationMessagesRef.current.find((candidate) => candidate.id === id) ?? null;
@@ -2108,6 +2240,7 @@ function GraphViewInternal({
         laneStrategy,
         disabledSummaryIds: disabledSummaryIdsSet,
         focusedMessageId,
+        contextPathMessageIds: contextPathMessageIdSet,
         matchingMessageIds: tagFilter.matchingMessageIds,
         filterActive: tagFilter.filterActive,
         hasNodeTypeFilter: tagFilter.hasNodeTypeFilter,
@@ -2260,28 +2393,39 @@ function GraphViewInternal({
     ]);
 
     const previewEdges = useMemo(() => {
-        if (!previewEdgeType) return layoutEdges;
+        const visibleEdges = layoutEdges.filter((edge) => {
+            const edgeLegendType = (edge.data as any)?.edgeLegendType as GraphEdgeLegendId | undefined;
+            return edgeLegendType ? visibleEdgeTypes.has(edgeLegendType) : false;
+        });
+
+        if (!previewEdgeType) return visibleEdges;
 
         const matchesPreview = (edge: any) => {
-            if (previewEdgeType === 'focus-path') return edge.animated === true;
+            if (previewEdgeType === 'context-path') return edge?.data?.isOnContextPath === true || edge?.animated === true;
             return edge?.data?.edgeLegendType === previewEdgeType;
         };
 
-        return layoutEdges.map((edge) => {
-            const matched = matchesPreview(edge);
-            return {
-                ...edge,
-                animated: matched,
-                style: {
-                    ...edge.style,
-                    stroke: matched ? '#f59e0b' : edge.style?.stroke,
-                    strokeWidth: matched ? Math.max(Number(edge.style?.strokeWidth ?? 2), 4) : edge.style?.strokeWidth,
-                    opacity: matched ? 1 : 0.18,
-                },
-                zIndex: matched ? 30 : -5,
-            };
-        });
-    }, [layoutEdges, previewEdgeType]);
+        return layoutEdges
+            .filter((edge) => {
+                const edgeLegendType = (edge.data as any)?.edgeLegendType as GraphEdgeLegendId | undefined;
+                const visibleByType = edgeLegendType ? visibleEdgeTypes.has(edgeLegendType) : false;
+                return visibleByType || matchesPreview(edge);
+            })
+            .map((edge) => {
+                const matched = matchesPreview(edge);
+                return {
+                    ...edge,
+                    animated: matched,
+                    style: {
+                        ...edge.style,
+                        stroke: matched ? '#f59e0b' : edge.style?.stroke,
+                        strokeWidth: matched ? Math.max(Number(edge.style?.strokeWidth ?? 2), 4) : edge.style?.strokeWidth,
+                        opacity: matched ? 1 : 0.18,
+                    },
+                    zIndex: matched ? 30 : -5,
+                };
+            });
+    }, [layoutEdges, previewEdgeType, visibleEdgeTypes]);
 
     // ─────────────────────────────────────────────────────────────────────────
     // EFFECTS
@@ -2410,11 +2554,22 @@ function GraphViewInternal({
         setViewMode(forcedViewMode);
     }, [forcedViewMode, viewMode]);
 
+    useEffect(() => {
+        const previousViewMode = previousViewModeRef.current;
+        previousViewModeRef.current = viewMode;
+
+        if (previousViewMode !== 'branch' && viewMode === 'branch') {
+            centeredFocusIdRef.current = null;
+            setBranchViewActivationNonce((value) => value + 1);
+        }
+    }, [viewMode]);
+
     useLayoutEffect(() => {
-        if (viewMode !== 'branch' || !focusedMessageId || focusNonce === 0) return;
+        if (viewMode !== 'branch' || !focusedMessageId) return;
 
         const focusEventKey = [
             selectedWorkspaceId ?? 'none',
+            branchViewActivationNonce,
             focusNonce,
             focusedMessageId,
             viewMode,
@@ -2445,6 +2600,7 @@ function GraphViewInternal({
         queueFocusedNodeCenter(focusedMessageId, focusEventKey, { respectImperativeCenter: true });
     }, [
         activeScopeId,
+        branchViewActivationNonce,
         focusNonce,
         focusedMessageId,
         graphResetNonce,
@@ -2494,9 +2650,45 @@ function GraphViewInternal({
     }, [stopViewportInteraction]);
 
     const messageMap = useMemo(() => new Map(messages.map((m: Message) => [m.id, m])), [messages]);
+    const collectCommitShasForDelete = useCallback((rootMessageIds: Iterable<string>, explicitCommitShas: Iterable<string> = []) => {
+        const commitShas = new Set<string>();
+        for (const sha of explicitCommitShas) {
+            if (sha && !deletedGraphCommitShas.has(sha)) commitShas.add(sha);
+        }
+
+        const impactedMessageIds = collectDeleteBranchMessageIds(rootMessageIds, messageMap);
+        for (const messageId of impactedMessageIds) {
+            const message = messageMap.get(messageId);
+            const outputCommitSha = message ? getMessageOutputCommitSha(message) : null;
+            if (outputCommitSha && !deletedGraphCommitShas.has(outputCommitSha)) {
+                commitShas.add(outputCommitSha);
+            }
+        }
+
+        for (const commit of snapshotCommits) {
+            if (
+                commit.sha &&
+                commit.produced_by_node_id &&
+                impactedMessageIds.has(commit.produced_by_node_id) &&
+                !deletedGraphCommitShas.has(commit.sha)
+            ) {
+                commitShas.add(commit.sha);
+            }
+        }
+
+        return Array.from(commitShas);
+    }, [deletedGraphCommitShas, messageMap, snapshotCommits]);
+    const bulkDeleteAvailableCommitShas = useMemo(
+        () => collectCommitShasForDelete(bulkDeleteIds, bulkDeleteExplicitCommitShas),
+        [bulkDeleteExplicitCommitShas, bulkDeleteIds, collectCommitShasForDelete]
+    );
     const bulkDeletePreview = useMemo(
-        () => getDeleteBranchPreview(bulkDeleteIds, messageMap),
-        [bulkDeleteIds, messageMap]
+        () => getDeleteBranchPreview(
+            bulkDeleteIds,
+            messageMap,
+            removeCommitsFromGraph ? bulkDeleteAvailableCommitShas.length : 0
+        ),
+        [bulkDeleteAvailableCommitShas.length, bulkDeleteIds, messageMap, removeCommitsFromGraph]
     );
 
     // Keyboard shortcuts
@@ -2548,8 +2740,6 @@ function GraphViewInternal({
                 messageId = nodeData?.entity?.messageId ?? node.id;
             } else if (node.type === 'summary_block') {
                 messageId = nodeData?.entity?.focusMessageId ?? null;
-            } else if (node.type === 'external_commit_batch') {
-                messageId = nodeData?.batch?.representativeMessageId ?? null;
             } else {
                 return;
             }
@@ -2883,11 +3073,21 @@ function GraphViewInternal({
             if (controlsRef.current) {
                 setControlsHeight(controlsRef.current.offsetHeight);
             }
+            if (focusedMessageId) {
+                queueFocusedNodeCenter(
+                    focusedMessageId,
+                    `reset-layout:${selectedWorkspaceId}:${graphResetNonce + 1}:${focusedMessageId}`
+                );
+                return;
+            }
             reactFlowInstance.fitView({ padding: 0.28, duration: 300 });
         });
     }, [
         clearFocusCenterTimers,
+        focusedMessageId,
+        graphResetNonce,
         nodeSelection,
+        queueFocusedNodeCenter,
         queryClient,
         reactFlowInstance,
         resetAutoRefreshSchedule,
@@ -2904,6 +3104,19 @@ function GraphViewInternal({
             setPreviewEdgeType(null);
             previewEdgeTimeoutRef.current = null;
         }, 2600);
+    }, []);
+
+    const handleToggleEdgeType = useCallback((edgeTypeId: GraphEdgeLegendId) => {
+        if (edgeTypeId === 'context-path') return;
+        setVisibleEdgeTypes((current) => {
+            const next = new Set(current);
+            if (next.has(edgeTypeId)) {
+                next.delete(edgeTypeId);
+            } else {
+                next.add(edgeTypeId);
+            }
+            return next;
+        });
     }, []);
 
     useEffect(() => {
@@ -3111,14 +3324,37 @@ function GraphViewInternal({
         return getTopLevelDeleteBranchIds(selectedIds, messageMap);
     }, [messageMap]);
 
+    const getExplicitCommitDeleteTargets = useCallback((selectedIds: Iterable<string>) => {
+        const shas = new Set<string>();
+        for (const id of selectedIds) {
+            if (!id.startsWith('commit:')) continue;
+            const sha = id.slice('commit:'.length);
+            if (sha && !deletedGraphCommitShas.has(sha)) shas.add(sha);
+        }
+        return Array.from(shas);
+    }, [deletedGraphCommitShas]);
+
+    const openBulkDeleteDialog = useCallback((messageIds: Iterable<string>, commitShas: Iterable<string> = []) => {
+        const rootIds = getBulkDeleteTargets(new Set(messageIds));
+        const explicitCommitShas = Array.from(new Set(commitShas)).filter((sha) => sha && !deletedGraphCommitShas.has(sha));
+        setBulkDeleteIds(rootIds);
+        setBulkDeleteExplicitCommitShas(explicitCommitShas);
+        setRemoveCommitsFromGraph(rootIds.length === 0 && explicitCommitShas.length > 0);
+        setBulkDeletePhase('idle');
+        setIsBulkDeleteAlertOpen(true);
+    }, [deletedGraphCommitShas, getBulkDeleteTargets]);
+
     const resetBulkDeleteDialog = useCallback(() => {
         setIsBulkDeleteAlertOpen(false);
         setBulkDeleteIds([]);
+        setBulkDeleteExplicitCommitShas([]);
+        setRemoveCommitsFromGraph(false);
         setBulkDeletePhase('idle');
     }, []);
 
     const handleBulkDeleteConfirm = useCallback(async () => {
-        if (!selectedWorkspaceId || bulkDeleteIds.length === 0) {
+        const commitShasToDelete = removeCommitsFromGraph ? bulkDeleteAvailableCommitShas : [];
+        if (!selectedWorkspaceId || (bulkDeleteIds.length === 0 && commitShasToDelete.length === 0)) {
             resetBulkDeleteDialog();
             return;
         }
@@ -3130,6 +3366,9 @@ function GraphViewInternal({
                     messageId: id,
                 });
             }
+            if (commitShasToDelete.length > 0) {
+                setDeletedGraphCommitShas(addDeletedGraphCommitShas(selectedWorkspaceId, commitShasToDelete));
+            }
             nodeSelection.clearSelection();
             setBulkDeletePhase('success');
             window.setTimeout(resetBulkDeleteDialog, 750);
@@ -3138,7 +3377,7 @@ function GraphViewInternal({
             toast.error('Delete failed', 'Some nodes could not be deleted.');
             setBulkDeletePhase('idle');
         }
-    }, [bulkDeleteIds, deleteMessageBranchMutation, nodeSelection, resetBulkDeleteDialog, selectedWorkspaceId, toast]);
+    }, [bulkDeleteAvailableCommitShas, bulkDeleteIds, deleteMessageBranchMutation, nodeSelection, removeCommitsFromGraph, resetBulkDeleteDialog, selectedWorkspaceId, toast]);
 
     // ─────────────────────────────────────────────────────────────────────────
     // DERIVED VALUES
@@ -3150,6 +3389,11 @@ function GraphViewInternal({
         let selectedCommitCount = 0;
 
         for (const selectedId of nodeSelection.selectedNodeIds) {
+            if (selectedId.startsWith('commit:')) {
+                selectedCommitCount += 1;
+                continue;
+            }
+
             if (summaryById.has(selectedId)) {
                 selectedMessageCount += 1;
                 continue;
@@ -3265,7 +3509,7 @@ function GraphViewInternal({
                 renderNodeIds.add(node.id);
                 continue;
             }
-            const messageId = data?.entity?.messageId ?? data?.entity?.focusMessageId;
+            const messageId = data?.entity?.focusMessageId ?? data?.entity?.messageId;
             if (typeof messageId === 'string' && ids.has(messageId)) {
                 renderNodeIds.add(node.id);
             }
@@ -3533,9 +3777,7 @@ function GraphViewInternal({
                 ? styleWidth
                 : typeof node.width === 'number'
                     ? node.width
-                    : node.type === 'external_commit_batch'
-                        ? 280
-                        : 220;
+                    : 220;
             const height = typeof styleHeight === 'number'
                 ? styleHeight
                 : typeof node.height === 'number'
@@ -3673,7 +3915,7 @@ function GraphViewInternal({
         const messageById = new Map((graphMessages as Message[]).map((message: Message) => [message.id, message]));
         const nodeById = new Map(branchNodesForRender.map((node) => [node.id, node]));
         const absolutePositionCache = new Map<string, { x: number; y: number }>();
-        const scopedFocusRoute = workspaceProjection.scopedFocusRoute;
+        const contextPathMessageIdSet = new Set(contextPathMessageIds);
         const visualNodeByMessageId = new Map<string, string>();
         for (const node of branchNodesForRender) {
             const data = node.data;
@@ -3690,8 +3932,8 @@ function GraphViewInternal({
                 visualNodeByMessageId.set(node.id, node.id);
             }
         }
-        const renderedFocusRoute = collapseRenderedFocusRoute(
-            scopedFocusRoute.messageIds,
+        const renderedContextRoute = collapseRenderedFocusRoute(
+            graphMessages.map((message) => message.id).filter((messageId) => contextPathMessageIdSet.has(messageId)),
             (messageId) => visualNodeByMessageId.get(messageId)
         );
 
@@ -3898,14 +4140,11 @@ function GraphViewInternal({
                 dom: domOverlaps,
             },
             recentHeightMeasureEvents: heightMeasureEventsRef.current,
-            focusPathRoute: {
-                nodes: scopedFocusRoute.messageIds,
-                edges: scopedFocusRoute.edges,
-                scopeId: scopedFocusRoute.scopeId,
-                baseNodeId: scopedFocusRoute.baseNodeId,
-                renderedNodes: renderedFocusRoute.nodeIds,
-                renderedEdges: renderedFocusRoute.edges,
-                visualFocusedEdges: layoutEdges
+            contextPathRoute: {
+                nodes: contextPathMessageIds,
+                renderedNodes: renderedContextRoute.nodeIds,
+                renderedEdges: renderedContextRoute.edges,
+                visualContextEdges: layoutEdges
                     .filter((edge: any) => edge.animated || edge.style?.stroke === '#4338ca')
                     .map((edge: any) => ({
                         id: edge.id,
@@ -3963,7 +4202,7 @@ function GraphViewInternal({
         tagFilter.keepDescendants,
         tagFilter.matchingCount,
         viewMode,
-        workspaceProjection.scopedFocusRoute,
+        contextPathMessageIds,
     ]);
 
     useEffect(() => (
@@ -4029,6 +4268,8 @@ function GraphViewInternal({
                         showInsightsInGraph={showInsightsInGraph}
                         onToggleInsightsVisible={toggleInsightsVisible}
                         onToggleShowInsightsInGraph={toggleShowInsightsInGraph}
+                        leafNodes={leafNodeNavigationItems}
+                        onLeafNodeFocus={handleFocus}
                         onResetLayout={handleResetLayout}
                         isRefreshingGraph={isSyncing || isFullRefreshing}
                         autoRefreshEligible={autoRefreshEligible}
@@ -4149,7 +4390,7 @@ function GraphViewInternal({
                                                     scheduleActiveGraphWindowUpdate('move-end', false);
                                                 }
                                             }}
-                                            fitView={!sendFlowGraphDiagFlags.disableGraphAutoCenter}
+                                            fitView={!sendFlowGraphDiagFlags.disableGraphAutoCenter && !focusedMessageId}
                                             fitViewOptions={{ padding: 0.28, duration: 400 }}
                                             onlyRenderVisibleElements={graphRenderElements.mode !== 'hold-visible' && !sendFlowGraphDiagFlags.disableOnlyRenderVisibleElements}
                                             nodesDraggable={false}
@@ -4182,6 +4423,8 @@ function GraphViewInternal({
                                     isVisible={isIndexVisible}
                                     onToggleVisible={setIsIndexVisible}
                                     onPreviewEdgeType={handlePreviewEdgeType}
+                                    visibleEdgeTypes={visibleEdgeTypes}
+                                    onToggleEdgeType={handleToggleEdgeType}
                                     onFocusMessage={handleFocus}
                                     nodes={graphRenderElements.nodes}
                                     messages={graphMessages as Message[]}
@@ -4201,9 +4444,10 @@ function GraphViewInternal({
                                 canGenerateSummary={nodeSelection.canGenerateSummary}
                                 canMerge={selectedMessageNodeIds.length >= 2}
                                 onDelete={() => {
-                                    setBulkDeleteIds(getBulkDeleteTargets(nodeSelection.selectedNodeIds));
-                                    setBulkDeletePhase('idle');
-                                    setIsBulkDeleteAlertOpen(true);
+                                    openBulkDeleteDialog(
+                                        nodeSelection.selectedNodeIds,
+                                        getExplicitCommitDeleteTargets(nodeSelection.selectedNodeIds)
+                                    );
                                 }}
                                 onViewDiff={() => {
                                     if (selectedMessageNodeIds.length === 2) {
@@ -4232,9 +4476,7 @@ function GraphViewInternal({
                             selectedNodeIds={nodeSelection.selectedNodeIds}
                             onSelectionChange={nodeSelection.onSelectionChange}
                             onRequestDeleteMessages={(messageIds) => {
-                                setBulkDeleteIds(getBulkDeleteTargets(new Set(messageIds)));
-                                setBulkDeletePhase('idle');
-                                setIsBulkDeleteAlertOpen(true);
+                                openBulkDeleteDialog(messageIds);
                             }}
                             onAddCommitsToMergePanel={handleAddCommitsToMergePanel}
                         />
@@ -4261,9 +4503,10 @@ function GraphViewInternal({
                 projection={workspaceProjection}
                 onClose={() => setScopedContextMenu(null)}
                 onDeleteMessages={(messageIds) => {
-                    setBulkDeleteIds(getBulkDeleteTargets(new Set(messageIds)));
-                    setBulkDeletePhase('idle');
-                    setIsBulkDeleteAlertOpen(true);
+                    openBulkDeleteDialog(messageIds);
+                }}
+                onDeleteTargets={({ messageIds, commitShas }) => {
+                    openBulkDeleteDialog(messageIds, commitShas);
                 }}
                 onAddCommitsToMergePanel={handleAddCommitsToMergePanel}
                 onAddCommitToNode={setAddCommitTargetId}
@@ -4278,9 +4521,6 @@ function GraphViewInternal({
                 messages={messages as Message[]}
                 onOpenChange={(open) => {
                     if (!open) setAddCommitTargetId(null);
-                }}
-                onAdded={(message) => {
-                    dispatchFocus({ messageId: message.id, source: 'system', metadata: { reason: 'add-commit-batch' } });
                 }}
             />
 
@@ -4304,6 +4544,9 @@ function GraphViewInternal({
                 title="Delete selected nodes?"
                 preview={bulkDeletePreview}
                 phase={bulkDeletePhase}
+                removableCommitCount={bulkDeleteAvailableCommitShas.length}
+                removeCommitsFromGraph={removeCommitsFromGraph}
+                onRemoveCommitsFromGraphChange={setRemoveCommitsFromGraph}
                 onOpenChange={(open) => {
                     if (bulkDeletePhase === 'deleting' || bulkDeletePhase === 'success') return;
                     if (open) {

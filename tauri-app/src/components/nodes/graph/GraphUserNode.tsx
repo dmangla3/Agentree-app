@@ -1,9 +1,8 @@
 import { memo } from 'react';
-import { User } from 'lucide-react';
+import { MessageSquareText } from 'lucide-react';
 import { GraphNodeWrapper } from './GraphNodeWrapper';
 import { SharedNodeProps } from '../../../types/nodes';
 import { cn } from '../../../lib/utils';
-import { ROLE_COLORS } from '../../../lib/visualTokens';
 
 export const GraphUserNode = memo(({
   nodeId,
@@ -28,27 +27,37 @@ export const GraphUserNode = memo(({
       scopeColor={scopeColor}
       heightKey={heightKey}
       className={cn(
-        ROLE_COLORS.user_message.bg,
-        ROLE_COLORS.user_message.border
+        'bg-zinc-50/95 border-zinc-200/90 dark:bg-zinc-950/80 dark:border-zinc-800/90',
+        'rounded-b-[5px] shadow-[0_8px_22px_-18px_rgba(24,24,27,0.45)]'
       )}
-      style={{ width: 220, minHeight: 64 }}
+      style={{ width: 200, height: 82 }}
       onMeasureHeight={onMeasureHeight}
       hoverCardContent={hoverCardContent}
       onFocus={onFocus}
       onSelect={onSelect}
       onContextMenu={onContextMenu}
     >
-      {/* Ultra-compact: Icon inline with text */}
-      <div className="flex items-start gap-2">
+      <div className="flex h-full items-start gap-2.5">
         <div
-          className={cn("p-1 rounded-md shrink-0 mt-0.5", ROLE_COLORS.user_message.chip)}
-          title="User message"
+          className={cn(
+            'mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-600 shadow-sm',
+            'dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300'
+          )}
+          title="User prompt"
         >
-          <User size={10} />
+          <MessageSquareText size={13} strokeWidth={1.8} />
         </div>
-        <p className={cn("text-xs font-medium line-clamp-3 leading-relaxed", ROLE_COLORS.user_message.text)}>
-          {entity.preview}
-        </p>
+        <div className="min-w-0 flex-1">
+          <div className="mb-1 flex items-center gap-1.5">
+            <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500" />
+            <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-500 dark:text-zinc-400">
+              User
+            </span>
+          </div>
+          <p className="line-clamp-2 text-[12px] font-medium leading-snug text-zinc-800 dark:text-zinc-100">
+            {entity.preview}
+          </p>
+        </div>
       </div>
     </GraphNodeWrapper>
   );

@@ -259,6 +259,46 @@ describe('agentRun.machine', () => {
     expect(snapshot.executionData.timeline).toHaveLength(2);
   });
 
+  it('ignores stale content events after a terminal snapshot', () => {
+    const snapshot = reduce([
+      { type: 'content', content: 'final answer', appendedText: 'final answer', streamSeq: 2, timestamp: 20 },
+      { type: 'terminal', status: 'completed', content: 'final answer', reason: 'done', holdMs: 10 },
+      { type: 'content', content: 'partial', appendedText: 'partial', streamSeq: 1, timestamp: 10 },
+    ]);
+
+    expect(snapshot.status).toBe('completed');
+    expect(snapshot.phase).toBe('terminal');
+    expect(snapshot.content).toBe('final answer');
+    expect(snapshot.lastStreamSeq).toBe(2);
+    expect(snapshot.timeline).toHaveLength(1);
+  });
+
+  it('ignores shorter duplicate content for the same stream seq', () => {
+    const snapshot = reduce([
+      { type: 'content', content: 'complete text', appendedText: 'complete text', streamSeq: 2, timestamp: 20 },
+      { type: 'content', content: 'partial', appendedText: 'partial', streamSeq: 2, timestamp: 21 },
+    ]);
+
+    expect(snapshot.status).toBe('streaming');
+    expect(snapshot.content).toBe('complete text');
+    expect(snapshot.lastStreamSeq).toBe(2);
+    expect(snapshot.timeline).toHaveLength(1);
+  });
+
+  it('accepts newer content after terminal without reopening the run', () => {
+    const snapshot = reduce([
+      { type: 'content', content: 'partial', appendedText: 'partial', streamSeq: 1, timestamp: 10 },
+      { type: 'terminal', status: 'completed', content: 'partial', reason: 'done', holdMs: 10 },
+      { type: 'content', content: 'final answer', appendedText: ' final answer', streamSeq: 2, timestamp: 20 },
+    ]);
+
+    expect(snapshot.status).toBe('completed');
+    expect(snapshot.phase).toBe('terminal');
+    expect(snapshot.content).toBe('final answer');
+    expect(snapshot.lastStreamSeq).toBe(2);
+    expect(snapshot.timeline).toHaveLength(2);
+  });
+
   it('replaces optimistic node ids without losing streamed content', () => {
     const snapshot = reduce([
       { type: 'content', content: 'streamed text' },

@@ -90,68 +90,6 @@ export const useMessages = (
                     });
                     return readCachedMessages();
                 }
-                if (!hasHotSendActivity()) {
-                    try {
-                        const serverMessages = await fetchServerMessages(workspaceId);
-                        if (hasHotSendActivity()) {
-                            recordPerfEvent('query.messages.hydrate-local-skipped', {
-                                elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
-                                workspaceId,
-                                reason: 'hot-send-active-after-fetch',
-                                serverMessageCount: serverMessages.length,
-                                cachedMessageCount: readCachedMessages().length,
-                            }, {
-                                source: 'useMessages',
-                                durationMs: Number((performance.now() - startedAt).toFixed(2)),
-                            });
-                            return readCachedMessages();
-                        }
-                        if (serverMessages.length > 0) {
-                            await agentClient.hydrateLocalNodesFromServer(workspaceId, serverMessages);
-                        }
-                        recordPerfEvent('query.messages.hydrate-local', {
-                            elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
-                            workspaceId,
-                            serverMessageCount: serverMessages.length,
-                        }, {
-                            source: 'useMessages',
-                            durationMs: Number((performance.now() - startedAt).toFixed(2)),
-                        });
-                    } catch (error) {
-                        if (axios.isAxiosError(error) && error.response?.status === 404) {
-                            throw error;
-                        }
-                        recordPerfEvent('query.messages.server-hydration-failed', {
-                            elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
-                            workspaceId,
-                            error: error instanceof Error ? error.message : String(error),
-                        }, {
-                            source: 'useMessages',
-                            durationMs: Number((performance.now() - startedAt).toFixed(2)),
-                        });
-                    }
-                } else {
-                    recordPerfEvent('query.messages.hydrate-local-skipped', {
-                        elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
-                        workspaceId,
-                        reason: 'hot-send-active',
-                    }, {
-                        source: 'useMessages',
-                        durationMs: Number((performance.now() - startedAt).toFixed(2)),
-                    });
-                }
-                if (hasHotSendActivity()) {
-                    recordPerfEvent('query.messages.local-read-skipped', {
-                        elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
-                        workspaceId,
-                        reason: 'hot-send-active-before-local-read',
-                        cachedMessageCount: readCachedMessages().length,
-                    }, {
-                        source: 'useMessages',
-                        durationMs: Number((performance.now() - startedAt).toFixed(2)),
-                    });
-                    return readCachedMessages();
-                }
                 const localRows = await agentClient.listLocalNodes(workspaceId);
                 const localMessages = localRows
                     .map(parseLocalNode)
@@ -197,15 +135,9 @@ export const useMessages = (
             }
         },
         enabled: !!workspaceId && options.enabled !== false,
-        staleTime: agentClient.hasRuntime() ? 1000 : 5 * 60 * 1000,
+        staleTime: agentClient.hasRuntime() ? Infinity : 5 * 60 * 1000,
         gcTime: 30 * 60 * 1000,
-        refetchInterval: agentClient.hasRuntime()
-            ? () => (
-                workspaceId && useRunStatusStore.getState().hasHotSendActivity(workspaceId, 5_000)
-                    ? false
-                    : 5000
-            )
-            : false,
+        refetchInterval: false,
         refetchOnMount: false,
         refetchOnWindowFocus: false,
         refetchOnReconnect: false,

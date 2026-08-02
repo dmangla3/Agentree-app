@@ -368,7 +368,7 @@ import { useAgents, findDefaultCodexAgentId } from '../hooks/useAgents';
 import { useWorkspaces } from '../hooks/useWorkspaces';
 import { useScopes } from '../hooks/useScopes';
 import { agentClient } from '../lib/agentClient';
-import { buildComposerContextManifest, buildComposerContextSelection, type ComposerContextManifest } from '../lib/composerContext';
+import { buildComposerContextManifest, buildComposerContextPathIds, buildComposerContextSelection, type ComposerContextManifest } from '../lib/composerContext';
 import { AGENT_STATUS, TERMINAL_STATUSES } from '@shared/agentStatus';
 import type { TerminalStatus } from '@shared/agentStatus';
 import { createOptimisticNodePair, categorizeError, formatErrorMessage, isOptimisticId } from '../lib/optimisticMessages';
@@ -442,7 +442,6 @@ export function ChatInput({
     const {
         selectedWorkspaceId,
         focusedMessageId,
-        lastFocusMetadata,
         activeScopeId,
         autoCheckoutOnAgentCommit,
         beginSendFlowFocus,
@@ -453,11 +452,11 @@ export function ChatInput({
         setAutoCheckoutOnAgentCommit,
         selectedAgentId,
         setSelectedAgentId,
+        setContextPathMessageIds,
     } = useWorkspaceStore(
         useShallow((state) => ({
             selectedWorkspaceId: state.selectedWorkspaceId,
             focusedMessageId: state.focusedMessageId,
-            lastFocusMetadata: state.lastFocusMetadata,
             activeScopeId: state.activeScopeId,
             autoCheckoutOnAgentCommit: state.autoCheckoutOnAgentCommit,
             beginSendFlowFocus: state.beginSendFlowFocus,
@@ -468,6 +467,7 @@ export function ChatInput({
             setAutoCheckoutOnAgentCommit: state.setAutoCheckoutOnAgentCommit,
             selectedAgentId: state.selectedAgentId,
             setSelectedAgentId: state.setSelectedAgentId,
+            setContextPathMessageIds: state.setContextPathMessageIds,
         }))
     );
     // Optimistic send setup creates projected-message inputs, but lifecycle
@@ -1911,6 +1911,13 @@ export function ChatInput({
                         return;
                     }
 
+                    const finalizedOutputCommitSha = typeof data.output_commit_sha === 'string' && data.output_commit_sha
+                        ? data.output_commit_sha
+                        : typeof data.outputCommitSha === 'string' && data.outputCommitSha
+                            ? data.outputCommitSha
+                            : typeof data.commit_sha === 'string' && data.commit_sha
+                                ? data.commit_sha
+                                : null;
                     const currentProjection = getAgentRunProjection(nodeId);
                     const currentMeta = (((currentProjection?.execution_data || {}) as any)?.meta || {}) as Record<string, any>;
                     agentRunManager.dispatch(nodeId, {
@@ -1918,8 +1925,8 @@ export function ChatInput({
                         commitCreated: data.commit_created !== false,
                         meta: {
                             ...currentMeta,
-                            ...(typeof data.commit_sha === 'string' && data.commit_sha
-                                ? { output_commit_sha: data.commit_sha }
+                            ...(finalizedOutputCommitSha
+                                ? { output_commit_sha: finalizedOutputCommitSha }
                                 : {}),
                             ...(data.commit_created === false ? { commit_created: false } : {}),
                         },
@@ -1935,13 +1942,41 @@ export function ChatInput({
                     uiDebug(`finalize-ack:refetch node=${nodeId}`, {
                         nodeId,
                         persisted: data.persisted,
-                        commitSha: data.commit_sha ?? null,
+                        commitSha: finalizedOutputCommitSha,
                         elapsedMs: Math.round(performance.now() - streamStartedAt),
                     });
+                    if (finalizedOutputCommitSha) {
+                        queryClient.setQueryData<Message[]>(['messages', workspaceId], (current) => {
+                            if (!current) return current;
+                            let changed = false;
+                            const next = current.map((message) => {
+                                if (message.id !== nodeId) return message;
+                                changed = true;
+                                const executionData = (message.execution_data || {}) as Record<string, any>;
+                                const meta = (executionData.meta || {}) as Record<string, any>;
+                                return {
+                                    ...message,
+                                    output_commit_sha: finalizedOutputCommitSha,
+                                    execution_data: {
+                                        ...executionData,
+                                        meta: {
+                                            ...meta,
+                                            output_commit_sha: finalizedOutputCommitSha,
+                                            commit_created: true,
+                                        },
+                                    },
+                                };
+                            });
+                            return changed ? next : current;
+                        });
+                    }
                     void queryClient.invalidateQueries({
                         queryKey: localNodeKeys.workspace(workspaceId),
                     });
-                    if (typeof data.commit_sha === 'string' && data.commit_sha) {
+                    void scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, {
+                        reason: 'agent-finalize-ack',
+                    });
+                    if (finalizedOutputCommitSha) {
                         void catchUpHotSendMessageDeltas(queryClient, workspaceId);
                         const flowId = getSendFlowIdForKey(nodeId);
                         if (flowId) {
@@ -1956,7 +1991,7 @@ export function ChatInput({
                             workspaceId,
                             assistantMessageId: nodeId,
                             targetMessageId: nodeId,
-                            commitSha: data.commit_sha,
+                            commitSha: finalizedOutputCommitSha,
                             flowId,
                         });
                     }
@@ -2179,11 +2214,13 @@ export function ChatInput({
         enabled: Boolean(selectedWorkspaceId && defaultBaseCommitSha),
         limit: 120,
     });
+    void baseCommitCandidatesQuery;
     useEffect(() => {
         setSelectedBaseCommit(null);
     }, [defaultBaseCommitSha, replyParentMessageId, selectedWorkspaceId]);
     const effectiveBaseCommitSha = selectedBaseCommit?.sha || defaultBaseCommitSha;
     const effectiveBaseCommitLabel = selectedBaseCommit?.subject || selectedBaseCommit?.sha || defaultBaseCommitSha || 'No commit';
+    void effectiveBaseCommitLabel;
     const replyParentLabel = branchParentMessage?.content || '';
     const messageById = useMemo(
         () => new Map(messageLookupMessages.map((m: Message) => [m.id, m])),
@@ -2288,6 +2325,26 @@ export function ChatInput({
         () => messageById.get(effectiveContextStartId || '') ?? null,
         [effectiveContextStartId, messageById]
     );
+    const contextPathMessageIds = useMemo(
+        () => Array.from(buildComposerContextPathIds({
+            parentId: replyParentMessageId,
+            messages: messageLookupMessages,
+            contextParentId: effectiveContextParentId,
+            contextPolicy,
+            contextStartId: effectiveContextStartId,
+        })),
+        [
+            replyParentMessageId,
+            messageLookupMessages,
+            effectiveContextParentId,
+            contextPolicy,
+            effectiveContextStartId,
+        ]
+    );
+    useEffect(() => {
+        setContextPathMessageIds(contextPathMessageIds);
+        return () => setContextPathMessageIds([]);
+    }, [contextPathMessageIds, setContextPathMessageIds]);
     const contextStartLabel = formatContextParentLabel(effectiveContextStartMessage, 'Root');
     const contextParentLabel = selectedMergeContextOption
         ? formatContextParentLabel(messageById.get(selectedMergeContextOption.id), selectedMergeContextOption.label)

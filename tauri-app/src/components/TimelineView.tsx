@@ -8,24 +8,6 @@ import { useScopes } from '../hooks/useScopes';
 import { format, isToday, isYesterday, parseISO } from 'date-fns';
 import { ScopedNodeContextMenu, type ScopedContextMenuState } from './ScopedNodeContextMenu';
 
-export interface CommitRow {
-  id: string;
-  commitSha: string | null;
-  subject: string;
-  authorName?: string | null;
-  authoredAt?: string | null;
-  parents: string[];
-  importedFromRef?: string | null;
-}
-
-export interface ExternalCommitGroup {
-  id: string;
-  title: string;
-  rows: CommitRow[];
-  representativeMessageId: string;
-  createdAt: string;
-}
-
 interface TimelineViewProps {
   projection: WorkspaceProjection;
   focusedMessageId: string | null;
@@ -74,9 +56,7 @@ const getTimelineItemTurnGroupId = (
     if (!entity) return null;
     return entity.kind === 'summary_block' ? null : entity.turnGroupId || null;
   }
-
-  const batch = projection.externalCommitBatchById.get(item.batchId);
-  return batch?.batch.turnGroupId || null;
+  return null;
 };
 
 const groupTimelineItemsByTurn = (
@@ -95,7 +75,7 @@ const groupTimelineItemsByTurn = (
     }
 
     grouped.push({
-      key: turnGroupId ? `${turnGroupId}:${index}` : `standalone:${index}:${item.type === 'entity' ? item.entityId : item.batchId}`,
+      key: turnGroupId ? `${turnGroupId}:${index}` : `standalone:${index}:${item.entityId}`,
       turnGroupId,
       items: [item] as [ProjectedTimelineItem],
     });
@@ -105,9 +85,7 @@ const groupTimelineItemsByTurn = (
 };
 
 const getTimelineRowDomId = (item: ProjectedTimelineItem): string =>
-  item.type === 'entity'
-    ? `timeline-row-entity-${item.entityId}`
-    : `timeline-row-batch-${item.batchId}`;
+  `timeline-row-entity-${item.entityId}`;
 
 const BOTTOM_PIN_THRESHOLD_PX = 96;
 const USER_SCROLL_INTENT_WINDOW_MS = 1200;
@@ -201,12 +179,6 @@ export const TimelineView = memo(({
     if (!filterActive) return projection.timelineItems;
 
     return projection.timelineItems.filter((item) => {
-      if (item.type === 'external_commit_batch') {
-        const batch = projection.externalCommitBatchById.get(item.batchId);
-        if (!batch) return false;
-        return batch.messageIds.some((messageId) => matchingMessageIds.has(messageId));
-      }
-
       const entity = projection.entitiesById.get(item.entityId);
       if (!entity) return false;
       if (entity.messageId && matchingMessageIds.has(entity.messageId)) return true;
@@ -220,18 +192,13 @@ export const TimelineView = memo(({
     filterActive,
     matchingMessageIds,
     projection.entitiesById,
-    projection.externalCommitBatchById,
     projection.timelineItems,
   ]);
 
   const groupedByDay = groupItemsByDay(timelineItems);
   const sortedDays = Object.keys(groupedByDay).sort((a, b) => a.localeCompare(b));
   const timelineScrollAnchorFingerprint = useMemo(() => (
-    timelineItems.map((item) => (
-      item.type === 'entity'
-        ? `entity:${item.entityId}:${item.sortTs}`
-        : `batch:${item.batchId}:${item.sortTs}`
-    )).join('|')
+    timelineItems.map((item) => `entity:${item.entityId}:${item.sortTs}`).join('|')
   ), [timelineItems]);
 
   const markUserScrollIntent = useCallback(() => {
@@ -297,10 +264,7 @@ export const TimelineView = memo(({
       if (focusedEntity) {
         return getTimelineRowDomId({ type: 'entity', entityId: focusedEntity.entityId, sortTs: focusedEntity.sortTs });
       }
-
-      const matchingBatch = projection.externalCommitBatches.find((batch) => batch.messageIds.includes(focusedMessageId));
-      if (!matchingBatch) return null;
-      return getTimelineRowDomId({ type: 'external_commit_batch', batchId: matchingBatch.batchId, sortTs: matchingBatch.sortTs });
+      return null;
     })();
 
     if (!targetDomId) return;
@@ -314,7 +278,7 @@ export const TimelineView = memo(({
     });
 
     return () => window.cancelAnimationFrame(rafId);
-  }, [focusedMessageId, projection.entitiesByMessageId, projection.externalCommitBatches, timelineItems.length]);
+  }, [focusedMessageId, projection.entitiesByMessageId, timelineItems.length]);
 
   return (
     <div className="flex flex-col h-full bg-slate-50 dark:bg-slate-950 overflow-hidden relative">
@@ -344,18 +308,16 @@ export const TimelineView = memo(({
                   >
                     {group.items.map((item) => {
                       const selectionId = getTimelineItemSelectionId(projection, item);
-                      const id = item.type === 'entity' ? item.entityId : item.batchId;
+                      const id = item.entityId;
                       return (
                         <TimelineNodeDispatcher
                           key={id}
                           rowId={getTimelineRowDomId(item)}
-                          entityId={item.type === 'entity' ? item.entityId : undefined}
-                          batchId={item.type === 'external_commit_batch' ? item.batchId : undefined}
+                          entityId={item.entityId}
                           projection={projection}
                           scopeColorById={finalScopeColorById}
                           isSelected={selectionId ? selectedNodeIds.has(selectionId) : false}
                           showSelectionControl={showSelectionControl}
-                          selectedNodeIds={selectedNodeIds}
                           onFocus={handleFocus}
                           onSelect={handleSelect}
                           onContextMenu={handleContextMenu}

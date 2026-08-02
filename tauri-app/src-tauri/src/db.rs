@@ -125,6 +125,23 @@ pub struct LocalDeletedNodeRoot {
     pub deleted_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalCommitImport {
+    pub sha: String,
+    pub parents: Vec<String>,
+    pub subject: Option<String>,
+    pub author_name: Option<String>,
+    pub author_email: Option<String>,
+    pub authored_at: Option<String>,
+    pub committed_at: Option<String>,
+    pub source_kind: Option<String>,
+    pub produced_by_node_id: Option<String>,
+    pub files_changed_count: Option<i64>,
+    pub total_additions: Option<i64>,
+    pub total_deletions: Option<i64>,
+}
+
 #[derive(Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetryEventRow {
@@ -338,6 +355,52 @@ impl TelemetryDb {
                 ON local_sync_events(status, next_attempt_at, created_at);
             CREATE INDEX IF NOT EXISTS idx_local_sync_events_entity
                 ON local_sync_events(entity_type, entity_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS local_commits (
+                workspace_id TEXT NOT NULL,
+                sha TEXT NOT NULL,
+                subject TEXT,
+                author_name TEXT,
+                author_email TEXT,
+                authored_at TEXT,
+                committed_at TEXT,
+                source_kind TEXT NOT NULL DEFAULT 'unknown',
+                produced_by_node_id TEXT,
+                first_parent_sha TEXT,
+                files_changed_count INTEGER,
+                total_additions INTEGER,
+                total_deletions INTEGER,
+                local_updated_at INTEGER NOT NULL,
+                server_ack_at TEXT,
+                PRIMARY KEY (workspace_id, sha)
+            );
+            CREATE INDEX IF NOT EXISTS idx_local_commits_workspace_first_parent
+                ON local_commits(workspace_id, first_parent_sha);
+            CREATE INDEX IF NOT EXISTS idx_local_commits_workspace_produced_by_node
+                ON local_commits(workspace_id, produced_by_node_id);
+
+            CREATE TABLE IF NOT EXISTS local_commit_parents (
+                workspace_id TEXT NOT NULL,
+                child_sha TEXT NOT NULL,
+                parent_sha TEXT NOT NULL,
+                parent_index INTEGER NOT NULL,
+                local_updated_at INTEGER NOT NULL,
+                server_ack_at TEXT,
+                PRIMARY KEY (workspace_id, child_sha, parent_index)
+            );
+            CREATE INDEX IF NOT EXISTS idx_local_commit_parents_parent
+                ON local_commit_parents(workspace_id, parent_sha);
+
+            CREATE TABLE IF NOT EXISTS local_commit_observations (
+                workspace_id TEXT NOT NULL,
+                commit_sha TEXT NOT NULL,
+                git_ref TEXT,
+                source_kind TEXT NOT NULL DEFAULT 'unknown',
+                first_seen_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL,
+                server_ack_at TEXT,
+                PRIMARY KEY (workspace_id, commit_sha, git_ref, source_kind)
+            );
             "#,
         )
         .map_err(|e| e.to_string())?;
@@ -1204,7 +1267,7 @@ impl TelemetryDb {
                 completion_tokens = excluded.completion_tokens,
                 total_tokens = excluded.total_tokens,
                 base_commit_sha = excluded.base_commit_sha,
-                output_commit_sha = excluded.output_commit_sha,
+                output_commit_sha = COALESCE(excluded.output_commit_sha, local_nodes.output_commit_sha),
                 base_selected_from_node_id = excluded.base_selected_from_node_id,
                 git_branch_name = excluded.git_branch_name,
                 scope_id = excluded.scope_id,
@@ -1370,7 +1433,7 @@ impl TelemetryDb {
                     completion_tokens = excluded.completion_tokens,
                     total_tokens = excluded.total_tokens,
                     base_commit_sha = excluded.base_commit_sha,
-                    output_commit_sha = excluded.output_commit_sha,
+                    output_commit_sha = COALESCE(excluded.output_commit_sha, local_nodes.output_commit_sha),
                     base_selected_from_node_id = excluded.base_selected_from_node_id,
                     git_branch_name = excluded.git_branch_name,
                     scope_id = excluded.scope_id,
@@ -1436,7 +1499,33 @@ impl TelemetryDb {
                 SELECT
                     n.id,
                     n.workspace_id,
-                    COALESCE(n.payload_json, json_object(
+                    CASE
+                        WHEN n.output_commit_sha IS NOT NULL THEN json_set(
+                            COALESCE(n.payload_json, json_object(
+                                'id', n.id,
+                                'role', n.role,
+                                'workspaceId', n.workspace_id,
+                                'parentId', n.parent_id,
+                                'content', n.content,
+                                'status', n.status,
+                                'execution_data', CASE
+                                    WHEN n.execution_data_json IS NULL THEN json('{}')
+                                    ELSE json(n.execution_data_json)
+                                END,
+                                'promptTokens', n.prompt_tokens,
+                                'completionTokens', n.completion_tokens,
+                                'totalTokens', n.total_tokens,
+                                'base_commit_sha', n.base_commit_sha,
+                                'base_selected_from_node_id', n.base_selected_from_node_id,
+                                'git_branch_name', n.git_branch_name,
+                                'scope_id', n.scope_id,
+                                'createdAt', n.created_at,
+                                'updatedAt', n.updated_at
+                            )),
+                            '$.output_commit_sha',
+                            n.output_commit_sha
+                        )
+                        ELSE COALESCE(n.payload_json, json_object(
                         'id', n.id,
                         'role', n.role,
                         'workspaceId', n.workspace_id,
@@ -1457,7 +1546,8 @@ impl TelemetryDb {
                         'scope_id', n.scope_id,
                         'createdAt', n.created_at,
                         'updatedAt', n.updated_at
-                    )) AS payload,
+                        ))
+                    END AS payload,
                     CASE
                         WHEN EXISTS (
                             SELECT 1
@@ -1525,6 +1615,118 @@ impl TelemetryDb {
             .map_err(|e| e.to_string())?;
         rows.sort_by_key(|row| row.finalized_at);
         Ok(rows)
+    }
+
+    pub fn import_local_commits(
+        &self,
+        workspace_id: &str,
+        commits: Vec<LocalCommitImport>,
+        git_ref: Option<&str>,
+    ) -> Result<usize, String> {
+        let now = unix_timestamp();
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut imported = 0usize;
+
+        for commit in commits {
+            let sha = commit.sha.trim();
+            if sha.is_empty() {
+                continue;
+            }
+            let parents = commit
+                .parents
+                .iter()
+                .map(|parent| parent.trim())
+                .filter(|parent| !parent.is_empty())
+                .collect::<Vec<_>>();
+            let first_parent_sha = parents.first().copied();
+            let source_kind = commit
+                .source_kind
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("external");
+
+            tx.execute(
+                r#"
+                INSERT INTO local_commits (
+                    workspace_id, sha, subject, author_name, author_email, authored_at, committed_at,
+                    source_kind, produced_by_node_id, first_parent_sha, files_changed_count,
+                    total_additions, total_deletions, local_updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                ON CONFLICT(workspace_id, sha) DO UPDATE SET
+                    subject = COALESCE(excluded.subject, local_commits.subject),
+                    author_name = COALESCE(excluded.author_name, local_commits.author_name),
+                    author_email = COALESCE(excluded.author_email, local_commits.author_email),
+                    authored_at = COALESCE(excluded.authored_at, local_commits.authored_at),
+                    committed_at = COALESCE(excluded.committed_at, local_commits.committed_at),
+                    source_kind = CASE
+                        WHEN local_commits.source_kind = 'agent' THEN local_commits.source_kind
+                        ELSE excluded.source_kind
+                    END,
+                    produced_by_node_id = COALESCE(excluded.produced_by_node_id, local_commits.produced_by_node_id),
+                    first_parent_sha = COALESCE(excluded.first_parent_sha, local_commits.first_parent_sha),
+                    files_changed_count = COALESCE(excluded.files_changed_count, local_commits.files_changed_count),
+                    total_additions = COALESCE(excluded.total_additions, local_commits.total_additions),
+                    total_deletions = COALESCE(excluded.total_deletions, local_commits.total_deletions),
+                    local_updated_at = excluded.local_updated_at
+                "#,
+                params![
+                    workspace_id,
+                    sha,
+                    commit.subject.as_deref(),
+                    commit.author_name.as_deref(),
+                    commit.author_email.as_deref(),
+                    commit.authored_at.as_deref(),
+                    commit.committed_at.as_deref().or(commit.authored_at.as_deref()),
+                    source_kind,
+                    commit.produced_by_node_id.as_deref(),
+                    first_parent_sha,
+                    commit.files_changed_count,
+                    commit.total_additions,
+                    commit.total_deletions,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            tx.execute(
+                "DELETE FROM local_commit_parents WHERE workspace_id = ?1 AND child_sha = ?2",
+                params![workspace_id, sha],
+            )
+            .map_err(|e| e.to_string())?;
+            for (index, parent_sha) in parents.iter().enumerate() {
+                tx.execute(
+                    r#"
+                    INSERT INTO local_commit_parents (
+                        workspace_id, child_sha, parent_sha, parent_index, local_updated_at
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5)
+                    "#,
+                    params![workspace_id, sha, parent_sha, index as i64, now],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+
+            tx.execute(
+                r#"
+                INSERT INTO local_commit_observations (
+                    workspace_id, commit_sha, git_ref, source_kind, first_seen_at, last_seen_at
+                )
+                VALUES (?1, ?2, COALESCE(?3, ''), ?4, ?5, ?5)
+                ON CONFLICT(workspace_id, commit_sha, git_ref, source_kind) DO UPDATE SET
+                    last_seen_at = excluded.last_seen_at
+                "#,
+                params![workspace_id, sha, git_ref, source_kind, now],
+            )
+            .map_err(|e| e.to_string())?;
+
+            imported += 1;
+        }
+
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(imported)
     }
 
     fn local_device_id_locked(conn: &Connection, now: i64) -> Result<String, String> {
@@ -2124,6 +2326,17 @@ pub fn upsert_local_node(
 
 #[tauri::command]
 #[specta::specta]
+pub fn import_local_commits(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+    commits: Vec<LocalCommitImport>,
+    git_ref: Option<String>,
+) -> Result<usize, String> {
+    telemetry.import_local_commits(&workspace_id, commits, git_ref.as_deref())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn local_first_delete_branch(
     telemetry: State<TelemetryDb>,
     workspace_id: String,
@@ -2242,7 +2455,7 @@ pub fn process_local_sync_events(
         }
         let result = sync_event(&client, &auth_token, &event);
         match result {
-            Ok(_response_body) => {
+            Ok(response_body) => {
                 if event.entity_type == "node" && event.event_type == "node.update_terminal" {
                     let _ = telemetry.mark_local_node_persisted(&event.entity_id);
                     if let Ok(payload) = serde_json::from_str::<JsonValue>(&event.payload_json) {
@@ -2250,9 +2463,18 @@ pub fn process_local_sync_events(
                             .get("status")
                             .and_then(|value| value.as_str())
                             .unwrap_or("completed");
-                        let output_commit_sha = payload
+                        let payload_output_commit_sha = payload
                             .get("outputCommitSha")
+                            .or_else(|| payload.get("output_commit_sha"))
                             .and_then(|value| value.as_str());
+                        let response_output_commit_sha = response_body
+                            .as_ref()
+                            .and_then(|body| {
+                                body.get("outputCommitSha")
+                                    .or_else(|| body.get("output_commit_sha"))
+                                    .and_then(|value| value.as_str())
+                            });
+                        let output_commit_sha = response_output_commit_sha.or(payload_output_commit_sha);
                         let _ = telemetry.mark_agent_run_finalized(
                             &event.entity_id,
                             status,
@@ -2537,6 +2759,42 @@ mod tests {
         assert_eq!(payload["content"], "server content");
         assert_eq!(payload["aiLabel"], "Preserved label");
         assert_eq!(payload["execution_data"]["meta"]["run_id"], "run-1");
+    }
+
+    #[test]
+    fn server_hydration_preserves_local_output_commit_in_render_payload() {
+        let (_dir, db) = open_test_db();
+        db.upsert_local_node(
+            "assistant-with-commit",
+            "workspace-1",
+            r#"{"id":"assistant-with-commit","workspaceId":"workspace-1","role":"assistant","content":"local final","status":"completed","output_commit_sha":"local-commit-sha"}"#,
+        )
+        .expect("local upsert");
+
+        let server_payload = serde_json::json!({
+            "id": "assistant-with-commit",
+            "workspaceId": "workspace-1",
+            "role": "assistant",
+            "content": "server final",
+            "status": "completed",
+            "output_commit_sha": null,
+            "createdAt": "2026-05-08T00:00:00Z",
+            "updatedAt": "2026-05-08T00:00:01Z"
+        });
+        let hydrated = db
+            .hydrate_local_nodes_from_server(
+                "workspace-1",
+                vec![serde_json::to_string(&server_payload).expect("payload")],
+            )
+            .expect("hydrate");
+        assert_eq!(hydrated, 1);
+
+        let rows = db
+            .list_local_nodes_for_workspace("workspace-1")
+            .expect("local nodes");
+        let payload: serde_json::Value =
+            serde_json::from_str(&rows[0].payload).expect("payload json");
+        assert_eq!(payload["output_commit_sha"], "local-commit-sha");
     }
 
     #[test]

@@ -867,7 +867,6 @@ export function ChatInterface() {
                       scopeNameById={scopeNameById}
                       focusedMessageId={focusedMessageId}
                       isSelected={selectedMessageIdsSet.has(getEntitySelectionId(projection, turn.userEntityId) || '')}
-                      selectedMessageIdsSet={selectedMessageIdsSet}
                       onFocus={handleFocus}
                       onSelect={handleSelect}
                       onContextMenu={handleContextMenu}
@@ -883,7 +882,6 @@ export function ChatInterface() {
                             scopeNameById={scopeNameById}
                             focusedMessageId={focusedMessageId}
                             isSelected={selectedMessageIdsSet.has(getEntitySelectionId(projection, aeid) || '')}
-                            selectedMessageIdsSet={selectedMessageIdsSet}
                             onFocus={handleFocus}
                             onSelect={handleSelect}
                             onContextMenu={handleContextMenu}
@@ -897,7 +895,6 @@ export function ChatInterface() {
                                 scopeNameById={scopeNameById}
                                 focusedMessageId={focusedMessageId}
                                 isSelected={selectedMessageIdsSet.has(getEntitySelectionId(projection, ceid) || '')}
-                                selectedMessageIdsSet={selectedMessageIdsSet}
                                 onFocus={handleFocus}
                                 onSelect={handleSelect}
                                 onContextMenu={handleContextMenu}
@@ -911,18 +908,16 @@ export function ChatInterface() {
                 );
               }
 
-              const id = (item as any).entityId || (item as any).batchId || (item as any).turnGroupId || `${item.type}:${index}`;
+              const id = (item as any).entityId || (item as any).turnGroupId || `${item.type}:${index}`;
               return (
                 <div key={`${item.type}:${id}`} className="box-border min-w-0 w-full max-w-full px-3 py-3 md:px-6 md:py-4 mb-8 last:mb-0">
                   <ChatNodeDispatcher
                     entityId={(item as any).entityId || (item as any).userEntityId}
-                    batchId={(item as any).batchId}
                     projection={projection}
                     scopeColorById={scopeColorById}
                     scopeNameById={scopeNameById}
                     focusedMessageId={focusedMessageId}
                     isSelected={selectedMessageIdsSet.has(getEntitySelectionId(projection, (item as any).entityId || (item as any).userEntityId) || '')}
-                    selectedMessageIdsSet={selectedMessageIdsSet}
                     onFocus={handleFocus}
                     onSelect={handleSelect}
                     onContextMenu={handleContextMenu}
@@ -956,9 +951,6 @@ export function ChatInterface() {
         messages={enrichedMessages}
         onOpenChange={(open) => {
           if (!open) setAddCommitTargetId(null);
-        }}
-        onAdded={(message) => {
-          dispatchFocus({ messageId: message.id, source: 'system', metadata: { reason: 'add-commit-batch' } });
         }}
       />
       <DeleteBranchDialog

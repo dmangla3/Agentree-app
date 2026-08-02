@@ -34,6 +34,11 @@ export const projectAgentRunToProjectedMessage = (
     ...(snapshot.lastSeq !== null ? { last_agent_event_seq: snapshot.lastSeq } : {}),
     ...(snapshot.lastStreamSeq !== null ? { last_stream_seq: snapshot.lastStreamSeq } : {}),
   };
+  const outputCommitSha = typeof (executionData as any).output_commit_sha === 'string'
+    ? (executionData as any).output_commit_sha
+    : typeof (executionData as any).meta?.output_commit_sha === 'string'
+      ? (executionData as any).meta.output_commit_sha
+      : base.output_commit_sha ?? null;
 
   return {
     ...base,
@@ -52,6 +57,7 @@ export const projectAgentRunToProjectedMessage = (
     _terminalHoldUntil: snapshot.terminalHoldUntil ?? base._terminalHoldUntil,
     _terminalContentLength: snapshot.terminalStatus ? snapshot.content.length : base._terminalContentLength,
     execution_data: executionData,
+    output_commit_sha: outputCommitSha,
     createdAt: base.createdAt ?? new Date().toISOString(),
     updatedAt: snapshot.updatedAt,
   } as AgentRunProjectedMessage;

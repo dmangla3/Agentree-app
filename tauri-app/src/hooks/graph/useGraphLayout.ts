@@ -30,6 +30,7 @@ export interface UseGraphLayoutOptions {
     laneStrategy: LaneStrategy;
     disabledSummaryIds: Set<string>;
     focusedMessageId: string | null;
+    contextPathMessageIds: Set<string>;
     matchingMessageIds: Set<string>;
     filterActive: boolean;
     hasNodeTypeFilter: boolean;
@@ -108,11 +109,13 @@ const createMessagesVisualFingerprint = (messages: Message[]): string => {
 };
 
 const DEFAULT_EDGE_STROKE_WIDTH = 4;
-const FOCUSED_PATH_EDGE_STROKE_WIDTH = 7;
+const CONTEXT_PATH_EDGE_STROKE_WIDTH = 7;
 const DEFAULT_SUMMARY_EDGE_STROKE_WIDTH = 4;
 const FOCUSED_SUMMARY_EDGE_STROKE_WIDTH = 6.5;
 const ACTIVE_EDGE_STROKE = '#4f46e5';
 const INACTIVE_EDGE_STROKE = '#64748b';
+const COMMIT_PARENT_EDGE_STROKE = '#059669';
+const BASE_USED_EDGE_STROKE = '#d97706';
 
 const createSummariesFingerprint = (summaries: Summary[]): string => {
     if (!summaries || summaries.length === 0) return '';
@@ -130,6 +133,13 @@ const createFilterFingerprint = (matchingMessageIds: Set<string>): string => {
     return Array.from(matchingMessageIds).sort().join(',');
 };
 
+const createCommitProjectionFingerprint = (projection: WorkspaceProjection): string => (
+    [
+        projection.commitLaneRows.map((row) => [row.type, row.commitSha ?? '', row.groupId ?? '', row.sortTs].join(':')).join(';'),
+        projection.layoutDerivedCommitGroups.map((group) => [group.groupId, group.commitShas.join(','), group.expanded ? 1 : 0].join(':')).join(';'),
+    ].join('|')
+);
+
 interface LayoutCacheKey {
     messagesFingerprint: string;
     summariesFingerprint: string;
@@ -146,6 +156,7 @@ interface LayoutCacheKey {
     activeScopeId: string | null;
     scopeViewMode: 'project' | 'scope';
     resetNonce: number;
+    commitProjectionFingerprint: string;
 }
 
 interface LayoutCacheEntry {
@@ -163,6 +174,7 @@ interface VisualCacheEntry {
     filterActive: boolean;
     hasNodeTypeFilter: boolean;
     focusedMessageId: string | null;
+    contextPathFingerprint: string;
     visualFingerprint: string;
     onFocus: UseGraphLayoutOptions['onFocus'];
     onSelect: UseGraphLayoutOptions['onSelect'];
@@ -186,7 +198,8 @@ const cacheKeysEqual = (a: LayoutCacheKey, b: LayoutCacheKey): boolean => {
         a.showInsightsInGraph === b.showInsightsInGraph &&
         a.activeScopeId === b.activeScopeId &&
         a.scopeViewMode === b.scopeViewMode &&
-        a.resetNonce === b.resetNonce
+        a.resetNonce === b.resetNonce &&
+        a.commitProjectionFingerprint === b.commitProjectionFingerprint
     );
 };
 
@@ -238,6 +251,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         laneStrategy,
         disabledSummaryIds,
         focusedMessageId,
+        contextPathMessageIds,
         matchingMessageIds,
         filterActive,
         hasNodeTypeFilter,
@@ -269,6 +283,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             .map(([id, name]) => `${id}:${name}:${readLookupValue(scopeColorById, id) || ''}`)
             .sort()
             .join(';');
+        const contextPathFingerprint = Array.from(contextPathMessageIds).sort().join(',');
         const messagesVisualFingerprint = createMessagesVisualFingerprint(messages);
         const currentCacheKey: LayoutCacheKey = {
             messagesFingerprint: createMessagesFingerprint(messages),
@@ -286,6 +301,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             activeScopeId,
             scopeViewMode,
             resetNonce,
+            commitProjectionFingerprint: createCommitProjectionFingerprint(projection),
         };
         const keyChanges = changedLayoutKeyFields(layoutCacheRef.current?.key, currentCacheKey);
 
@@ -300,6 +316,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 filterActiveChanged: previousVisual.filterActive !== currentCacheKey.filterActive,
                 hasNodeTypeFilterChanged: previousVisual.hasNodeTypeFilter !== currentCacheKey.hasNodeTypeFilter,
                 focusedMessageChanged: previousVisual.focusedMessageId !== focusedMessageId,
+                contextPathChanged: previousVisual.contextPathFingerprint !== contextPathFingerprint,
                 visualFingerprintChanged: previousVisual.visualFingerprint !== visualFingerprint,
                 onFocusChanged: previousVisual.onFocus !== onFocus,
                 onSelectChanged: previousVisual.onSelect !== onSelect,
@@ -321,6 +338,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 previousVisual.filterActive === currentCacheKey.filterActive &&
                 previousVisual.hasNodeTypeFilter === currentCacheKey.hasNodeTypeFilter &&
                 previousVisual.focusedMessageId === focusedMessageId &&
+                previousVisual.contextPathFingerprint === contextPathFingerprint &&
                 previousVisual.visualFingerprint === visualFingerprint &&
                 previousVisual.onFocus === onFocus &&
                 previousVisual.onSelect === onSelect &&
@@ -342,6 +360,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 messages,
                 projection,
                 focusedMessageId,
+                contextPathMessageIds,
                 matchingMessageIds,
                 filterActive,
                 hasNodeTypeFilter,
@@ -362,6 +381,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 filterActive: currentCacheKey.filterActive,
                 hasNodeTypeFilter: currentCacheKey.hasNodeTypeFilter,
                 focusedMessageId,
+                contextPathFingerprint,
                 visualFingerprint,
                 onFocus,
                 onSelect,
@@ -385,6 +405,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 messages,
                 summaries,
                 null,
+                contextPathMessageIds,
                 matchingMessageIds,
                 filterActive,
                 hasNodeTypeFilter,
@@ -420,6 +441,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 filterActive: currentCacheKey.filterActive,
                 hasNodeTypeFilter: currentCacheKey.hasNodeTypeFilter,
                 focusedMessageId,
+                contextPathFingerprint,
                 visualFingerprint,
                 onFocus,
                 onSelect,
@@ -442,7 +464,6 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         switch (layoutMode) {
             case 'lane':
                 ({ nodes: layoutedNodes, edges: layoutedEdges } = getLaneLayoutedElements(mappedNodes, mappedEdges, laneStrategy));
-                layoutedNodes = layoutedNodes.map(node => node.type?.includes('message') || node.type?.includes('Node') ? { ...node, sourcePosition: Position.Right, targetPosition: Position.Left } : node);
                 layoutedEdges = layoutedEdges.map(edge => edge.type === 'summaryEdge' ? edge : { ...edge, type: 'horizontalThenVertical' });
                 break;
             case 'tidy':
@@ -466,6 +487,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             messages,
             projection,
             focusedMessageId,
+            contextPathMessageIds,
             matchingMessageIds,
             filterActive,
             hasNodeTypeFilter,
@@ -486,6 +508,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             filterActive: currentCacheKey.filterActive,
             hasNodeTypeFilter: currentCacheKey.hasNodeTypeFilter,
             focusedMessageId,
+            contextPathFingerprint,
             visualFingerprint,
             onFocus,
             onSelect,
@@ -501,8 +524,8 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         });
         return visualResult;
     }, [
-        messages, summaries, measuredNodeHeights, layoutMode, laneStrategy, disabledSummaryIds,
-        focusedMessageId, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, insights, showInsightsInGraph,
+        messages, summaries, projection, measuredNodeHeights, layoutMode, laneStrategy, disabledSummaryIds,
+        focusedMessageId, contextPathMessageIds, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, insights, showInsightsInGraph,
         workspaceRepoMap, branchPointersByNodeId, activeScopeId, scopeViewMode,
         scopeNameById, scopeColorById, onToggleSummary, onToggleCollapse,
         onFocus, onSelect, onContextMenu, onMeasureNodeHeight, resetNonce
@@ -517,6 +540,7 @@ function applyVisualProperties(
     messages: Message[],
     projection: WorkspaceProjection,
     focusedMessageId: string | null,
+    contextPathMessageIds: Set<string>,
     matchingMessageIds: Set<string>,
     filterActive: boolean,
     _hasNodeTypeFilter: boolean,
@@ -531,13 +555,17 @@ function applyVisualProperties(
     const startedAt = performance.now();
     const messageMap = new Map(messages.map(m => [m.id, m]));
     const nodeById = new Map(cachedNodes.map(node => [node.id, node]));
-    const focusPathNodes = new Set<string>();
-    const focusPathEdges = new Set<string>();
-    const focusPathVisualEdges = new Set<string>();
+    const contextPathNodes = new Set<string>(contextPathMessageIds);
+    const contextPathEdges = new Set<string>();
+    const contextPathVisualEdges = new Set<string>();
     const activeSummaryIds = new Set<string>();
-    const scopedRoute = projection.scopedFocusRoute;
-    scopedRoute.messageIds.forEach((messageId) => focusPathNodes.add(messageId));
-    scopedRoute.edges.forEach((edgeId) => focusPathEdges.add(edgeId));
+    contextPathNodes.forEach((messageId) => {
+        const message = messageMap.get(messageId);
+        const parentId = message?.parentId ?? null;
+        if (parentId && contextPathNodes.has(parentId)) {
+            contextPathEdges.add(`${parentId}->${messageId}`);
+        }
+    });
 
     const visualNodeByMessageId = new Map<string, string>();
     for (const node of cachedNodes) {
@@ -557,30 +585,33 @@ function applyVisualProperties(
         }
     }
 
-    collapseRenderedFocusRoute(scopedRoute.messageIds, (messageId) => visualNodeByMessageId.get(messageId))
+    const orderedContextMessageIds = messages
+        .map((message) => message.id)
+        .filter((messageId) => contextPathNodes.has(messageId));
+    collapseRenderedFocusRoute(orderedContextMessageIds, (messageId) => visualNodeByMessageId.get(messageId))
         .edges
-        .forEach((edgeId) => focusPathVisualEdges.add(edgeId));
+        .forEach((edgeId) => contextPathVisualEdges.add(edgeId));
 
     for (const node of cachedNodes) {
         if (node.type !== 'summary_block') continue;
         const data = node.data;
         const endMessageId = data.endMessageId ?? data.entity?.summary?.endMessageId;
-        if (focusedMessageId && endMessageId && endMessageId !== focusedMessageId && focusPathNodes.has(endMessageId)) {
+        if (focusedMessageId && endMessageId && endMessageId !== focusedMessageId && contextPathNodes.has(endMessageId)) {
             activeSummaryIds.add(node.id);
         }
     }
 
-    const isNodeInFocusPath = (nodeId: string): boolean => {
+    const isNodeInContextPath = (nodeId: string): boolean => {
         const node = nodeById.get(nodeId);
-        if (!node) return focusPathNodes.has(nodeId);
+        if (!node) return contextPathNodes.has(nodeId);
         const data = node.data;
-        if (data?.batch?.messageIds?.some((id: string) => focusPathNodes.has(id))) return true;
+        if (data?.batch?.messageIds?.some((id: string) => contextPathNodes.has(id))) return true;
         const focusId = data?.entity?.focusMessageId ?? data?.entity?.messageId ?? node.id;
-        return focusPathNodes.has(focusId);
+        return contextPathNodes.has(focusId);
     };
 
-    const isExternalClusterFocusEdge = (edge: Edge): boolean => {
-        return focusPathVisualEdges.has(`${edge.source}->${edge.target}`);
+    const isExternalClusterContextEdge = (edge: Edge): boolean => {
+        return contextPathVisualEdges.has(`${edge.source}->${edge.target}`);
     };
 
     const updatedNodes = cachedNodes.map(node => {
@@ -598,9 +629,9 @@ function applyVisualProperties(
         const latestMessage = data.message?.id ? messageMap.get(data.message.id) : undefined;
         const isSummaryNode = node.type === 'summary_block';
         const isFocused = focusId === focusedMessageId || (data.batch?.messageIds.includes(focusedMessageId || ''));
-        const isInFocusPath = isSummaryNode
+        const isInContextPath = isSummaryNode
             ? activeSummaryIds.has(node.id)
-            : focusPathNodes.has(focusId) || (data.batch?.messageIds.some((id: string) => focusPathNodes.has(id)));
+            : contextPathNodes.has(focusId) || (data.batch?.messageIds.some((id: string) => contextPathNodes.has(id)));
         const matchesTagFilter = !filterActive || matchingMessageIds.has(selectionId) || (data.batch?.messageIds.some((id: string) => matchingMessageIds.has(id)));
 
         // Pass the latest callbacks and visual state
@@ -621,7 +652,7 @@ function applyVisualProperties(
                 onContextMenu,
                 focusedMessageId,
                 isFocused,
-                isInFocusPath,
+                isInContextPath,
                 matchesTagFilter,
                 filterActive,
                 // Update specific entity data if needed
@@ -636,30 +667,58 @@ function applyVisualProperties(
         const targetId = edge.target as string;
         const isCanonicalMessageEdge = messageMap.has(sourceId) && messageMap.has(targetId);
         const isSummaryEdge = edge.type === 'summaryEdge';
-        const isOnFocusPath = isSummaryEdge
-            ? activeSummaryIds.has(targetId) || (activeSummaryIds.has(sourceId) && isNodeInFocusPath(targetId))
-            : focusPathVisualEdges.has(`${sourceId}->${targetId}`) || (
+        const relationship = (edge.data as any)?.relationship as string | undefined;
+        const edgeLegendType = (edge.data as any)?.edgeLegendType as string | undefined;
+        const isOnContextPath = isSummaryEdge
+            ? activeSummaryIds.has(targetId) || (activeSummaryIds.has(sourceId) && isNodeInContextPath(targetId))
+            : contextPathVisualEdges.has(`${sourceId}->${targetId}`) || (
                 isCanonicalMessageEdge
-                    ? focusPathEdges.has(`${sourceId}->${targetId}`)
-                    : isExternalClusterFocusEdge(edge)
+                    ? contextPathEdges.has(`${sourceId}->${targetId}`)
+                    : isExternalClusterContextEdge(edge)
             );
         const sourceMessage = messageMap.get(edge.source as string);
-        const isContextBreak = sourceMessage?.context_active === false;
+        const isContextBreak = sourceMessage?.context_active === false || edgeLegendType === 'context-break';
         const activeStroke = ACTIVE_EDGE_STROKE;
-        const inactiveStroke = INACTIVE_EDGE_STROKE;
+        const inactiveStroke = relationship === 'git-parent'
+            ? COMMIT_PARENT_EDGE_STROKE
+            : relationship === 'base-used'
+                ? BASE_USED_EDGE_STROKE
+                : INACTIVE_EDGE_STROKE;
+        const defaultStrokeWidth = relationship === 'git-parent'
+            ? 4
+            : relationship === 'base-used'
+                ? 4.5
+                : DEFAULT_EDGE_STROKE_WIDTH;
+        const semanticEdgeZIndex = relationship === 'git-parent' || relationship === 'base-used'
+            ? 30
+            : 0;
+        const defaultDash = relationship === 'base-used'
+            ? '4 5'
+            : isContextBreak
+                ? '6 6'
+                : edge.style?.strokeDasharray;
+        const defaultOpacity = isContextBreak
+            ? 0.6
+            : relationship === 'git-parent' || relationship === 'base-used'
+                ? 0.86
+                : 1;
         return {
             ...edge,
-            animated: isOnFocusPath,
+            animated: isOnContextPath,
+            data: {
+                ...(edge.data as Record<string, unknown> | undefined),
+                isOnContextPath,
+            },
             style: {
                 ...edge.style,
-                stroke: isOnFocusPath ? activeStroke : inactiveStroke,
+                stroke: isOnContextPath ? activeStroke : inactiveStroke,
                 strokeWidth: isSummaryEdge
-                    ? (isOnFocusPath ? FOCUSED_SUMMARY_EDGE_STROKE_WIDTH : DEFAULT_SUMMARY_EDGE_STROKE_WIDTH)
-                    : (isOnFocusPath ? FOCUSED_PATH_EDGE_STROKE_WIDTH : DEFAULT_EDGE_STROKE_WIDTH),
-                strokeDasharray: isContextBreak ? '6 6' : undefined,
-                opacity: isContextBreak ? 0.6 : 1,
+                    ? (isOnContextPath ? FOCUSED_SUMMARY_EDGE_STROKE_WIDTH : DEFAULT_SUMMARY_EDGE_STROKE_WIDTH)
+                    : (isOnContextPath ? CONTEXT_PATH_EDGE_STROKE_WIDTH : defaultStrokeWidth),
+                strokeDasharray: defaultDash,
+                opacity: isOnContextPath ? 1 : defaultOpacity,
             },
-            zIndex: isOnFocusPath ? 10 : (isSummaryEdge ? -3 : 0),
+            zIndex: isOnContextPath ? 40 : (isSummaryEdge ? -3 : semanticEdgeZIndex),
         };
     });
 
@@ -667,8 +726,8 @@ function applyVisualProperties(
         nodeCount: cachedNodes.length,
         edgeCount: cachedEdges.length,
         messageCount: messages.length,
-        focusPathNodeCount: focusPathNodes.size,
-        focusPathEdgeCount: focusPathEdges.size,
+        contextPathNodeCount: contextPathNodes.size,
+        contextPathEdgeCount: contextPathEdges.size,
         focusedMessageId,
         filterActive,
     }, performance.now() - startedAt);

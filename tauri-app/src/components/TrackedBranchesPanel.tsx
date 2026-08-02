@@ -2,14 +2,12 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { GitCommitHorizontal, Compass, X, Loader2 } from 'lucide-react';
 import { agentClient } from '../lib/agentClient';
-import { api } from '../lib/api';
-import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
 import { useCreateTrackedRef, useDeleteTrackedRef, useTrackedRefs, trackedRefKeys } from '../hooks/useTrackedRefs';
 import { branchKeys, useBranches } from '../hooks/useBranches';
 import { useCurrentHead } from '../hooks/useCurrentHead';
 import { useMessages } from '../hooks/useMessages';
 import { shouldShowWorkspaceFeatures } from '../hooks/useTauriWorkspace';
-import { useWorkspaceStore, type Message } from '../stores/workspaceStore';
+import { useWorkspaceStore } from '../stores/workspaceStore';
 import { Button } from '../../@/components/ui/button';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../@/components/ui/hover-card';
 import { cn } from '../lib/utils';
@@ -137,103 +135,39 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
         throw new Error('No commits were found for the current checkout.');
       }
 
-      const currentMessagesResponse = await api.get(`/workspaces/${workspaceId}/messages`);
-      const currentMessages = Array.isArray(currentMessagesResponse.data)
-        ? currentMessagesResponse.data as Message[]
-        : [];
-      const currentMessagesByCommit = new Map<string, Message[]>();
-      for (const message of currentMessages) {
-        const sha = getMessageOutputCommitSha(message)?.trim();
-        if (!sha) continue;
-        const list = currentMessagesByCommit.get(sha) ?? [];
-        list.push(message);
-        currentMessagesByCommit.set(sha, list);
-      }
-
-      const existingHead = currentMessagesByCommit.get(normalizedHead)?.[0] ?? null;
-      let createdMessage: Message | null = null;
+      const existingHead = messageByCommit.get(normalizedHead) ?? null;
       let importedCount = 0;
       if (!existingHead) {
-        let anchorIndex = -1;
-        let anchorMessage: Message | null = null;
-        for (let index = commits.length - 2; index >= 0; index -= 1) {
-          const candidate = currentMessagesByCommit.get(commits[index].sha)?.[0] ?? null;
-          if (candidate) {
-            anchorIndex = index;
-            anchorMessage = candidate;
-            break;
-          }
-        }
-
-        if (!anchorMessage) {
-          anchorMessage = currentMessages
-            .filter((message) => !message.parentId)
-            .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime())[0] ?? null;
-        }
-        if (!anchorMessage) {
-          throw new Error('No imported ancestor is available to attach the checked-out commit batch.');
-        }
-
-        const range = commits.slice(anchorIndex + 1);
-        if (range.length === 0) {
-          throw new Error('No missing commits are available for the current checkout.');
-        }
-        const existingNodeIdsBySha = Object.fromEntries(
-          range.map((commit) => [
-            commit.sha,
-            (currentMessagesByCommit.get(commit.sha) ?? []).map((message) => message.id),
-          ])
+        importedCount = await agentClient.importLocalCommits(
+          workspaceId,
+          commits.map((commit) => ({
+            sha: commit.sha,
+            parents: commit.parents,
+            subject: commit.subject,
+            authorName: commit.author_name ?? null,
+            authorEmail: commit.author_email ?? null,
+            authoredAt: commit.authored_at ?? null,
+            committedAt: commit.authored_at ?? null,
+            sourceKind: 'external',
+            producedByNodeId: null,
+            filesChangedCount: commit.files_changed_count ?? null,
+            totalAdditions: commit.total_additions ?? null,
+            totalDeletions: commit.total_deletions ?? null,
+          })),
+          currentCheckout.gitRef ?? null
         );
-        const sourceLabel = currentCheckout.gitRef
-          ? currentCheckout.gitRef.replace(/^refs\/heads\//, '')
-          : 'current checkout';
-        const response = await api.post(`/workspaces/${workspaceId}/nodes/${anchorMessage.id}/add-commit-batch`, {
-          baseCommit: anchorIndex >= 0 ? commits[anchorIndex].sha : null,
-          tipCommit: normalizedHead,
-          sourceLabel,
-          sourceRef: currentCheckout.gitRef ?? null,
-          commits: range,
-          existingNodeIdsBySha,
-        });
-        createdMessage = response.data?.message ?? null;
-        importedCount = range.length;
       }
 
-      const messagesResponse = await api.get(`/workspaces/${workspaceId}/messages`);
-      const freshMessages = Array.isArray(messagesResponse.data)
-        ? messagesResponse.data as Message[]
-        : [];
-      await agentClient.hydrateLocalNodesFromServer(workspaceId, freshMessages);
-
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['messages', workspaceId], refetchType: 'active' }),
         queryClient.invalidateQueries({ queryKey: ['graph-snapshot', workspaceId], refetchType: 'active' }),
+        queryClient.invalidateQueries({ queryKey: ['local-commits', workspaceId], refetchType: 'active' }),
         queryClient.invalidateQueries({ queryKey: trackedRefKeys.workspace(workspaceId) }),
         queryClient.invalidateQueries({ queryKey: branchKeys.workspace(workspaceId) }),
       ]);
-      await scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, {
-        refetchActive: true,
-        reason: 'current-checkout-import',
-      });
 
-      const freshMessageByCommit = new Map<string, Message>();
-      for (const message of [...freshMessages].sort((a, b) => {
-        const aTime = new Date(a.updatedAt || a.createdAt).getTime();
-        const bTime = new Date(b.updatedAt || b.createdAt).getTime();
-        return bTime - aTime;
-      })) {
-        const sha = getMessageOutputCommitSha(message)?.trim();
-        if (!sha || freshMessageByCommit.has(sha)) continue;
-        freshMessageByCommit.set(sha, message);
-      }
-      const focusNodeId = createdMessage?.id ?? freshMessageByCommit.get(normalizedHead)?.id ?? null;
-      if (!focusNodeId) {
-        throw new Error('Import finished, but the checked-out commit is still missing from the graph.');
-      }
-
-      if (focusNodeId) {
+      if (existingHead?.id) {
         dispatchFocus({
-          messageId: focusNodeId,
+          messageId: existingHead.id,
           source: 'graph',
           metadata: {
             gitRef,
@@ -268,6 +202,7 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
     currentCheckout.gitRef,
     currentHeadSha,
     dispatchFocus,
+    messageByCommit,
     queryClient,
     removeToast,
     repoPath,

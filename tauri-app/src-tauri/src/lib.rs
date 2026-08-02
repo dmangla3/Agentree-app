@@ -120,6 +120,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             db::list_local_nodes,
             db::hydrate_local_nodes_from_server,
             db::upsert_local_node,
+            db::import_local_commits,
             db::local_first_delete_branch,
             db::local_first_delete_workspace,
             db::list_local_deleted_node_roots,

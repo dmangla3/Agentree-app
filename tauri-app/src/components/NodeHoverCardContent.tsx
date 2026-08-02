@@ -4,8 +4,6 @@ import { ChatNodeDispatcher } from './nodes/chat/ChatNodeDispatcher';
 import { Button } from '../../@/components/ui/button';
 import { Reply } from 'lucide-react';
 
-const EMPTY_SELECTED_MESSAGE_IDS = new Set<string>();
-
 interface NodeHoverCardContentProps {
   entity?: ProjectedNodeEntity;
   projection?: WorkspaceProjection;
@@ -34,7 +32,6 @@ export function NodeHoverCardContent({ entity, projection }: NodeHoverCardConten
               projection={projection}
               focusedMessageId={null}
               isSelected={false}
-              selectedMessageIdsSet={EMPTY_SELECTED_MESSAGE_IDS}
               onFocus={() => {}}
               onSelect={() => {}}
               onContextMenu={() => {}}

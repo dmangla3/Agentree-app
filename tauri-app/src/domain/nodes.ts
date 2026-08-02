@@ -1,6 +1,6 @@
 import { Message, Summary } from '../stores/workspaceStore';
 import { getGraphParentId } from '../lib/graph/lineage';
-import { getCommitSha, getGitParentShas, isFirstClassCommitMessage, isExternalCommit, isRedundantCommitNode, shouldClusterExternalCommitByBatch } from '../lib/graph/turnUtils';
+import { getCommitSha, getGitParentShas, isFirstClassCommitMessage, isRedundantCommitNode } from '../lib/graph/turnUtils';
 
 export { getCommitSha };
 
@@ -17,14 +17,6 @@ export interface CanonicalNodeEntity {
   focusMessageId: string | null;
   turnGroupId?: string;
   parentEntityId?: string;
-  sortTs: number;
-}
-
-export interface ExternalCommitBatch {
-  entityId: string;
-  representativeMessageId: string;
-  turnGroupId?: string;
-  messages: Message[];
   sortTs: number;
 }
 
@@ -101,6 +93,10 @@ export function getAssistantCommitCount(
   }
 
   const commitKeys = new Set<string>();
+  const outputCommitSha = getCommitSha(message);
+  if (outputCommitSha) {
+    commitKeys.add(`sha:${outputCommitSha}`);
+  }
   messages.forEach((candidate) => {
     if (candidate.role !== 'assistant') return;
     if (!isFirstClassCommitMessage(candidate, { messageMap })) return;
@@ -122,61 +118,6 @@ export function getNodePreview(message: Message): string {
     .replace(/\s+/g, ' ')
     .replace(/```[\s\S]*?```/g, '[Code]')
     .trim();
-}
-
-export function isManualCommitBatch(message: Message | null | undefined): boolean {
-  if (!message || message.role !== 'assistant') return false;
-  const meta = ((message.execution_data as any)?.meta || {}) as Record<string, any>;
-  return meta.node_kind === 'commit_batch' && meta.sync_source === 'manual_add_commit';
-}
-
-export function buildExternalCommitBatches(
-  messages: Message[],
-  messageMap?: Map<string, Message>
-): ExternalCommitBatch[] {
-  const commitMessages = messages.filter((message) => (
-    message.role === 'assistant' &&
-    (isExternalCommit(message) || isManualCommitBatch(message)) &&
-    isFirstClassCommitMessage(message, { messageMap })
-  ));
-
-  const groups = new Map<string, Message[]>();
-  for (const message of commitMessages) {
-    const meta = ((message.execution_data as any)?.meta || {}) as Record<string, any>;
-    if (isManualCommitBatch(message)) {
-      groups.set(`manual:${message.id}`, [message]);
-      continue;
-    }
-    const batchId = typeof meta.import_batch_id === 'string' && meta.import_batch_id.trim()
-      ? meta.import_batch_id.trim()
-      : null;
-    const groupKey = batchId && shouldClusterExternalCommitByBatch(message)
-      ? `batch:${batchId}`
-      : `singleton:${message.id}`;
-    const list = groups.get(groupKey) ?? [];
-    list.push(message);
-    groups.set(groupKey, list);
-  }
-
-  return Array.from(groups.entries()).map(([groupKey, groupedMessages]) => {
-    const sortedByCreatedAt = [...groupedMessages].sort(
-      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-    );
-    const representative = sortedByCreatedAt[sortedByCreatedAt.length - 1];
-    const turnGroupId = representative && messageMap
-      ? getTurnGroupIdForMessage(representative, messageMap)
-      : undefined;
-
-    return {
-      entityId: groupKey.startsWith('batch:') || groupKey.startsWith('manual:')
-        ? `external_commit_batch:${groupKey}`
-        : `commit_message:${representative.id}`,
-      representativeMessageId: representative.id,
-      turnGroupId,
-      messages: sortedByCreatedAt,
-      sortTs: new Date(representative.createdAt).getTime(),
-    };
-  }).sort((a, b) => a.sortTs - b.sortTs);
 }
 
 export function getCommitParentShas(message: Message): string[] {

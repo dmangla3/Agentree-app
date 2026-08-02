@@ -45,16 +45,12 @@ export const ChatCommitCard = memo(({
   const branchPointers = entity.message?.branchPointers || [];
   const executionData = ((entity.message?.execution_data as any) || {}) as Record<string, any>;
   const meta = (executionData.meta || {}) as Record<string, any>;
-  const isCommitBatch = meta.node_kind === 'commit_batch';
-  const batchCommits = Array.isArray(meta.commits) ? meta.commits : [];
   const hasHead = branchPointers.some((p: BranchPointer) => p.name === 'HEAD');
   const otherBranches = branchPointers.filter((p: BranchPointer) => p.name !== 'HEAD');
   const primaryBranch = otherBranches[0] ?? null;
   const extraBranchCount = Math.max(0, otherBranches.length - 1);
   const nodeCommit = getMessageOutputCommitSha(entity.message);
-  const parentCommit = isCommitBatch && typeof meta.range_base_commit === 'string'
-    ? meta.range_base_commit
-    : resolveParentCommit(entity.message, messageMap, workspace?.base_commit_sha ?? null);
+  const parentCommit = resolveParentCommit(entity.message, messageMap, workspace?.base_commit_sha ?? null);
   const precomputedFileCount = typeof meta.files_changed_count === 'number'
     ? meta.files_changed_count
     : typeof executionData.files_changed_count === 'number'
@@ -159,7 +155,7 @@ export const ChatCommitCard = memo(({
                 </span>
               )}
               <span className="min-w-0 break-words text-[11px] text-muted-foreground">
-                {isCommitBatch ? `${batchCommits.length || entity.commitCount || 1} commits` : entity.authorName}
+                {entity.authorName}
               </span>
               <span className="text-[10px] text-muted-foreground/60">
                 {entity.authoredAt
@@ -171,19 +167,6 @@ export const ChatCommitCard = memo(({
             <div className="break-words text-[12px] font-medium text-foreground leading-tight">
               {entity.preview}
             </div>
-            {isCommitBatch && batchCommits.length > 0 ? (
-              <div className="mt-2 space-y-1 rounded-md border border-emerald-200/50 bg-emerald-50/50 p-2 dark:border-emerald-900/50 dark:bg-emerald-950/20">
-                {batchCommits.slice(0, 4).map((commit: any) => (
-                  <div key={commit.sha} className="flex min-w-0 items-center gap-2 text-[10px] text-muted-foreground">
-                    <code className="shrink-0 font-mono text-emerald-700 dark:text-emerald-300">{String(commit.sha || '').slice(0, 8)}</code>
-                    <span className="truncate">{commit.subject || 'Commit'}</span>
-                  </div>
-                ))}
-                {batchCommits.length > 4 ? (
-                  <div className="text-[10px] text-muted-foreground">+{batchCommits.length - 4} more</div>
-                ) : null}
-              </div>
-            ) : null}
             {(hasHead || primaryBranch) && (
               <div className="mt-1 flex flex-wrap items-center gap-1.5">
                 {hasHead && (

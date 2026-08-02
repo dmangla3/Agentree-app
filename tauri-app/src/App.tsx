@@ -19,7 +19,6 @@ const HomePage = lazy(() => import('./pages/HomePage').then((module) => ({ defau
 const LoginPage = lazy(() => import('./pages/auth/LoginPage').then((module) => ({ default: module.LoginPage })));
 const MergePreviewDialog = lazy(() => import('./components/MergePreviewDialog').then((module) => ({ default: module.MergePreviewDialog })));
 const MergeProgressDialog = lazy(() => import('./components/MergeProgressDialog').then((module) => ({ default: module.MergeProgressDialog })));
-const PerfCapturePanel = lazy(() => import('./components/PerfCapturePanel').then((module) => ({ default: module.PerfCapturePanel })));
 
 function AppShellSkeleton({ label = 'Preparing workspace' }: { label?: string }) {
   return (
@@ -292,7 +291,6 @@ function App() {
               <Suspense fallback={null}>
                 <MergePreviewDialog />
                 <MergeProgressDialog />
-                {import.meta.env.DEV && <PerfCapturePanel />}
                 {import.meta.env.DEV && <Agentation />}
               </Suspense>
             </DiffProvider>

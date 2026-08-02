@@ -69,6 +69,25 @@ export const graphSnapshot: GraphSnapshot = {
     git_branch_name: message.git_branch_name,
   })),
   summaries: [],
+  commits: [
+    {
+      sha: 'commit0001',
+      workspace_id: workspaceId,
+      subject: 'MSW scenario is active and stable.',
+      source_kind: 'agent',
+      produced_by_node_id: 'msg-assistant-1',
+      first_parent_sha: 'base0001',
+      committed_at: '2026-05-09T04:00:03.000Z',
+    },
+  ],
+  commitParents: [
+    {
+      child_sha: 'commit0001',
+      parent_sha: 'base0001',
+      parent_index: 0,
+    },
+  ],
+  commitObservations: [],
   cacheWriteDisabled: true,
 };
 

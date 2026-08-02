@@ -4,9 +4,8 @@ import { api } from '../lib/api';
 import { agentClient } from '../lib/agentClient';
 import { trackedRefKeys } from './useTrackedRefs';
 import { branchKeys } from './useBranches';
-import type { Message, TrackedGitRef } from '../stores/workspaceStore';
-import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
-import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
+import type { TrackedGitRef } from '../stores/workspaceStore';
+import type { GraphSnapshot } from './useGraphSnapshot';
 
 type IgnoredSyncRef = {
   gitRef: string;
@@ -35,13 +34,8 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
           return response.data;
         },
       });
-      const messages = await queryClient.ensureQueryData<Message[]>({
-        queryKey: ['messages', workspaceId],
-        queryFn: async () => {
-          const response = await api.get(`/workspaces/${workspaceId}/messages`);
-          return response.data;
-        },
-      });
+      const cachedGraphSnapshot = queryClient.getQueryData<GraphSnapshot>(['graph-snapshot', workspaceId]);
+      const knownCommitShas = new Set((cachedGraphSnapshot?.commits ?? []).map((commit) => commit.sha));
       const ignoredRefs: IgnoredSyncRef[] = [];
       const enabledRefs = trackedRefs.filter((ref) => ref.enabled);
 
@@ -82,18 +76,12 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
         }
 
         const lastSeenCommit = tracked.last_seen_commit_sha ?? null;
-        const lastSeenNodeCommit = tracked.last_seen_node_id
-          ? getMessageOutputCommitSha(messages.find((message) => message.id === tracked.last_seen_node_id))
-          : null;
-        const hasMaterializedTipNode = messages.some((message) => getMessageOutputCommitSha(message) === tipCommitSha);
         let fromCommit = lastSeenCommit;
 
         // Recover from an older bad sync where a tracked ref was marked as seen at the tip
-        // even though no node was imported for that commit.
-        if (lastSeenCommit === tipCommitSha && !hasMaterializedTipNode) {
-          fromCommit = lastSeenNodeCommit && lastSeenNodeCommit !== tipCommitSha
-            ? lastSeenNodeCommit
-            : null;
+        // even though no canonical commit row was imported for that commit.
+        if (lastSeenCommit === tipCommitSha && knownCommitShas.size > 0 && !knownCommitShas.has(tipCommitSha)) {
+          fromCommit = null;
         }
 
         if (fromCommit && fromCommit === tipCommitSha) {
@@ -154,10 +142,8 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
       if (!workspaceId) return;
       if (!result?.didSync) return;
       if ((result.importedCount ?? 0) > 0) {
-        void scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, {
-          refetchActive: true,
-          reason: 'git-sync',
-        });
+        void queryClient.invalidateQueries({ queryKey: ['graph-snapshot', workspaceId], refetchType: 'active' });
+        void queryClient.invalidateQueries({ queryKey: ['local-commits', workspaceId], refetchType: 'active' });
       }
       queryClient.invalidateQueries({ queryKey: trackedRefKeys.workspace(workspaceId) });
       queryClient.invalidateQueries({ queryKey: branchKeys.workspace(workspaceId) });

@@ -164,6 +164,39 @@ const updateStatus = (
   };
 };
 
+const hasOlderStreamSeq = (
+  snapshot: AgentRunSnapshot,
+  streamSeq: number | null | undefined,
+) => (
+  typeof streamSeq === 'number' &&
+  typeof snapshot.lastStreamSeq === 'number' &&
+  streamSeq < snapshot.lastStreamSeq
+);
+
+const shouldAcceptContentEvent = (
+  snapshot: AgentRunSnapshot,
+  event: Extract<AgentRunEvent, { type: 'content' }>,
+) => {
+  if (hasOlderStreamSeq(snapshot, event.streamSeq)) return false;
+  if (
+    typeof event.streamSeq === 'number' &&
+    typeof snapshot.lastStreamSeq === 'number' &&
+    event.streamSeq === snapshot.lastStreamSeq &&
+    event.content.length < snapshot.content.length
+  ) {
+    return false;
+  }
+  if (!isTerminalAgentRunStatus(snapshot.status)) return true;
+  if (
+    typeof event.streamSeq === 'number' &&
+    typeof snapshot.lastStreamSeq === 'number' &&
+    event.streamSeq > snapshot.lastStreamSeq
+  ) {
+    return true;
+  }
+  return event.content.length > snapshot.content.length;
+};
+
 export const reduceAgentRunSnapshot = (
   snapshot: AgentRunSnapshot,
   event: AgentRunEvent,
@@ -224,6 +257,7 @@ export const reduceAgentRunSnapshot = (
     }
     case 'content':
       {
+        if (!shouldAcceptContentEvent(snapshot, event)) return snapshot;
         const timeline = appendAssistantTimelineMessage(snapshot.timeline, event.appendedText, event.timestamp);
         return {
         ...updateStatus(snapshot, 'streaming', snapshot.progress),
@@ -281,9 +315,12 @@ export const reduceAgentRunSnapshot = (
         executionData: mergeExecutionData(snapshot.executionData, { meta: event.meta }),
       };
     case 'terminal': {
-      const content = typeof event.content === 'string' ? event.content : snapshot.content;
       const nextSnapshot = updateStatus(snapshot, event.status, progressForTerminalStatus(event.status));
       const acceptedTerminalStatus = nextSnapshot.status === event.status;
+      const content = typeof event.content === 'string' && (
+        acceptedTerminalStatus ||
+        event.content.length > snapshot.content.length
+      ) ? event.content : snapshot.content;
       return {
         ...nextSnapshot,
         phase: 'terminal',

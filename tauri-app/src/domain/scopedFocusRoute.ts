@@ -23,7 +23,7 @@ const EMPTY_ROUTE: ScopedFocusRoute = {
 export const isImportedGitMessage = (message: Message | null | undefined): boolean => {
   if (!message || message.role !== 'assistant') return false;
   const meta = ((message.execution_data as any)?.meta || {}) as Record<string, unknown>;
-  return meta.sync_source === 'external_git' || meta.node_kind === 'commit' || meta.node_kind === 'commit_batch';
+  return meta.sync_source === 'external_git' || meta.node_kind === 'commit';
 };
 
 const edgeIdsForRoute = (messageIds: string[]): string[] => {

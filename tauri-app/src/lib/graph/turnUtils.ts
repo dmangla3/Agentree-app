@@ -43,11 +43,6 @@ export const getGitParentShas = (msg: Message): string[] => {
   return Array.from(new Set([targetCommit, ...sourceCommits].filter((sha) => sha.length > 0)));
 };
 
-export const shouldClusterExternalCommitByBatch = (msg: Message): boolean => {
-  if (!isExternalCommit(msg)) return false;
-  return getGitParentShas(msg).length <= 1;
-};
-
 export const getNearestAncestorCommitSha = (
   msg: Message,
   messageMap?: Map<string, Message>
@@ -83,7 +78,7 @@ export function isFirstClassCommitMessage(msg: Message, options: CommitDetection
   void options;
   if (msg.role !== 'assistant') return false;
   const nodeKind = getNodeKind(msg);
-  if (nodeKind === 'commit' || nodeKind === 'commit_batch') return true;
+  if (nodeKind === 'commit') return true;
   if (isExternalCommit(msg)) return true;
   return Boolean(msg.commit?.sha);
 }

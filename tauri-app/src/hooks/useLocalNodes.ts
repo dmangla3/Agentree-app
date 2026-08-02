@@ -54,15 +54,22 @@ export const useLocalNodes = (workspaceId: string | null | undefined) => {
     enabled: Boolean(workspaceId) && agentClient.hasRuntime(),
     staleTime: 1000,
     gcTime: 30 * 60 * 1000,
-    refetchInterval: agentClient.hasRuntime() ? 5000 : false,
+    refetchInterval: (query) => {
+      if (!agentClient.hasRuntime()) return false;
+      const data = query.state.data;
+      if (!data?.some((row) => row.syncStatus === 'local_only')) return false;
+      return 5000;
+    },
     refetchOnWindowFocus: false,
     refetchOnReconnect: true,
   });
+  const localNodes = query.data;
+  const refetchLocalNodes = query.refetch;
 
   useEffect(() => {
     if (!workspaceId || !agentClient.hasRuntime()) return;
     if (syncInFlightRef.current) return;
-    const hasRetryableLocalOnly = (query.data ?? []).some((row) => {
+    const hasRetryableLocalOnly = (localNodes ?? []).some((row) => {
       if (row.syncStatus !== 'local_only') return false;
       if (!row.nextRetryAt) return true;
       return row.nextRetryAt <= Math.floor(Date.now() / 1000);
@@ -71,12 +78,12 @@ export const useLocalNodes = (workspaceId: string | null | undefined) => {
     syncInFlightRef.current = true;
     void getAccessToken()
       .then((token) => agentClient.processLocalSyncEvents(token))
-      .then(() => query.refetch())
+      .then(() => refetchLocalNodes())
       .catch(() => undefined)
       .finally(() => {
         syncInFlightRef.current = false;
       });
-  }, [query.data, query, workspaceId]);
+  }, [localNodes, refetchLocalNodes, workspaceId]);
 
   return query;
 };

@@ -53,6 +53,7 @@ export const commands = {
 	listLocalNodes: (workspaceId: string) => __TAURI_INVOKE<LocalNodeRow[]>("list_local_nodes", { workspaceId }),
 	hydrateLocalNodesFromServer: (workspaceId: string, payloads: string[]) => __TAURI_INVOKE<number>("hydrate_local_nodes_from_server", { workspaceId, payloads }),
 	upsertLocalNode: (workspaceId: string, nodeId: string, payload: string) => __TAURI_INVOKE<null>("upsert_local_node", { workspaceId, nodeId, payload }),
+	importLocalCommits: (workspaceId: string, commits: LocalCommitImport[], gitRef: string | null) => __TAURI_INVOKE<number>("import_local_commits", { workspaceId, commits, gitRef }),
 	localFirstDeleteBranch: (workspaceId: string, rootNodeId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_delete_branch", { workspaceId, rootNodeId }),
 	localFirstDeleteWorkspace: (workspaceId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_delete_workspace", { workspaceId }),
 	listLocalDeletedNodeRoots: (workspaceId: string) => __TAURI_INVOKE<LocalDeletedNodeRoot[]>("list_local_deleted_node_roots", { workspaceId }),
@@ -331,6 +332,21 @@ export type GitRefTipInfo = {
 	git_ref: string,
 	commit_sha: string | null,
 	error: string | null,
+};
+
+export type LocalCommitImport = {
+	sha: string,
+	parents: string[],
+	subject: string | null,
+	authorName: string | null,
+	authorEmail: string | null,
+	authoredAt: string | null,
+	committedAt: string | null,
+	sourceKind: string | null,
+	producedByNodeId: string | null,
+	filesChangedCount: number | null,
+	totalAdditions: number | null,
+	totalDeletions: number | null,
 };
 
 export type LocalDeletedNodeRoot = {

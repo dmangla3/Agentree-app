@@ -12,10 +12,8 @@ import { Button } from '../../@/components/ui/button';
 import { Input } from '../../@/components/ui/input';
 import { ScrollArea } from '../../@/components/ui/scroll-area';
 import { Badge } from '../../@/components/ui/badge';
-import { api } from '../lib/api';
 import { agentClient, type AddableCommitCandidate, type GitCommitMetadata } from '../lib/agentClient';
 import { buildMessageMap, resolveNodeCommit } from '../lib/gitNodeUtils';
-import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
 import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { Message } from '../stores/workspaceStore';
 import { useTrackedRefs } from '../hooks/useTrackedRefs';
@@ -30,7 +28,6 @@ interface AddCommitDialogProps {
   parentNodeId: string | null;
   messages: Message[];
   onOpenChange: (open: boolean) => void;
-  onAdded?: (message: Message) => void;
 }
 
 const shortSha = (sha: string | null | undefined) => (sha || '').slice(0, 8);
@@ -101,7 +98,6 @@ export function AddCommitDialog({
   parentNodeId,
   messages,
   onOpenChange,
-  onAdded,
 }: AddCommitDialogProps) {
   const queryClient = useQueryClient();
   const { data: trackedRefs = [] } = useTrackedRefs(open ? workspaceId : null);
@@ -130,15 +126,6 @@ export function AddCommitDialog({
       .filter((sha): sha is string => Boolean(sha))
       .slice(0, 80);
     return Array.from(new Set([...edgeCommits, ...recentCommits]));
-  }, [messages]);
-  const existingNodeIdsBySha = useMemo(() => {
-    const result: Record<string, string[]> = {};
-    for (const message of messages) {
-      const commitSha = getMessageOutputCommitSha(message);
-      if (!commitSha) continue;
-      result[commitSha] = [...(result[commitSha] ?? []), message.id];
-    }
-    return result;
   }, [messages]);
   const trackedRefSet = useMemo(
     () => new Set(trackedRefs.filter((ref) => ref.enabled).map((ref) => ref.git_ref)),
@@ -211,7 +198,6 @@ export function AddCommitDialog({
   const handleSubmit = useCallback(async (candidateOverride?: AddableCommitCandidate) => {
     const candidate = candidateOverride ?? selectedCandidate;
     if (!workspaceId || !parentNodeId || !candidate || !baseCommit || !repoPath) return;
-    const label = getCandidateLabel(candidate);
     const primaryRef = candidate.refs.find((ref) => ref.is_current_branch) || candidate.refs[0] || null;
     setIsSubmitting(true);
     setError(null);
@@ -222,25 +208,33 @@ export function AddCommitDialog({
         return;
       }
       const enrichedRange = await enrichCommitRangeWithDiffStats(repoPath, range);
-      const response = await api.post(`/workspaces/${workspaceId}/nodes/${parentNodeId}/add-commit-batch`, {
-        baseCommit,
-        tipCommit: candidate.sha,
-        sourceLabel: label,
-        sourceRef: primaryRef?.git_ref ?? null,
-        commits: enrichedRange,
-        existingNodeIdsBySha,
-      });
-      const created = response.data?.message as Message | undefined;
-      await scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, { reason: 'add-commit-batch', refetchActive: true });
+      await agentClient.importLocalCommits(
+        workspaceId,
+        enrichedRange.map((commit) => ({
+          sha: commit.sha,
+          parents: commit.parents,
+          subject: commit.subject,
+          authorName: commit.author_name ?? null,
+          authorEmail: commit.author_email ?? null,
+          authoredAt: commit.authored_at ?? null,
+          committedAt: commit.authored_at ?? null,
+          sourceKind: 'manual',
+          producedByNodeId: null,
+          filesChangedCount: commit.files_changed_count ?? null,
+          totalAdditions: commit.total_additions ?? null,
+          totalDeletions: commit.total_deletions ?? null,
+        })),
+        primaryRef?.git_ref ?? null
+      );
       queryClient.invalidateQueries({ queryKey: ['graph-snapshot', workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ['local-commits', workspaceId] });
       onOpenChange(false);
-      if (created) onAdded?.(created);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add commit.');
     } finally {
       setIsSubmitting(false);
     }
-  }, [baseCommit, existingNodeIdsBySha, onAdded, onOpenChange, parentNodeId, queryClient, repoPath, selectedCandidate, workspaceId]);
+  }, [baseCommit, onOpenChange, parentNodeId, queryClient, repoPath, selectedCandidate, workspaceId]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -249,7 +243,7 @@ export function AddCommitDialog({
         <DialogHeader>
           <DialogTitle>Add Commit</DialogTitle>
           <DialogDescription>
-            Add a descendant commit range after the selected node as one compact batch.
+            Add descendant commits after the selected node as individual graph commits.
           </DialogDescription>
         </DialogHeader>
         </div>

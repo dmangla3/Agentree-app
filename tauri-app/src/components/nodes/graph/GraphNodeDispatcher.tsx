@@ -3,9 +3,10 @@ import type { Node, NodeProps } from '@xyflow/react';
 import { GraphUserNode } from './GraphUserNode';
 import { GraphAssistantNode } from './GraphAssistantNode';
 import { GraphCommitNode } from './GraphCommitNode';
+import { GraphCanonicalCommitNode } from './GraphCanonicalCommitNode';
+import { GraphDerivedCommitGroupNode } from './GraphDerivedCommitGroupNode';
 import { GraphSummaryNode } from './GraphSummaryNode';
-import { GraphExternalCommitBatchNode } from './GraphExternalCommitBatchNode';
-import type { ProjectedExternalCommitBatch, ProjectedNodeEntity, WorkspaceProjection } from '../../../domain/workspaceProjection';
+import type { ProjectedCommitEntity, ProjectedCommitGroup, ProjectedNodeEntity, WorkspaceProjection } from '../../../domain/workspaceProjection';
 import { NodeHoverCardContent } from '../../NodeHoverCardContent';
 import { useGraphInteractionContext } from '../../graph/GraphInteractionContext';
 import { useGraphHoverProjectionInput } from '../../graph/GraphHoverProjectionContext';
@@ -16,12 +17,12 @@ import type { FocusTriggerMetrics } from '../../../types/nodes';
 export interface GraphNodeData {
   [key: string]: unknown;
   entity?: ProjectedNodeEntity;
-  batch?: ProjectedExternalCommitBatch;
+  commit?: ProjectedCommitEntity;
+  group?: ProjectedCommitGroup;
   projection?: WorkspaceProjection;
   isFocused?: boolean;
   focusedMessageId?: string | null;
   isSelected: boolean;
-  selectedCommitIds?: Set<string>;
   heightKey?: string;
   onMeasureHeight?: (id: string, height: number) => void;
   onFocus: (id: string, metrics?: FocusTriggerMetrics) => void;
@@ -33,11 +34,9 @@ type GraphNode = Node<GraphNodeData>;
 
 function GraphNodeHoverCardContent({
   entity,
-  representativeMessageId,
   fallbackProjection,
 }: {
   entity?: ProjectedNodeEntity;
-  representativeMessageId?: string | null;
   fallbackProjection?: WorkspaceProjection;
 }) {
   const hoverInput = useGraphHoverProjectionInput();
@@ -53,9 +52,7 @@ function GraphNodeHoverCardContent({
     ? hoverProjection.entitiesByMessageId.get(entity.messageId) ?? entity
     : entity?.summary?.id
       ? hoverProjection.entitiesBySummaryId.get(entity.summary.id) ?? entity
-      : representativeMessageId
-        ? hoverProjection.entitiesByMessageId.get(representativeMessageId)
-        : entity;
+      : entity;
 
   return (
     <NodeHoverCardContent
@@ -67,25 +64,23 @@ function GraphNodeHoverCardContent({
 
 export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
   const { data, selected: isSelectedInFlow } = props;
-  const { selectedNodeIds, isSelectionGestureActive, isViewportInteracting } = useGraphInteractionContext();
+  const { isSelectionGestureActive, isViewportInteracting } = useGraphInteractionContext();
 
   const handleFocus = useCallback((metrics?: FocusTriggerMetrics) => {
     if (data.entity?.focusMessageId) {
       data.onFocus(data.entity.focusMessageId, metrics);
-    } else if (data.batch?.representativeMessageId) {
-      data.onFocus(data.batch.representativeMessageId, metrics);
     }
   }, [data]);
 
   const handleSelect = useCallback((multi: boolean) => {
-    const id = data.entity?.messageId || data.entity?.summary?.id;
+    const id = data.entity?.focusMessageId || data.entity?.messageId || data.entity?.summary?.id;
     if (id) {
       data.onSelect(id, multi);
     }
   }, [data]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
-    const id = data.entity?.messageId || data.entity?.summary?.id || data.batch?.entityId;
+    const id = data.entity?.focusMessageId || data.entity?.messageId || data.entity?.summary?.id;
     if (id) {
       data.onContextMenu(id, e);
     }
@@ -105,7 +100,6 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
     hoverCardContent: (
       <GraphNodeHoverCardContent
         entity={data.entity}
-        representativeMessageId={data.batch?.representativeMessageId}
         fallbackProjection={data.projection}
       />
     ),
@@ -115,25 +109,23 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
     onContextMenu: handleContextMenu,
   };
 
-  if (data.batch) {
+  if (data.group) {
     return (
-      <GraphExternalCommitBatchNode
-        nodeId={props.id}
-        batch={data.batch}
+      <GraphDerivedCommitGroupNode
+        group={data.group}
         projection={data.projection}
-        focusedCommitId={data.focusedMessageId ?? null}
-        isFocused={sharedProps.isFocused}
-        isSelected={sharedProps.isSelected}
-        disableHoverCard={isSelectionGestureActive || isViewportInteracting}
-        scopeColor={sharedProps.scopeColor}
-        heightKey={data.heightKey}
-        onMeasureHeight={data.onMeasureHeight}
-        onFocusCommit={data.onFocus}
-        onSelectCommit={data.onSelect}
-        selectedCommitIds={selectedNodeIds}
-        onFocus={handleFocus}
-        onSelect={handleSelect}
-        onContextMenu={handleContextMenu}
+        isFocused={!!data.isFocused}
+        isSelected={data.isSelected || isSelectedInFlow}
+      />
+    );
+  }
+
+  if (data.commit) {
+    return (
+      <GraphCanonicalCommitNode
+        commit={data.commit}
+        isFocused={!!data.isFocused}
+        isSelected={data.isSelected || isSelectedInFlow}
       />
     );
   }

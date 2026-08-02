@@ -153,6 +153,21 @@ export interface LocalDeletedNodeRootRecord {
     deletedAt: number;
 }
 
+export interface LocalCommitImport {
+    sha: string;
+    parents: string[];
+    subject?: string | null;
+    authorName?: string | null;
+    authorEmail?: string | null;
+    authoredAt?: string | null;
+    committedAt?: string | null;
+    sourceKind?: 'agent' | 'external' | 'manual' | 'merge' | 'unknown' | string | null;
+    producedByNodeId?: string | null;
+    filesChangedCount?: number | null;
+    totalAdditions?: number | null;
+    totalDeletions?: number | null;
+}
+
 export interface StartAgentRunIntent {
     runId: string;
     assistantNodeId: string;
@@ -502,6 +517,27 @@ export const agentClient = {
     upsertLocalNode: async (workspaceId: string, nodeId: string, message: unknown): Promise<void> => {
         if (!hasTauriRuntime()) return;
         await tauriCommands.upsertLocalNode(workspaceId, nodeId, JSON.stringify(message));
+    },
+    importLocalCommits: async (workspaceId: string, commits: LocalCommitImport[], gitRef?: string | null): Promise<number> => {
+        if (!hasTauriRuntime()) return 0;
+        return await tauriCommands.importLocalCommits(
+            workspaceId,
+            commits.map((commit) => ({
+                sha: commit.sha,
+                parents: commit.parents,
+                subject: commit.subject ?? null,
+                authorName: commit.authorName ?? null,
+                authorEmail: commit.authorEmail ?? null,
+                authoredAt: commit.authoredAt ?? null,
+                committedAt: commit.committedAt ?? null,
+                sourceKind: commit.sourceKind ?? null,
+                producedByNodeId: commit.producedByNodeId ?? null,
+                filesChangedCount: commit.filesChangedCount ?? null,
+                totalAdditions: commit.totalAdditions ?? null,
+                totalDeletions: commit.totalDeletions ?? null,
+            })),
+            gitRef ?? null
+        );
     },
     localFirstDeleteBranch: async (workspaceId: string, rootNodeId: string): Promise<LocalSyncEventRecord | null> => {
         if (!hasTauriRuntime()) return null;

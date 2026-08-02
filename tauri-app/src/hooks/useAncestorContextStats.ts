@@ -51,18 +51,15 @@ interface ContextNodeEntry {
 export function useAncestorContextStats(
     parentId: string | null,
     messages: Message[],
-    scopeId: string | null = null
+    _scopeId: string | null = null
 ) {
     return useMemo(() => {
         if (!parentId) return { active: 0, total: 0, tokens: 0, nodes: [] as ContextNodeEntry[] };
         const ancestors = reconstructContext(parentId, messages);
         if (!ancestors.length) return { active: 0, total: 0, tokens: 0, nodes: [] as ContextNodeEntry[] };
 
-        const scopedAncestors = scopeId
-            ? ancestors.filter((message) => (message.scope_id || null) === scopeId)
-            : ancestors;
-        const activityById = computeContextActivityMap(scopedAncestors);
-        const activeAncestors = scopedAncestors.filter((message) => activityById.get(message.id) === true);
+        const activityById = computeContextActivityMap(ancestors);
+        const activeAncestors = ancestors.filter((message) => activityById.get(message.id) === true);
         const tokens = activeAncestors.reduce((sum, message) => {
             if (typeof message.totalTokens === 'number' && message.totalTokens > 0) {
                 return sum + message.totalTokens;
@@ -71,7 +68,7 @@ export function useAncestorContextStats(
             return sum + estimateTokens(content);
         }, 0);
 
-        const nodes: ContextNodeEntry[] = scopedAncestors.map((message) => {
+        const nodes: ContextNodeEntry[] = ancestors.map((message) => {
             const raw = (message.aiLabel && message.aiLabel.trim())
                 ? message.aiLabel
                 : (message.processedContent ?? message.content ?? '');
@@ -95,9 +92,9 @@ export function useAncestorContextStats(
 
         return {
             active: activeAncestors.length,
-            total: scopedAncestors.length,
+            total: ancestors.length,
             tokens,
             nodes,
         };
-    }, [parentId, messages, scopeId]);
+    }, [parentId, messages, _scopeId]);
 }

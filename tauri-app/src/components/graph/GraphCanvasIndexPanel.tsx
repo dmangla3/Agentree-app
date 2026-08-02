@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Eye, EyeOff } from 'lucide-react';
+import { Check, Eye, EyeOff, Route } from 'lucide-react';
 import type { Node } from '@xyflow/react';
 import type { Message } from '../../stores/workspaceStore';
 import type { LlmNodeData } from '../../lib/graphUtils';
@@ -10,6 +10,8 @@ interface GraphCanvasIndexPanelProps {
   isVisible: boolean;
   onToggleVisible: (visible: boolean) => void;
   onPreviewEdgeType: (edgeTypeId: GraphEdgeLegendId) => void;
+  visibleEdgeTypes: Set<GraphEdgeLegendId>;
+  onToggleEdgeType: (edgeTypeId: GraphEdgeLegendId) => void;
   onFocusMessage: (messageId: string) => void;
   nodes: Node<any>[];
   messages: Message[];
@@ -20,44 +22,59 @@ interface GraphCanvasIndexPanelProps {
 
 const EDGE_LEGEND = [
   {
-    id: 'focus-path',
-    label: 'Focus Path',
-    description: 'The actively emphasized route through the graph. It shows the branch or selection path the rest of the interface is currently anchored to.',
-    color: '#4338ca',
-    darkColor: '#6366f1',
-    width: 2,
+    id: 'context-path',
+    label: 'Context Path',
+    description: 'The conversation context that will be passed into the next agent run. This is a visual state, not a persisted relationship.',
+    color: '#4f46e5',
+    darkColor: '#a5b4fc',
+    width: 3,
     dashed: false,
     opacity: 1,
+    toggleable: false,
   },
   {
-    id: 'lineage',
-    label: 'Lineage',
-    description: 'A direct parent-to-child structural link. Follow these solid edges to understand how a branch evolved step by step.',
-    color: '#000000',
+    id: 'conversation',
+    label: 'Conversation',
+    description: 'Inter-turn conversation placement: the previous assistant reply to the next user message. This is the only edge type that affects graph layout.',
+    color: '#475569',
     darkColor: '#94a3b8',
     width: 2,
     dashed: false,
     opacity: 1,
+    toggleable: true,
   },
   {
     id: 'context-break',
     label: 'Context Break',
-    description: 'The branch relationship still exists, but some context in between is inactive, hidden, or intentionally skipped, so the edge is rendered as dashed.',
-    color: '#000000',
-    darkColor: '#64748b',
+    description: 'A conversation placement edge where the next turn intentionally starts with fresh or inactive context. It still follows conversation layout.',
+    color: '#64748b',
+    darkColor: '#94a3b8',
+    width: 2,
+    dashed: true,
+    opacity: 0.7,
+    toggleable: true,
+  },
+  {
+    id: 'git-parent',
+    label: 'Commit Parent',
+    description: 'Commit lineage: a parent commit to a child commit. Merge commits can have multiple commit-parent edges. These edges do not affect layout.',
+    color: '#059669',
+    darkColor: '#34d399',
+    width: 2,
+    dashed: false,
+    opacity: 0.8,
+    toggleable: true,
+  },
+  {
+    id: 'base-used',
+    label: 'Base Used',
+    description: 'Code anchor for a run: the base commit selected by the assistant run. This edge is informational and does not affect layout.',
+    color: '#d97706',
+    darkColor: '#f59e0b',
     width: 2,
     dashed: true,
     opacity: 0.8,
-  },
-  {
-    id: 'reference',
-    label: 'Reference Link',
-    description: 'A secondary relationship used for association, reference, or cross-linking. It connects related work without implying direct branch ancestry.',
-    color: '#000000',
-    darkColor: '#64748b',
-    width: 2,
-    dashed: true,
-    opacity: 0.9,
+    toggleable: true,
   },
 ] as const;
 
@@ -67,6 +84,8 @@ export function GraphCanvasIndexPanel({
   isVisible,
   onToggleVisible,
   onPreviewEdgeType,
+  visibleEdgeTypes,
+  onToggleEdgeType,
   onFocusMessage,
   nodes,
   messages,
@@ -215,46 +234,93 @@ export function GraphCanvasIndexPanel({
                 Edges
               </div>
               <div className="space-y-1">
-                {EDGE_LEGEND.map((item) => (
-                  <div
-                    key={item.id}
-                    role="button"
-                    tabIndex={0}
-                    title={item.description}
-                    className="rounded px-0.5 py-0.5 cursor-pointer hover:bg-muted/50 dark:hover:bg-slate-800/50 transition-colors outline-none focus-visible:bg-muted/60 dark:focus-visible:bg-slate-800/60"
-                    onClick={() => onPreviewEdgeType(item.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        onPreviewEdgeType(item.id);
-                      }
-                    }}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <div
-                        className="w-6 border-t rounded-sm flex-shrink-0 dark:hidden"
-                        style={{
-                          borderTopColor: item.color,
-                          borderTopWidth: item.width,
-                          borderTopStyle: item.dashed ? 'dashed' : 'solid',
-                          opacity: item.opacity,
-                        }}
-                      />
-                      <div
-                        className="w-6 border-t rounded-sm flex-shrink-0 hidden dark:block"
-                        style={{
-                          borderTopColor: item.darkColor,
-                          borderTopWidth: item.width,
-                          borderTopStyle: item.dashed ? 'dashed' : 'solid',
-                          opacity: item.opacity,
-                        }}
-                      />
-                      <span className="text-foreground dark:text-slate-300 text-[10px] font-medium leading-tight">
-                        {item.label}
-                      </span>
+                {EDGE_LEGEND.map((item) => {
+                  const isVisible = !item.toggleable || visibleEdgeTypes.has(item.id);
+                  return (
+                    <div
+                      key={item.id}
+                      role={item.toggleable ? undefined : 'button'}
+                      tabIndex={0}
+                      title={item.description}
+                      className="rounded px-0.5 py-0.5 hover:bg-muted/50 dark:hover:bg-slate-800/50 transition-colors outline-none focus-visible:bg-muted/60 dark:focus-visible:bg-slate-800/60"
+                      onClick={() => {
+                        if (!item.toggleable) onPreviewEdgeType(item.id);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          if (item.toggleable) {
+                            onToggleEdgeType(item.id);
+                          } else {
+                            onPreviewEdgeType(item.id);
+                          }
+                        }
+                      }}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        {item.id === 'context-path' ? (
+                          <Route className="h-3 w-3 flex-shrink-0 text-indigo-600 dark:text-indigo-300" />
+                        ) : (
+                          <div
+                            className="w-6 border-t rounded-sm flex-shrink-0 dark:hidden"
+                            style={{
+                              borderTopColor: item.color,
+                              borderTopWidth: item.width,
+                              borderTopStyle: item.dashed ? 'dashed' : 'solid',
+                              opacity: item.opacity,
+                            }}
+                          />
+                        )}
+                        {item.id !== 'context-path' && (
+                          <div
+                            className="w-6 border-t rounded-sm flex-shrink-0 hidden dark:block"
+                            style={{
+                              borderTopColor: item.darkColor,
+                              borderTopWidth: item.width,
+                              borderTopStyle: item.dashed ? 'dashed' : 'solid',
+                              opacity: item.opacity,
+                            }}
+                          />
+                        )}
+                        <span className="text-foreground dark:text-slate-300 text-[10px] font-medium leading-tight">
+                          {item.label}
+                        </span>
+                        {item.toggleable ? (
+                          <button
+                            type="button"
+                            className={cn(
+                              'ml-auto flex h-4 w-4 items-center justify-center rounded border transition-colors',
+                              isVisible
+                                ? 'border-foreground/20 bg-foreground text-background dark:border-slate-500 dark:bg-slate-200 dark:text-slate-950'
+                                : 'border-border bg-background text-transparent dark:border-slate-700 dark:bg-slate-900'
+                            )}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onToggleEdgeType(item.id);
+                            }}
+                            aria-pressed={isVisible}
+                            aria-label={`${isVisible ? 'Hide' : 'Show'} ${item.label} edges`}
+                            title={`${isVisible ? 'Hide' : 'Show'} ${item.label} edges`}
+                          >
+                            <Check className="h-2.5 w-2.5" />
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="ml-auto rounded px-1 py-px text-[9px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onPreviewEdgeType(item.id);
+                            }}
+                            title="Preview context path"
+                          >
+                            ping
+                          </button>
+                        )}
                       </div>
-                  </div>
-                ))}
+                    </div>
+                  );
+                })}
               </div>
             </div>
 

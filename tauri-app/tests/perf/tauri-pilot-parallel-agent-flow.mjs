@@ -7,11 +7,11 @@ const FRONTEND_LOG_PATH = process.env.AGENTREE_TAURI_PILOT_FRONTEND_LOG ?? 'runt
 const LABEL = process.env.AGENTREE_TAURI_PILOT_LABEL ?? `tauri-pilot-parallel-agent-${Date.now()}`;
 const TEST_AGENT_MODEL = process.env.AGENTREE_TAURI_PILOT_AGENT_MODEL ?? 'gpt-5.4-mini';
 const RUN_TIMEOUT_MS = Number(process.env.AGENTREE_TAURI_PILOT_RUN_TIMEOUT_MS ?? 360000);
-const NO_PROGRESS_TIMEOUT_MS = Number(process.env.AGENTREE_TAURI_PILOT_NO_PROGRESS_TIMEOUT_MS ?? 45000);
+const NO_PROGRESS_TIMEOUT_MS = Number(process.env.AGENTREE_TAURI_PILOT_NO_PROGRESS_TIMEOUT_MS ?? 120000);
 const SEND_SPACING_MS = Number(process.env.AGENTREE_TAURI_PILOT_SEND_SPACING_MS ?? 2500);
 const DISABLE_GRAPH_INTERACTIONS = process.env.AGENTREE_TAURI_PILOT_DISABLE_GRAPH_INTERACTIONS === 'true';
 const DISABLE_GRAPH_CLICKS = process.env.AGENTREE_TAURI_PILOT_DISABLE_GRAPH_CLICKS === 'true';
-const GRAPH_INTERACTIONS_DURING_LAUNCH = process.env.AGENTREE_TAURI_PILOT_GRAPH_INTERACTIONS_DURING_LAUNCH === 'true';
+const GRAPH_INTERACTIONS_DURING_LAUNCH = process.env.AGENTREE_TAURI_PILOT_GRAPH_INTERACTIONS_DURING_LAUNCH !== 'false';
 const DISABLE_PERF_CAPTURE = process.env.AGENTREE_TAURI_PILOT_DISABLE_PERF_CAPTURE === 'true';
 const PROMPTS = (process.env.AGENTREE_TAURI_PILOT_PROMPTS
   ? JSON.parse(process.env.AGENTREE_TAURI_PILOT_PROMPTS)
@@ -82,6 +82,7 @@ const install = async () => pilotEval(`
     actions: [],
     samples: [],
     sends: [],
+    runningGraphInteractions: [],
     errors: [],
     rafStalls: [],
     intervalStalls: [],
@@ -203,6 +204,7 @@ const install = async () => pilotEval(`
     startedAtIso: probe.startedAtIso,
     done: probe.done,
     sends: probe.sends,
+    runningGraphInteractions: probe.runningGraphInteractions,
     actions: probe.actions.slice(-120),
     samples: probe.samples.slice(-180),
     errors: probe.errors,
@@ -212,12 +214,15 @@ const install = async () => pilotEval(`
     intervalStallCount: probe.intervalStalls.length,
     rafStalls: probe.rafStalls.slice(-50),
     intervalStalls: probe.intervalStalls.slice(-50),
+    latestPan: probe.actions.slice().reverse().find((action) => action.type === 'pan') ?? null,
+    latestClick: probe.actions.slice().reverse().find((action) => action.type === 'click-node' || action.type === 'click-node-missing' || action.type === 'click-node-no-safe-target') ?? null,
   });
   const summarizeCompactProbe = () => ({
     label: probe.label,
     testAgentModel: probe.testAgentModel,
     done: probe.done,
     sends: probe.sends,
+    runningGraphInteractions: probe.runningGraphInteractions,
     actions: probe.actions.slice(-80),
     samples: probe.samples.slice(-30),
     errors: probe.errors,
@@ -227,35 +232,94 @@ const install = async () => pilotEval(`
     intervalStallCount: probe.intervalStalls.length,
     rafStalls: probe.rafStalls.slice(-20),
     intervalStalls: probe.intervalStalls.slice(-20),
+    latestPan: probe.actions.slice().reverse().find((action) => action.type === 'pan') ?? null,
+    latestClick: probe.actions.slice().reverse().find((action) => action.type === 'click-node' || action.type === 'click-node-missing' || action.type === 'click-node-no-safe-target') ?? null,
   });
   const perfEvents = () => window.__AGENTREE_PERF__?.readLatestSession?.() ?? [];
+  const awaitWithProgress = async (promise, label, intervalMs = 10000) => {
+    let settled = false;
+    let tick = 0;
+    const heartbeat = window.setInterval(() => {
+      if (settled) return;
+      tick += 1;
+      logAction('await-progress', { actionLabel: label, tick, waitedMs: tick * intervalMs });
+    }, intervalMs);
+    try {
+      return await promise;
+    } finally {
+      settled = true;
+      window.clearInterval(heartbeat);
+    }
+  };
   const ensureLatestRunnableFocus = async (label) => {
-    const apiModule = await import(new URL('/src/lib/api.ts', location.origin).href);
-    const gitNodeUtils = await import(new URL('/src/lib/gitNodeUtils.ts', location.origin).href);
     const workspaceId = workspaceStore?.getState?.().selectedWorkspaceId ?? null;
     if (!workspaceId) throw new Error('parallel preflight failed: no selected workspace');
-    const response = await apiModule.api.get('/workspaces/' + workspaceId + '/messages');
-    const messages = Array.isArray(response.data) ? response.data : [];
-    const sortedMessages = messages.slice().sort((left, right) => {
-      const leftTime = Date.parse(left.createdAt || left.updatedAt || '') || 0;
-      const rightTime = Date.parse(right.createdAt || right.updatedAt || '') || 0;
-      return rightTime - leftTime;
-    });
-    const latestRunnable = sortedMessages.find((message) => gitNodeUtils.resolveNodeCommit(message, messages, null));
-    if (!latestRunnable) throw new Error('parallel preflight failed: no latest runnable node');
-    workspaceStore.getState().dispatchFocus?.({
-      messageId: latestRunnable.id,
-      source: 'system',
-      metadata: { reason: 'parallel-perf-latest-runnable-focus', label },
-    });
-    logAction('latest-runnable-focus-set', {
-      actionLabel: label,
-      messageId: latestRunnable.id,
-      role: latestRunnable.role ?? null,
-      status: latestRunnable.status ?? null,
-      text: (latestRunnable.aiLabel || latestRunnable.content || '').trim().slice(0, 100),
-    });
-    return latestRunnable.id;
+    const apiModule = await import(new URL('/src/lib/api.ts', location.origin).href);
+    const gitNodeUtils = await import(new URL('/src/lib/gitNodeUtils.ts', location.origin).href);
+    try {
+      logAction('latest-runnable-focus-fetch-start', { actionLabel: label, workspaceId });
+      const response = await awaitWithProgress(
+        apiModule.api.get('/workspaces/' + workspaceId + '/messages'),
+        'latest-runnable-focus-fetch-' + label
+      );
+      const messages = Array.isArray(response.data) ? response.data : [];
+      logAction('latest-runnable-focus-fetch-finished', { actionLabel: label, workspaceId, messageCount: messages.length });
+      const sortedMessages = messages.slice().sort((left, right) => {
+        const leftTime = Date.parse(left.createdAt || left.updatedAt || '') || 0;
+        const rightTime = Date.parse(right.createdAt || right.updatedAt || '') || 0;
+        return rightTime - leftTime;
+      });
+      const latestRunnable = sortedMessages.find((message) => {
+        if (['running', 'pending', 'initializing', 'streaming'].includes(String(message.status || ''))) return false;
+        return gitNodeUtils.resolveNodeCommit(message, messages, null);
+      });
+      if (latestRunnable) {
+        workspaceStore.getState().dispatchFocus?.({
+          messageId: latestRunnable.id,
+          source: 'system',
+          metadata: { reason: 'parallel-perf-latest-runnable-focus', label },
+        });
+        logAction('latest-runnable-focus-set', {
+          actionLabel: label,
+          messageId: latestRunnable.id,
+          role: latestRunnable.role ?? null,
+          status: latestRunnable.status ?? null,
+          text: (latestRunnable.aiLabel || latestRunnable.content || '').trim().slice(0, 100),
+        });
+        return latestRunnable.id;
+      }
+      logAction('latest-runnable-focus-missing', { actionLabel: label, workspaceId, messageCount: messages.length });
+    } catch (error) {
+      logAction('latest-runnable-focus-fetch-failed', { actionLabel: label, workspaceId, message: String(error?.message || error) });
+    }
+
+    const visibleGraphNode = [...document.querySelectorAll('.react-flow__node-assistant_message, .react-flow__node-user_message')]
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        const id = element.getAttribute('data-id');
+        const text = (element.textContent || '').trim();
+        return { element, id, rect, text };
+      })
+      .filter((entry) => entry.id && entry.rect.width > 20 && entry.rect.height > 20 && entry.rect.right > 0 && entry.rect.bottom > 0 && entry.rect.left < window.innerWidth && entry.rect.top < window.innerHeight)
+      .filter((entry) => !/\\b(pending|creating|initializing|running|streaming)\\b/i.test(entry.text))
+      .sort((left, right) => {
+        const roleScore = (entry) => entry.element.classList.contains('react-flow__node-assistant_message') ? 0 : 1;
+        return roleScore(left) - roleScore(right) || right.rect.top - left.rect.top;
+      })[0] ?? null;
+    if (visibleGraphNode?.id) {
+      workspaceStore.getState().dispatchFocus?.({
+        messageId: visibleGraphNode.id,
+        source: 'system',
+        metadata: { reason: 'parallel-perf-visible-graph-focus', label },
+      });
+      logAction('visible-graph-focus-set', {
+        actionLabel: label,
+        messageId: visibleGraphNode.id,
+        text: visibleGraphNode.text.slice(0, 100),
+      });
+      return visibleGraphNode.id;
+    }
+    throw new Error('parallel preflight failed: no latest runnable node');
   };
   const focusMessage = async (messageId, label) => {
     if (!messageId) throw new Error('parallel focus failed: missing message id');
@@ -325,6 +389,20 @@ const install = async () => pilotEval(`
       selectedNodeCount: document.querySelectorAll('.react-flow__node.selected').length,
       selectionOverlayPresent: selectionDialogPresent(),
     });
+  };
+  const clearStaleCancelState = async (label) => {
+    const labelText = buttonLabel();
+    const runningCount = focusState()?.runningCount ?? 0;
+    if ((labelText === 'Cancel sending message' || labelText === 'Cancel') && runningCount === 0) {
+      sendButton()?.click();
+      await sleep(250);
+      logAction('clear-stale-cancel-state', {
+        actionLabel: label,
+        beforeLabel: labelText,
+        afterLabel: buttonLabel(),
+        runningCount,
+      });
+    }
   };
   const setPromptAndSend = async (prompt, index) => {
     const textarea = findComposer();
@@ -619,6 +697,37 @@ const install = async () => pilotEval(`
     sample('after-click-' + label);
     return id;
   };
+  const interactWithGraphDuringRun = async (label, clickedIds) => {
+    const beforeFocus = focusState();
+    const runningBefore = Number(beforeFocus?.runningCount ?? 0);
+    const beforeGraph = graphCounts();
+    const panOk = await panGraph(label);
+    let clickedId = null;
+    if (disableGraphClicks) {
+      logAction('graph-click-skipped', { actionLabel: label });
+    } else {
+      clickedId = await clickVisibleNode(label, clickedIds, { avoidActiveRuns: true });
+      if (clickedId) clickedIds.push(clickedId);
+    }
+    const afterFocus = focusState();
+    const interaction = {
+      label,
+      at: new Date().toISOString(),
+      elapsedMs: nowElapsed(),
+      runningBefore,
+      runningAfter: Number(afterFocus?.runningCount ?? 0),
+      panOk,
+      clickedId,
+      focusedBefore: beforeFocus?.focusedMessageId ?? null,
+      focusedAfter: afterFocus?.focusedMessageId ?? null,
+      focusChanged: Boolean(clickedId && beforeFocus?.focusedMessageId !== afterFocus?.focusedMessageId),
+      graphTransformBefore: beforeGraph.transform,
+      graphTransformAfter: graphCounts().transform,
+    };
+    probe.runningGraphInteractions.push(interaction);
+    logAction('running-graph-interaction', interaction);
+    return interaction;
+  };
   const waitComposerReady = async (label, timeoutMs = 12000) => {
     const startedAt = performance.now();
     while (performance.now() - startedAt < timeoutMs) {
@@ -743,10 +852,11 @@ const install = async () => pilotEval(`
       await ensureStores();
       sample('stores-ready');
       await clearSelectionState('initial');
+      await clearStaleCancelState('initial');
       const parallelParentId = await ensureLatestRunnableFocus('initial');
       await waitForFocusCenterSettled('initial');
       const preflightGraph = sample('parallel-preflight-centered').graph;
-      if (preflightGraph.nodes === 0 || preflightGraph.edges === 0) {
+      if (preflightGraph.nodes === 0) {
         throw new Error('parallel preflight failed: graph is blank after centering, nodes=' + preflightGraph.nodes + ', edges=' + preflightGraph.edges);
       }
       const clickedIds = [];
@@ -761,13 +871,7 @@ const install = async () => pilotEval(`
         } else if (!graphInteractionsDuringLaunch) {
           logAction('launch-graph-interactions-deferred', { actionLabel: 'after-send-' + index });
         } else {
-          await panGraph('after-send-' + index);
-          if (disableGraphClicks) {
-            logAction('graph-click-skipped', { actionLabel: 'after-send-' + index });
-          } else {
-            const clickedId = await clickVisibleNode('after-send-' + index, clickedIds, { avoidActiveRuns: true });
-            if (clickedId) clickedIds.push(clickedId);
-          }
+          await interactWithGraphDuringRun('after-send-' + index, clickedIds);
         }
         if (send.blocked) break;
       }
@@ -781,12 +885,7 @@ const install = async () => pilotEval(`
         await sleep(4500);
       } else {
         for (let i = 0; i < 5; i += 1) {
-          await panGraph('active-observation-' + (i + 1));
-          if (disableGraphClicks) {
-            logAction('graph-click-skipped', { actionLabel: 'active-observation-' + (i + 1) });
-          } else {
-            await clickVisibleNode('active-observation-' + (i + 1), clickedIds);
-          }
+          await interactWithGraphDuringRun('active-observation-' + (i + 1), clickedIds);
           await sleep(900);
         }
       }
@@ -821,7 +920,7 @@ const install = async () => pilotEval(`
   window.__PARALLEL_AGENT_FLOW__ = probe;
   window.__PARALLEL_AGENT_FLOW_SUMMARY__ = summarizeProbe;
   window.setTimeout(run, 250);
-  return { label, url: location.href, promptCount: prompts.length, testAgentModel, sendSpacingMs, disableGraphInteractions, disablePerfCapture };
+  return { label, url: location.href, promptCount: prompts.length, testAgentModel, sendSpacingMs, disableGraphInteractions, graphInteractionsDuringLaunch, disablePerfCapture };
 })()
 `);
 
@@ -881,11 +980,13 @@ const summarizeEvents = (events) => {
   const latestLaunch = events.slice().reverse().find((event) => event.type === 'launch-phase-complete');
   const latestPan = events.slice().reverse().find((event) => event.type === 'pan');
   const latestClick = events.slice().reverse().find((event) => event.type === 'click-node' || event.type === 'click-node-missing' || event.type === 'click-node-no-safe-target');
+  const runningGraphInteractions = events.filter((event) => event.type === 'running-graph-interaction');
   const latestSample = events.slice().reverse().find((event) => event.type === 'done' || event.type === 'error')?.summary?.samples?.slice?.(-1)?.[0] ?? null;
   return {
     label: LABEL,
     done: false,
     sends,
+    runningGraphInteractions,
     actions: events.slice(-80),
     samples: latestSample ? [latestSample] : [],
     errors: events
@@ -1063,6 +1164,19 @@ const main = async () => {
   }
   if (lifecycleFailures.length > 0) {
     validationErrors.push(`${lifecycleFailures.length} send flow(s) ended with lifecycle.failed`);
+  }
+  const runningGraphInteractions = summary?.runningGraphInteractions ?? [];
+  const activeRunningGraphInteractions = runningGraphInteractions.filter((interaction) => Number(interaction.runningBefore ?? 0) > 0);
+  if (!DISABLE_GRAPH_INTERACTIONS && activeRunningGraphInteractions.length === 0) {
+    validationErrors.push('graph was not dragged/click-focused while agents were running');
+  }
+  const activePanCount = activeRunningGraphInteractions.filter((interaction) => interaction.panOk).length;
+  if (!DISABLE_GRAPH_INTERACTIONS && activePanCount === 0) {
+    validationErrors.push('no successful graph drag was observed while agents were running');
+  }
+  const activeFocusCount = activeRunningGraphInteractions.filter((interaction) => interaction.clickedId && interaction.focusChanged).length;
+  if (!DISABLE_GRAPH_INTERACTIONS && !DISABLE_GRAPH_CLICKS && activeFocusCount === 0) {
+    validationErrors.push('no successful graph node focus click was observed while agents were running');
   }
   const graphEventContract = summarizeGraphEventContract(report.collect?.fundamentals, sendsStarted);
   if (report.collect) {

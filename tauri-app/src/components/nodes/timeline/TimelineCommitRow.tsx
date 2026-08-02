@@ -36,8 +36,6 @@ export const TimelineCommitRow = memo(({
       : '--:--';
 
   const branchPointers = entity.message?.branchPointers || [];
-  const meta = ((entity.message?.execution_data as any)?.meta || {}) as Record<string, any>;
-  const isCommitBatch = meta.node_kind === 'commit_batch';
   const hasHead = branchPointers.some((p: BranchPointer) => p.name === 'HEAD');
   const otherBranches = branchPointers.filter((p: BranchPointer) => p.name !== 'HEAD');
   const isExternal = !!entity.importedFromRef;
@@ -99,11 +97,6 @@ export const TimelineCommitRow = memo(({
           {isExternal && (
             <Badge variant="outline" className="h-4 px-1 text-[8px] border-emerald-200 text-emerald-600">
               Import
-            </Badge>
-          )}
-          {isCommitBatch && (
-            <Badge variant="outline" className="h-4 px-1 text-[8px] border-teal-200 text-teal-600">
-              Batch
             </Badge>
           )}
           {hasHead && (

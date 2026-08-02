@@ -31,10 +31,10 @@ export function getTopLevelDeleteBranchIds(
   });
 }
 
-export function getDeleteBranchPreview(
+export function collectDeleteBranchMessageIds(
   rootMessageIds: Iterable<string>,
   messageMap: Map<string, Message>
-): DeleteBranchPreview {
+): Set<string> {
   const topLevelRootIds = getTopLevelDeleteBranchIds(rootMessageIds, messageMap);
   const childrenByParentId = new Map<string, string[]>();
 
@@ -56,9 +56,20 @@ export function getDeleteBranchPreview(
     stack.push(...(childrenByParentId.get(id) ?? []));
   }
 
+  return impactedIds;
+}
+
+export function getDeleteBranchPreview(
+  rootMessageIds: Iterable<string>,
+  messageMap: Map<string, Message>,
+  extraCommitCount = 0
+): DeleteBranchPreview {
+  const topLevelRootIds = getTopLevelDeleteBranchIds(rootMessageIds, messageMap);
+  const impactedIds = collectDeleteBranchMessageIds(topLevelRootIds, messageMap);
+
   let userCount = 0;
   let assistantCount = 0;
-  let commitCount = 0;
+  let commitCount = extraCommitCount;
 
   for (const id of impactedIds) {
     const message = messageMap.get(id);
@@ -77,7 +88,7 @@ export function getDeleteBranchPreview(
 
   return {
     rootCount: topLevelRootIds.length,
-    totalCount: impactedIds.size,
+    totalCount: impactedIds.size + extraCommitCount,
     userCount,
     assistantCount,
     commitCount,
@@ -86,6 +97,10 @@ export function getDeleteBranchPreview(
 }
 
 export function formatDeleteBranchPreview(preview: DeleteBranchPreview): string {
+  if (preview.rootCount === 0 && preview.commitCount > 0) {
+    return `This will permanently remove ${pluralize(preview.commitCount, 'commit node')} from the graph. This action cannot be undone.`;
+  }
+
   const rootLabel = pluralize(preview.rootCount, 'selected branch', 'selected branches');
   const totalLabel = pluralize(preview.totalCount, 'total node');
   return `This will permanently delete ${rootLabel} and ${totalLabel}: ${preview.typeSummary}. This action cannot be undone.`;

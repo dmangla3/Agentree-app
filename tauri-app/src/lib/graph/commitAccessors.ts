@@ -27,6 +27,8 @@ export const getMessageBaseCommitSha = (message: Message | null | undefined): st
 export const getMessageOutputCommitSha = (message: Message | null | undefined): string | null => {
   if (!message) return null;
   return normalizedString(message.output_commit_sha)
+    ?? normalizedString(getExecutionData(message)?.output_commit_sha)
+    ?? normalizedString(getExecutionMeta(message)?.output_commit_sha)
     ?? normalizedString(message.commit?.sha);
 };
 

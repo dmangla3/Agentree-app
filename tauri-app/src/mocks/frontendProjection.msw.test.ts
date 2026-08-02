@@ -65,6 +65,7 @@ const mapProjectionToGraph = (
     [],
     focusedMessageId,
     new Set(),
+    new Set(),
     false,
   );
 
@@ -96,10 +97,7 @@ const chatMessageIds = (projection: WorkspaceProjection): Set<string> => {
     }
     if (item.type === 'summary' || item.type === 'entity') {
       addEntity(item.entityId);
-      return;
     }
-    const batch = projection.externalCommitBatchById.get(item.batchId);
-    batch?.entityIds.forEach(addEntity);
   });
 
   return ids;
@@ -144,7 +142,10 @@ describe('MSW projection/perf contracts', () => {
 
     expect(projection.entities).toHaveLength(messages.length);
     expect(graphMessageIds).toHaveLength(messages.length);
-    expect(graph.edges.length).toBeGreaterThanOrEqual(messages.length - 1);
+    expect(graph.edges).toHaveLength(87);
+    expect(new Set(graph.edges.map((edge) => (edge.data as any)?.relationship))).toEqual(
+      new Set(['conversation', 'git-parent', 'base-used'])
+    );
     expect(graphIds.has(focusedMessageId)).toBe(true);
     expect(visibleChatIds.has(focusedMessageId)).toBe(true);
 
@@ -164,7 +165,10 @@ describe('MSW projection/perf contracts', () => {
 
     expect(projection.entities).toHaveLength(messages.length);
     expect(graphMessageNodeIds(graph, messages)).toHaveLength(messages.length);
-    expect(graph.edges.length).toBeGreaterThanOrEqual(messages.length - 1);
+    expect(graph.edges).toHaveLength(1497);
+    expect(new Set(graph.edges.map((edge) => (edge.data as any)?.relationship))).toEqual(
+      new Set(['conversation', 'git-parent', 'base-used'])
+    );
     expect(durationMs).toBeLessThan(1500);
   });
 });

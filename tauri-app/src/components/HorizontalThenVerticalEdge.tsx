@@ -12,6 +12,33 @@ const hashToOffset = (id: string, bucketCount: number) => {
   return idx - mid;
 };
 
+export const getVerticalHorizontalVerticalEdgePath = ({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+}: {
+  id: string;
+  sourceX: number;
+  sourceY: number;
+  targetX: number;
+  targetY: number;
+}): { path: string; midpointY: number } => {
+  const dy = targetY - sourceY;
+  const offsetStep = 5;
+  const offsetBuckets = 5;
+  const offset = hashToOffset(id, offsetBuckets) * offsetStep;
+  const midpointY = Math.abs(dy) <= 2
+    ? sourceY
+    : sourceY + dy / 2 + offset;
+  const isNearlyVertical = Math.abs(targetX - sourceX) <= 1;
+  const path = isNearlyVertical
+    ? `M ${sourceX} ${sourceY} L ${targetX} ${targetY}`
+    : `M ${sourceX} ${sourceY} L ${sourceX} ${midpointY} L ${targetX} ${midpointY} L ${targetX} ${targetY}`;
+  return { path, midpointY };
+};
+
 export const HorizontalThenVerticalEdge = ({
   id,
   sourceX,
@@ -22,13 +49,13 @@ export const HorizontalThenVerticalEdge = ({
   markerEnd,
   data,
 }: EdgeProps) => {
-  const direction = targetX >= sourceX ? -1 : 1;
-  const gutterBase = 24;
-  const offsetStep = 6;
-  const offsetBuckets = 7;
-  const offset = hashToOffset(id, offsetBuckets) * offsetStep;
-  const gutterX = targetX + direction * (gutterBase + offset);
-  const path = `M ${sourceX} ${sourceY} L ${gutterX} ${sourceY} L ${gutterX} ${targetY} L ${targetX} ${targetY}`;
+  const { path, midpointY } = getVerticalHorizontalVerticalEdgePath({
+    id,
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+  });
   return (
     <>
       <BaseEdge
@@ -38,7 +65,7 @@ export const HorizontalThenVerticalEdge = ({
         markerEnd={markerEnd}
       />
       {(data as any)?.contextBoundary?.type === 'fresh' && (
-        <ContextResetCut x={gutterX} y={(sourceY + targetY) / 2} />
+        <ContextResetCut x={(sourceX + targetX) / 2} y={midpointY} />
       )}
     </>
   );

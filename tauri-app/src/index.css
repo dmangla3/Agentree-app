@@ -421,13 +421,11 @@
 }
 
 .agentree-minimap .react-flow__minimap-edge {
-  stroke: hsl(var(--foreground));
-  stroke-opacity: 0.24;
-  stroke-width: 1.5;
+  display: none;
 }
 
 .dark .agentree-minimap .react-flow__minimap-edge {
-  stroke-opacity: 0.32;
+  display: none;
 }
 
 .agentree-graph-canvas[data-viewport-interacting="true"] .react-flow__node,

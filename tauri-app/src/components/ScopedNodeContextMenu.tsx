@@ -19,6 +19,7 @@ interface ScopedNodeContextMenuProps {
   projection: WorkspaceProjection;
   onClose: () => void;
   onDeleteMessages?: (messageIds: string[]) => void;
+  onDeleteTargets?: (targets: { messageIds: string[]; commitShas: string[] }) => void;
   onAddCommitsToMergePanel?: (messageIds: string[]) => void;
   onAddCommitToNode?: (messageId: string) => void;
   onShareNode?: (messageId: string) => void;
@@ -29,14 +30,16 @@ export function ScopedNodeContextMenu({
   projection,
   onClose,
   onDeleteMessages,
+  onDeleteTargets,
   onAddCommitsToMergePanel,
   onAddCommitToNode,
   onShareNode,
 }: ScopedNodeContextMenuProps) {
   const scopedIds = contextMenu?.scopedIds ?? [];
 
-  const { deletableMessageIds, mergeableCommitIds, actionNodeId } = useMemo(() => {
+  const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, actionNodeId } = useMemo(() => {
     const deletableIds = new Set<string>();
+    const deletableShas = new Set<string>();
     const mergeableIds = new Set<string>();
     let singleActionId: string | null = null;
 
@@ -53,11 +56,9 @@ export function ScopedNodeContextMenu({
     };
 
     for (const id of scopedIds) {
-      const batch = projection.externalCommitBatchById.get(id);
-      if (batch) {
-        batch.messageIds.forEach(addMessageId);
-        batch.messageIds.forEach(addMergeableCommitId);
-        continue;
+      if (id.startsWith('commit:')) {
+        const sha = id.slice('commit:'.length);
+        if (projection.commitBySha.has(sha)) deletableShas.add(sha);
       }
 
       const entity = projection.entitiesByMessageId.get(id) ?? projection.entitiesById.get(id);
@@ -77,14 +78,15 @@ export function ScopedNodeContextMenu({
 
     return {
       deletableMessageIds: Array.from(deletableIds),
+      deletableCommitShas: Array.from(deletableShas),
       mergeableCommitIds: Array.from(mergeableIds),
       actionNodeId: singleActionId,
     };
-  }, [projection.entitiesById, projection.entitiesByMessageId, projection.externalCommitBatchById, scopedIds]);
+  }, [projection.commitBySha, projection.entitiesById, projection.entitiesByMessageId, scopedIds]);
 
   if (!contextMenu) return null;
 
-  const canDelete = deletableMessageIds.length > 0 && !!onDeleteMessages;
+  const canDelete = (deletableMessageIds.length > 0 || deletableCommitShas.length > 0) && (!!onDeleteTargets || !!onDeleteMessages);
   const canAddToMergePanel = mergeableCommitIds.length > 0 && !!onAddCommitsToMergePanel;
   const canAddCommit = !!actionNodeId && !!onAddCommitToNode;
   const canShareNode = !!actionNodeId && !!onShareNode;
@@ -93,7 +95,8 @@ export function ScopedNodeContextMenu({
     return null;
   }
 
-  const deleteLabel = deletableMessageIds.length === 1 ? 'Delete Node' : 'Delete Nodes';
+  const deleteCount = deletableMessageIds.length + deletableCommitShas.length;
+  const deleteLabel = deleteCount === 1 ? 'Delete Node' : 'Delete Nodes';
   const mergeLabel = mergeableCommitIds.length === 1
     ? 'Add to merge panel'
     : `Add ${mergeableCommitIds.length} commits to merge panel`;
@@ -150,7 +153,11 @@ export function ScopedNodeContextMenu({
           <DropdownMenuItem
             className="text-destructive focus:text-destructive"
             onClick={() => {
-              onDeleteMessages?.(deletableMessageIds);
+              if (onDeleteTargets) {
+                onDeleteTargets({ messageIds: deletableMessageIds, commitShas: deletableCommitShas });
+              } else {
+                onDeleteMessages?.(deletableMessageIds);
+              }
               onClose();
             }}
           >
