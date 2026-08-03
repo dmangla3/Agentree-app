@@ -69,7 +69,6 @@ struct FinalizeAckPayload {
 }
 
 enum FinalizeRunSnapshotOutcome {
-    ServerPersisted(FinalizeAckPayload),
     QueuedForRetry {
         finalize_ack: FinalizeAckPayload,
         upload_error: String,
@@ -581,21 +580,6 @@ fn finalize_run_state_if_ready(
         let _ =
             telemetry.update_agent_run_phase(session_id, "finalizing", "finalizing_stream", None);
         match finalize_run_snapshot(app_handle, snapshot, auth_token) {
-            Ok(FinalizeRunSnapshotOutcome::ServerPersisted(finalize_ack)) => {
-                let _ = telemetry.mark_agent_run_finalized(
-                    session_id,
-                    &finalize_ack.status,
-                    finalize_ack.persisted,
-                    finalize_ack.output_commit_sha.as_deref(),
-                );
-                cleanup_worktree_after_finalize(
-                    app_handle,
-                    session_id,
-                    snapshot.repo_path.clone(),
-                    "cleanup_after_finalize_success",
-                );
-                emit_finalize_ack(app_handle, session_id, &finalize_ack);
-            }
             Ok(FinalizeRunSnapshotOutcome::QueuedForRetry {
                 finalize_ack,
                 upload_error,
@@ -1410,7 +1394,7 @@ fn finalize_run_snapshot(
                 })?;
                 let diff = tauri::async_runtime::block_on(crate::git_workspace::diff_commits(
                     repo_path.clone(),
-                    parent_commit,
+                    parent_commit.clone(),
                     commit_sha.clone(),
                     false,
                 ))?;
@@ -1443,6 +1427,29 @@ fn finalize_run_snapshot(
                 let _ = app_handle
                     .state::<crate::db::TelemetryDb>()
                     .record_agent_run_output_commit(&snapshot.node_id, &commit_sha);
+                if let Some(workspace_id) = workspace_id_from_execution_data(&snapshot.execution_data) {
+                    let _ = app_handle.state::<crate::db::TelemetryDb>().import_local_commits(
+                        &workspace_id,
+                        vec![crate::db::LocalCommitImport {
+                            sha: commit_sha.clone(),
+                            parents: vec![parent_commit.clone()],
+                            subject: Some(commit_message.clone()),
+                            author_name: snapshot.author_name.clone(),
+                            author_email: None,
+                            authored_at: Some(chrono_like_now()),
+                            committed_at: Some(chrono_like_now()),
+                            source_kind: Some("agent".to_string()),
+                            produced_by_node_id: Some(snapshot.node_id.clone()),
+                            files_changed_count: snapshot
+                                .execution_data
+                                .get("files_changed_count")
+                                .and_then(|value| value.as_i64()),
+                            total_additions: None,
+                            total_deletions: None,
+                        }],
+                        Some("agent"),
+                    );
+                }
                 commit_created = true;
             } else if let Some(execution_object) = snapshot.execution_data.as_object_mut() {
                 execution_object.insert("files_changed".to_string(), JsonValue::Array(Vec::new()));
@@ -1466,7 +1473,6 @@ fn finalize_run_snapshot(
         "gitBranchName": snapshot.git_branch_name,
     });
     persist_local_node_snapshot(app_handle, snapshot)?;
-    let client = reqwest::blocking::Client::new();
     let _ = app_handle
         .state::<crate::db::TelemetryDb>()
         .update_agent_run_phase(&snapshot.node_id, "finalizing", "persisting_final", None);
@@ -1476,142 +1482,55 @@ fn finalize_run_snapshot(
         "persisting",
         "Saving generated commit...",
     );
-    let _finalize_response = match post_json_with_retry(
-        &client,
-        auth_token,
-        &format!("{}/stream/finalize", crate::config::server_base_url()),
-        &payload,
-        8,
-        "stream_finalize",
-    ) {
-        Ok(response) => response,
-        Err(err) => {
-            let telemetry = app_handle.state::<crate::db::TelemetryDb>();
-            let workspace_id =
-                workspace_id_from_execution_data(&snapshot.execution_data).unwrap_or_default();
-            let payload_json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
-            telemetry
-                .enqueue_local_sync_event(
-                    if workspace_id.is_empty() {
-                        None
-                    } else {
-                        Some(workspace_id.as_str())
-                    },
-                    "node",
-                    &snapshot.node_id,
-                    "node.update_terminal",
-                    &payload_json,
-                    Some(&snapshot.run_id),
-                )
-                .map_err(|queue_err| {
-                    format!(
-                        "{}; failed to enqueue local terminal sync retry: {}",
-                        err, queue_err
-                    )
-                })?;
-            let finalize_ack = FinalizeAckPayload {
-                run_id: snapshot.run_id.clone(),
-                status: snapshot.status.clone(),
-                persisted: false,
-                output_commit_sha: snapshot.output_commit_sha.clone(),
-                base_commit_sha: snapshot.parent_commit.clone(),
-                commit_created,
-            };
-            store_finalize_ack(&telemetry, &snapshot.node_id, &finalize_ack);
-            return Ok(FinalizeRunSnapshotOutcome::QueuedForRetry {
-                finalize_ack,
-                upload_error: err,
-            });
-        }
-    };
+    let telemetry = app_handle.state::<crate::db::TelemetryDb>();
+    let workspace_id = workspace_id_from_execution_data(&snapshot.execution_data)
+        .ok_or_else(|| "Missing workspace_id in terminal snapshot execution data.".to_string())?;
+    let assistant_payload = telemetry
+        .get_local_node_payload(&snapshot.node_id)?
+        .ok_or_else(|| format!("Missing local assistant payload for {}", snapshot.node_id))?;
+    let user_node_id = telemetry
+        .get_local_node_parent_id(&snapshot.node_id)?
+        .ok_or_else(|| format!("Missing local parent user node for {}", snapshot.node_id))?;
+    let user_payload = telemetry
+        .get_local_node_payload(&user_node_id)?
+        .ok_or_else(|| format!("Missing local user payload for {}", user_node_id))?;
+    let sync_payload = serde_json::json!({
+        "workspaceId": workspace_id,
+        "userMessage": serde_json::from_str::<JsonValue>(&user_payload).unwrap_or(JsonValue::Null),
+        "assistantMessage": serde_json::from_str::<JsonValue>(&assistant_payload).unwrap_or(JsonValue::Null),
+        "finalize": payload,
+    });
+    let payload_json = serde_json::to_string(&sync_payload).unwrap_or_else(|_| "{}".to_string());
+    telemetry
+        .enqueue_local_sync_event(
+            Some(workspace_id.as_str()),
+            "node",
+            &snapshot.node_id,
+            "node.update_terminal",
+            &payload_json,
+            Some(&snapshot.run_id),
+        )
+        .map_err(|queue_err| {
+            format!(
+                "failed to enqueue local terminal sync retry: {}",
+                queue_err
+            )
+        })?;
     let finalize_ack = FinalizeAckPayload {
         run_id: snapshot.run_id.clone(),
         status: snapshot.status.clone(),
-        persisted: true,
+        persisted: false,
         output_commit_sha: snapshot.output_commit_sha.clone(),
         base_commit_sha: snapshot.parent_commit.clone(),
         commit_created,
     };
 
-    let telemetry = app_handle.state::<crate::db::TelemetryDb>();
-    let _ = telemetry.mark_local_node_persisted(&snapshot.node_id);
     store_finalize_ack(&telemetry, &snapshot.node_id, &finalize_ack);
 
-    Ok(FinalizeRunSnapshotOutcome::ServerPersisted(finalize_ack))
-}
-
-fn persist_run_start(
-    run_context: &AgentRunContext,
-    session_id: &str,
-    auth_token: &str,
-) -> Result<(), String> {
-    let payload = serde_json::json!({
-        "nodeId": session_id,
-        "runId": run_context.run_id,
-        "status": "running",
-        "executionData": run_context.execution_data,
-        "gitBranchName": run_context.git_branch_name,
-    });
-    let client = reqwest::blocking::Client::new();
-    post_json_with_retry(
-        &client,
-        auth_token,
-        &format!("{}/stream/start", crate::config::server_base_url()),
-        &payload,
-        4,
-        "stream_start",
-    )?;
-    Ok(())
-}
-
-fn persist_run_heartbeat(
-    run_context: &AgentRunContext,
-    session_id: &str,
-    auth_token: &str,
-) -> Result<(), String> {
-    let payload = serde_json::json!({
-        "nodeId": session_id,
-        "runId": run_context.run_id,
-    });
-    let client = reqwest::blocking::Client::new();
-    post_json_with_retry(
-        &client,
-        auth_token,
-        &format!("{}/stream/heartbeat", crate::config::server_base_url()),
-        &payload,
-        2,
-        "stream_heartbeat",
-    )?;
-    Ok(())
-}
-
-fn spawn_run_heartbeat(
-    app: AppHandle,
-    session_id: String,
-    auth_token: String,
-    run_context: AgentRunContext,
-) {
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(120));
-        let still_active = {
-            let app_state = app.state::<AgentState>();
-            let run_states = app_state.run_states.lock().unwrap();
-            run_states
-                .get(&session_id)
-                .map(|run_state| !run_state.lock().unwrap().finalized)
-                .unwrap_or(false)
-        };
-        if !still_active {
-            return;
-        }
-        if let Err(err) = persist_run_heartbeat(&run_context, &session_id, &auth_token) {
-            crate::app_log!(
-                "[RCSTRM] stream_heartbeat_failed session={} err={}",
-                session_id,
-                err
-            );
-        }
-    });
+    Ok(FinalizeRunSnapshotOutcome::QueuedForRetry {
+        finalize_ack,
+        upload_error: "queued for background sync".to_string(),
+    })
 }
 
 fn spawn_agent_internal(
@@ -1979,45 +1898,10 @@ fn spawn_agent_internal(
         if let Some(trace_id) = trace_id.as_deref() {
             record_local_trace_event(&app, &session_id, trace_id, "tauri_child_spawned", "tauri");
         }
-        if let Err(err) = persist_run_start(&run_context, &session_id, &auth_token) {
-            crate::app_log!(
-                "[AGENT_WORKTREE] event=spawn.persist_start_error node_id={} pid={} err={}",
-                session_id,
-                child_id,
-                err
-            );
-            {
-                if let Some(mut child) = state.children.lock().unwrap().remove(&child_id) {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-                state.sessions.lock().unwrap().remove(&session_id);
-                state.session_tokens.lock().unwrap().remove(&session_id);
-                state.run_states.lock().unwrap().remove(&session_id);
-            }
-            let _ = app
-                .state::<crate::db::TelemetryDb>()
-                .update_agent_run_phase(
-                    &session_id,
-                    "failed_persist_start",
-                    "persisting_start",
-                    Some(&err),
-                );
-            return Err(err);
-        }
         crate::app_log!(
-            "[AGENT_WORKTREE] event=spawn.persist_start_ok node_id={} pid={}",
+            "[AGENT_WORKTREE] event=spawn.persist_start_skipped_local_first node_id={} pid={}",
             session_id,
             child_id
-        );
-        let _ = app
-            .state::<crate::db::TelemetryDb>()
-            .mark_agent_run_server_start_persisted(&session_id);
-        spawn_run_heartbeat(
-            app.clone(),
-            session_id.clone(),
-            auth_token.clone(),
-            run_context,
         );
     }
 

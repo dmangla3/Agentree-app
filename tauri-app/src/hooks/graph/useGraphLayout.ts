@@ -13,6 +13,7 @@ import {
     getSugiyamaLayoutedElements,
 } from '../../lib/graphUtils';
 import { resolveNodeState } from '../../lib/runStateResolver';
+import type { GraphNodeSectionId } from '../../components/graph/GraphCanvasIndexPanel';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -36,6 +37,7 @@ export interface UseGraphLayoutOptions {
     hasNodeTypeFilter: boolean;
     keepAncestors: boolean;
     keepDescendants: boolean;
+    visibleNodeSections: Set<GraphNodeSectionId>;
     insights: Insight[];
     showInsightsInGraph: boolean;
     workspaceRepoMap: Map<string, string | null>;
@@ -149,6 +151,7 @@ interface LayoutCacheKey {
     hasNodeTypeFilter: boolean;
     keepAncestors: boolean;
     keepDescendants: boolean;
+    visibleNodeSectionsFingerprint: string;
     layoutMode: string;
     laneStrategy: string;
     insightsFingerprint: string;
@@ -192,6 +195,7 @@ const cacheKeysEqual = (a: LayoutCacheKey, b: LayoutCacheKey): boolean => {
         a.hasNodeTypeFilter === b.hasNodeTypeFilter &&
         a.keepAncestors === b.keepAncestors &&
         a.keepDescendants === b.keepDescendants &&
+        a.visibleNodeSectionsFingerprint === b.visibleNodeSectionsFingerprint &&
         a.layoutMode === b.layoutMode &&
         a.laneStrategy === b.laneStrategy &&
         a.insightsFingerprint === b.insightsFingerprint &&
@@ -257,6 +261,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         hasNodeTypeFilter,
         keepAncestors,
         keepDescendants,
+        visibleNodeSections,
         insights,
         showInsightsInGraph,
         workspaceRepoMap,
@@ -294,6 +299,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             hasNodeTypeFilter,
             keepAncestors,
             keepDescendants,
+            visibleNodeSectionsFingerprint: Array.from(visibleNodeSections).sort().join(','),
             layoutMode,
             laneStrategy,
             insightsFingerprint: insights.map((insight) => insight.id).sort().join(','),
@@ -426,7 +432,8 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 onFocus,
                 onSelect,
                 onContextMenu,
-                onMeasureNodeHeight
+                onMeasureNodeHeight,
+                visibleNodeSections
         );
 
         if (mappedNodes.length === 0) {
@@ -526,6 +533,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
     }, [
         messages, summaries, projection, measuredNodeHeights, layoutMode, laneStrategy, disabledSummaryIds,
         focusedMessageId, contextPathMessageIds, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, insights, showInsightsInGraph,
+        visibleNodeSections,
         workspaceRepoMap, branchPointersByNodeId, activeScopeId, scopeViewMode,
         scopeNameById, scopeColorById, onToggleSummary, onToggleCollapse,
         onFocus, onSelect, onContextMenu, onMeasureNodeHeight, resetNonce

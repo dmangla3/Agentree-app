@@ -216,6 +216,14 @@ export interface Insight {
   createdAt: string;
 }
 
+export interface ComposerContextPreviewState {
+  workspaceId: string | null;
+  parentId: string | null;
+  contextParentId: string | null;
+  contextPolicy: 'continue' | 'fresh';
+  contextStartId: string | null;
+}
+
 interface WorkspaceState {
   selectedWorkspaceId: string | null;
   focusedMessageId: string | null;
@@ -223,7 +231,7 @@ interface WorkspaceState {
   lastFocusMetadata: Record<string, unknown> | null;
   selectedMessageIds: string[];
   focusNonce: number;
-  contextPathMessageIds: string[];
+  composerContextPreview: ComposerContextPreviewState | null;
   lastFocusedMessageByWorkspace: Record<string, string>;
   recentFocusedMessageIdsByWorkspace: Record<string, string[]>;
   activeScopeId: string | null;
@@ -261,7 +269,7 @@ interface WorkspaceState {
   replaceSelectedMessageIds: (messageIds: string[]) => void;
   toggleSelectedMessageId: (messageId: string) => void;
   clearSelectedMessageIds: () => void;
-  setContextPathMessageIds: (messageIds: string[]) => void;
+  setComposerContextPreview: (preview: ComposerContextPreviewState | null) => void;
   setActiveScopeId: (scopeId: string | null) => void;
   setAutoCheckoutOnAgentCommit: (enabled: boolean) => void;
   clearPendingInitialFocusId: () => void;
@@ -293,7 +301,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       lastFocusMetadata: null,
       selectedMessageIds: [],
       focusNonce: 0,
-      contextPathMessageIds: [],
+      composerContextPreview: null,
       lastFocusedMessageByWorkspace: {},
       recentFocusedMessageIdsByWorkspace: {},
       activeScopeId: null,
@@ -323,7 +331,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           lastFocusMetadata: null,
           selectedMessageIds: [],
           focusNonce: 0,
-          contextPathMessageIds: [],
+          composerContextPreview: null,
           activeScopeId: null,
           activeSendFlowFocus: null,
           insights: [],
@@ -340,7 +348,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             lastFocusMetadata: initialFocusId ? { reason: 'initial-focus' } : null,
             selectedMessageIds: [],
             focusNonce: Date.now(),
-            contextPathMessageIds: [],
+            composerContextPreview: null,
             activeScopeId: null,
             insights: [],
           };
@@ -438,16 +446,19 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             : [...state.selectedMessageIds, messageId],
         })),
       clearSelectedMessageIds: () => set({ selectedMessageIds: [] }),
-      setContextPathMessageIds: (messageIds) =>
+      setComposerContextPreview: (preview) =>
         set((state) => {
-          const uniqueIds = Array.from(new Set(messageIds.filter(Boolean)));
+          const current = state.composerContextPreview;
           if (
-            uniqueIds.length === state.contextPathMessageIds.length &&
-            uniqueIds.every((id, index) => id === state.contextPathMessageIds[index])
+            current?.workspaceId === preview?.workspaceId &&
+            current?.parentId === preview?.parentId &&
+            current?.contextParentId === preview?.contextParentId &&
+            current?.contextPolicy === preview?.contextPolicy &&
+            current?.contextStartId === preview?.contextStartId
           ) {
             return state;
           }
-          return { contextPathMessageIds: uniqueIds };
+          return { composerContextPreview: preview };
         }),
       setActiveScopeId: (scopeId) => set({ activeScopeId: scopeId }),
       setAutoCheckoutOnAgentCommit: (enabled) => set({ autoCheckoutOnAgentCommit: enabled }),

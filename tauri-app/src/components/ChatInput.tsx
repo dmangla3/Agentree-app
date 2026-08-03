@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
 import { Button } from '../../@/components/ui/button';
-import { Send, X, Reply, FileText, FileTextIcon, GitBranchIcon, Loader2, ChevronDown, Layers3, Bot, Clipboard, Check, Pencil, AtSign, RotateCcw, Plus } from 'lucide-react';
+import { Send, X, Reply, FileText, FileTextIcon, GitBranchIcon, Loader2, ChevronDown, ChevronRight, Layers3, Bot, Clipboard, Check, Pencil, AtSign, RotateCcw, Plus } from 'lucide-react';
 import { useWorkspaceStore, AttachmentMetadata, Message, Workspace, Scope, CommitEntity } from '../stores/workspaceStore';
 import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 import { useQueryClient } from '@tanstack/react-query';
@@ -198,6 +198,9 @@ const formatContextParentLabel = (message: Message | null | undefined, fallback:
 const formatCommitLabel = (commitSha: string | null | undefined): string => (
     commitSha ? commitSha.slice(0, 8) : 'No commit'
 );
+const formatCommitSubject = (commit: CommitEntity | null | undefined): string => (
+    truncateText(normalizePreviewText(commit?.subject) || 'Untitled commit', 58)
+);
 
 const resolveConversationContextMessage = (
     startId: string | null | undefined,
@@ -359,7 +362,7 @@ const deriveIncrementalText = (previousText: string, nextText: string) => {
     return previous.includes(next) ? '' : next;
 };
 
-import { useMessages, useSendMessage, useCommitDescendants } from '../hooks/useMessages';
+import { useMessages, useSendMessage, useCommitDescendants, useCommitAncestors } from '../hooks/useMessages';
 import { useWorkspaceMessages } from '../hooks/useLiveMessages';
 import { localNodeKeys } from '../hooks/useLocalNodes';
 
@@ -368,7 +371,7 @@ import { useAgents, findDefaultCodexAgentId } from '../hooks/useAgents';
 import { useWorkspaces } from '../hooks/useWorkspaces';
 import { useScopes } from '../hooks/useScopes';
 import { agentClient } from '../lib/agentClient';
-import { buildComposerContextManifest, buildComposerContextPathIds, buildComposerContextSelection, type ComposerContextManifest } from '../lib/composerContext';
+import { buildComposerContextManifest, buildComposerContextSelection, type ComposerContextManifest } from '../lib/composerContext';
 import { AGENT_STATUS, TERMINAL_STATUSES } from '@shared/agentStatus';
 import type { TerminalStatus } from '@shared/agentStatus';
 import { createOptimisticNodePair, categorizeError, formatErrorMessage, isOptimisticId } from '../lib/optimisticMessages';
@@ -434,6 +437,7 @@ export function ChatInput({
     const [repoMentionFiles, setRepoMentionFiles] = useState<RepoMentionFile[]>([]);
     const [repoMentionCommit, setRepoMentionCommit] = useState<string | null>(null);
     const [selectedBaseCommit, setSelectedBaseCommit] = useState<CommitEntity | null>(null);
+    const [isEarlierCommitsOpen, setIsEarlierCommitsOpen] = useState(false);
     const [activeFileMention, setActiveFileMention] = useState<ActiveFileMention | null>(null);
     const [activeFileMentionIndex, setActiveFileMentionIndex] = useState(0);
     const [contextFetchError, _setContextFetchError] = useState<string | null>(null);
@@ -452,7 +456,7 @@ export function ChatInput({
         setAutoCheckoutOnAgentCommit,
         selectedAgentId,
         setSelectedAgentId,
-        setContextPathMessageIds,
+        setComposerContextPreview,
     } = useWorkspaceStore(
         useShallow((state) => ({
             selectedWorkspaceId: state.selectedWorkspaceId,
@@ -467,7 +471,7 @@ export function ChatInput({
             setAutoCheckoutOnAgentCommit: state.setAutoCheckoutOnAgentCommit,
             selectedAgentId: state.selectedAgentId,
             setSelectedAgentId: state.setSelectedAgentId,
-            setContextPathMessageIds: state.setContextPathMessageIds,
+            setComposerContextPreview: state.setComposerContextPreview,
         }))
     );
     // Optimistic send setup creates projected-message inputs, but lifecycle
@@ -2214,13 +2218,32 @@ export function ChatInput({
         enabled: Boolean(selectedWorkspaceId && defaultBaseCommitSha),
         limit: 120,
     });
-    void baseCommitCandidatesQuery;
+    const baseCommitAncestorsQuery = useCommitAncestors(selectedWorkspaceId, defaultBaseCommitSha, {
+        enabled: Boolean(selectedWorkspaceId && defaultBaseCommitSha),
+        limit: 120,
+    });
     useEffect(() => {
         setSelectedBaseCommit(null);
+        setIsEarlierCommitsOpen(false);
     }, [defaultBaseCommitSha, replyParentMessageId, selectedWorkspaceId]);
     const effectiveBaseCommitSha = selectedBaseCommit?.sha || defaultBaseCommitSha;
     const effectiveBaseCommitLabel = selectedBaseCommit?.subject || selectedBaseCommit?.sha || defaultBaseCommitSha || 'No commit';
-    void effectiveBaseCommitLabel;
+    const baseCommitCandidates = useMemo(() => {
+        const seen = new Set<string>();
+        return (baseCommitCandidatesQuery.data?.commits ?? []).filter((commit) => {
+            if (!commit.sha || seen.has(commit.sha)) return false;
+            seen.add(commit.sha);
+            return commit.sha !== defaultBaseCommitSha;
+        });
+    }, [baseCommitCandidatesQuery.data?.commits, defaultBaseCommitSha]);
+    const baseCommitAncestorCandidates = useMemo(() => {
+        const seen = new Set<string>();
+        return (baseCommitAncestorsQuery.data?.commits ?? []).filter((commit) => {
+            if (!commit.sha || seen.has(commit.sha)) return false;
+            seen.add(commit.sha);
+            return commit.sha !== defaultBaseCommitSha;
+        });
+    }, [baseCommitAncestorsQuery.data?.commits, defaultBaseCommitSha]);
     const replyParentLabel = branchParentMessage?.content || '';
     const messageById = useMemo(
         () => new Map(messageLookupMessages.map((m: Message) => [m.id, m])),
@@ -2325,26 +2348,23 @@ export function ChatInput({
         () => messageById.get(effectiveContextStartId || '') ?? null,
         [effectiveContextStartId, messageById]
     );
-    const contextPathMessageIds = useMemo(
-        () => Array.from(buildComposerContextPathIds({
+    useEffect(() => {
+        setComposerContextPreview({
+            workspaceId: selectedWorkspaceId,
             parentId: replyParentMessageId,
-            messages: messageLookupMessages,
-            contextParentId: effectiveContextParentId,
+            contextParentId: contextPolicy === 'fresh' ? null : effectiveContextParentId,
             contextPolicy,
             contextStartId: effectiveContextStartId,
-        })),
-        [
-            replyParentMessageId,
-            messageLookupMessages,
-            effectiveContextParentId,
-            contextPolicy,
-            effectiveContextStartId,
-        ]
-    );
-    useEffect(() => {
-        setContextPathMessageIds(contextPathMessageIds);
-        return () => setContextPathMessageIds([]);
-    }, [contextPathMessageIds, setContextPathMessageIds]);
+        });
+        return () => setComposerContextPreview(null);
+    }, [
+        selectedWorkspaceId,
+        replyParentMessageId,
+        effectiveContextParentId,
+        contextPolicy,
+        effectiveContextStartId,
+        setComposerContextPreview,
+    ]);
     const contextStartLabel = formatContextParentLabel(effectiveContextStartMessage, 'Root');
     const contextParentLabel = selectedMergeContextOption
         ? formatContextParentLabel(messageById.get(selectedMergeContextOption.id), selectedMergeContextOption.label)
@@ -3075,6 +3095,7 @@ export function ChatInput({
 
         const optimisticPair = createOptimisticNodePair(
             {
+                id: hasLocalAgentRuntime ? crypto.randomUUID() : undefined,
                 workspaceId: selectedWorkspaceId!,
                 parentId: sendParentMessageId,
                 content: prompt.trim(),
@@ -3085,6 +3106,7 @@ export function ChatInput({
                 role: 'user',
             },
             {
+                id: hasLocalAgentRuntime ? crypto.randomUUID() : undefined,
                 llmModel: selectedAgentModelId,
                 llmProvider: selectedAgent?.type || null,
                 agentId: selectedAgentId || null,
@@ -3164,6 +3186,10 @@ export function ChatInput({
                     },
                 };
             }
+        }
+        if (optimisticPair.assistantMessage) {
+            optimisticPair.assistantMessage.base_commit_sha = effectiveBaseCommitSha || null;
+            optimisticPair.assistantMessage.base_selected_from_node_id = selectedBaseCommit?.produced_by_node_id || null;
         }
 
         // Enter the bounded graph send mode before optimistic nodes are added.
@@ -3331,6 +3357,92 @@ export function ChatInput({
                         return;
                     }
                 }
+            }
+
+            if (hasLocalAgentRuntime && optimisticPair.assistantMessage) {
+                sendFlowDebug('Persisting local-first message pair');
+                setSetupProgress(optimisticPair.userMessageId, 'Starting locally...');
+                await Promise.all([
+                    agentClient.upsertLocalNode(selectedWorkspaceId!, optimisticPair.userMessageId, optimisticPair.userMessage),
+                    agentClient.upsertLocalNode(selectedWorkspaceId!, optimisticPair.assistantMessageId!, optimisticPair.assistantMessage),
+                ]);
+                queryClient.setQueryData<Message[]>(['messages', selectedWorkspaceId], (current) => {
+                    const existing = current ?? [];
+                    const ids = new Set([optimisticPair.userMessageId, optimisticPair.assistantMessageId!]);
+                    return [
+                        ...existing.filter((message) => !ids.has(message.id)),
+                        optimisticPair.userMessage as Message,
+                        optimisticPair.assistantMessage as Message,
+                    ].sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+                });
+                void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(selectedWorkspaceId!) });
+                recordSendFlowEvent('local-first.persisted', {
+                    flowId,
+                    workspaceId: selectedWorkspaceId,
+                    userMessageId: optimisticPair.userMessageId,
+                    assistantMessageId: optimisticPair.assistantMessageId,
+                }, { source: 'ChatInput' });
+                releaseSendAcceptance('local-first-persisted');
+
+                const token = await getAccessToken();
+                attachLatencyTraceToNode(operationKey, optimisticPair.assistantMessageId!, token);
+                recordLatencyMark(optimisticPair.assistantMessageId!, 'assistant_node_created', {
+                    authToken: token,
+                    nodeId: optimisticPair.assistantMessageId!,
+                    detail: { local_first: true },
+                });
+                dispatchSendFlowFocus({
+                    flowId,
+                    messageId: optimisticPair.assistantMessageId!,
+                    phase: 'real-assistant',
+                    allowedCurrentFocusIds: [
+                        optimisticPair.userMessageId,
+                        optimisticPair.assistantMessageId,
+                        sendParentMessageId,
+                    ],
+                });
+                advanceSendFlowFocus({
+                    flowId,
+                    preferredMessageId: optimisticPair.assistantMessageId!,
+                    addGuardedMessageIds: [optimisticPair.userMessageId, optimisticPair.assistantMessageId!],
+                    phase: 'real-assistant',
+                });
+                startStreamForNode(optimisticPair.assistantMessage as Message, {
+                    waitForReady: false,
+                    authToken: token,
+                    parentId: optimisticPair.userMessageId,
+                }).catch(err => {
+                    console.warn('[SEND_FLOW] Streaming error:', err);
+                });
+
+                if (selectedAgentId && selectedAgent) {
+                    let expandedPromptForAgent = savedPrompt.trim();
+                    try {
+                        expandedPromptForAgent = await expandRepoMentionContext(savedPrompt.trim());
+                    } catch (error) {
+                        console.warn('[ChatInput] Failed to expand repo mention context:', error);
+                    }
+                    if (shouldAutoCheckout) {
+                        autoCheckoutPendingRef.current.add(optimisticPair.assistantMessageId!);
+                    }
+                    runAgentSetupInBackground({
+                        nodeId: optimisticPair.assistantMessageId!,
+                        assistantMsg: optimisticPair.assistantMessage as Message,
+                        prompt: expandedPromptForAgent,
+                        authToken: token,
+                        autoCheckout: shouldAutoCheckout,
+                        scopeMode: effectiveScopeMode,
+                        contextPolicy,
+                        parentMessageId: optimisticPair.userMessageId,
+                        baseMessageId: sendParentMessageId,
+                        contextParentMessageId: sendContextParentId,
+                        contextStartMessageId: sendContextStartId,
+                    }).catch(err => {
+                        console.error('[SEND_FLOW] Background agent setup error:', err);
+                    });
+                }
+                onSendComplete?.();
+                return;
             }
 
             // --- 5. SEND API REQUEST ---
@@ -4582,17 +4694,137 @@ export function ChatInput({
                             </div>
                         </div>
 
-                        <div className={cn(composerMetaClass, "flex-[0_1_154px]")}>
-                            <div className={composerIconClass}>
-                                <GitBranchIcon className="h-2.5 w-2.5" />
-                            </div>
-                            <div className="min-w-0">
-                                <div className={composerEyebrowClass}>Code base</div>
-                                <div className="truncate font-mono text-[11px] font-semibold leading-tight text-[hsl(var(--app-text-soft))]">
-                                    {formatCommitLabel(codeParentCommit)}
-                                </div>
-                            </div>
-                        </div>
+                        <DropdownMenu>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <DropdownMenuTrigger asChild>
+                                        <button
+                                            type="button"
+                                            className={cn(composerControlClass, "flex-[0_1_174px]")}
+                                            aria-label="Select code base commit"
+                                            disabled={!defaultBaseCommitSha}
+                                        >
+                                            <div className={composerControlIconClass}>
+                                                <GitBranchIcon className="h-3 w-3" />
+                                            </div>
+                                            <div className="min-w-0">
+                                                <div className={composerEyebrowClass}>Code base</div>
+                                                <div className="truncate font-mono text-[11px] font-semibold leading-tight text-foreground">
+                                                    {formatCommitLabel(codeParentCommit)}
+                                                </div>
+                                            </div>
+                                            <ChevronDown className="ml-auto h-3 w-3 shrink-0 text-foreground/70" />
+                                        </button>
+                                    </DropdownMenuTrigger>
+                                </TooltipTrigger>
+                                <TooltipContent side="bottom" align="start" className="max-w-72">
+                                    <div>Run from commit {formatCommitLabel(codeParentCommit)}{effectiveBaseCommitLabel !== codeParentCommit ? `: ${effectiveBaseCommitLabel}` : ''}.</div>
+                                    <div className="mt-1 text-muted-foreground">Use commit selection rarely; changing the base can make the graph harder to follow.</div>
+                                </TooltipContent>
+                            </Tooltip>
+                            <DropdownMenuContent
+                                align="start"
+                                side="top"
+                                sideOffset={6}
+                                collisionPadding={12}
+                                className="max-h-[min(22rem,var(--radix-dropdown-menu-content-available-height))] w-[min(20rem,calc(100vw-1.5rem))] overflow-y-auto rounded-lg border border-border/70 bg-popover/95 p-1 shadow-[0_16px_42px_-20px_rgba(15,23,42,0.50),0_6px_18px_-14px_rgba(15,23,42,0.38)] backdrop-blur-xl dark:shadow-[0_16px_42px_-20px_rgba(0,0,0,0.78),0_6px_18px_-14px_rgba(0,0,0,0.62)]"
+                            >
+                                <DropdownMenuLabel className="px-1.5 py-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Run from commit</DropdownMenuLabel>
+                                <DropdownMenuItem
+                                    onSelect={(event) => {
+                                        event.preventDefault();
+                                        setIsEarlierCommitsOpen((value) => !value);
+                                    }}
+                                    className="min-h-7 gap-1.5 rounded-md px-1.5 py-1 text-muted-foreground"
+                                >
+                                    {isEarlierCommitsOpen ? (
+                                        <ChevronDown className="h-3 w-3" />
+                                    ) : (
+                                        <ChevronRight className="h-3 w-3" />
+                                    )}
+                                    <span className="text-[10px] font-semibold uppercase tracking-[0.12em]">
+                                        Earlier commits{baseCommitAncestorCandidates.length > 0 ? ` (${baseCommitAncestorCandidates.length})` : ''}
+                                    </span>
+                                </DropdownMenuItem>
+                                {isEarlierCommitsOpen ? (
+                                    baseCommitAncestorsQuery.isLoading ? (
+                                        <DropdownMenuItem disabled className="min-h-7 gap-1.5 rounded-md px-1.5 py-1 text-xs">
+                                            <Loader2 className="h-3 w-3 animate-spin" />
+                                            Loading earlier commits...
+                                        </DropdownMenuItem>
+                                    ) : baseCommitAncestorCandidates.length > 0 ? (
+                                        baseCommitAncestorCandidates.map((commit) => {
+                                            const selected = selectedBaseCommit?.sha === commit.sha;
+                                            return (
+                                                <DropdownMenuItem
+                                                    key={`ancestor-${commit.sha}`}
+                                                    onClick={() => setSelectedBaseCommit(commit)}
+                                                    className="min-h-8 gap-1.5 rounded-md px-1.5 py-1"
+                                                    title={`${commit.sha} ${commit.subject ?? ''}`.trim()}
+                                                >
+                                                    <div className="flex h-4 w-4 shrink-0 items-center justify-center">
+                                                        {selected ? <Check className="h-3 w-3" /> : null}
+                                                    </div>
+                                                    <div className="min-w-0 flex-1">
+                                                        <div className="truncate text-[11px] font-medium leading-tight">{formatCommitSubject(commit)}</div>
+                                                        <div className="truncate font-mono text-[10px] leading-tight text-muted-foreground">{formatCommitLabel(commit.sha)}</div>
+                                                    </div>
+                                                </DropdownMenuItem>
+                                            );
+                                        })
+                                    ) : (
+                                        <DropdownMenuItem disabled className="min-h-7 rounded-md px-1.5 py-1 text-xs text-muted-foreground">
+                                            No ancestor commits available
+                                        </DropdownMenuItem>
+                                    )
+                                ) : null}
+                                <DropdownMenuSeparator className="my-0.5" />
+                                <DropdownMenuItem
+                                    onClick={() => setSelectedBaseCommit(null)}
+                                    className="min-h-8 gap-1.5 rounded-md px-1.5 py-1"
+                                >
+                                    <div className="flex h-4 w-4 shrink-0 items-center justify-center">
+                                        {!selectedBaseCommit ? <Check className="h-3 w-3" /> : null}
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                        <div className="truncate text-[11px] font-medium leading-tight">Focused node base</div>
+                                        <div className="truncate font-mono text-[10px] leading-tight text-muted-foreground">{formatCommitLabel(defaultBaseCommitSha)}</div>
+                                    </div>
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator className="my-0.5" />
+                                <DropdownMenuLabel className="px-1.5 py-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Later commits</DropdownMenuLabel>
+                                {baseCommitCandidatesQuery.isLoading ? (
+                                    <DropdownMenuItem disabled className="min-h-7 gap-1.5 rounded-md px-1.5 py-1 text-xs">
+                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                        Loading commits...
+                                    </DropdownMenuItem>
+                                ) : baseCommitCandidates.length > 0 ? (
+                                    baseCommitCandidates.map((commit) => {
+                                        const selected = selectedBaseCommit?.sha === commit.sha;
+                                        return (
+                                            <DropdownMenuItem
+                                                key={commit.sha}
+                                                onClick={() => setSelectedBaseCommit(commit)}
+                                                className="min-h-8 gap-1.5 rounded-md px-1.5 py-1"
+                                                title={`${commit.sha} ${commit.subject ?? ''}`.trim()}
+                                            >
+                                                <div className="flex h-4 w-4 shrink-0 items-center justify-center">
+                                                    {selected ? <Check className="h-3 w-3" /> : null}
+                                                </div>
+                                                <div className="min-w-0 flex-1">
+                                                    <div className="truncate text-[11px] font-medium leading-tight">{formatCommitSubject(commit)}</div>
+                                                    <div className="truncate font-mono text-[10px] leading-tight text-muted-foreground">{formatCommitLabel(commit.sha)}</div>
+                                                </div>
+                                            </DropdownMenuItem>
+                                        );
+                                    })
+                                ) : (
+                                    <DropdownMenuItem disabled className="min-h-7 rounded-md px-1.5 py-1 text-xs text-muted-foreground">
+                                        No descendant commits available
+                                    </DropdownMenuItem>
+                                )}
+                            </DropdownMenuContent>
+                        </DropdownMenu>
 
                         <DropdownMenu>
                             <Tooltip>

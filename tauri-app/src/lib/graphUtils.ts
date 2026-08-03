@@ -5,7 +5,7 @@ import type { AgentStatus } from '@shared/agentStatus';
 import { RuntimeCatalogModel } from '../stores/modelStore';
 import { getGraphParentId } from './graph/lineage';
 import { classifyMessageNodeKind, getAssistantCommitCount, getToolCallCount } from '../domain/nodes';
-import type { WorkspaceProjection, ProjectedNodeEntity, ProjectedTurnGroup } from '../domain/workspaceProjection';
+import type { WorkspaceProjection, ProjectedCommitEntity, ProjectedNodeEntity, ProjectedTurnGroup } from '../domain/workspaceProjection';
 import { getGitParentShas } from './graph/turnUtils';
 import { hasFreshContextBoundary } from './messageContext';
 import { resolveNodeState } from './runStateResolver';
@@ -322,7 +322,9 @@ const getSingleCommitLaneHeight = (conversationMembers: Node<any>[]): number => 
 const getTurnLayoutDimensions = (members: Node<any>[]): { width: number; height: number; leftWidth: number; rightWidth: number } => {
   const conversationMembers = getTurnConversationMembers(members);
   const commitMembers = getTurnCommitMembers(members);
-  const leftWidth = Math.max(...conversationMembers.map(getNodeWidth), NODE_WIDTH);
+  const leftWidth = conversationMembers.length > 0
+    ? Math.max(...conversationMembers.map(getNodeWidth), TURN_CONVERSATION_NODE_WIDTH)
+    : 0;
   const rightWidth = commitMembers.length > 0 ? Math.max(...commitMembers.map(getNodeWidth)) : 0;
   const conversationHeight = getStackHeight(conversationMembers);
   const commitHeight = commitMembers.length === 1
@@ -330,7 +332,7 @@ const getTurnLayoutDimensions = (members: Node<any>[]): { width: number; height:
     : Math.max(conversationHeight, getStackHeight(commitMembers));
 
   return {
-    width: leftWidth + (rightWidth > 0 ? TURN_LANE_GAP + rightWidth : 0),
+    width: leftWidth + (rightWidth > 0 ? (leftWidth > 0 ? TURN_LANE_GAP : 0) + rightWidth : 0),
     height: Math.max(conversationHeight, commitHeight),
     leftWidth,
     rightWidth,
@@ -500,7 +502,7 @@ const expandLayoutedUnits = (
           )
           : Math.max(0, (turnDimensions.height - commitStackHeight) / 2);
 
-        localXOffset = turnDimensions.leftWidth + TURN_LANE_GAP;
+        localXOffset = turnDimensions.leftWidth + (turnDimensions.leftWidth > 0 ? TURN_LANE_GAP : 0);
         localYOffset = commitLaneTop + commitMembers.slice(0, commitIndex).reduce((total, member) => (
           total + getNodeHeight(member) + TURN_STACK_GAP
         ), 0);
@@ -636,6 +638,32 @@ const applyTurnGroupHullBounds = <T extends Node<any>>(nodes: T[]): T[] => {
       width: (maxX - minX) + padding * 2,
       height: (maxY - minY) + padding * 2,
       zIndex: -1,
+    };
+  });
+
+  return result;
+};
+
+const applyLayoutAnchorHints = <T extends Node<any>>(nodes: T[]): T[] => {
+  if (!nodes.some((node) => typeof (node.data as any)?.layoutAnchorNodeId === 'string')) {
+    return nodes;
+  }
+
+  const result = nodes.map(node => ({ ...node, position: { ...node.position } })) as T[];
+  const nodesById = new Map(result.map(node => [node.id, node]));
+
+  result.forEach((node) => {
+    const anchorNodeId = (node.data as any)?.layoutAnchorNodeId;
+    if (typeof anchorNodeId !== 'string') return;
+    const anchor = nodesById.get(anchorNodeId);
+    if (!anchor) return;
+
+    const anchorWidth = getNodeWidth(anchor);
+    const anchorHeight = getNodeHeight(anchor);
+    const nodeHeight = getNodeHeight(node);
+    node.position = {
+      x: anchor.position.x + anchorWidth + TURN_LANE_GAP,
+      y: anchor.position.y + Math.max(0, (anchorHeight - nodeHeight) / 2),
     };
   });
 
@@ -919,7 +947,8 @@ export const mapMessagesToGraphElements = (
   onFocus: (id: string) => void = () => { },
   onSelect: (id: string, multi: boolean) => void = () => { },
   onContextMenu: (id: string, e: React.MouseEvent) => void = () => { },
-  onMeasureNodeHeight: (id: string, height: number) => void = () => { }
+  onMeasureNodeHeight: (id: string, height: number) => void = () => { },
+  visibleNodeSections: Set<'conversation' | 'commits'> = new Set(['conversation', 'commits'])
 ): { nodes: Node<LlmNodeData | SummaryNodeData | Record<string, unknown> | any>[]; edges: Edge[] } => {
   if (!messages || messages.length === 0) {
     return { nodes: [], edges: [] };
@@ -930,6 +959,9 @@ export const mapMessagesToGraphElements = (
   const messageMap = new Map<string, Message>(messages.map(m => [m.id, m]));
   const messageIdByCommitSha = new Map<string, string>();
   const renderedCommitNodeIdBySha = new Map<string, string>();
+  const producedCommitByNodeId = new Map<string, ProjectedCommitEntity>();
+  const showConversationNodes = visibleNodeSections.has('conversation');
+  const showCommitNodes = visibleNodeSections.has('commits');
   messages.forEach((message) => {
     const sha = getMessageOutputCommitSha(message) ?? '';
     if (!sha) return;
@@ -942,6 +974,14 @@ export const mapMessagesToGraphElements = (
   });
   projection.groupIdByCommitSha.forEach((groupId, sha) => {
     renderedCommitNodeIdBySha.set(sha, groupId);
+  });
+  projection.commitBySha.forEach((commit) => {
+    if (commit.placement !== 'conversation_sidecar' || !commit.producedByNodeId) return;
+    const existing = producedCommitByNodeId.get(commit.producedByNodeId);
+    if (!existing || commit.sortTs >= existing.sortTs) {
+      producedCommitByNodeId.set(commit.producedByNodeId, commit);
+    }
+    renderedCommitNodeIdBySha.set(commit.sha, getAssistantOutputCommitNodeId(commit.producedByNodeId));
   });
 
   // Inject branchPointers from the branchPointersByNodeId map onto each message.
@@ -1225,12 +1265,17 @@ export const mapMessagesToGraphElements = (
     messages.forEach((msg) => {
       if (hiddenNodes.has(msg.id)) return;
       if (msg.role === 'assistant' && externalClusterByAssistantId.has(msg.id)) return;
-      if (!shouldRenderMessageNode(msg.id)) return;
       if (msg.role === 'assistant' && !isAssistantVisible(msg.id)) return;
       if (msg.role === 'user' && !isMessageInVisibleBranch(msg.id)) return;
 
       const entity = projection.entitiesByMessageId.get(msg.id);
       if (!entity) return;
+      const nodeKind = classifyMessageNodeKind(msg, messageMap);
+      const isCommitNodeKind = nodeKind === 'commit_message';
+      const renderMessageNode = shouldRenderMessageNode(msg.id)
+        && (isCommitNodeKind ? showCommitNodes : showConversationNodes);
+
+      if (!renderMessageNode && !(showCommitNodes && nodeKind === 'assistant_message')) return;
 
       const isFocused = msg.id === focusedMessageId;
       const isInContextPathNode = contextPathNodes.has(msg.id);
@@ -1242,7 +1287,6 @@ export const mapMessagesToGraphElements = (
       const isOutsideActiveScope = !!activeScopeId && scopeId !== activeScopeId;
       const isScopeBoundary = isOutsideActiveScope && scopeViewMode === 'scope';
       const scopeDimmed = isOutsideActiveScope && scopeViewMode === 'project' && !isFocused && !isInContextPathNode;
-      const nodeKind = classifyMessageNodeKind(msg, messageMap);
       const llmColor = msg.role === 'user'
         ? 'bg-gradient-to-br from-slate-500 to-slate-700'
         : nodeKind === 'commit_message'
@@ -1257,86 +1301,92 @@ export const mapMessagesToGraphElements = (
       const commitCount = getAssistantCommitCount(msg, messages, messageMap);
       const filesChanged = getFilesChanged(msg);
       const changedFilesCount = filesChanged.length || undefined;
-      nodes.push({
-        id: msg.id,
-        type: nodeKind, // Use the canonical node kind as the type
-        position: { x: 0, y: 0 },
-        data: {
-          entity,
-          projection,
-          isSelected: false, // Selection will be updated in applyVisualProperties
-          heightKey: createMessageHeightKey({
-            message: msg,
+      if (renderMessageNode) {
+        nodes.push({
+          id: msg.id,
+          type: nodeKind, // Use the canonical node kind as the type
+          position: { x: 0, y: 0 },
+          data: {
             entity,
+            projection,
+            isSelected: false, // Selection will be updated in applyVisualProperties
+            heightKey: createMessageHeightKey({
+              message: msg,
+              entity,
+              nodeKind,
+              branchPointers,
+              toolCallCount,
+              commitCount,
+              changedFilesCount,
+            }),
+            onMeasureHeight: onMeasureNodeHeight,
+            onFocus,
+            onSelect,
+            onContextMenu,
+            message: msg,
             nodeKind,
+            repoPath: workspaceRepoMap.get(msg.workspaceId) ?? null,
             branchPointers,
+            isFocused,
+            isInContextPath: isInContextPathNode,
+            llmColor,
+            matchesTagFilter: matchesTagFilter,
+            filterActive,
+            isSummarized: summarizedMessageIds.has(msg.id),
+            onToggleSummary,
+            summaryIds: messageToSummaryIdMap.has(msg.id) ? Array.from(messageToSummaryIdMap.get(msg.id)!) : undefined,
+            hasDisabledSummary: disabledSummaryStartNodeMap.has(msg.id),
+            isDense: false,
+            collapsed: msg.collapsed,
+            onToggleCollapse,
+            hiddenDescendantCount: hiddenDescendantCounts.get(msg.id),
+            isInsideActiveSummary: (() => {
+              const sIds = messageToSummaryIdMap.get(msg.id);
+              if (!sIds) return false;
+              for (const sId of sIds) {
+                const status = summaryStatusMap.get(sId);
+                if (status && status.isActive && status.isEnabled) {
+                  return true;
+                }
+              }
+              return false;
+            })(),
             toolCallCount,
             commitCount,
             changedFilesCount,
-          }),
-          onMeasureHeight: onMeasureNodeHeight,
-          onFocus,
-          onSelect,
-          onContextMenu,
-          message: msg,
-          nodeKind,
-          repoPath: workspaceRepoMap.get(msg.workspaceId) ?? null,
-          branchPointers,
-          isFocused,
-          isInContextPath: isInContextPathNode,
-          llmColor,
-          matchesTagFilter: matchesTagFilter,
-          filterActive,
-          isSummarized: summarizedMessageIds.has(msg.id),
-          onToggleSummary,
-          summaryIds: messageToSummaryIdMap.has(msg.id) ? Array.from(messageToSummaryIdMap.get(msg.id)!) : undefined,
-          hasDisabledSummary: disabledSummaryStartNodeMap.has(msg.id),
-          isDense: false,
-          collapsed: msg.collapsed,
-          onToggleCollapse,
-          hiddenDescendantCount: hiddenDescendantCounts.get(msg.id),
-          isInsideActiveSummary: (() => {
-            const sIds = messageToSummaryIdMap.get(msg.id);
-            if (!sIds) return false;
-            for (const sId of sIds) {
-              const status = summaryStatusMap.get(sId);
-              if (status && status.isActive && status.isEnabled) {
-                return true;
-              }
-            }
-            return false;
-          })(),
-          toolCallCount,
-          commitCount,
-          changedFilesCount,
-          agentStatus: resolveNodeState(msg, null).status ?? (msg.agent_id ? 'pending' : null),
-          isAgentRunning: ['pending', 'running', 'streaming'].includes(String(resolveNodeState(msg, null).status ?? '')),
-          agentId: msg.agent_id ?? null,
-          isContextActive,
-          scopeId,
-          scopeName: scopeId ? (readLookupValue(scopeNameById, scopeId) || null) : null,
-          scopeColor: scopeId ? (readLookupValue(scopeColorById, scopeId) || null) : null,
-          isInActiveScope,
-          isScopeBoundary,
-          scopeDimmed,
-        },
-        style: { width, height, zIndex: 1 },
-      } as Node<any>);
+            agentStatus: resolveNodeState(msg, null).status ?? (msg.agent_id ? 'pending' : null),
+            isAgentRunning: ['pending', 'running', 'streaming'].includes(String(resolveNodeState(msg, null).status ?? '')),
+            agentId: msg.agent_id ?? null,
+            isContextActive,
+            scopeId,
+            scopeName: scopeId ? (readLookupValue(scopeNameById, scopeId) || null) : null,
+            scopeColor: scopeId ? (readLookupValue(scopeColorById, scopeId) || null) : null,
+            isInActiveScope,
+            isScopeBoundary,
+            scopeDimmed,
+          },
+          style: { width, height, zIndex: 1 },
+        } as Node<any>);
+      }
 
-      const assistantOutputCommitSha = nodeKind === 'assistant_message' ? getMessageOutputCommitSha(msg) : null;
+      const projectedProducedCommit = nodeKind === 'assistant_message' ? producedCommitByNodeId.get(msg.id) ?? null : null;
+      const assistantOutputCommitSha = nodeKind === 'assistant_message'
+        ? getMessageOutputCommitSha(msg) ?? projectedProducedCommit?.sha ?? null
+        : null;
       const shouldRenderSyntheticOutputCommit = Boolean(
         assistantOutputCommitSha && !hasMaterializedCommitChild(msg.id, assistantOutputCommitSha),
       );
-      if (assistantOutputCommitSha && shouldRenderSyntheticOutputCommit) {
+      if (showCommitNodes && assistantOutputCommitSha && shouldRenderSyntheticOutputCommit) {
         const commitNodeId = getAssistantOutputCommitNodeId(msg.id);
-        const parentShas = getRawGitParentShas(msg);
+        const parentShas = projectedProducedCommit?.parentShas ?? getRawGitParentShas(msg);
         const baseParentSha = inferAssistantBaseCommitSha(msg);
         const commitParentShas = parentShas.length > 0
           ? parentShas
           : baseParentSha
             ? [baseParentSha]
             : [];
-        const commitSubject = ((msg.execution_data as any)?.meta?.commit_message as string | undefined)?.trim()
+        const commitSubject = projectedProducedCommit?.subject
+          || ((msg.execution_data as any)?.meta?.commit_message as string | undefined)?.trim()
           || msg.aiLabel?.trim()
           || msg.content?.trim()
           || `Commit ${assistantOutputCommitSha.slice(0, 8)}`;
@@ -1347,6 +1397,7 @@ export const mapMessagesToGraphElements = (
           content: commitSubject,
           commit: {
             ...(msg.commit || {}),
+            ...(projectedProducedCommit?.commit || {}),
             sha: assistantOutputCommitSha,
             subject: commitSubject,
             source_kind: 'agent',
@@ -1488,7 +1539,7 @@ export const mapMessagesToGraphElements = (
         });
       };
 
-      if (msg.role === 'user' && graphParentId) {
+      if (showConversationNodes && renderMessageNode && msg.role === 'user' && graphParentId) {
         const parentMsg = messageMap.get(graphParentId);
         if (parentMsg?.role === 'assistant') {
           if (parentMsg.role === 'assistant' && !externalClusterByAssistantId.has(parentMsg.id) && !isAssistantVisible(parentMsg.id)) return;
@@ -1516,7 +1567,7 @@ export const mapMessagesToGraphElements = (
         }
       }
 
-      if (nodeKind === 'commit_message') {
+      if (showCommitNodes && renderMessageNode && nodeKind === 'commit_message') {
         const parentShas = getRawGitParentShas(msg);
         parentShas.forEach((parentSha, parentIndex) => {
           const parentNodeId = renderedCommitNodeIdBySha.get(parentSha);
@@ -1532,7 +1583,6 @@ export const mapMessagesToGraphElements = (
             target: msg.id,
             relationship: 'git-parent',
             edgeRole: 'commit-lineage',
-            layout: false,
             isInContextEdge: contextPathEdges.has(`${sourceNodeId}->${msg.id}`),
           });
         });
@@ -1546,14 +1596,13 @@ export const mapMessagesToGraphElements = (
               target: msg.id,
               relationship: 'git-parent',
               edgeRole: 'commit-lineage',
-              layout: false,
               isInContextEdge: contextPathEdges.has(`${parentMsg.id}->${msg.id}`),
             });
           }
         }
       }
 
-      if (assistantOutputCommitSha && shouldRenderSyntheticOutputCommit) {
+      if (showCommitNodes && assistantOutputCommitSha && shouldRenderSyntheticOutputCommit) {
         const commitNodeId = getAssistantOutputCommitNodeId(msg.id);
         const parentShas = getRawGitParentShas(msg);
         const baseParentSha = inferAssistantBaseCommitSha(msg);
@@ -1573,14 +1622,13 @@ export const mapMessagesToGraphElements = (
             target: commitNodeId,
             relationship: 'git-parent',
             edgeRole: 'commit-lineage',
-            layout: false,
             isInContextEdge: contextPathEdges.has(`${parentNodeId}->${commitNodeId}`),
           });
         });
       }
 
       const assistantBaseCommitSha = nodeKind === 'assistant_message' ? inferAssistantBaseCommitSha(msg) : null;
-      if (nodeKind === 'assistant_message' && assistantBaseCommitSha) {
+      if (showCommitNodes && showConversationNodes && renderMessageNode && nodeKind === 'assistant_message' && assistantBaseCommitSha) {
         const baseCommitNodeId = renderedCommitNodeIdBySha.get(assistantBaseCommitSha);
         const baseCommitMessageId = messageIdByCommitSha.get(assistantBaseCommitSha);
         if (baseCommitNodeId && baseCommitNodeId !== msg.id && (!baseCommitMessageId || shouldRenderMessageNode(baseCommitMessageId))) {
@@ -1600,7 +1648,13 @@ export const mapMessagesToGraphElements = (
 
     });
 
-    projection.layoutDerivedCommitGroups.forEach((group) => {
+    const firstImportedGroupId = projection.originMessageId
+      ? projection.layoutDerivedCommitGroups
+        .filter((group) => group.sourceKind === 'external')
+        .sort((left, right) => left.sortTs - right.sortTs || left.groupId.localeCompare(right.groupId))[0]?.groupId ?? null
+      : null;
+
+    if (showCommitNodes) projection.layoutDerivedCommitGroups.forEach((group) => {
       nodes.push({
         id: group.groupId,
         type: 'layout_derived_commit_group',
@@ -1608,6 +1662,9 @@ export const mapMessagesToGraphElements = (
         data: {
           group,
           projection,
+          ...(group.groupId === firstImportedGroupId && projection.originMessageId
+            ? { layoutAnchorNodeId: projection.originMessageId }
+            : {}),
           sortTs: group.sortTs,
           isSelected: false,
           isFocused: false,
@@ -1622,7 +1679,7 @@ export const mapMessagesToGraphElements = (
       } as Node<any>);
     });
 
-    projection.commitLaneRows.forEach((row) => {
+    if (showCommitNodes) projection.commitLaneRows.forEach((row) => {
       if (row.type !== 'commit' || !row.commitSha) return;
       if (renderedCommitNodeIdBySha.get(row.commitSha) && renderedCommitNodeIdBySha.get(row.commitSha) !== row.commitSha) return;
       const commit = projection.commitBySha.get(row.commitSha);
@@ -1649,13 +1706,13 @@ export const mapMessagesToGraphElements = (
       renderedCommitNodeIdBySha.set(commit.sha, commit.sha);
     });
 
-    const renderedNodeIds = new Set(nodes.map((node) => node.id));
-    projection.commitBySha.forEach((commit) => {
+    const commitRenderedNodeIds = new Set(nodes.map((node) => node.id));
+    if (showCommitNodes) projection.commitBySha.forEach((commit) => {
       const targetNodeId = renderedCommitNodeIdBySha.get(commit.sha);
-      if (!targetNodeId || !renderedNodeIds.has(targetNodeId)) return;
+      if (!targetNodeId || !commitRenderedNodeIds.has(targetNodeId)) return;
       commit.parentRows.forEach((parent, parentIndex) => {
         const sourceNodeId = renderedCommitNodeIdBySha.get(parent.parent_sha);
-        if (!sourceNodeId || sourceNodeId === targetNodeId || !renderedNodeIds.has(sourceNodeId)) return;
+        if (!sourceNodeId || sourceNodeId === targetNodeId || !commitRenderedNodeIds.has(sourceNodeId)) return;
         const id = `${sourceNodeId}->${targetNodeId}:git-parent:canonical:${parentIndex}`;
         if (edges.some((edge) => edge.id === id || (edge.source === sourceNodeId && edge.target === targetNodeId && (edge.data as any)?.relationship === 'git-parent'))) return;
         edges.push({
@@ -1670,7 +1727,7 @@ export const mapMessagesToGraphElements = (
             edgeLegendType: 'git-parent',
             relationship: 'git-parent',
             edgeRole: 'commit-lineage',
-            layout: false,
+            layout: true,
             parentIndex,
             childSha: commit.sha,
             parentSha: parent.parent_sha,
@@ -1950,11 +2007,12 @@ export const mapMessagesToGraphElements = (
 
 
     // --- Add Turn Group Hulls ---
-    projection.turnGroups.forEach((tg: ProjectedTurnGroup) => {
+    if (showConversationNodes) projection.turnGroups.forEach((tg: ProjectedTurnGroup) => {
       // Only add hull if at least one member is visible
+      const renderedNodeIds = new Set(nodes.map((node) => node.id));
       const isVisible = tg.memberEntityIds.some((eid: string) => {
         const mid = projection.entitiesById.get(eid)?.messageId;
-        return mid && !hiddenNodes.has(mid);
+        return mid && renderedNodeIds.has(mid) && !hiddenNodes.has(mid);
       });
 
       if (!isVisible) return;
@@ -1981,7 +2039,10 @@ export const mapMessagesToGraphElements = (
       } as Node<any>);
     });
 
-    return { nodes, edges };
+    const renderedNodeIds = new Set(nodes.map((node) => node.id));
+    const visibleEdges = edges.filter((edge) => renderedNodeIds.has(edge.source) && renderedNodeIds.has(edge.target));
+
+    return { nodes, edges: visibleEdges };
 
   } catch (error) {
     console.error("[mapMessagesToGraphElements] Error during processing:", error);
@@ -2153,6 +2214,7 @@ export const getLayoutedElements = (nodes: Node<LlmNodeData | SummaryNodeData | 
     });
   }
 
+  layoutedNodes = applyLayoutAnchorHints(layoutedNodes);
   layoutedNodes = applyTurnGroupHullBounds(layoutedNodes);
 
   return { nodes: layoutedNodes, edges: edges };
@@ -2478,6 +2540,7 @@ export const getLaneLayoutedElements = (
     }
   });
 
+  finalNodes = applyLayoutAnchorHints(finalNodes);
   finalNodes = applyTurnGroupHullBounds(finalNodes);
 
   return { nodes: finalNodes, edges };
@@ -2794,6 +2857,7 @@ export const getTidyTreeLayoutedElements = (
     }
   });
 
+  finalNodes = applyLayoutAnchorHints(finalNodes);
   finalNodes = applyTurnGroupHullBounds(finalNodes);
 
   return { nodes: finalNodes, edges };
@@ -3064,6 +3128,7 @@ export const getSugiyamaLayoutedElements = (
     }
   });
 
+  finalNodes = applyLayoutAnchorHints(finalNodes);
   finalNodes = applyTurnGroupHullBounds(finalNodes);
 
   return { nodes: finalNodes, edges };

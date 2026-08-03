@@ -54,6 +54,8 @@ export const commands = {
 	hydrateLocalNodesFromServer: (workspaceId: string, payloads: string[]) => __TAURI_INVOKE<number>("hydrate_local_nodes_from_server", { workspaceId, payloads }),
 	upsertLocalNode: (workspaceId: string, nodeId: string, payload: string) => __TAURI_INVOKE<null>("upsert_local_node", { workspaceId, nodeId, payload }),
 	importLocalCommits: (workspaceId: string, commits: LocalCommitImport[], gitRef: string | null) => __TAURI_INVOKE<number>("import_local_commits", { workspaceId, commits, gitRef }),
+	listLocalCommitGraph: (workspaceId: string) => __TAURI_INVOKE<LocalCommitGraphSnapshot>("list_local_commit_graph", { workspaceId }),
+	enqueueLocalCommitGraphSync: (workspaceId: string, payloadJson: string, mutationId: string | null) => __TAURI_INVOKE<LocalSyncEventRow>("enqueue_local_commit_graph_sync", { workspaceId, payloadJson, mutationId }),
 	localFirstDeleteBranch: (workspaceId: string, rootNodeId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_delete_branch", { workspaceId, rootNodeId }),
 	localFirstDeleteWorkspace: (workspaceId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_delete_workspace", { workspaceId }),
 	listLocalDeletedNodeRoots: (workspaceId: string) => __TAURI_INVOKE<LocalDeletedNodeRoot[]>("list_local_deleted_node_roots", { workspaceId }),
@@ -100,8 +102,10 @@ export const commands = {
 	getAvailableEditors: () => __TAURI_INVOKE<Editor[]>("get_available_editors"),
 	getSkillStorePath: () => __TAURI_INVOKE<string>("get_skill_store_path"),
 	listInstalledSkills: (opId: string | null) => __TAURI_INVOKE<SkillSummary[]>("list_installed_skills", { opId }),
+	listImportableSkills: (opId: string | null) => __TAURI_INVOKE<SkillSummary[]>("list_importable_skills", { opId }),
 	searchCatalogSkills: (query: string, opId: string | null) => __TAURI_INVOKE<SkillSummary[]>("search_catalog_skills", { query, opId }),
 	installCatalogSkill: (skillId: string, opId: string | null) => __TAURI_INVOKE<SkillSummary>("install_catalog_skill", { skillId, opId }),
+	importLocalSkill: (sourcePath: string, opId: string | null) => __TAURI_INVOKE<SkillSummary>("import_local_skill", { sourcePath, opId }),
 	deleteInstalledSkill: (skillId: string, opId: string | null) => __TAURI_INVOKE<null>("delete_installed_skill", { skillId, opId }),
 	setMcpAuthToken: (token: string) => __TAURI_INVOKE<null>("set_mcp_auth_token", { token }),
 	setMcpWorkspaceId: (workspaceId: string) => __TAURI_INVOKE<null>("set_mcp_workspace_id", { workspaceId }),
@@ -291,6 +295,9 @@ export type GitCommitMetadata = {
 	author_name: string | null,
 	author_email: string | null,
 	authored_at: string | null,
+	files_changed_count: number | null,
+	total_additions: number | null,
+	total_deletions: number | null,
 };
 
 export type GitCommitRefLabel = {
@@ -334,6 +341,12 @@ export type GitRefTipInfo = {
 	error: string | null,
 };
 
+export type LocalCommitGraphSnapshot = {
+	commits: LocalCommitRow[],
+	commitParents: LocalCommitParentRow[],
+	commitObservations: LocalCommitObservationRow[],
+};
+
 export type LocalCommitImport = {
 	sha: string,
 	parents: string[],
@@ -344,6 +357,35 @@ export type LocalCommitImport = {
 	committedAt: string | null,
 	sourceKind: string | null,
 	producedByNodeId: string | null,
+	filesChangedCount: number | null,
+	totalAdditions: number | null,
+	totalDeletions: number | null,
+};
+
+export type LocalCommitObservationRow = {
+	commitSha: string,
+	gitRef: string | null,
+	sourceKind: string,
+	firstSeenAt: string,
+	lastSeenAt: string,
+};
+
+export type LocalCommitParentRow = {
+	childSha: string,
+	parentSha: string,
+	parentIndex: number,
+};
+
+export type LocalCommitRow = {
+	sha: string,
+	subject: string | null,
+	authorName: string | null,
+	authorEmail: string | null,
+	authoredAt: string | null,
+	committedAt: string | null,
+	sourceKind: string,
+	producedByNodeId: string | null,
+	firstParentSha: string | null,
 	filesChangedCount: number | null,
 	totalAdditions: number | null,
 	totalDeletions: number | null,

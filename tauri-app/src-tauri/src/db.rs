@@ -142,6 +142,49 @@ pub struct LocalCommitImport {
     pub total_deletions: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalCommitRow {
+    pub sha: String,
+    pub subject: Option<String>,
+    pub author_name: Option<String>,
+    pub author_email: Option<String>,
+    pub authored_at: Option<String>,
+    pub committed_at: Option<String>,
+    pub source_kind: String,
+    pub produced_by_node_id: Option<String>,
+    pub first_parent_sha: Option<String>,
+    pub files_changed_count: Option<i64>,
+    pub total_additions: Option<i64>,
+    pub total_deletions: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalCommitParentRow {
+    pub child_sha: String,
+    pub parent_sha: String,
+    pub parent_index: i64,
+}
+
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalCommitObservationRow {
+    pub commit_sha: String,
+    pub git_ref: Option<String>,
+    pub source_kind: String,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalCommitGraphSnapshot {
+    pub commits: Vec<LocalCommitRow>,
+    pub commit_parents: Vec<LocalCommitParentRow>,
+    pub commit_observations: Vec<LocalCommitObservationRow>,
+}
+
 #[derive(Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetryEventRow {
@@ -758,24 +801,6 @@ impl TelemetryDb {
                 failure_reason,
                 unix_timestamp()
             ],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
-    pub fn mark_agent_run_server_start_persisted(
-        &self,
-        assistant_node_id: &str,
-    ) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.execute(
-            r#"
-            UPDATE agent_run_ledger
-            SET server_start_persisted = 1,
-                updated_at = ?2
-            WHERE assistant_node_id = ?1
-            "#,
-            params![assistant_node_id, unix_timestamp()],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -1617,6 +1642,123 @@ impl TelemetryDb {
         Ok(rows)
     }
 
+    pub fn get_local_node_payload(&self, node_id: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT payload_json FROM local_nodes WHERE id = ?1 AND deleted_at IS NULL",
+            params![node_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|value| value.flatten())
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn get_local_node_parent_id(&self, node_id: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT parent_id FROM local_nodes WHERE id = ?1 AND deleted_at IS NULL",
+            params![node_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|value| value.flatten())
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn list_local_commit_graph(
+        &self,
+        workspace_id: &str,
+    ) -> Result<LocalCommitGraphSnapshot, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut commit_stmt = conn
+            .prepare(
+                r#"
+                SELECT sha, subject, author_name, author_email, authored_at, committed_at,
+                       source_kind, produced_by_node_id, first_parent_sha, files_changed_count,
+                       total_additions, total_deletions
+                FROM local_commits
+                WHERE workspace_id = ?1
+                ORDER BY COALESCE(committed_at, authored_at, ''), sha
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let commits = commit_stmt
+            .query_map(params![workspace_id], |row| {
+                Ok(LocalCommitRow {
+                    sha: row.get(0)?,
+                    subject: row.get(1)?,
+                    author_name: row.get(2)?,
+                    author_email: row.get(3)?,
+                    authored_at: row.get(4)?,
+                    committed_at: row.get(5)?,
+                    source_kind: row.get(6)?,
+                    produced_by_node_id: row.get(7)?,
+                    first_parent_sha: row.get(8)?,
+                    files_changed_count: row.get(9)?,
+                    total_additions: row.get(10)?,
+                    total_deletions: row.get(11)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        let mut parent_stmt = conn
+            .prepare(
+                r#"
+                SELECT child_sha, parent_sha, parent_index
+                FROM local_commit_parents
+                WHERE workspace_id = ?1
+                ORDER BY child_sha, parent_index
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let commit_parents = parent_stmt
+            .query_map(params![workspace_id], |row| {
+                Ok(LocalCommitParentRow {
+                    child_sha: row.get(0)?,
+                    parent_sha: row.get(1)?,
+                    parent_index: row.get(2)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        let mut observation_stmt = conn
+            .prepare(
+                r#"
+                SELECT commit_sha, NULLIF(git_ref, ''), source_kind,
+                       strftime('%Y-%m-%dT%H:%M:%fZ', first_seen_at, 'unixepoch'),
+                       strftime('%Y-%m-%dT%H:%M:%fZ', last_seen_at, 'unixepoch')
+                FROM local_commit_observations
+                WHERE workspace_id = ?1
+                ORDER BY commit_sha, git_ref, source_kind
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let commit_observations = observation_stmt
+            .query_map(params![workspace_id], |row| {
+                Ok(LocalCommitObservationRow {
+                    commit_sha: row.get(0)?,
+                    git_ref: row.get(1)?,
+                    source_kind: row.get(2)?,
+                    first_seen_at: row.get(3)?,
+                    last_seen_at: row.get(4)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        Ok(LocalCommitGraphSnapshot {
+            commits,
+            commit_parents,
+            commit_observations,
+        })
+    }
+
     pub fn import_local_commits(
         &self,
         workspace_id: &str,
@@ -1805,6 +1947,22 @@ impl TelemetryDb {
         drop(conn);
         self.get_local_sync_event_by_idempotency_key(&idempotency_key)?
             .ok_or_else(|| "Failed to read enqueued sync event.".to_string())
+    }
+
+    pub fn enqueue_local_commit_graph_sync(
+        &self,
+        workspace_id: &str,
+        payload_json: &str,
+        mutation_id: Option<&str>,
+    ) -> Result<LocalSyncEventRow, String> {
+        self.enqueue_local_sync_event(
+            Some(workspace_id),
+            "commit_graph",
+            workspace_id,
+            "commit_graph.git_sync_ingest",
+            payload_json,
+            mutation_id,
+        )
     }
 
     pub fn has_retryable_terminal_node_sync(&self, node_id: &str) -> Result<bool, String> {
@@ -2337,6 +2495,26 @@ pub fn import_local_commits(
 
 #[tauri::command]
 #[specta::specta]
+pub fn list_local_commit_graph(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+) -> Result<LocalCommitGraphSnapshot, String> {
+    telemetry.list_local_commit_graph(&workspace_id)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn enqueue_local_commit_graph_sync(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+    payload_json: String,
+    mutation_id: Option<String>,
+) -> Result<LocalSyncEventRow, String> {
+    telemetry.enqueue_local_commit_graph_sync(&workspace_id, &payload_json, mutation_id.as_deref())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn local_first_delete_branch(
     telemetry: State<TelemetryDb>,
     workspace_id: String,
@@ -2379,10 +2557,16 @@ fn sync_event(
     if event.entity_type == "node" && event.event_type == "node.update_terminal" {
         let payload: JsonValue =
             serde_json::from_str(&event.payload_json).map_err(|err| err.to_string())?;
+        let endpoint = if payload.get("userMessage").is_some() && payload.get("assistantMessage").is_some() {
+            "stream/finalize-local-pair"
+        } else {
+            "stream/finalize"
+        };
         let response = client
             .post(format!(
-                "{}/stream/finalize",
-                crate::config::server_base_url()
+                "{}/{}",
+                crate::config::server_base_url(),
+                endpoint
             ))
             .header("Authorization", format!("Bearer {}", auth_token))
             .header("Idempotency-Key", &event.idempotency_key)
@@ -2403,6 +2587,34 @@ fn sync_event(
     }
 
     let url = match (event.entity_type.as_str(), event.event_type.as_str()) {
+        ("commit_graph", "commit_graph.git_sync_ingest") => {
+            let workspace_id = event
+                .workspace_id
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .unwrap_or(event.entity_id.as_str());
+            let payload: JsonValue =
+                serde_json::from_str(&event.payload_json).map_err(|err| err.to_string())?;
+            let response = client
+                .post(format!(
+                    "{}/workspaces/{}/git-sync/ingest",
+                    crate::config::server_base_url(),
+                    workspace_id
+                ))
+                .header("Authorization", format!("Bearer {}", auth_token))
+                .header("Idempotency-Key", &event.idempotency_key)
+                .json(&payload)
+                .send()
+                .map_err(|err| format!("{} transport error: {}", event.event_type, err))?;
+            if response.status().is_success() {
+                return Ok(None);
+            }
+            return Err(format!(
+                "{} failed with status {}",
+                event.event_type,
+                response.status()
+            ));
+        }
         ("node", "node.delete") => format!(
             "{}/messages/{}/branch",
             crate::config::server_base_url(),
@@ -2459,22 +2671,29 @@ pub fn process_local_sync_events(
                 if event.entity_type == "node" && event.event_type == "node.update_terminal" {
                     let _ = telemetry.mark_local_node_persisted(&event.entity_id);
                     if let Ok(payload) = serde_json::from_str::<JsonValue>(&event.payload_json) {
-                        let status = payload
+                        if let Some(user_node_id) = payload
+                            .get("userMessage")
+                            .and_then(|value| value.get("id"))
+                            .and_then(|value| value.as_str())
+                        {
+                            let _ = telemetry.mark_local_node_persisted(user_node_id);
+                        }
+                        let finalize_payload = payload.get("finalize").unwrap_or(&payload);
+                        let status = finalize_payload
                             .get("status")
                             .and_then(|value| value.as_str())
                             .unwrap_or("completed");
-                        let payload_output_commit_sha = payload
+                        let payload_output_commit_sha = finalize_payload
                             .get("outputCommitSha")
-                            .or_else(|| payload.get("output_commit_sha"))
+                            .or_else(|| finalize_payload.get("output_commit_sha"))
                             .and_then(|value| value.as_str());
-                        let response_output_commit_sha = response_body
-                            .as_ref()
-                            .and_then(|body| {
-                                body.get("outputCommitSha")
-                                    .or_else(|| body.get("output_commit_sha"))
-                                    .and_then(|value| value.as_str())
-                            });
-                        let output_commit_sha = response_output_commit_sha.or(payload_output_commit_sha);
+                        let response_output_commit_sha = response_body.as_ref().and_then(|body| {
+                            body.get("outputCommitSha")
+                                .or_else(|| body.get("output_commit_sha"))
+                                .and_then(|value| value.as_str())
+                        });
+                        let output_commit_sha =
+                            response_output_commit_sha.or(payload_output_commit_sha);
                         let _ = telemetry.mark_agent_run_finalized(
                             &event.entity_id,
                             status,
@@ -2537,6 +2756,44 @@ mod tests {
             phase: phase.to_string(),
         })
         .expect("upsert run");
+    }
+
+    #[test]
+    fn local_commit_graph_round_trips_imported_commits() {
+        let (_dir, db) = open_test_db();
+        db.import_local_commits(
+            "workspace-1",
+            vec![LocalCommitImport {
+                sha: "child-sha".to_string(),
+                parents: vec!["parent-sha".to_string()],
+                subject: Some("local commit".to_string()),
+                author_name: Some("Agentree".to_string()),
+                author_email: None,
+                authored_at: Some("2026-05-11T00:00:00.000Z".to_string()),
+                committed_at: Some("2026-05-11T00:00:01.000Z".to_string()),
+                source_kind: Some("agent".to_string()),
+                produced_by_node_id: Some("assistant-1".to_string()),
+                files_changed_count: Some(2),
+                total_additions: Some(3),
+                total_deletions: Some(1),
+            }],
+            Some("agentree/assistant-1"),
+        )
+        .expect("import local commits");
+
+        let snapshot = db
+            .list_local_commit_graph("workspace-1")
+            .expect("list local commit graph");
+        assert_eq!(snapshot.commits.len(), 1);
+        assert_eq!(snapshot.commits[0].sha, "child-sha");
+        assert_eq!(snapshot.commits[0].produced_by_node_id.as_deref(), Some("assistant-1"));
+        assert_eq!(snapshot.commit_parents.len(), 1);
+        assert_eq!(snapshot.commit_parents[0].parent_sha, "parent-sha");
+        assert_eq!(snapshot.commit_observations.len(), 1);
+        assert_eq!(
+            snapshot.commit_observations[0].git_ref.as_deref(),
+            Some("agentree/assistant-1")
+        );
     }
 
     #[test]

@@ -9,6 +9,18 @@ import { getMessageOutputCommitSha } from './graph/commitAccessors';
 
 const INITIAL_IMPORT_COMMIT_LIMIT = 11;
 
+const toCommitSyncPayload = (commit: Awaited<ReturnType<typeof agentClient.listMissingCommits>>[number]) => ({
+  sha: commit.sha,
+  parents: commit.parents,
+  subject: commit.subject,
+  authorName: commit.author_name ?? null,
+  authorEmail: commit.author_email ?? null,
+  authoredAt: commit.authored_at ?? null,
+  filesChangedCount: commit.files_changed_count ?? null,
+  totalAdditions: commit.total_additions ?? null,
+  totalDeletions: commit.total_deletions ?? null,
+});
+
 const displayNameForRef = (gitRef: string): string => {
   if (gitRef.startsWith('refs/heads/')) return gitRef.replace('refs/heads/', '');
   if (gitRef === 'HEAD') return 'Checked out commit';
@@ -79,23 +91,47 @@ export async function bootstrapWorkspaceInitialGitImport({
     INITIAL_IMPORT_COMMIT_LIMIT
   );
 
-  const ingestResponse = await api.post(`/workspaces/${workspaceId}/git-sync/ingest`, {
-    refs: [{
-      gitRef: importGitRef,
-      tipCommitSha: headCommitSha,
-      commits: commits.map((commit) => ({
+  const importRefPayload = {
+    gitRef: importGitRef,
+    tipCommitSha: headCommitSha,
+    commits: commits.map(toCommitSyncPayload),
+  };
+
+  let importedCount = 0;
+  if (agentClient.hasRuntime()) {
+    importedCount = await agentClient.importLocalCommits(
+      workspaceId,
+      importRefPayload.commits.map((commit) => ({
         sha: commit.sha,
         parents: commit.parents,
         subject: commit.subject,
-        authorName: commit.author_name ?? null,
-        authorEmail: commit.author_email ?? null,
-        authoredAt: commit.authored_at ?? null,
+        authorName: commit.authorName,
+        authorEmail: commit.authorEmail,
+        authoredAt: commit.authoredAt,
+        committedAt: commit.authoredAt,
+        sourceKind: 'external',
+        filesChangedCount: commit.filesChangedCount ?? null,
+        totalAdditions: commit.totalAdditions ?? null,
+        totalDeletions: commit.totalDeletions ?? null,
       })),
-    }],
-  });
+      importGitRef
+    );
+    await agentClient.enqueueLocalCommitGraphSync(
+      workspaceId,
+      { refs: [importRefPayload] },
+      `${importGitRef}:${headCommitSha}`
+    );
+  } else {
+    const ingestResponse = await api.post(`/workspaces/${workspaceId}/git-sync/ingest`, {
+      refs: [importRefPayload],
+    });
+    importedCount = ingestResponse.data?.importedCount ?? 0;
+  }
 
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: ['messages', workspaceId] }),
+    queryClient.invalidateQueries({ queryKey: ['local-commits', workspaceId] }),
+    queryClient.invalidateQueries({ queryKey: ['local-commit-graph', workspaceId] }),
     queryClient.invalidateQueries({ queryKey: trackedRefKeys.workspace(workspaceId) }),
     queryClient.invalidateQueries({ queryKey: branchKeys.workspace(workspaceId) }),
     queryClient.invalidateQueries({ queryKey: ['workspaces'] }),
@@ -117,6 +153,6 @@ export async function bootstrapWorkspaceInitialGitImport({
 
   return {
     focusedMessageId,
-    importedCount: ingestResponse.data?.importedCount ?? 0,
+    importedCount,
   };
 }

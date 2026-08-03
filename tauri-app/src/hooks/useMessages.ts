@@ -222,6 +222,29 @@ export const useCommitDescendants = (
     gcTime: 5 * 60 * 1000,
 });
 
+export const useCommitAncestors = (
+    workspaceId: string | null,
+    baseSha: string | null | undefined,
+    options: { enabled?: boolean; limit?: number } = {}
+) => useQuery<CommitDescendantsResponse>({
+    queryKey: ['commit-ancestors', workspaceId, baseSha, options.limit ?? 120],
+    queryFn: async () => {
+        if (!workspaceId || !baseSha) return { baseSha: baseSha ?? '', commits: [], parents: [], observations: [] };
+        const response = await api.get(`/workspaces/${workspaceId}/commits/ancestors`, {
+            params: { baseSha, limit: options.limit ?? 120 },
+        });
+        return {
+            baseSha: response.data?.baseSha ?? baseSha,
+            commits: Array.isArray(response.data?.commits) ? response.data.commits : [],
+            parents: Array.isArray(response.data?.parents) ? response.data.parents : [],
+            observations: Array.isArray(response.data?.observations) ? response.data.observations : [],
+        };
+    },
+    enabled: !!workspaceId && !!baseSha && options.enabled !== false,
+    staleTime: 15_000,
+    gcTime: 5 * 60 * 1000,
+});
+
 export const useSendMessage = () => {
     const queryClient = useQueryClient();
     return useMutation({

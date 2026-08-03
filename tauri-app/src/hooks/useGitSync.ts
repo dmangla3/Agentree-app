@@ -59,6 +59,9 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
           authorName: string | null;
           authorEmail: string | null;
           authoredAt: string | null;
+          filesChangedCount: number | null;
+          totalAdditions: number | null;
+          totalDeletions: number | null;
         }>;
       }> = [];
 
@@ -109,6 +112,9 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
             authorName: commit.author_name ?? null,
             authorEmail: commit.author_email ?? null,
             authoredAt: commit.authored_at ?? null,
+            filesChangedCount: commit.files_changed_count ?? null,
+            totalAdditions: commit.total_additions ?? null,
+            totalDeletions: commit.total_deletions ?? null,
           })),
         });
       }
@@ -119,12 +125,140 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
 
       // Local check found no commit delta; skip server sync entirely.
       if (refsPayload.every((ref) => ref.commits.length === 0)) {
+        if (agentClient.hasRuntime()) {
+          const localGraph = await agentClient.listLocalCommitGraph(workspaceId);
+          const commitsBySha = new Map(localGraph.commits.map((commit) => [commit.sha, commit]));
+          let importedCount = 0;
+          const backfilledRefsPayload: typeof refsPayload = [];
+
+          for (const refPayload of refsPayload) {
+            const observedShas = new Set(
+              localGraph.commitObservations
+                .filter((observation) => observation.gitRef === refPayload.gitRef)
+                .map((observation) => observation.commitSha)
+            );
+            const needsStatsBackfill = Array.from(observedShas).some((sha) => {
+              const commit = commitsBySha.get(sha);
+              return commit && (
+                commit.filesChangedCount == null ||
+                commit.totalAdditions == null ||
+                commit.totalDeletions == null
+              );
+            });
+            if (!needsStatsBackfill) continue;
+
+            const commits = await agentClient.listMissingCommits(repoPath, null, refPayload.tipCommitSha, 500);
+            const commitsForRef = commits
+              .filter((commit) => observedShas.has(commit.sha))
+              .map((commit) => ({
+                sha: commit.sha,
+                parents: commit.parents,
+                subject: commit.subject,
+                authorName: commit.author_name ?? null,
+                authorEmail: commit.author_email ?? null,
+                authoredAt: commit.authored_at ?? null,
+                filesChangedCount: commit.files_changed_count ?? null,
+                totalAdditions: commit.total_additions ?? null,
+                totalDeletions: commit.total_deletions ?? null,
+              }));
+            if (commitsForRef.length === 0) continue;
+
+            importedCount += await agentClient.importLocalCommits(
+              workspaceId,
+              commitsForRef.map((commit) => ({
+                sha: commit.sha,
+                parents: commit.parents,
+                subject: commit.subject,
+                authorName: commit.authorName,
+                authorEmail: commit.authorEmail,
+                authoredAt: commit.authoredAt,
+                committedAt: commit.authoredAt,
+                sourceKind: 'external',
+                filesChangedCount: commit.filesChangedCount,
+                totalAdditions: commit.totalAdditions,
+                totalDeletions: commit.totalDeletions,
+              })),
+              refPayload.gitRef
+            );
+            backfilledRefsPayload.push({ ...refPayload, commits: commitsForRef });
+          }
+
+          if (importedCount > 0) {
+            const mutationId = backfilledRefsPayload
+              .map((ref) => `${ref.gitRef}:${ref.tipCommitSha}:stats`)
+              .sort()
+              .join('|');
+            await agentClient.enqueueLocalCommitGraphSync(workspaceId, { refs: backfilledRefsPayload }, mutationId);
+            return {
+              didSync: true,
+              importedCount,
+              importedNodeIds: [],
+              importedByRef: Object.fromEntries(backfilledRefsPayload.map((ref) => [ref.gitRef, ref.commits.length])),
+              ignoredRefs,
+              queuedForServerSync: true,
+              statsBackfill: true,
+            };
+          }
+        }
+
         return {
           didSync: false,
           importedCount: 0,
           importedNodeIds: [],
           importedByRef: {},
           ignoredRefs,
+        };
+      }
+
+      if (agentClient.hasRuntime()) {
+        let importedCount = 0;
+        for (const refPayload of refsPayload) {
+          if (refPayload.commits.length === 0) continue;
+          importedCount += await agentClient.importLocalCommits(
+            workspaceId,
+            refPayload.commits.map((commit) => ({
+              sha: commit.sha,
+              parents: commit.parents,
+              subject: commit.subject,
+              authorName: commit.authorName,
+              authorEmail: commit.authorEmail,
+              authoredAt: commit.authoredAt,
+              committedAt: commit.authoredAt,
+              sourceKind: 'external',
+              filesChangedCount: commit.filesChangedCount ?? null,
+              totalAdditions: commit.totalAdditions ?? null,
+              totalDeletions: commit.totalDeletions ?? null,
+            })),
+            refPayload.gitRef
+          );
+        }
+        const mutationId = refsPayload
+          .map((ref) => `${ref.gitRef}:${ref.tipCommitSha}`)
+          .sort()
+          .join('|');
+        await agentClient.enqueueLocalCommitGraphSync(workspaceId, { refs: refsPayload }, mutationId);
+        queryClient.setQueryData<TrackedGitRef[]>(
+          trackedRefKeys.workspace(workspaceId),
+          (current) => {
+            if (!current) return current;
+            const tipByRef = new Map(refsPayload.map((ref) => [ref.gitRef, ref.tipCommitSha]));
+            let changed = false;
+            const next = current.map((ref) => {
+              const tip = tipByRef.get(ref.git_ref);
+              if (!tip || ref.last_seen_commit_sha === tip) return ref;
+              changed = true;
+              return { ...ref, last_seen_commit_sha: tip };
+            });
+            return changed ? next : current;
+          }
+        );
+        return {
+          didSync: true,
+          importedCount,
+          importedNodeIds: [],
+          importedByRef: Object.fromEntries(refsPayload.map((ref) => [ref.gitRef, ref.commits.length])),
+          ignoredRefs,
+          queuedForServerSync: true,
         };
       }
 
@@ -144,6 +278,7 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
       if ((result.importedCount ?? 0) > 0) {
         void queryClient.invalidateQueries({ queryKey: ['graph-snapshot', workspaceId], refetchType: 'active' });
         void queryClient.invalidateQueries({ queryKey: ['local-commits', workspaceId], refetchType: 'active' });
+        void queryClient.invalidateQueries({ queryKey: ['local-commit-graph', workspaceId], refetchType: 'active' });
       }
       queryClient.invalidateQueries({ queryKey: trackedRefKeys.workspace(workspaceId) });
       queryClient.invalidateQueries({ queryKey: branchKeys.workspace(workspaceId) });

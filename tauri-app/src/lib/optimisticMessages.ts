@@ -2,6 +2,7 @@ import type { Message, AttachmentMetadata } from '../stores/workspaceStore';
 import type { AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 
 export interface OptimisticMessageConfig {
+  id?: string;
   workspaceId: string;
   parentId: string | null;
   content: string;
@@ -40,7 +41,7 @@ export function createOptimisticUserMessage(
   config: OptimisticMessageConfig
 ): AgentRunProjectedMessage {
   const now = new Date().toISOString();
-  const id = generateOptimisticId('opt-user');
+  const id = config.id || generateOptimisticId('opt-user');
 
   return {
     id,
@@ -96,7 +97,7 @@ export function createOptimisticAssistantMessage(
   parentUserMessageId: string
 ): AgentRunProjectedMessage {
   const now = new Date().toISOString();
-  const id = generateOptimisticId('opt-assistant');
+  const id = config.id || generateOptimisticId('opt-assistant');
 
   return {
     id,

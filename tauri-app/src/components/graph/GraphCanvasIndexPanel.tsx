@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Check, Eye, EyeOff, Route } from 'lucide-react';
+import { Check, Eye, EyeOff, GitCommitHorizontal, MessageSquareText, Route, type LucideIcon } from 'lucide-react';
 import type { Node } from '@xyflow/react';
 import type { Message } from '../../stores/workspaceStore';
 import type { LlmNodeData } from '../../lib/graphUtils';
@@ -12,6 +12,9 @@ interface GraphCanvasIndexPanelProps {
   onPreviewEdgeType: (edgeTypeId: GraphEdgeLegendId) => void;
   visibleEdgeTypes: Set<GraphEdgeLegendId>;
   onToggleEdgeType: (edgeTypeId: GraphEdgeLegendId) => void;
+  visibleNodeSections: Set<GraphNodeSectionId>;
+  onToggleNodeSection: (sectionId: GraphNodeSectionId) => void;
+  nodeSectionCounts: Record<GraphNodeSectionId, number>;
   onFocusMessage: (messageId: string) => void;
   nodes: Node<any>[];
   messages: Message[];
@@ -35,7 +38,7 @@ const EDGE_LEGEND = [
   {
     id: 'conversation',
     label: 'Conversation',
-    description: 'Inter-turn conversation placement: the previous assistant reply to the next user message. This is the only edge type that affects graph layout.',
+    description: 'Inter-turn conversation placement: the previous assistant reply to the next user message. Conversation edges drive conversation-lane layout.',
     color: '#475569',
     darkColor: '#94a3b8',
     width: 2,
@@ -57,7 +60,7 @@ const EDGE_LEGEND = [
   {
     id: 'git-parent',
     label: 'Commit Parent',
-    description: 'Commit lineage: a parent commit to a child commit. Merge commits can have multiple commit-parent edges. These edges do not affect layout.',
+    description: 'Commit lineage: a parent commit to a child commit. Merge commits can have multiple commit-parent edges. Commit-parent edges drive commit-lane layout.',
     color: '#059669',
     darkColor: '#34d399',
     width: 2,
@@ -79,6 +82,24 @@ const EDGE_LEGEND = [
 ] as const;
 
 export type GraphEdgeLegendId = typeof EDGE_LEGEND[number]['id'];
+export type GraphNodeSectionId = 'conversation' | 'commits';
+
+const NODE_SECTION_LEGEND: Array<{
+  id: GraphNodeSectionId;
+  label: string;
+  icon: LucideIcon;
+}> = [
+  {
+    id: 'conversation',
+    label: 'Conversation',
+    icon: MessageSquareText,
+  },
+  {
+    id: 'commits',
+    label: 'Commits',
+    icon: GitCommitHorizontal,
+  },
+];
 
 export function GraphCanvasIndexPanel({
   isVisible,
@@ -86,6 +107,9 @@ export function GraphCanvasIndexPanel({
   onPreviewEdgeType,
   visibleEdgeTypes,
   onToggleEdgeType,
+  visibleNodeSections,
+  onToggleNodeSection,
+  nodeSectionCounts,
   onFocusMessage,
   nodes,
   messages,
@@ -228,6 +252,49 @@ export function GraphCanvasIndexPanel({
               </span>
             </button>
           </div>
+
+            <div className="mb-2">
+              <div className="text-[9px] font-medium text-muted-foreground dark:text-slate-500 uppercase tracking-wide mb-1 px-0.5">
+                Nodes
+              </div>
+              <div className="space-y-1">
+                {NODE_SECTION_LEGEND.map((item) => {
+                  const isSectionVisible = visibleNodeSections.has(item.id);
+                  const Icon = item.icon;
+                  return (
+                    <div
+                      key={item.id}
+                      className="rounded px-0.5 py-0.5 hover:bg-muted/50 dark:hover:bg-slate-800/50 transition-colors"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <Icon className="h-3 w-3 flex-shrink-0 text-muted-foreground dark:text-slate-400" />
+                        <span className="text-foreground dark:text-slate-300 text-[10px] font-medium leading-tight">
+                          {item.label}
+                        </span>
+                        <span className="text-muted-foreground dark:text-slate-400 text-[9px] bg-muted dark:bg-slate-800 px-1 rounded">
+                          {nodeSectionCounts[item.id]}
+                        </span>
+                        <button
+                          type="button"
+                          className={cn(
+                            'ml-auto flex h-4 w-4 items-center justify-center rounded border transition-colors',
+                            isSectionVisible
+                              ? 'border-foreground/20 bg-foreground text-background dark:border-slate-500 dark:bg-slate-200 dark:text-slate-950'
+                              : 'border-border bg-background text-transparent dark:border-slate-700 dark:bg-slate-900'
+                          )}
+                          onClick={() => onToggleNodeSection(item.id)}
+                          aria-pressed={isSectionVisible}
+                          aria-label={`${isSectionVisible ? 'Hide' : 'Show'} ${item.label} nodes`}
+                          title={`${isSectionVisible ? 'Hide' : 'Show'} ${item.label} nodes`}
+                        >
+                          <Check className="h-2.5 w-2.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
 
             <div className="mb-2">
               <div className="text-[9px] font-medium text-muted-foreground dark:text-slate-500 uppercase tracking-wide mb-1 px-0.5">

@@ -205,6 +205,10 @@ fn sync_skill_entry(runtime_dir: &Path, source_dir: &Path) -> Result<(), String>
 }
 
 fn infer_skill_name(skill_folder: &str, content: &str) -> String {
+    if let Some(name) = frontmatter_value(content, "name") {
+        return name;
+    }
+
     content
         .lines()
         .find_map(|line| line.strip_prefix("# ").map(str::trim))
@@ -214,6 +218,10 @@ fn infer_skill_name(skill_folder: &str, content: &str) -> String {
 }
 
 fn infer_skill_description(content: &str) -> String {
+    if let Some(description) = frontmatter_value(content, "description") {
+        return description;
+    }
+
     let mut in_frontmatter = false;
     for line in content.lines() {
         let trimmed = line.trim();
@@ -227,6 +235,28 @@ fn infer_skill_description(content: &str) -> String {
         return trimmed.to_string();
     }
     "No description available.".to_string()
+}
+
+fn frontmatter_value(content: &str, key: &str) -> Option<String> {
+    let mut lines = content.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+
+    let prefix = format!("{}:", key);
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            return None;
+        }
+        if let Some(value) = trimmed.strip_prefix(&prefix) {
+            let normalized = value.trim().trim_matches('"').trim_matches('\'');
+            if !normalized.is_empty() {
+                return Some(normalized.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn parse_source_metadata(skill_dir: &Path) -> Option<SkillSourceMetadata> {
@@ -445,17 +475,86 @@ fn resolve_store_skill(skill_id: &str) -> Result<Option<PathBuf>, String> {
     Ok(None)
 }
 
-fn write_skill_metadata(skill_dir: &Path, canonical_id: &str) -> Result<(), String> {
-    let (source, _) = split_canonical_id(canonical_id);
+fn write_skill_metadata_with_source(
+    skill_dir: &Path,
+    canonical_id: &str,
+    source: &str,
+) -> Result<(), String> {
     let metadata = SkillSourceMetadata {
         canonical_id: canonical_id.to_string(),
-        source,
+        source: source.to_string(),
     };
     let metadata_path = skill_dir.join(SKILL_METADATA_FILENAME);
     let payload = serde_json::to_string_pretty(&metadata)
         .map_err(|e| format!("Failed to encode skill metadata: {}", e))?;
     fs::write(&metadata_path, payload)
         .map_err(|e| format!("Failed to write {}: {}", metadata_path.display(), e))
+}
+
+fn write_skill_metadata(skill_dir: &Path, canonical_id: &str) -> Result<(), String> {
+    let (source, _) = split_canonical_id(canonical_id);
+    write_skill_metadata_with_source(skill_dir, canonical_id, &source)
+}
+
+fn local_skill_canonical_id(skill_dir: &Path) -> Result<String, String> {
+    let canonical = skill_dir.canonicalize().map_err(|e| {
+        format!(
+            "Failed to resolve skill path {}: {}",
+            skill_dir.display(),
+            e
+        )
+    })?;
+    Ok(format!("local:{}", canonical.to_string_lossy()))
+}
+
+fn standard_skill_roots() -> Vec<(String, PathBuf)> {
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+
+    let mut push_root = |source: &str, root: PathBuf| {
+        if seen.insert(root.clone()) {
+            roots.push((source.to_string(), root));
+        }
+    };
+
+    if let Some(home_dir) = dirs::home_dir() {
+        push_root("codex", home_dir.join(".codex").join("skills"));
+        push_root("codex", home_dir.join(".agents").join("skills"));
+        push_root("claude-code", home_dir.join(".claude").join("skills"));
+    }
+
+    if let Ok(codex_home) = std::env::var("CODEX_HOME") {
+        push_root("codex", PathBuf::from(codex_home).join("skills"));
+    }
+    if let Ok(claude_home) = std::env::var("CLAUDE_HOME") {
+        push_root("claude-code", PathBuf::from(claude_home).join("skills"));
+    }
+
+    roots
+}
+
+fn summarize_discovered_skill(
+    skill_dir: &Path,
+    source: &str,
+    installed_ids: &HashSet<String>,
+) -> Result<SkillSummary, String> {
+    let folder_name = skill_dir
+        .file_name()
+        .ok_or_else(|| format!("Invalid skill path {}", skill_dir.display()))?
+        .to_string_lossy()
+        .into_owned();
+    let skill_doc = fs::read_to_string(skill_dir.join(SKILL_DOC_FILENAME))
+        .map_err(|e| format!("Failed to read {}: {}", skill_dir.display(), e))?;
+    let id = local_skill_canonical_id(skill_dir)?;
+
+    Ok(SkillSummary {
+        installed: installed_ids.contains(&id),
+        id,
+        name: infer_skill_name(&folder_name, &skill_doc),
+        description: infer_skill_description(&skill_doc),
+        source: source.to_string(),
+        path: Some(skill_dir.to_string_lossy().into_owned()),
+    })
 }
 
 fn list_installed_skills_inner(progress: &SkillProgress) -> Result<Vec<SkillSummary>, String> {
@@ -474,6 +573,32 @@ fn list_installed_skills_inner(progress: &SkillProgress) -> Result<Vec<SkillSumm
         skills.push(summarize_local_skill(&skill_dir)?);
     }
     skills.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(skills)
+}
+
+fn list_importable_skills_inner(progress: &SkillProgress) -> Result<Vec<SkillSummary>, String> {
+    let store_dir = agentree_skills_dir()?;
+    fs::create_dir_all(&store_dir).map_err(|e| {
+        format!(
+            "Failed to create Agentree skill store {}: {}",
+            store_dir.display(),
+            e
+        )
+    })?;
+    let installed = installed_skill_ids(&store_dir)?;
+
+    progress.stage("scan", "Scanning Claude Code and Codex skill folders");
+    let mut skills = Vec::new();
+    let mut seen_ids = HashSet::new();
+    for (source, root) in standard_skill_roots() {
+        for skill_dir in skill_directories(&root)? {
+            let id = local_skill_canonical_id(&skill_dir)?;
+            if seen_ids.insert(id) {
+                skills.push(summarize_discovered_skill(&skill_dir, &source, &installed)?);
+            }
+        }
+    }
+    skills.sort_by(|a, b| a.name.cmp(&b.name).then(a.source.cmp(&b.source)));
     Ok(skills)
 }
 
@@ -540,6 +665,66 @@ fn install_catalog_skill_inner(
     }
     copy_dir_recursive(&installed_dir, &destination)?;
     write_skill_metadata(&destination, normalized)?;
+
+    summarize_local_skill(&destination)
+}
+
+fn import_local_skill_inner(
+    source_path: &str,
+    progress: &SkillProgress,
+) -> Result<SkillSummary, String> {
+    let source_dir = PathBuf::from(source_path.trim())
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve skill path {}: {}", source_path, e))?;
+    if !source_dir.is_dir() || !source_dir.join(SKILL_DOC_FILENAME).exists() {
+        return Err(format!(
+            "{} is not a skill directory with a {} file",
+            source_dir.display(),
+            SKILL_DOC_FILENAME
+        ));
+    }
+
+    let store_dir = agentree_skills_dir()?;
+    fs::create_dir_all(&store_dir).map_err(|e| {
+        format!(
+            "Failed to create Agentree skill store {}: {}",
+            store_dir.display(),
+            e
+        )
+    })?;
+
+    progress.stage("import", "Copying local skill into the Agentree store");
+    let folder_name = source_dir
+        .file_name()
+        .ok_or_else(|| format!("Invalid skill path {}", source_dir.display()))?
+        .to_string_lossy()
+        .into_owned();
+    let canonical_id = local_skill_canonical_id(&source_dir)?;
+    let source_label = standard_skill_roots()
+        .into_iter()
+        .find_map(|(source, root)| {
+            root.canonicalize()
+                .ok()
+                .filter(|canonical_root| source_dir.starts_with(canonical_root))
+                .map(|_| source)
+        })
+        .unwrap_or_else(|| "local".to_string());
+
+    let mut destination = store_dir.join(&folder_name);
+    if destination.exists() {
+        let existing_matches = parse_source_metadata(&destination)
+            .map(|metadata| metadata.canonical_id == canonical_id)
+            .unwrap_or(false);
+        if !existing_matches {
+            destination = store_dir.join(format!("{}-{}", source_label, folder_name));
+        }
+    }
+
+    if destination.exists() {
+        remove_existing_path(&destination)?;
+    }
+    copy_dir_recursive(&source_dir, &destination)?;
+    write_skill_metadata_with_source(&destination, &canonical_id, &source_label)?;
 
     summarize_local_skill(&destination)
 }
@@ -628,6 +813,27 @@ pub async fn list_installed_skills(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn list_importable_skills(
+    app: AppHandle,
+    op_id: Option<String>,
+) -> Result<Vec<SkillSummary>, String> {
+    let progress = SkillProgress::new(app, op_id, "list-importable", None);
+    let worker = progress.clone();
+    let result = tokio::task::spawn_blocking(move || list_importable_skills_inner(&worker))
+        .await
+        .map_err(|e| format!("Failed to list importable skills: {}", e))?;
+    match &result {
+        Ok(skills) => progress.finish(
+            "complete",
+            &format!("Found {} importable skills", skills.len()),
+        ),
+        Err(error) => progress.fail("error", error),
+    }
+    result
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn search_catalog_skills(
     app: AppHandle,
     query: String,
@@ -663,6 +869,26 @@ pub async fn install_catalog_skill(
             .map_err(|e| format!("Failed to install skill: {}", e))?;
     match &result {
         Ok(skill) => progress.finish("complete", &format!("Installed {}", skill.name)),
+        Err(error) => progress.fail("error", error),
+    }
+    result
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn import_local_skill(
+    app: AppHandle,
+    source_path: String,
+    op_id: Option<String>,
+) -> Result<SkillSummary, String> {
+    let progress = SkillProgress::new(app, op_id, "import-skill", Some(source_path.clone()));
+    let worker = progress.clone();
+    let result =
+        tokio::task::spawn_blocking(move || import_local_skill_inner(&source_path, &worker))
+            .await
+            .map_err(|e| format!("Failed to import skill: {}", e))?;
+    match &result {
+        Ok(skill) => progress.finish("complete", &format!("Imported {}", skill.name)),
         Err(error) => progress.fail("error", error),
     }
     result

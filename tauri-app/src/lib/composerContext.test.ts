@@ -79,4 +79,69 @@ describe('composer context', () => {
       contextPolicy: 'fresh',
     })).toEqual(new Set());
   });
+
+  it('starts context at the selected context start node', () => {
+    expect(buildComposerContextPathIds({
+      parentId: 'assistant-2',
+      messages: scopedConversation(),
+      contextPolicy: 'continue',
+      contextStartId: 'user-2',
+    })).toEqual(new Set(['user-2', 'assistant-2']));
+  });
+
+  it('merges an alternate context parent with the placement parent path', () => {
+    const messages = [
+      ...scopedConversation(),
+      message({ id: 'user-branch', role: 'user', parentId: 'assistant-1' }, 5),
+      message({ id: 'assistant-branch', role: 'assistant', parentId: 'user-branch' }, 6),
+    ];
+
+    expect(buildComposerContextPathIds({
+      parentId: 'assistant-branch',
+      messages,
+      contextParentId: 'assistant-2',
+      contextPolicy: 'continue',
+    })).toEqual(new Set([
+      'user-1',
+      'assistant-1',
+      'user-2',
+      'assistant-2',
+      'user-branch',
+      'assistant-branch',
+    ]));
+  });
+
+  it('offers tool context without selecting it by default or adding extra path ids', () => {
+    const messages = [
+      message({ id: 'user-1', role: 'user', parentId: null }, 1),
+      message({
+        id: 'assistant-1',
+        role: 'assistant',
+        parentId: 'user-1',
+        execution_data: {
+          timeline: [
+            { type: 'tool_use', toolUseId: 'tool-1', toolName: 'read_file', toolInput: { path: 'a.ts' } },
+            { type: 'tool_result', toolUseId: 'tool-1', toolName: 'read_file', toolOutput: 'content' },
+          ],
+        },
+      }, 2),
+    ];
+
+    const selection = buildComposerContextSelection('assistant-1', messages);
+
+    expect(selection.entries.map((entry) => entry.id)).toEqual([
+      'user-1:user',
+      'assistant-1:assistant',
+      'assistant-1:tool',
+    ]);
+    expect(selection.defaultSelectedIds).toEqual([
+      'user-1:user',
+      'assistant-1:assistant',
+    ]);
+    expect(buildComposerContextPathIds({
+      parentId: 'assistant-1',
+      messages,
+      contextPolicy: 'continue',
+    })).toEqual(new Set(['user-1', 'assistant-1']));
+  });
 });

@@ -168,6 +168,31 @@ export interface LocalCommitImport {
     totalDeletions?: number | null;
 }
 
+export interface LocalCommitGraphSnapshot {
+    commits: Array<{
+        sha: string;
+        subject?: string | null;
+        authorName?: string | null;
+        authorEmail?: string | null;
+        authoredAt?: string | null;
+        committedAt?: string | null;
+        sourceKind?: string | null;
+        producedByNodeId?: string | null;
+        firstParentSha?: string | null;
+        filesChangedCount?: number | null;
+        totalAdditions?: number | null;
+        totalDeletions?: number | null;
+    }>;
+    commitParents: Array<{ childSha: string; parentSha: string; parentIndex: number }>;
+    commitObservations: Array<{
+        commitSha: string;
+        gitRef?: string | null;
+        sourceKind?: string | null;
+        firstSeenAt?: string | null;
+        lastSeenAt?: string | null;
+    }>;
+}
+
 export interface StartAgentRunIntent {
     runId: string;
     assistantNodeId: string;
@@ -487,11 +512,17 @@ export const agentClient = {
     listInstalledSkills: async (opId?: string): Promise<SkillSummary[]> => {
         return await tauriCommands.listInstalledSkills(opId ?? null);
     },
+    listImportableSkills: async (opId?: string): Promise<SkillSummary[]> => {
+        return await tauriCommands.listImportableSkills(opId ?? null);
+    },
     searchCatalogSkills: async (query: string, opId?: string): Promise<SkillSummary[]> => {
         return await tauriCommands.searchCatalogSkills(query, opId ?? null);
     },
     installCatalogSkill: async (skillId: string, opId?: string): Promise<SkillSummary> => {
         return await tauriCommands.installCatalogSkill(skillId, opId ?? null);
+    },
+    importLocalSkill: async (sourcePath: string, opId?: string): Promise<SkillSummary> => {
+        return await tauriCommands.importLocalSkill(sourcePath, opId ?? null);
     },
     deleteInstalledSkill: async (skillId: string, opId?: string): Promise<void> => {
         await tauriCommands.deleteInstalledSkill(skillId, opId ?? null);
@@ -538,6 +569,18 @@ export const agentClient = {
             })),
             gitRef ?? null
         );
+    },
+    listLocalCommitGraph: async (workspaceId: string): Promise<LocalCommitGraphSnapshot> => {
+        if (!hasTauriRuntime()) return { commits: [], commitParents: [], commitObservations: [] };
+        return await tauriCommands.listLocalCommitGraph(workspaceId) as LocalCommitGraphSnapshot;
+    },
+    enqueueLocalCommitGraphSync: async (workspaceId: string, payload: unknown, mutationId?: string | null): Promise<LocalSyncEventRecord | null> => {
+        if (!hasTauriRuntime()) return null;
+        return await tauriCommands.enqueueLocalCommitGraphSync(
+            workspaceId,
+            JSON.stringify(payload),
+            mutationId ?? null
+        ) as LocalSyncEventRecord;
     },
     localFirstDeleteBranch: async (workspaceId: string, rootNodeId: string): Promise<LocalSyncEventRecord | null> => {
         if (!hasTauriRuntime()) return null;

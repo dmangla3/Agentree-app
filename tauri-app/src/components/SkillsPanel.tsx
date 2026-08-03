@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Download, FolderOpen, Loader2, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react';
+import { CheckCircle2, Download, FolderOpen, Import, Loader2, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react';
 import { agentClient, SkillProgressEvent, SkillSummary } from '../lib/agentClient';
 import { useToastHelpers } from './Toast';
 import { Button } from '../../@/components/ui/button';
@@ -90,6 +90,11 @@ export function SkillsPanel({ className }: { className?: string }) {
         enabled: hasCatalogSearch,
     });
 
+    const importableQuery = useQuery({
+        queryKey: ['skills', 'importable'],
+        queryFn: () => agentClient.listImportableSkills('skills-importable'),
+    });
+
     const storePathQuery = useQuery({
         queryKey: ['skills', 'store-path'],
         queryFn: agentClient.getSkillStorePath,
@@ -98,6 +103,7 @@ export function SkillsPanel({ className }: { className?: string }) {
     const refreshAll = async () => {
         await Promise.all([
             queryClient.invalidateQueries({ queryKey: ['skills', 'installed'] }),
+            queryClient.invalidateQueries({ queryKey: ['skills', 'importable'] }),
             hasCatalogSearch
                 ? queryClient.invalidateQueries({ queryKey: ['skills', 'catalog-search', searchTerm] })
                 : Promise.resolve(),
@@ -116,6 +122,17 @@ export function SkillsPanel({ className }: { className?: string }) {
         },
     });
 
+    const importMutation = useMutation({
+        mutationFn: (sourcePath: string) => agentClient.importLocalSkill(sourcePath, `import:${sourcePath}`),
+        onSuccess: async (skill) => {
+            toast.success('Skill imported', `${skill.name} is now available to Claude and Codex runs.`);
+            await refreshAll();
+        },
+        onError: (error) => {
+            toast.error('Import failed', error instanceof Error ? error.message : 'Could not import skill.');
+        },
+    });
+
     const deleteMutation = useMutation({
         mutationFn: (skillId: string) => agentClient.deleteInstalledSkill(skillId, `delete:${skillId}`),
         onSuccess: async () => {
@@ -129,6 +146,7 @@ export function SkillsPanel({ className }: { className?: string }) {
 
     const installedSkills = installedQuery.data ?? [];
     const catalogSkills = hasCatalogSearch ? catalogQuery.data ?? [] : [];
+    const importableSkills = importableQuery.data ?? [];
 
     const filteredInstalled = useMemo(() => {
         const localSearch = searchTerm.toLowerCase();
@@ -138,8 +156,24 @@ export function SkillsPanel({ className }: { className?: string }) {
         );
     }, [installedSkills, searchTerm]);
 
+    const filteredImportable = useMemo(() => {
+        const localSearch = searchTerm.toLowerCase();
+        if (!localSearch) return importableSkills;
+        return importableSkills.filter((skill) =>
+            [skill.name, skill.id, skill.description, skill.source, skill.path ?? ''].some((field) =>
+                field.toLowerCase().includes(localSearch)
+            )
+        );
+    }, [importableSkills, searchTerm]);
+
     const activeMutationSkillId =
-        installMutation.isPending ? installMutation.variables : deleteMutation.isPending ? deleteMutation.variables : null;
+        installMutation.isPending
+            ? installMutation.variables
+            : importMutation.isPending
+              ? importMutation.variables
+              : deleteMutation.isPending
+                ? deleteMutation.variables
+                : null;
     const activeProgress = Object.values(progressByOp).filter(isProgressVisible);
 
     return (
@@ -197,12 +231,13 @@ export function SkillsPanel({ className }: { className?: string }) {
                 </div>
             )}
 
-            {(installedQuery.error || catalogQuery.error || storePathQuery.error) && (
+            {(installedQuery.error || importableQuery.error || catalogQuery.error || storePathQuery.error) && (
                 <div className="p-4">
                     <Alert variant="destructive">
                         <AlertDescription>
                             {String(
                                 installedQuery.error ||
+                                    importableQuery.error ||
                                     catalogQuery.error ||
                                     storePathQuery.error ||
                                     'Skills could not be loaded.'
@@ -216,6 +251,7 @@ export function SkillsPanel({ className }: { className?: string }) {
                 <div className="border-b px-4 py-3">
                     <TabsList>
                         <TabsTrigger value="installed">Installed ({installedSkills.length})</TabsTrigger>
+                        <TabsTrigger value="local">Local Sources ({importableSkills.length})</TabsTrigger>
                         <TabsTrigger value="catalog">Registry Search ({catalogSkills.length})</TabsTrigger>
                     </TabsList>
                 </div>
@@ -251,6 +287,55 @@ export function SkillsPanel({ className }: { className?: string }) {
                                                 <Trash2 className="h-4 w-4" />
                                                 {activeMutationSkillId === skill.id && deleteMutation.isPending ? 'Deleting...' : 'Delete'}
                                             </Button>
+                                        }
+                                    />
+                                ))
+                            )}
+                        </div>
+                    </ScrollArea>
+                </TabsContent>
+
+                <TabsContent value="local" className="mt-0 min-h-0 flex-1">
+                    <ScrollArea className="h-full">
+                        <div className="space-y-3 p-4">
+                            <div className="rounded-xl border bg-muted/25 p-4 text-sm text-muted-foreground">
+                                Agentree scans your Claude Code and Codex skill folders, then imports selected skills into
+                                the shared Agentree store.
+                            </div>
+                            {importableQuery.isLoading ? (
+                                <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+                                    Scanning local skill folders...
+                                </div>
+                            ) : filteredImportable.length === 0 ? (
+                                <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+                                    {searchTerm
+                                        ? 'No local Claude Code or Codex skills match your search.'
+                                        : 'No local Claude Code or Codex skills were found.'}
+                                </div>
+                            ) : (
+                                filteredImportable.map((skill) => (
+                                    <SkillRow
+                                        key={`${skill.source}:${skill.path ?? skill.id}`}
+                                        skill={skill}
+                                        action={
+                                            skill.installed ? (
+                                                <Button variant="outline" size="sm" className="gap-1" disabled>
+                                                    <CheckCircle2 className="h-4 w-4" />
+                                                    Imported
+                                                </Button>
+                                            ) : (
+                                                <Button
+                                                    size="sm"
+                                                    className="gap-1"
+                                                    disabled={Boolean(activeMutationSkillId)}
+                                                    onClick={() => skill.path && importMutation.mutate(skill.path)}
+                                                >
+                                                    <Import className="h-4 w-4" />
+                                                    {activeMutationSkillId === skill.path && importMutation.isPending
+                                                        ? 'Importing...'
+                                                        : 'Import'}
+                                                </Button>
+                                            )
                                         }
                                     />
                                 ))

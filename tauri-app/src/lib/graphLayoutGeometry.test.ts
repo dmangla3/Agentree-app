@@ -392,6 +392,7 @@ const buildMappedGraph = (
     commitObservations?: Array<{ commit_sha: string; source_kind: string; git_ref?: string | null; first_seen_at?: string; last_seen_at?: string }>;
   },
   contextPathMessageIds?: Set<string>,
+  visibleNodeSections?: Set<'conversation' | 'commits'>,
 ) => {
   const projection = buildWorkspaceProjection({
     messages,
@@ -408,6 +409,26 @@ const buildMappedGraph = (
     contextPathMessageIds ?? new Set(),
     new Set(),
     false,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    visibleNodeSections,
   );
 };
 
@@ -497,6 +518,22 @@ describe('graph layout geometry QA', () => {
     assertCompactTurnCellGeometry(layouted.nodes, layouted.edges);
   });
 
+  it('removes hidden node sections before calculating turn lane width', () => {
+    const messages = buildTurnWithLocalAssistantOutputCommit();
+    const conversationOnly = buildMappedGraph(messages, 'assistant-1', undefined, undefined, new Set(['conversation']));
+    const commitsOnly = buildMappedGraph(messages, 'assistant-1', undefined, undefined, new Set(['commits']));
+
+    expect(conversationOnly.nodes.some((node) => node.type === 'commit_message')).toBe(false);
+    expect(getNode(conversationOnly.nodes, 'assistant-1').style?.width).toBe(200);
+
+    expect(commitsOnly.nodes.some((node) => node.type === 'user_message' || node.type === 'assistant_message')).toBe(false);
+    expect(getNode(commitsOnly.nodes, 'commit:assistant-1').style?.width).toBe(120);
+
+    const layoutedCommitsOnly = getTidyTreeLayoutedElements(commitsOnly.nodes, commitsOnly.edges);
+    const commit = getNode(layoutedCommitsOnly.nodes, 'commit:assistant-1');
+    expect(numberStyle(commit.style?.width)).toBe(120);
+  });
+
   it('keeps a generated commit as a compact sidecar in dagre layout', () => {
     const mapped = buildMappedGraph(buildTurnWithGeneratedCommit());
     const layouted = getLayoutedElements(mapped.nodes, mapped.edges);
@@ -533,7 +570,7 @@ describe('graph layout geometry QA', () => {
 
     expect(generatedCommit.type).toBe('commit_message');
     expect((commitEdge?.data as any)?.relationship).toBe('git-parent');
-    expect((commitEdge?.data as any)?.layout).toBe(false);
+    expect((commitEdge?.data as any)?.layout).toBe(true);
     expect(commitEdge?.sourceHandle).toBe('bottom-source');
     expect(commitEdge?.targetHandle).toBe('top-target');
 
@@ -556,7 +593,7 @@ describe('graph layout geometry QA', () => {
     const baseUsedEdge = mapped.edges.find((edge) => edge.source === parentCommit.id && edge.target === 'assistant-2');
 
     expect((commitEdge?.data as any)?.relationship).toBe('git-parent');
-    expect((commitEdge?.data as any)?.layout).toBe(false);
+    expect((commitEdge?.data as any)?.layout).toBe(true);
     expect(commitEdge?.sourceHandle).toBe('bottom-source');
     expect(commitEdge?.targetHandle).toBe('top-target');
     expect((baseUsedEdge?.data as any)?.relationship).toBe('base-used');
@@ -575,10 +612,10 @@ describe('graph layout geometry QA', () => {
     expect(second.type).toBe('commit_message');
     expect(third.type).toBe('commit_message');
     expect((firstToSecond?.data as any)?.relationship).toBe('git-parent');
-    expect((firstToSecond?.data as any)?.layout).toBe(false);
+    expect((firstToSecond?.data as any)?.layout).toBe(true);
     expect((firstToSecond?.data as any)?.edgeRole).toBe('commit-lineage');
     expect((secondToThird?.data as any)?.relationship).toBe('git-parent');
-    expect((secondToThird?.data as any)?.layout).toBe(false);
+    expect((secondToThird?.data as any)?.layout).toBe(true);
     expect((secondToThird?.data as any)?.edgeRole).toBe('commit-lineage');
   });
 
@@ -632,6 +669,121 @@ describe('graph layout geometry QA', () => {
     expect((edge?.data as any)?.edgeRole).toBe('commit-lineage');
   });
 
+  it('uses produced_by_node_id, not source_kind, to decide generated commit placement', () => {
+    const messages = [
+      makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
+      makeMessage({ id: 'assistant-1', role: 'assistant', parentId: 'user-1', status: 'completed' }, 1),
+    ];
+    const commitGraph = {
+      commits: [{
+        sha: 'agentorphan0001',
+        workspace_id: workspaceId,
+        subject: 'Agent-like commit without producing node',
+        source_kind: 'agent',
+        produced_by_node_id: null,
+        first_parent_sha: null,
+        committed_at: isoAt(2),
+        authored_at: isoAt(2),
+      }],
+      commitParents: [],
+      commitObservations: [],
+    };
+
+    const mapped = buildMappedGraph(messages, 'assistant-1', commitGraph);
+    const commit = getNode(mapped.nodes, 'agentorphan0001');
+
+    expect(commit.type).toBe('canonical_commit');
+    expect((commit.data as any).commit.producedByNodeId).toBe(null);
+    expect((commit.data as any).commit.kind).not.toBe('generated_commit');
+  });
+
+  it('uses imported commit parents as layout edges for individual commit rows', () => {
+    const messages = [
+      makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
+      makeMessage({ id: 'assistant-1', role: 'assistant', parentId: 'user-1', status: 'completed' }, 1),
+    ];
+    const commitGraph = buildCanonicalImportedCommitChain();
+    const shortCommitGraph = {
+      commits: commitGraph.commits.slice(0, 2),
+      commitParents: commitGraph.commitParents.slice(0, 2),
+      commitObservations: commitGraph.commitObservations.slice(0, 2),
+    };
+
+    const mapped = buildMappedGraph(messages, 'assistant-1', shortCommitGraph);
+    const edge = mapped.edges.find((candidate) => candidate.source === 'imported0001' && candidate.target === 'imported0002');
+
+    expect((edge?.data as any)?.relationship).toBe('git-parent');
+    expect((edge?.data as any)?.layout).toBe(true);
+  });
+
+  it('uses derived imported commit batches as layout nodes in commit lineage', () => {
+    const messages = buildTurnWithLocalAssistantOutputCommit().map((message) => (
+      message.id === 'assistant-1'
+        ? { ...message, base_commit_sha: 'imported0004' }
+        : message
+    ));
+    const commitGraph = buildCanonicalImportedCommitChain();
+
+    const mapped = buildMappedGraph(messages, 'assistant-1', commitGraph);
+    const group = mapped.nodes.find((node) => node.type === 'layout_derived_commit_group');
+    expect(group).toBeTruthy();
+
+    const edgeToGeneratedCommit = mapped.edges.find((edge) => edge.source === group!.id && edge.target === 'commit:assistant-1');
+    expect((edgeToGeneratedCommit?.data as any)?.relationship).toBe('git-parent');
+    expect((edgeToGeneratedCommit?.data as any)?.layout).toBe(true);
+  });
+
+  it('keeps a single observed imported ref batch even when merge commits are included', () => {
+    const messages = [
+      makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
+      makeMessage({ id: 'assistant-1', role: 'assistant', parentId: 'user-1', status: 'completed' }, 1),
+    ];
+    const commits: CommitEntity[] = [1, 2, 3, 4, 5].map((index) => ({
+      sha: `batch000${index}`,
+      workspace_id: workspaceId,
+      subject: `Imported batch commit ${index}`,
+      source_kind: 'external',
+      produced_by_node_id: null,
+      first_parent_sha: index === 1 ? 'base0001' : `batch000${index - 1}`,
+      committed_at: isoAt(index),
+      authored_at: isoAt(index),
+    }));
+    const commitParents = [
+      { child_sha: 'batch0001', parent_sha: 'base0001', parent_index: 0 },
+      { child_sha: 'batch0002', parent_sha: 'batch0001', parent_index: 0 },
+      { child_sha: 'batch0003', parent_sha: 'batch0002', parent_index: 0 },
+      { child_sha: 'batch0004', parent_sha: 'batch0003', parent_index: 0 },
+      { child_sha: 'batch0004', parent_sha: 'side0001', parent_index: 1 },
+      { child_sha: 'batch0005', parent_sha: 'batch0004', parent_index: 0 },
+    ];
+    const commitObservations = commits.map((commit) => ({
+      commit_sha: commit.sha,
+      source_kind: 'external',
+      git_ref: 'refs/heads/main',
+      first_seen_at: isoAt(20),
+      last_seen_at: isoAt(20),
+    }));
+
+    const mapped = buildMappedGraph(messages, 'assistant-1', { commits, commitParents, commitObservations });
+    const groups = mapped.nodes.filter((node) => node.type === 'layout_derived_commit_group');
+    const individualImportedCommits = mapped.nodes.filter((node) => (
+      node.type === 'canonical_commit' &&
+      String(node.id).startsWith('batch')
+    ));
+
+    expect(groups).toHaveLength(1);
+    expect((groups[0].data as any).group.commitShas).toHaveLength(5);
+    expect(individualImportedCommits).toHaveLength(0);
+
+    const layouted = getLayoutedElements(mapped.nodes, mapped.edges);
+    const origin = getNode(layouted.nodes, 'user-1');
+    const group = getNode(layouted.nodes, groups[0].id);
+    expect(group.position.x).toBeGreaterThan(origin.position.x);
+    expect(group.position.x - origin.position.x).toBeLessThan(280);
+    expect(Math.abs(group.position.y - origin.position.y)).toBeLessThan(80);
+    expect(layouted.edges.some((edge) => edge.source === 'user-1' && edge.target === group.id)).toBe(false);
+  });
+
   it('emits only inter-turn conversation, commit-parent, and base-used semantic edges', () => {
     const mapped = buildMappedGraph(buildTwoTurnBaseCommitScenario());
     const keys = semanticEdgeKeys(mapped.edges);
@@ -657,7 +809,7 @@ describe('graph layout geometry QA', () => {
     expect((conversationEdge?.data as any)?.layout).toBe(true);
     expect((conversationEdge?.data as any)?.relationship).toBe('conversation');
     expect((conversationEdge?.data as any)?.edgeLegendType).toBe('context-break');
-    expect((commitParentEdge?.data as any)?.layout).toBe(false);
+    expect((commitParentEdge?.data as any)?.layout).toBe(true);
     expect(commitParentEdge?.sourceHandle).toBe('bottom-source');
     expect(commitParentEdge?.targetHandle).toBe('top-target');
     expect(conversationEdge?.sourceHandle).toBe('bottom-source');

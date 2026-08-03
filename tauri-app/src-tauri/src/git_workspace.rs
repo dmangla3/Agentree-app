@@ -121,6 +121,9 @@ pub struct GitCommitMetadata {
     pub author_name: Option<String>,
     pub author_email: Option<String>,
     pub authored_at: Option<String>,
+    pub files_changed_count: Option<usize>,
+    pub total_additions: Option<usize>,
+    pub total_deletions: Option<usize>,
 }
 
 #[derive(Debug, Serialize, Clone, specta::Type)]
@@ -633,7 +636,37 @@ fn parse_commit_metadata_line(line: &str) -> Option<GitCommitMetadata> {
         author_name,
         author_email,
         authored_at,
+        files_changed_count: None,
+        total_additions: None,
+        total_deletions: None,
     })
+}
+
+fn attach_commit_stats(repo_path: &str, commit: &mut GitCommitMetadata) {
+    let output = match run_git(
+        repo_path,
+        &[
+            "show",
+            "--numstat",
+            "--format=",
+            "--first-parent",
+            "--root",
+            &commit.sha,
+        ],
+    ) {
+        Ok(output) => output,
+        Err(_) => return,
+    };
+    let numstats = parse_numstat(&output);
+    commit.files_changed_count = Some(numstats.len());
+    commit.total_additions = Some(numstats.values().map(|(additions, _)| *additions).sum());
+    commit.total_deletions = Some(numstats.values().map(|(_, deletions)| *deletions).sum());
+}
+
+fn attach_commit_stats_to_all(repo_path: &str, commits: &mut [GitCommitMetadata]) {
+    for commit in commits {
+        attach_commit_stats(repo_path, commit);
+    }
 }
 
 fn ref_kind(git_ref: &str) -> String {
@@ -2233,6 +2266,7 @@ pub async fn list_missing_commits(
         }
     }
 
+    attach_commit_stats_to_all(&repo_path, &mut commits);
     Ok(commits)
 }
 
@@ -2255,8 +2289,10 @@ pub async fn read_commit_metadata(
         .lines()
         .next()
         .ok_or_else(|| "Commit metadata not found".to_string())?;
-    parse_commit_metadata_line(first_line)
-        .ok_or_else(|| "Failed to parse commit metadata".to_string())
+    let mut commit = parse_commit_metadata_line(first_line)
+        .ok_or_else(|| "Failed to parse commit metadata".to_string())?;
+    attach_commit_stats(&repo_path, &mut commit);
+    Ok(commit)
 }
 
 #[tauri::command]
@@ -2411,11 +2447,13 @@ pub async fn list_addable_commit_range(
     args.push(&range);
 
     let output = run_git(&repo_path, &args)?;
-    Ok(output
+    let mut commits = output
         .lines()
         .filter(|line| !line.trim().is_empty())
         .filter_map(parse_commit_metadata_line)
-        .collect())
+        .collect::<Vec<_>>();
+    attach_commit_stats_to_all(&repo_path, &mut commits);
+    Ok(commits)
 }
 
 #[tauri::command]
@@ -2476,5 +2514,6 @@ pub async fn list_all_commits(
         }
     }
 
+    attach_commit_stats_to_all(&repo_path, &mut commits);
     Ok(commits)
 }
