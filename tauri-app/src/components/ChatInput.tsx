@@ -1981,6 +1981,14 @@ export function ChatInput({
                         reason: 'agent-finalize-ack',
                     });
                     if (finalizedOutputCommitSha) {
+                        void queryClient.invalidateQueries({
+                            queryKey: ['local-commit-graph', workspaceId],
+                            refetchType: 'active',
+                        });
+                        void queryClient.invalidateQueries({
+                            queryKey: ['local-commits', workspaceId],
+                            refetchType: 'active',
+                        });
                         void catchUpHotSendMessageDeltas(queryClient, workspaceId);
                         const flowId = getSendFlowIdForKey(nodeId);
                         if (flowId) {
@@ -4718,8 +4726,8 @@ export function ChatInput({
                                     </DropdownMenuTrigger>
                                 </TooltipTrigger>
                                 <TooltipContent side="bottom" align="start" className="max-w-72">
-                                    <div>Run from commit {formatCommitLabel(codeParentCommit)}{effectiveBaseCommitLabel !== codeParentCommit ? `: ${effectiveBaseCommitLabel}` : ''}.</div>
-                                    <div className="mt-1 text-muted-foreground">Use commit selection rarely; changing the base can make the graph harder to follow.</div>
+                                    <div>Run starts from commit {formatCommitLabel(codeParentCommit)}{effectiveBaseCommitLabel !== codeParentCommit ? `: ${effectiveBaseCommitLabel}` : ''}.</div>
+                                    <div className="mt-1 text-muted-foreground">Changing the base can make the graph harder to follow.</div>
                                 </TooltipContent>
                             </Tooltip>
                             <DropdownMenuContent
@@ -4854,7 +4862,7 @@ export function ChatInput({
                                 </TooltipTrigger>
                                 <TooltipContent side="bottom" align="start" className="max-w-72">
                                     {contextPolicy === 'fresh'
-                                        ? 'Start this agent run without inherited conversation context.'
+                                        ? 'Start without inherited conversation context. The node still belongs to the selected scope.'
                                         : `Context starts at ${contextStartLabel} and ends at ${contextParentLabel}.`}
                                 </TooltipContent>
                             </Tooltip>
@@ -5268,7 +5276,6 @@ export function ChatInput({
                                         "text-[11px] font-semibold text-muted-foreground transition-colors",
                                         selectedWorkspaceId ? "hover:border-[hsl(var(--app-border))] hover:bg-background/70 hover:text-foreground" : "opacity-50"
                                     )}
-                                    title="Automatically detach HEAD to the new commit created by the agent"
                                 >
                                     <Checkbox
                                         checked={autoCheckoutOnAgentCommit}

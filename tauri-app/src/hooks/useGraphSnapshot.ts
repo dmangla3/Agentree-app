@@ -52,6 +52,18 @@ const normalizeGraphSnapshot = (snapshot: GraphSnapshot): GraphSnapshot => ({
   commitObservations: Array.isArray(snapshot.commitObservations) ? snapshot.commitObservations : [],
 });
 
+const emptyGraphSnapshot = (workspaceId: string): GraphSnapshot => ({
+  version: 2,
+  workspaceId,
+  generatedAt: new Date(0).toISOString(),
+  messages: [],
+  summaries: [],
+  commits: [],
+  commitParents: [],
+  commitObservations: [],
+  cacheWriteDisabled: true,
+});
+
 const cacheKey = (workspaceId: string) => `${GRAPH_SNAPSHOT_CACHE_PREFIX}.${workspaceId}`;
 
 export const clearCachedGraphSnapshot = async (workspaceId: string | null): Promise<void> => {
@@ -273,8 +285,9 @@ export const graphSnapshotToSummaries = (snapshot: GraphSnapshot | undefined): S
 };
 
 export const useGraphSnapshot = (workspaceId: string | null, cacheResetNonce = 0): UseQueryResult<GraphSnapshot, Error> => {
+  const isNativeRuntime = isTauriEnvironment();
   const localInitialSnapshot = useMemo(() => readCachedGraphSnapshot(workspaceId), [workspaceId, cacheResetNonce]);
-  const shouldUseNativeCache = !!workspaceId && !localInitialSnapshot && isTauriEnvironment();
+  const shouldUseNativeCache = !!workspaceId && !localInitialSnapshot && isNativeRuntime;
   const [nativeCacheState, setNativeCacheState] = useState<{
     ready: boolean;
     snapshot?: GraphSnapshot;
@@ -334,7 +347,7 @@ export const useGraphSnapshot = (workspaceId: string | null, cacheResetNonce = 0
       });
       return normalizeGraphSnapshot(response.data);
     },
-    enabled: !!workspaceId && (!shouldUseNativeCache || nativeCacheReady),
+    enabled: !!workspaceId && !isNativeRuntime && (!shouldUseNativeCache || nativeCacheReady),
     initialData: () => localInitialSnapshot,
     staleTime: 30 * 1000,
     gcTime: 30 * 60 * 1000,
@@ -347,17 +360,22 @@ export const useGraphSnapshot = (workspaceId: string | null, cacheResetNonce = 0
     if (!workspaceId || !queryResult.data) return;
     if (queryResult.data.cacheWriteDisabled) return;
     writeCachedGraphSnapshot(workspaceId, queryResult.data);
-    if (isTauriEnvironment()) {
+    if (isNativeRuntime) {
       scheduleNativeGraphSnapshotCacheWrite(workspaceId, queryResult.data);
     }
-  }, [queryResult.data, workspaceId]);
+  }, [isNativeRuntime, queryResult.data, workspaceId]);
+
+  const nativeFallbackSnapshot = workspaceId && isNativeRuntime && nativeCacheReady
+    ? nativeCachedSnapshot ?? emptyGraphSnapshot(workspaceId)
+    : undefined;
+  const resolvedData = queryResult.data ?? nativeCachedSnapshot ?? nativeFallbackSnapshot;
 
   return {
     ...queryResult,
-    data: queryResult.data ?? nativeCachedSnapshot,
-    status: queryResult.data || nativeCachedSnapshot ? 'success' : queryResult.status,
-    isSuccess: queryResult.isSuccess || !!nativeCachedSnapshot,
-    isPending: !nativeCachedSnapshot && queryResult.isPending,
-    isLoading: !nativeCachedSnapshot && queryResult.isLoading,
+    data: resolvedData,
+    status: resolvedData ? 'success' : queryResult.status,
+    isSuccess: queryResult.isSuccess || !!resolvedData,
+    isPending: !resolvedData && queryResult.isPending,
+    isLoading: !resolvedData && queryResult.isLoading,
   } as UseQueryResult<GraphSnapshot, Error>;
 };

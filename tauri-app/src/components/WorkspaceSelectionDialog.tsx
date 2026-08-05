@@ -45,6 +45,7 @@ import { cn } from '../lib/utils';
 import { Badge } from '../../@/components/ui/badge';
 import { useToast } from './Toast';
 import { agentClient } from '../lib/agentClient';
+import { getErrorMessage } from '../lib/api';
 import { Alert, AlertDescription, AlertTitle } from '../../@/components/ui/alert';
 import { finalizeCreatedWorkspace } from '../lib/finalizeCreatedWorkspace';
 import { WorkspaceDeleteDialog } from './WorkspaceDeleteDialog';
@@ -359,7 +360,7 @@ RepoSection.displayName = 'RepoSection';
 export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSelectionDialogProps) {
   const queryClient = useQueryClient();
   const { selectWorkspace, selectedWorkspaceId, dispatchFocus } = useWorkspaceStore();
-  const { data: workspacesData, isLoading } = useWorkspaces();
+  const { data: workspacesData, isLoading, isError, error, refetch } = useWorkspaces();
   const createWorkspace = useCreateWorkspace();
   const renameWorkspace = useRenameWorkspace();
   const deleteWorkspace = useDeleteWorkspace();
@@ -719,6 +720,16 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
                   <div key={i} className="h-16 bg-muted rounded-lg animate-pulse" />
                 ))}
               </div>
+            ) : isError ? (
+              <Alert variant="destructive">
+                <AlertTitle>Unable to load workspaces</AlertTitle>
+                <AlertDescription className="space-y-3">
+                  <p>{getErrorMessage(error)}</p>
+                  <Button variant="outline" size="sm" onClick={() => void refetch()}>
+                    Try again
+                  </Button>
+                </AlertDescription>
+              </Alert>
             ) : workspaces.length === 0 ? (
               <div className="text-center py-12">
                 <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mx-auto mb-4">

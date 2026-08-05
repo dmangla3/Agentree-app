@@ -5,6 +5,7 @@ import type { Message } from '../../stores/workspaceStore';
 import type { LlmNodeData } from '../../lib/graphUtils';
 import { getGraphParentId } from '../../lib/graph/lineage';
 import { cn } from '../../lib/utils';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../../@/components/ui/tooltip';
 
 interface GraphCanvasIndexPanelProps {
   isVisible: boolean;
@@ -304,88 +305,93 @@ export function GraphCanvasIndexPanel({
                 {EDGE_LEGEND.map((item) => {
                   const isVisible = !item.toggleable || visibleEdgeTypes.has(item.id);
                   return (
-                    <div
-                      key={item.id}
-                      role={item.toggleable ? undefined : 'button'}
-                      tabIndex={0}
-                      title={item.description}
-                      className="rounded px-0.5 py-0.5 hover:bg-muted/50 dark:hover:bg-slate-800/50 transition-colors outline-none focus-visible:bg-muted/60 dark:focus-visible:bg-slate-800/60"
-                      onClick={() => {
-                        if (!item.toggleable) onPreviewEdgeType(item.id);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault();
-                          if (item.toggleable) {
-                            onToggleEdgeType(item.id);
-                          } else {
-                            onPreviewEdgeType(item.id);
-                          }
-                        }
-                      }}
-                    >
-                      <div className="flex items-center gap-1.5">
-                        {item.id === 'context-path' ? (
-                          <Route className="h-3 w-3 flex-shrink-0 text-indigo-600 dark:text-indigo-300" />
-                        ) : (
-                          <div
-                            className="w-6 border-t rounded-sm flex-shrink-0 dark:hidden"
-                            style={{
-                              borderTopColor: item.color,
-                              borderTopWidth: item.width,
-                              borderTopStyle: item.dashed ? 'dashed' : 'solid',
-                              opacity: item.opacity,
-                            }}
-                          />
-                        )}
-                        {item.id !== 'context-path' && (
-                          <div
-                            className="w-6 border-t rounded-sm flex-shrink-0 hidden dark:block"
-                            style={{
-                              borderTopColor: item.darkColor,
-                              borderTopWidth: item.width,
-                              borderTopStyle: item.dashed ? 'dashed' : 'solid',
-                              opacity: item.opacity,
-                            }}
-                          />
-                        )}
-                        <span className="text-foreground dark:text-slate-300 text-[10px] font-medium leading-tight">
-                          {item.label}
-                        </span>
-                        {item.toggleable ? (
-                          <button
-                            type="button"
-                            className={cn(
-                              'ml-auto flex h-4 w-4 items-center justify-center rounded border transition-colors',
-                              isVisible
-                                ? 'border-foreground/20 bg-foreground text-background dark:border-slate-500 dark:bg-slate-200 dark:text-slate-950'
-                                : 'border-border bg-background text-transparent dark:border-slate-700 dark:bg-slate-900'
+                    <Tooltip key={item.id}>
+                      <TooltipTrigger asChild>
+                        <div
+                          role={item.toggleable ? undefined : 'button'}
+                          tabIndex={0}
+                          className="rounded px-0.5 py-0.5 hover:bg-muted/50 dark:hover:bg-slate-800/50 transition-colors outline-none focus-visible:bg-muted/60 dark:focus-visible:bg-slate-800/60"
+                          onClick={() => {
+                            if (!item.toggleable) onPreviewEdgeType(item.id);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              if (item.toggleable) {
+                                onToggleEdgeType(item.id);
+                              } else {
+                                onPreviewEdgeType(item.id);
+                              }
+                            }
+                          }}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            {item.id === 'context-path' ? (
+                              <Route className="h-3 w-3 flex-shrink-0 text-indigo-600 dark:text-indigo-300" />
+                            ) : (
+                              <div
+                                className="w-6 border-t rounded-sm flex-shrink-0 dark:hidden"
+                                style={{
+                                  borderTopColor: item.color,
+                                  borderTopWidth: item.width,
+                                  borderTopStyle: item.dashed ? 'dashed' : 'solid',
+                                  opacity: item.opacity,
+                                }}
+                              />
                             )}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onToggleEdgeType(item.id);
-                            }}
-                            aria-pressed={isVisible}
-                            aria-label={`${isVisible ? 'Hide' : 'Show'} ${item.label} edges`}
-                            title={`${isVisible ? 'Hide' : 'Show'} ${item.label} edges`}
-                          >
-                            <Check className="h-2.5 w-2.5" />
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            className="ml-auto rounded px-1 py-px text-[9px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onPreviewEdgeType(item.id);
-                            }}
-                            title="Preview context path"
-                          >
-                            ping
-                          </button>
-                        )}
-                      </div>
-                    </div>
+                            {item.id !== 'context-path' && (
+                              <div
+                                className="w-6 border-t rounded-sm flex-shrink-0 hidden dark:block"
+                                style={{
+                                  borderTopColor: item.darkColor,
+                                  borderTopWidth: item.width,
+                                  borderTopStyle: item.dashed ? 'dashed' : 'solid',
+                                  opacity: item.opacity,
+                                }}
+                              />
+                            )}
+                            <span className="text-foreground dark:text-slate-300 text-[10px] font-medium leading-tight">
+                              {item.label}
+                            </span>
+                            {item.toggleable ? (
+                              <button
+                                type="button"
+                                className={cn(
+                                  'ml-auto flex h-4 w-4 items-center justify-center rounded border transition-colors',
+                                  isVisible
+                                    ? 'border-foreground/20 bg-foreground text-background dark:border-slate-500 dark:bg-slate-200 dark:text-slate-950'
+                                    : 'border-border bg-background text-transparent dark:border-slate-700 dark:bg-slate-900'
+                                )}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  onToggleEdgeType(item.id);
+                                }}
+                                aria-pressed={isVisible}
+                                aria-label={`${isVisible ? 'Hide' : 'Show'} ${item.label} edges`}
+                                title={`${isVisible ? 'Hide' : 'Show'} ${item.label} edges`}
+                              >
+                                <Check className="h-2.5 w-2.5" />
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                className="ml-auto rounded px-1 py-px text-[9px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  onPreviewEdgeType(item.id);
+                                }}
+                                title="Preview context path"
+                              >
+                                ping
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent side="right" align="start" className="max-w-72 leading-relaxed">
+                        {item.description}
+                      </TooltipContent>
+                    </Tooltip>
                   );
                 })}
               </div>

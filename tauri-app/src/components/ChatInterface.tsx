@@ -14,6 +14,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useIntegrationStore } from '../stores/integrationStore';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { useToastHelpers } from './Toast';
+import { agentClient } from '../lib/agentClient';
 
 import { ChatNodeDispatcher } from './nodes/chat/ChatNodeDispatcher';
 import { ChatTurnGroupLayout } from './nodes/chat/ChatTurnGroupLayout';
@@ -112,7 +113,7 @@ export function ChatInterface() {
   const graphSnapshotQuery = useGraphSnapshot(selectedWorkspaceId || null);
   const shouldHydrateFullMessages = graphSnapshotQuery.isSuccess || graphSnapshotQuery.isError;
   const messagesQuery = useMessages(selectedWorkspaceId);
-  const summariesQuery = useSummaries(selectedWorkspaceId, { enabled: shouldHydrateFullMessages });
+  const summariesQuery = useSummaries(selectedWorkspaceId, { enabled: shouldHydrateFullMessages && !agentClient.hasRuntime() });
   const scopesQuery = useScopes(selectedWorkspaceId);
   const { data: branchPointersData } = useBranches(selectedWorkspaceId || null);
   const { data: workspacesData } = useWorkspaces();

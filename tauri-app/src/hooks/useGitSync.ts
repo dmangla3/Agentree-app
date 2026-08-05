@@ -2,6 +2,7 @@ import { useCallback } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { agentClient } from '../lib/agentClient';
+import { getAccessToken } from '../lib/authSession';
 import { trackedRefKeys } from './useTrackedRefs';
 import { branchKeys } from './useBranches';
 import type { TrackedGitRef } from '../stores/workspaceStore';
@@ -14,6 +15,15 @@ type IgnoredSyncRef = {
 
 export const useGitSync = (workspaceId: string | null, repoPath: string | null) => {
   const queryClient = useQueryClient();
+
+  const flushLocalCommitGraphSync = async () => {
+    try {
+      const token = await getAccessToken();
+      await agentClient.processLocalSyncEvents(token);
+    } catch (error) {
+      console.warn('[useGitSync] Queued commit graph sync will retry later:', error);
+    }
+  };
 
   const syncMutation = useMutation({
     mutationFn: async () => {
@@ -36,6 +46,16 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
       });
       const cachedGraphSnapshot = queryClient.getQueryData<GraphSnapshot>(['graph-snapshot', workspaceId]);
       const knownCommitShas = new Set((cachedGraphSnapshot?.commits ?? []).map((commit) => commit.sha));
+      if (agentClient.hasRuntime()) {
+        try {
+          const localGraph = await agentClient.listLocalCommitGraph(workspaceId);
+          for (const commit of localGraph.commits) {
+            if (commit.sha) knownCommitShas.add(commit.sha);
+          }
+        } catch (error) {
+          console.warn('[useGitSync] Unable to read local commit graph before sync:', error);
+        }
+      }
       const ignoredRefs: IgnoredSyncRef[] = [];
       const enabledRefs = trackedRefs.filter((ref) => ref.enabled);
 
@@ -81,9 +101,9 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
         const lastSeenCommit = tracked.last_seen_commit_sha ?? null;
         let fromCommit = lastSeenCommit;
 
-        // Recover from an older bad sync where a tracked ref was marked as seen at the tip
-        // even though no canonical commit row was imported for that commit.
-        if (lastSeenCommit === tipCommitSha && knownCommitShas.size > 0 && !knownCommitShas.has(tipCommitSha)) {
+        // Recover when a tracked ref was marked as seen at the tip even though
+        // the graph currently available to this app has no commit row for it.
+        if (lastSeenCommit === tipCommitSha && !knownCommitShas.has(tipCommitSha)) {
           fromCommit = null;
         }
 
@@ -178,7 +198,8 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
                 totalAdditions: commit.totalAdditions,
                 totalDeletions: commit.totalDeletions,
               })),
-              refPayload.gitRef
+              refPayload.gitRef,
+              repoPath
             );
             backfilledRefsPayload.push({ ...refPayload, commits: commitsForRef });
           }
@@ -189,6 +210,7 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
               .sort()
               .join('|');
             await agentClient.enqueueLocalCommitGraphSync(workspaceId, { refs: backfilledRefsPayload }, mutationId);
+            await flushLocalCommitGraphSync();
             return {
               didSync: true,
               importedCount,
@@ -229,7 +251,8 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
               totalAdditions: commit.totalAdditions ?? null,
               totalDeletions: commit.totalDeletions ?? null,
             })),
-            refPayload.gitRef
+            refPayload.gitRef,
+            repoPath
           );
         }
         const mutationId = refsPayload
@@ -237,6 +260,7 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
           .sort()
           .join('|');
         await agentClient.enqueueLocalCommitGraphSync(workspaceId, { refs: refsPayload }, mutationId);
+        await flushLocalCommitGraphSync();
         queryClient.setQueryData<TrackedGitRef[]>(
           trackedRefKeys.workspace(workspaceId),
           (current) => {

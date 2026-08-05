@@ -1,10 +1,13 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
+
+const LOCAL_COMMIT_PARENT_CLOSURE_LIMIT: usize = 5_000;
 
 fn unix_timestamp() -> i64 {
     SystemTime::now()
@@ -1759,6 +1762,240 @@ impl TelemetryDb {
         })
     }
 
+    fn list_local_commit_shas(&self, workspace_id: &str) -> Result<HashSet<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT sha FROM local_commits WHERE workspace_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let shas = stmt
+            .query_map(params![workspace_id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<HashSet<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(shas)
+    }
+
+    fn materialize_local_commit_parent_closure(
+        &self,
+        workspace_id: &str,
+        commits: Vec<LocalCommitImport>,
+        repo_path: Option<&str>,
+    ) -> Result<Vec<LocalCommitImport>, String> {
+        let existing_shas = self.list_local_commit_shas(workspace_id)?;
+        let mut commit_by_sha: HashMap<String, LocalCommitImport> = HashMap::new();
+        let mut commit_order: Vec<String> = Vec::new();
+
+        for mut commit in commits {
+            let sha = commit.sha.trim().to_string();
+            if sha.is_empty() {
+                continue;
+            }
+            commit.sha = sha.clone();
+            commit.parents = commit
+                .parents
+                .iter()
+                .map(|parent| parent.trim().to_string())
+                .filter(|parent| !parent.is_empty())
+                .collect();
+            if !commit_by_sha.contains_key(&sha) {
+                commit_order.push(sha.clone());
+            }
+            commit_by_sha.insert(sha, commit);
+        }
+
+        if !existing_shas.is_empty() {
+            if let Some(repo_path) = repo_path.map(str::trim).filter(|value| !value.is_empty()) {
+                let mut queue: VecDeque<String> = commit_by_sha
+                    .values()
+                    .flat_map(|commit| commit.parents.iter().cloned())
+                    .filter(|sha| !existing_shas.contains(sha) && !commit_by_sha.contains_key(sha))
+                    .collect();
+                let mut queued: HashSet<String> = queue.iter().cloned().collect();
+                let mut fetched = 0usize;
+
+                while let Some(parent_sha) = queue.pop_front() {
+                    queued.remove(&parent_sha);
+                    if existing_shas.contains(&parent_sha)
+                        || commit_by_sha.contains_key(&parent_sha)
+                    {
+                        continue;
+                    }
+                    if fetched >= LOCAL_COMMIT_PARENT_CLOSURE_LIMIT {
+                        return Err(format!(
+                            "Local commit parent closure exceeded {} commits while resolving {}",
+                            LOCAL_COMMIT_PARENT_CLOSURE_LIMIT, parent_sha
+                        ));
+                    }
+
+                    let metadata =
+                        crate::git_workspace::read_commit_metadata_sync(repo_path, &parent_sha)?;
+                    let sha = metadata.sha.trim().to_string();
+                    if sha.is_empty()
+                        || existing_shas.contains(&sha)
+                        || commit_by_sha.contains_key(&sha)
+                    {
+                        continue;
+                    }
+
+                    let parents = metadata
+                        .parents
+                        .iter()
+                        .map(|parent| parent.trim().to_string())
+                        .filter(|parent| !parent.is_empty())
+                        .collect::<Vec<_>>();
+                    for parent in &parents {
+                        if !existing_shas.contains(parent)
+                            && !commit_by_sha.contains_key(parent)
+                            && queued.insert(parent.clone())
+                        {
+                            queue.push_back(parent.clone());
+                        }
+                    }
+
+                    commit_order.push(sha.clone());
+                    commit_by_sha.insert(
+                        sha.clone(),
+                        LocalCommitImport {
+                            sha,
+                            parents,
+                            subject: Some(metadata.subject),
+                            author_name: metadata.author_name,
+                            author_email: metadata.author_email,
+                            authored_at: metadata.authored_at.clone(),
+                            committed_at: metadata.authored_at,
+                            source_kind: Some("external".to_string()),
+                            produced_by_node_id: None,
+                            files_changed_count: metadata
+                                .files_changed_count
+                                .map(|value| value as i64),
+                            total_additions: metadata.total_additions.map(|value| value as i64),
+                            total_deletions: metadata.total_deletions.map(|value| value as i64),
+                        },
+                    );
+                    fetched += 1;
+                }
+            }
+        }
+
+        let available_shas = existing_shas
+            .union(&commit_by_sha.keys().cloned().collect::<HashSet<_>>())
+            .cloned()
+            .collect::<HashSet<_>>();
+
+        let mut visited = HashSet::new();
+        let mut ordered = Vec::new();
+        fn visit_commit(
+            sha: &str,
+            commit_by_sha: &HashMap<String, LocalCommitImport>,
+            visited: &mut HashSet<String>,
+            ordered: &mut Vec<String>,
+        ) {
+            if !visited.insert(sha.to_string()) {
+                return;
+            }
+            if let Some(commit) = commit_by_sha.get(sha) {
+                for parent in &commit.parents {
+                    if commit_by_sha.contains_key(parent) {
+                        visit_commit(parent, commit_by_sha, visited, ordered);
+                    }
+                }
+            }
+            ordered.push(sha.to_string());
+        }
+
+        for sha in &commit_order {
+            visit_commit(sha, &commit_by_sha, &mut visited, &mut ordered);
+        }
+
+        Ok(ordered
+            .into_iter()
+            .filter_map(|sha| commit_by_sha.remove(&sha))
+            .map(|mut commit| {
+                commit
+                    .parents
+                    .retain(|parent| available_shas.contains(parent));
+                commit
+            })
+            .collect())
+    }
+
+    fn list_dangling_local_commit_parent_shas(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT DISTINCT p.parent_sha
+                FROM local_commit_parents p
+                LEFT JOIN local_commits c
+                  ON c.workspace_id = p.workspace_id
+                 AND c.sha = p.parent_sha
+                WHERE p.workspace_id = ?1
+                  AND c.sha IS NULL
+                ORDER BY p.parent_sha
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let shas = stmt
+            .query_map(params![workspace_id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(shas)
+    }
+
+    pub fn repair_local_commit_parent_closure(
+        &self,
+        workspace_id: &str,
+        repo_path: &str,
+        git_ref: Option<&str>,
+    ) -> Result<usize, String> {
+        let dangling_parent_shas = self.list_dangling_local_commit_parent_shas(workspace_id)?;
+        if dangling_parent_shas.is_empty() {
+            return Ok(0);
+        }
+
+        let mut commits = Vec::new();
+        for sha in dangling_parent_shas {
+            let metadata = crate::git_workspace::read_commit_metadata_sync(repo_path, &sha)?;
+            commits.push(LocalCommitImport {
+                sha: metadata.sha,
+                parents: metadata.parents,
+                subject: Some(metadata.subject),
+                author_name: metadata.author_name,
+                author_email: metadata.author_email,
+                authored_at: metadata.authored_at.clone(),
+                committed_at: metadata.authored_at,
+                source_kind: Some("external".to_string()),
+                produced_by_node_id: None,
+                files_changed_count: metadata.files_changed_count.map(|value| value as i64),
+                total_additions: metadata.total_additions.map(|value| value as i64),
+                total_deletions: metadata.total_deletions.map(|value| value as i64),
+            });
+        }
+
+        self.import_local_commits_with_parent_closure(
+            workspace_id,
+            commits,
+            git_ref,
+            Some(repo_path),
+        )
+    }
+
+    pub fn import_local_commits_with_parent_closure(
+        &self,
+        workspace_id: &str,
+        commits: Vec<LocalCommitImport>,
+        git_ref: Option<&str>,
+        repo_path: Option<&str>,
+    ) -> Result<usize, String> {
+        let commits =
+            self.materialize_local_commit_parent_closure(workspace_id, commits, repo_path)?;
+        self.import_local_commits(workspace_id, commits, git_ref)
+    }
+
     pub fn import_local_commits(
         &self,
         workspace_id: &str,
@@ -2489,8 +2726,14 @@ pub fn import_local_commits(
     workspace_id: String,
     commits: Vec<LocalCommitImport>,
     git_ref: Option<String>,
+    repo_path: Option<String>,
 ) -> Result<usize, String> {
-    telemetry.import_local_commits(&workspace_id, commits, git_ref.as_deref())
+    telemetry.import_local_commits_with_parent_closure(
+        &workspace_id,
+        commits,
+        git_ref.as_deref(),
+        repo_path.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -2500,6 +2743,17 @@ pub fn list_local_commit_graph(
     workspace_id: String,
 ) -> Result<LocalCommitGraphSnapshot, String> {
     telemetry.list_local_commit_graph(&workspace_id)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn repair_local_commit_graph(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+    repo_path: String,
+    git_ref: Option<String>,
+) -> Result<usize, String> {
+    telemetry.repair_local_commit_parent_closure(&workspace_id, &repo_path, git_ref.as_deref())
 }
 
 #[tauri::command]
@@ -2557,17 +2811,14 @@ fn sync_event(
     if event.entity_type == "node" && event.event_type == "node.update_terminal" {
         let payload: JsonValue =
             serde_json::from_str(&event.payload_json).map_err(|err| err.to_string())?;
-        let endpoint = if payload.get("userMessage").is_some() && payload.get("assistantMessage").is_some() {
-            "stream/finalize-local-pair"
-        } else {
-            "stream/finalize"
-        };
+        let endpoint =
+            if payload.get("userMessage").is_some() && payload.get("assistantMessage").is_some() {
+                "stream/finalize-local-pair"
+            } else {
+                "stream/finalize"
+            };
         let response = client
-            .post(format!(
-                "{}/{}",
-                crate::config::server_base_url(),
-                endpoint
-            ))
+            .post(format!("{}/{}", crate::config::server_base_url(), endpoint))
             .header("Authorization", format!("Bearer {}", auth_token))
             .header("Idempotency-Key", &event.idempotency_key)
             .json(&payload)
@@ -2740,6 +2991,41 @@ mod tests {
         (dir, db)
     }
 
+    fn run_test_git(repo_path: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn init_test_repo_with_commits(count: usize) -> (tempfile::TempDir, Vec<String>) {
+        let dir = tempfile::tempdir().expect("repo tempdir");
+        run_test_git(dir.path(), &["init"]);
+        run_test_git(dir.path(), &["config", "user.name", "Agentree Test"]);
+        run_test_git(
+            dir.path(),
+            &["config", "user.email", "agentree@example.com"],
+        );
+
+        let mut shas = Vec::new();
+        for index in 0..count {
+            std::fs::write(dir.path().join("file.txt"), format!("commit {index}\n"))
+                .expect("write test file");
+            run_test_git(dir.path(), &["add", "file.txt"]);
+            run_test_git(dir.path(), &["commit", "-m", &format!("commit {index}")]);
+            shas.push(run_test_git(dir.path(), &["rev-parse", "HEAD"]));
+        }
+        (dir, shas)
+    }
+
     fn upsert_run(db: &TelemetryDb, assistant_node_id: &str, status: &str, phase: &str) {
         db.upsert_agent_run_ledger(&AgentRunLedgerUpsert {
             run_id: format!("run-{assistant_node_id}"),
@@ -2786,7 +3072,10 @@ mod tests {
             .expect("list local commit graph");
         assert_eq!(snapshot.commits.len(), 1);
         assert_eq!(snapshot.commits[0].sha, "child-sha");
-        assert_eq!(snapshot.commits[0].produced_by_node_id.as_deref(), Some("assistant-1"));
+        assert_eq!(
+            snapshot.commits[0].produced_by_node_id.as_deref(),
+            Some("assistant-1")
+        );
         assert_eq!(snapshot.commit_parents.len(), 1);
         assert_eq!(snapshot.commit_parents[0].parent_sha, "parent-sha");
         assert_eq!(snapshot.commit_observations.len(), 1);
@@ -2794,6 +3083,179 @@ mod tests {
             snapshot.commit_observations[0].git_ref.as_deref(),
             Some("agentree/assistant-1")
         );
+    }
+
+    #[test]
+    fn local_commit_import_materializes_missing_parent_closure_to_existing_graph() {
+        let (_db_dir, db) = open_test_db();
+        let (repo_dir, shas) = init_test_repo_with_commits(3);
+        let root = shas[0].clone();
+        let middle = shas[1].clone();
+        let tip = shas[2].clone();
+
+        db.import_local_commits(
+            "workspace-1",
+            vec![LocalCommitImport {
+                sha: root.clone(),
+                parents: Vec::new(),
+                subject: Some("commit 0".to_string()),
+                author_name: None,
+                author_email: None,
+                authored_at: None,
+                committed_at: None,
+                source_kind: Some("external".to_string()),
+                produced_by_node_id: None,
+                files_changed_count: None,
+                total_additions: None,
+                total_deletions: None,
+            }],
+            Some("refs/heads/main"),
+        )
+        .expect("seed root commit");
+
+        db.import_local_commits_with_parent_closure(
+            "workspace-1",
+            vec![LocalCommitImport {
+                sha: tip.clone(),
+                parents: vec![middle.clone()],
+                subject: Some("commit 2".to_string()),
+                author_name: None,
+                author_email: None,
+                authored_at: None,
+                committed_at: None,
+                source_kind: Some("external".to_string()),
+                produced_by_node_id: None,
+                files_changed_count: None,
+                total_additions: None,
+                total_deletions: None,
+            }],
+            Some("refs/heads/main"),
+            Some(repo_dir.path().to_string_lossy().as_ref()),
+        )
+        .expect("import tip with closure");
+
+        let snapshot = db
+            .list_local_commit_graph("workspace-1")
+            .expect("list local graph");
+        let commit_shas = snapshot
+            .commits
+            .iter()
+            .map(|commit| commit.sha.as_str())
+            .collect::<HashSet<_>>();
+        assert!(commit_shas.contains(root.as_str()));
+        assert!(commit_shas.contains(middle.as_str()));
+        assert!(commit_shas.contains(tip.as_str()));
+        assert!(snapshot
+            .commit_parents
+            .iter()
+            .any(|parent| parent.child_sha == middle && parent.parent_sha == root));
+        assert!(snapshot
+            .commit_parents
+            .iter()
+            .any(|parent| parent.child_sha == tip && parent.parent_sha == middle));
+    }
+
+    #[test]
+    fn local_commit_import_prunes_unmaterialized_boundary_parent_edges() {
+        let (_db_dir, db) = open_test_db();
+        let (repo_dir, shas) = init_test_repo_with_commits(2);
+        let root = shas[0].clone();
+        let tip = shas[1].clone();
+
+        db.import_local_commits_with_parent_closure(
+            "workspace-1",
+            vec![LocalCommitImport {
+                sha: tip.clone(),
+                parents: vec![root.clone()],
+                subject: Some("commit 1".to_string()),
+                author_name: None,
+                author_email: None,
+                authored_at: None,
+                committed_at: None,
+                source_kind: Some("external".to_string()),
+                produced_by_node_id: None,
+                files_changed_count: None,
+                total_additions: None,
+                total_deletions: None,
+            }],
+            Some("refs/heads/main"),
+            Some(repo_dir.path().to_string_lossy().as_ref()),
+        )
+        .expect("import bounded tip");
+
+        let snapshot = db
+            .list_local_commit_graph("workspace-1")
+            .expect("list local graph");
+        assert_eq!(snapshot.commits.len(), 1);
+        assert_eq!(snapshot.commits[0].sha, tip);
+        assert!(snapshot.commit_parents.is_empty());
+    }
+
+    #[test]
+    fn local_commit_graph_repair_materializes_existing_dangling_parent_edges() {
+        let (_db_dir, db) = open_test_db();
+        let (repo_dir, shas) = init_test_repo_with_commits(3);
+        let root = shas[0].clone();
+        let middle = shas[1].clone();
+        let tip = shas[2].clone();
+
+        db.import_local_commits(
+            "workspace-1",
+            vec![
+                LocalCommitImport {
+                    sha: root.clone(),
+                    parents: Vec::new(),
+                    subject: Some("commit 0".to_string()),
+                    author_name: None,
+                    author_email: None,
+                    authored_at: None,
+                    committed_at: None,
+                    source_kind: Some("external".to_string()),
+                    produced_by_node_id: None,
+                    files_changed_count: None,
+                    total_additions: None,
+                    total_deletions: None,
+                },
+                LocalCommitImport {
+                    sha: tip.clone(),
+                    parents: vec![middle.clone()],
+                    subject: Some("commit 2".to_string()),
+                    author_name: None,
+                    author_email: None,
+                    authored_at: None,
+                    committed_at: None,
+                    source_kind: Some("external".to_string()),
+                    produced_by_node_id: None,
+                    files_changed_count: None,
+                    total_additions: None,
+                    total_deletions: None,
+                },
+            ],
+            Some("refs/heads/main"),
+        )
+        .expect("seed graph with dangling parent");
+
+        let repaired = db
+            .repair_local_commit_parent_closure(
+                "workspace-1",
+                repo_dir.path().to_string_lossy().as_ref(),
+                Some("refs/heads/main"),
+            )
+            .expect("repair graph");
+        assert_eq!(repaired, 1);
+
+        let snapshot = db
+            .list_local_commit_graph("workspace-1")
+            .expect("list local graph");
+        assert!(snapshot.commits.iter().any(|commit| commit.sha == middle));
+        assert!(snapshot
+            .commit_parents
+            .iter()
+            .any(|parent| parent.child_sha == middle && parent.parent_sha == root));
+        assert!(snapshot
+            .commit_parents
+            .iter()
+            .any(|parent| parent.child_sha == tip && parent.parent_sha == middle));
     }
 
     #[test]

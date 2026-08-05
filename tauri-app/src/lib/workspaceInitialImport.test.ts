@@ -88,7 +88,8 @@ describe('bootstrapWorkspaceInitialGitImport', () => {
           totalDeletions: 7,
         },
       ],
-      'refs/heads/main'
+      'refs/heads/main',
+      '/repo'
     );
     expect(mockedAgentClient.enqueueLocalCommitGraphSync).toHaveBeenCalledWith(
       'workspace-1',

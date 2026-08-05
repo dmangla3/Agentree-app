@@ -107,6 +107,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             greet,
             logging::append_frontend_logs,
             logging::get_log_paths,
+            logging::get_diagnostics_logs,
             logging::export_perf_capture_bundle,
             db::create_session_db,
             db::record_tool_call,
@@ -122,6 +123,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             db::upsert_local_node,
             db::import_local_commits,
             db::list_local_commit_graph,
+            db::repair_local_commit_graph,
             db::enqueue_local_commit_graph_sync,
             db::local_first_delete_branch,
             db::local_first_delete_workspace,
@@ -205,6 +207,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_process::init());
 
     #[cfg(debug_assertions)]

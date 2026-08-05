@@ -583,6 +583,12 @@ describe('graph layout geometry QA', () => {
     expect(layoutedGeneratedCommit.targetPosition).toBe(Position.Top);
     expect(layoutedCommitEdge?.sourceHandle).toBe('bottom-source');
     expect(layoutedCommitEdge?.targetHandle).toBe('top-target');
+
+    const layoutedAssistant = getNode(layouted.nodes, 'assistant-2');
+    const parentCommitCenterX = parentCommit.position.x + numberStyle(parentCommit.style?.width) / 2;
+    const generatedCommitCenterX = layoutedGeneratedCommit.position.x + numberStyle(layoutedGeneratedCommit.style?.width) / 2;
+    expect(Math.abs(generatedCommitCenterX - parentCommitCenterX)).toBeLessThanOrEqual(1);
+    expect(layoutedGeneratedCommit.position.x).toBeGreaterThan(layoutedAssistant.position.x);
   });
 
   it('infers generated commit parent from conversation parent assistant output when base sha is absent', () => {
@@ -597,7 +603,7 @@ describe('graph layout geometry QA', () => {
     expect(commitEdge?.sourceHandle).toBe('bottom-source');
     expect(commitEdge?.targetHandle).toBe('top-target');
     expect((baseUsedEdge?.data as any)?.relationship).toBe('base-used');
-    expect((baseUsedEdge?.data as any)?.layout).toBe(false);
+    expect((baseUsedEdge?.data as any)?.layout).not.toBe(false);
   });
 
   it('renders imported commit parent chains as individual rows when imported rows lack commit shas', () => {
@@ -722,7 +728,27 @@ describe('graph layout geometry QA', () => {
         ? { ...message, base_commit_sha: 'imported0004' }
         : message
     ));
-    const commitGraph = buildCanonicalImportedCommitChain();
+    const importedGraph = buildCanonicalImportedCommitChain();
+    const commitGraph = {
+      commits: [
+        ...importedGraph.commits,
+        {
+          sha: 'localcommit0001',
+          workspace_id: workspaceId,
+          subject: 'Create hello.md',
+          source_kind: 'agent',
+          produced_by_node_id: 'assistant-1',
+          first_parent_sha: 'imported0004',
+          committed_at: isoAt(20),
+          authored_at: isoAt(20),
+        },
+      ],
+      commitParents: [
+        ...importedGraph.commitParents,
+        { child_sha: 'localcommit0001', parent_sha: 'imported0004', parent_index: 0 },
+      ],
+      commitObservations: importedGraph.commitObservations,
+    };
 
     const mapped = buildMappedGraph(messages, 'assistant-1', commitGraph);
     const group = mapped.nodes.find((node) => node.type === 'layout_derived_commit_group');
@@ -731,6 +757,664 @@ describe('graph layout geometry QA', () => {
     const edgeToGeneratedCommit = mapped.edges.find((edge) => edge.source === group!.id && edge.target === 'commit:assistant-1');
     expect((edgeToGeneratedCommit?.data as any)?.relationship).toBe('git-parent');
     expect((edgeToGeneratedCommit?.data as any)?.layout).toBe(true);
+  });
+
+  it('lays out commits after an imported batch as children of the batch node', () => {
+    const messages = buildTurnWithLocalAssistantOutputCommit();
+    const importedGraph = buildCanonicalImportedCommitChain();
+    const commitGraph = {
+      commits: [
+        ...importedGraph.commits,
+        {
+          sha: 'postbatch0001',
+          workspace_id: workspaceId,
+          subject: 'Commit after imported batch',
+          source_kind: 'external',
+          produced_by_node_id: null,
+          first_parent_sha: 'imported0004',
+          committed_at: isoAt(20),
+          authored_at: isoAt(20),
+        },
+      ],
+      commitParents: [
+        ...importedGraph.commitParents,
+        { child_sha: 'postbatch0001', parent_sha: 'imported0004', parent_index: 0 },
+      ],
+      commitObservations: [
+        ...importedGraph.commitObservations,
+        {
+          commit_sha: 'postbatch0001',
+          source_kind: 'external',
+          git_ref: 'refs/heads/main',
+          first_seen_at: isoAt(30),
+          last_seen_at: isoAt(31),
+        },
+      ],
+    };
+
+    const mapped = buildMappedGraph(messages, 'assistant-1', commitGraph);
+    const group = mapped.nodes.find((node) => node.type === 'layout_derived_commit_group');
+    expect(group).toBeTruthy();
+
+    const edgeToPostBatchCommit = mapped.edges.find((edge) => (
+      edge.source === group!.id && edge.target === 'postbatch0001'
+    ));
+    expect((edgeToPostBatchCommit?.data as any)?.relationship).toBe('git-parent');
+    expect((edgeToPostBatchCommit?.data as any)?.layout).toBe(true);
+
+    const layouted = getLayoutedElements(mapped.nodes, mapped.edges);
+    const layoutedGroup = getNode(layouted.nodes, group!.id);
+    const postBatchCommit = getNode(layouted.nodes, 'postbatch0001');
+    expect(postBatchCommit.position.y).toBeGreaterThan(layoutedGroup.position.y);
+    expect(Math.abs(postBatchCommit.position.x - layoutedGroup.position.x)).toBeLessThan(8);
+
+    const tidyLayouted = getTidyTreeLayoutedElements(mapped.nodes, mapped.edges);
+    const tidyGroup = getNode(tidyLayouted.nodes, group!.id);
+    const tidyPostBatchCommit = getNode(tidyLayouted.nodes, 'postbatch0001');
+    expect(tidyPostBatchCommit.position.y).toBeGreaterThan(tidyGroup.position.y);
+    expect(Math.abs(tidyPostBatchCommit.position.x - tidyGroup.position.x)).toBeLessThan(8);
+  });
+
+  it('keeps a conversation turn and its generated commit together below the selected base commit', () => {
+    const messages = buildTurnWithLocalAssistantOutputCommit().map((message) => (
+      message.id === 'assistant-1'
+        ? {
+          ...message,
+          base_commit_sha: 'imported0004',
+          output_commit_sha: 'localcommit0001',
+        }
+        : message
+    ));
+    const commitGraph = buildCanonicalImportedCommitChain();
+
+    const mapped = buildMappedGraph(messages, 'assistant-1', commitGraph);
+    const group = mapped.nodes.find((node) => node.type === 'layout_derived_commit_group');
+    expect(group).toBeTruthy();
+
+    const baseUsedEdge = mapped.edges.find((edge) => edge.source === group!.id && edge.target === 'assistant-1');
+    expect((baseUsedEdge?.data as any)?.relationship).toBe('base-used');
+    expect((baseUsedEdge?.data as any)?.layout).not.toBe(false);
+
+    const layouted = getTidyTreeLayoutedElements(mapped.nodes, mapped.edges);
+    const layoutedGroup = getNode(layouted.nodes, group!.id);
+    const user = getNode(layouted.nodes, 'user-1');
+    const assistant = getNode(layouted.nodes, 'assistant-1');
+    const generatedCommit = getNode(layouted.nodes, 'commit:assistant-1');
+
+    expect(user.position.y).toBeGreaterThan(layoutedGroup.position.y);
+    expect(assistant.position.y).toBeGreaterThan(user.position.y);
+    expect(generatedCommit.position.x).toBeGreaterThan(assistant.position.x);
+    const baseCommitCenterX = layoutedGroup.position.x + numberStyle(layoutedGroup.style?.width) / 2;
+    const generatedCommitCenterX = generatedCommit.position.x + numberStyle(generatedCommit.style?.width) / 2;
+    expect(Math.abs(generatedCommitCenterX - baseCommitCenterX)).toBeLessThanOrEqual(1);
+    const assistantCenterY = assistant.position.y + numberStyle(assistant.style?.height) / 2;
+    const generatedCommitCenterY = generatedCommit.position.y + numberStyle(generatedCommit.style?.height) / 2;
+    expect(Math.abs(generatedCommitCenterY - assistantCenterY)).toBeLessThanOrEqual(32);
+  });
+
+  it('fans out multiple generated commit turns from the same parent commit without overlapping them', () => {
+    const messages = [
+      makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
+      makeMessage({ id: 'assistant-1', role: 'assistant', parentId: 'user-1', status: 'completed' }, 1),
+      makeMessage({
+        id: 'commit-1',
+        role: 'assistant',
+        parentId: 'assistant-1',
+        content: 'Parent commit',
+        commit: {
+          sha: 'parentcommit0001',
+          subject: 'Parent commit',
+          source_kind: 'agent',
+          produced_by_node_id: 'assistant-1',
+          parents: [],
+        },
+      }, 2),
+      makeMessage({ id: 'user-2', role: 'user', parentId: 'assistant-1' }, 3),
+      makeMessage({
+        id: 'assistant-2',
+        role: 'assistant',
+        parentId: 'user-2',
+        status: 'completed',
+        base_commit_sha: 'parentcommit0001',
+        output_commit_sha: 'childcommit0002',
+        execution_data: { meta: { commit_message: 'First child commit' } },
+      }, 4),
+      makeMessage({ id: 'user-3', role: 'user', parentId: 'assistant-1' }, 5),
+      makeMessage({
+        id: 'assistant-3',
+        role: 'assistant',
+        parentId: 'user-3',
+        status: 'completed',
+        base_commit_sha: 'parentcommit0001',
+        output_commit_sha: 'childcommit0003',
+        execution_data: { meta: { commit_message: 'Second child commit' } },
+      }, 6),
+    ];
+
+    const mapped = buildMappedGraph(messages, 'assistant-3');
+    const layouted = getTidyTreeLayoutedElements(mapped.nodes, mapped.edges);
+    const firstAssistant = getNode(layouted.nodes, 'assistant-2');
+    const secondAssistant = getNode(layouted.nodes, 'assistant-3');
+    const firstGeneratedCommit = getNode(layouted.nodes, 'commit:assistant-2');
+    const secondGeneratedCommit = getNode(layouted.nodes, 'commit:assistant-3');
+
+    expect(firstGeneratedCommit.position.x).toBeGreaterThan(firstAssistant.position.x);
+    expect(secondGeneratedCommit.position.x).toBeGreaterThan(secondAssistant.position.x);
+    expect(Math.abs(firstGeneratedCommit.position.x - secondGeneratedCommit.position.x)).toBeGreaterThanOrEqual(
+      numberStyle(firstGeneratedCommit.style?.width),
+    );
+  });
+
+  it('uses imported commit-only turns as lineage bridges between conversation turns', () => {
+    const messages = [
+      makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
+      makeMessage({ id: 'assistant-1', role: 'assistant', parentId: 'user-1', status: 'completed' }, 1),
+      makeMessage({ id: 'user-2', role: 'user', parentId: 'assistant-1' }, 3),
+      makeMessage({
+        id: 'assistant-2',
+        role: 'assistant',
+        parentId: 'user-2',
+        status: 'completed',
+        base_commit_sha: 'imported0004',
+        output_commit_sha: 'childcommit0002',
+        execution_data: { meta: { commit_message: 'Child from bridge commit' } },
+      }, 4),
+    ];
+    const commitGraph = buildCanonicalImportedCommitChain();
+
+    const mapped = buildMappedGraph(messages, 'assistant-2', commitGraph);
+    const layouted = getTidyTreeLayoutedElements(mapped.nodes, mapped.edges);
+    const bridgeCommit = layouted.nodes.find((node) => node.type === 'layout_derived_commit_group');
+    expect(bridgeCommit).toBeTruthy();
+    const childGeneratedCommit = getNode(layouted.nodes, 'commit:assistant-2');
+
+    expect(childGeneratedCommit.position.y).toBeGreaterThan(bridgeCommit!.position.y);
+
+    const bridgeCommitCenterX = bridgeCommit!.position.x + numberStyle(bridgeCommit!.style?.width) / 2;
+    const childGeneratedCommitCenterX = childGeneratedCommit.position.x + numberStyle(childGeneratedCommit.style?.width) / 2;
+    expect(Math.abs(childGeneratedCommitCenterX - bridgeCommitCenterX)).toBeLessThanOrEqual(1);
+  });
+
+  it('orders imported sidecar, commit-only bridge, conversation, and generated commit as turn rows', () => {
+    const messages = [
+      makeMessage({
+        id: 'origin-assistant',
+        role: 'assistant',
+        parentId: null,
+        content: 'Origin assistant message.',
+        status: 'completed',
+      }, 0),
+      makeMessage({
+        id: 'conversation-user',
+        role: 'user',
+        parentId: 'origin-assistant',
+        content: 'Conversation after imported code.',
+      }, 10),
+      makeMessage({
+        id: 'conversation-assistant',
+        role: 'assistant',
+        parentId: 'conversation-user',
+        content: 'Conversation-only reply.',
+        status: 'completed',
+      }, 11),
+      makeMessage({
+        id: 'generated-user',
+        role: 'user',
+        parentId: 'conversation-assistant',
+        content: 'Now create a commit from the bridge.',
+      }, 12),
+      makeMessage({
+        id: 'generated-assistant',
+        role: 'assistant',
+        parentId: 'generated-user',
+        content: 'Created the child commit.',
+        status: 'completed',
+        base_commit_sha: 'postbatch0001',
+        output_commit_sha: 'generated0002',
+        execution_data: { meta: { commit_message: 'Generated child commit' } },
+      }, 13),
+    ];
+    const importedGraph = buildCanonicalImportedCommitChain();
+    const commitGraph = {
+      commits: [
+        ...importedGraph.commits,
+        {
+          sha: 'postbatch0001',
+          workspace_id: workspaceId,
+          subject: 'Commit after imported batch',
+          source_kind: 'external',
+          produced_by_node_id: null,
+          first_parent_sha: 'imported0004',
+          committed_at: isoAt(8),
+          authored_at: isoAt(8),
+        },
+      ],
+      commitParents: [
+        ...importedGraph.commitParents,
+        { child_sha: 'postbatch0001', parent_sha: 'imported0004', parent_index: 0 },
+      ],
+      commitObservations: [
+        ...importedGraph.commitObservations,
+        {
+          commit_sha: 'postbatch0001',
+          source_kind: 'external',
+          git_ref: 'refs/heads/main',
+          first_seen_at: isoAt(20),
+          last_seen_at: isoAt(21),
+        },
+      ],
+    };
+
+    const mapped = buildMappedGraph(messages, 'generated-assistant', commitGraph);
+    const group = mapped.nodes.find((node) => node.type === 'layout_derived_commit_group');
+    expect(group).toBeTruthy();
+
+    [getTidyTreeLayoutedElements, getLayoutedElements].forEach((layoutFn) => {
+      const layouted = layoutFn(mapped.nodes, mapped.edges);
+      const origin = getNode(layouted.nodes, 'origin-assistant');
+      const importedBatch = getNode(layouted.nodes, group!.id);
+      const bridgeCommit = getNode(layouted.nodes, 'postbatch0001');
+      const conversationUser = getNode(layouted.nodes, 'conversation-user');
+      const conversationAssistant = getNode(layouted.nodes, 'conversation-assistant');
+      const generatedUser = getNode(layouted.nodes, 'generated-user');
+      const generatedAssistant = getNode(layouted.nodes, 'generated-assistant');
+      const generatedCommit = getNode(layouted.nodes, 'commit:generated-assistant');
+
+      expect(Math.abs(importedBatch.position.y - origin.position.y)).toBeLessThanOrEqual(8);
+      expect(bridgeCommit.position.y).toBeGreaterThan(importedBatch.position.y);
+      expect(conversationUser.position.y).toBeGreaterThan(bridgeCommit.position.y);
+      expect(conversationAssistant.position.y).toBeGreaterThan(conversationUser.position.y);
+      expect(generatedUser.position.y).toBeGreaterThan(conversationAssistant.position.y);
+      expect(generatedAssistant.position.y).toBeGreaterThan(generatedUser.position.y);
+      expect(Math.abs(conversationUser.position.x - origin.position.x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(generatedUser.position.x - origin.position.x)).toBeLessThanOrEqual(1);
+
+      const bridgeCommitCenterX = bridgeCommit.position.x + numberStyle(bridgeCommit.style?.width) / 2;
+      const generatedCommitCenterX = generatedCommit.position.x + numberStyle(generatedCommit.style?.width) / 2;
+      expect(Math.abs(generatedCommitCenterX - bridgeCommitCenterX)).toBeLessThanOrEqual(1);
+    });
+  });
+
+  it('keeps imported bridge ordering when the bridge commit also has an independent commit sibling', () => {
+    const messages = [
+      makeMessage({
+        id: 'origin-assistant',
+        role: 'assistant',
+        parentId: null,
+        content: 'Origin assistant message.',
+        status: 'completed',
+      }, 0),
+      makeMessage({
+        id: 'conversation-user',
+        role: 'user',
+        parentId: 'origin-assistant',
+        content: 'Conversation after imported code.',
+      }, 10),
+      makeMessage({
+        id: 'conversation-assistant',
+        role: 'assistant',
+        parentId: 'conversation-user',
+        content: 'Conversation-only reply.',
+        status: 'completed',
+      }, 11),
+      makeMessage({
+        id: 'generated-user',
+        role: 'user',
+        parentId: 'conversation-assistant',
+        content: 'Now create a commit from the bridge.',
+      }, 12),
+      makeMessage({
+        id: 'generated-assistant',
+        role: 'assistant',
+        parentId: 'generated-user',
+        content: 'Created the child commit.',
+        status: 'completed',
+        base_commit_sha: 'postbatch0001',
+        output_commit_sha: 'generated0002',
+        execution_data: { meta: { commit_message: 'Generated child commit' } },
+      }, 13),
+    ];
+    const importedGraph = buildCanonicalImportedCommitChain();
+    const commitGraph = {
+      commits: [
+        ...importedGraph.commits,
+        {
+          sha: 'postbatch0001',
+          workspace_id: workspaceId,
+          subject: 'Commit after imported batch',
+          source_kind: 'external',
+          produced_by_node_id: null,
+          first_parent_sha: 'imported0004',
+          committed_at: isoAt(8),
+          authored_at: isoAt(8),
+        },
+        {
+          sha: 'independent0003',
+          workspace_id: workspaceId,
+          subject: 'Independent later commit',
+          source_kind: 'external',
+          produced_by_node_id: null,
+          first_parent_sha: 'postbatch0001',
+          committed_at: isoAt(30),
+          authored_at: isoAt(30),
+        },
+        {
+          sha: 'generated0002',
+          workspace_id: workspaceId,
+          subject: 'Generated child commit',
+          source_kind: 'agent',
+          produced_by_node_id: 'generated-assistant',
+          first_parent_sha: 'postbatch0001',
+          committed_at: isoAt(14),
+          authored_at: isoAt(14),
+        },
+      ],
+      commitParents: [
+        ...importedGraph.commitParents,
+        { child_sha: 'postbatch0001', parent_sha: 'imported0004', parent_index: 0 },
+        { child_sha: 'independent0003', parent_sha: 'postbatch0001', parent_index: 0 },
+        { child_sha: 'generated0002', parent_sha: 'postbatch0001', parent_index: 0 },
+      ],
+      commitObservations: [
+        ...importedGraph.commitObservations,
+        {
+          commit_sha: 'postbatch0001',
+          source_kind: 'external',
+          git_ref: 'refs/heads/main',
+          first_seen_at: isoAt(20),
+          last_seen_at: isoAt(21),
+        },
+        {
+          commit_sha: 'independent0003',
+          source_kind: 'external',
+          git_ref: 'refs/heads/main',
+          first_seen_at: isoAt(31),
+          last_seen_at: isoAt(32),
+        },
+        {
+          commit_sha: 'generated0002',
+          source_kind: 'agent',
+          git_ref: 'refs/heads/generated',
+          first_seen_at: isoAt(14),
+          last_seen_at: isoAt(15),
+        },
+      ],
+    };
+
+    const mapped = buildMappedGraph(messages, 'generated-assistant', commitGraph);
+
+    [getTidyTreeLayoutedElements, getLayoutedElements].forEach((layoutFn) => {
+      const layouted = layoutFn(mapped.nodes, mapped.edges);
+      const origin = getNode(layouted.nodes, 'origin-assistant');
+      const bridgeCommit = getNode(layouted.nodes, 'postbatch0001');
+      const independentCommit = getNode(layouted.nodes, 'independent0003');
+      const conversationUser = getNode(layouted.nodes, 'conversation-user');
+      const generatedUser = getNode(layouted.nodes, 'generated-user');
+      const generatedCommit = getNode(layouted.nodes, 'commit:generated-assistant');
+
+      expect(conversationUser.position.y).toBeGreaterThan(bridgeCommit.position.y);
+      expect(generatedUser.position.y).toBeGreaterThan(conversationUser.position.y);
+      expect(independentCommit.position.y).toBeGreaterThan(bridgeCommit.position.y);
+      expect(Math.abs(conversationUser.position.y - independentCommit.position.y)).toBeLessThanOrEqual(8);
+      expect(Math.abs(conversationUser.position.x - origin.position.x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(generatedUser.position.x - origin.position.x)).toBeLessThanOrEqual(1);
+
+      const bridgeCommitCenterX = bridgeCommit.position.x + numberStyle(bridgeCommit.style?.width) / 2;
+      const generatedCommitCenterX = generatedCommit.position.x + numberStyle(generatedCommit.style?.width) / 2;
+      expect(Math.abs(generatedCommitCenterX - bridgeCommitCenterX)).toBeLessThanOrEqual(1);
+    });
+  });
+
+  it('uses the downstream generated commit lineage as the imported bridge when later imported batches also branch from the batch', () => {
+    const messages = [
+      makeMessage({
+        id: 'origin-assistant',
+        role: 'assistant',
+        parentId: null,
+        content: 'Origin assistant message.',
+        status: 'completed',
+      }, 0),
+      makeMessage({
+        id: 'conversation-user',
+        role: 'user',
+        parentId: 'origin-assistant',
+        content: 'Conversation after imported code.',
+      }, 10),
+      makeMessage({
+        id: 'conversation-assistant',
+        role: 'assistant',
+        parentId: 'conversation-user',
+        content: 'Conversation-only reply.',
+        status: 'completed',
+      }, 11),
+      makeMessage({
+        id: 'generated-user',
+        role: 'user',
+        parentId: 'conversation-assistant',
+        content: 'Now create a commit from the bridge.',
+      }, 12),
+      makeMessage({
+        id: 'generated-assistant',
+        role: 'assistant',
+        parentId: 'generated-user',
+        content: 'Created the child commit.',
+        status: 'completed',
+        base_commit_sha: 'postbatch0001',
+        output_commit_sha: 'generated0002',
+        execution_data: { meta: { commit_message: 'Generated child commit' } },
+      }, 13),
+    ];
+    const importedGraph = buildCanonicalImportedCommitChain();
+    const laterImportedCommits: CommitEntity[] = [1, 2, 3].map((index) => ({
+      sha: `laterimported000${index}`,
+      workspace_id: workspaceId,
+      subject: `Later imported commit ${index}`,
+      source_kind: 'external',
+      produced_by_node_id: null,
+      first_parent_sha: index === 1 ? 'imported0002' : `laterimported000${index - 1}`,
+      committed_at: isoAt(30 + index),
+      authored_at: isoAt(30 + index),
+    }));
+    const commitGraph = {
+      commits: [
+        ...importedGraph.commits,
+        {
+          sha: 'postbatch0001',
+          workspace_id: workspaceId,
+          subject: 'Commit after imported batch',
+          source_kind: 'external',
+          produced_by_node_id: null,
+          first_parent_sha: 'imported0004',
+          committed_at: isoAt(8),
+          authored_at: isoAt(8),
+        },
+        {
+          sha: 'generated0002',
+          workspace_id: workspaceId,
+          subject: 'Generated child commit',
+          source_kind: 'agent',
+          produced_by_node_id: 'generated-assistant',
+          first_parent_sha: 'postbatch0001',
+          committed_at: isoAt(14),
+          authored_at: isoAt(14),
+        },
+        ...laterImportedCommits,
+      ],
+      commitParents: [
+        ...importedGraph.commitParents,
+        { child_sha: 'postbatch0001', parent_sha: 'imported0004', parent_index: 0 },
+        { child_sha: 'generated0002', parent_sha: 'postbatch0001', parent_index: 0 },
+        { child_sha: 'laterimported0001', parent_sha: 'imported0002', parent_index: 0 },
+        { child_sha: 'laterimported0002', parent_sha: 'laterimported0001', parent_index: 0 },
+        { child_sha: 'laterimported0003', parent_sha: 'laterimported0002', parent_index: 0 },
+      ],
+      commitObservations: [
+        ...importedGraph.commitObservations,
+        {
+          commit_sha: 'postbatch0001',
+          source_kind: 'external',
+          git_ref: 'refs/heads/main',
+          first_seen_at: isoAt(20),
+          last_seen_at: isoAt(21),
+        },
+        {
+          commit_sha: 'generated0002',
+          source_kind: 'agent',
+          git_ref: 'refs/heads/generated',
+          first_seen_at: isoAt(14),
+          last_seen_at: isoAt(15),
+        },
+        ...laterImportedCommits.map((commit) => ({
+          commit_sha: commit.sha,
+          source_kind: 'external',
+          git_ref: 'refs/heads/main',
+          first_seen_at: isoAt(40),
+          last_seen_at: isoAt(41),
+        })),
+      ],
+    };
+
+    const mapped = buildMappedGraph(messages, 'generated-assistant', commitGraph);
+    const importedBatches = mapped.nodes
+      .filter((node) => node.type === 'layout_derived_commit_group')
+      .sort((left, right) => numberStyle((left.data as any)?.group?.sortTs) - numberStyle((right.data as any)?.group?.sortTs));
+    expect(importedBatches.length).toBeGreaterThanOrEqual(2);
+
+    [getTidyTreeLayoutedElements, getLayoutedElements].forEach((layoutFn) => {
+      const layouted = layoutFn(mapped.nodes, mapped.edges);
+      const origin = getNode(layouted.nodes, 'origin-assistant');
+      const firstImportedBatch = getNode(layouted.nodes, importedBatches[0].id);
+      const bridgeCommit = getNode(layouted.nodes, 'postbatch0001');
+      const conversationUser = getNode(layouted.nodes, 'conversation-user');
+      const generatedUser = getNode(layouted.nodes, 'generated-user');
+      const generatedCommit = getNode(layouted.nodes, 'commit:generated-assistant');
+
+      expect(Math.abs(firstImportedBatch.position.y - origin.position.y)).toBeLessThanOrEqual(8);
+      expect(bridgeCommit.position.y).toBeGreaterThan(firstImportedBatch.position.y);
+      expect(conversationUser.position.y).toBeGreaterThan(bridgeCommit.position.y);
+      expect(generatedUser.position.y).toBeGreaterThan(conversationUser.position.y);
+      expect(Math.abs(conversationUser.position.x - origin.position.x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(generatedUser.position.x - origin.position.x)).toBeLessThanOrEqual(1);
+
+      const bridgeCommitCenterX = bridgeCommit.position.x + numberStyle(bridgeCommit.style?.width) / 2;
+      const firstBatchCenterX = firstImportedBatch.position.x + numberStyle(firstImportedBatch.style?.width) / 2;
+      const generatedCommitCenterX = generatedCommit.position.x + numberStyle(generatedCommit.style?.width) / 2;
+      expect(Math.abs(bridgeCommitCenterX - firstBatchCenterX)).toBeLessThanOrEqual(1);
+      expect(Math.abs(generatedCommitCenterX - bridgeCommitCenterX)).toBeLessThanOrEqual(1);
+    });
+  });
+
+  it('uses a standalone base commit as the imported bridge when the assistant creates no output commit', () => {
+    const messages = [
+      makeMessage({
+        id: 'origin-assistant',
+        role: 'assistant',
+        parentId: null,
+        content: 'Origin assistant message.',
+        status: 'completed',
+      }, 0),
+      makeMessage({
+        id: 'base-user',
+        role: 'user',
+        parentId: 'origin-assistant',
+        content: 'Use the later base commit but do not create a commit.',
+      }, 10),
+      makeMessage({
+        id: 'base-assistant',
+        role: 'assistant',
+        parentId: 'base-user',
+        content: 'Answered without changing files.',
+        status: 'completed',
+        base_commit_sha: 'postbatch0001',
+      }, 11),
+    ];
+    const importedGraph = buildCanonicalImportedCommitChain();
+    const commitGraph = {
+      commits: [
+        ...importedGraph.commits,
+        {
+          sha: 'postbatch0001',
+          workspace_id: workspaceId,
+          subject: 'Commit after imported batch',
+          source_kind: 'external',
+          produced_by_node_id: null,
+          first_parent_sha: 'imported0004',
+          committed_at: isoAt(8),
+          authored_at: isoAt(8),
+        },
+      ],
+      commitParents: [
+        ...importedGraph.commitParents,
+        { child_sha: 'postbatch0001', parent_sha: 'imported0004', parent_index: 0 },
+      ],
+      commitObservations: [
+        ...importedGraph.commitObservations,
+        {
+          commit_sha: 'postbatch0001',
+          source_kind: 'external',
+          git_ref: 'refs/heads/main',
+          first_seen_at: isoAt(20),
+          last_seen_at: isoAt(21),
+        },
+      ],
+    };
+
+    const mapped = buildMappedGraph(messages, 'base-assistant', commitGraph);
+    expect(mapped.edges.some((edge) => (
+      edge.source === 'postbatch0001' &&
+      edge.target === 'base-assistant' &&
+      (edge.data as any)?.relationship === 'base-used'
+    ))).toBe(true);
+
+    [getTidyTreeLayoutedElements, getLayoutedElements].forEach((layoutFn) => {
+      const layouted = layoutFn(mapped.nodes, mapped.edges);
+      const origin = getNode(layouted.nodes, 'origin-assistant');
+      const bridgeCommit = getNode(layouted.nodes, 'postbatch0001');
+      const baseUser = getNode(layouted.nodes, 'base-user');
+      const baseAssistant = getNode(layouted.nodes, 'base-assistant');
+
+      expect(baseUser.position.y).toBeGreaterThan(bridgeCommit.position.y);
+      expect(baseAssistant.position.y).toBeGreaterThan(baseUser.position.y);
+      expect(Math.abs(baseUser.position.x - origin.position.x)).toBeLessThanOrEqual(1);
+    });
+  });
+
+  it('keeps conversation turns as siblings when git parent belongs to another conversation turn', () => {
+    const messages = [
+      makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
+      makeMessage({ id: 'assistant-1', role: 'assistant', parentId: 'user-1', status: 'completed' }, 1),
+      makeMessage({ id: 'user-2', role: 'user', parentId: 'assistant-1' }, 2),
+      makeMessage({
+        id: 'assistant-2',
+        role: 'assistant',
+        parentId: 'user-2',
+        status: 'completed',
+        output_commit_sha: 'branchbcommit0002',
+        execution_data: { meta: { commit_message: 'Branch B commit' } },
+      }, 3),
+      makeMessage({ id: 'user-3', role: 'user', parentId: 'assistant-1' }, 4),
+      makeMessage({
+        id: 'assistant-3',
+        role: 'assistant',
+        parentId: 'user-3',
+        status: 'completed',
+        base_commit_sha: 'branchbcommit0002',
+        output_commit_sha: 'branchccommit0003',
+        execution_data: { meta: { commit_message: 'Branch C commit' } },
+      }, 5),
+    ];
+
+    const mapped = buildMappedGraph(messages, 'assistant-3');
+    const layouted = getTidyTreeLayoutedElements(mapped.nodes, mapped.edges);
+    const branchBUser = getNode(layouted.nodes, 'user-2');
+    const branchCUser = getNode(layouted.nodes, 'user-3');
+    const branchBAssistant = getNode(layouted.nodes, 'assistant-2');
+    const branchCAssistant = getNode(layouted.nodes, 'assistant-3');
+    const branchCGeneratedCommit = getNode(layouted.nodes, 'commit:assistant-3');
+
+    expect(Math.abs(branchBUser.position.y - branchCUser.position.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(branchBAssistant.position.y - branchCAssistant.position.y)).toBeLessThanOrEqual(1);
+    expect(branchCGeneratedCommit.position.x).toBeGreaterThan(branchCAssistant.position.x);
   });
 
   it('keeps a single observed imported ref batch even when merge commits are included', () => {
@@ -778,7 +1462,9 @@ describe('graph layout geometry QA', () => {
     const layouted = getLayoutedElements(mapped.nodes, mapped.edges);
     const origin = getNode(layouted.nodes, 'user-1');
     const group = getNode(layouted.nodes, groups[0].id);
+    const originRight = origin.position.x + numberStyle(origin.style?.width);
     expect(group.position.x).toBeGreaterThan(origin.position.x);
+    expect(group.position.x - originRight).toBeLessThanOrEqual(8);
     expect(group.position.x - origin.position.x).toBeLessThan(280);
     expect(Math.abs(group.position.y - origin.position.y)).toBeLessThan(80);
     expect(layouted.edges.some((edge) => edge.source === 'user-1' && edge.target === group.id)).toBe(false);
@@ -801,7 +1487,7 @@ describe('graph layout geometry QA', () => {
     expect(mapped.edges.every((edge) => allowedRelationships.has(String((edge.data as any)?.relationship)))).toBe(true);
 
     const baseEdge = mapped.edges.find((edge) => edge.source === 'commit-1' && edge.target === 'assistant-2');
-    expect((baseEdge?.data as any)?.layout).toBe(false);
+    expect((baseEdge?.data as any)?.layout).not.toBe(false);
     expect(baseEdge?.style?.strokeDasharray).toBe('4 5');
 
     const conversationEdge = mapped.edges.find((edge) => edge.source === 'assistant-1' && edge.target === 'user-2');

@@ -1,4 +1,5 @@
-import { lazy, Suspense, useEffect, useState, useMemo, useRef } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState, useMemo, useRef } from 'react';
+import type { ImperativePanelHandle } from 'react-resizable-panels';
 import { useAuthStore } from '../stores/authStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -18,7 +19,8 @@ import { useOnboardingStore } from '../stores/onboardingStore';
 import { trackScreenViewed } from '../lib/analytics';
 import { devLogLazy } from '../lib/appLogger';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
-import { X } from 'lucide-react';
+import { DEFAULT_GRAPH_CHAT_SPLIT, getGraphChatRestoreSplit, readRememberedGraphChatSplit, rememberGraphChatSplit } from '../lib/graphChatSplitLayout';
+import { PanelRightClose, PanelRightOpen, X } from 'lucide-react';
 
 const AdvancedSearchPanel = lazy(() => import('../components/AdvancedSearchPanel').then((module) => ({ default: module.AdvancedSearchPanel })));
 const ChatInterface = lazy(() => import('../components/ChatInterface').then((module) => ({ default: module.ChatInterface })));
@@ -45,6 +47,7 @@ export function HomePage() {
   const {
     selectedWorkspaceId,
     selectWorkspace,
+    clearSelectedWorkspace,
     rightPanelTab,
     setRightPanelTab,
     isFloatingChatInputOpen,
@@ -64,7 +67,11 @@ export function HomePage() {
   const [mergeTabAttentionActive, setMergeTabAttentionActive] = useState(false);
   const mergeSourceCount = mergeSession?.sources.length ?? 0;
   const [isWorkspaceSelectorOpen, setIsWorkspaceSelectorOpen] = useState(false);
+  const [isChatCollapsed, setIsChatCollapsed] = useState(false);
   const shellReadyLoggedRef = useRef(false);
+  const graphPanelRef = useRef<ImperativePanelHandle>(null);
+  const chatPanelRef = useRef<ImperativePanelHandle>(null);
+  const rememberedGraphChatSplitRef = useRef(readRememberedGraphChatSplit() ?? DEFAULT_GRAPH_CHAT_SPLIT);
   const hasCompletedOnboarding = useOnboardingStore((state) => state.hasCompletedForUser(user?.id));
   const markCompletedOnboarding = useOnboardingStore((state) => state.markCompleted);
   const workspaces = workspacesData ?? [];
@@ -111,6 +118,19 @@ export function HomePage() {
     selectWorkspace(workspaces[0].id);
   }, [selectedWorkspaceId, selectWorkspace, workspaceId, workspaces]);
 
+  useEffect(() => {
+    if (workspaceId || isLoadingWorkspaces || !selectedWorkspaceId) return;
+    const selectedWorkspaceExists = workspaces.some((workspace) => workspace.id === selectedWorkspaceId);
+    if (selectedWorkspaceExists) return;
+
+    if (workspaces.length > 0) {
+      selectWorkspace(workspaces[0].id);
+      return;
+    }
+
+    clearSelectedWorkspace();
+  }, [clearSelectedWorkspace, isLoadingWorkspaces, selectedWorkspaceId, selectWorkspace, workspaceId, workspaces]);
+
   // Keyboard shortcuts for search
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -130,6 +150,38 @@ export function HomePage() {
     setIsSearchPanelOpen(false);
     setActiveView('chat'); // Switch to chat view
   };
+
+  const handleGraphChatLayout = useCallback((layout: number[]) => {
+    const rememberedSplit = rememberGraphChatSplit(layout);
+    if (rememberedSplit) {
+      rememberedGraphChatSplitRef.current = rememberedSplit;
+    }
+
+    setIsChatCollapsed(layout[1] <= 1);
+  }, []);
+
+  const toggleChatPanelCollapsed = useCallback(() => {
+    if (isChatCollapsed) {
+      const [graphPercent, chatPercent] = getGraphChatRestoreSplit(rememberedGraphChatSplitRef.current);
+      graphPanelRef.current?.resize(graphPercent);
+      chatPanelRef.current?.resize(chatPercent);
+      setIsChatCollapsed(false);
+      return;
+    }
+
+    const currentGraphPercent = graphPanelRef.current?.getSize();
+    const currentChatPercent = chatPanelRef.current?.getSize();
+    if (currentGraphPercent !== undefined && currentChatPercent !== undefined) {
+      const rememberedSplit = rememberGraphChatSplit([currentGraphPercent, currentChatPercent]);
+      if (rememberedSplit) {
+        rememberedGraphChatSplitRef.current = rememberedSplit;
+      }
+    }
+
+    chatPanelRef.current?.collapse();
+    graphPanelRef.current?.resize(100);
+    setIsChatCollapsed(true);
+  }, [isChatCollapsed]);
 
   // If no user, ProtectedRoute should have redirected, but double-check
   useEffect(() => {
@@ -183,7 +235,12 @@ export function HomePage() {
       {/* Main Content Area with Sidebar */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* Sidebar Navigation Rail - Below Header */}
-        <Sidebar activeView={activeView} onViewChange={setActiveView} />
+        <Sidebar
+          activeView={activeView}
+          onViewChange={setActiveView}
+          selectedWorkspaceId={selectedWorkspaceId}
+          selectedWorkspaceName={selectedWorkspace?.name || null}
+        />
 
         {/* Content Area */}
         <main className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
@@ -194,8 +251,14 @@ export function HomePage() {
                 <ResizablePanelGroup
                   direction="horizontal"
                   className="flex-1 min-h-0 w-full rounded-lg border-0"
+                  onLayout={handleGraphChatLayout}
                 >
-                  <ResizablePanel defaultSize={35} minSize={0} collapsible={true}>
+                  <ResizablePanel
+                    ref={graphPanelRef}
+                    defaultSize={rememberedGraphChatSplitRef.current[0]}
+                    minSize={0}
+                    collapsible={true}
+                  >
                     {/* Left Panel: Graph View */}
                     <div className="flex min-w-0 flex-col h-full">
                       <div className="flex-1 min-w-0 overflow-hidden">
@@ -205,8 +268,28 @@ export function HomePage() {
                       </div>
                     </div>
                   </ResizablePanel>
-                  <ResizableHandle withHandle />
-                  <ResizablePanel defaultSize={65} minSize={0} collapsible={true}>
+                  <ResizableHandle>
+                    <button
+                      type="button"
+                      onClick={toggleChatPanelCollapsed}
+                      className={`group relative z-20 flex items-center justify-center rounded-full border border-border/70 bg-background/95 text-muted-foreground shadow-[0_10px_28px_-16px_rgba(15,23,42,0.55)] ring-1 ring-black/5 transition-[width,height,background-color,color,box-shadow,transform] duration-300 [transition-timing-function:cubic-bezier(0.32,_0.72,_0,_1)] hover:bg-accent hover:text-foreground hover:shadow-[0_14px_34px_-18px_rgba(15,23,42,0.65)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-95 dark:ring-white/10 ${isChatCollapsed ? 'h-11 w-14 -translate-x-3' : 'h-8 w-5 hover:w-7'}`}
+                      aria-label={isChatCollapsed ? 'Restore chat panel' : 'Hide chat panel'}
+                      title={isChatCollapsed ? 'Restore chat panel' : 'Hide chat panel'}
+                    >
+                      {isChatCollapsed ? (
+                        <PanelRightOpen className={`${isChatCollapsed ? 'h-4 w-4' : 'h-3.5 w-3.5'} transition-transform duration-300 [transition-timing-function:cubic-bezier(0.32,_0.72,_0,_1)] group-hover:translate-x-0.5`} />
+                      ) : (
+                        <PanelRightClose className="h-3.5 w-3.5 transition-transform duration-300 [transition-timing-function:cubic-bezier(0.32,_0.72,_0,_1)] group-hover:-translate-x-0.5" />
+                      )}
+                    </button>
+                  </ResizableHandle>
+                  <ResizablePanel
+                    ref={chatPanelRef}
+                    defaultSize={rememberedGraphChatSplitRef.current[1]}
+                    minSize={0}
+                    collapsible={true}
+                    collapsedSize={0}
+                  >
                     {/* Right Panel: Chat/Merge */}
                     <div className="flex min-w-0 h-full flex-col overflow-hidden bg-background">
                       {/* Chat Sub-Header */}

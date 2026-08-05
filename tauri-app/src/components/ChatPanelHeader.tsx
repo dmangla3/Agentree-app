@@ -41,7 +41,7 @@ export function ChatPanelHeader({
                         </span>
                     </TooltipTrigger>
                     <TooltipContent side="bottom">
-                        View the assistant workspace for the selected project.
+                        Shows the selected project&apos;s conversation and agent runs.
                     </TooltipContent>
                 </Tooltip>
                 <Tooltip>
@@ -63,7 +63,7 @@ export function ChatPanelHeader({
                         </span>
                     </TooltipTrigger>
                     <TooltipContent side="bottom">
-                        Review selected commits and prepare the merge workflow.
+                        Review selected commit sources before opening the merge workflow.
                     </TooltipContent>
                 </Tooltip>
                 {mergeSourceCount > 0 && (
@@ -74,7 +74,7 @@ export function ChatPanelHeader({
                             </span>
                         </TooltipTrigger>
                         <TooltipContent side="bottom">
-                            {mergeSourceCount} commits selected for merge.
+                            {mergeSourceCount} commit {mergeSourceCount === 1 ? 'source' : 'sources'} selected for merge.
                         </TooltipContent>
                     </Tooltip>
                 )}

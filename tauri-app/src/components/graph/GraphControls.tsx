@@ -866,7 +866,7 @@ export function GraphControls({
                                 </DropdownMenuTrigger>
                             </TooltipTrigger>
                             <TooltipContent side="bottom" align="end">
-                                Leaf nodes
+                                Branch endpoints with no child nodes, ordered newest first.
                             </TooltipContent>
                         </Tooltip>
                         <DropdownMenuContent className="w-80 overflow-hidden p-0" align="end">
@@ -1050,7 +1050,7 @@ export function GraphControls({
                                             </span>
                                         </TooltipTrigger>
                                         <TooltipContent side="bottom" align="end">
-                                            Automatic graph sync is due soon. Use reset to refresh the graph immediately.
+                                            Next automatic graph sync is due soon. Reset now to reload repo state and remount the graph canvas.
                                         </TooltipContent>
                                     </Tooltip>
                                 ) : null}

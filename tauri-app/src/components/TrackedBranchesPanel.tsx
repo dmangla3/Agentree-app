@@ -154,7 +154,8 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
             totalAdditions: commit.total_additions ?? null,
             totalDeletions: commit.total_deletions ?? null,
           })),
-          currentCheckout.gitRef ?? null
+          currentCheckout.gitRef ?? null,
+          repoPath
         );
       }
 
@@ -262,7 +263,7 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
                 ? "bg-muted/40 text-muted-foreground border border-border/50"
                 : "bg-blue-500/10 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400 border border-blue-500/30 hover:bg-blue-500/20"
             )}
-            title={currentCheckout.title}
+            aria-label={`Focus currently checked out ${currentCheckout.title}`}
             onClick={focusCurrentCheckout}
           >
             {currentCheckout.kind === 'branch' ? <Compass size={12} className="shrink-0" /> : <GitCommitHorizontal size={12} className="shrink-0" />}
@@ -291,7 +292,7 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
             </div>
           </HoverCardTrigger>
           <HoverCardContent className="w-64 rounded-xl border border-border/70 bg-popover px-3 py-2 text-xs leading-relaxed text-muted-foreground shadow-lg">
-            Agentree continously monitors tracked branches and automatically imports new commits when detected
+            Agentree continuously checks tracked branches and imports new commits when their refs move.
           </HoverCardContent>
         </HoverCard>
 

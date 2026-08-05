@@ -7,6 +7,7 @@ export const commands = {
 	greet: (name: string) => __TAURI_INVOKE<string>("greet", { name }),
 	appendFrontendLogs: (lines: string[]) => __TAURI_INVOKE<null>("append_frontend_logs", { lines }),
 	getLogPaths: () => __TAURI_INVOKE<LogPaths>("get_log_paths"),
+	getDiagnosticsLogs: (maxLinesPerLog: number | null) => __TAURI_INVOKE<DiagnosticsLogBundle>("get_diagnostics_logs", { maxLinesPerLog }),
 	exportPerfCaptureBundle: (request: PerfCaptureExportRequest) => __TAURI_INVOKE<PerfCaptureExportResult>("export_perf_capture_bundle", { request }),
 	createSessionDb: (sessionId: string) => __TAURI_INVOKE<string>("create_session_db", { sessionId }),
 	recordToolCall: (sessionId: string, name: string, parameters: string | null, result: string | null, error: string | null, startedAt: number, completedAt: number) => __TAURI_INVOKE<number>("record_tool_call", { sessionId, name, parameters, result, error, startedAt, completedAt }),
@@ -53,8 +54,9 @@ export const commands = {
 	listLocalNodes: (workspaceId: string) => __TAURI_INVOKE<LocalNodeRow[]>("list_local_nodes", { workspaceId }),
 	hydrateLocalNodesFromServer: (workspaceId: string, payloads: string[]) => __TAURI_INVOKE<number>("hydrate_local_nodes_from_server", { workspaceId, payloads }),
 	upsertLocalNode: (workspaceId: string, nodeId: string, payload: string) => __TAURI_INVOKE<null>("upsert_local_node", { workspaceId, nodeId, payload }),
-	importLocalCommits: (workspaceId: string, commits: LocalCommitImport[], gitRef: string | null) => __TAURI_INVOKE<number>("import_local_commits", { workspaceId, commits, gitRef }),
+	importLocalCommits: (workspaceId: string, commits: LocalCommitImport[], gitRef: string | null, repoPath: string | null) => __TAURI_INVOKE<number>("import_local_commits", { workspaceId, commits, gitRef, repoPath }),
 	listLocalCommitGraph: (workspaceId: string) => __TAURI_INVOKE<LocalCommitGraphSnapshot>("list_local_commit_graph", { workspaceId }),
+	repairLocalCommitGraph: (workspaceId: string, repoPath: string, gitRef: string | null) => __TAURI_INVOKE<number>("repair_local_commit_graph", { workspaceId, repoPath, gitRef }),
 	enqueueLocalCommitGraphSync: (workspaceId: string, payloadJson: string, mutationId: string | null) => __TAURI_INVOKE<LocalSyncEventRow>("enqueue_local_commit_graph_sync", { workspaceId, payloadJson, mutationId }),
 	localFirstDeleteBranch: (workspaceId: string, rootNodeId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_delete_branch", { workspaceId, rootNodeId }),
 	localFirstDeleteWorkspace: (workspaceId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_delete_workspace", { workspaceId }),
@@ -214,6 +216,13 @@ export type ConflictResolution_Serialize = {
 	action: ResolutionAction,
 	content: string | null,
 	sourceCommit?: string | null,
+};
+
+export type DiagnosticsLogBundle = {
+	logPaths: LogPaths,
+	frontendExcerpt: string,
+	backendExcerpt: string,
+	maxLinesPerLog: number,
 };
 
 /**  A hunk in a unified diff. */

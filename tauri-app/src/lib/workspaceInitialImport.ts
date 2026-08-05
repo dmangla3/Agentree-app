@@ -114,7 +114,8 @@ export async function bootstrapWorkspaceInitialGitImport({
         totalAdditions: commit.totalAdditions ?? null,
         totalDeletions: commit.totalDeletions ?? null,
       })),
-      importGitRef
+      importGitRef,
+      repoPath
     );
     await agentClient.enqueueLocalCommitGraphSync(
       workspaceId,

@@ -224,7 +224,8 @@ export function AddCommitDialog({
           totalAdditions: commit.total_additions ?? null,
           totalDeletions: commit.total_deletions ?? null,
         })),
-        primaryRef?.git_ref ?? null
+        primaryRef?.git_ref ?? null,
+        repoPath
       );
       queryClient.invalidateQueries({ queryKey: ['graph-snapshot', workspaceId] });
       queryClient.invalidateQueries({ queryKey: ['local-commits', workspaceId] });

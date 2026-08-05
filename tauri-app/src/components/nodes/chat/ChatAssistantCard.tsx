@@ -531,7 +531,7 @@ export const ChatAssistantCard = memo(({
                     {formatTokenValue(promptTokens) ? (
                       <span 
                         className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 border-r border-border/30 last:border-r-0"
-                        title={typeof promptTokens === 'number' ? `${promptTokens.toLocaleString()} input tokens` : undefined}
+                        title={typeof promptTokens === 'number' ? `${promptTokens.toLocaleString()} input tokens sent as context for this response.` : undefined}
                       >
                         <Zap size={9} strokeWidth={2.5} className="text-emerald-500 dark:text-emerald-400" />
                         {formatTokenValue(promptTokens)}
@@ -541,7 +541,7 @@ export const ChatAssistantCard = memo(({
                     {formatTokenValue(completionTokens) ? (
                       <span 
                         className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400 border-r border-border/30 last:border-r-0"
-                        title={typeof completionTokens === 'number' ? `${completionTokens.toLocaleString()} output tokens` : undefined}
+                        title={typeof completionTokens === 'number' ? `${completionTokens.toLocaleString()} output tokens generated in this response.` : undefined}
                       >
                         <Zap size={9} strokeWidth={2.5} className="text-blue-500 dark:text-blue-400" />
                         {formatTokenValue(completionTokens)}
@@ -551,7 +551,7 @@ export const ChatAssistantCard = memo(({
                     {formatTokenValue(cachedInputTokens) ? (
                       <span 
                         className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 border-r border-border/30 last:border-r-0"
-                        title={typeof cachedInputTokens === 'number' ? `${cachedInputTokens.toLocaleString()} cached input tokens` : undefined}
+                        title={typeof cachedInputTokens === 'number' ? `${cachedInputTokens.toLocaleString()} cached input tokens reused from prior context.` : undefined}
                       >
                         <Sigma size={9} strokeWidth={2.5} className="text-cyan-500 dark:text-cyan-400" />
                         {formatTokenValue(cachedInputTokens)}
@@ -561,7 +561,7 @@ export const ChatAssistantCard = memo(({
                     {formatTokenValue(reasoningTokens) ? (
                       <span 
                         className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 border-r border-border/30 last:border-r-0"
-                        title={typeof reasoningTokens === 'number' ? `${reasoningTokens.toLocaleString()} reasoning tokens` : undefined}
+                        title={typeof reasoningTokens === 'number' ? `${reasoningTokens.toLocaleString()} internal reasoning tokens used by the model.` : undefined}
                       >
                         <Sparkles size={9} strokeWidth={2.5} className="text-violet-500 dark:text-violet-400" />
                         {formatTokenValue(reasoningTokens)}
@@ -571,7 +571,7 @@ export const ChatAssistantCard = memo(({
                     {formatTokenValue(totalTokens) ? (
                       <span 
                         className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400 bg-amber-50/50 dark:bg-amber-950/20"
-                        title={typeof totalTokens === 'number' ? `${totalTokens.toLocaleString()} total tokens` : undefined}
+                        title={typeof totalTokens === 'number' ? `${totalTokens.toLocaleString()} total input, output, cached, and reasoning tokens reported for this response.` : undefined}
                       >
                         <Sigma size={9} strokeWidth={2.5} className="text-amber-500 dark:text-amber-400" />
                         {formatTokenValue(totalTokens)}

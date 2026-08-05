@@ -19,6 +19,15 @@ pub struct LogPaths {
     pub backend_log: String,
 }
 
+#[derive(Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticsLogBundle {
+    pub log_paths: LogPaths,
+    pub frontend_excerpt: String,
+    pub backend_excerpt: String,
+    pub max_lines_per_log: usize,
+}
+
 #[derive(Deserialize, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct PerfCaptureExportSession {
@@ -169,6 +178,17 @@ fn read_log_slice(
     }
 }
 
+fn tail_log(path: &PathBuf, max_lines: usize) -> String {
+    match read_to_string(path) {
+        Ok(contents) => {
+            let lines = contents.lines().collect::<Vec<_>>();
+            let start = lines.len().saturating_sub(max_lines);
+            lines[start..].join("\n")
+        }
+        Err(error) => format!("log_unavailable: {}", error),
+    }
+}
+
 pub fn init_logging(app: &AppHandle) -> Result<LogPaths, String> {
     let log_dir = ensure_log_dir(app)?.clone();
     let paths = LogPaths {
@@ -213,6 +233,26 @@ pub fn get_log_paths(app: AppHandle) -> Result<LogPaths, String> {
         log_dir: log_dir.display().to_string(),
         frontend_log: frontend_log_path(&app)?.display().to_string(),
         backend_log: backend_log_path(&app)?.display().to_string(),
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_diagnostics_logs(
+    app: AppHandle,
+    max_lines_per_log: Option<usize>,
+) -> Result<DiagnosticsLogBundle, String> {
+    let requested_lines = max_lines_per_log.unwrap_or(200);
+    let max_lines = requested_lines.clamp(20, 400);
+    let log_paths = get_log_paths(app.clone())?;
+    let frontend_path = frontend_log_path(&app)?;
+    let backend_path = backend_log_path(&app)?;
+
+    Ok(DiagnosticsLogBundle {
+        log_paths,
+        frontend_excerpt: tail_log(&frontend_path, max_lines),
+        backend_excerpt: tail_log(&backend_path, max_lines),
+        max_lines_per_log: max_lines,
     })
 }
 

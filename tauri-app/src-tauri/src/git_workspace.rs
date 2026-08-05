@@ -669,6 +669,29 @@ fn attach_commit_stats_to_all(repo_path: &str, commits: &mut [GitCommitMetadata]
     }
 }
 
+pub fn read_commit_metadata_sync(
+    repo_path: &str,
+    commit_sha: &str,
+) -> Result<GitCommitMetadata, String> {
+    let output = run_git(
+        repo_path,
+        &[
+            "show",
+            "-s",
+            "--format=%H\t%P\t%s\t%an\t%ae\t%aI",
+            commit_sha.trim(),
+        ],
+    )?;
+    let first_line = output
+        .lines()
+        .next()
+        .ok_or_else(|| "Commit metadata not found".to_string())?;
+    let mut commit = parse_commit_metadata_line(first_line)
+        .ok_or_else(|| "Failed to parse commit metadata".to_string())?;
+    attach_commit_stats(repo_path, &mut commit);
+    Ok(commit)
+}
+
 fn ref_kind(git_ref: &str) -> String {
     if git_ref.starts_with("refs/heads/") {
         "branch".to_string()
@@ -2276,23 +2299,7 @@ pub async fn read_commit_metadata(
     repo_path: String,
     commit_sha: String,
 ) -> Result<GitCommitMetadata, String> {
-    let output = run_git(
-        &repo_path,
-        &[
-            "show",
-            "-s",
-            "--format=%H\t%P\t%s\t%an\t%ae\t%aI",
-            commit_sha.trim(),
-        ],
-    )?;
-    let first_line = output
-        .lines()
-        .next()
-        .ok_or_else(|| "Commit metadata not found".to_string())?;
-    let mut commit = parse_commit_metadata_line(first_line)
-        .ok_or_else(|| "Failed to parse commit metadata".to_string())?;
-    attach_commit_stats(&repo_path, &mut commit);
-    Ok(commit)
+    read_commit_metadata_sync(&repo_path, &commit_sha)
 }
 
 #[tauri::command]

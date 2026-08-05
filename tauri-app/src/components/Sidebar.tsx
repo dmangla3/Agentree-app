@@ -4,14 +4,17 @@ import { Avatar, AvatarFallback, AvatarImage } from "../../@/components/ui/avata
 import { useAuthStore } from '../stores/authStore';
 import { logoutCurrentSession } from '../lib/authSession';
 import { logoutDesktopBrowserAuth, shouldUseDesktopBrowserAuth } from '../lib/kindeDesktopAuth';
+import { DiagnosticsButton } from './DiagnosticsButton';
 
 
 interface SidebarProps {
     activeView: 'chat' | 'knowledge' | 'skills';
     onViewChange: (view: 'chat' | 'knowledge' | 'skills') => void;
+    selectedWorkspaceId: string | null;
+    selectedWorkspaceName: string | null;
 }
 
-export function Sidebar({ activeView, onViewChange }: SidebarProps) {
+export function Sidebar({ activeView, onViewChange, selectedWorkspaceId, selectedWorkspaceName }: SidebarProps) {
     const { user } = useAuthStore();
     const navItems = [
         { id: 'chat' as const, label: 'Workspace', icon: MessageSquare },
@@ -50,6 +53,11 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
                         {user?.name?.[0]?.toUpperCase() || 'U'}
                     </AvatarFallback>
                 </Avatar>
+
+                <DiagnosticsButton
+                    selectedWorkspaceId={selectedWorkspaceId}
+                    selectedWorkspaceName={selectedWorkspaceName}
+                />
 
                 <button
                     type="button"

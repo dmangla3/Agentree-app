@@ -492,7 +492,7 @@ function GraphViewInternal({
     const shouldHydrateFullMessages = graphSnapshotQuery.isSuccess || graphSnapshotQuery.isError;
     const messagesQuery = useMessages(selectedWorkspaceId || '');
     const localNodesQuery = useLocalNodes(selectedWorkspaceId || null);
-    const summariesQuery = useSummaries(selectedWorkspaceId || '', { enabled: shouldHydrateFullMessages });
+    const summariesQuery = useSummaries(selectedWorkspaceId || '', { enabled: shouldHydrateFullMessages && !agentClient.hasRuntime() });
     const { data: workspacesData } = useWorkspaces();
     const workspaces = useMemo(() => workspacesData ?? [], [workspacesData]);
     const { data: allModelsData } = useModels();
@@ -507,11 +507,18 @@ function GraphViewInternal({
     const workspaceRepoMap = useMemo(() => {
         return new Map(workspaces.map(c => [c.id, c.git_repo_path ?? c.folderPath ?? null]));
     }, [workspaces]);
+    const localCommitGraphRepoPath = selectedWorkspaceId ? workspaceRepoMap.get(selectedWorkspaceId) ?? null : null;
     // Stable references for messages and summaries
     const snapshotSummaries = useMemo(() => graphSnapshotToSummaries(graphSnapshotQuery.data), [graphSnapshotQuery.data]);
     const localCommitGraphQuery = useQuery({
-        queryKey: ['local-commit-graph', selectedWorkspaceId],
-        queryFn: async () => selectedWorkspaceId ? agentClient.listLocalCommitGraph(selectedWorkspaceId) : { commits: [], commitParents: [], commitObservations: [] },
+        queryKey: ['local-commit-graph', selectedWorkspaceId, localCommitGraphRepoPath],
+        queryFn: async () => {
+            if (!selectedWorkspaceId) return { commits: [], commitParents: [], commitObservations: [] };
+            if (localCommitGraphRepoPath) {
+                await agentClient.repairLocalCommitGraph(selectedWorkspaceId, localCommitGraphRepoPath);
+            }
+            return agentClient.listLocalCommitGraph(selectedWorkspaceId);
+        },
         enabled: Boolean(selectedWorkspaceId && agentClient.hasRuntime()),
         staleTime: 5_000,
         gcTime: 5 * 60 * 1000,
@@ -3008,7 +3015,7 @@ function GraphViewInternal({
         setAutoRefreshTargets({
             repo: REPO_REF_SYNC_ENABLED ? fromTime + REF_SYNC_INTERVAL_MS : null,
             graph: AUTO_REFRESH_ENABLED ? fromTime + GRAPH_DATA_INTERVAL_MS : null,
-            summaries: AUTO_REFRESH_ENABLED ? fromTime + SUMMARIES_INTERVAL_MS : null,
+            summaries: AUTO_REFRESH_ENABLED && !agentClient.hasRuntime() ? fromTime + SUMMARIES_INTERVAL_MS : null,
             workspaces: AUTO_REFRESH_ENABLED ? fromTime + CONVERSATIONS_INTERVAL_MS : null,
         });
     }, []);
@@ -3022,12 +3029,14 @@ function GraphViewInternal({
                 reason: 'graph-refresh',
             }),
             queryClient.invalidateQueries({ queryKey: ['graph-snapshot', selectedWorkspaceId] }),
+            queryClient.invalidateQueries({ queryKey: ['local-commit-graph', selectedWorkspaceId] }),
             queryClient.invalidateQueries({ queryKey: trackedRefKeys.workspace(selectedWorkspaceId) }),
             queryClient.invalidateQueries({ queryKey: branchKeys.workspace(selectedWorkspaceId) }),
         ]);
 
         await Promise.all([
             queryClient.refetchQueries({ queryKey: ['graph-snapshot', selectedWorkspaceId], type: 'active' }),
+            queryClient.refetchQueries({ queryKey: ['local-commit-graph', selectedWorkspaceId], type: 'active' }),
             queryClient.refetchQueries({ queryKey: trackedRefKeys.workspace(selectedWorkspaceId), type: 'active' }),
             queryClient.refetchQueries({ queryKey: branchKeys.workspace(selectedWorkspaceId), type: 'active' }),
         ]);
@@ -3035,6 +3044,7 @@ function GraphViewInternal({
 
     const refetchSummaries = useCallback(async () => {
         if (!selectedWorkspaceId) return;
+        if (agentClient.hasRuntime()) return;
 
         await queryClient.invalidateQueries({ queryKey: ['summaries', selectedWorkspaceId] });
         await queryClient.refetchQueries({ queryKey: ['summaries', selectedWorkspaceId], type: 'active' });
@@ -3157,6 +3167,7 @@ function GraphViewInternal({
 
         await clearCachedGraphSnapshot(selectedWorkspaceId);
         queryClient.removeQueries({ queryKey: ['graph-snapshot', selectedWorkspaceId] });
+        queryClient.removeQueries({ queryKey: ['local-commit-graph', selectedWorkspaceId] });
         queryClient.removeQueries({ queryKey: ['messages', selectedWorkspaceId] });
         queryClient.removeQueries({ queryKey: ['summaries', selectedWorkspaceId] });
         queryClient.removeQueries({ queryKey: trackedRefKeys.workspace(selectedWorkspaceId) });
@@ -3703,7 +3714,29 @@ function GraphViewInternal({
     }, [branchNodesForRender]);
     const graphRenderElements = useMemo(() => {
         const buildHeldElements = (nodeIds: Set<string>, reason = 'active-window') => {
-            const nodes = Array.from(nodeIds)
+            const resolvedIds = new Set(nodeIds);
+            let changed = true;
+            while (changed) {
+                changed = false;
+                for (const edge of previewEdges) {
+                    const relationship = (edge.data as any)?.relationship;
+                    const edgeRole = (edge.data as any)?.edgeRole;
+                    if (
+                        relationship !== 'git-parent' &&
+                        relationship !== 'base-used' &&
+                        edgeRole !== 'commit-lineage' &&
+                        edgeRole !== 'base'
+                    ) continue;
+                    if (resolvedIds.has(edge.source) || resolvedIds.has(edge.target)) {
+                        const beforeSize = resolvedIds.size;
+                        resolvedIds.add(edge.source);
+                        resolvedIds.add(edge.target);
+                        if (resolvedIds.size !== beforeSize) changed = true;
+                    }
+                }
+            }
+
+            const nodes = Array.from(resolvedIds)
                 .map((id) => activeGraphWindowSpatialIndex.nodeById.get(id))
                 .filter((node): node is Node<any> => Boolean(node));
             const resolvedNodeIds = new Set(nodes.map((node) => node.id));

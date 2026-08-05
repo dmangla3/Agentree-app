@@ -172,7 +172,7 @@ function RepoItem({
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="top">
-                  <p>Add workspace to this repo</p>
+                  <p>Create another workspace backed by this repository path.</p>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
@@ -195,7 +195,7 @@ function RepoItem({
                   </DropdownMenuTrigger>
                 </TooltipTrigger>
                 <TooltipContent side="top">
-                  <p>More options</p>
+                  <p>Repository actions, including adding a workspace.</p>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
@@ -418,7 +418,7 @@ export function WorkspaceList() {
               </Button>
             </TooltipTrigger>
             <TooltipContent side="right">
-              <p>Add a new repository</p>
+              <p>Create a repository group and its first workspace.</p>
             </TooltipContent>
           </Tooltip>
         </div>

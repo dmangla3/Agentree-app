@@ -232,6 +232,14 @@ const applyWorkspaceMessageDeltas = async (
 
 export const catchUpHotSendMessageDeltas = async (queryClient: QueryClient, workspaceId: string | null | undefined) => {
   if (!workspaceId || catchupInFlightByWorkspace.has(workspaceId)) return;
+  if (agentClient.hasRuntime()) {
+    recordPerfEvent('query.message-deltas.catchup-skipped', {
+      elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
+      workspaceId,
+      reason: 'local-runtime-authoritative',
+    }, { source: 'useHotSendMessageDeltas.catchup' });
+    return;
+  }
   catchupInFlightByWorkspace.add(workspaceId);
   try {
     const cursorByWorkspace: Record<string, number> = {};
@@ -280,6 +288,7 @@ export const useHotSendMessageDeltas = (workspaceId: string | null) => {
 
   useEffect(() => {
     if (!workspaceId) return;
+    if (agentClient.hasRuntime()) return;
     if (!hasHotSendActivity) return;
     if (activeRunCount > 0) {
       recordPerfEvent('query.message-deltas.poll-paused', {

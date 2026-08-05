@@ -26,22 +26,11 @@ interface UpdateContextValue {
 
 const UpdateContext = createContext<UpdateContextValue | null>(null);
 
-function isUpdaterNoise(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? '');
-  const normalized = message.toLowerCase();
-  return (
-    normalized.includes('updater') &&
-    (normalized.includes('endpoint') ||
-      normalized.includes('pubkey') ||
-      normalized.includes('plugin') ||
-      normalized.includes('not configured'))
-  );
-}
-
 export function UpdateManager({ children }: { children: ReactNode }) {
   const { addToast, removeToast } = useToast();
   const updateRef = useRef<Update | null>(null);
   const availableToastIdRef = useRef<string | null>(null);
+  const autoCheckStartedRef = useRef(false);
   const [checking, setChecking] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [availableVersion, setAvailableVersion] = useState<string | null>(null);
@@ -154,7 +143,7 @@ export function UpdateManager({ children }: { children: ReactNode }) {
         setAvailableVersion(update.version);
         notifyUpdateAvailable(update);
       } catch (error) {
-        if (!silent || !isUpdaterNoise(error)) {
+        if (!silent) {
           addToast({
             title: 'Update check failed',
             description: error instanceof Error ? error.message : 'Failed to check for updates.',
@@ -171,6 +160,8 @@ export function UpdateManager({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (import.meta.env.DEV) return;
+    if (autoCheckStartedRef.current) return;
+    autoCheckStartedRef.current = true;
     void checkForUpdates({ silent: true });
   }, [checkForUpdates]);
 

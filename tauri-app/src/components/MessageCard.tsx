@@ -242,7 +242,7 @@ function MessageMetaHeader({ message, cachedInputTokens }: { message: Message, c
       <div className="flex items-stretch overflow-hidden rounded-full border border-border/40 shadow-[0_1px_3px_rgba(0,0,0,0.04)] bg-background/80 backdrop-blur-xl text-[10px] text-muted-foreground transition-[background-color,box-shadow] hover:shadow-md hover:bg-background/90 ring-1 ring-white/10 dark:ring-white/5">
 
         {/* Turn Tokens */}
-        <div className="px-2.5 py-1 flex items-center gap-1.5 border-r border-border/40 bg-muted/20 hover:bg-muted/40 transition-colors" title="Turn Tokens (Prompt/Completion)">
+        <div className="px-2.5 py-1 flex items-center gap-1.5 border-r border-border/40 bg-muted/20 hover:bg-muted/40 transition-colors" title="Tokens used by this message. P=input prompt tokens, C=assistant output tokens.">
           <Hash size={11} className="opacity-80 text-blue-500" />
           <div className="flex items-baseline gap-1">
             <span className="font-mono tabular-nums font-semibold text-foreground/90">{message.totalTokens || '-'}</span>
@@ -252,7 +252,7 @@ function MessageMetaHeader({ message, cachedInputTokens }: { message: Message, c
               </span>
             )}
             {cachedInputTokens && cachedInputTokens > 0 ? (
-              <span className="text-[8.5px] text-amber-700 dark:text-amber-400 font-mono tabular-nums font-medium tracking-tighter ml-0.5 bg-amber-500/15 ring-1 ring-amber-500/30 px-1 rounded-[4px]" title="Cached Tokens">
+              <span className="text-[8.5px] text-amber-700 dark:text-amber-400 font-mono tabular-nums font-medium tracking-tighter ml-0.5 bg-amber-500/15 ring-1 ring-amber-500/30 px-1 rounded-[4px]" title="Cached input tokens reused from prior context.">
                 +{cachedInputTokens}c
               </span>
             ) : null}
@@ -260,7 +260,7 @@ function MessageMetaHeader({ message, cachedInputTokens }: { message: Message, c
         </div>
 
         {/* Total Tokens */}
-        <div className="px-2.5 py-1 flex items-center gap-1.5 border-r border-border/40 bg-muted/10 hover:bg-muted/30 transition-colors" title="Cumulative Tokens">
+        <div className="px-2.5 py-1 flex items-center gap-1.5 border-r border-border/40 bg-muted/10 hover:bg-muted/30 transition-colors" title="Total tokens accumulated up to this message, after summary adjustments.">
           <Sigma size={11} className="opacity-80 text-purple-500" />
           <span className="font-mono tabular-nums font-semibold text-foreground/90">{cumulativeTokens > 0 ? cumulativeTokens.toLocaleString() : '-'}</span>
         </div>
@@ -273,14 +273,14 @@ function MessageMetaHeader({ message, cachedInputTokens }: { message: Message, c
 
           if (toolCount > 0) {
             return (
-              <div className="px-3 py-1 flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-400 transition-colors" title={`Tools Used: ${toolCalls[0]?.tool_name || 'various'}`}>
+              <div className="px-3 py-1 flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-400 transition-colors" title={`${toolCount} tool ${toolCount === 1 ? 'call' : 'calls'} in this message${toolCalls[0]?.tool_name ? `, starting with ${toolCalls[0].tool_name}` : ''}.`}>
                 <Settings2 size={11} className="opacity-90" />
                 <span className="font-medium font-mono flex items-center"><span className="font-bold mr-1">{toolCount}</span> call{toolCount !== 1 && 's'}</span>
               </div>
             );
           } else {
             return (
-              <div className="px-2.5 py-1 flex items-center gap-1.5 bg-background/40 hover:bg-background/80 transition-colors" title="Message Length">
+              <div className="px-2.5 py-1 flex items-center gap-1.5 bg-background/40 hover:bg-background/80 transition-colors" title="Characters in this message content.">
                 <Pilcrow size={11} className="opacity-80 text-emerald-500" />
                 <div className="flex items-baseline gap-0.5">
                   <span className="font-mono tabular-nums font-semibold text-foreground/90">{contentLength.toLocaleString()}</span>
@@ -296,7 +296,7 @@ function MessageMetaHeader({ message, cachedInputTokens }: { message: Message, c
       <div className="flex items-center gap-3 pl-2 shrink-0">
 
         {/* Timestamp */}
-        <div className="flex items-center gap-1.5 text-muted-foreground/60 transition-opacity" title="Time">
+        <div className="flex items-center gap-1.5 text-muted-foreground/60 transition-opacity" title="When this message was created.">
           <Clock size={10} className="opacity-50" />
           <span className="font-medium tabular-nums tracking-tight text-[9px]">{new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
         </div>

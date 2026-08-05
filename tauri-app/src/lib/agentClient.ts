@@ -549,7 +549,7 @@ export const agentClient = {
         if (!hasTauriRuntime()) return;
         await tauriCommands.upsertLocalNode(workspaceId, nodeId, JSON.stringify(message));
     },
-    importLocalCommits: async (workspaceId: string, commits: LocalCommitImport[], gitRef?: string | null): Promise<number> => {
+    importLocalCommits: async (workspaceId: string, commits: LocalCommitImport[], gitRef?: string | null, repoPath?: string | null): Promise<number> => {
         if (!hasTauriRuntime()) return 0;
         return await tauriCommands.importLocalCommits(
             workspaceId,
@@ -567,12 +567,17 @@ export const agentClient = {
                 totalAdditions: commit.totalAdditions ?? null,
                 totalDeletions: commit.totalDeletions ?? null,
             })),
-            gitRef ?? null
+            gitRef ?? null,
+            repoPath ?? null
         );
     },
     listLocalCommitGraph: async (workspaceId: string): Promise<LocalCommitGraphSnapshot> => {
         if (!hasTauriRuntime()) return { commits: [], commitParents: [], commitObservations: [] };
         return await tauriCommands.listLocalCommitGraph(workspaceId) as LocalCommitGraphSnapshot;
+    },
+    repairLocalCommitGraph: async (workspaceId: string, repoPath: string, gitRef?: string | null): Promise<number> => {
+        if (!hasTauriRuntime()) return 0;
+        return await tauriCommands.repairLocalCommitGraph(workspaceId, repoPath, gitRef ?? null);
     },
     enqueueLocalCommitGraphSync: async (workspaceId: string, payload: unknown, mutationId?: string | null): Promise<LocalSyncEventRecord | null> => {
         if (!hasTauriRuntime()) return null;

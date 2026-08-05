@@ -9,6 +9,7 @@ use once_cell::sync::Lazy;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 static AUTH_CALLBACK_STARTED: AtomicBool = AtomicBool::new(false);
@@ -54,13 +55,24 @@ pub fn start_auth_callback_server(app_handle: AppHandle) {
 
     tauri::async_runtime::spawn(async move {
         crate::app_log!("[Auth] Starting Kinde callback server on http://{}", addr);
-        let listener = match tokio::net::TcpListener::bind(addr).await {
-            Ok(listener) => listener,
-            Err(error) => {
-                crate::app_log!("[Auth] Failed to bind Kinde callback server: {}", error);
-                return;
+
+        let mut retry_delay = Duration::from_millis(250);
+        let listener = loop {
+            match tokio::net::TcpListener::bind(addr).await {
+                Ok(listener) => break listener,
+                Err(error) => {
+                    crate::app_log!(
+                        "[Auth] Failed to bind Kinde callback server: {}; retrying in {:?}",
+                        error,
+                        retry_delay
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = (retry_delay * 2).min(Duration::from_secs(5));
+                }
             }
         };
+
+        crate::app_log!("[Auth] Kinde callback server listening on http://{}", addr);
 
         if let Err(error) = axum::serve(listener, app).await {
             crate::app_log!("[Auth] Kinde callback server error: {}", error);

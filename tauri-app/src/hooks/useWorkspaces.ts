@@ -210,6 +210,7 @@ export const useCreateWorkspace = () => {
 
 export const useRenameWorkspace = () => {
   const queryClient = useQueryClient();
+  const { addToast } = useToast();
   return useMutation({
     mutationFn: async ({ id, name }: { id: string; name: string }) => {
       const response = await api.patch(`/workspaces/${id}`, { name });
@@ -217,6 +218,10 @@ export const useRenameWorkspace = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+    },
+    onError: (error: unknown) => {
+      const message = error instanceof Error ? error.message : 'Failed to rename workspace';
+      addToast({ title: 'Error renaming workspace', description: message, variant: 'error' });
     },
   });
 };

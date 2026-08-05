@@ -1427,28 +1427,33 @@ fn finalize_run_snapshot(
                 let _ = app_handle
                     .state::<crate::db::TelemetryDb>()
                     .record_agent_run_output_commit(&snapshot.node_id, &commit_sha);
-                if let Some(workspace_id) = workspace_id_from_execution_data(&snapshot.execution_data) {
-                    let _ = app_handle.state::<crate::db::TelemetryDb>().import_local_commits(
-                        &workspace_id,
-                        vec![crate::db::LocalCommitImport {
-                            sha: commit_sha.clone(),
-                            parents: vec![parent_commit.clone()],
-                            subject: Some(commit_message.clone()),
-                            author_name: snapshot.author_name.clone(),
-                            author_email: None,
-                            authored_at: Some(chrono_like_now()),
-                            committed_at: Some(chrono_like_now()),
-                            source_kind: Some("agent".to_string()),
-                            produced_by_node_id: Some(snapshot.node_id.clone()),
-                            files_changed_count: snapshot
-                                .execution_data
-                                .get("files_changed_count")
-                                .and_then(|value| value.as_i64()),
-                            total_additions: None,
-                            total_deletions: None,
-                        }],
-                        Some("agent"),
-                    );
+                if let Some(workspace_id) =
+                    workspace_id_from_execution_data(&snapshot.execution_data)
+                {
+                    let _ = app_handle
+                        .state::<crate::db::TelemetryDb>()
+                        .import_local_commits_with_parent_closure(
+                            &workspace_id,
+                            vec![crate::db::LocalCommitImport {
+                                sha: commit_sha.clone(),
+                                parents: vec![parent_commit.clone()],
+                                subject: Some(commit_message.clone()),
+                                author_name: snapshot.author_name.clone(),
+                                author_email: None,
+                                authored_at: Some(chrono_like_now()),
+                                committed_at: Some(chrono_like_now()),
+                                source_kind: Some("agent".to_string()),
+                                produced_by_node_id: Some(snapshot.node_id.clone()),
+                                files_changed_count: snapshot
+                                    .execution_data
+                                    .get("files_changed_count")
+                                    .and_then(|value| value.as_i64()),
+                                total_additions: None,
+                                total_deletions: None,
+                            }],
+                            Some("agent"),
+                            Some(&repo_path),
+                        );
                 }
                 commit_created = true;
             } else if let Some(execution_object) = snapshot.execution_data.as_object_mut() {
@@ -1511,10 +1516,7 @@ fn finalize_run_snapshot(
             Some(&snapshot.run_id),
         )
         .map_err(|queue_err| {
-            format!(
-                "failed to enqueue local terminal sync retry: {}",
-                queue_err
-            )
+            format!("failed to enqueue local terminal sync retry: {}", queue_err)
         })?;
     let finalize_ack = FinalizeAckPayload {
         run_id: snapshot.run_id.clone(),

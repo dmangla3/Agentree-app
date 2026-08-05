@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { Handle, Position } from '@xyflow/react';
 import { Files, GitCommitVertical, GitMerge, Layers3, Minus, Plus, Rows3 } from 'lucide-react';
 import type { ProjectedCommitEntity, ProjectedCommitGroup, WorkspaceProjection } from '../../../domain/workspaceProjection';
 import { cn } from '../../../lib/utils';
@@ -193,6 +194,19 @@ export const GraphDerivedCommitGroupNode = memo(({
           <span className="font-medium text-emerald-700/70 dark:text-emerald-300/70">hover</span>
         </div>
       </div>
+
+      <Handle
+        id="top-target"
+        type="target"
+        position={Position.Top}
+        className="!h-2.5 !w-2.5 !border-2 !border-background !bg-slate-400"
+      />
+      <Handle
+        id="bottom-source"
+        type="source"
+        position={Position.Bottom}
+        className="!h-2.5 !w-2.5 !border-2 !border-background !bg-slate-400"
+      />
     </div>
   );
 
