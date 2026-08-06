@@ -9,6 +9,7 @@ import { useScopes } from '../hooks/useScopes';
 import { useWorkspaces } from '../hooks/useWorkspaces';
 import { useWorkspaceProjection } from '../hooks/useWorkspaceProjection';
 import { useWorkspaceMessages } from '../hooks/useLiveMessages';
+import { useLocalNodes } from '../hooks/useLocalNodes';
 import { useBranches } from '../hooks/useBranches';
 import { useShallow } from 'zustand/react/shallow';
 import { useIntegrationStore } from '../stores/integrationStore';
@@ -113,6 +114,7 @@ export function ChatInterface() {
   const graphSnapshotQuery = useGraphSnapshot(selectedWorkspaceId || null);
   const shouldHydrateFullMessages = graphSnapshotQuery.isSuccess || graphSnapshotQuery.isError;
   const messagesQuery = useMessages(selectedWorkspaceId);
+  const localNodesQuery = useLocalNodes(selectedWorkspaceId);
   const summariesQuery = useSummaries(selectedWorkspaceId, { enabled: shouldHydrateFullMessages && !agentClient.hasRuntime() });
   const scopesQuery = useScopes(selectedWorkspaceId);
   const { data: branchPointersData } = useBranches(selectedWorkspaceId || null);
@@ -124,7 +126,7 @@ export function ChatInterface() {
 
   const snapshotSummaries = useMemo(() => graphSnapshotToSummaries(graphSnapshotQuery.data), [graphSnapshotQuery.data]);
   const persistedMessages = useMemo(() => (messagesQuery.data ?? []) as Message[], [messagesQuery.data]);
-  const messages = useWorkspaceMessages(selectedWorkspaceId, persistedMessages);
+  const messages = useWorkspaceMessages(selectedWorkspaceId, persistedMessages, localNodesQuery.data);
   const branchPointers = useMemo(() => branchPointersData ?? [], [branchPointersData]);
   const summaries = useMemo(() => (summariesQuery.data ?? snapshotSummaries) as Summary[], [snapshotSummaries, summariesQuery.data]);
 
@@ -300,6 +302,10 @@ export function ChatInterface() {
 
 	    const renderedMessageIds = new Set(messages.map((message) => message.id));
 	    if (focusedMessageId && renderedMessageIds.has(focusedMessageId)) return;
+      const focusedCommitSha = typeof lastFocusMetadata?.commitSha === 'string'
+        ? lastFocusMetadata.commitSha.trim()
+        : '';
+      if (lastFocusSource === 'graph' && focusedCommitSha && focusedMessageId === focusedCommitSha) return;
 
 	    const persistedMessageIds = new Set(persistedMessages.map((message) => message.id));
 	    const rememberedFocusId = lastFocusedMessageByWorkspace[selectedWorkspaceId] ?? null;
@@ -322,6 +328,8 @@ export function ChatInterface() {
 	  }, [
 	    dispatchFocus,
 	    focusedMessageId,
+      lastFocusMetadata,
+      lastFocusSource,
 	    lastFocusedMessageByWorkspace,
       activeSendFlowFocus,
 	    messages,

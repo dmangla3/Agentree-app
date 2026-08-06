@@ -28,7 +28,11 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
   const { data: messages = [] } = useMessages(workspaceId);
   const createTrackedRef = useCreateTrackedRef();
   const deleteTrackedRef = useDeleteTrackedRef();
-  const { dispatchFocus, focusedMessageId } = useWorkspaceStore();
+  const {
+    composerBaseCommitOverride,
+    composerContextPreview,
+    setComposerBaseCommitOverride,
+  } = useWorkspaceStore();
   const { addToast, removeToast } = useToast();
   const queryClient = useQueryClient();
   const [isImportingCurrentCheckout, setIsImportingCurrentCheckout] = useState(false);
@@ -43,6 +47,24 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
     },
     refetchInterval: 30000,
   });
+  const { data: localCommitGraph } = useQuery({
+    queryKey: ['local-commit-graph', workspaceId],
+    enabled: Boolean(workspaceId && shouldShowWorkspaceFeatures() && agentClient.hasRuntime()),
+    queryFn: async () => {
+      if (!workspaceId) return { commits: [], commitParents: [], commitObservations: [] };
+      return agentClient.listLocalCommitGraph(workspaceId);
+    },
+    staleTime: 5_000,
+  });
+
+  const graphCommitShas = useMemo(() => (
+    new Set((localCommitGraph?.commits ?? []).map((commit) => commit.sha).filter(Boolean))
+  ), [localCommitGraph?.commits]);
+  const selectedComposerCommitSha = composerBaseCommitOverride?.workspaceId === workspaceId
+    ? composerBaseCommitOverride.commitSha
+    : composerContextPreview?.workspaceId === workspaceId
+      ? composerContextPreview.baseCommitSha
+      : null;
 
   const trackableRefs = useMemo(() => {
     const trackedSet = new Set(trackedRefs.map((ref) => ref.git_ref));
@@ -83,6 +105,7 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
       ref.commit_sha === normalizedHead && ref.git_ref.startsWith('refs/heads/')
     ) || null;
     const matchingMessage = messageByCommit.get(normalizedHead) ?? null;
+    const focusNodeId = matchingMessage?.id ?? (graphCommitShas.has(normalizedHead) ? normalizedHead : null);
 
     if (matchingBranch) {
       return {
@@ -90,7 +113,7 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
         label: matchingBranch.short_name,
         sublabel: normalizedHead.slice(0, 8),
         title: `${matchingBranch.short_name} (${normalizedHead})`,
-        focusNodeId: matchingMessage?.id ?? null,
+        focusNodeId,
         gitRef: matchingBranch.git_ref,
       };
     }
@@ -100,10 +123,10 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
       label: normalizedHead.slice(0, 8),
       sublabel: 'Detached HEAD',
       title: `Detached HEAD at ${normalizedHead}`,
-      focusNodeId: matchingMessage?.id ?? null,
+      focusNodeId,
       gitRef: null,
     };
-  }, [branchPointerByRef, currentHeadSha, localRefs, messageByCommit]);
+  }, [currentHeadSha, graphCommitShas, localRefs, messageByCommit]);
 
 
 
@@ -129,7 +152,6 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
     });
 
     try {
-      const gitRef = currentCheckout.gitRef ?? `HEAD:${normalizedHead.slice(0, 12)}`;
       const commits = await agentClient.listMissingCommits(repoPath, null, normalizedHead);
       if (commits.length === 0) {
         throw new Error('No commits were found for the current checkout.');
@@ -166,15 +188,12 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
         queryClient.invalidateQueries({ queryKey: branchKeys.workspace(workspaceId) }),
       ]);
 
-      if (existingHead?.id) {
-        dispatchFocus({
-          messageId: existingHead.id,
-          source: 'graph',
-          metadata: {
-            gitRef,
-            commitSha: normalizedHead,
-            reason: 'current-checkout-import',
-          },
+      if (existingHead?.id || importedCount > 0 || graphCommitShas.has(normalizedHead)) {
+        setComposerBaseCommitOverride({
+          workspaceId,
+          commitSha: normalizedHead,
+          label: currentCheckout.label,
+          source: 'graph-header',
         });
       }
 
@@ -201,21 +220,28 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
   }, [
     addToast,
     currentCheckout.gitRef,
+    currentCheckout.label,
     currentHeadSha,
-    dispatchFocus,
     messageByCommit,
     queryClient,
     removeToast,
     repoPath,
+    setComposerBaseCommitOverride,
     workspaceId,
   ]);
 
   const focusTrackedRef = (gitRef: string) => {
+    const trackedRef = trackedRefs.find((ref) => ref.git_ref === gitRef);
+    const trackedCommitSha = trackedRef?.last_seen_commit_sha?.trim() || null;
     const branch = branchPointerByRef.get(gitRef);
-    const commitSha = getBranchPointerCommitSha(branch);
-    const nodeId = commitSha ? messageByCommit.get(commitSha)?.id ?? null : null;
-    if (!nodeId) return;
-    dispatchFocus({ messageId: nodeId, source: 'graph', metadata: { gitRef, commitSha } });
+    const commitSha = trackedCommitSha ?? getBranchPointerCommitSha(branch);
+    if (!commitSha || !workspaceId) return;
+    setComposerBaseCommitOverride({
+      workspaceId,
+      commitSha,
+      label: trackedRef?.display_name ?? branch?.name ?? gitRef,
+      source: 'graph-header',
+    });
   };
 
   const focusCurrentCheckout = () => {
@@ -236,13 +262,13 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
       });
       return;
     }
-    dispatchFocus({
-      messageId: currentCheckout.focusNodeId,
-      source: 'graph',
-      metadata: {
-        gitRef: currentCheckout.gitRef || 'HEAD',
-        commitSha: currentHeadSha,
-      },
+    const commitSha = currentHeadSha?.trim() || null;
+    if (!commitSha || !workspaceId) return;
+    setComposerBaseCommitOverride({
+      workspaceId,
+      commitSha,
+      label: currentCheckout.label,
+      source: 'graph-header',
     });
   };
 
@@ -259,7 +285,9 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
             type="button"
             className={cn(
               "group flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 transition-all text-left",
-              currentCheckout.kind === 'unknown'
+              currentHeadSha?.trim() && selectedComposerCommitSha === currentHeadSha.trim()
+                ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/50 hover:bg-emerald-500/15"
+                : currentCheckout.kind === 'unknown'
                 ? "bg-muted/40 text-muted-foreground border border-border/50"
                 : "bg-blue-500/10 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400 border border-blue-500/30 hover:bg-blue-500/20"
             )}
@@ -301,15 +329,14 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
         )}
 
         {trackedRefs.map((ref) => {
-          const pointerCommitSha = getBranchPointerCommitSha(branchPointerByRef.get(ref.git_ref));
-          const pointerMessageId = pointerCommitSha ? messageByCommit.get(pointerCommitSha)?.id ?? null : null;
-          const isFocused = pointerMessageId === focusedMessageId;
+          const pointerCommitSha = ref.last_seen_commit_sha?.trim() || getBranchPointerCommitSha(branchPointerByRef.get(ref.git_ref));
+          const isSelectedForComposer = !!pointerCommitSha && pointerCommitSha === selectedComposerCommitSha;
           return (
             <div
               key={ref.id}
               className={cn(
                 "group flex shrink-0 items-center rounded-full border bg-background px-1.5 py-0.5 text-[10px] font-medium transition-all",
-                isFocused ? "border-primary text-primary bg-primary/5" : "border-border/60 text-foreground/80 hover:border-border hover:bg-muted/30"
+                isSelectedForComposer ? "border-emerald-500/70 text-emerald-700 bg-emerald-500/10 dark:text-emerald-300" : "border-border/60 text-foreground/80 hover:border-border hover:bg-muted/30"
               )}
             >
               <button

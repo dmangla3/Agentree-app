@@ -222,6 +222,14 @@ export interface ComposerContextPreviewState {
   contextParentId: string | null;
   contextPolicy: 'continue' | 'fresh';
   contextStartId: string | null;
+  baseCommitSha: string | null;
+}
+
+export interface ComposerBaseCommitOverrideState {
+  workspaceId: string;
+  commitSha: string;
+  label?: string | null;
+  source: 'graph-header';
 }
 
 interface WorkspaceState {
@@ -232,6 +240,7 @@ interface WorkspaceState {
   selectedMessageIds: string[];
   focusNonce: number;
   composerContextPreview: ComposerContextPreviewState | null;
+  composerBaseCommitOverride: ComposerBaseCommitOverrideState | null;
   lastFocusedMessageByWorkspace: Record<string, string>;
   recentFocusedMessageIdsByWorkspace: Record<string, string[]>;
   activeScopeId: string | null;
@@ -270,6 +279,7 @@ interface WorkspaceState {
   toggleSelectedMessageId: (messageId: string) => void;
   clearSelectedMessageIds: () => void;
   setComposerContextPreview: (preview: ComposerContextPreviewState | null) => void;
+  setComposerBaseCommitOverride: (override: ComposerBaseCommitOverrideState | null) => void;
   setActiveScopeId: (scopeId: string | null) => void;
   setAutoCheckoutOnAgentCommit: (enabled: boolean) => void;
   clearPendingInitialFocusId: () => void;
@@ -302,6 +312,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       selectedMessageIds: [],
       focusNonce: 0,
       composerContextPreview: null,
+      composerBaseCommitOverride: null,
       lastFocusedMessageByWorkspace: {},
       recentFocusedMessageIdsByWorkspace: {},
       activeScopeId: null,
@@ -332,6 +343,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           selectedMessageIds: [],
           focusNonce: 0,
           composerContextPreview: null,
+          composerBaseCommitOverride: null,
           activeScopeId: null,
           activeSendFlowFocus: null,
           insights: [],
@@ -349,6 +361,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             selectedMessageIds: [],
             focusNonce: Date.now(),
             composerContextPreview: null,
+            composerBaseCommitOverride: null,
             activeScopeId: null,
             insights: [],
           };
@@ -454,12 +467,14 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             current?.parentId === preview?.parentId &&
             current?.contextParentId === preview?.contextParentId &&
             current?.contextPolicy === preview?.contextPolicy &&
-            current?.contextStartId === preview?.contextStartId
+            current?.contextStartId === preview?.contextStartId &&
+            current?.baseCommitSha === preview?.baseCommitSha
           ) {
             return state;
           }
           return { composerContextPreview: preview };
         }),
+      setComposerBaseCommitOverride: (override) => set({ composerBaseCommitOverride: override }),
       setActiveScopeId: (scopeId) => set({ activeScopeId: scopeId }),
       setAutoCheckoutOnAgentCommit: (enabled) => set({ autoCheckoutOnAgentCommit: enabled }),
       clearPendingInitialFocusId: () => set({ pendingInitialFocusId: null }),

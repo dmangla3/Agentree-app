@@ -14,6 +14,7 @@ export interface SharedNodeProps {
   entity: ProjectedNodeEntity;
   isFocused: boolean;
   isSelected: boolean;
+  isComposerBaseCommit?: boolean;
   disableHoverCard?: boolean;
   showSelectionControl?: boolean;
   scopeColor?: string | null;

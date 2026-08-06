@@ -9,6 +9,7 @@ interface GraphCanonicalCommitNodeProps {
   commit: ProjectedCommitEntity;
   isFocused?: boolean;
   isSelected?: boolean;
+  isComposerBaseCommit?: boolean;
 }
 
 const sourceLabel = (commit: ProjectedCommitEntity): string => {
@@ -23,6 +24,7 @@ export const GraphCanonicalCommitNode = memo(({
   commit,
   isFocused = false,
   isSelected = false,
+  isComposerBaseCommit = false,
 }: GraphCanonicalCommitNodeProps) => {
   const parentCount = commit.parentShas.length;
   const isMergeCommit = parentCount > 1;
@@ -35,6 +37,7 @@ export const GraphCanonicalCommitNode = memo(({
       nodeId={commit.sha}
       isFocused={isFocused}
       isSelected={isSelected}
+      isComposerBaseCommit={isComposerBaseCommit}
       onFocus={() => {}}
       onSelect={() => {}}
       onContextMenu={() => {}}

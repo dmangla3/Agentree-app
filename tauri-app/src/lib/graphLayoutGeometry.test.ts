@@ -5,6 +5,8 @@ import { buildWorkspaceProjection } from '../domain/workspaceProjection';
 import { Position, type Node } from '@xyflow/react';
 import {
   getLayoutedElements,
+  getLaneLayoutedElements,
+  getSugiyamaLayoutedElements,
   getTidyTreeLayoutedElements,
   mapMessagesToGraphElements,
 } from './graphUtils';
@@ -469,6 +471,22 @@ const numberStyle = (value: unknown): number => {
   return value as number;
 };
 
+const getVisibleCommitNodeId = (nodes: Node[], sha: string): string => (
+  nodes.find((node) => (
+    node.type === 'layout_derived_commit_group' &&
+    ((node.data as any)?.group?.commitShas ?? []).includes(sha)
+  ))?.id ?? sha
+);
+
+const getHullByMember = (nodes: Node[], memberId: string) => {
+  const node = nodes.find((candidate) => (
+    candidate.type === 'turn_group_hull' &&
+    ((candidate.data as any)?.memberIds ?? []).includes(memberId)
+  ));
+  expect(node, `expected hull containing ${memberId}`).toBeTruthy();
+  return node!;
+};
+
 const assertCompactTurnCellGeometry = (
   nodes: ReturnType<typeof getLayoutedElements>['nodes'],
   edges: ReturnType<typeof getLayoutedElements>['edges'],
@@ -532,6 +550,19 @@ describe('graph layout geometry QA', () => {
     const layoutedCommitsOnly = getTidyTreeLayoutedElements(commitsOnly.nodes, commitsOnly.edges);
     const commit = getNode(layoutedCommitsOnly.nodes, 'commit:assistant-1');
     expect(numberStyle(commit.style?.width)).toBe(120);
+
+    const siblingMessages = buildSiblingTurnScenario();
+    const conversationOnlySiblings = buildMappedGraph(siblingMessages, 'assistant-3', undefined, undefined, new Set(['conversation']));
+    const commitsOnlySiblings = buildMappedGraph(siblingMessages, 'assistant-3', undefined, undefined, new Set(['commits']));
+    const layoutedConversationOnlySiblings = getTidyTreeLayoutedElements(conversationOnlySiblings.nodes, conversationOnlySiblings.edges);
+    const layoutedCommitsOnlySiblings = getTidyTreeLayoutedElements(commitsOnlySiblings.nodes, commitsOnlySiblings.edges);
+    const firstConversationSibling = getNode(layoutedConversationOnlySiblings.nodes, 'user-2');
+    const secondConversationSibling = getNode(layoutedConversationOnlySiblings.nodes, 'user-3');
+    const firstCommitSibling = getNode(layoutedCommitsOnlySiblings.nodes, 'commit-2');
+    const secondCommitSibling = getNode(layoutedCommitsOnlySiblings.nodes, 'commit-3');
+
+    expect(Math.abs(firstConversationSibling.position.x - secondConversationSibling.position.x)).toBeLessThanOrEqual(240);
+    expect(Math.abs(firstCommitSibling.position.x - secondCommitSibling.position.x)).toBeLessThanOrEqual(240);
   });
 
   it('keeps a generated commit as a compact sidecar in dagre layout', () => {
@@ -759,6 +790,57 @@ describe('graph layout geometry QA', () => {
     expect((edgeToGeneratedCommit?.data as any)?.layout).toBe(true);
   });
 
+  it('keeps the first conversation child below origin when origin also has an imported sidecar', () => {
+    const messages = [
+      makeMessage({
+        id: 'origin-assistant',
+        role: 'assistant',
+        parentId: null,
+        content: 'Origin assistant message.',
+        status: 'completed',
+      }, 0),
+      makeMessage({
+        id: 'first-child-user',
+        role: 'user',
+        parentId: 'origin-assistant',
+        content: 'First child branch.',
+      }, 10),
+      makeMessage({
+        id: 'first-child-assistant',
+        role: 'assistant',
+        parentId: 'first-child-user',
+        content: 'First child reply.',
+        status: 'completed',
+      }, 11),
+      makeMessage({
+        id: 'second-child-user',
+        role: 'user',
+        parentId: 'origin-assistant',
+        content: 'Second child branch from an imported base.',
+      }, 12),
+      makeMessage({
+        id: 'second-child-assistant',
+        role: 'assistant',
+        parentId: 'second-child-user',
+        content: 'Second child reply.',
+        status: 'completed',
+        base_commit_sha: 'imported0004',
+      }, 13),
+    ];
+    const mapped = buildMappedGraph(messages, 'second-child-assistant', buildCanonicalImportedCommitChain());
+
+    [getTidyTreeLayoutedElements, getLayoutedElements].forEach((layoutFn) => {
+      const layouted = layoutFn(mapped.nodes, mapped.edges);
+      const origin = getNode(layouted.nodes, 'origin-assistant');
+      const firstChild = getNode(layouted.nodes, 'first-child-user');
+      const secondChild = getNode(layouted.nodes, 'second-child-user');
+
+      expect(firstChild.position.y).toBeGreaterThan(origin.position.y);
+      expect(secondChild.position.y).toBeGreaterThan(origin.position.y);
+      expect(secondChild.position.x).toBeGreaterThan(firstChild.position.x);
+    });
+  });
+
   it('lays out commits after an imported batch as children of the batch node', () => {
     const messages = buildTurnWithLocalAssistantOutputCommit();
     const importedGraph = buildCanonicalImportedCommitChain();
@@ -795,24 +877,18 @@ describe('graph layout geometry QA', () => {
     const mapped = buildMappedGraph(messages, 'assistant-1', commitGraph);
     const group = mapped.nodes.find((node) => node.type === 'layout_derived_commit_group');
     expect(group).toBeTruthy();
-
-    const edgeToPostBatchCommit = mapped.edges.find((edge) => (
-      edge.source === group!.id && edge.target === 'postbatch0001'
-    ));
-    expect((edgeToPostBatchCommit?.data as any)?.relationship).toBe('git-parent');
-    expect((edgeToPostBatchCommit?.data as any)?.layout).toBe(true);
+    expect((group!.data as any).group.commitShas).toContain('postbatch0001');
+    expect(mapped.nodes.some((node) => node.id === 'postbatch0001')).toBe(false);
 
     const layouted = getLayoutedElements(mapped.nodes, mapped.edges);
     const layoutedGroup = getNode(layouted.nodes, group!.id);
-    const postBatchCommit = getNode(layouted.nodes, 'postbatch0001');
-    expect(postBatchCommit.position.y).toBeGreaterThan(layoutedGroup.position.y);
-    expect(Math.abs(postBatchCommit.position.x - layoutedGroup.position.x)).toBeLessThan(8);
+    const postBatchCommit = getNode(layouted.nodes, getVisibleCommitNodeId(mapped.nodes, 'postbatch0001'));
+    expect(postBatchCommit.id).toBe(layoutedGroup.id);
 
     const tidyLayouted = getTidyTreeLayoutedElements(mapped.nodes, mapped.edges);
     const tidyGroup = getNode(tidyLayouted.nodes, group!.id);
-    const tidyPostBatchCommit = getNode(tidyLayouted.nodes, 'postbatch0001');
-    expect(tidyPostBatchCommit.position.y).toBeGreaterThan(tidyGroup.position.y);
-    expect(Math.abs(tidyPostBatchCommit.position.x - tidyGroup.position.x)).toBeLessThan(8);
+    const tidyPostBatchCommit = getNode(tidyLayouted.nodes, getVisibleCommitNodeId(mapped.nodes, 'postbatch0001'));
+    expect(tidyPostBatchCommit.id).toBe(tidyGroup.id);
   });
 
   it('keeps a conversation turn and its generated commit together below the selected base commit', () => {
@@ -843,13 +919,98 @@ describe('graph layout geometry QA', () => {
 
     expect(user.position.y).toBeGreaterThan(layoutedGroup.position.y);
     expect(assistant.position.y).toBeGreaterThan(user.position.y);
+    expect(generatedCommit.position.y).toBeGreaterThan(layoutedGroup.position.y);
     expect(generatedCommit.position.x).toBeGreaterThan(assistant.position.x);
-    const baseCommitCenterX = layoutedGroup.position.x + numberStyle(layoutedGroup.style?.width) / 2;
-    const generatedCommitCenterX = generatedCommit.position.x + numberStyle(generatedCommit.style?.width) / 2;
-    expect(Math.abs(generatedCommitCenterX - baseCommitCenterX)).toBeLessThanOrEqual(1);
     const assistantCenterY = assistant.position.y + numberStyle(assistant.style?.height) / 2;
     const generatedCommitCenterY = generatedCommit.position.y + numberStyle(generatedCommit.style?.height) / 2;
     expect(Math.abs(generatedCommitCenterY - assistantCenterY)).toBeLessThanOrEqual(32);
+  });
+
+  it('lets layout engines place turn boxes while keeping intra-turn slots fixed', () => {
+    const mapped = buildMappedGraph(buildSiblingTurnScenario());
+    const layouts = [
+      getLayoutedElements(mapped.nodes, mapped.edges),
+      getLaneLayoutedElements(mapped.nodes, mapped.edges),
+      getTidyTreeLayoutedElements(mapped.nodes, mapped.edges),
+      getSugiyamaLayoutedElements(mapped.nodes, mapped.edges),
+    ];
+
+    const signatures = layouts.map((layouted) => [
+      'user-2',
+      'assistant-2',
+      'commit-2',
+      'user-3',
+      'assistant-3',
+      'commit-3',
+    ].map((id) => {
+      const node = getNode(layouted.nodes, id);
+      return `${id}:${Math.round(node.position.x)},${Math.round(node.position.y)}`;
+    }).join('|'));
+
+    expect(new Set(signatures).size).toBeGreaterThan(1);
+
+    layouts.forEach((layouted) => {
+      const firstAssistant = getNode(layouted.nodes, 'assistant-2');
+      const firstGeneratedCommit = getNode(layouted.nodes, 'commit-2');
+      const secondAssistant = getNode(layouted.nodes, 'assistant-3');
+      const secondGeneratedCommit = getNode(layouted.nodes, 'commit-3');
+
+      expect(firstGeneratedCommit.position.x).toBeGreaterThan(firstAssistant.position.x);
+      expect(secondGeneratedCommit.position.x).toBeGreaterThan(secondAssistant.position.x);
+      expect(Math.abs(
+        firstGeneratedCommit.position.x - (firstAssistant.position.x + numberStyle(firstAssistant.style?.width) + 2)
+      )).toBeLessThanOrEqual(1);
+      expect(Math.abs(
+        secondGeneratedCommit.position.x - (secondAssistant.position.x + numberStyle(secondAssistant.style?.width) + 2)
+      )).toBeLessThanOrEqual(1);
+    });
+  });
+
+  it('sizes turn hulls as a full-slot wash around generated commits', () => {
+    const mapped = buildMappedGraph(buildTurnWithLocalAssistantOutputCommit());
+    const layouted = getLayoutedElements(mapped.nodes, mapped.edges);
+    const user = getNode(layouted.nodes, 'user-1');
+    const assistant = getNode(layouted.nodes, 'assistant-1');
+    const generatedCommit = getNode(layouted.nodes, 'commit:assistant-1');
+    const hull = getHullByMember(layouted.nodes, 'commit:assistant-1');
+
+    const minY = Math.min(user.position.y, assistant.position.y, generatedCommit.position.y);
+    const maxY = Math.max(
+      user.position.y + numberStyle(user.style?.height),
+      assistant.position.y + numberStyle(assistant.style?.height),
+      generatedCommit.position.y + numberStyle(generatedCommit.style?.height),
+    );
+
+    expect(hull.position.x).toBe(user.position.x);
+    expect(hull.position.y).toBe(minY);
+    expect(numberStyle(hull.style?.width)).toBe(
+      generatedCommit.position.x + numberStyle(generatedCommit.style?.width) - user.position.x,
+    );
+    expect(numberStyle(hull.style?.height)).toBe(maxY - minY);
+  });
+
+  it('sizes independent commit hulls as full turn slots with an empty conversation lane', () => {
+    const messages = [
+      makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
+      makeMessage({ id: 'assistant-1', role: 'assistant', parentId: 'user-1', status: 'completed' }, 1),
+    ];
+    const commitGraph = buildCanonicalImportedCommitChain();
+    const shortCommitGraph = {
+      commits: commitGraph.commits.slice(0, 2),
+      commitParents: commitGraph.commitParents.slice(0, 2),
+      commitObservations: commitGraph.commitObservations.slice(0, 2),
+    };
+
+    const mapped = buildMappedGraph(messages, 'assistant-1', shortCommitGraph);
+    const layouted = getLayoutedElements(mapped.nodes, mapped.edges);
+    const commit = getNode(layouted.nodes, 'imported0001');
+    const hull = getHullByMember(layouted.nodes, 'imported0001');
+
+    expect((hull.data as any).slotKind).toBe('commit-only');
+    expect(hull.position.x).toBe(commit.position.x - 202);
+    expect(hull.position.y).toBe(commit.position.y);
+    expect(numberStyle(hull.style?.width)).toBe(322);
+    expect(numberStyle(hull.style?.height)).toBe(numberStyle(commit.style?.height));
   });
 
   it('fans out multiple generated commit turns from the same parent commit without overlapping them', () => {
@@ -1013,7 +1174,7 @@ describe('graph layout geometry QA', () => {
       const layouted = layoutFn(mapped.nodes, mapped.edges);
       const origin = getNode(layouted.nodes, 'origin-assistant');
       const importedBatch = getNode(layouted.nodes, group!.id);
-      const bridgeCommit = getNode(layouted.nodes, 'postbatch0001');
+      const bridgeCommit = getNode(layouted.nodes, getVisibleCommitNodeId(mapped.nodes, 'postbatch0001'));
       const conversationUser = getNode(layouted.nodes, 'conversation-user');
       const conversationAssistant = getNode(layouted.nodes, 'conversation-assistant');
       const generatedUser = getNode(layouted.nodes, 'generated-user');
@@ -1021,7 +1182,7 @@ describe('graph layout geometry QA', () => {
       const generatedCommit = getNode(layouted.nodes, 'commit:generated-assistant');
 
       expect(Math.abs(importedBatch.position.y - origin.position.y)).toBeLessThanOrEqual(8);
-      expect(bridgeCommit.position.y).toBeGreaterThan(importedBatch.position.y);
+      expect(bridgeCommit.id).toBe(importedBatch.id);
       expect(conversationUser.position.y).toBeGreaterThan(bridgeCommit.position.y);
       expect(conversationAssistant.position.y).toBeGreaterThan(conversationUser.position.y);
       expect(generatedUser.position.y).toBeGreaterThan(conversationAssistant.position.y);
@@ -1146,16 +1307,15 @@ describe('graph layout geometry QA', () => {
     [getTidyTreeLayoutedElements, getLayoutedElements].forEach((layoutFn) => {
       const layouted = layoutFn(mapped.nodes, mapped.edges);
       const origin = getNode(layouted.nodes, 'origin-assistant');
-      const bridgeCommit = getNode(layouted.nodes, 'postbatch0001');
-      const independentCommit = getNode(layouted.nodes, 'independent0003');
+      const bridgeCommit = getNode(layouted.nodes, getVisibleCommitNodeId(mapped.nodes, 'postbatch0001'));
+      const independentCommit = getNode(layouted.nodes, getVisibleCommitNodeId(mapped.nodes, 'independent0003'));
       const conversationUser = getNode(layouted.nodes, 'conversation-user');
       const generatedUser = getNode(layouted.nodes, 'generated-user');
       const generatedCommit = getNode(layouted.nodes, 'commit:generated-assistant');
 
       expect(conversationUser.position.y).toBeGreaterThan(bridgeCommit.position.y);
       expect(generatedUser.position.y).toBeGreaterThan(conversationUser.position.y);
-      expect(independentCommit.position.y).toBeGreaterThan(bridgeCommit.position.y);
-      expect(Math.abs(conversationUser.position.y - independentCommit.position.y)).toBeLessThanOrEqual(8);
+      expect(independentCommit.id).toBe(bridgeCommit.id);
       expect(Math.abs(conversationUser.position.x - origin.position.x)).toBeLessThanOrEqual(1);
       expect(Math.abs(generatedUser.position.x - origin.position.x)).toBeLessThanOrEqual(1);
 
@@ -1278,19 +1438,19 @@ describe('graph layout geometry QA', () => {
     const importedBatches = mapped.nodes
       .filter((node) => node.type === 'layout_derived_commit_group')
       .sort((left, right) => numberStyle((left.data as any)?.group?.sortTs) - numberStyle((right.data as any)?.group?.sortTs));
-    expect(importedBatches.length).toBeGreaterThanOrEqual(2);
+    expect(importedBatches.length).toBeGreaterThanOrEqual(1);
 
     [getTidyTreeLayoutedElements, getLayoutedElements].forEach((layoutFn) => {
       const layouted = layoutFn(mapped.nodes, mapped.edges);
       const origin = getNode(layouted.nodes, 'origin-assistant');
       const firstImportedBatch = getNode(layouted.nodes, importedBatches[0].id);
-      const bridgeCommit = getNode(layouted.nodes, 'postbatch0001');
+      const bridgeCommit = getNode(layouted.nodes, getVisibleCommitNodeId(mapped.nodes, 'postbatch0001'));
       const conversationUser = getNode(layouted.nodes, 'conversation-user');
       const generatedUser = getNode(layouted.nodes, 'generated-user');
       const generatedCommit = getNode(layouted.nodes, 'commit:generated-assistant');
 
       expect(Math.abs(firstImportedBatch.position.y - origin.position.y)).toBeLessThanOrEqual(8);
-      expect(bridgeCommit.position.y).toBeGreaterThan(firstImportedBatch.position.y);
+      expect(bridgeCommit.id).toBe(firstImportedBatch.id);
       expect(conversationUser.position.y).toBeGreaterThan(bridgeCommit.position.y);
       expect(generatedUser.position.y).toBeGreaterThan(conversationUser.position.y);
       expect(Math.abs(conversationUser.position.x - origin.position.x)).toBeLessThanOrEqual(1);
@@ -1360,8 +1520,9 @@ describe('graph layout geometry QA', () => {
     };
 
     const mapped = buildMappedGraph(messages, 'base-assistant', commitGraph);
+    const visibleBaseCommitNodeId = getVisibleCommitNodeId(mapped.nodes, 'postbatch0001');
     expect(mapped.edges.some((edge) => (
-      edge.source === 'postbatch0001' &&
+      edge.source === visibleBaseCommitNodeId &&
       edge.target === 'base-assistant' &&
       (edge.data as any)?.relationship === 'base-used'
     ))).toBe(true);
@@ -1369,13 +1530,108 @@ describe('graph layout geometry QA', () => {
     [getTidyTreeLayoutedElements, getLayoutedElements].forEach((layoutFn) => {
       const layouted = layoutFn(mapped.nodes, mapped.edges);
       const origin = getNode(layouted.nodes, 'origin-assistant');
-      const bridgeCommit = getNode(layouted.nodes, 'postbatch0001');
+      const bridgeCommit = getNode(layouted.nodes, getVisibleCommitNodeId(mapped.nodes, 'postbatch0001'));
       const baseUser = getNode(layouted.nodes, 'base-user');
       const baseAssistant = getNode(layouted.nodes, 'base-assistant');
 
       expect(baseUser.position.y).toBeGreaterThan(bridgeCommit.position.y);
       expect(baseAssistant.position.y).toBeGreaterThan(baseUser.position.y);
       expect(Math.abs(baseUser.position.x - origin.position.x)).toBeLessThanOrEqual(1);
+    });
+  });
+
+  it('spaces an imported batch as a sibling of a no-output conversation turn from the same base commit', () => {
+    const messages = [
+      makeMessage({
+        id: 'origin-assistant',
+        role: 'assistant',
+        parentId: null,
+        content: 'Origin assistant message.',
+        status: 'completed',
+      }, 0),
+      makeMessage({
+        id: 'base-user',
+        role: 'user',
+        parentId: 'origin-assistant',
+        content: 'Use the later base commit but do not create a commit.',
+      }, 10),
+      makeMessage({
+        id: 'base-assistant',
+        role: 'assistant',
+        parentId: 'base-user',
+        content: 'Answered without changing files.',
+        status: 'completed',
+        base_commit_sha: 'postbatch0001',
+      }, 11),
+    ];
+    const importedGraph = buildCanonicalImportedCommitChain();
+    const laterImportedCommits: CommitEntity[] = [1, 2, 3].map((index) => ({
+      sha: `laterimported000${index}`,
+      workspace_id: workspaceId,
+      subject: `Later imported commit ${index}`,
+      source_kind: 'external',
+      produced_by_node_id: null,
+      first_parent_sha: index === 1 ? 'postbatch0001' : `laterimported000${index - 1}`,
+      committed_at: isoAt(30 + index),
+      authored_at: isoAt(30 + index),
+    }));
+    const commitGraph = {
+      commits: [
+        ...importedGraph.commits,
+        {
+          sha: 'postbatch0001',
+          workspace_id: workspaceId,
+          subject: 'Commit after imported batch',
+          source_kind: 'external',
+          produced_by_node_id: null,
+          first_parent_sha: 'imported0004',
+          committed_at: isoAt(8),
+          authored_at: isoAt(8),
+        },
+        ...laterImportedCommits,
+      ],
+      commitParents: [
+        ...importedGraph.commitParents,
+        { child_sha: 'postbatch0001', parent_sha: 'imported0004', parent_index: 0 },
+        { child_sha: 'laterimported0001', parent_sha: 'postbatch0001', parent_index: 0 },
+        { child_sha: 'laterimported0002', parent_sha: 'laterimported0001', parent_index: 0 },
+        { child_sha: 'laterimported0003', parent_sha: 'laterimported0002', parent_index: 0 },
+      ],
+      commitObservations: [
+        ...importedGraph.commitObservations,
+        {
+          commit_sha: 'postbatch0001',
+          source_kind: 'external',
+          git_ref: 'refs/heads/main',
+          first_seen_at: isoAt(20),
+          last_seen_at: isoAt(21),
+        },
+        ...laterImportedCommits.map((commit) => ({
+          commit_sha: commit.sha,
+          source_kind: 'external',
+          git_ref: 'refs/heads/main',
+          first_seen_at: isoAt(40),
+          last_seen_at: isoAt(41),
+        })),
+      ],
+    };
+
+    const mapped = buildMappedGraph(messages, 'base-assistant', commitGraph);
+    const laterImportedBatch = mapped.nodes
+      .filter((node) => node.type === 'layout_derived_commit_group')
+      .find((node) => ((node.data as any)?.group?.commitShas ?? []).includes('laterimported0001'));
+    expect(laterImportedBatch).toBeTruthy();
+
+    [getTidyTreeLayoutedElements, getLayoutedElements].forEach((layoutFn) => {
+      const layouted = layoutFn(mapped.nodes, mapped.edges);
+      const bridgeCommit = getNode(layouted.nodes, getVisibleCommitNodeId(mapped.nodes, 'postbatch0001'));
+      const baseUser = getNode(layouted.nodes, 'base-user');
+      const baseAssistant = getNode(layouted.nodes, 'base-assistant');
+      const importedBatch = getNode(layouted.nodes, laterImportedBatch!.id);
+
+      expect(baseUser.position.y).toBeGreaterThan(bridgeCommit.position.y);
+      expect(importedBatch.id).toBe(bridgeCommit.id);
+      expect(baseAssistant.position.y).toBeGreaterThan(baseUser.position.y);
     });
   });
 

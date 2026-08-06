@@ -176,9 +176,8 @@ export const subscribeGraphDiagnosticCaptures = (callback: () => void) => {
 
 export const installGraphDiagnosticConsoleApi = () => {
   if (typeof window === 'undefined') return;
-  if (window.__AGENTREE_GRAPH_DEBUG__) return;
-
   window.__AGENTREE_GRAPH_DEBUG__ = {
+    ...(window.__AGENTREE_GRAPH_DEBUG__ ?? {}),
     capture: (label?: string) => captureGraphDiagnostics(label),
     latest: () => latestCapture(),
     read: () => readStoredCaptures(),

@@ -175,8 +175,6 @@ const TURN_STACK_GAP = 2;
 const TURN_CONVERSATION_NODE_WIDTH = 200;
 const TURN_COMMIT_NODE_WIDTH = 120;
 const TURN_COMMIT_NODE_HEIGHT = 112;
-const DAGRE_EDGE_VERTICAL_GAP = 18;
-const DAGRE_COLLISION_GAP = 12;
 
 const isHullNodeType = (type?: string | null) => type === 'turn_group_hull';
 const isSummaryNodeType = (type?: string | null) => CANONICAL_SUMMARY_NODE_TYPES.has(type || '');
@@ -247,7 +245,7 @@ const getTurnMemberPriority = (node: Node<any>): number => {
   const kind = (node.data as any)?.entity?.kind;
   if (kind === 'user_message') return 0;
   if (kind === 'assistant_message') return 1;
-  if (kind === 'commit_message') return 2;
+  if (kind === 'commit_message' || isCommitLaneLayoutMember(node)) return 2;
   if (isSummaryNodeType(node.type)) return 4;
   return 5;
 };
@@ -291,11 +289,11 @@ const isCommitLaneLayoutMember = (node: Node<any>): boolean => (
 const getAssistantOutputCommitNodeId = (assistantId: string): string => `commit:${assistantId}`;
 
 const getTurnConversationMembers = (members: Node<any>[]): Node<any>[] => (
-  members.filter((member) => !isTurnCommitLaneMember(member))
+  members.filter((member) => !isCommitLaneLayoutMember(member))
 );
 
 const getTurnCommitMembers = (members: Node<any>[]): Node<any>[] => (
-  members.filter(isTurnCommitLaneMember)
+  members.filter(isCommitLaneLayoutMember)
 );
 
 const hasTurnConversationMembers = (members: Node<any>[]): boolean => (
@@ -332,16 +330,23 @@ const getSingleCommitLaneHeight = (conversationMembers: Node<any>[]): number => 
   return Math.max(TURN_COMMIT_NODE_HEIGHT, getNodeHeight(assistant) + previousHalfHeight + previousGap);
 };
 
-const getTurnLayoutDimensions = (members: Node<any>[]): { width: number; height: number; leftWidth: number; rightWidth: number } => {
+const getTurnLayoutDimensions = (
+  members: Node<any>[],
+  reserveEmptyLanes: boolean,
+): { width: number; height: number; leftWidth: number; rightWidth: number } => {
   const conversationMembers = getTurnConversationMembers(members);
   const commitMembers = getTurnCommitMembers(members);
   const leftWidth = conversationMembers.length > 0
     ? Math.max(...conversationMembers.map(getNodeWidth), TURN_CONVERSATION_NODE_WIDTH)
     : 0;
-  const rightWidth = commitMembers.length > 0 ? Math.max(...commitMembers.map(getNodeWidth)) : 0;
+  const rightWidth = commitMembers.length > 0
+    ? Math.max(...commitMembers.map(getNodeWidth))
+    : reserveEmptyLanes && conversationMembers.length > 0
+      ? TURN_COMMIT_NODE_WIDTH
+      : 0;
   const conversationHeight = getStackHeight(conversationMembers);
   const commitHeight = commitMembers.length === 1
-    ? getSingleCommitLaneHeight(conversationMembers)
+    ? Math.max(getNodeHeight(commitMembers[0]), getSingleCommitLaneHeight(conversationMembers))
     : Math.max(conversationHeight, getStackHeight(commitMembers));
 
   return {
@@ -362,6 +367,7 @@ interface LayoutUnit {
   commitAnchorOffsetX: number;
   commitLaneOffsetX: number;
   hasConversationMembers: boolean;
+  reserveEmptyLanes: boolean;
 }
 
 interface LayoutModel {
@@ -380,6 +386,12 @@ const buildLayoutModel = (
   const unitByNodeId = new Map<string, string>();
   const membersByUnitId = new Map<string, Node<any>[]>();
   const layoutUnits = new Map<string, LayoutUnit>();
+  const hasVisibleConversationLayer = nodes.some((node) => {
+    const kind = getNodeEntityKind(node);
+    return kind === 'user_message' || kind === 'assistant_message';
+  });
+  const hasVisibleCommitLayer = nodes.some(isCommitLaneLayoutMember);
+  const reserveEmptyLanes = hasVisibleConversationLayer && hasVisibleCommitLayer;
 
   const registerUnitNode = (unitId: string, node: Node<any>) => {
     unitByNodeId.set(node.id, unitId);
@@ -390,10 +402,32 @@ const buildLayoutModel = (
 
   nodes.forEach((node) => {
     if (node.parentId || isHullNodeType(node.type)) return;
+    if (typeof (node.data as any)?.layoutAnchorNodeId === 'string') return;
 
     const turnGroupId = getNodeTurnGroupId(node);
     const shouldCollapseIntoTurn = Boolean(turnGroupId) && !isSummaryNodeType(node.type);
     const unitId = shouldCollapseIntoTurn ? `${TURN_LAYOUT_NODE_TYPE}:${turnGroupId}` : node.id;
+
+    registerUnitNode(unitId, node);
+  });
+
+  nodes.forEach((node) => {
+    if (node.parentId || isHullNodeType(node.type)) return;
+    const layoutAnchorNodeId = (node.data as any)?.layoutAnchorNodeId;
+    if (typeof layoutAnchorNodeId !== 'string') return;
+
+    const anchorNode = nodesById.get(layoutAnchorNodeId);
+    const anchorTurnGroupId = anchorNode ? getNodeTurnGroupId(anchorNode) : null;
+    const anchorUnitId = anchorTurnGroupId && !isSummaryNodeType(anchorNode?.type)
+      ? `${TURN_LAYOUT_NODE_TYPE}:${anchorTurnGroupId}`
+      : layoutAnchorNodeId;
+    const anchoredNodeFeedsAnchorTurn = Boolean(anchorTurnGroupId) && edges.some((edge) => {
+      if (!isLayoutEdge(edge) || edge.source !== node.id) return false;
+      const targetNode = nodesById.get(edge.target);
+      if (!targetNode) return false;
+      return getNodeTurnGroupId(targetNode) === anchorTurnGroupId;
+    });
+    const unitId = membersByUnitId.has(anchorUnitId) && !anchoredNodeFeedsAnchorTurn ? anchorUnitId : node.id;
 
     registerUnitNode(unitId, node);
   });
@@ -417,10 +451,12 @@ const buildLayoutModel = (
     const commitOnlyTurnCommitWidth = isCommitOnlyTurnUnit
       ? Math.max(...members.map(getNodeWidth))
       : 0;
-    const commitOnlyLaneOffsetX = isCommitOnlyTurnUnit ? TURN_CONVERSATION_NODE_WIDTH + TURN_LANE_GAP : 0;
+    const commitOnlyLaneOffsetX = isCommitOnlyTurnUnit && reserveEmptyLanes
+      ? TURN_CONVERSATION_NODE_WIDTH + TURN_LANE_GAP
+      : 0;
 
     const turnDimensions = isTurnUnit
-      ? getTurnLayoutDimensions(members)
+      ? getTurnLayoutDimensions(members, reserveEmptyLanes)
       : null;
     const width = turnDimensions?.width ?? (
       isCommitOnlyTurnUnit
@@ -434,11 +470,11 @@ const buildLayoutModel = (
     const commitAnchorOffsetX = (() => {
       if (isCommitOnlyTurnUnit) return commitOnlyLaneOffsetX + commitOnlyTurnCommitWidth / 2;
       if (!isTurnUnit || !turnDimensions) return width / 2;
-      const commitMembers = getTurnCommitMembers(members);
-      if (commitMembers.length === 0) return width / 2;
       const commitLaneLeft = turnDimensions.leftWidth > 0
         ? turnDimensions.leftWidth + TURN_LANE_GAP
         : 0;
+      const commitMembers = getTurnCommitMembers(members);
+      if (commitMembers.length === 0 && turnDimensions.rightWidth === 0) return width / 2;
       return commitLaneLeft + turnDimensions.rightWidth / 2;
     })();
 
@@ -452,15 +488,12 @@ const buildLayoutModel = (
       commitAnchorOffsetX,
       commitLaneOffsetX: commitOnlyLaneOffsetX,
       hasConversationMembers,
+      reserveEmptyLanes,
     });
   });
 
   const layoutNodes = Array.from(layoutUnits.values()).map((unit) => {
     const sourceNode = nodesById.get(unit.memberNodeIds[0]) ?? null;
-    const layoutAnchorNodeId = sourceNode ? (sourceNode.data as any)?.layoutAnchorNodeId : null;
-    const layoutAnchorUnitId = typeof layoutAnchorNodeId === 'string'
-      ? unitByNodeId.get(layoutAnchorNodeId) ?? null
-      : null;
 
     return {
       id: unit.id,
@@ -474,7 +507,7 @@ const buildLayoutModel = (
         commitAnchorOffsetX: unit.commitAnchorOffsetX,
         commitLaneOffsetX: unit.commitLaneOffsetX,
         hasConversationMembers: unit.hasConversationMembers,
-        ...(layoutAnchorUnitId ? { layoutAnchorUnitId } : {}),
+        reserveEmptyLanes: unit.reserveEmptyLanes,
       },
       style: { width: unit.width, height: unit.height },
     };
@@ -514,14 +547,6 @@ const buildLayoutModel = (
   unitEdgeCandidates.forEach(({ edge, targetUnitId }) => {
     if ((edge.data as any)?.relationship === 'conversation') {
       targetHasConversationParent.add(targetUnitId);
-    }
-  });
-
-  const layoutAnchorUnitIdByUnitId = new Map<string, string>();
-  layoutNodes.forEach((node) => {
-    const anchorUnitId = (node.data as any)?.layoutAnchorUnitId;
-    if (typeof anchorUnitId === 'string') {
-      layoutAnchorUnitIdByUnitId.set(node.id, anchorUnitId);
     }
   });
 
@@ -600,36 +625,22 @@ const buildLayoutModel = (
     return distances;
   };
 
-  const anchoredCommitUnitsByAnchorUnit = new Map<string, string[]>();
-  layoutAnchorUnitIdByUnitId.forEach((anchorUnitId, anchoredUnitId) => {
-    if (layoutUnits.get(anchoredUnitId)?.hasConversationMembers) return;
-    const anchoredUnits = anchoredCommitUnitsByAnchorUnit.get(anchorUnitId) ?? [];
-    anchoredUnits.push(anchoredUnitId);
-    anchoredCommitUnitsByAnchorUnit.set(anchorUnitId, anchoredUnits);
-  });
-
-  const bridgeUnitByConversationEdge = new Map<string, { bridgeUnitId: string; anchoredUnitId: string }>();
+  const bridgeUnitByConversationEdge = new Map<string, { bridgeUnitId: string }>();
   unitEdgeCandidates.forEach(({ edge, sourceUnitId, targetUnitId }) => {
     if ((edge.data as any)?.relationship !== 'conversation') return;
-    const anchoredUnitIds = anchoredCommitUnitsByAnchorUnit.get(sourceUnitId) ?? [];
-    if (anchoredUnitIds.length === 0) return;
-
     const conversationDescendants = collectConversationDescendants(targetUnitId);
-    const bridgeCandidates: Array<{ bridgeUnitId: string; anchoredUnitId: string; distance: number; sortTs: number }> = [];
+    const bridgeCandidates: Array<{ bridgeUnitId: string; distance: number; sortTs: number }> = [];
 
-    anchoredUnitIds.forEach((anchoredUnitId) => {
-      const reachableDistances = getReachableCommitOnlyDistances(anchoredUnitId);
-      conversationDescendants.forEach((descendantUnitId) => {
-        (lineageParentsByTarget.get(descendantUnitId) ?? []).forEach(({ sourceUnitId: lineageSourceUnitId }) => {
-          const distance = reachableDistances.get(lineageSourceUnitId);
-          if (distance === undefined || distance <= 0) return;
-          const sortTs = layoutUnits.get(lineageSourceUnitId)?.sortTs ?? 0;
-          bridgeCandidates.push({
-            bridgeUnitId: lineageSourceUnitId,
-            anchoredUnitId,
-            distance,
-            sortTs,
-          });
+    const reachableDistances = getReachableCommitOnlyDistances(sourceUnitId);
+    conversationDescendants.forEach((descendantUnitId) => {
+      (lineageParentsByTarget.get(descendantUnitId) ?? []).forEach(({ sourceUnitId: lineageSourceUnitId }) => {
+        const distance = reachableDistances.get(lineageSourceUnitId);
+        if (distance === undefined || distance <= 0) return;
+        const sortTs = layoutUnits.get(lineageSourceUnitId)?.sortTs ?? 0;
+        bridgeCandidates.push({
+          bridgeUnitId: lineageSourceUnitId,
+          distance,
+          sortTs,
         });
       });
     });
@@ -644,32 +655,7 @@ const buildLayoutModel = (
     if (selectedBridge) {
       bridgeUnitByConversationEdge.set(edge.id, {
         bridgeUnitId: selectedBridge.bridgeUnitId,
-        anchoredUnitId: selectedBridge.anchoredUnitId,
       });
-    }
-  });
-
-  const bridgeUnitByConversationParent = new Map<string, string>();
-  layoutAnchorUnitIdByUnitId.forEach((anchorUnitId, anchoredUnitId) => {
-    if (layoutUnits.get(anchoredUnitId)?.hasConversationMembers) return;
-
-    let bridgeUnitId: string | null = null;
-    let currentUnitId = anchoredUnitId;
-    const seen = new Set<string>([anchoredUnitId]);
-    while (true) {
-      const lineageChildren = (lineageChildrenByParent.get(currentUnitId) ?? [])
-        .filter((childId) => !seen.has(childId));
-      const commitOnlyChildren = (commitOnlyLineageChildrenByParent.get(currentUnitId) ?? [])
-        .filter((childId) => !seen.has(childId));
-      if (lineageChildren.length !== 1 || commitOnlyChildren.length !== 1) break;
-      const [childId] = commitOnlyChildren;
-      bridgeUnitId = childId;
-      seen.add(childId);
-      currentUnitId = childId;
-    }
-
-    if (bridgeUnitId) {
-      bridgeUnitByConversationParent.set(anchorUnitId, bridgeUnitId);
     }
   });
 
@@ -687,11 +673,12 @@ const buildLayoutModel = (
       return;
     }
 
-    const data = edge.data as { isReference?: boolean; layout?: boolean } | undefined;
+    const data = edge.data as { edgeRole?: string; isReference?: boolean; layout?: boolean; relationship?: string } | undefined;
     const edgeKey = [
       sourceUnitId,
       targetUnitId,
       edge.type || 'default',
+      data?.relationship || data?.edgeRole || 'edge',
       data?.isReference ? 'ref' : 'tree',
       data?.layout === false ? 'nolayout' : 'layout',
     ].join('::');
@@ -709,7 +696,7 @@ const buildLayoutModel = (
   unitEdgeCandidates.forEach(({ edge, sourceUnitId, targetUnitId }) => {
     const relationship = (edge.data as any)?.relationship;
     const selectedBridge = bridgeUnitByConversationEdge.get(edge.id) ?? null;
-    const bridgeUnitId = selectedBridge?.bridgeUnitId ?? bridgeUnitByConversationParent.get(sourceUnitId);
+    const bridgeUnitId = selectedBridge?.bridgeUnitId;
     const targetUnit = layoutUnits.get(targetUnitId);
     const bridgeUnit = bridgeUnitId ? layoutUnits.get(bridgeUnitId) : null;
     if (
@@ -719,20 +706,6 @@ const buildLayoutModel = (
       bridgeUnit
     ) {
       conversationEdgesReroutedToBridge.add(edge.id);
-      if (selectedBridge && selectedBridge.anchoredUnitId !== bridgeUnitId) {
-        pushLayoutEdge({
-          id: `${selectedBridge.anchoredUnitId}->${bridgeUnitId}:commit-bridge-spine-layout`,
-          source: selectedBridge.anchoredUnitId,
-          target: bridgeUnitId,
-          type: 'commitBridgeSpineLayout',
-          data: {
-            relationship: 'git-parent',
-            edgeRole: 'commit-lineage',
-            layoutOnly: true,
-            commitBridgeSpineLayout: true,
-          },
-        } as Edge, selectedBridge.anchoredUnitId, bridgeUnitId);
-      }
       pushLayoutEdge({
         ...edge,
         id: `${bridgeUnitId}->${targetUnitId}:commit-bridge-layout`,
@@ -759,6 +732,7 @@ const buildLayoutModel = (
 const expandLayoutedUnits = (
   nodes: Node<any>[],
   layoutedUnitNodes: Node<any>[],
+  unitByNodeId: Map<string, string>,
   membersByUnitId: Map<string, Node<any>[]>
 ): Node<any>[] => {
   const unitPositions = new Map(layoutedUnitNodes.map((node) => [node.id, node]));
@@ -768,9 +742,11 @@ const expandLayoutedUnits = (
     if (node.parentId || isHullNodeType(node.type)) return;
 
     const turnGroupId = getNodeTurnGroupId(node);
-    const unitId = turnGroupId && !isSummaryNodeType(node.type) ? `${TURN_LAYOUT_NODE_TYPE}:${turnGroupId}` : node.id;
+    const unitId = unitByNodeId.get(node.id)
+      ?? (turnGroupId && !isSummaryNodeType(node.type) ? `${TURN_LAYOUT_NODE_TYPE}:${turnGroupId}` : node.id);
     const unitNode = unitPositions.get(unitId);
     if (!unitNode) return;
+    const isTurnLayoutUnit = unitId.startsWith(`${TURN_LAYOUT_NODE_TYPE}:`);
 
     const unitMembers = membersByUnitId.get(unitId) ?? [node];
     const unitWidth = getNodeWidth(unitNode);
@@ -785,10 +761,13 @@ const expandLayoutedUnits = (
       return total + getNodeHeight(member) + gap;
     }, 0);
 
-    if (turnGroupId && !isSummaryNodeType(node.type)) {
+    if (isTurnLayoutUnit && !isSummaryNodeType(node.type)) {
       const conversationMembers = getTurnConversationMembers(unitMembers);
       const commitMembers = getTurnCommitMembers(unitMembers);
-      const turnDimensions = getTurnLayoutDimensions(unitMembers);
+      const turnDimensions = getTurnLayoutDimensions(
+        unitMembers,
+        (unitNode.data as any)?.reserveEmptyLanes === true,
+      );
       const conversationIndex = conversationMembers.findIndex((member) => member.id === node.id);
       const commitIndex = commitMembers.findIndex((member) => member.id === node.id);
 
@@ -816,8 +795,8 @@ const expandLayoutedUnits = (
       }
     }
 
-    const nodeHeight = turnGroupId && isTurnCommitLaneMember(node) && getTurnCommitMembers(unitMembers).length === 1
-      ? getSingleCommitLaneHeight(getTurnConversationMembers(unitMembers))
+    const nodeHeight = isTurnLayoutUnit && isCommitLaneLayoutMember(node) && getTurnCommitMembers(unitMembers).length === 1
+      ? Math.max(getNodeHeight(node), getSingleCommitLaneHeight(getTurnConversationMembers(unitMembers)))
       : getNodeHeight(node);
 
     node.position = {
@@ -836,100 +815,37 @@ const expandLayoutedUnits = (
   return expandedNodes;
 };
 
-const getLayoutBoxWidth = (node: Node<any>): number => (
-  typeof node.style?.width === 'number' ? node.style.width : getNodeWidth(node)
-);
-
-const getLayoutBoxHeight = (node: Node<any>): number => (
-  typeof node.style?.height === 'number' ? node.style.height : getNodeHeight(node)
-);
-
-const rangesOverlap = (startA: number, endA: number, startB: number, endB: number): boolean => (
-  startA < endB && startB < endA
-);
-
-const compactDagreUnitLayout = (
-  layoutedUnitNodes: Node<any>[],
-  layoutEdges: Edge[],
-): Node<any>[] => {
-  const nodesById = new Map(layoutedUnitNodes.map((node) => [
-    node.id,
-    {
-      ...node,
-      position: { ...node.position },
-      style: { ...node.style },
-    } as Node<any>,
-  ]));
-
-  const incomingByNodeId = new Map<string, string[]>();
-  layoutEdges.forEach((edge) => {
-    if (!nodesById.has(edge.source) || !nodesById.has(edge.target)) return;
-    const incoming = incomingByNodeId.get(edge.target) ?? [];
-    incoming.push(edge.source);
-    incomingByNodeId.set(edge.target, incoming);
-  });
-
-  const orderedNodes = [...layoutedUnitNodes].sort((left, right) => (
-    left.position.y - right.position.y || left.position.x - right.position.x || left.id.localeCompare(right.id)
-  ));
-  const placedNodes: Node<any>[] = [];
-
-  orderedNodes.forEach((node) => {
-    const positionedNode = nodesById.get(node.id);
-    if (!positionedNode) return;
-
-    const nodeWidth = getLayoutBoxWidth(positionedNode);
-    let minY = 0;
-
-    const incomingNodeIds = incomingByNodeId.get(node.id) ?? [];
-    incomingNodeIds.forEach((incomingNodeId) => {
-      const predecessor = nodesById.get(incomingNodeId);
-      if (!predecessor) return;
-      minY = Math.max(
-        minY,
-        predecessor.position.y + getLayoutBoxHeight(predecessor) + DAGRE_EDGE_VERTICAL_GAP
-      );
-    });
-
-    placedNodes.forEach((otherNode) => {
-      const otherWidth = getLayoutBoxWidth(otherNode);
-      const otherHeight = getLayoutBoxHeight(otherNode);
-      const overlapsInX = rangesOverlap(
-        positionedNode.position.x,
-        positionedNode.position.x + nodeWidth,
-        otherNode.position.x,
-        otherNode.position.x + otherWidth
-      );
-      if (!overlapsInX) return;
-
-      minY = Math.max(minY, otherNode.position.y + otherHeight + DAGRE_COLLISION_GAP);
-    });
-
-    positionedNode.position.y = Math.max(0, minY);
-    placedNodes.push(positionedNode);
-  });
-
-  return layoutedUnitNodes.map((node) => nodesById.get(node.id) ?? node);
-};
-
 const applyTurnGroupHullBounds = <T extends Node<any>>(nodes: T[]): T[] => {
   const result = nodes.map(node => ({ ...node })) as T[];
   const nodesById = new Map(result.map(node => [node.id, node]));
+  const hasVisibleConversationLayer = result.some((node) => {
+    const kind = getNodeEntityKind(node);
+    return kind === 'user_message' || kind === 'assistant_message';
+  });
+  const hasVisibleCommitLayer = result.some((node) => !isHullNodeType(node.type) && isCommitLaneLayoutMember(node));
+  const shouldCoverFullTurnSlot = hasVisibleConversationLayer && hasVisibleCommitLayer;
+  const fullTurnSlotWidth = TURN_CONVERSATION_NODE_WIDTH + TURN_LANE_GAP + TURN_COMMIT_NODE_WIDTH;
 
   result.forEach((node) => {
     if (node.type !== 'turn_group_hull' || !(node.data as any)?.memberIds) return;
 
     const memberIds = (node.data as any).memberIds as string[];
+    const slotKind = (node.data as any)?.slotKind;
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
+    let hasConversationMember = false;
+    let hasCommitMember = false;
 
     memberIds.forEach((memberId) => {
       const memberNode = nodesById.get(memberId);
-      if (!memberNode) return;
+      if (!memberNode || isHullNodeType(memberNode.type)) return;
       const width = getNodeWidth(memberNode);
       const height = getNodeHeight(memberNode);
+      const kind = getNodeEntityKind(memberNode);
+      hasConversationMember = hasConversationMember || kind === 'user_message' || kind === 'assistant_message';
+      hasCommitMember = hasCommitMember || isCommitLaneLayoutMember(memberNode);
       minX = Math.min(minX, memberNode.position.x);
       minY = Math.min(minY, memberNode.position.y);
       maxX = Math.max(maxX, memberNode.position.x + width);
@@ -938,163 +854,21 @@ const applyTurnGroupHullBounds = <T extends Node<any>>(nodes: T[]): T[] => {
 
     if (minX === Infinity) return;
 
-    const padding = 10;
-    node.position = { x: minX - padding, y: minY - padding };
+    if (shouldCoverFullTurnSlot) {
+      if (slotKind === 'commit-only' || (!hasConversationMember && hasCommitMember)) {
+        minX = maxX - fullTurnSlotWidth;
+      } else if (hasConversationMember) {
+        maxX = Math.max(maxX, minX + fullTurnSlotWidth);
+      }
+    }
+
+    node.position = { x: minX, y: minY };
     node.style = {
       ...node.style,
-      width: (maxX - minX) + padding * 2,
-      height: (maxY - minY) + padding * 2,
+      width: maxX - minX,
+      height: maxY - minY,
       zIndex: -1,
     };
-  });
-
-  return result;
-};
-
-const getLayoutUnitCommitAnchorOffsetX = (node: Node<any>): number => {
-  const value = (node.data as any)?.commitAnchorOffsetX;
-  return typeof value === 'number' && Number.isFinite(value)
-    ? value
-    : getNodeWidth(node) / 2;
-};
-
-const isLineageOrBaseLayoutEdge = (edge: Edge): boolean => {
-  const data = edge.data as any;
-  if (data?.layout === false) return false;
-  return data?.relationship === 'git-parent'
-    || data?.relationship === 'base-used'
-    || data?.edgeRole === 'commit-lineage'
-    || data?.edgeRole === 'base';
-};
-
-const isCommitLineageLayoutEdge = (edge: Edge): boolean => {
-  const data = edge.data as any;
-  if (data?.layout === false) return false;
-  return data?.relationship === 'git-parent' || data?.edgeRole === 'commit-lineage';
-};
-
-const applyLayoutUnitPositionHints = <T extends Node<any>>(layoutedUnitNodes: T[], layoutEdges: Edge[] = []): T[] => {
-  if (layoutedUnitNodes.length === 0) return layoutedUnitNodes;
-
-  const result = layoutedUnitNodes.map(node => ({ ...node, position: { ...node.position } })) as T[];
-  const nodesById = new Map(result.map(node => [node.id, node]));
-  const layoutChildrenByParent = new Map<string, string[]>();
-  const lineageChildrenByParent = new Map<string, string[]>();
-
-  layoutEdges.forEach((edge) => {
-    const data = edge.data as any;
-    if (data?.layout === false) return;
-
-    const layoutChildren = layoutChildrenByParent.get(edge.source) ?? [];
-    layoutChildren.push(edge.target);
-    layoutChildrenByParent.set(edge.source, layoutChildren);
-
-    if (isLineageOrBaseLayoutEdge(edge)) {
-      const lineageChildren = lineageChildrenByParent.get(edge.source) ?? [];
-      lineageChildren.push(edge.target);
-      lineageChildrenByParent.set(edge.source, lineageChildren);
-    }
-  });
-
-  const shiftSubtree = (
-    rootId: string,
-    dx: number,
-    dy: number,
-    childrenByParent: Map<string, string[]> = layoutChildrenByParent,
-  ) => {
-    if ((!Number.isFinite(dx) || Math.abs(dx) < 0.5) && (!Number.isFinite(dy) || Math.abs(dy) < 0.5)) return;
-    const seen = new Set<string>();
-    const queue = [rootId];
-
-    while (queue.length > 0) {
-      const nodeId = queue.shift()!;
-      if (seen.has(nodeId)) continue;
-      seen.add(nodeId);
-
-      const node = nodesById.get(nodeId);
-      if (node) {
-        node.position = {
-          x: node.position.x + dx,
-          y: node.position.y + dy,
-        };
-      }
-
-      queue.push(...(childrenByParent.get(nodeId) ?? []));
-    }
-  };
-
-  result.forEach((node) => {
-    const anchorUnitId = (node.data as any)?.layoutAnchorUnitId;
-    if (typeof anchorUnitId !== 'string') return;
-
-    const anchor = nodesById.get(anchorUnitId);
-    if (!anchor) return;
-
-    const nextPosition = {
-      x: anchor.position.x + getNodeWidth(anchor) + TURN_LANE_GAP,
-      y: anchor.position.y + Math.max(0, (getNodeHeight(anchor) - getNodeHeight(node)) / 2),
-    };
-    shiftSubtree(
-      node.id,
-      nextPosition.x - node.position.x,
-      nextPosition.y - node.position.y,
-      layoutChildrenByParent,
-    );
-  });
-
-  layoutEdges.forEach((edge) => {
-    if ((edge.data as any)?.turnBridgeLayout !== true) return;
-    const source = nodesById.get(edge.source);
-    const target = nodesById.get(edge.target);
-    if (!source || !target) return;
-    shiftSubtree(edge.target, source.position.x - target.position.x, 0);
-  });
-
-  layoutEdges.forEach((edge) => {
-    if ((edge.data as any)?.commitBridgeSpineLayout !== true) return;
-    const source = nodesById.get(edge.source);
-    const target = nodesById.get(edge.target);
-    if (!source || !target) return;
-    const sourceAnchorX = source.position.x + getLayoutUnitCommitAnchorOffsetX(source);
-    const targetAnchorX = target.position.x + getLayoutUnitCommitAnchorOffsetX(target);
-    shiftSubtree(edge.target, sourceAnchorX - targetAnchorX, 0);
-  });
-
-  const conversationChildrenByParent = new Map<string, string[]>();
-  layoutEdges.forEach((edge) => {
-    if ((edge.data as any)?.relationship !== 'conversation') return;
-    const children = conversationChildrenByParent.get(edge.source) ?? [];
-    children.push(edge.target);
-    conversationChildrenByParent.set(edge.source, children);
-  });
-  layoutEdges.forEach((edge) => {
-    if ((edge.data as any)?.relationship !== 'conversation') return;
-    if ((conversationChildrenByParent.get(edge.source)?.length ?? 0) !== 1) return;
-    const source = nodesById.get(edge.source);
-    const target = nodesById.get(edge.target);
-    if (!source || !target) return;
-    if ((source.data as any)?.hasConversationMembers !== true || (target.data as any)?.hasConversationMembers !== true) return;
-    shiftSubtree(edge.target, source.position.x - target.position.x, 0);
-  });
-
-  const commitLineageChildrenByParent = new Map<string, string[]>();
-  layoutEdges.filter(isCommitLineageLayoutEdge).forEach((edge) => {
-    const children = commitLineageChildrenByParent.get(edge.source) ?? [];
-    children.push(edge.target);
-    commitLineageChildrenByParent.set(edge.source, children);
-  });
-
-  layoutEdges.filter(isCommitLineageLayoutEdge).forEach((edge) => {
-    const siblingCount = commitLineageChildrenByParent.get(edge.source)?.length ?? 0;
-    if (siblingCount !== 1) return;
-
-    const source = nodesById.get(edge.source);
-    const target = nodesById.get(edge.target);
-    if (!source || !target) return;
-
-    const sourceAnchorX = source.position.x + getLayoutUnitCommitAnchorOffsetX(source);
-    const targetAnchorX = target.position.x + getLayoutUnitCommitAnchorOffsetX(target);
-    shiftSubtree(edge.target, sourceAnchorX - targetAnchorX, 0);
   });
 
   return result;
@@ -2457,6 +2231,18 @@ export const mapMessagesToGraphElements = (
       const scopeId = userMsg?.scope_id ?? null;
       const scopeColor = scopeId ? (readLookupValue(scopeColorById, scopeId) || null) : null;
 
+      const memberIds = tg.memberEntityIds
+        .flatMap((eid: string) => {
+          const entity = projection.entitiesById.get(eid);
+          const messageId = entity?.messageId;
+          if (!messageId) return entity?.summary?.id ? [entity.summary.id] : [];
+          const generatedCommitNodeId = getAssistantOutputCommitNodeId(messageId);
+          return renderedNodeIds.has(generatedCommitNodeId)
+            ? [messageId, generatedCommitNodeId]
+            : [messageId];
+        })
+        .filter(Boolean);
+
       nodes.push({
         id: `hull:${tg.turnGroupId}`,
         type: 'turn_group_hull',
@@ -2464,16 +2250,41 @@ export const mapMessagesToGraphElements = (
         data: {
           label: tg.userMessageId === originMessageId ? 'Origin' : undefined,
           scopeColor,
-          memberIds: tg.memberEntityIds
-            .map((eid: string) => {
-              const entity = projection.entitiesById.get(eid);
-              return entity?.messageId || entity?.summary?.id || null;
-            })
-            .filter(Boolean),
+          slotKind: 'turn',
+          memberIds,
         },
         style: { zIndex: -1 },
       } as Node<any>);
     });
+
+    if (showCommitNodes) {
+      const hullMemberIds = new Set<string>();
+      nodes.forEach((node) => {
+        if (node.type !== 'turn_group_hull') return;
+        ((node.data as any)?.memberIds as string[] | undefined)?.forEach((memberId) => {
+          hullMemberIds.add(memberId);
+        });
+      });
+
+      nodes
+        .filter((node) => (
+          (node.type === 'canonical_commit' || node.type === 'layout_derived_commit_group') &&
+          !node.parentId &&
+          !hullMemberIds.has(node.id)
+        ))
+        .forEach((commitNode) => {
+          nodes.push({
+            id: `hull:commit:${commitNode.id}`,
+            type: 'turn_group_hull',
+            position: { x: 0, y: 0 },
+            data: {
+              slotKind: 'commit-only',
+              memberIds: [commitNode.id],
+            },
+            style: { zIndex: -1 },
+          } as Node<any>);
+        });
+    }
 
     const renderedNodeIds = new Set(nodes.map((node) => node.id));
     const visibleEdges = edges.filter((edge) => renderedNodeIds.has(edge.source) && renderedNodeIds.has(edge.target));
@@ -2628,12 +2439,7 @@ export const getLayoutedElements = (nodes: Node<LlmNodeData | SummaryNodeData | 
     };
   });
 
-  const compactedUnitNodes = applyLayoutUnitPositionHints(
-    compactDagreUnitLayout(layoutedUnitNodes as Node<any>[], layoutEdges),
-    layoutEdges,
-  );
-
-  let layoutedNodes = expandLayoutedUnits(nodes as Node<any>[], compactedUnitNodes as Node<any>[], membersByUnitId);
+  let layoutedNodes = expandLayoutedUnits(nodes as Node<any>[], layoutedUnitNodes as Node<any>[], unitByNodeId, membersByUnitId);
 
   // Sanitize positions to prevent NaN errors
   layoutedNodes.forEach(n => {
@@ -2922,11 +2728,7 @@ export const getLaneLayoutedElements = (
     }
   }
 
-  const compactedNodes = applyLayoutUnitPositionHints(
-    compactDagreUnitLayout(positionedNodes, layoutEdges),
-    layoutEdges,
-  );
-  const expandedNodes = expandLayoutedUnits(nodes as Node<any>[], compactedNodes, layoutModel.membersByUnitId);
+  const expandedNodes = expandLayoutedUnits(nodes as Node<any>[], positionedNodes, layoutModel.unitByNodeId, layoutModel.membersByUnitId);
   let finalNodes = expandedNodes.map(n => ({ ...n }));
 
   // Compute group node bounds and convert children to relative positions
@@ -3243,11 +3045,7 @@ export const getTidyTreeLayoutedElements = (
     };
   });
 
-  const compactedNodes = applyLayoutUnitPositionHints(
-    compactDagreUnitLayout(positionedNodes, layoutEdges),
-    layoutEdges,
-  );
-  const expandedNodes = expandLayoutedUnits(nodes as Node<any>[], compactedNodes, layoutModel.membersByUnitId);
+  const expandedNodes = expandLayoutedUnits(nodes as Node<any>[], positionedNodes, layoutModel.unitByNodeId, layoutModel.membersByUnitId);
   let finalNodes = expandedNodes.map(n => ({ ...n }));
 
   const childrenByParentGroups = new Map<string, Node[]>();
@@ -3516,11 +3314,7 @@ export const getSugiyamaLayoutedElements = (
     };
   });
 
-  const compactedNodes = applyLayoutUnitPositionHints(
-    compactDagreUnitLayout(positionedNodes, layoutEdges),
-    layoutEdges,
-  );
-  const expandedNodes = expandLayoutedUnits(nodes as Node<any>[], compactedNodes, layoutModel.membersByUnitId);
+  const expandedNodes = expandLayoutedUnits(nodes as Node<any>[], positionedNodes, layoutModel.unitByNodeId, layoutModel.membersByUnitId);
   let finalNodes = expandedNodes.map(n => ({ ...n }));
 
   const childrenByParentGroups = new Map<string, Node[]>();

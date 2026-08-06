@@ -11,6 +11,7 @@ interface GraphNodeWrapperProps {
   children: ReactNode;
   isFocused: boolean;
   isSelected: boolean;
+  isComposerBaseCommit?: boolean;
   disableHoverCard?: boolean;
   scopeColor?: string | null;
   className?: string;
@@ -30,6 +31,7 @@ export const GraphNodeWrapper = memo(({
   children,
   isFocused,
   isSelected,
+  isComposerBaseCommit = false,
   disableHoverCard,
   scopeColor,
   className,
@@ -50,6 +52,7 @@ export const GraphNodeWrapper = memo(({
   const [hoverOpen, setHoverOpen] = useState(false);
   const [suppressFocusedHoverUntilLeave, setSuppressFocusedHoverUntilLeave] = useState(false);
   const restingBorderColor = scopeColor ? withHexAlpha(scopeColor, '88') : undefined;
+  const isBaseCommitHighlighted = isComposerBaseCommit && !isFocused && !isFocusFeedbackActive;
 
   const clearFocusFeedback = () => {
     if (focusFeedbackTimeoutRef.current !== null) {
@@ -136,10 +139,18 @@ export const GraphNodeWrapper = memo(({
       }}
       style={{
         ...style,
-        borderColor: isFocused || isFocusFeedbackActive ? '#6366f1' : isSelected ? '#3b82f6' : restingBorderColor,
-        boxShadow: !isFocused && !isSelected && scopeColor
-          ? `0 4px 12px ${withHexAlpha(scopeColor, '16')}`
-          : style?.boxShadow,
+        borderColor: isFocused || isFocusFeedbackActive
+          ? '#6366f1'
+          : isBaseCommitHighlighted
+            ? '#059669'
+            : isSelected
+              ? '#3b82f6'
+              : restingBorderColor,
+        boxShadow: isBaseCommitHighlighted
+          ? '0 0 0 1.5px rgba(5,150,105,0.72), 0 14px 28px -22px rgba(4,120,87,0.86)'
+          : !isFocused && !isSelected && scopeColor
+            ? `0 4px 12px ${withHexAlpha(scopeColor, '16')}`
+            : style?.boxShadow,
       }}
       className={cn(
         'agentree-graph-node-card relative flex flex-col overflow-hidden bg-background cursor-default pointer-events-auto',
@@ -147,8 +158,10 @@ export const GraphNodeWrapper = memo(({
         'border',
         isFocused || isFocusFeedbackActive
           ? 'transition-all duration-200 ring-2 ring-indigo-500 shadow-md'
-          : 'transition-all duration-200 shadow-sm hover:shadow-md',
-        isSelected ? 'ring-2 ring-blue-500' : '',
+          : isBaseCommitHighlighted
+            ? 'transition-all duration-200 ring-2 ring-emerald-600/80 shadow-sm'
+            : 'transition-all duration-200 shadow-sm hover:shadow-md',
+        isSelected && !isBaseCommitHighlighted ? 'ring-2 ring-blue-500' : '',
         className
       )}
     >
@@ -165,6 +178,18 @@ export const GraphNodeWrapper = memo(({
         type="target"
         position={Position.Top}
         className="!w-2.5 !h-2.5 !bg-slate-400 !border-2 !border-background"
+      />
+      <Handle
+        id="left-target"
+        type="target"
+        position={Position.Left}
+        className="!h-2.5 !w-2.5 !border-0 !bg-transparent"
+      />
+      <Handle
+        id="right-target"
+        type="target"
+        position={Position.Right}
+        className="!h-2.5 !w-2.5 !border-0 !bg-transparent"
       />
       <Handle
         id="bottom-source"

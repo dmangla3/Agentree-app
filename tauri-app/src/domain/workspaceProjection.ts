@@ -456,15 +456,10 @@ const buildCommitProjection = (
   commitObservations: CommitObservationEntity[] = [],
 ) => {
   const parentsByChildSha = new Map<string, CommitParentEntity[]>();
-  const childrenByParentSha = new Map<string, string[]>();
   for (const parent of commitParents) {
     const childParents = parentsByChildSha.get(parent.child_sha) ?? [];
     childParents.push(parent);
     parentsByChildSha.set(parent.child_sha, childParents);
-
-    const children = childrenByParentSha.get(parent.parent_sha) ?? [];
-    children.push(parent.child_sha);
-    childrenByParentSha.set(parent.parent_sha, children);
   }
   parentsByChildSha.forEach((parents) => parents.sort((left, right) => left.parent_index - right.parent_index));
 
@@ -511,59 +506,90 @@ const buildCommitProjection = (
     return left.sha.localeCompare(right.sha);
   });
 
-  const getObservationBatchKey = (commit: ProjectedCommitEntity): string | null => {
-    if (commit.placement !== 'commit_lineage') return null;
-    if (!['external', 'manual'].includes(commit.sourceKind)) return null;
-    const batchObservation = [...commit.observations]
-      .filter((observation) => (
-        observation.source_kind === commit.sourceKind &&
-        typeof observation.first_seen_at === 'string' &&
-        observation.first_seen_at.trim().length > 0
-      ))
-      .sort((left, right) => {
-        const leftSeen = left.first_seen_at ?? '';
-        const rightSeen = right.first_seen_at ?? '';
-        if (leftSeen !== rightSeen) return leftSeen.localeCompare(rightSeen);
-        return (left.git_ref ?? '').localeCompare(right.git_ref ?? '');
-      })[0];
-    if (!batchObservation) return null;
-    return [
-      commit.sourceKind,
-      batchObservation.git_ref ?? '',
-      batchObservation.first_seen_at,
-    ].join('\u001f');
+  const getGroupSourceKind = (commit: ProjectedCommitEntity): ProjectedCommitGroup['sourceKind'] | null => {
+    if (commit.sourceKind === 'external' || commit.sourceKind === 'manual') return commit.sourceKind;
+    if (commit.sourceKind === 'unknown') return 'unknown';
+    return null;
   };
 
   const isGroupable = (commit: ProjectedCommitEntity): boolean => {
     if (commit.placement !== 'commit_lineage') return false;
-    if (commit.parentRows.length > 1) return false;
-    return true;
+    return getGroupSourceKind(commit) !== null;
   };
 
   const groups: ProjectedCommitGroup[] = [];
   const groupedShas = new Set<string>();
-  const batchCandidatesByKey = new Map<string, ProjectedCommitEntity[]>();
+  const neighborsBySha = new Map<string, Set<string>>();
+  const addNeighbor = (leftSha: string, rightSha: string) => {
+    const left = neighborsBySha.get(leftSha) ?? new Set<string>();
+    left.add(rightSha);
+    neighborsBySha.set(leftSha, left);
+    const right = neighborsBySha.get(rightSha) ?? new Set<string>();
+    right.add(leftSha);
+    neighborsBySha.set(rightSha, right);
+  };
+
   for (const commit of sortedCommits) {
-    const batchKey = getObservationBatchKey(commit);
-    if (!batchKey) continue;
-    const batch = batchCandidatesByKey.get(batchKey) ?? [];
-    batch.push(commit);
-    batchCandidatesByKey.set(batchKey, batch);
+    if (!isGroupable(commit)) continue;
+    const sourceKind = getGroupSourceKind(commit);
+    commit.parentShas.forEach((parentSha) => {
+      const parent = commitBySha.get(parentSha);
+      if (!parent || !isGroupable(parent)) return;
+      if (getGroupSourceKind(parent) !== sourceKind) return;
+      addNeighbor(commit.sha, parent.sha);
+    });
   }
 
-  for (const batch of batchCandidatesByKey.values()) {
-    if (batch.length < 3) continue;
-    const orderedBatch = [...batch].sort((left, right) => {
-      if (left.sortTs !== right.sortTs) return left.sortTs - right.sortTs;
-      return left.sha.localeCompare(right.sha);
+  const pickBoundaryCommit = (
+    component: ProjectedCommitEntity[],
+    direction: 'root' | 'tip',
+  ): ProjectedCommitEntity => {
+    const componentShas = new Set(component.map((commit) => commit.sha));
+    const candidates = component.filter((commit) => {
+      if (direction === 'root') {
+        return !commit.parentShas.some((parentSha) => componentShas.has(parentSha));
+      }
+      return !Array.from(neighborsBySha.get(commit.sha) ?? [])
+        .some((neighborSha) => {
+          const neighbor = commitBySha.get(neighborSha);
+          return neighbor?.parentShas.includes(commit.sha) ?? false;
+        });
     });
-    const first = orderedBatch[0];
-    const last = orderedBatch[orderedBatch.length - 1];
+    return (candidates.length > 0 ? candidates : component)
+      .sort((left, right) => left.sha.localeCompare(right.sha))[0];
+  };
+
+  const visitedShas = new Set<string>();
+  const componentStarts = [...sortedCommits].sort((left, right) => left.sha.localeCompare(right.sha));
+  for (const start of componentStarts) {
+    if (groupedShas.has(start.sha) || !isGroupable(start)) continue;
+    if (visitedShas.has(start.sha)) continue;
+
+    const component: ProjectedCommitEntity[] = [];
+    const stack = [start.sha];
+    visitedShas.add(start.sha);
+    while (stack.length > 0) {
+      const sha = stack.pop()!;
+      const commit = commitBySha.get(sha);
+      if (!commit || !isGroupable(commit)) continue;
+      component.push(commit);
+      (neighborsBySha.get(sha) ?? new Set<string>()).forEach((neighborSha) => {
+        if (visitedShas.has(neighborSha)) return;
+        visitedShas.add(neighborSha);
+        stack.push(neighborSha);
+      });
+    }
+
+    if (component.length < 3) continue;
+
+    const first = pickBoundaryCommit(component, 'root');
+    const last = pickBoundaryCommit(component, 'tip');
+    const sourceKind = getGroupSourceKind(first) ?? 'unknown';
     const group: ProjectedCommitGroup = {
-      groupId: `commit-group:${first.sourceKind}:${first.sha}:${last.sha}`,
+      groupId: `commit-group:${sourceKind}:${first.sha}:${last.sha}:${component.length}`,
       kind: 'layout_derived_commit_group',
-      sourceKind: first.sourceKind === 'external' || first.sourceKind === 'manual' ? first.sourceKind : 'unknown',
-      commitShas: orderedBatch.map((commit) => commit.sha),
+      sourceKind,
+      commitShas: component.map((commit) => commit.sha).sort((left, right) => left.localeCompare(right)),
       firstSha: first.sha,
       lastSha: last.sha,
       parentSha: first.parentShas[0] ?? null,
@@ -572,61 +598,8 @@ const buildCommitProjection = (
       expanded: false,
     };
     groups.push(group);
-    orderedBatch.forEach((commit) => groupedShas.add(commit.sha));
+    component.forEach((commit) => groupedShas.add(commit.sha));
   }
-
-  let run: ProjectedCommitEntity[] = [];
-
-  const flushRun = () => {
-    if (run.length >= 3) {
-      const first = run[0];
-      const last = run[run.length - 1];
-      const sourceKind = (first.sourceKind === 'external' || first.sourceKind === 'manual') ? first.sourceKind : 'unknown';
-      const group: ProjectedCommitGroup = {
-        groupId: `commit-group:${sourceKind}:${first.sha}:${last.sha}`,
-        kind: 'layout_derived_commit_group',
-        sourceKind,
-        commitShas: run.map((commit) => commit.sha),
-        firstSha: first.sha,
-        lastSha: last.sha,
-        parentSha: first.parentShas[0] ?? null,
-        childSha: null,
-        sortTs: first.sortTs,
-        expanded: false,
-      };
-      groups.push(group);
-      run.forEach((commit) => groupedShas.add(commit.sha));
-    }
-    run = [];
-  };
-
-  for (const commit of sortedCommits) {
-    if (groupedShas.has(commit.sha)) {
-      flushRun();
-      continue;
-    }
-    const previous = run[run.length - 1] ?? null;
-    const childCount = previous ? (childrenByParentSha.get(previous.sha) ?? []).filter((sha) => commitBySha.has(sha)).length : 0;
-    const continuesRun = previous
-      && isGroupable(commit)
-      && isGroupable(previous)
-      && commit.sourceKind === previous.sourceKind
-      && commit.parentShas[0] === previous.sha
-      && childCount <= 1;
-
-    if (!isGroupable(commit)) {
-      flushRun();
-      continue;
-    }
-
-    if (!previous || continuesRun) {
-      run.push(commit);
-    } else {
-      flushRun();
-      run.push(commit);
-    }
-  }
-  flushRun();
 
   const groupIdByCommitSha = new Map<string, string>();
   groups.forEach((group) => {

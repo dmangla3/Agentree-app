@@ -364,7 +364,7 @@ const deriveIncrementalText = (previousText: string, nextText: string) => {
 
 import { useMessages, useSendMessage, useCommitDescendants, useCommitAncestors } from '../hooks/useMessages';
 import { useWorkspaceMessages } from '../hooks/useLiveMessages';
-import { localNodeKeys } from '../hooks/useLocalNodes';
+import { localNodeKeys, useLocalNodes } from '../hooks/useLocalNodes';
 
 import { useKnowledgeTree } from '../hooks/useKnowledge';
 import { useAgents, findDefaultCodexAgentId } from '../hooks/useAgents';
@@ -446,6 +446,9 @@ export function ChatInput({
     const {
         selectedWorkspaceId,
         focusedMessageId,
+        lastFocusSource,
+        lastFocusMetadata,
+        composerBaseCommitOverride,
         activeScopeId,
         autoCheckoutOnAgentCommit,
         beginSendFlowFocus,
@@ -457,10 +460,14 @@ export function ChatInput({
         selectedAgentId,
         setSelectedAgentId,
         setComposerContextPreview,
+        setComposerBaseCommitOverride,
     } = useWorkspaceStore(
         useShallow((state) => ({
             selectedWorkspaceId: state.selectedWorkspaceId,
             focusedMessageId: state.focusedMessageId,
+            lastFocusSource: state.lastFocusSource,
+            lastFocusMetadata: state.lastFocusMetadata,
+            composerBaseCommitOverride: state.composerBaseCommitOverride,
             activeScopeId: state.activeScopeId,
             autoCheckoutOnAgentCommit: state.autoCheckoutOnAgentCommit,
             beginSendFlowFocus: state.beginSendFlowFocus,
@@ -472,6 +479,7 @@ export function ChatInput({
             selectedAgentId: state.selectedAgentId,
             setSelectedAgentId: state.setSelectedAgentId,
             setComposerContextPreview: state.setComposerContextPreview,
+            setComposerBaseCommitOverride: state.setComposerBaseCommitOverride,
         }))
     );
     // Optimistic send setup creates projected-message inputs, but lifecycle
@@ -533,6 +541,7 @@ export function ChatInput({
     const scopes = useMemo(() => (scopesQuery.data?.scopes ?? []) as Scope[], [scopesQuery.data?.scopes]);
     const [selectedScopeIdOverride, setSelectedScopeIdOverride] = useState<string | null>(null);
     const [isCreatingNewScope, setIsCreatingNewScope] = useState(false);
+    const [isNewScopeEditorOpen, setIsNewScopeEditorOpen] = useState(false);
     const [newScopeName, setNewScopeName] = useState('');
     const [contextPolicy, setContextPolicy] = useState<ContextPolicy>('continue');
     const [sendPressFeedback, setSendPressFeedback] = useState(false);
@@ -547,11 +556,12 @@ export function ChatInput({
     }, []);
 
     const { data: messagesData } = useMessages(selectedWorkspaceId);
+    const localNodesQuery = useLocalNodes(selectedWorkspaceId);
     const persistedMessages = useMemo(
         () => (messagesData ?? []) as Message[],
         [messagesData]
     );
-    const messages = useWorkspaceMessages(selectedWorkspaceId, persistedMessages);
+    const messages = useWorkspaceMessages(selectedWorkspaceId, persistedMessages, localNodesQuery.data);
     const messageLookupMessages = messages;
     const { data: agentsData } = useAgents();
     const agents = useMemo(() => agentsData ?? [], [agentsData]);
@@ -598,7 +608,19 @@ export function ChatInput({
             });
     }, [queryClient]);
 
-    const parentMessageId = parentMessageIdOverride !== undefined ? parentMessageIdOverride : focusedMessageId;
+    const focusedCommitSha = useMemo(() => {
+        if (lastFocusSource !== 'graph') return null;
+        const metadataCommitSha = typeof lastFocusMetadata?.commitSha === 'string'
+            ? lastFocusMetadata.commitSha.trim()
+            : '';
+        if (!metadataCommitSha) return null;
+        return !focusedMessageId || focusedMessageId === metadataCommitSha ? metadataCommitSha : null;
+    }, [focusedMessageId, lastFocusMetadata, lastFocusSource]);
+    const parentMessageId = parentMessageIdOverride !== undefined
+        ? parentMessageIdOverride
+        : focusedCommitSha
+            ? null
+            : focusedMessageId;
     const replyParentMessageId = editDraftSource
         ? (editDraftSource.parentId ?? null)
         : parentMessageId;
@@ -2220,8 +2242,10 @@ export function ChatInput({
         [messageLookupMessages, replyParentMessageId]
     );
     const defaultBaseCommitSha = useMemo(() => (
-        resolveNodeCommit(branchParentMessage ?? selectedNodeMessage, messageLookupMessages, selectedWorkspace?.base_commit_sha ?? null)
-    ), [branchParentMessage, messageLookupMessages, selectedNodeMessage, selectedWorkspace?.base_commit_sha]);
+        focusedCommitSha
+            ? focusedCommitSha
+            : resolveNodeCommit(branchParentMessage ?? selectedNodeMessage, messageLookupMessages, selectedWorkspace?.base_commit_sha ?? null)
+    ), [branchParentMessage, focusedCommitSha, messageLookupMessages, selectedNodeMessage, selectedWorkspace?.base_commit_sha]);
     const baseCommitCandidatesQuery = useCommitDescendants(selectedWorkspaceId, defaultBaseCommitSha, {
         enabled: Boolean(selectedWorkspaceId && defaultBaseCommitSha),
         limit: 120,
@@ -2234,8 +2258,13 @@ export function ChatInput({
         setSelectedBaseCommit(null);
         setIsEarlierCommitsOpen(false);
     }, [defaultBaseCommitSha, replyParentMessageId, selectedWorkspaceId]);
-    const effectiveBaseCommitSha = selectedBaseCommit?.sha || defaultBaseCommitSha;
-    const effectiveBaseCommitLabel = selectedBaseCommit?.subject || selectedBaseCommit?.sha || defaultBaseCommitSha || 'No commit';
+    const composerOverrideCommitSha = composerBaseCommitOverride?.workspaceId === selectedWorkspaceId
+        ? composerBaseCommitOverride.commitSha
+        : null;
+    const effectiveBaseCommitSha = composerOverrideCommitSha || selectedBaseCommit?.sha || defaultBaseCommitSha;
+    const effectiveBaseCommitLabel = composerOverrideCommitSha
+        ? (composerBaseCommitOverride?.label || composerOverrideCommitSha)
+        : selectedBaseCommit?.subject || selectedBaseCommit?.sha || defaultBaseCommitSha || 'No commit';
     const baseCommitCandidates = useMemo(() => {
         const seen = new Set<string>();
         return (baseCommitCandidatesQuery.data?.commits ?? []).filter((commit) => {
@@ -2363,6 +2392,7 @@ export function ChatInput({
             contextParentId: contextPolicy === 'fresh' ? null : effectiveContextParentId,
             contextPolicy,
             contextStartId: effectiveContextStartId,
+            baseCommitSha: effectiveBaseCommitSha,
         });
         return () => setComposerContextPreview(null);
     }, [
@@ -2371,6 +2401,7 @@ export function ChatInput({
         effectiveContextParentId,
         contextPolicy,
         effectiveContextStartId,
+        effectiveBaseCommitSha,
         setComposerContextPreview,
     ]);
     const contextStartLabel = formatContextParentLabel(effectiveContextStartMessage, 'Root');
@@ -2433,8 +2464,9 @@ export function ChatInput({
         () => effectiveScopeIdForReply ? scopes.find((scope) => scope.id === effectiveScopeIdForReply) ?? null : null,
         [effectiveScopeIdForReply, scopes]
     );
+    const pendingNewScopeName = newScopeName.trim() || nextUntitledScopeName;
     const effectiveScopeLabel = isCreatingNewScope
-        ? (newScopeName.trim() || nextUntitledScopeName)
+        ? pendingNewScopeName
         : (effectiveScope?.name || 'Default');
     const codeParentCommit = effectiveBaseCommitSha;
 
@@ -2448,12 +2480,14 @@ export function ChatInput({
     useEffect(() => {
         setSelectedScopeIdOverride(null);
         setIsCreatingNewScope(false);
+        setIsNewScopeEditorOpen(false);
         setNewScopeName('');
         setContextPolicy('continue');
     }, [replyParentMessageId]);
 
     const handleCreateScopeFromComposer = useCallback(() => {
         setIsCreatingNewScope(true);
+        setIsNewScopeEditorOpen(true);
         setSelectedScopeIdOverride(null);
         setNewScopeName((current) => {
             const trimmed = current.trim();
@@ -2461,6 +2495,20 @@ export function ChatInput({
             return nextUntitledScopeName;
         });
     }, [nextUntitledScopeName]);
+    const handleSaveNewScopeName = useCallback(() => {
+        setNewScopeName((current) => {
+            const trimmed = current.trim();
+            return trimmed || nextUntitledScopeName;
+        });
+        setIsCreatingNewScope(true);
+        setSelectedScopeIdOverride(null);
+        setIsNewScopeEditorOpen(false);
+    }, [nextUntitledScopeName]);
+    const handleCancelNewScopeName = useCallback(() => {
+        setIsCreatingNewScope(false);
+        setIsNewScopeEditorOpen(false);
+        setNewScopeName('');
+    }, []);
 
     useEffect(() => {
         if (agents.length === 0) return;
@@ -4762,11 +4810,14 @@ export function ChatInput({
                                         </DropdownMenuItem>
                                     ) : baseCommitAncestorCandidates.length > 0 ? (
                                         baseCommitAncestorCandidates.map((commit) => {
-                                            const selected = selectedBaseCommit?.sha === commit.sha;
+                                            const selected = effectiveBaseCommitSha === commit.sha;
                                             return (
                                                 <DropdownMenuItem
                                                     key={`ancestor-${commit.sha}`}
-                                                    onClick={() => setSelectedBaseCommit(commit)}
+                                                    onClick={() => {
+                                                        setComposerBaseCommitOverride(null);
+                                                        setSelectedBaseCommit(commit);
+                                                    }}
                                                     className="min-h-8 gap-1.5 rounded-md px-1.5 py-1"
                                                     title={`${commit.sha} ${commit.subject ?? ''}`.trim()}
                                                 >
@@ -4788,11 +4839,14 @@ export function ChatInput({
                                 ) : null}
                                 <DropdownMenuSeparator className="my-0.5" />
                                 <DropdownMenuItem
-                                    onClick={() => setSelectedBaseCommit(null)}
+                                    onClick={() => {
+                                        setComposerBaseCommitOverride(null);
+                                        setSelectedBaseCommit(null);
+                                    }}
                                     className="min-h-8 gap-1.5 rounded-md px-1.5 py-1"
                                 >
                                     <div className="flex h-4 w-4 shrink-0 items-center justify-center">
-                                        {!selectedBaseCommit ? <Check className="h-3 w-3" /> : null}
+                                        {!selectedBaseCommit && !composerOverrideCommitSha ? <Check className="h-3 w-3" /> : null}
                                     </div>
                                     <div className="min-w-0 flex-1">
                                         <div className="truncate text-[11px] font-medium leading-tight">Focused node base</div>
@@ -4808,11 +4862,14 @@ export function ChatInput({
                                     </DropdownMenuItem>
                                 ) : baseCommitCandidates.length > 0 ? (
                                     baseCommitCandidates.map((commit) => {
-                                        const selected = selectedBaseCommit?.sha === commit.sha;
+                                        const selected = effectiveBaseCommitSha === commit.sha;
                                         return (
                                             <DropdownMenuItem
                                                 key={commit.sha}
-                                                onClick={() => setSelectedBaseCommit(commit)}
+                                                onClick={() => {
+                                                    setComposerBaseCommitOverride(null);
+                                                    setSelectedBaseCommit(commit);
+                                                }}
                                                 className="min-h-8 gap-1.5 rounded-md px-1.5 py-1"
                                                 title={`${commit.sha} ${commit.subject ?? ''}`.trim()}
                                             >
@@ -4982,13 +5039,14 @@ export function ChatInput({
                                 align="end"
                                 sideOffset={8}
                                 collisionPadding={12}
-                                className="max-h-[min(16rem,var(--radix-dropdown-menu-content-available-height))] w-72 overflow-y-auto rounded-xl border border-border/70 bg-popover/95 p-1.5 shadow-[0_18px_48px_-18px_rgba(15,23,42,0.45),0_8px_20px_-12px_rgba(15,23,42,0.35)] backdrop-blur-xl dark:shadow-[0_18px_48px_-18px_rgba(0,0,0,0.75),0_8px_20px_-12px_rgba(0,0,0,0.6)]"
+                                className="max-h-[min(20rem,var(--radix-dropdown-menu-content-available-height))] w-72 overflow-y-auto rounded-xl border border-border/70 bg-popover/95 p-1.5 shadow-[0_18px_48px_-18px_rgba(15,23,42,0.45),0_8px_20px_-12px_rgba(15,23,42,0.35)] backdrop-blur-xl dark:shadow-[0_18px_48px_-18px_rgba(0,0,0,0.75),0_8px_20px_-12px_rgba(0,0,0,0.6)]"
                             >
                                 <DropdownMenuLabel className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">Scopes</DropdownMenuLabel>
                                 {scopes.length === 0 ? (
                                     <DropdownMenuItem
                                         onClick={() => {
                                             setIsCreatingNewScope(false);
+                                            setIsNewScopeEditorOpen(false);
                                             setSelectedScopeIdOverride(null);
                                             setNewScopeName('');
                                         }}
@@ -5005,6 +5063,7 @@ export function ChatInput({
                                             key={scope.id}
                                             onClick={() => {
                                                 setIsCreatingNewScope(false);
+                                                setIsNewScopeEditorOpen(false);
                                                 setSelectedScopeIdOverride(scope.id);
                                                 setNewScopeName('');
                                             }}
@@ -5019,29 +5078,79 @@ export function ChatInput({
                                         </DropdownMenuItem>
                                     );
                                 })}
+                                {isCreatingNewScope && !isNewScopeEditorOpen && (
+                                    <DropdownMenuItem
+                                        onClick={() => setIsNewScopeEditorOpen(true)}
+                                        className="min-h-10 gap-2 rounded-lg bg-emerald-500/10 text-emerald-800 focus:bg-emerald-500/15 dark:text-emerald-300"
+                                    >
+                                        <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+                                        <div className="min-w-0 flex-1">
+                                            <div className="truncate text-sm font-medium">{pendingNewScopeName}</div>
+                                            <div className="truncate text-[10px] text-emerald-700/75 dark:text-emerald-300/75">Will be created when sent</div>
+                                        </div>
+                                        <Check className="ml-auto h-3.5 w-3.5 shrink-0" />
+                                    </DropdownMenuItem>
+                                )}
                                 <DropdownMenuSeparator />
-                                <DropdownMenuItem onClick={handleCreateScopeFromComposer} className="min-h-9 gap-2 rounded-lg">
+                                <DropdownMenuItem
+                                    onSelect={(event) => {
+                                        event.preventDefault();
+                                        handleCreateScopeFromComposer();
+                                    }}
+                                    className="min-h-9 gap-2 rounded-lg"
+                                >
                                     <Plus className="h-3.5 w-3.5" />
-                                    Create scope
+                                    {isCreatingNewScope ? 'Edit new scope' : 'Create scope'}
                                 </DropdownMenuItem>
+                                {isCreatingNewScope && isNewScopeEditorOpen && (
+                                    <div
+                                        className="mt-1 rounded-lg bg-[hsl(var(--app-panel-strong))] p-2 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.35),0_8px_22px_-18px_rgba(16,185,129,0.55)]"
+                                        onKeyDown={(event) => {
+                                            event.stopPropagation();
+                                            if (event.key === 'Enter') {
+                                                event.preventDefault();
+                                                handleSaveNewScopeName();
+                                            }
+                                            if (event.key === 'Escape') {
+                                                event.preventDefault();
+                                                handleCancelNewScopeName();
+                                            }
+                                        }}
+                                    >
+                                        <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-emerald-700 dark:text-emerald-300">
+                                            <Pencil className="h-3 w-3" />
+                                            New scope
+                                        </div>
+                                        <div className="flex items-center gap-1.5">
+                                            <Input
+                                                value={newScopeName}
+                                                onChange={(event) => setNewScopeName(event.target.value)}
+                                                placeholder={nextUntitledScopeName}
+                                                className="h-8 min-w-0 flex-1 rounded-md border-border/60 bg-background/80 px-2 text-xs font-medium shadow-none focus-visible:ring-2 focus-visible:ring-emerald-500/35"
+                                                aria-label="Scope name"
+                                                autoFocus
+                                            />
+                                            <button
+                                                type="button"
+                                                className="flex h-8 shrink-0 items-center justify-center gap-1 rounded-md bg-emerald-600 px-2.5 text-xs font-semibold text-white shadow-[0_8px_18px_-12px_rgba(16,185,129,0.85)] transition-colors hover:bg-emerald-700 active:scale-[0.96]"
+                                                onClick={handleSaveNewScopeName}
+                                            >
+                                                <Check className="h-3.5 w-3.5" />
+                                                Save
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground active:scale-[0.96]"
+                                                aria-label="Cancel new scope"
+                                                onClick={handleCancelNewScopeName}
+                                            >
+                                                <X className="h-3.5 w-3.5" />
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
                             </DropdownMenuContent>
                         </DropdownMenu>
-
-                        {isCreatingNewScope && (
-                            <div className="group flex min-h-8 min-w-[170px] max-w-[230px] items-center gap-1.5 rounded-md bg-[hsl(var(--app-panel-strong))] pl-2 pr-2 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.35)] transition-[box-shadow] focus-within:shadow-[inset_0_0_0_1px_rgba(16,185,129,0.72),0_0_0_3px_rgba(16,185,129,0.12)]">
-                                <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
-                                    <Pencil className="h-3 w-3" />
-                                </div>
-                                <Input
-                                    value={newScopeName}
-                                    onChange={(event) => setNewScopeName(event.target.value)}
-                                    placeholder={nextUntitledScopeName}
-                                    className="h-6 border-0 bg-transparent px-0 text-[11px] font-medium shadow-none focus-visible:ring-0"
-                                    aria-label="Scope name"
-                                    autoFocus
-                                />
-                            </div>
-                        )}
 
                         {isParentContextInactive && (
                             <span className="flex min-h-8 items-center rounded-md bg-amber-50 px-2 text-[10.5px] font-semibold text-amber-700 shadow-[inset_0_0_0_1px_rgba(245,158,11,0.25)] dark:bg-amber-950/30 dark:text-amber-300">

@@ -12,6 +12,7 @@ export const GraphCommitNode = memo(({
   entity,
   isFocused,
   isSelected,
+  isComposerBaseCommit,
   disableHoverCard,
   scopeColor,
   heightKey,
@@ -41,6 +42,7 @@ export const GraphCommitNode = memo(({
       nodeId={nodeId}
       isFocused={isFocused}
       isSelected={isSelected}
+      isComposerBaseCommit={isComposerBaseCommit}
       disableHoverCard={disableHoverCard}
       scopeColor={scopeColor}
       heightKey={heightKey}

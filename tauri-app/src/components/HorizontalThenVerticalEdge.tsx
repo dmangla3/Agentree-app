@@ -1,42 +1,28 @@
 import { BaseEdge, type EdgeProps } from '@xyflow/react';
 import { ContextResetCut } from './ContextResetCut';
 
-const hashToOffset = (id: string, bucketCount: number) => {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) {
-    hash = ((hash << 5) - hash) + id.charCodeAt(i);
-    hash |= 0;
-  }
-  const idx = Math.abs(hash) % bucketCount;
-  const mid = Math.floor(bucketCount / 2);
-  return idx - mid;
-};
+const NEAR_VERTICAL_THRESHOLD = 1;
 
-export const getVerticalHorizontalVerticalEdgePath = ({
-  id,
+export const getVerticalThenHorizontalEdgePath = ({
   sourceX,
   sourceY,
   targetX,
   targetY,
 }: {
-  id: string;
   sourceX: number;
   sourceY: number;
   targetX: number;
   targetY: number;
-}): { path: string; midpointY: number } => {
-  const dy = targetY - sourceY;
-  const offsetStep = 5;
-  const offsetBuckets = 5;
-  const offset = hashToOffset(id, offsetBuckets) * offsetStep;
-  const midpointY = Math.abs(dy) <= 2
-    ? sourceY
-    : sourceY + dy / 2 + offset;
-  const isNearlyVertical = Math.abs(targetX - sourceX) <= 1;
+}): { path: string; labelX: number; labelY: number } => {
+  const isNearlyVertical = Math.abs(targetX - sourceX) <= NEAR_VERTICAL_THRESHOLD;
   const path = isNearlyVertical
     ? `M ${sourceX} ${sourceY} L ${targetX} ${targetY}`
-    : `M ${sourceX} ${sourceY} L ${sourceX} ${midpointY} L ${targetX} ${midpointY} L ${targetX} ${targetY}`;
-  return { path, midpointY };
+    : `M ${sourceX} ${sourceY} L ${sourceX} ${targetY} L ${targetX} ${targetY}`;
+  return {
+    path,
+    labelX: isNearlyVertical ? (sourceX + targetX) / 2 : sourceX,
+    labelY: isNearlyVertical ? (sourceY + targetY) / 2 : (sourceY + targetY) / 2,
+  };
 };
 
 export const HorizontalThenVerticalEdge = ({
@@ -49,8 +35,7 @@ export const HorizontalThenVerticalEdge = ({
   markerEnd,
   data,
 }: EdgeProps) => {
-  const { path, midpointY } = getVerticalHorizontalVerticalEdgePath({
-    id,
+  const { path, labelX, labelY } = getVerticalThenHorizontalEdgePath({
     sourceX,
     sourceY,
     targetX,
@@ -65,7 +50,7 @@ export const HorizontalThenVerticalEdge = ({
         markerEnd={markerEnd}
       />
       {(data as any)?.contextBoundary?.type === 'fresh' && (
-        <ContextResetCut x={(sourceX + targetX) / 2} y={midpointY} />
+        <ContextResetCut x={labelX} y={labelY} />
       )}
     </>
   );

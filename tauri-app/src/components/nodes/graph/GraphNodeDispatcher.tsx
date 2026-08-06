@@ -23,6 +23,7 @@ export interface GraphNodeData {
   isFocused?: boolean;
   focusedMessageId?: string | null;
   isSelected: boolean;
+  isComposerBaseCommit?: boolean;
   heightKey?: string;
   onMeasureHeight?: (id: string, height: number) => void;
   onFocus: (id: string, metrics?: FocusTriggerMetrics) => void;
@@ -93,6 +94,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
     nodeId: props.id,
     isFocused: !!data.isFocused,
     isSelected: data.isSelected || isSelectedInFlow,
+    isComposerBaseCommit: !!data.isComposerBaseCommit,
     scopeColor,
     layout: 'graph' as const,
     heightKey: data.heightKey,
@@ -116,6 +118,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
         projection={data.projection}
         isFocused={!!data.isFocused}
         isSelected={data.isSelected || isSelectedInFlow}
+        isComposerBaseCommit={!!data.isComposerBaseCommit}
       />
     );
   }
@@ -126,6 +129,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
         commit={data.commit}
         isFocused={!!data.isFocused}
         isSelected={data.isSelected || isSelectedInFlow}
+        isComposerBaseCommit={!!data.isComposerBaseCommit}
       />
     );
   }

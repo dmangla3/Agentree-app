@@ -10,6 +10,7 @@ interface GraphDerivedCommitGroupNodeProps {
   projection?: WorkspaceProjection;
   isFocused?: boolean;
   isSelected?: boolean;
+  isComposerBaseCommit?: boolean;
 }
 
 const sourceLabelByKind: Record<ProjectedCommitGroup['sourceKind'], string> = {
@@ -24,6 +25,10 @@ const formatCommitDate = (value?: string | null): string => {
   if (Number.isNaN(date.getTime())) return '';
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(date);
 };
+
+const isProjectedCommit = (commit: ProjectedCommitEntity | undefined | null): commit is ProjectedCommitEntity => (
+  Boolean(commit)
+);
 
 function CompactCommitPreviewRow({ commit }: { commit: ProjectedCommitEntity }) {
   return (
@@ -141,6 +146,7 @@ export const GraphDerivedCommitGroupNode = memo(({
   projection,
   isFocused = false,
   isSelected = false,
+  isComposerBaseCommit = false,
 }: GraphDerivedCommitGroupNodeProps) => {
   const commits = group.commitShas
     .map((sha) => projection?.commitBySha.get(sha))
@@ -148,7 +154,10 @@ export const GraphDerivedCommitGroupNode = memo(({
   const first = projection?.commitBySha.get(group.firstSha);
   const last = projection?.commitBySha.get(group.lastSha);
   const label = sourceLabelByKind[group.sourceKind];
-  const visibleCommits = commits.length > 0 ? commits : [first, last].filter(Boolean);
+  const visibleCommits = (commits.length > 0 ? commits : [first, last]).filter(isProjectedCommit);
+  const hoverCardCommits = [...visibleCommits].sort((left, right) => (
+    right.sortTs - left.sortTs || right.sha.localeCompare(left.sha)
+  ));
   const previewCommits = visibleCommits.slice(-2);
   const hiddenPreviewCount = Math.max(0, group.commitShas.length - previewCommits.length);
   const batchNode = (
@@ -156,7 +165,8 @@ export const GraphDerivedCommitGroupNode = memo(({
       className={cn(
         'relative h-full w-[120px] overflow-hidden rounded-l-[2px] rounded-r-[9px] border border-emerald-300/70 bg-[radial-gradient(circle_at_85%_10%,rgba(255,255,255,0.82),transparent_42%),linear-gradient(180deg,rgba(236,253,245,0.98),rgba(209,250,229,0.92))] px-2 py-2 text-emerald-950 shadow-[0_12px_28px_-22px_rgba(4,120,87,0.72),0_1px_0_rgba(255,255,255,0.78)_inset] transition-all duration-200 hover:-translate-y-px hover:border-emerald-400/80 hover:shadow-[0_18px_34px_-24px_rgba(4,120,87,0.82),0_1px_0_rgba(255,255,255,0.82)_inset] dark:border-emerald-800/75 dark:bg-[radial-gradient(circle_at_85%_10%,rgba(52,211,153,0.16),transparent_42%),linear-gradient(180deg,rgba(6,78,59,0.5),rgba(2,44,34,0.36))] dark:text-emerald-100 dark:shadow-[0_14px_32px_-26px_rgba(0,0,0,0.9)]',
         isFocused && 'ring-2 ring-indigo-400/70',
-        isSelected && 'ring-2 ring-emerald-400/80',
+        isComposerBaseCommit && !isFocused && 'border-emerald-600 ring-2 ring-emerald-600/80 shadow-[0_0_0_1.5px_rgba(5,150,105,0.72),0_18px_34px_-24px_rgba(4,120,87,0.92)] dark:border-emerald-400',
+        isSelected && !isComposerBaseCommit && 'ring-2 ring-emerald-400/80',
       )}
       title={`${group.commitShas.length} ${label.toLowerCase()} commits: ${group.firstSha.slice(0, 8)}..${group.lastSha.slice(0, 8)}`}
     >
@@ -202,6 +212,18 @@ export const GraphDerivedCommitGroupNode = memo(({
         className="!h-2.5 !w-2.5 !border-2 !border-background !bg-slate-400"
       />
       <Handle
+        id="left-target"
+        type="target"
+        position={Position.Left}
+        className="!h-2.5 !w-2.5 !border-0 !bg-transparent"
+      />
+      <Handle
+        id="right-target"
+        type="target"
+        position={Position.Right}
+        className="!h-2.5 !w-2.5 !border-0 !bg-transparent"
+      />
+      <Handle
         id="bottom-source"
         type="source"
         position={Position.Bottom}
@@ -216,7 +238,7 @@ export const GraphDerivedCommitGroupNode = memo(({
         {batchNode}
       </HoverCardTrigger>
       <HoverCardContent side="right" align="center" sideOffset={10} className="z-50 w-auto border-none bg-transparent p-0 shadow-none">
-        <CommitBatchHoverCard group={group} label={label} commits={visibleCommits as ProjectedCommitEntity[]} />
+        <CommitBatchHoverCard group={group} label={label} commits={hoverCardCommits} />
       </HoverCardContent>
     </HoverCard>
   );

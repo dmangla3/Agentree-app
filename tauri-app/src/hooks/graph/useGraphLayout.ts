@@ -13,6 +13,7 @@ import {
     getSugiyamaLayoutedElements,
 } from '../../lib/graphUtils';
 import { resolveNodeState } from '../../lib/runStateResolver';
+import { getMessageOutputCommitSha } from '../../lib/graph/commitAccessors';
 import type { GraphNodeSectionId } from '../../components/graph/GraphCanvasIndexPanel';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -32,6 +33,7 @@ export interface UseGraphLayoutOptions {
     disabledSummaryIds: Set<string>;
     focusedMessageId: string | null;
     contextPathMessageIds: Set<string>;
+    composerBaseCommitSha?: string | null;
     matchingMessageIds: Set<string>;
     filterActive: boolean;
     hasNodeTypeFilter: boolean;
@@ -79,6 +81,42 @@ const lookupEntries = <T,>(lookup: Map<string, T> | Record<string, T> | null | u
     if (!lookup) return [];
     if (lookup instanceof Map) return Array.from(lookup.entries());
     return Object.entries(lookup) as [string, T][];
+};
+
+const getRenderedNodeWidth = (node: Node<any>): number => {
+    if (typeof node.style?.width === 'number') return node.style.width;
+    if (typeof (node as any).width === 'number') return (node as any).width;
+    return 0;
+};
+
+const getNodeCenterX = (node: Node<any>): number => (
+    node.position.x + getRenderedNodeWidth(node) / 2
+);
+
+const applyDirectionalEdgeHandles = (nodes: Node<any>[], edges: Edge[]): Edge[] => {
+    const nodesById = new Map(nodes.map((node) => [node.id, node]));
+    const sameLaneThreshold = 24;
+
+    return edges.map((edge) => {
+        if (edge.type === 'summaryEdge' || edge.type === 'smoothstep') return edge;
+        const sourceNode = nodesById.get(edge.source);
+        const targetNode = nodesById.get(edge.target);
+        if (!sourceNode || !targetNode || targetNode.type === 'summary_block') return edge;
+
+        const sourceCenterX = getNodeCenterX(sourceNode);
+        const targetCenterX = getNodeCenterX(targetNode);
+        const targetHandle = Math.abs(sourceCenterX - targetCenterX) <= sameLaneThreshold
+            ? 'top-target'
+            : sourceCenterX < targetCenterX
+                ? 'left-target'
+                : 'right-target';
+
+        return {
+            ...edge,
+            sourceHandle: edge.sourceHandle ?? 'bottom-source',
+            targetHandle,
+        };
+    });
 };
 
 const getHeightFingerprintTextBucket = (value: string | null | undefined, maxBucket: number): number => {
@@ -178,6 +216,7 @@ interface VisualCacheEntry {
     hasNodeTypeFilter: boolean;
     focusedMessageId: string | null;
     contextPathFingerprint: string;
+    composerBaseCommitSha: string | null;
     visualFingerprint: string;
     onFocus: UseGraphLayoutOptions['onFocus'];
     onSelect: UseGraphLayoutOptions['onSelect'];
@@ -256,6 +295,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         disabledSummaryIds,
         focusedMessageId,
         contextPathMessageIds,
+        composerBaseCommitSha = null,
         matchingMessageIds,
         filterActive,
         hasNodeTypeFilter,
@@ -323,6 +363,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 hasNodeTypeFilterChanged: previousVisual.hasNodeTypeFilter !== currentCacheKey.hasNodeTypeFilter,
                 focusedMessageChanged: previousVisual.focusedMessageId !== focusedMessageId,
                 contextPathChanged: previousVisual.contextPathFingerprint !== contextPathFingerprint,
+                composerBaseCommitChanged: previousVisual.composerBaseCommitSha !== composerBaseCommitSha,
                 visualFingerprintChanged: previousVisual.visualFingerprint !== visualFingerprint,
                 onFocusChanged: previousVisual.onFocus !== onFocus,
                 onSelectChanged: previousVisual.onSelect !== onSelect,
@@ -345,6 +386,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 previousVisual.hasNodeTypeFilter === currentCacheKey.hasNodeTypeFilter &&
                 previousVisual.focusedMessageId === focusedMessageId &&
                 previousVisual.contextPathFingerprint === contextPathFingerprint &&
+                previousVisual.composerBaseCommitSha === composerBaseCommitSha &&
                 previousVisual.visualFingerprint === visualFingerprint &&
                 previousVisual.onFocus === onFocus &&
                 previousVisual.onSelect === onSelect &&
@@ -367,6 +409,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 projection,
                 focusedMessageId,
                 contextPathMessageIds,
+                composerBaseCommitSha,
                 matchingMessageIds,
                 filterActive,
                 hasNodeTypeFilter,
@@ -388,6 +431,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 hasNodeTypeFilter: currentCacheKey.hasNodeTypeFilter,
                 focusedMessageId,
                 contextPathFingerprint,
+                composerBaseCommitSha,
                 visualFingerprint,
                 onFocus,
                 onSelect,
@@ -449,6 +493,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 hasNodeTypeFilter: currentCacheKey.hasNodeTypeFilter,
                 focusedMessageId,
                 contextPathFingerprint,
+                composerBaseCommitSha,
                 visualFingerprint,
                 onFocus,
                 onSelect,
@@ -487,6 +532,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 break;
         }
 
+        layoutedEdges = applyDirectionalEdgeHandles(layoutedNodes, layoutedEdges);
         layoutCacheRef.current = { key: currentCacheKey, nodes: layoutedNodes, edges: layoutedEdges };
         const visualResult = applyVisualProperties(
             layoutedNodes,
@@ -495,6 +541,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             projection,
             focusedMessageId,
             contextPathMessageIds,
+            composerBaseCommitSha,
             matchingMessageIds,
             filterActive,
             hasNodeTypeFilter,
@@ -516,6 +563,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             hasNodeTypeFilter: currentCacheKey.hasNodeTypeFilter,
             focusedMessageId,
             contextPathFingerprint,
+            composerBaseCommitSha,
             visualFingerprint,
             onFocus,
             onSelect,
@@ -532,7 +580,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         return visualResult;
     }, [
         messages, summaries, projection, measuredNodeHeights, layoutMode, laneStrategy, disabledSummaryIds,
-        focusedMessageId, contextPathMessageIds, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, insights, showInsightsInGraph,
+        focusedMessageId, contextPathMessageIds, composerBaseCommitSha, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, insights, showInsightsInGraph,
         visibleNodeSections,
         workspaceRepoMap, branchPointersByNodeId, activeScopeId, scopeViewMode,
         scopeNameById, scopeColorById, onToggleSummary, onToggleCollapse,
@@ -549,6 +597,7 @@ function applyVisualProperties(
     projection: WorkspaceProjection,
     focusedMessageId: string | null,
     contextPathMessageIds: Set<string>,
+    composerBaseCommitSha: string | null,
     matchingMessageIds: Set<string>,
     filterActive: boolean,
     _hasNodeTypeFilter: boolean,
@@ -567,6 +616,15 @@ function applyVisualProperties(
     const contextPathEdges = new Set<string>();
     const contextPathVisualEdges = new Set<string>();
     const activeSummaryIds = new Set<string>();
+    const isComposerBaseCommitNode = (node: Node<any>): boolean => {
+        if (!composerBaseCommitSha) return false;
+        const data = node.data;
+        if (data?.commit?.sha === composerBaseCommitSha) return true;
+        if (Array.isArray(data?.group?.commitShas) && data.group.commitShas.includes(composerBaseCommitSha)) return true;
+
+        const message = data?.message ?? data?.entity?.message;
+        return getMessageOutputCommitSha(message) === composerBaseCommitSha;
+    };
     contextPathNodes.forEach((messageId) => {
         const message = messageMap.get(messageId);
         const parentId = message?.parentId ?? null;
@@ -636,7 +694,12 @@ function applyVisualProperties(
                 : undefined;
         const latestMessage = data.message?.id ? messageMap.get(data.message.id) : undefined;
         const isSummaryNode = node.type === 'summary_block';
-        const isFocused = focusId === focusedMessageId || (data.batch?.messageIds.includes(focusedMessageId || ''));
+        const isFocused =
+            focusId === focusedMessageId ||
+            data.commit?.sha === focusedMessageId ||
+            data.group?.commitShas?.includes(focusedMessageId || '') ||
+            (data.batch?.messageIds.includes(focusedMessageId || ''));
+        const isComposerBaseCommit = isComposerBaseCommitNode(node);
         const isInContextPath = isSummaryNode
             ? activeSummaryIds.has(node.id)
             : contextPathNodes.has(focusId) || (data.batch?.messageIds.some((id: string) => contextPathNodes.has(id)));
@@ -660,6 +723,7 @@ function applyVisualProperties(
                 onContextMenu,
                 focusedMessageId,
                 isFocused,
+                isComposerBaseCommit,
                 isInContextPath,
                 matchesTagFilter,
                 filterActive,

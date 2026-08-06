@@ -732,6 +732,9 @@ function GraphViewInternal({
         () => Array.from(contextPathMessageIdSet),
         [contextPathMessageIdSet]
     );
+    const composerBaseCommitSha = composerContextPreview?.workspaceId === selectedWorkspaceId
+        ? composerContextPreview.baseCommitSha
+        : null;
 
     useEffect(() => {
         if (focusedIdOverride !== undefined || !selectedWorkspaceId || graphMessages.length === 0) return;
@@ -740,6 +743,10 @@ function GraphViewInternal({
         const workspaceMessages = graphMessages as Message[];
         const messageIds = new Set(workspaceMessages.map((message) => message.id));
         if (focusedMessageId && messageIds.has(focusedMessageId)) return;
+        const focusedCommitSha = typeof lastFocusMetadata?.commitSha === 'string'
+            ? lastFocusMetadata.commitSha.trim()
+            : '';
+        if (lastFocusSource === 'graph' && focusedCommitSha && focusedMessageId === focusedCommitSha) return;
 
         const rememberedFocusId = lastFocusedMessageByWorkspace[selectedWorkspaceId] ?? null;
         const fallbackMessageId = rememberedFocusId && messageIds.has(rememberedFocusId)
@@ -764,6 +771,8 @@ function GraphViewInternal({
         focusedIdOverride,
         focusedMessageId,
         graphMessages,
+        lastFocusMetadata,
+        lastFocusSource,
         lastFocusedMessageByWorkspace,
         activeSendFlowFocus,
         selectedWorkspaceId,
@@ -2051,7 +2060,11 @@ function GraphViewInternal({
             return null;
         }
 
-        const targetNode = layoutNodesRef.current.find((node) => node.id === messageId);
+        const targetNode = layoutNodesRef.current.find((node) => (
+            node.id === messageId ||
+            (node.data as any)?.commit?.sha === messageId ||
+            ((node.data as any)?.group?.commitShas ?? []).includes(messageId)
+        ));
 
         if (!targetNode) return null;
 
@@ -2344,6 +2357,7 @@ function GraphViewInternal({
         disabledSummaryIds: disabledSummaryIdsSet,
         focusedMessageId,
         contextPathMessageIds: contextPathMessageIdSet,
+        composerBaseCommitSha,
         matchingMessageIds: tagFilter.matchingMessageIds,
         filterActive: tagFilter.filterActive,
         hasNodeTypeFilter: tagFilter.hasNodeTypeFilter,
@@ -3715,24 +3729,18 @@ function GraphViewInternal({
     const graphRenderElements = useMemo(() => {
         const buildHeldElements = (nodeIds: Set<string>, reason = 'active-window') => {
             const resolvedIds = new Set(nodeIds);
-            let changed = true;
-            while (changed) {
-                changed = false;
-                for (const edge of previewEdges) {
-                    const relationship = (edge.data as any)?.relationship;
-                    const edgeRole = (edge.data as any)?.edgeRole;
-                    if (
-                        relationship !== 'git-parent' &&
-                        relationship !== 'base-used' &&
-                        edgeRole !== 'commit-lineage' &&
-                        edgeRole !== 'base'
-                    ) continue;
-                    if (resolvedIds.has(edge.source) || resolvedIds.has(edge.target)) {
-                        const beforeSize = resolvedIds.size;
-                        resolvedIds.add(edge.source);
-                        resolvedIds.add(edge.target);
-                        if (resolvedIds.size !== beforeSize) changed = true;
-                    }
+            for (const edge of previewEdges) {
+                const relationship = (edge.data as any)?.relationship;
+                const edgeRole = (edge.data as any)?.edgeRole;
+                if (
+                    relationship !== 'git-parent' &&
+                    relationship !== 'base-used' &&
+                    edgeRole !== 'commit-lineage' &&
+                    edgeRole !== 'base'
+                ) continue;
+                if (nodeIds.has(edge.source) || nodeIds.has(edge.target)) {
+                    resolvedIds.add(edge.source);
+                    resolvedIds.add(edge.target);
                 }
             }
 
@@ -3741,7 +3749,14 @@ function GraphViewInternal({
                 .filter((node): node is Node<any> => Boolean(node));
             const resolvedNodeIds = new Set(nodes.map((node) => node.id));
             const edges = previewEdges.filter((edge) => resolvedNodeIds.has(edge.source) && resolvedNodeIds.has(edge.target));
-            const key = `${reason}:${nodes.map((node) => node.id).join('|')}::${edges.map((edge) => edge.id).join('|')}`;
+            const nodeLayoutKey = nodes.map((node) => [
+                node.id,
+                Math.round(node.position?.x ?? 0),
+                Math.round(node.position?.y ?? 0),
+                numericDimension((node.style as any)?.width) ?? '',
+                numericDimension((node.style as any)?.height) ?? '',
+            ].join('@')).join('|');
+            const key = `${reason}:${nodeLayoutKey}::${edges.map((edge) => edge.id).join('|')}`;
             return {
                 nodes,
                 edges,
