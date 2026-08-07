@@ -1,0 +1,59 @@
+import { describe, expect, it } from 'vitest';
+import {
+  createSubgraphFilterState,
+  getSubgraphMessageIds,
+} from './graphSubgraphScope';
+import type { Message } from '../stores/workspaceStore';
+
+const makeMessage = (id: string, parentId: string | null): Message => ({
+  id,
+  parentId,
+  role: id.startsWith('user') ? 'user' : 'assistant',
+  content: id,
+  workspaceId: 'workspace-1',
+  status: null,
+  agent_id: null,
+  execution_data: null,
+  createdAt: '2026-05-16T00:00:00.000Z',
+  updatedAt: '2026-05-16T00:00:00.000Z',
+});
+
+describe('graph subgraph scope', () => {
+  it('collects only the root node and descendants', () => {
+    const messages = [
+      makeMessage('user-root', null),
+      makeMessage('assistant-parent', 'user-root'),
+      makeMessage('user-target', 'assistant-parent'),
+      makeMessage('assistant-child', 'user-target'),
+      makeMessage('user-grandchild', 'assistant-child'),
+      makeMessage('assistant-grandchild', 'user-grandchild'),
+      makeMessage('user-sibling', 'assistant-parent'),
+      makeMessage('assistant-sibling-child', 'user-sibling'),
+    ];
+
+    expect(Array.from(getSubgraphMessageIds(messages, 'user-target')).sort()).toEqual([
+      'assistant-child',
+      'assistant-grandchild',
+      'user-grandchild',
+      'user-target',
+    ]);
+  });
+
+  it('overrides graph filters as descendants-only while a subgraph root is active', () => {
+    const fallback = {
+      matchingMessageIds: new Set(['assistant-parent']),
+      filterActive: false,
+      hasNodeTypeFilter: false,
+      keepAncestors: true,
+      keepDescendants: false,
+    };
+
+    const scoped = createSubgraphFilterState('user-target', new Set(['user-target', 'assistant-child']), fallback);
+
+    expect(scoped.filterActive).toBe(true);
+    expect(scoped.hasNodeTypeFilter).toBe(true);
+    expect(scoped.keepAncestors).toBe(false);
+    expect(scoped.keepDescendants).toBe(false);
+    expect(Array.from(scoped.matchingMessageIds).sort()).toEqual(['assistant-child', 'user-target']);
+  });
+});

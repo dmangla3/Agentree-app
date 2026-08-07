@@ -19,7 +19,7 @@ import { agentClient } from '../lib/agentClient';
 
 import { ChatNodeDispatcher } from './nodes/chat/ChatNodeDispatcher';
 import { ChatTurnGroupLayout } from './nodes/chat/ChatTurnGroupLayout';
-import { ChatAgentRecencyRail, ChatBreadcrumbRail, ChatRecentFocusRail } from './chat/ChatBreadcrumbRail';
+import { ChatBreadcrumbRail } from './chat/ChatBreadcrumbRail';
 import { ScopedNodeContextMenu, type ScopedContextMenuState } from './ScopedNodeContextMenu';
 import { AddCommitDialog } from './AddCommitDialog';
 import { DeleteBranchDialog, type DeleteBranchDialogPhase } from './DeleteBranchDialog';
@@ -84,7 +84,6 @@ export function ChatInterface() {
     lastFocusSource,
     lastFocusMetadata,
     lastFocusedMessageByWorkspace,
-    recentFocusedMessageIdsByWorkspace,
     activeSendFlowFocus,
     selectedMessageIds,
     dispatchFocus,
@@ -100,7 +99,6 @@ export function ChatInterface() {
       lastFocusSource: state.lastFocusSource,
       lastFocusMetadata: state.lastFocusMetadata,
       lastFocusedMessageByWorkspace: state.lastFocusedMessageByWorkspace,
-      recentFocusedMessageIdsByWorkspace: state.recentFocusedMessageIdsByWorkspace,
       activeSendFlowFocus: state.activeSendFlowFocus,
       selectedMessageIds: state.selectedMessageIds,
       dispatchFocus: state.dispatchFocus,
@@ -279,24 +277,10 @@ export function ChatInterface() {
 	  const selectedWorkspace = useMemo(() => {
     if (!workspacesData || !selectedWorkspaceId) return null;
     return workspacesData.find((workspace) => workspace.id === selectedWorkspaceId) ?? null;
-	  }, [workspacesData, selectedWorkspaceId]);
+  }, [workspacesData, selectedWorkspaceId]);
   const selectedRepoPath = selectedWorkspace?.git_repo_path || selectedWorkspace?.folderPath || null;
-  const recentFocusedMessageIds = useMemo(() => {
-    if (!selectedWorkspaceId) return [];
 
-    return Array.from(new Set([
-      focusedMessageId,
-      ...(recentFocusedMessageIdsByWorkspace[selectedWorkspaceId] ?? []),
-      lastFocusedMessageByWorkspace[selectedWorkspaceId] ?? null,
-    ].filter((id): id is string => typeof id === 'string' && id.length > 0)));
-  }, [
-    focusedMessageId,
-    lastFocusedMessageByWorkspace,
-    recentFocusedMessageIdsByWorkspace,
-    selectedWorkspaceId,
-  ]);
-
-	  useEffect(() => {
+		  useEffect(() => {
 	    if (!selectedWorkspaceId || persistedMessages.length === 0) return;
       if (activeSendFlowFocus?.workspaceId === selectedWorkspaceId) return;
 
@@ -837,18 +821,6 @@ export function ChatInterface() {
     <div className="flex min-w-0 h-full w-full max-w-full flex-col overflow-hidden bg-background text-foreground">
       <ChatBreadcrumbRail
         projection={projection}
-        focusedMessageId={focusedMessageId}
-        onFocus={handleFocus}
-      />
-      <ChatRecentFocusRail
-        projection={projection}
-        focusedMessageId={focusedMessageId}
-        recentMessageIds={recentFocusedMessageIds}
-        onFocus={handleFocus}
-      />
-      <ChatAgentRecencyRail
-        projection={projection}
-        messages={messages}
         focusedMessageId={focusedMessageId}
         onFocus={handleFocus}
       />

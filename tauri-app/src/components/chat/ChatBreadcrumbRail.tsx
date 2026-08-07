@@ -1,8 +1,6 @@
 import { Bot, GitCommitHorizontal, UserRound } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../../domain/workspaceProjection';
-import type { Message } from '../../stores/workspaceStore';
-import type { AgentStatus } from '@shared/agentStatus';
 import { cn } from '../../lib/utils';
 import { ROLE_COLORS } from '../../lib/visualTokens';
 import { NodeHoverCardContent } from '../NodeHoverCardContent';
@@ -18,26 +16,8 @@ interface ChatBreadcrumbRailProps {
   onFocus: (messageId: string) => void;
 }
 
-interface ChatRecentFocusRailProps extends ChatBreadcrumbRailProps {
-  recentMessageIds: string[];
-}
-
-interface ChatAgentRecencyRailProps extends ChatBreadcrumbRailProps {
-  messages: Message[];
-}
-
 const bySortTs = (left: ProjectedNodeEntity, right: ProjectedNodeEntity) =>
   left.sortTs - right.sortTs;
-
-const ACTIVE_AGENT_STATUSES = new Set<AgentStatus | string>(['pending', 'running', 'streaming']);
-const TERMINAL_AGENT_STATUSES = new Set<AgentStatus | string>(['completed', 'error', 'failed', 'cancelled']);
-const MAX_AGENT_RAIL_ITEMS = 24;
-
-const getMessageTime = (message: Message): number => {
-  const timestamp = message.last_event_at || message.updatedAt || message.createdAt;
-  const parsed = Date.parse(timestamp || '');
-  return Number.isFinite(parsed) ? parsed : 0;
-};
 
 const getBreadcrumbLabel = (entity: ProjectedNodeEntity) => {
   const message = entity.message;
@@ -137,41 +117,6 @@ const getBreadcrumbKindMeta = (entity: ProjectedNodeEntity) => {
   }
 };
 
-const getAgentStatusLabel = (status: AgentStatus | null | undefined) => {
-  switch (status) {
-    case 'pending':
-      return 'Pending';
-    case 'running':
-    case 'streaming':
-      return 'Running';
-    case 'completed':
-      return 'Done';
-    case 'error':
-    case 'failed':
-      return 'Failed';
-    case 'cancelled':
-      return 'Cancelled';
-    default:
-      return null;
-  }
-};
-
-const getAgentStatusClassName = (status: AgentStatus | null | undefined) => {
-  if (status && ACTIVE_AGENT_STATUSES.has(status)) {
-    return 'bg-amber-500/12 text-amber-700 dark:bg-amber-400/12 dark:text-amber-300';
-  }
-  if (status === 'completed') {
-    return 'bg-emerald-500/12 text-emerald-700 dark:bg-emerald-400/12 dark:text-emerald-300';
-  }
-  if (status === 'error' || status === 'failed') {
-    return 'bg-red-500/12 text-red-700 dark:bg-red-400/12 dark:text-red-300';
-  }
-  if (status === 'cancelled') {
-    return 'bg-slate-500/12 text-slate-600 dark:bg-slate-400/12 dark:text-slate-300';
-  }
-  return 'bg-slate-500/12 text-slate-600 dark:bg-slate-400/12 dark:text-slate-300';
-};
-
 function EntityNavigationRail({
   ariaLabel,
   label,
@@ -180,7 +125,6 @@ function EntityNavigationRail({
   focusedMessageId,
   onFocus,
   showPathSeparators = false,
-  statusByMessageId,
 }: {
   ariaLabel: string;
   label: string;
@@ -189,7 +133,6 @@ function EntityNavigationRail({
   focusedMessageId: string | null;
   onFocus: (messageId: string) => void;
   showPathSeparators?: boolean;
-  statusByMessageId?: Map<string, AgentStatus | null | undefined>;
 }) {
   const [activeEntityId, setActiveEntityId] = useState<string | null>(null);
 
@@ -218,8 +161,6 @@ function EntityNavigationRail({
             const isFocused = message.id === focusedMessageId;
             const kindMeta = getBreadcrumbKindMeta(entity);
             const Icon = kindMeta.icon;
-            const status = statusByMessageId?.get(message.id) ?? null;
-            const statusLabel = getAgentStatusLabel(status);
 
             return (
               <li key={message.id} className="flex flex-shrink-0 items-center gap-1">
@@ -258,11 +199,6 @@ function EntityNavigationRail({
                         <code className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-emerald-700 dark:bg-emerald-400/12 dark:text-emerald-300">
                           {entity.shortSha}
                         </code>
-                      ) : null}
-                      {statusLabel ? (
-                        <span className={cn('shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold leading-none', getAgentStatusClassName(status))}>
-                          {statusLabel}
-                        </span>
                       ) : null}
                       <span className={cn('min-w-0 truncate', kindMeta.labelClassName)}>
                         {getBreadcrumbLabel(entity)}
@@ -315,95 +251,6 @@ export function ChatBreadcrumbRail({
       focusedMessageId={focusedMessageId}
       onFocus={onFocus}
       showPathSeparators
-    />
-  );
-}
-
-export function ChatRecentFocusRail({
-  projection,
-  focusedMessageId,
-  recentMessageIds,
-  onFocus,
-}: ChatRecentFocusRailProps) {
-  const recentEntities = useMemo(() => (
-    recentMessageIds
-      .map((messageId) => projection.entitiesByMessageId.get(messageId))
-      .filter((entity): entity is ProjectedNodeEntity => Boolean(entity?.message))
-  ), [projection.entitiesByMessageId, recentMessageIds]);
-
-  return (
-    <EntityNavigationRail
-      ariaLabel="Recently focused messages"
-      label="Recent Focus"
-      projection={projection}
-      entities={recentEntities}
-      focusedMessageId={focusedMessageId}
-      onFocus={onFocus}
-    />
-  );
-}
-
-export function ChatAgentRecencyRail({
-  projection,
-  messages,
-  focusedMessageId,
-  onFocus,
-}: ChatAgentRecencyRailProps) {
-  const statusByMessageId = useMemo(() => {
-    const map = new Map<string, AgentStatus | null | undefined>();
-    for (const message of messages) {
-      if (message.role !== 'assistant') continue;
-      map.set(message.id, message.status);
-    }
-    return map;
-  }, [messages]);
-
-  const agentEntities = useMemo(() => {
-    const candidates: Array<{
-      entity: ProjectedNodeEntity;
-      status: AgentStatus | null | undefined;
-      statusRank: number;
-      recency: number;
-    }> = [];
-
-    for (const message of messages) {
-      if (message.role !== 'assistant') continue;
-      const status = message.status;
-      const hasAgentIdentity = Boolean(message.agent_id || status);
-      if (!hasAgentIdentity) continue;
-      const isActive = Boolean(status && ACTIVE_AGENT_STATUSES.has(status));
-      const isTerminal = Boolean(status && TERMINAL_AGENT_STATUSES.has(status));
-      if (!isActive && !isTerminal) continue;
-      const entity = projection.entitiesByMessageId.get(message.id);
-      if (!entity?.message) continue;
-
-      candidates.push({
-        entity,
-        status,
-        statusRank: isActive ? 0 : 1,
-        recency: getMessageTime(message),
-      });
-    }
-
-    return candidates
-      .sort((left, right) => (
-        left.statusRank - right.statusRank ||
-        right.recency - left.recency ||
-        right.entity.sortTs - left.entity.sortTs
-      ))
-      .slice(0, MAX_AGENT_RAIL_ITEMS)
-      .map((candidate) => candidate.entity);
-  }, [messages, projection.entitiesByMessageId]);
-
-  return (
-    <EntityNavigationRail
-      ariaLabel="Agent recency"
-      label="Agents - Running | Completed"
-      projection={projection}
-      entities={agentEntities}
-      focusedMessageId={focusedMessageId}
-      onFocus={onFocus}
-      statusByMessageId={statusByMessageId}
     />
   );
 }

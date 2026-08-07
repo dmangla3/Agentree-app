@@ -1,5 +1,5 @@
 import { BaseEdge, type EdgeProps } from '@xyflow/react';
-import { ContextResetCut } from './ContextResetCut';
+import { ContextResetCut, getContextResetCutPosition } from './ContextResetCut';
 
 const NEAR_VERTICAL_THRESHOLD = 1;
 
@@ -31,15 +31,23 @@ export const HorizontalThenVerticalEdge = ({
   sourceY,
   targetX,
   targetY,
+  targetPosition,
   style,
   markerEnd,
   data,
 }: EdgeProps) => {
-  const { path, labelX, labelY } = getVerticalThenHorizontalEdgePath({
+  const { path } = getVerticalThenHorizontalEdgePath({
     sourceX,
     sourceY,
     targetX,
     targetY,
+  });
+  const contextBoundary = (data as any)?.contextBoundary;
+  const contextResetCutPosition = getContextResetCutPosition({
+    targetX,
+    targetY,
+    targetPosition,
+    anchor: contextBoundary?.anchor,
   });
   return (
     <>
@@ -49,8 +57,12 @@ export const HorizontalThenVerticalEdge = ({
         style={style}
         markerEnd={markerEnd}
       />
-      {(data as any)?.contextBoundary?.type === 'fresh' && (
-        <ContextResetCut x={labelX} y={labelY} />
+      {contextBoundary?.type === 'fresh' && (
+        <ContextResetCut
+          x={contextResetCutPosition.x}
+          y={contextResetCutPosition.y}
+          orientation={contextResetCutPosition.orientation}
+        />
       )}
     </>
   );

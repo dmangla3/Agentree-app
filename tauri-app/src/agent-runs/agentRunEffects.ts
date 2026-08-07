@@ -44,6 +44,17 @@ export const projectAgentRunSnapshot = (snapshot: AgentRunSnapshot) => {
   }
 };
 
+export const projectAgentRunStatusSnapshot = (snapshot: AgentRunSnapshot) => {
+  if (snapshot.phase === 'cleanup') {
+    if (!isTerminalAgentRunStatus(snapshot.status)) {
+      useRunStatusStore.getState().clearRunStatus(snapshot.nodeId);
+    }
+    return;
+  }
+
+  useRunStatusStore.getState().setRunStatus(snapshot.nodeId, projectAgentRunStatus(snapshot));
+};
+
 export const clearAgentRunProjection = (
   nodeId: string,
   options: { clearRunStatus?: boolean } = {},

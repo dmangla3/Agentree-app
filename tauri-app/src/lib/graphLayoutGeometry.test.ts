@@ -10,6 +10,10 @@ import {
   getTidyTreeLayoutedElements,
   mapMessagesToGraphElements,
 } from './graphUtils';
+import {
+  isComposerBaseCommitVisualNode,
+  isGraphNodeVisuallyFocused,
+} from '../hooks/graph/useGraphLayout';
 import type { CommitEntity, Message } from '../stores/workspaceStore';
 
 const workspaceId = 'workspace-graph-layout-qa';
@@ -385,6 +389,111 @@ const buildSiblingTurnScenario = (): Message[] => [
   }, 8),
 ];
 
+const buildNestedSharedImportedBaseReuseScenario = (): {
+  messages: Message[];
+  commitGraph: {
+    commits: CommitEntity[];
+    commitParents: Array<{ child_sha: string; parent_sha: string; parent_index: number }>;
+    commitObservations: Array<{ commit_sha: string; source_kind: string; git_ref?: string | null; first_seen_at?: string; last_seen_at?: string }>;
+  };
+} => {
+  const messages: Message[] = [
+    makeMessage({
+      id: 'origin-assistant',
+      role: 'assistant',
+      parentId: null,
+      content: 'Origin assistant message.',
+    }, 0),
+    makeMessage({
+      id: 'parent-user',
+      role: 'user',
+      parentId: 'origin-assistant',
+      content: 'Create the parent generated commit.',
+    }, 1),
+    makeMessage({
+      id: 'parent-assistant',
+      role: 'assistant',
+      parentId: 'parent-user',
+      content: 'Selected the parent canonical commit.',
+      status: 'completed',
+      base_commit_sha: 'parentcanonical0001',
+    }, 2),
+  ];
+
+  ['left', 'right'].forEach((branchName, branchIndex) => {
+    const index = branchIndex + 1;
+    messages.push(
+      makeMessage({
+        id: `${branchName}-user`,
+        role: 'user',
+        parentId: 'parent-assistant',
+        content: `Try ${branchName} branch from the imported base.`,
+      }, index * 2 + 1),
+      makeMessage({
+        id: `${branchName}-assistant`,
+        role: 'assistant',
+        parentId: `${branchName}-user`,
+        content: `${branchName} branch completed.`,
+        status: 'completed',
+        base_commit_sha: 'externalbase0003',
+      }, index * 2 + 2),
+      makeMessage({
+        id: `${branchName}-nested-user`,
+        role: 'user',
+        parentId: `${branchName}-assistant`,
+        content: `Continue ${branchName} branch while reusing the same imported base.`,
+      }, index * 2 + 20),
+      makeMessage({
+        id: `${branchName}-nested-assistant`,
+        role: 'assistant',
+        parentId: `${branchName}-nested-user`,
+        content: `${branchName} nested reply completed.`,
+        status: 'completed',
+        base_commit_sha: 'externalbase0003',
+      }, index * 2 + 21),
+    );
+  });
+
+  const parentCommit: CommitEntity = {
+    sha: 'parentcanonical0001',
+    workspace_id: workspaceId,
+    subject: 'Parent canonical commit',
+    source_kind: 'manual',
+    produced_by_node_id: null,
+    first_parent_sha: 'base0001',
+    committed_at: isoAt(20),
+    authored_at: isoAt(20),
+  };
+  const importedCommits: CommitEntity[] = [1, 2, 3].map((index) => ({
+    sha: `externalbase000${index}`,
+    workspace_id: workspaceId,
+    subject: `External base commit ${index}`,
+    source_kind: 'external',
+    produced_by_node_id: null,
+    first_parent_sha: index === 1 ? parentCommit.sha : `externalbase000${index - 1}`,
+    committed_at: isoAt(20 + index),
+    authored_at: isoAt(20 + index),
+  }));
+  const commits = [parentCommit, ...importedCommits];
+  const commitParents = importedCommits.map((commit, index) => ({
+    child_sha: commit.sha,
+    parent_sha: index === 0 ? parentCommit.sha : importedCommits[index - 1].sha,
+    parent_index: 0,
+  }));
+  const commitObservations = importedCommits.map((commit) => ({
+    commit_sha: commit.sha,
+    source_kind: 'external',
+    git_ref: 'refs/heads/nested-imported-base',
+    first_seen_at: isoAt(30),
+    last_seen_at: isoAt(31),
+  }));
+
+  return {
+    messages,
+    commitGraph: { commits, commitParents, commitObservations },
+  };
+};
+
 const buildMappedGraph = (
   messages: Message[],
   focusedMessageId = 'assistant-1',
@@ -395,6 +504,15 @@ const buildMappedGraph = (
   },
   contextPathMessageIds?: Set<string>,
   visibleNodeSections?: Set<'conversation' | 'commits'>,
+  filterState?: {
+    matchingMessageIds: Set<string>;
+    filterActive: boolean;
+    hasNodeTypeFilter: boolean;
+    keepAncestors: boolean;
+    keepDescendants: boolean;
+    scopedCommitFiltering: boolean;
+    pinnedCommitShas?: Set<string>;
+  },
 ) => {
   const projection = buildWorkspaceProjection({
     messages,
@@ -409,11 +527,11 @@ const buildMappedGraph = (
     [],
     focusedMessageId,
     contextPathMessageIds ?? new Set(),
-    new Set(),
-    false,
-    undefined,
-    undefined,
-    undefined,
+    filterState?.matchingMessageIds ?? new Set(),
+    filterState?.filterActive ?? false,
+    filterState?.hasNodeTypeFilter,
+    filterState?.keepAncestors,
+    filterState?.keepDescendants,
     undefined,
     undefined,
     undefined,
@@ -431,6 +549,8 @@ const buildMappedGraph = (
     undefined,
     undefined,
     visibleNodeSections,
+    filterState?.scopedCommitFiltering,
+    filterState?.pinnedCommitShas,
   );
 };
 
@@ -460,6 +580,31 @@ const buildCanonicalImportedCommitChain = () => {
   return { commits, commitParents, commitObservations };
 };
 
+const buildManualCommitOnlyChain = () => {
+  const commits: CommitEntity[] = [1, 2].map((index) => ({
+    sha: `manualcommit000${index}`,
+    workspace_id: workspaceId,
+    subject: `Manual commit ${index}`,
+    source_kind: 'manual',
+    produced_by_node_id: null,
+    first_parent_sha: index === 1 ? 'base0001' : 'manualcommit0001',
+    committed_at: isoAt(30 + index),
+    authored_at: isoAt(30 + index),
+  }));
+  const commitParents = [
+    { child_sha: 'manualcommit0001', parent_sha: 'base0001', parent_index: 0 },
+    { child_sha: 'manualcommit0002', parent_sha: 'manualcommit0001', parent_index: 0 },
+  ];
+  const commitObservations = commits.map((commit) => ({
+    commit_sha: commit.sha,
+    source_kind: 'manual',
+    git_ref: 'refs/heads/manual',
+    first_seen_at: isoAt(40),
+    last_seen_at: isoAt(41),
+  }));
+  return { commits, commitParents, commitObservations };
+};
+
 const getNode = (nodes: Node[], id: string) => {
   const node = nodes.find((candidate) => candidate.id === id);
   expect(node, `expected node ${id}`).toBeTruthy();
@@ -470,6 +615,10 @@ const numberStyle = (value: unknown): number => {
   expect(typeof value).toBe('number');
   return value as number;
 };
+
+const verticalGapBetween = (parent: Node, child: Node): number => (
+  child.position.y - (parent.position.y + numberStyle(parent.style?.height))
+);
 
 const getVisibleCommitNodeId = (nodes: Node[], sha: string): string => (
   nodes.find((node) => (
@@ -572,6 +721,23 @@ describe('graph layout geometry QA', () => {
     assertCompactTurnCellGeometry(layouted.nodes, layouted.edges);
   });
 
+  it('uses compact commit lineage gaps across graph layout modes', () => {
+    const commitGraph = buildManualCommitOnlyChain();
+    const mapped = buildMappedGraph(buildTurnWithGeneratedCommit(), 'assistant-1', commitGraph);
+    const layouts = [
+      { name: 'dagre', layouted: getLayoutedElements(mapped.nodes, mapped.edges) },
+      { name: 'lane', layouted: getLaneLayoutedElements(mapped.nodes, mapped.edges) },
+      { name: 'tidy', layouted: getTidyTreeLayoutedElements(mapped.nodes, mapped.edges) },
+      { name: 'sugiyama', layouted: getSugiyamaLayoutedElements(mapped.nodes, mapped.edges) },
+    ];
+
+    layouts.forEach(({ name, layouted }) => {
+      const parent = getNode(layouted.nodes, 'manualcommit0001');
+      const child = getNode(layouted.nodes, 'manualcommit0002');
+      expect(verticalGapBetween(parent, child), name).toBeLessThanOrEqual(24);
+    });
+  });
+
   it('materializes a local assistant output commit without a server commit node', () => {
     const mapped = buildMappedGraph(buildTurnWithLocalAssistantOutputCommit());
     const syntheticCommit = getNode(mapped.nodes, 'commit:assistant-1');
@@ -592,6 +758,17 @@ describe('graph layout geometry QA', () => {
     const laneGap = layoutedCommit.position.x - (layoutedAssistant.position.x + numberStyle(layoutedAssistant.style?.width));
     expect(laneGap).toBeGreaterThanOrEqual(0);
     expect(laneGap).toBeLessThanOrEqual(3);
+  });
+
+  it('highlights a generated assistant commit as composer base without inheriting assistant focus', () => {
+    const mapped = buildMappedGraph(buildTurnWithLocalAssistantOutputCommit(), 'assistant-1');
+    const assistant = getNode(mapped.nodes, 'assistant-1');
+    const syntheticCommit = getNode(mapped.nodes, 'commit:assistant-1');
+
+    expect(isGraphNodeVisuallyFocused(assistant, 'assistant-1')).toBe(true);
+    expect(isGraphNodeVisuallyFocused(syntheticCommit, 'assistant-1')).toBe(false);
+    expect(isComposerBaseCommitVisualNode(assistant, 'localcommit0001')).toBe(false);
+    expect(isComposerBaseCommitVisualNode(syntheticCommit, 'localcommit0001')).toBe(true);
   });
 
   it('draws a generated commit edge from parent commit bottom to generated commit top', () => {
@@ -706,6 +883,107 @@ describe('graph layout geometry QA', () => {
     expect((edge?.data as any)?.edgeRole).toBe('commit-lineage');
   });
 
+  it('filters canonical imported commits to commits linked to visible subgraph messages', () => {
+    const messages = [
+      makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
+      makeMessage({
+        id: 'assistant-1',
+        role: 'assistant',
+        parentId: 'user-1',
+        status: 'completed',
+        base_commit_sha: 'imported0002',
+      }, 1),
+      makeMessage({ id: 'user-2', role: 'user', parentId: 'assistant-1' }, 2),
+      makeMessage({
+        id: 'assistant-2',
+        role: 'assistant',
+        parentId: 'user-2',
+        status: 'completed',
+        base_commit_sha: 'outside0002',
+      }, 3),
+    ];
+    const commitGraph = buildCanonicalImportedCommitChain();
+    const outsideCommits: CommitEntity[] = [1, 2].map((index) => ({
+      sha: `outside000${index}`,
+      workspace_id: workspaceId,
+      subject: `Outside imported commit ${index}`,
+      source_kind: 'external',
+      produced_by_node_id: null,
+      first_parent_sha: index === 1 ? null : `outside000${index - 1}`,
+      committed_at: isoAt(20 + index),
+      authored_at: isoAt(20 + index),
+    }));
+    const outsideParents = outsideCommits.slice(1).map((commit, index) => ({
+      child_sha: commit.sha,
+      parent_sha: outsideCommits[index].sha,
+      parent_index: 0,
+    }));
+    const outsideObservations = outsideCommits.map((commit) => ({
+      commit_sha: commit.sha,
+      source_kind: 'external',
+      git_ref: 'refs/heads/other',
+      first_seen_at: isoAt(30),
+      last_seen_at: isoAt(31),
+    }));
+
+    const mapped = buildMappedGraph(
+      messages,
+      'assistant-1',
+      {
+        commits: [...commitGraph.commits.slice(0, 2), ...outsideCommits],
+        commitParents: [...commitGraph.commitParents.slice(0, 2), ...outsideParents],
+        commitObservations: [...commitGraph.commitObservations.slice(0, 2), ...outsideObservations],
+      },
+      undefined,
+      undefined,
+      {
+        matchingMessageIds: new Set(['user-1', 'assistant-1']),
+        filterActive: true,
+        hasNodeTypeFilter: true,
+        keepAncestors: false,
+        keepDescendants: false,
+        scopedCommitFiltering: true,
+      },
+    );
+
+    expect(mapped.nodes.some((node) => node.id === 'imported0002')).toBe(true);
+    expect(mapped.nodes.some((node) => node.id === 'outside0001')).toBe(false);
+    expect(mapped.nodes.some((node) => node.id === 'outside0002')).toBe(false);
+  });
+
+  it('keeps pinned imported commits while subgraph commit filtering is active', () => {
+    const messages = [
+      makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
+      makeMessage({ id: 'assistant-1', role: 'assistant', parentId: 'user-1', status: 'completed' }, 1),
+    ];
+    const commitGraph = buildCanonicalImportedCommitChain();
+    const shortCommitGraph = {
+      commits: commitGraph.commits.slice(0, 2),
+      commitParents: commitGraph.commitParents.slice(0, 2),
+      commitObservations: commitGraph.commitObservations.slice(0, 2),
+    };
+
+    const mapped = buildMappedGraph(
+      messages,
+      'assistant-1',
+      shortCommitGraph,
+      undefined,
+      undefined,
+      {
+        matchingMessageIds: new Set(['user-1', 'assistant-1']),
+        filterActive: true,
+        hasNodeTypeFilter: true,
+        keepAncestors: false,
+        keepDescendants: false,
+        scopedCommitFiltering: true,
+        pinnedCommitShas: new Set(['imported0002']),
+      },
+    );
+
+    expect(mapped.nodes.some((node) => node.id === 'imported0001')).toBe(false);
+    expect(getNode(mapped.nodes, 'imported0002').type).toBe('canonical_commit');
+  });
+
   it('uses produced_by_node_id, not source_kind, to decide generated commit placement', () => {
     const messages = [
       makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
@@ -788,6 +1066,263 @@ describe('graph layout geometry QA', () => {
     const edgeToGeneratedCommit = mapped.edges.find((edge) => edge.source === group!.id && edge.target === 'commit:assistant-1');
     expect((edgeToGeneratedCommit?.data as any)?.relationship).toBe('git-parent');
     expect((edgeToGeneratedCommit?.data as any)?.layout).toBe(true);
+  });
+
+  it('keeps an Agentree-owned merge out of imported groups even when the commit row was observed as external', () => {
+    const messages = [
+      makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
+      makeMessage({
+        id: 'assistant-agent',
+        role: 'assistant',
+        parentId: 'user-1',
+        status: 'completed',
+        base_commit_sha: 'imported0004',
+        output_commit_sha: 'agent0001',
+      }, 1),
+      makeMessage({ id: 'user-merge', role: 'user', parentId: 'assistant-agent' }, 2),
+      makeMessage({
+        id: 'assistant-merge',
+        role: 'assistant',
+        parentId: 'user-merge',
+        status: 'completed',
+        base_commit_sha: 'agent0001',
+        output_commit_sha: 'merge0001',
+        execution_data: {
+          merge_metadata: {
+            target: { commitSha: 'agent0001', nodeId: 'assistant-agent' },
+            sources: [{ commitSha: 'imported0004' }],
+            lineage: { primary_parent_node_id: 'assistant-agent' },
+          },
+        },
+      }, 3),
+    ];
+    const importedGraph = buildCanonicalImportedCommitChain();
+    const commitGraph = {
+      commits: [
+        ...importedGraph.commits,
+        {
+          sha: 'agent0001',
+          workspace_id: workspaceId,
+          subject: 'Agentree work',
+          source_kind: 'agent',
+          produced_by_node_id: 'assistant-agent',
+          first_parent_sha: 'imported0004',
+          committed_at: isoAt(20),
+          authored_at: isoAt(20),
+        },
+        {
+          sha: 'merge0001',
+          workspace_id: workspaceId,
+          subject: 'Merge imported into Agentree work',
+          source_kind: 'external',
+          produced_by_node_id: null,
+          first_parent_sha: 'imported0004',
+          committed_at: isoAt(21),
+          authored_at: isoAt(21),
+        },
+      ],
+      commitParents: [
+        ...importedGraph.commitParents,
+        { child_sha: 'agent0001', parent_sha: 'imported0004', parent_index: 0 },
+        { child_sha: 'merge0001', parent_sha: 'imported0004', parent_index: 0 },
+        { child_sha: 'merge0001', parent_sha: 'agent0001', parent_index: 1 },
+      ],
+      commitObservations: [
+        ...importedGraph.commitObservations,
+        {
+          commit_sha: 'merge0001',
+          source_kind: 'external',
+          git_ref: 'refs/heads/main',
+          first_seen_at: isoAt(21),
+          last_seen_at: isoAt(22),
+        },
+      ],
+    };
+
+    const projection = buildWorkspaceProjection({
+      messages,
+      summaries: [],
+      focusedMessageId: 'assistant-merge',
+      ...commitGraph,
+    });
+    const mergeCommit = projection.commitBySha.get('merge0001');
+    expect(mergeCommit?.ownerKind).toBe('agentree');
+    expect(mergeCommit?.placement).toBe('conversation_sidecar');
+    expect(mergeCommit?.visualOwnerNodeId).toBe('assistant-merge');
+    expect(mergeCommit?.isProminentMerge).toBe(true);
+    expect(mergeCommit?.layoutParentSha).toBe('agent0001');
+    expect(projection.layoutDerivedCommitGroups.some((group) => group.commitShas.includes('merge0001'))).toBe(false);
+
+    const mapped = buildMappedGraph(messages, 'assistant-merge', commitGraph);
+    const mergeNode = getNode(mapped.nodes, 'commit:assistant-merge');
+    const importedGroupId = getVisibleCommitNodeId(mapped.nodes, 'imported0004');
+    const primaryEdge = mapped.edges.find((edge) => edge.source === 'commit:assistant-agent' && edge.target === mergeNode.id);
+    const secondaryEdge = mapped.edges.find((edge) => edge.source === importedGroupId && edge.target === mergeNode.id);
+
+    expect(mergeNode.type).toBe('commit_message');
+    expect((primaryEdge?.data as any)?.relationship).toBe('git-parent');
+    expect((primaryEdge?.data as any)?.layout).toBe(true);
+    expect((secondaryEdge?.data as any)?.relationship).toBe('git-parent');
+    expect((secondaryEdge?.data as any)?.layout).toBe(false);
+    expect(secondaryEdge?.style?.strokeDasharray).toBe('6 6');
+    expect(secondaryEdge?.style?.opacity).toBeLessThan(1);
+
+    const layouted = getTidyTreeLayoutedElements(mapped.nodes, mapped.edges);
+    const layoutedParent = getNode(layouted.nodes, 'commit:assistant-agent');
+    const layoutedMerge = getNode(layouted.nodes, mergeNode.id);
+    expect(layoutedMerge.position.y).toBeGreaterThan(layoutedParent.position.y);
+  });
+
+  it('promotes external merges that integrate Agentree parents without attaching them to a turn', () => {
+    const messages = [
+      makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
+      makeMessage({
+        id: 'assistant-agent',
+        role: 'assistant',
+        parentId: 'user-1',
+        status: 'completed',
+        base_commit_sha: 'imported0004',
+        output_commit_sha: 'agent0001',
+      }, 1),
+    ];
+    const importedGraph = buildCanonicalImportedCommitChain();
+    const commitGraph = {
+      commits: [
+        ...importedGraph.commits,
+        {
+          sha: 'agent0001',
+          workspace_id: workspaceId,
+          subject: 'Agentree work',
+          source_kind: 'agent',
+          produced_by_node_id: 'assistant-agent',
+          first_parent_sha: 'imported0004',
+          committed_at: isoAt(20),
+          authored_at: isoAt(20),
+        },
+        {
+          sha: 'externalmerge0001',
+          workspace_id: workspaceId,
+          subject: 'External merge of Agentree work',
+          source_kind: 'external',
+          produced_by_node_id: null,
+          first_parent_sha: 'imported0004',
+          committed_at: isoAt(21),
+          authored_at: isoAt(21),
+        },
+      ],
+      commitParents: [
+        ...importedGraph.commitParents,
+        { child_sha: 'agent0001', parent_sha: 'imported0004', parent_index: 0 },
+        { child_sha: 'externalmerge0001', parent_sha: 'imported0004', parent_index: 0 },
+        { child_sha: 'externalmerge0001', parent_sha: 'agent0001', parent_index: 1 },
+      ],
+      commitObservations: [
+        ...importedGraph.commitObservations,
+        {
+          commit_sha: 'externalmerge0001',
+          source_kind: 'external',
+          git_ref: 'refs/heads/main',
+          first_seen_at: isoAt(21),
+          last_seen_at: isoAt(22),
+        },
+      ],
+    };
+
+    const projection = buildWorkspaceProjection({
+      messages,
+      summaries: [],
+      focusedMessageId: 'assistant-agent',
+      ...commitGraph,
+    });
+    const externalMerge = projection.commitBySha.get('externalmerge0001');
+    expect(externalMerge?.ownerKind).toBe('external');
+    expect(externalMerge?.placement).toBe('commit_lineage');
+    expect(externalMerge?.isProminentMerge).toBe(true);
+    expect(externalMerge?.layoutParentSha).toBe('agent0001');
+    expect(projection.layoutDerivedCommitGroups.some((group) => group.commitShas.includes('externalmerge0001'))).toBe(false);
+
+    const mapped = buildMappedGraph(messages, 'assistant-agent', commitGraph);
+    const mergeNode = getNode(mapped.nodes, 'externalmerge0001');
+    expect(mergeNode.type).toBe('canonical_commit');
+    const importedGroupId = getVisibleCommitNodeId(mapped.nodes, 'imported0004');
+    const primaryEdge = mapped.edges.find((edge) => edge.source === 'commit:assistant-agent' && edge.target === mergeNode.id);
+    const secondaryEdge = mapped.edges.find((edge) => edge.source === importedGroupId && edge.target === mergeNode.id);
+    expect((primaryEdge?.data as any)?.layout).toBe(true);
+    expect((secondaryEdge?.data as any)?.layout).toBe(false);
+    expect(secondaryEdge?.style?.strokeDasharray).toBe('6 6');
+    expect(secondaryEdge?.style?.opacity).toBeLessThan(1);
+
+    const layouted = getTidyTreeLayoutedElements(mapped.nodes, mapped.edges);
+    const layoutedParent = getNode(layouted.nodes, 'commit:assistant-agent');
+    const layoutedMerge = getNode(layouted.nodes, mergeNode.id);
+    expect(layoutedMerge.position.y).toBeGreaterThan(layoutedParent.position.y);
+  });
+
+  it('keeps unrelated external merges groupable as imported first-parent history', () => {
+    const messages = [
+      makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
+      makeMessage({ id: 'assistant-1', role: 'assistant', parentId: 'user-1', status: 'completed' }, 1),
+    ];
+    const importedGraph = buildCanonicalImportedCommitChain();
+    const externalSideCommit = {
+      sha: 'externalside0001',
+      workspace_id: workspaceId,
+      subject: 'External side branch',
+      source_kind: 'external',
+      produced_by_node_id: null,
+      first_parent_sha: 'base0001',
+      committed_at: isoAt(5),
+      authored_at: isoAt(5),
+    };
+    const externalMergeCommit = {
+      sha: 'externalmerge0001',
+      workspace_id: workspaceId,
+      subject: 'External merge',
+      source_kind: 'external',
+      produced_by_node_id: null,
+      first_parent_sha: 'imported0004',
+      committed_at: isoAt(6),
+      authored_at: isoAt(6),
+    };
+    const commitGraph = {
+      commits: [...importedGraph.commits, externalSideCommit, externalMergeCommit],
+      commitParents: [
+        ...importedGraph.commitParents,
+        { child_sha: 'externalside0001', parent_sha: 'base0001', parent_index: 0 },
+        { child_sha: 'externalmerge0001', parent_sha: 'imported0004', parent_index: 0 },
+        { child_sha: 'externalmerge0001', parent_sha: 'externalside0001', parent_index: 1 },
+      ],
+      commitObservations: [
+        ...importedGraph.commitObservations,
+        {
+          commit_sha: 'externalside0001',
+          source_kind: 'external',
+          git_ref: 'refs/heads/side',
+          first_seen_at: isoAt(5),
+          last_seen_at: isoAt(6),
+        },
+        {
+          commit_sha: 'externalmerge0001',
+          source_kind: 'external',
+          git_ref: 'refs/heads/main',
+          first_seen_at: isoAt(6),
+          last_seen_at: isoAt(7),
+        },
+      ],
+    };
+
+    const projection = buildWorkspaceProjection({
+      messages,
+      summaries: [],
+      focusedMessageId: 'assistant-1',
+      ...commitGraph,
+    });
+    const externalMerge = projection.commitBySha.get('externalmerge0001');
+    expect(externalMerge?.ownerKind).toBe('external');
+    expect(externalMerge?.isProminentMerge).toBe(false);
+    expect(externalMerge?.layoutParentSha).toBe('imported0004');
+    expect(projection.layoutDerivedCommitGroups.some((group) => group.commitShas.includes('externalmerge0001'))).toBe(true);
+    expect(projection.layoutDerivedCommitGroups.some((group) => group.commitShas.includes('externalside0001'))).toBe(false);
   });
 
   it('keeps the first conversation child below origin when origin also has an imported sidecar', () => {
@@ -1751,6 +2286,13 @@ describe('graph layout geometry QA', () => {
     expect((conversationEdge?.data as any)?.layout).toBe(true);
     expect((conversationEdge?.data as any)?.relationship).toBe('conversation');
     expect((conversationEdge?.data as any)?.edgeLegendType).toBe('context-break');
+    const layouted = getLaneLayoutedElements(mapped.nodes, mapped.edges);
+    const layoutedUser = layouted.nodes.find((node) => node.id === 'user-2');
+    const layoutedConversationEdge = layouted.edges.find((edge) => edge.source === 'assistant-1' && edge.target === 'user-2');
+    expect((layoutedConversationEdge?.data as any)?.contextBoundary?.anchor).toEqual({
+      x: (layoutedUser?.position.x ?? 0) + 100,
+      y: layoutedUser?.position.y,
+    });
     expect((commitParentEdge?.data as any)?.layout).toBe(true);
     expect(commitParentEdge?.sourceHandle).toBe('bottom-source');
     expect(commitParentEdge?.targetHandle).toBe('top-target');
@@ -1807,5 +2349,184 @@ describe('graph layout geometry QA', () => {
 
     expect(Math.abs(firstSiblingUser.position.y - secondSiblingUser.position.y)).toBeLessThanOrEqual(1);
     expect(Math.abs(firstSiblingAssistant.position.y - secondSiblingAssistant.position.y)).toBeLessThanOrEqual(1);
+  });
+
+  it('keeps nested tidy conversation turns under their parent when they reuse a shared base', () => {
+    const scenario = buildNestedSharedImportedBaseReuseScenario();
+    const mapped = buildMappedGraph(scenario.messages, 'right-nested-assistant', scenario.commitGraph);
+    const layouted = getTidyTreeLayoutedElements(mapped.nodes, mapped.edges);
+    const importedBase = layouted.nodes.find((node) => node.type === 'layout_derived_commit_group');
+    expect(importedBase).toBeTruthy();
+
+    const leftUser = getNode(layouted.nodes, 'left-user');
+    const rightUser = getNode(layouted.nodes, 'right-user');
+    const leftNestedUser = getNode(layouted.nodes, 'left-nested-user');
+    const rightNestedUser = getNode(layouted.nodes, 'right-nested-user');
+    const leftAssistant = getNode(layouted.nodes, 'left-assistant');
+    const rightAssistant = getNode(layouted.nodes, 'right-assistant');
+
+    expect(Math.abs(leftUser.position.y - rightUser.position.y)).toBeLessThanOrEqual(1);
+    expect(leftNestedUser.position.y).toBeGreaterThan(leftAssistant.position.y);
+    expect(rightNestedUser.position.y).toBeGreaterThan(rightAssistant.position.y);
+    expect(Math.abs(leftNestedUser.position.x - leftUser.position.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(rightNestedUser.position.x - rightUser.position.x)).toBeLessThanOrEqual(1);
+
+    const directBranchCenters = [leftUser, rightUser].map((node) => node.position.x + numberStyle(node.style?.width) / 2);
+    const importedBaseCenter = importedBase!.position.x + numberStyle(importedBase!.style?.width) / 2;
+    const directBranchMidpoint = (Math.min(...directBranchCenters) + Math.max(...directBranchCenters)) / 2;
+
+    expect(Math.abs(importedBaseCenter - directBranchMidpoint)).toBeLessThanOrEqual(350);
+  });
+
+  it('centers direct tidy children under their shared commit-only base before nested conversation fanout', () => {
+    const messages = [
+      makeMessage({
+        id: 'origin-assistant',
+        role: 'assistant',
+        parentId: null,
+        content: 'Origin assistant message.',
+        status: 'completed',
+      }, 0),
+      makeMessage({
+        id: 'ordinary-user',
+        role: 'user',
+        parentId: 'origin-assistant',
+        content: 'Ordinary conversation branch.',
+      }, 1),
+      makeMessage({
+        id: 'ordinary-assistant',
+        role: 'assistant',
+        parentId: 'ordinary-user',
+        content: 'Ordinary reply.',
+        status: 'completed',
+      }, 2),
+      makeMessage({
+        id: 'base-left-user',
+        role: 'user',
+        parentId: 'origin-assistant',
+        content: 'Left branch from imported base.',
+      }, 3),
+      makeMessage({
+        id: 'base-left-assistant',
+        role: 'assistant',
+        parentId: 'base-left-user',
+        content: 'Left base reply.',
+        status: 'completed',
+        base_commit_sha: 'imported0004',
+      }, 4),
+      makeMessage({
+        id: 'base-right-user',
+        role: 'user',
+        parentId: 'origin-assistant',
+        content: 'Right branch from imported base.',
+      }, 5),
+      makeMessage({
+        id: 'base-right-assistant',
+        role: 'assistant',
+        parentId: 'base-right-user',
+        content: 'Right base reply.',
+        status: 'completed',
+        base_commit_sha: 'imported0004',
+      }, 6),
+      makeMessage({
+        id: 'base-left-nested-user',
+        role: 'user',
+        parentId: 'base-left-assistant',
+        content: 'Continue left branch from the same imported base.',
+      }, 7),
+      makeMessage({
+        id: 'base-left-nested-assistant',
+        role: 'assistant',
+        parentId: 'base-left-nested-user',
+        content: 'Left nested reply.',
+        status: 'completed',
+        base_commit_sha: 'imported0004',
+      }, 8),
+    ];
+    const mapped = buildMappedGraph(messages, 'base-left-nested-assistant', buildCanonicalImportedCommitChain());
+    const importedBase = mapped.nodes.find((node) => node.type === 'layout_derived_commit_group');
+    expect(importedBase).toBeTruthy();
+
+    const layouted = getTidyTreeLayoutedElements(mapped.nodes, mapped.edges);
+    const layoutedBase = getNode(layouted.nodes, importedBase!.id);
+    const leftUser = getNode(layouted.nodes, 'base-left-user');
+    const rightUser = getNode(layouted.nodes, 'base-right-user');
+    const leftNestedUser = getNode(layouted.nodes, 'base-left-nested-user');
+    const leftAssistant = getNode(layouted.nodes, 'base-left-assistant');
+
+    const baseCenter = layoutedBase.position.x + numberStyle(layoutedBase.style?.width) / 2;
+    const leftCenter = leftUser.position.x + numberStyle(leftUser.style?.width) / 2;
+    const rightCenter = rightUser.position.x + numberStyle(rightUser.style?.width) / 2;
+    const directMidpoint = (leftCenter + rightCenter) / 2;
+
+    expect(leftUser.position.y).toBeGreaterThan(layoutedBase.position.y);
+    expect(Math.abs(leftUser.position.y - rightUser.position.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(baseCenter - directMidpoint)).toBeLessThanOrEqual(350);
+    expect(leftNestedUser.position.y).toBeGreaterThan(leftAssistant.position.y);
+    expect(Math.abs(leftNestedUser.position.x - leftUser.position.x)).toBeLessThanOrEqual(1);
+  });
+
+  it('counts each tidy turn under one effective parent when base-used and conversation edges overlap', () => {
+    const makeLayoutNode = (
+      id: string,
+      type: 'layout_derived_commit_group' | 'assistant_message',
+      sortTs: number,
+    ): Node => ({
+      id,
+      type,
+      position: { x: 0, y: 0 },
+      data: {
+        sortTs,
+        entity: type === 'assistant_message' ? { kind: 'assistant_message', sortTs } : undefined,
+      },
+      style: {
+        width: type === 'assistant_message' ? 200 : 120,
+        height: type === 'assistant_message' ? 112 : 118,
+      },
+    });
+    const nodes = [
+      makeLayoutNode('shared-base', 'layout_derived_commit_group', 0),
+      makeLayoutNode('left-branch', 'assistant_message', 1),
+      makeLayoutNode('right-branch', 'assistant_message', 2),
+      makeLayoutNode('left-nested', 'assistant_message', 3),
+    ];
+    const edges = [
+      {
+        id: 'shared-base->left-branch:base-used',
+        source: 'shared-base',
+        target: 'left-branch',
+        data: { relationship: 'base-used', edgeRole: 'base', layout: true },
+      },
+      {
+        id: 'shared-base->right-branch:base-used',
+        source: 'shared-base',
+        target: 'right-branch',
+        data: { relationship: 'base-used', edgeRole: 'base', layout: true },
+      },
+      {
+        id: 'left-branch->left-nested:conversation',
+        source: 'left-branch',
+        target: 'left-nested',
+        data: { relationship: 'conversation', edgeRole: 'conversation', layout: true },
+      },
+      {
+        id: 'shared-base->left-nested:base-used',
+        source: 'shared-base',
+        target: 'left-nested',
+        data: { relationship: 'base-used', edgeRole: 'base', layout: true },
+      },
+    ];
+
+    const layouted = getTidyTreeLayoutedElements(nodes, edges);
+    const sharedBase = getNode(layouted.nodes, 'shared-base');
+    const leftBranch = getNode(layouted.nodes, 'left-branch');
+    const rightBranch = getNode(layouted.nodes, 'right-branch');
+    const leftNested = getNode(layouted.nodes, 'left-nested');
+
+    const directBranchMidpoint = (leftBranch.position.x + rightBranch.position.x) / 2;
+    const sharedBaseTurnLeft = sharedBase.position.x - 202;
+    expect(Math.abs(sharedBaseTurnLeft - directBranchMidpoint)).toBeLessThanOrEqual(1);
+    expect(leftNested.position.y).toBeGreaterThan(leftBranch.position.y);
+    expect(Math.abs(leftNested.position.x - leftBranch.position.x)).toBeLessThanOrEqual(1);
   });
 });

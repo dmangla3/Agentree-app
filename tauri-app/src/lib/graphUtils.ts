@@ -157,7 +157,7 @@ const isOriginWelcomeMessage = (msg: Message | null | undefined): boolean => {
 // --- Configuration ---
 const NODE_WIDTH = 180;  // Updated to match new LlmResponseNode width
 const NODE_HEIGHT = 140; // Increased to accommodate header + body + footer
-const RANK_SEP = 28;    // Keep dagre compact; node sizes still prevent overlap
+const RANK_SEP = 18;    // Shared compact vertical gap between layout ranks
 const NODE_SEP = 12;    // Tighter horizontal packing without touching
 const DEFAULT_EDGE_STROKE_WIDTH = 4;
 const CONTEXT_PATH_EDGE_STROKE_WIDTH = 7;
@@ -202,6 +202,164 @@ const getNodeHeight = (node: Node<any>): number => {
   if (node.type === 'assistant_message') return 112;
   if (node.type === 'user_message') return 82;
   return NODE_HEIGHT;
+};
+
+const buildCompactRankOffsets = (
+  rankEntries: Array<{ rank: number; height: number }>,
+  gap = RANK_SEP,
+): Map<number, number> => {
+  const heightByRank = new Map<number, number>();
+  rankEntries.forEach(({ rank, height }) => {
+    heightByRank.set(rank, Math.max(heightByRank.get(rank) ?? 0, height));
+  });
+
+  const offsets = new Map<number, number>();
+  let cursor = 0;
+  Array.from(heightByRank.keys()).sort((left, right) => left - right).forEach((rank) => {
+    offsets.set(rank, cursor);
+    cursor += (heightByRank.get(rank) ?? 0) + gap;
+  });
+  return offsets;
+};
+
+const compactLayoutNodeRanks = <T extends Node<any>>(nodes: T[], edges: Edge[], gap = RANK_SEP): T[] => {
+  const rankNodeIds = new Set(
+    nodes
+      .filter((node) => !isSummaryNodeType(node.type) && isPrimaryLayoutNodeType(node.type))
+      .map((node) => node.id),
+  );
+  if (rankNodeIds.size === 0) return nodes;
+
+  const incoming = new Map<string, Set<string>>();
+  const outgoing = new Map<string, Set<string>>();
+  edges.forEach((edge) => {
+    if (!rankNodeIds.has(edge.source) || !rankNodeIds.has(edge.target)) return;
+    if (!incoming.has(edge.target)) incoming.set(edge.target, new Set());
+    if (!outgoing.has(edge.source)) outgoing.set(edge.source, new Set());
+    incoming.get(edge.target)!.add(edge.source);
+    outgoing.get(edge.source)!.add(edge.target);
+  });
+
+  const depth = new Map<string, number>();
+  const inDegree = new Map<string, number>();
+  rankNodeIds.forEach((id) => inDegree.set(id, incoming.get(id)?.size ?? 0));
+  const queue = Array.from(rankNodeIds).filter((id) => (inDegree.get(id) ?? 0) === 0);
+
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    const parents = Array.from(incoming.get(id) ?? []);
+    const maxParentDepth = parents.length === 0
+      ? -1
+      : Math.max(...parents.map((parentId) => depth.get(parentId) ?? 0));
+    depth.set(id, maxParentDepth + 1);
+
+    outgoing.get(id)?.forEach((childId) => {
+      const nextDegree = (inDegree.get(childId) ?? 0) - 1;
+      inDegree.set(childId, nextDegree);
+      if (nextDegree === 0) queue.push(childId);
+    });
+  }
+
+  rankNodeIds.forEach((id) => {
+    if (depth.has(id)) return;
+    const parents = Array.from(incoming.get(id) ?? []);
+    const maxParentDepth = parents.length === 0
+      ? -1
+      : Math.max(...parents.map((parentId) => depth.get(parentId) ?? 0));
+    depth.set(id, maxParentDepth + 1);
+  });
+
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const rankOffsets = buildCompactRankOffsets(
+    Array.from(depth.entries()).map(([id, rank]) => ({
+      rank,
+      height: getNodeHeight(nodeById.get(id)!),
+    })),
+    gap,
+  );
+
+  return nodes.map((node) => {
+    const rank = depth.get(node.id);
+    if (rank === undefined) return node;
+    return {
+      ...node,
+      position: {
+        ...node.position,
+        y: rankOffsets.get(rank) ?? node.position.y,
+      },
+    };
+  }) as T[];
+};
+
+const isStandaloneCommitLineageNode = (node: Node<any>): boolean => (
+  node.type === 'canonical_commit' || node.type === 'layout_derived_commit_group'
+);
+
+const compactStandaloneCommitLineageGaps = <T extends Node<any>>(nodes: T[], edges: Edge[], gap = RANK_SEP): T[] => {
+  const result = nodes.map((node) => ({ ...node })) as T[];
+  const nodesById = new Map(result.map((node) => [node.id, node]));
+  const lineageEdges = edges.filter((edge) => {
+    const data = edge.data as any;
+    const source = nodesById.get(edge.source);
+    const target = nodesById.get(edge.target);
+    return data?.relationship === 'git-parent' &&
+      data?.layout !== false &&
+      source &&
+      target &&
+      isStandaloneCommitLineageNode(source) &&
+      isStandaloneCommitLineageNode(target);
+  });
+  if (lineageEdges.length === 0) return result;
+
+  const incoming = new Map<string, Edge[]>();
+  const outgoing = new Map<string, Edge[]>();
+  lineageEdges.forEach((edge) => {
+    const incomingEdges = incoming.get(edge.target) ?? [];
+    incomingEdges.push(edge);
+    incoming.set(edge.target, incomingEdges);
+
+    const outgoingEdges = outgoing.get(edge.source) ?? [];
+    outgoingEdges.push(edge);
+    outgoing.set(edge.source, outgoingEdges);
+  });
+
+  const inDegree = new Map<string, number>();
+  result.forEach((node) => {
+    if (!isStandaloneCommitLineageNode(node)) return;
+    inDegree.set(node.id, incoming.get(node.id)?.length ?? 0);
+  });
+
+  const queue = Array.from(inDegree.entries())
+    .filter(([, degree]) => degree === 0)
+    .map(([id]) => id)
+    .sort((left, right) => (nodesById.get(left)?.position.y ?? 0) - (nodesById.get(right)?.position.y ?? 0));
+  const visited = new Set<string>();
+
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+
+    const node = nodesById.get(id);
+    if (node) {
+      const parentEdges = incoming.get(id) ?? [];
+      if (parentEdges.length > 0) {
+        const compactY = Math.max(...parentEdges.map((edge) => {
+          const parent = nodesById.get(edge.source)!;
+          return parent.position.y + getNodeHeight(parent) + gap;
+        }));
+        node.position = { ...node.position, y: compactY };
+      }
+    }
+
+    (outgoing.get(id) ?? []).forEach((edge) => {
+      const nextDegree = (inDegree.get(edge.target) ?? 0) - 1;
+      inDegree.set(edge.target, nextDegree);
+      if (nextDegree === 0) queue.push(edge.target);
+    });
+  }
+
+  return result;
 };
 
 const getNodeCreatedAtTs = (node: Node<any>): number | undefined => {
@@ -529,7 +687,8 @@ const buildLayoutModel = (
     const data = edge.data as any;
     return data?.relationship === 'git-parent'
       && typeof data.parentIndex === 'number'
-      && data.parentIndex > 0;
+      && data.parentIndex > 0
+      && data.layout !== true;
   };
 
   const unitEdgeCandidates = edges.flatMap((edge) => {
@@ -874,6 +1033,35 @@ const applyTurnGroupHullBounds = <T extends Node<any>>(nodes: T[]): T[] => {
   return result;
 };
 
+const addContextBoundaryAnchors = (nodes: Node<any>[], edges: Edge[]): Edge[] => {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+
+  return edges.map((edge) => {
+    const contextBoundary = (edge.data as any)?.contextBoundary;
+    if (contextBoundary?.type !== 'fresh') return edge;
+
+    const childNodeId = typeof contextBoundary.childNodeId === 'string'
+      ? contextBoundary.childNodeId
+      : edge.target;
+    const childNode = nodeById.get(childNodeId) ?? nodeById.get(edge.target);
+    if (!childNode) return edge;
+
+    return {
+      ...edge,
+      data: {
+        ...(edge.data as Record<string, unknown> | undefined),
+        contextBoundary: {
+          ...contextBoundary,
+          anchor: {
+            x: childNode.position.x + getNodeWidth(childNode) / 2,
+            y: childNode.position.y,
+          },
+        },
+      },
+    };
+  });
+};
+
 // Dense Layout Constants - DEPRECATED: Dense mode removed
 // Keeping as comments for reference during migration
 // const DENSE_NODE_HEIGHT = 48;
@@ -1152,7 +1340,9 @@ export const mapMessagesToGraphElements = (
   onSelect: (id: string, multi: boolean) => void = () => { },
   onContextMenu: (id: string, e: React.MouseEvent) => void = () => { },
   onMeasureNodeHeight: (id: string, height: number) => void = () => { },
-  visibleNodeSections: Set<'conversation' | 'commits'> = new Set(['conversation', 'commits'])
+  visibleNodeSections: Set<'conversation' | 'commits'> = new Set(['conversation', 'commits']),
+  scopedCommitFiltering: boolean = false,
+  pinnedCommitShas: Set<string> = new Set()
 ): { nodes: Node<LlmNodeData | SummaryNodeData | Record<string, unknown> | any>[]; edges: Edge[] } => {
   if (!messages || messages.length === 0) {
     return { nodes: [], edges: [] };
@@ -1176,24 +1366,14 @@ export const mapMessagesToGraphElements = (
       nodeKind === 'commit_message' ? message.id : getAssistantOutputCommitNodeId(message.id),
     );
   });
-  projection.groupIdByCommitSha.forEach((groupId, sha) => {
-    renderedCommitNodeIdBySha.set(sha, groupId);
-  });
   projection.commitBySha.forEach((commit) => {
-    if (commit.placement !== 'conversation_sidecar' || !commit.producedByNodeId) return;
-    const existing = producedCommitByNodeId.get(commit.producedByNodeId);
+    const ownerNodeId = commit.producedByNodeId ?? commit.visualOwnerNodeId;
+    if (commit.placement !== 'conversation_sidecar' || !ownerNodeId) return;
+    const existing = producedCommitByNodeId.get(ownerNodeId);
     if (!existing || commit.sortTs >= existing.sortTs) {
-      producedCommitByNodeId.set(commit.producedByNodeId, commit);
+      producedCommitByNodeId.set(ownerNodeId, commit);
     }
-    renderedCommitNodeIdBySha.set(commit.sha, getAssistantOutputCommitNodeId(commit.producedByNodeId));
   });
-  if (showCommitNodes) {
-    projection.commitLaneRows.forEach((row) => {
-      if (row.type !== 'commit' || !row.commitSha) return;
-      if (renderedCommitNodeIdBySha.has(row.commitSha)) return;
-      renderedCommitNodeIdBySha.set(row.commitSha, row.commitSha);
-    });
-  }
 
   // Inject branchPointers from the branchPointersByNodeId map onto each message.
   // The server does not eagerly load this association, so we enrich messages here
@@ -1469,6 +1649,56 @@ export const mapMessagesToGraphElements = (
       return getMessageOutputCommitSha(parentAssistantMessage);
     };
 
+    const scopedCommitShas = new Set<string>();
+    const addScopedCommitSha = (sha: string | null | undefined) => {
+      const normalized = typeof sha === 'string' ? sha.trim() : '';
+      if (normalized) scopedCommitShas.add(normalized);
+    };
+
+    if (scopedCommitFiltering) {
+      pinnedCommitShas.forEach(addScopedCommitSha);
+      messages.forEach((message) => {
+        if (!matchingMessageIds.has(message.id)) return;
+        addScopedCommitSha(getMessageOutputCommitSha(message));
+        addScopedCommitSha(getMessageBaseCommitSha(message));
+        getRawGitParentShas(message).forEach(addScopedCommitSha);
+        if (message.role === 'assistant') {
+          addScopedCommitSha(inferAssistantBaseCommitSha(message));
+        }
+      });
+      projection.commitBySha.forEach((commit) => {
+        if (commit.producedByNodeId && matchingMessageIds.has(commit.producedByNodeId)) {
+          addScopedCommitSha(commit.sha);
+          commit.parentShas.forEach(addScopedCommitSha);
+        }
+      });
+    }
+
+    const shouldRenderCanonicalCommitSha = (sha: string): boolean => (
+      !scopedCommitFiltering || scopedCommitShas.has(sha)
+    );
+    const visibleLayoutDerivedCommitGroups = scopedCommitFiltering
+      ? projection.layoutDerivedCommitGroups.filter((group) => group.commitShas.some((sha) => scopedCommitShas.has(sha)))
+      : projection.layoutDerivedCommitGroups;
+
+    visibleLayoutDerivedCommitGroups.forEach((group) => {
+      group.commitShas.forEach((sha) => renderedCommitNodeIdBySha.set(sha, group.groupId));
+    });
+    projection.commitBySha.forEach((commit) => {
+      const ownerNodeId = commit.producedByNodeId ?? commit.visualOwnerNodeId;
+      if (commit.placement !== 'conversation_sidecar' || !ownerNodeId) return;
+      if (!shouldRenderCanonicalCommitSha(commit.sha) && !matchingMessageIds.has(ownerNodeId)) return;
+      renderedCommitNodeIdBySha.set(commit.sha, getAssistantOutputCommitNodeId(ownerNodeId));
+    });
+    if (showCommitNodes) {
+      projection.commitLaneRows.forEach((row) => {
+        if (row.type !== 'commit' || !row.commitSha) return;
+        if (!shouldRenderCanonicalCommitSha(row.commitSha)) return;
+        if (renderedCommitNodeIdBySha.has(row.commitSha)) return;
+        renderedCommitNodeIdBySha.set(row.commitSha, row.commitSha);
+      });
+    }
+
     const externalClusterByAssistantId = new Map<string, string>();
     const externalClusterByAssistantCommitKey = new Map<string, string>();
 
@@ -1611,7 +1841,7 @@ export const mapMessagesToGraphElements = (
             ...(projectedProducedCommit?.commit || {}),
             sha: assistantOutputCommitSha,
             subject: commitSubject,
-            source_kind: 'agent',
+            source_kind: projectedProducedCommit?.sourceKind ?? 'agent',
             produced_by_node_id: msg.id,
             first_parent_sha: commitParentShas[0] ?? null,
             parents: commitParentShas.map((parentSha, parentIndex) => ({ parent_sha: parentSha, parent_index: parentIndex })),
@@ -1666,7 +1896,7 @@ export const mapMessagesToGraphElements = (
             nodeKind: 'commit_message',
             repoPath: workspaceRepoMap.get(msg.workspaceId) ?? null,
             branchPointers,
-            isFocused,
+            isFocused: false,
             isInContextPath: isInContextPathNode,
             llmColor: 'bg-gradient-to-br from-blue-500 to-indigo-600',
             matchesTagFilter,
@@ -1723,6 +1953,7 @@ export const mapMessagesToGraphElements = (
       }) => {
         if (source === target) return;
         if (edges.some((edge) => edge.id === id || (edge.source === source && edge.target === target && (edge.data as any)?.relationship === relationship))) return;
+        const isSecondaryGitParent = relationship === 'git-parent' && layout === false;
         edges.push({
           id,
           source,
@@ -1742,11 +1973,11 @@ export const mapMessagesToGraphElements = (
           style: {
             stroke: isInContextEdge ? activeStroke : inactiveStroke,
             strokeWidth: isInContextEdge ? CONTEXT_PATH_EDGE_STROKE_WIDTH : DEFAULT_EDGE_STROKE_WIDTH,
-            strokeDasharray,
-            opacity,
+            strokeDasharray: strokeDasharray ?? (isSecondaryGitParent ? '6 6' : undefined),
+            opacity: isSecondaryGitParent ? Math.min(opacity, 0.45) : opacity,
           },
           className: isInContextEdge ? 'dark:[stroke:#a5b4fc]' : 'dark:[stroke:#94a3b8]',
-          zIndex: isInContextEdge ? 10 : 0,
+          zIndex: isInContextEdge ? 10 : isSecondaryGitParent ? -1 : 0,
         });
       };
 
@@ -1827,12 +2058,15 @@ export const mapMessagesToGraphElements = (
           if (!parentNodeId || parentNodeId === commitNodeId) return;
           const parentMessageId = messageIdByCommitSha.get(parentSha);
           if (parentMessageId && !shouldRenderMessageNode(parentMessageId)) return;
+          const isLayoutParent = !projectedProducedCommit?.layoutParentSha
+            || projectedProducedCommit.layoutParentSha === parentSha;
           pushSemanticEdge({
             id: `${parentNodeId}->${commitNodeId}:git-parent:${parentIndex}`,
             source: parentNodeId,
             target: commitNodeId,
             relationship: 'git-parent',
             edgeRole: 'commit-lineage',
+            layout: isLayoutParent,
             isInContextEdge: contextPathEdges.has(`${parentNodeId}->${commitNodeId}`),
           });
         });
@@ -1859,12 +2093,12 @@ export const mapMessagesToGraphElements = (
     });
 
     const firstImportedGroupId = projection.originMessageId
-      ? projection.layoutDerivedCommitGroups
+      ? visibleLayoutDerivedCommitGroups
         .filter((group) => group.sourceKind === 'external')
         .sort((left, right) => left.sortTs - right.sortTs || left.groupId.localeCompare(right.groupId))[0]?.groupId ?? null
       : null;
 
-    if (showCommitNodes) projection.layoutDerivedCommitGroups.forEach((group) => {
+    if (showCommitNodes) visibleLayoutDerivedCommitGroups.forEach((group) => {
       nodes.push({
         id: group.groupId,
         type: 'layout_derived_commit_group',
@@ -1891,6 +2125,7 @@ export const mapMessagesToGraphElements = (
 
     if (showCommitNodes) projection.commitLaneRows.forEach((row) => {
       if (row.type !== 'commit' || !row.commitSha) return;
+      if (!shouldRenderCanonicalCommitSha(row.commitSha)) return;
       if (renderedCommitNodeIdBySha.get(row.commitSha) && renderedCommitNodeIdBySha.get(row.commitSha) !== row.commitSha) return;
       const commit = projection.commitBySha.get(row.commitSha);
       if (!commit) return;
@@ -1923,6 +2158,7 @@ export const mapMessagesToGraphElements = (
       commit.parentRows.forEach((parent, parentIndex) => {
         const sourceNodeId = renderedCommitNodeIdBySha.get(parent.parent_sha);
         if (!sourceNodeId || sourceNodeId === targetNodeId || !commitRenderedNodeIds.has(sourceNodeId)) return;
+        const isLayoutParent = !commit.layoutParentSha || commit.layoutParentSha === parent.parent_sha;
         const id = `${sourceNodeId}->${targetNodeId}:git-parent:canonical:${parentIndex}`;
         if (edges.some((edge) => edge.id === id || (edge.source === sourceNodeId && edge.target === targetNodeId && (edge.data as any)?.relationship === 'git-parent'))) return;
         edges.push({
@@ -1937,7 +2173,7 @@ export const mapMessagesToGraphElements = (
             edgeLegendType: 'git-parent',
             relationship: 'git-parent',
             edgeRole: 'commit-lineage',
-            layout: true,
+            layout: isLayoutParent,
             parentIndex,
             childSha: commit.sha,
             parentSha: parent.parent_sha,
@@ -1945,10 +2181,11 @@ export const mapMessagesToGraphElements = (
           style: {
             stroke: INACTIVE_EDGE_STROKE,
             strokeWidth: DEFAULT_EDGE_STROKE_WIDTH,
-            opacity: 1,
+            strokeDasharray: isLayoutParent ? undefined : '6 6',
+            opacity: isLayoutParent ? 1 : 0.45,
           },
           className: 'dark:[stroke:#94a3b8]',
-          zIndex: 0,
+          zIndex: isLayoutParent ? 0 : -1,
         });
       });
     });
@@ -2416,7 +2653,7 @@ export const getLayoutedElements = (nodes: Node<LlmNodeData | SummaryNodeData | 
     return { nodes: nodesWithDefaultPos, edges: edges };
   }
 
-  const layoutedUnitNodes = layoutNodes.map((currentNode) => {
+  let layoutedUnitNodes = layoutNodes.map((currentNode) => {
     const nodeWithPosition = dagreGraph.node(currentNode.id);
     if (!nodeWithPosition) {
       console.warn(`[getLayoutedElements] Dagre missing position for node: ${currentNode.id}`);
@@ -2438,8 +2675,12 @@ export const getLayoutedElements = (nodes: Node<LlmNodeData | SummaryNodeData | 
       style: { ...currentNode.style, width: nodeWidth, height: nodeHeight }
     };
   });
+  layoutedUnitNodes = compactLayoutNodeRanks(layoutedUnitNodes, layoutEdges);
 
-  let layoutedNodes = expandLayoutedUnits(nodes as Node<any>[], layoutedUnitNodes as Node<any>[], unitByNodeId, membersByUnitId);
+  let layoutedNodes = compactStandaloneCommitLineageGaps(
+    expandLayoutedUnits(nodes as Node<any>[], layoutedUnitNodes as Node<any>[], unitByNodeId, membersByUnitId),
+    edges,
+  );
 
   // Sanitize positions to prevent NaN errors
   layoutedNodes.forEach(n => {
@@ -2461,7 +2702,7 @@ export const getLayoutedElements = (nodes: Node<LlmNodeData | SummaryNodeData | 
 
   layoutedNodes = applyTurnGroupHullBounds(layoutedNodes);
 
-  return { nodes: layoutedNodes, edges: edges };
+  return { nodes: layoutedNodes, edges: addContextBoundaryAnchors(layoutedNodes, edges) };
 
 };
 
@@ -2481,11 +2722,7 @@ export const getLaneLayoutedElements = (
   const layoutNodes = layoutModel.layoutNodes;
   const layoutEdges = layoutModel.layoutEdges;
 
-  // Always use normal layout constants (dense mode removed)
   const maxNodeWidth = Math.max(...layoutNodes.map(getNodeWidth), NODE_WIDTH);
-  const maxNodeHeight = Math.max(...layoutNodes.map(getNodeHeight), NODE_HEIGHT);
-  const nodeHeight = maxNodeHeight;
-  const rowHeight = nodeHeight + RANK_SEP;
   const laneGap = 56;
   const laneWidth = maxNodeWidth + laneGap;
   const groupPadding = 20;
@@ -2549,6 +2786,9 @@ export const getLaneLayoutedElements = (
   timeOrdered.sort(sortByTime);
   const rowByNode = new Map<string, number>();
   timeOrdered.forEach((id, idx) => rowByNode.set(id, idx));
+  const rowOffsets = buildCompactRankOffsets(
+    timeOrdered.map((id) => ({ rank: rowByNode.get(id) ?? 0, height: getNodeHeight(nodesById.get(id)!) })),
+  );
 
   const laneByNode = new Map<string, number>();
   let nextLaneIndex = 0;
@@ -2648,7 +2888,7 @@ export const getLaneLayoutedElements = (
     const rowIndex = rowByNode.get(id) ?? 0;
     positions.set(id, {
       x: laneIndex * laneWidth,
-      y: rowIndex * rowHeight,
+      y: rowOffsets.get(rowIndex) ?? 0,
     });
   });
 
@@ -2690,12 +2930,12 @@ export const getLaneLayoutedElements = (
       const avgOut = egressYs.reduce((a, b) => a + b, 0) / egressYs.length;
       y = (avgIn + avgOut) / 2;
     } else if (ingressYs.length > 0) {
-      y = ingressYs[0] + rowHeight * 0.5;
+      y = ingressYs[0] + (NODE_HEIGHT + RANK_SEP) * 0.5;
     } else if (egressYs.length > 0) {
-      y = egressYs[0] - rowHeight * 0.5;
+      y = egressYs[0] - (NODE_HEIGHT + RANK_SEP) * 0.5;
     } else {
       const fallbackIdx = nodeIndexMap.get(node.id) ?? 0;
-      y = fallbackIdx * rowHeight;
+      y = rowOffsets.get(fallbackIdx) ?? fallbackIdx * (NODE_HEIGHT + RANK_SEP);
     }
 
     const x = ((laneIndex ?? 0) + laneOffset) * laneWidth;
@@ -2729,7 +2969,10 @@ export const getLaneLayoutedElements = (
   }
 
   const expandedNodes = expandLayoutedUnits(nodes as Node<any>[], positionedNodes, layoutModel.unitByNodeId, layoutModel.membersByUnitId);
-  let finalNodes = expandedNodes.map(n => ({ ...n }));
+  let finalNodes = compactStandaloneCommitLineageGaps(
+    expandedNodes.map(n => ({ ...n })),
+    edges,
+  );
 
   // Compute group node bounds and convert children to relative positions
   const childrenByParentGroups = new Map<string, Node[]>();
@@ -2751,7 +2994,7 @@ export const getLaneLayoutedElements = (
 
     children.forEach(child => {
       const width = child.style && (child.style as { width?: number }).width ? (child.style as { width?: number }).width! : NODE_WIDTH;
-      const height = child.style && (child.style as { height?: number }).height ? (child.style as { height?: number }).height! : nodeHeight;
+      const height = child.style && (child.style as { height?: number }).height ? (child.style as { height?: number }).height! : getNodeHeight(child);
       minX = Math.min(minX, child.position.x);
       minY = Math.min(minY, child.position.y);
       maxX = Math.max(maxX, child.position.x + width);
@@ -2785,7 +3028,7 @@ export const getLaneLayoutedElements = (
 
   finalNodes = applyTurnGroupHullBounds(finalNodes);
 
-  return { nodes: finalNodes, edges };
+  return { nodes: finalNodes, edges: addContextBoundaryAnchors(finalNodes, edges) };
 };
 
 // --- Tidy Tree Layout (Custom) ---
@@ -2803,11 +3046,7 @@ export const getTidyTreeLayoutedElements = (
   const layoutNodes = layoutModel.layoutNodes;
   const layoutEdges = layoutModel.layoutEdges;
 
-  // Always use normal layout constants (dense mode removed)
   const maxNodeWidth = Math.max(...layoutNodes.map(getNodeWidth), NODE_WIDTH);
-  const maxNodeHeight = Math.max(...layoutNodes.map(getNodeHeight), NODE_HEIGHT);
-  const nodeHeight = maxNodeHeight;
-  const rowHeight = nodeHeight + RANK_SEP * 0.5; // Reduced vertical gap
   const laneGap = 24;
   const laneWidth = maxNodeWidth + laneGap;
   const groupPadding = 20;
@@ -2830,9 +3069,66 @@ export const getTidyTreeLayoutedElements = (
     }
   });
 
+  const tidyEdgeCandidates = layoutEdges.filter((edge) => (
+    laneNodeIds.has(edge.source) && laneNodeIds.has(edge.target)
+  ));
+  const isUnitLineageEdge = (edge: Edge) => {
+    const relationship = (edge.data as any)?.relationship;
+    const edgeRole = (edge.data as any)?.edgeRole;
+    return relationship === 'git-parent'
+      || relationship === 'base-used'
+      || edgeRole === 'commit-lineage'
+      || edgeRole === 'base';
+  };
+  const incomingCandidatesByTarget = new Map<string, Edge[]>();
+  const directLineageSourcesByTarget = new Map<string, Set<string>>();
+  tidyEdgeCandidates.forEach((edge) => {
+    const incomingCandidates = incomingCandidatesByTarget.get(edge.target) ?? [];
+    incomingCandidates.push(edge);
+    incomingCandidatesByTarget.set(edge.target, incomingCandidates);
+
+    if (isUnitLineageEdge(edge)) {
+      const lineageSources = directLineageSourcesByTarget.get(edge.target) ?? new Set<string>();
+      lineageSources.add(edge.source);
+      directLineageSourcesByTarget.set(edge.target, lineageSources);
+    }
+  });
+  const getTidyParentPriority = (edge: Edge): number => {
+    const relationship = (edge.data as any)?.relationship;
+    const edgeRole = (edge.data as any)?.edgeRole;
+    const source = nodesById.get(edge.source);
+    const target = nodesById.get(edge.target);
+    const sourceHasConversation = (source?.data as any)?.hasConversationMembers === true;
+    const targetHasConversation = (target?.data as any)?.hasConversationMembers === true;
+    const conversationParents = (incomingCandidatesByTarget.get(edge.target) ?? [])
+      .filter((candidate) => (candidate.data as any)?.relationship === 'conversation')
+      .map((candidate) => candidate.source);
+    const conversationParentAlreadyUsesLineageSource = conversationParents.some((parentId) => (
+      directLineageSourcesByTarget.get(parentId)?.has(edge.source)
+    ));
+
+    if (relationship === 'conversation') return 20;
+    if (isUnitLineageEdge(edge)) {
+      if (!targetHasConversation) return relationship === 'git-parent' || edgeRole === 'commit-lineage' ? 5 : 10;
+      if (!sourceHasConversation && conversationParents.length > 0) {
+        return conversationParentAlreadyUsesLineageSource ? 30 : 5;
+      }
+      return 25;
+    }
+    return 40;
+  };
+  const tidyTreeEdges = Array.from(incomingCandidatesByTarget.entries()).map(([, candidates]) => (
+    candidates.slice().sort((left, right) => (
+      getTidyParentPriority(left) - getTidyParentPriority(right) ||
+      (createdAtMap.get(left.source) ?? 0) - (createdAtMap.get(right.source) ?? 0) ||
+      left.source.localeCompare(right.source) ||
+      left.id.localeCompare(right.id)
+    ))[0]
+  )).filter((edge): edge is Edge => Boolean(edge));
+
   const incoming = new Map<string, Set<string>>();
   const outgoing = new Map<string, Set<string>>();
-  layoutEdges.forEach(edge => {
+  tidyTreeEdges.forEach(edge => {
     if (!laneNodeIds.has(edge.source) || !laneNodeIds.has(edge.target)) return;
     if (!incoming.has(edge.target)) incoming.set(edge.target, new Set());
     if (!outgoing.has(edge.source)) outgoing.set(edge.source, new Set());
@@ -2924,6 +3220,7 @@ export const getTidyTreeLayoutedElements = (
   };
 
   const positions = new Map<string, { x: number; y: number }>();
+  const depthByNode = new Map<string, number>();
 
   const assigned = new Set<string>();
   const assign = (rootId: string, rootLeft: number, rootDepth: number) => {
@@ -2947,7 +3244,8 @@ export const getTidyTreeLayoutedElements = (
 
       const width = computeWidth(frame.id);
       const center = frame.left + width / 2;
-      positions.set(frame.id, { x: center * laneWidth, y: frame.depth * rowHeight });
+      depthByNode.set(frame.id, frame.depth);
+      positions.set(frame.id, { x: center * laneWidth, y: frame.depth });
 
       stack.push({ id: frame.id, left: frame.left, depth: frame.depth, exiting: true });
 
@@ -2981,6 +3279,18 @@ export const getTidyTreeLayoutedElements = (
     rootCursor += width + 1;
   });
 
+  const depthOffsets = buildCompactRankOffsets(
+    Array.from(depthByNode.entries()).map(([id, depth]) => ({
+      rank: depth,
+      height: getNodeHeight(nodesById.get(id)!),
+    })),
+  );
+  positions.forEach((position, id) => {
+    const depth = depthByNode.get(id);
+    if (depth === undefined) return;
+    positions.set(id, { ...position, y: depthOffsets.get(depth) ?? 0 });
+  });
+
   layoutNodes.forEach(node => {
     if (!isSummaryNodeType(node.type)) return;
     const ingress = layoutEdges.filter(e => e.target === node.id);
@@ -3012,12 +3322,12 @@ export const getTidyTreeLayoutedElements = (
       const avgOut = egressYs.reduce((a, b) => a + b, 0) / egressYs.length;
       y = (avgIn + avgOut) / 2;
     } else if (ingressYs.length > 0) {
-      y = ingressYs[0] + rowHeight * 0.5;
+      y = ingressYs[0] + (NODE_HEIGHT + RANK_SEP) * 0.5;
     } else if (egressYs.length > 0) {
-      y = egressYs[0] - rowHeight * 0.5;
+      y = egressYs[0] - (NODE_HEIGHT + RANK_SEP) * 0.5;
     } else {
       const fallbackIdx = nodeIndexMap.get(node.id) ?? 0;
-      y = fallbackIdx * rowHeight;
+      y = fallbackIdx * (NODE_HEIGHT + RANK_SEP);
     }
 
     let x = 0;
@@ -3046,7 +3356,10 @@ export const getTidyTreeLayoutedElements = (
   });
 
   const expandedNodes = expandLayoutedUnits(nodes as Node<any>[], positionedNodes, layoutModel.unitByNodeId, layoutModel.membersByUnitId);
-  let finalNodes = expandedNodes.map(n => ({ ...n }));
+  let finalNodes = compactStandaloneCommitLineageGaps(
+    expandedNodes.map(n => ({ ...n })),
+    edges,
+  );
 
   const childrenByParentGroups = new Map<string, Node[]>();
   finalNodes.forEach(n => {
@@ -3067,7 +3380,7 @@ export const getTidyTreeLayoutedElements = (
 
     children.forEach(child => {
       const width = child.style && (child.style as { width?: number }).width ? (child.style as { width?: number }).width! : NODE_WIDTH;
-      const height = child.style && (child.style as { height?: number }).height ? (child.style as { height?: number }).height! : nodeHeight;
+      const height = child.style && (child.style as { height?: number }).height ? (child.style as { height?: number }).height! : getNodeHeight(child);
       minX = Math.min(minX, child.position.x);
       minY = Math.min(minY, child.position.y);
       maxX = Math.max(maxX, child.position.x + width);
@@ -3100,7 +3413,7 @@ export const getTidyTreeLayoutedElements = (
 
   finalNodes = applyTurnGroupHullBounds(finalNodes);
 
-  return { nodes: finalNodes, edges };
+  return { nodes: finalNodes, edges: addContextBoundaryAnchors(finalNodes, edges) };
 };
 
 // --- Depth-Ranked Sugiyama Layout (Custom) ---
@@ -3117,10 +3430,7 @@ export const getSugiyamaLayoutedElements = (
   const layoutNodes = layoutModel.layoutNodes;
   const layoutEdges = layoutModel.layoutEdges;
 
-  // Always use normal layout constants (dense mode removed)
   const maxNodeWidth = Math.max(...layoutNodes.map(getNodeWidth), NODE_WIDTH);
-  const maxNodeHeight = Math.max(...layoutNodes.map(getNodeHeight), NODE_HEIGHT);
-  const nodeHeight = maxNodeHeight;
   const groupPadding = 20;
 
   const nodeIndexMap = new Map<string, number>();
@@ -3258,10 +3568,12 @@ export const getSugiyamaLayoutedElements = (
     }
   }
 
-  const sugiyamaRowHeight = nodeHeight + 80; // Increased for better flow
   const sugiyamaLaneWidth = maxNodeWidth + 40;
 
   const positions = new Map<string, { x: number; y: number }>();
+  const layerOffsets = buildCompactRankOffsets(
+    Array.from(laneNodeIds).map((id) => ({ rank: depth.get(id) ?? 0, height: getNodeHeight(nodesById.get(id)!) })),
+  );
 
   layers.forEach((nodesInLayer, d) => {
     // Center each rank horizontally
@@ -3271,7 +3583,7 @@ export const getSugiyamaLayoutedElements = (
     nodesInLayer.forEach((id, idx) => {
       positions.set(id, {
         x: offset + (idx * sugiyamaLaneWidth),
-        y: d * sugiyamaRowHeight
+        y: layerOffsets.get(d) ?? 0,
       });
     });
   });
@@ -3292,12 +3604,12 @@ export const getSugiyamaLayoutedElements = (
       const avgOutY = egressPositions.reduce((a, b) => a + b.y, 0) / egressPositions.length;
       positions.set(node.id, { x: (avgInX + avgOutX) / 2, y: (avgInY + avgOutY) / 2 });
     } else if (ingressPositions.length > 0) {
-      positions.set(node.id, { x: ingressPositions[0].x, y: ingressPositions[0].y + sugiyamaRowHeight * 0.4 });
+      positions.set(node.id, { x: ingressPositions[0].x, y: ingressPositions[0].y + (NODE_HEIGHT + RANK_SEP) * 0.4 });
     } else if (egressPositions.length > 0) {
-      positions.set(node.id, { x: egressPositions[0].x, y: egressPositions[0].y - sugiyamaRowHeight * 0.4 });
+      positions.set(node.id, { x: egressPositions[0].x, y: egressPositions[0].y - (NODE_HEIGHT + RANK_SEP) * 0.4 });
     } else {
       const fallbackIdx = nodeIndexMap.get(node.id) ?? 0;
-      positions.set(node.id, { x: 0, y: fallbackIdx * sugiyamaRowHeight });
+      positions.set(node.id, { x: 0, y: fallbackIdx * (NODE_HEIGHT + RANK_SEP) });
     }
   });
 
@@ -3315,7 +3627,10 @@ export const getSugiyamaLayoutedElements = (
   });
 
   const expandedNodes = expandLayoutedUnits(nodes as Node<any>[], positionedNodes, layoutModel.unitByNodeId, layoutModel.membersByUnitId);
-  let finalNodes = expandedNodes.map(n => ({ ...n }));
+  let finalNodes = compactStandaloneCommitLineageGaps(
+    expandedNodes.map(n => ({ ...n })),
+    edges,
+  );
 
   const childrenByParentGroups = new Map<string, Node[]>();
   finalNodes.forEach(n => {
@@ -3336,7 +3651,7 @@ export const getSugiyamaLayoutedElements = (
 
     children.forEach(child => {
       const width = child.style && (child.style as { width?: number }).width ? (child.style as { width?: number }).width! : NODE_WIDTH;
-      const height = child.style && (child.style as { height?: number }).height ? (child.style as { height?: number }).height! : nodeHeight;
+      const height = child.style && (child.style as { height?: number }).height ? (child.style as { height?: number }).height! : getNodeHeight(child);
       minX = Math.min(minX, child.position.x);
       minY = Math.min(minY, child.position.y);
       maxX = Math.max(maxX, child.position.x + width);
@@ -3369,7 +3684,7 @@ export const getSugiyamaLayoutedElements = (
 
   finalNodes = applyTurnGroupHullBounds(finalNodes);
 
-  return { nodes: finalNodes, edges };
+  return { nodes: finalNodes, edges: addContextBoundaryAnchors(finalNodes, edges) };
 };
 
 // --- Branch Path Helper ---

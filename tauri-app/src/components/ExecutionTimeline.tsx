@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import { cn } from '../lib/utils';
 import { 
   ChevronDown, 
@@ -65,6 +66,19 @@ export type CommandAction =
 type CommandSummaryItem = {
     label: 'Read' | 'List' | 'Search' | 'Run';
     text: string;
+};
+
+export type FileChangeSummary = {
+    path: string;
+    kind: string;
+    additions: number;
+    deletions: number;
+};
+
+type FileChangesSummary = {
+    files: FileChangeSummary[];
+    totalAdditions: number;
+    totalDeletions: number;
 };
 
 interface ExecutionTimelineProps {
@@ -341,9 +355,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                                         ) : null}
                                     </div>
                                     {call.toolInput !== undefined ? (
-                                        <pre className="max-h-32 overflow-x-auto rounded-md bg-muted/40 p-2 text-[10px] text-muted-foreground/80">
-                                            {formatToolPayload(call.toolInput)}
-                                        </pre>
+                                        <ToolPayloadDisplay payload={call.toolInput} className="max-h-32" />
                                     ) : null}
                                 </div>
                             ))}
@@ -436,12 +448,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                                     <div className="w-1 h-1 rounded-full bg-blue-400" />
                                     <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/60">Input</span>
                                 </div>
-                                <pre className={cn(
-                                    "text-[10px] bg-muted/40 p-2.5 rounded-lg border overflow-x-auto font-mono",
-                                    "text-muted-foreground/80 max-h-32"
-                                )}>
-                                    {formatToolPayload(row.toolInput)}
-                                </pre>
+                                <ToolPayloadDisplay payload={row.toolInput} className="max-h-32" />
                             </div>
                         )}
                         {row.toolOutput !== undefined && (
@@ -450,12 +457,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                                     <div className="w-1 h-1 rounded-full bg-emerald-400" />
                                     <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/60">Output</span>
                                 </div>
-                                <pre className={cn(
-                                    "text-[10px] bg-muted/40 p-2.5 rounded-lg border overflow-x-auto font-mono",
-                                    "text-muted-foreground/80 max-h-32"
-                                )}>
-                                    {formatToolPayload(row.toolOutput)}
-                                </pre>
+                                <ToolPayloadDisplay payload={row.toolOutput} className="max-h-32" />
                             </div>
                         )}
                         {row.isError && row.toolOutput == null && (
@@ -533,6 +535,8 @@ export function buildTimelineRows(events: TimelineEvent[]): TimelineRow[] {
                 key: buildRowKey(toolName || 'tool', event),
                 toolName: toolName || 'tool',
                 toolInput: extractToolInput(event),
+                toolOutput: extractToolOutput(event),
+                isError: extractIsError(event),
                 durationMs: event.durationMs ?? event.duration_ms,
                 startedAtMs: getTimestampMs(event.timestamp),
             };
@@ -540,6 +544,21 @@ export function buildTimelineRows(events: TimelineEvent[]): TimelineRow[] {
             const toolUseId = extractToolUseId(event);
             if (toolUseId) toolRowById.set(toolUseId, rowIndex);
             lastOpenToolIndex = rowIndex;
+            continue;
+        }
+
+        if ((event as any).type === 'tool_output_delta') {
+            const toolUseId = extractToolUseId(event);
+            const delta = typeof (event as any).delta === 'string' ? (event as any).delta : '';
+            let rowIndex = toolUseId ? toolRowById.get(toolUseId) : undefined;
+            if (rowIndex === undefined && lastOpenToolIndex !== null) {
+                rowIndex = lastOpenToolIndex;
+            }
+            if (rowIndex !== undefined && delta) {
+                const row = rows[rowIndex] as Extract<TimelineRow, { kind: 'tool' }>;
+                const existingOutput = typeof row.toolOutput === 'string' ? row.toolOutput : '';
+                row.toolOutput = existingOutput ? `${existingOutput}${delta}` : delta;
+            }
             continue;
         }
 
@@ -632,6 +651,129 @@ export function formatToolPayload(payload: any): string {
     } catch {
         return String(payload);
     }
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function getChangeKind(change: Record<string, any>): string {
+    const kind = change.kind;
+    if (typeof kind === 'string') return kind;
+    if (isRecord(kind) && typeof kind.type === 'string') return kind.type;
+    return 'updated';
+}
+
+function cleanChangePath(path: string): string {
+    const worktreeMatch = path.match(/\/\.git\/agentree\/worktrees\/[^/]+\/(.+)$/);
+    if (worktreeMatch?.[1]) return worktreeMatch[1];
+    if (!path.startsWith('/')) return path;
+    const parts = path.split('/').filter(Boolean);
+    return parts.slice(-3).join('/') || path;
+}
+
+function countNonEmptyLines(text: string): number {
+    return text.split('\n').filter((line, index, lines) => (
+        line.length > 0 || index < lines.length - 1
+    )).length;
+}
+
+function countUnifiedDiffLines(diff: string, kind: string): { additions: number; deletions: number } {
+    let additions = 0;
+    let deletions = 0;
+    for (const line of diff.split('\n')) {
+        if (line.startsWith('+++') || line.startsWith('---')) continue;
+        if (line.startsWith('+')) additions += 1;
+        if (line.startsWith('-')) deletions += 1;
+    }
+
+    if (additions === 0 && deletions === 0) {
+        const lineCount = countNonEmptyLines(diff);
+        if (kind === 'add') additions = lineCount;
+        if (kind === 'delete') deletions = lineCount;
+    }
+
+    return { additions, deletions };
+}
+
+export function summarizeFileChangesPayload(payload: unknown): FileChangesSummary | null {
+    if (!isRecord(payload) || !Array.isArray(payload.changes)) return null;
+
+    const files = payload.changes.flatMap((change): FileChangeSummary[] => {
+        if (!isRecord(change) || typeof change.path !== 'string') return [];
+        const kind = getChangeKind(change);
+        const diff = typeof change.diff === 'string' ? change.diff : '';
+        const counts = countUnifiedDiffLines(diff, kind);
+        return [{
+            path: cleanChangePath(change.path),
+            kind,
+            additions: counts.additions,
+            deletions: counts.deletions,
+        }];
+    });
+
+    if (files.length === 0) return null;
+
+    return {
+        files,
+        totalAdditions: files.reduce((total, file) => total + file.additions, 0),
+        totalDeletions: files.reduce((total, file) => total + file.deletions, 0),
+    };
+}
+
+function FileChangesSummaryView({ summary }: { summary: FileChangesSummary }) {
+    const fileLabel = summary.files.length === 1 ? 'file' : 'files';
+    return (
+        <div className="rounded-lg border bg-muted/35 p-2.5 text-[10px] text-muted-foreground/85">
+            <div className="mb-2 flex items-center justify-between gap-3">
+                <span className="font-semibold text-foreground/75">
+                    {summary.files.length} {fileLabel} changed
+                </span>
+                <span className="shrink-0 font-mono tabular-nums">
+                    <span className="text-emerald-600 dark:text-emerald-400">+{summary.totalAdditions}</span>
+                    <span className="px-1 text-muted-foreground/45">/</span>
+                    <span className="text-red-500 dark:text-red-400">-{summary.totalDeletions}</span>
+                </span>
+            </div>
+            <div className="space-y-1">
+                {summary.files.map((file, index) => (
+                    <div key={`${file.path}_${index}`} className="flex min-w-0 items-center gap-2 font-mono">
+                        <span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span>
+                        <span className="shrink-0 rounded border border-border/60 px-1 py-0.5 text-[9px] uppercase text-muted-foreground/65">
+                            {file.kind}
+                        </span>
+                        <span className="shrink-0 tabular-nums">
+                            <span className="text-emerald-600 dark:text-emerald-400">+{file.additions}</span>
+                            <span className="px-1 text-muted-foreground/45">/</span>
+                            <span className="text-red-500 dark:text-red-400">-{file.deletions}</span>
+                        </span>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+export function ToolPayloadDisplay({
+    payload,
+    className,
+}: {
+    payload: unknown;
+    className?: string;
+}): ReactNode {
+    const fileChangesSummary = summarizeFileChangesPayload(payload);
+    if (fileChangesSummary) {
+        return <FileChangesSummaryView summary={fileChangesSummary} />;
+    }
+
+    return (
+        <pre className={cn(
+            "overflow-x-auto whitespace-pre-wrap break-words rounded-lg border bg-muted/40 p-2.5 font-mono text-[10px] text-muted-foreground/80",
+            className,
+        )}>
+            {formatToolPayload(payload)}
+        </pre>
+    );
 }
 
 export function getToolSummary(toolName: string, toolInput: any): string {
@@ -811,14 +953,9 @@ function parseCommandSummaryFromShell(command: string): CommandSummaryItem[] {
         }
     }
 
-    const sedRead = trimmed.match(/\bsed\s+-n\s+'[^']*p'\s+([^\|\&;]+)/);
-    if (sedRead?.[1]) {
-        return [{ label: 'Read', text: basenameLike(sedRead[1].trim()) }];
-    }
-
-    const catRead = trimmed.match(/\bcat\s+([^\|\&;]+)/);
-    if (catRead?.[1]) {
-        return [{ label: 'Read', text: basenameLike(catRead[1].trim()) }];
+    const readTargets = extractReadTargetsFromShell(trimmed);
+    if (readTargets.length > 0) {
+        return [{ label: 'Read', text: readTargets.join(', ') }];
     }
 
     return [{ label: 'Run', text: trimmed }];
@@ -836,4 +973,43 @@ function basenameLike(value: string): string {
     const cleaned = value.replace(/^['"]|['"]$/g, '').trim();
     const parts = cleaned.split('/');
     return parts[parts.length - 1] || cleaned;
+}
+
+function extractReadTargetsFromShell(script: string): string[] {
+    const targets: string[] = [];
+    const addTarget = (value: string) => {
+        const cleaned = cleanShellPath(value);
+        if (!cleaned || cleaned.startsWith('-')) return;
+        targets.push(cleaned);
+    };
+
+    const sedReadPattern = /\bsed\s+-n\s+(?:"[^"]*"|'[^']*'|[^\s|&;]+)\s+(--\s+)?(?<path>"[^"]+"|'[^']+'|[^\s|&;]+)/g;
+    for (const match of script.matchAll(sedReadPattern)) {
+        const path = match.groups?.path;
+        if (path) addTarget(path);
+    }
+
+    const catReadPattern = /\bcat\s+(?<args>[^|&;]+)/g;
+    for (const match of script.matchAll(catReadPattern)) {
+        const args = match.groups?.args ?? '';
+        for (const token of splitShellWords(args)) {
+            if (token.startsWith('-')) continue;
+            addTarget(token);
+        }
+    }
+
+    return Array.from(new Set(targets));
+}
+
+function splitShellWords(value: string): string[] {
+    return [...value.matchAll(/"[^"]+"|'[^']+'|[^\s]+/g)].map((match) => match[0]);
+}
+
+function cleanShellPath(value: string): string {
+    const cleaned = value.replace(/^['"]|['"]$/g, '').trim();
+    const worktreeMatch = cleaned.match(/\/\.git\/agentree\/worktrees\/[^/]+\/(.+)$/);
+    if (worktreeMatch?.[1]) return worktreeMatch[1];
+    if (cleaned.includes('/.codex/') && cleaned.endsWith('/SKILL.md')) return 'SKILL.md';
+    if (cleaned.startsWith('/')) return basenameLike(cleaned);
+    return cleaned;
 }

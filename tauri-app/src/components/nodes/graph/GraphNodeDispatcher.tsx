@@ -12,6 +12,7 @@ import { useGraphInteractionContext } from '../../graph/GraphInteractionContext'
 import { useGraphHoverProjectionInput } from '../../graph/GraphHoverProjectionContext';
 import { useWorkspaceProjection } from '../../../hooks/useWorkspaceProjection';
 import type { FocusTriggerMetrics } from '../../../types/nodes';
+import { createCommitHoverEntity } from './commitHoverEntity';
 
 
 export interface GraphNodeData {
@@ -124,12 +125,20 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
   }
 
   if (data.commit) {
+    const hoverEntity = createCommitHoverEntity(data.commit);
     return (
       <GraphCanonicalCommitNode
         commit={data.commit}
         isFocused={!!data.isFocused}
         isSelected={data.isSelected || isSelectedInFlow}
         isComposerBaseCommit={!!data.isComposerBaseCommit}
+        disableHoverCard={isSelectionGestureActive || isViewportInteracting}
+        hoverCardContent={(
+          <GraphNodeHoverCardContent
+            entity={hoverEntity}
+            fallbackProjection={data.projection}
+          />
+        )}
       />
     );
   }

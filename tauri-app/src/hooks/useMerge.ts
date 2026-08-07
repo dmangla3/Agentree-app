@@ -5,6 +5,7 @@ import { useWorkspaceStore, Message } from '../stores/workspaceStore';
 import { GitMergeApplyResult, GitMergeSession, useMergeStore } from '../stores/mergeStore';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
 import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
+import { persistMergeCommitGraph } from '../lib/mergeCommitGraph';
 
 function getMessagesForWorkspace(queryClient: ReturnType<typeof useQueryClient>, workspaceId: string | null): Message[] {
   if (!workspaceId) return [];
@@ -127,6 +128,7 @@ export function useApplyGitMerge() {
       }
 
       if (result.commit_sha && selectedWorkspaceId && result.resultNodeId) {
+        const commitMessage = `Merge ${previewSession.sourceBranch} into ${previewSession.targetBranch}`;
         await api.post(`/workspaces/${selectedWorkspaceId}/messages`, {
           id: result.resultNodeId,
           role: 'assistant',
@@ -137,6 +139,14 @@ export function useApplyGitMerge() {
         await api.patch(`/messages/${result.resultNodeId}`, {
           output_commit_sha: result.commit_sha,
           git_branch_name: null,
+        });
+        await persistMergeCommitGraph({
+          workspaceId: selectedWorkspaceId,
+          repoPath: previewSession.repoPath,
+          commitSha: result.commit_sha,
+          resultNodeId: result.resultNodeId,
+          fallbackParents: [previewSession.targetBranch, previewSession.sourceBranch],
+          fallbackSubject: commitMessage,
         });
         void scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, {
           refetchActive: true,

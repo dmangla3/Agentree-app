@@ -69,6 +69,33 @@ describe('agentRun projection integration', () => {
     expect(useAgentRunProjectionStore.getState().projectionsById['assistant-1']?.execution_data?.last_agent_event_seq).toBe(2);
   });
 
+  it('ingests raw adapter events at the manager boundary', () => {
+    agentRunManager.seed(message({ status: 'running', content: '' }), 'run-1');
+
+    agentRunManager.ingest('assistant-1', {
+      type: 'provider_stop',
+      seq: 10,
+      status: 'completed',
+      provider_status: 'completed',
+    });
+
+    const afterProviderStop = agentRunManager.snapshot('assistant-1');
+    expect(afterProviderStop?.status).toBe('running');
+    expect(afterProviderStop?.phase).toBe('running');
+    expect(afterProviderStop?.lastSeq).toBe(10);
+
+    agentRunManager.ingest('assistant-1', {
+      type: 'exit',
+      seq: 11,
+      status: 'failed',
+    });
+
+    const afterExit = agentRunManager.snapshot('assistant-1');
+    expect(afterExit?.status).toBe('failed');
+    expect(afterExit?.phase).toBe('terminal');
+    expect(useRunStatusStore.getState().byNodeId['assistant-1']?.status).toBe('failed');
+  });
+
   it('does not count optimistic user send progress as a running agent run', () => {
     agentRunManager.seed(message({ id: 'user-1', role: 'user', status: 'pending', content: 'hello' }));
     agentRunManager.dispatch('user-1', { type: 'setup_progress', progress: 'Sending...' });
@@ -156,6 +183,57 @@ describe('agentRun projection integration', () => {
     const runStatus = useRunStatusStore.getState().byNodeId['assistant-1'];
     expect(runStatus?.status).toBe('completed');
     expect(runStatus?.progress).toBe('Completed');
+  });
+
+  it('batches throttled content projections across active runs', () => {
+    agentRunManager.seed(message({ id: 'assistant-1', status: 'running', content: '' }), 'run-1');
+    agentRunManager.seed(message({ id: 'assistant-2', status: 'running', content: '' }), 'run-2');
+    agentRunManager.dispatch('assistant-1', { type: 'content', content: 'a', streamSeq: 1 });
+    agentRunManager.dispatch('assistant-2', { type: 'content', content: 'b', streamSeq: 1 });
+
+    agentRunManager.dispatch('assistant-1', { type: 'content', content: 'aa', streamSeq: 2 });
+    agentRunManager.dispatch('assistant-2', { type: 'content', content: 'bb', streamSeq: 2 });
+
+    expect(agentRunManager.snapshot('assistant-1')?.content).toBe('aa');
+    expect(agentRunManager.snapshot('assistant-2')?.content).toBe('bb');
+    expect(useAgentRunProjectionStore.getState().projectionsById['assistant-1']?.content).toBe('a');
+    expect(useAgentRunProjectionStore.getState().projectionsById['assistant-2']?.content).toBe('b');
+
+    vi.advanceTimersByTime(140);
+
+    expect(useAgentRunProjectionStore.getState().projectionsById['assistant-1']?.content).toBe('aa');
+    expect(useAgentRunProjectionStore.getState().projectionsById['assistant-2']?.content).toBe('bb');
+  });
+
+  it('promotes the latest actor snapshot for watched runs immediately', () => {
+    agentRunManager.seed(message({ status: 'running', content: '' }), 'run-1');
+    agentRunManager.dispatch('assistant-1', { type: 'content', content: 'first', streamSeq: 1 });
+    agentRunManager.dispatch('assistant-1', { type: 'content', content: 'latest', streamSeq: 2 });
+
+    expect(agentRunManager.snapshot('assistant-1')?.content).toBe('latest');
+    expect(useAgentRunProjectionStore.getState().projectionsById['assistant-1']?.content).toBe('first');
+
+    agentRunManager.watch('assistant-1', 'hover');
+
+    expect(useAgentRunProjectionStore.getState().projectionsById['assistant-1']?.content).toBe('latest');
+    agentRunManager.unwatch('assistant-1', 'hover');
+  });
+
+  it('keeps unwatched background runs status-only until promoted', () => {
+    agentRunManager.dispatch('background-1', { type: 'content', content: 'hidden live text', streamSeq: 1 }, {
+      workspaceId: 'workspace-1',
+      parentId: 'user-1',
+      role: 'assistant',
+    });
+
+    expect(agentRunManager.snapshot('background-1')?.content).toBe('hidden live text');
+    expect(useRunStatusStore.getState().byNodeId['background-1']?.status).toBe('streaming');
+    expect(useAgentRunProjectionStore.getState().projectionsById['background-1']).toBeUndefined();
+
+    agentRunManager.watch('background-1', 'hover');
+
+    expect(useAgentRunProjectionStore.getState().projectionsById['background-1']?.content).toBe('hidden live text');
+    agentRunManager.unwatch('background-1', 'hover');
   });
 
   it('cleans active runtime state and active run status', () => {

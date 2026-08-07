@@ -39,6 +39,8 @@ export interface UseGraphLayoutOptions {
     hasNodeTypeFilter: boolean;
     keepAncestors: boolean;
     keepDescendants: boolean;
+    scopedCommitFiltering?: boolean;
+    pinnedCommitShas?: Set<string>;
     visibleNodeSections: Set<GraphNodeSectionId>;
     insights: Insight[];
     showInsightsInGraph: boolean;
@@ -92,6 +94,44 @@ const getRenderedNodeWidth = (node: Node<any>): number => {
 const getNodeCenterX = (node: Node<any>): number => (
     node.position.x + getRenderedNodeWidth(node) / 2
 );
+
+export const isSyntheticGeneratedCommitSidecarNode = (node: Node<any>): boolean => {
+    const entity = node.data?.entity;
+    return node.type === 'commit_message' &&
+        entity?.kind === 'commit_message' &&
+        typeof entity.messageId === 'string' &&
+        typeof entity.focusMessageId === 'string' &&
+        entity.messageId !== entity.focusMessageId;
+};
+
+export const isComposerBaseCommitVisualNode = (
+    node: Node<any>,
+    composerBaseCommitSha: string | null | undefined
+): boolean => {
+    if (!composerBaseCommitSha) return false;
+    const data = node.data;
+    if (data?.commit?.sha === composerBaseCommitSha) return true;
+    if (Array.isArray(data?.group?.commitShas) && data.group.commitShas.includes(composerBaseCommitSha)) return true;
+    if (node.type !== 'commit_message') return false;
+
+    const message = data?.message ?? data?.entity?.message;
+    return getMessageOutputCommitSha(message) === composerBaseCommitSha;
+};
+
+export const isGraphNodeVisuallyFocused = (
+    node: Node<any>,
+    focusedMessageId: string | null
+): boolean => {
+    const data = node.data;
+    const focusId = data.entity?.focusMessageId ?? data.entity?.messageId ?? node.id;
+    const isFocused =
+        focusId === focusedMessageId ||
+        data.commit?.sha === focusedMessageId ||
+        data.group?.commitShas?.includes(focusedMessageId || '') ||
+        (data.batch?.messageIds.includes(focusedMessageId || ''));
+
+    return isFocused && !isSyntheticGeneratedCommitSidecarNode(node);
+};
 
 const applyDirectionalEdgeHandles = (nodes: Node<any>[], edges: Edge[]): Edge[] => {
     const nodesById = new Map(nodes.map((node) => [node.id, node]));
@@ -189,6 +229,8 @@ interface LayoutCacheKey {
     hasNodeTypeFilter: boolean;
     keepAncestors: boolean;
     keepDescendants: boolean;
+    scopedCommitFiltering: boolean;
+    pinnedCommitShasFingerprint: string;
     visibleNodeSectionsFingerprint: string;
     layoutMode: string;
     laneStrategy: string;
@@ -234,6 +276,8 @@ const cacheKeysEqual = (a: LayoutCacheKey, b: LayoutCacheKey): boolean => {
         a.hasNodeTypeFilter === b.hasNodeTypeFilter &&
         a.keepAncestors === b.keepAncestors &&
         a.keepDescendants === b.keepDescendants &&
+        a.scopedCommitFiltering === b.scopedCommitFiltering &&
+        a.pinnedCommitShasFingerprint === b.pinnedCommitShasFingerprint &&
         a.visibleNodeSectionsFingerprint === b.visibleNodeSectionsFingerprint &&
         a.layoutMode === b.layoutMode &&
         a.laneStrategy === b.laneStrategy &&
@@ -301,6 +345,8 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         hasNodeTypeFilter,
         keepAncestors,
         keepDescendants,
+        scopedCommitFiltering = false,
+        pinnedCommitShas = new Set<string>(),
         visibleNodeSections,
         insights,
         showInsightsInGraph,
@@ -339,6 +385,8 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             hasNodeTypeFilter,
             keepAncestors,
             keepDescendants,
+            scopedCommitFiltering,
+            pinnedCommitShasFingerprint: Array.from(pinnedCommitShas).sort().join(','),
             visibleNodeSectionsFingerprint: Array.from(visibleNodeSections).sort().join(','),
             layoutMode,
             laneStrategy,
@@ -477,7 +525,9 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 onSelect,
                 onContextMenu,
                 onMeasureNodeHeight,
-                visibleNodeSections
+                visibleNodeSections,
+                scopedCommitFiltering,
+                pinnedCommitShas
         );
 
         if (mappedNodes.length === 0) {
@@ -580,7 +630,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         return visualResult;
     }, [
         messages, summaries, projection, measuredNodeHeights, layoutMode, laneStrategy, disabledSummaryIds,
-        focusedMessageId, contextPathMessageIds, composerBaseCommitSha, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, insights, showInsightsInGraph,
+        focusedMessageId, contextPathMessageIds, composerBaseCommitSha, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, scopedCommitFiltering, pinnedCommitShas, insights, showInsightsInGraph,
         visibleNodeSections,
         workspaceRepoMap, branchPointersByNodeId, activeScopeId, scopeViewMode,
         scopeNameById, scopeColorById, onToggleSummary, onToggleCollapse,
@@ -616,15 +666,6 @@ function applyVisualProperties(
     const contextPathEdges = new Set<string>();
     const contextPathVisualEdges = new Set<string>();
     const activeSummaryIds = new Set<string>();
-    const isComposerBaseCommitNode = (node: Node<any>): boolean => {
-        if (!composerBaseCommitSha) return false;
-        const data = node.data;
-        if (data?.commit?.sha === composerBaseCommitSha) return true;
-        if (Array.isArray(data?.group?.commitShas) && data.group.commitShas.includes(composerBaseCommitSha)) return true;
-
-        const message = data?.message ?? data?.entity?.message;
-        return getMessageOutputCommitSha(message) === composerBaseCommitSha;
-    };
     contextPathNodes.forEach((messageId) => {
         const message = messageMap.get(messageId);
         const parentId = message?.parentId ?? null;
@@ -694,12 +735,8 @@ function applyVisualProperties(
                 : undefined;
         const latestMessage = data.message?.id ? messageMap.get(data.message.id) : undefined;
         const isSummaryNode = node.type === 'summary_block';
-        const isFocused =
-            focusId === focusedMessageId ||
-            data.commit?.sha === focusedMessageId ||
-            data.group?.commitShas?.includes(focusedMessageId || '') ||
-            (data.batch?.messageIds.includes(focusedMessageId || ''));
-        const isComposerBaseCommit = isComposerBaseCommitNode(node);
+        const isFocused = isGraphNodeVisuallyFocused(node, focusedMessageId);
+        const isComposerBaseCommit = isComposerBaseCommitVisualNode(node, composerBaseCommitSha);
         const isInContextPath = isSummaryNode
             ? activeSummaryIds.has(node.id)
             : contextPathNodes.has(focusId) || (data.batch?.messageIds.some((id: string) => contextPathNodes.has(id)));
@@ -741,6 +778,7 @@ function applyVisualProperties(
         const isSummaryEdge = edge.type === 'summaryEdge';
         const relationship = (edge.data as any)?.relationship as string | undefined;
         const edgeLegendType = (edge.data as any)?.edgeLegendType as string | undefined;
+        const isSecondaryGitParent = relationship === 'git-parent' && (edge.data as any)?.layout === false;
         const isOnContextPath = isSummaryEdge
             ? activeSummaryIds.has(targetId) || (activeSummaryIds.has(sourceId) && isNodeInContextPath(targetId))
             : contextPathVisualEdges.has(`${sourceId}->${targetId}`) || (
@@ -757,12 +795,12 @@ function applyVisualProperties(
                 ? BASE_USED_EDGE_STROKE
                 : INACTIVE_EDGE_STROKE;
         const defaultStrokeWidth = relationship === 'git-parent'
-            ? 4
+            ? (isSecondaryGitParent ? 3 : 4)
             : relationship === 'base-used'
                 ? 4.5
                 : DEFAULT_EDGE_STROKE_WIDTH;
         const semanticEdgeZIndex = relationship === 'git-parent' || relationship === 'base-used'
-            ? 30
+            ? (isSecondaryGitParent ? 10 : 30)
             : 0;
         const defaultDash = relationship === 'base-used'
             ? '4 5'
@@ -771,6 +809,8 @@ function applyVisualProperties(
                 : edge.style?.strokeDasharray;
         const defaultOpacity = isContextBreak
             ? 0.6
+            : isSecondaryGitParent
+                ? 0.45
             : relationship === 'git-parent' || relationship === 'base-used'
                 ? 0.86
                 : 1;

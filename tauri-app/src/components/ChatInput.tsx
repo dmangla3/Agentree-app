@@ -38,7 +38,7 @@ import { Checkbox } from '../../@/components/ui/checkbox';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../@/components/ui/hover-card';
 import { useShallow } from 'zustand/react/shallow';
 import { branchKeys } from '../hooks/useBranches';
-import { catchUpHotSendMessageDeltas, primeHotSendMessageDeltaCursor, useHotSendMessageDeltas } from '../hooks/useHotSendMessageDeltas';
+import { primeHotSendMessageDeltaCursor, useHotSendMessageDeltas } from '../hooks/useHotSendMessageDeltas';
 import { isFirstClassCommitMessage } from '../lib/graph/turnUtils';
 import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { getMergeVisualParentEntries, isMergeResultNode } from '../lib/graph/lineage';
@@ -49,7 +49,13 @@ import {
 } from '../lib/graphInteractionGate';
 import { createSendFlowId, recordSendFlowEvent, recordSendFlowMark } from '../perf/sendFlow';
 import { agentRunManager } from '../agent-runs/agentRunManager';
-import { normalizeAgentAdapterEventForRun } from '../agent-runs/agentRunEventNormalizer';
+import {
+    parseStdoutAgentEvent,
+    shouldAcceptFinalizeAckForRun,
+    summarizeFinalizeAck,
+    summarizeProviderStop,
+} from '../agent-runs/agentRunEventIngestor';
+import { requestAgentWorkspaceRefresh } from '../agent-runs/agentRunWorkspaceRefresh';
 
 
 // --- Types ---
@@ -589,23 +595,8 @@ export function ChatInput({
     const queryClient = useQueryClient();
     useHotSendMessageDeltas(selectedWorkspaceId);
 
-    const patchPersistedMessageLocally = useCallback((workspaceId: string, messageId: string, updates: Partial<Message>) => {
-        const queryKey = ['messages', workspaceId];
-        const currentMessages = queryClient.getQueryData<Message[]>(queryKey);
-        const current = currentMessages?.find((message) => message.id === messageId);
-        if (!current) return;
-        const next = { ...current, ...updates, workspaceId, id: messageId };
-        queryClient.setQueryData<Message[]>(queryKey, (messages) => (
-            messages?.map((message) => (
-                message.id === messageId ? { ...message, ...next } : message
-            )) ?? messages
-        ));
-        void agentClient
-            .upsertLocalNode(workspaceId, messageId, next)
-            .finally(() => {
-                queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(workspaceId) });
-                queryClient.invalidateQueries({ queryKey: ['messages', workspaceId], refetchType: 'active' });
-            });
+    const refreshPersistedAgentNode = useCallback((workspaceId: string, reason: string) => {
+        requestAgentWorkspaceRefresh(queryClient, workspaceId, { reason });
     }, [queryClient]);
 
     const focusedCommitSha = useMemo(() => {
@@ -1085,12 +1076,12 @@ export function ChatInput({
             addTimelineEvent({
                 type: 'tool_use',
                 timestamp: Date.now(),
-                toolName: data.name,
-                toolInput: data.tool_input ?? data.input,
-                toolUseId: data.id || data.tool_use_id,
+                toolName: data.name || data.toolName || data.tool_name,
+                toolInput: data.tool_input ?? data.toolInput ?? data.input,
+                toolUseId: data.id || data.toolUseId || data.tool_use_id,
                 commandActions: data.commandActions ?? data.command_actions ?? data.provider_item?.commandActions ?? data.provider_item?.command_actions,
                 providerItem: data.provider_item ?? data.providerItem,
-                provider_item_id: data.provider_item_id ?? data.id ?? data.tool_use_id,
+                provider_item_id: data.provider_item_id ?? data.id ?? data.toolUseId ?? data.tool_use_id,
             }, nodeId, parentId, currentOutput, workspaceId, agentId);
         } else if (data.type === 'tool_result') {
             maybePromoteLiveActivity(`Finished ${data.toolName || data.tool_name || data.name || 'tool'}`);
@@ -1098,9 +1089,16 @@ export function ChatInput({
                 type: 'tool_result',
                 timestamp: Date.now(),
                 toolName: data.toolName || data.tool_name || data.name || 'unknown',
-                toolOutput: data.content || data.tool_output || data.output,
+                toolOutput: data.content ?? data.toolOutput ?? data.tool_output ?? data.output,
                 isError: data.is_error,
-                toolUseId: data.tool_use_id || data.id
+                toolUseId: data.toolUseId || data.tool_use_id || data.id
+            }, nodeId, parentId, currentOutput, workspaceId, agentId);
+        } else if (data.type === 'tool_output_delta') {
+            addTimelineEvent({
+                type: 'tool_output_delta',
+                timestamp: Date.now(),
+                toolUseId: data.toolUseId || data.tool_use_id || data.id,
+                delta: data.delta,
             }, nodeId, parentId, currentOutput, workspaceId, agentId);
         } else if (data.type === 'stop' || data.type === 'provider_stop' || data.type === 'result') {
             // Inner stop/result events are emitted on stdout by wrappers.
@@ -1639,12 +1637,7 @@ export function ChatInput({
                 content: finalContent,
                 executionData: finalExecutionData,
             });
-            patchPersistedMessageLocally(workspaceId, nodeId, {
-                content: finalContent,
-                status: finalStatus as any,
-                execution_data: finalExecutionData,
-                updatedAt: new Date().toISOString(),
-            });
+            refreshPersistedAgentNode(workspaceId, 'agent-terminal');
             uiDebug(`finalize:overlay-updated node=${nodeId}`, {
                 nodeId,
                 finalStatus,
@@ -1723,7 +1716,7 @@ export function ChatInput({
         // Future: add observer-driven backend fanout as a secondary stream path.
         streamHandlerMapRef.current.set(nodeId, (data: any) => {
             try {
-                agentRunManager.dispatch(nodeId, normalizeAgentAdapterEventForRun(data), {
+                agentRunManager.ingest(nodeId, data, {
                     workspaceId,
                     parentId,
                     role: 'assistant',
@@ -1796,7 +1789,7 @@ export function ChatInput({
                         updateAgentRunUsage(data.usage, nodeId, parentId, workspaceId, data.agent_id);
                     } else if (data.type === 'codex_event' && data.usage) {
                         updateAgentRunUsage(data.usage, nodeId, parentId, workspaceId, data.agent_id);
-                    } else if (data.type === 'provider_meta' || data.type === 'thinking' || data.type === 'tool_use' || data.type === 'tool_result' || data.type === 'error') {
+                    } else if (data.type === 'provider_meta' || data.type === 'thinking' || data.type === 'tool_use' || data.type === 'tool_result' || data.type === 'tool_output_delta' || data.type === 'error') {
                         if (data.type === 'error' && typeof data.content === 'string') {
                             maybeShowCodexAuthToast(data.content);
                         }
@@ -1806,8 +1799,9 @@ export function ChatInput({
                 }
 
                 if (data.type === 'stdout') {
-                    try {
-                        const innerData = JSON.parse(data.data);
+                    const parsedStdout = parseStdoutAgentEvent(data.data);
+                    if (parsedStdout.kind === 'json') {
+                        const innerData = parsedStdout.event;
                         if (innerData?.type === 'message') {
                             maybeShowCodexAuthToast(extractMessageText(innerData));
                         }
@@ -1920,11 +1914,9 @@ export function ChatInput({
                             streamDebug(`stdout_inner_terminal node=${nodeId}`, { type: innerData.type, stream_seq: data.stream_seq ?? null });
                         }
                         processAgentEvent(innerData, output, nodeId, parentId, workspaceId, data.agent_id);
-                    } catch (_e) {
-                        if (typeof data.data === 'string') {
-                            maybeShowCodexAuthToast(data.data);
-                            processAgentEvent({ type: 'error', content: data.data }, output, nodeId, parentId, workspaceId, data.agent_id);
-                        }
+                    } else if (parsedStdout.kind === 'text') {
+                        maybeShowCodexAuthToast(parsedStdout.text);
+                        processAgentEvent({ type: 'error', content: parsedStdout.text }, output, nodeId, parentId, workspaceId, data.agent_id);
                     }
                 } else if (data.type === 'stderr') {
                     if (typeof data.data === 'string') {
@@ -1933,28 +1925,23 @@ export function ChatInput({
                     }
                 } else if (data.type === 'finalize_ack') {
                     const currentRunId = String((((getAgentRunProjection(nodeId)?.execution_data || {}) as any)?.current_run_id || nodeId));
-                    if (typeof data.run_id === 'string' && data.run_id !== currentRunId) {
+                    if (!shouldAcceptFinalizeAckForRun(data, currentRunId)) {
                         return;
                     }
 
-                    const finalizedOutputCommitSha = typeof data.output_commit_sha === 'string' && data.output_commit_sha
-                        ? data.output_commit_sha
-                        : typeof data.outputCommitSha === 'string' && data.outputCommitSha
-                            ? data.outputCommitSha
-                            : typeof data.commit_sha === 'string' && data.commit_sha
-                                ? data.commit_sha
-                                : null;
+                    const finalizeAckSummary = summarizeFinalizeAck(data);
+                    const finalizedOutputCommitSha = finalizeAckSummary.outputCommitSha;
                     const currentProjection = getAgentRunProjection(nodeId);
                     const currentMeta = (((currentProjection?.execution_data || {}) as any)?.meta || {}) as Record<string, any>;
                     agentRunManager.dispatch(nodeId, {
                         type: 'finalize_ack',
-                        commitCreated: data.commit_created !== false,
+                        commitCreated: finalizeAckSummary.commitCreated,
                         meta: {
                             ...currentMeta,
                             ...(finalizedOutputCommitSha
                                 ? { output_commit_sha: finalizedOutputCommitSha }
                                 : {}),
-                            ...(data.commit_created === false ? { commit_created: false } : {}),
+                            ...(!finalizeAckSummary.commitCreated ? { commit_created: false } : {}),
                         },
                     }, {
                         workspaceId,
@@ -1996,22 +1983,12 @@ export function ChatInput({
                             return changed ? next : current;
                         });
                     }
-                    void queryClient.invalidateQueries({
-                        queryKey: localNodeKeys.workspace(workspaceId),
-                    });
-                    void scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, {
+                    requestAgentWorkspaceRefresh(queryClient, workspaceId, {
                         reason: 'agent-finalize-ack',
+                        includeCommitGraph: Boolean(finalizedOutputCommitSha),
+                        catchUpHotDeltas: Boolean(finalizedOutputCommitSha),
                     });
                     if (finalizedOutputCommitSha) {
-                        void queryClient.invalidateQueries({
-                            queryKey: ['local-commit-graph', workspaceId],
-                            refetchType: 'active',
-                        });
-                        void queryClient.invalidateQueries({
-                            queryKey: ['local-commits', workspaceId],
-                            refetchType: 'active',
-                        });
-                        void catchUpHotSendMessageDeltas(queryClient, workspaceId);
                         const flowId = getSendFlowIdForKey(nodeId);
                         if (flowId) {
                             advanceSendFlowFocus({
@@ -2050,16 +2027,7 @@ export function ChatInput({
                         executionData: (getAgentRunProjection(nodeId)?.execution_data || node.execution_data || {}) as Record<string, any>,
                     });
                 } else if (data.type === 'stop' || data.type === 'provider_stop') {
-                    const providerTerminalStatus = typeof data.provider_status === 'string'
-                        ? data.provider_status
-                        : typeof data.status === 'string'
-                            ? data.status
-                            : AGENT_STATUS.completed;
-                    const providerStopReason = typeof data.provider_stop_reason === 'string'
-                        ? data.provider_stop_reason
-                        : typeof data.stop_reason === 'string'
-                            ? data.stop_reason
-                            : null;
+                    const { providerTerminalStatus, providerStopReason } = summarizeProviderStop(data);
                     uiDebug(`stop:received node=${nodeId}`, {
                         nodeId,
                         providerStatus: providerTerminalStatus,
@@ -2104,14 +2072,6 @@ export function ChatInput({
                         },
                     };
                     mergeAgentRunExecutionData(nodeId, executionDataSnapshot);
-                    patchPersistedMessageLocally(workspaceId, nodeId, {
-                        content: output,
-                        execution_data: executionDataSnapshot,
-                        promptTokens: data.usage?.input_tokens ?? data.usage?.prompt_tokens ?? null,
-                        completionTokens: data.usage?.output_tokens ?? data.usage?.completion_tokens ?? null,
-                        totalTokens: data.usage?.total_tokens ?? null,
-                        updatedAt: new Date().toISOString(),
-                    });
 
                     agentRunManager.dispatch(nodeId, {
                         type: 'finalize_progress',
@@ -2200,11 +2160,11 @@ export function ChatInput({
         hasPendingCommitFocusForFlow,
         maybeShowCodexAuthToast,
         mergeStreamingOutput,
-        patchPersistedMessageLocally,
         processAgentEvent,
         queueGeneratedCommitFocus,
         queryClient,
         recordLatencyMark,
+        refreshPersistedAgentNode,
         releaseSendFlowKey,
         seedAgentRunProjection,
         applyStreamingAssistantText,

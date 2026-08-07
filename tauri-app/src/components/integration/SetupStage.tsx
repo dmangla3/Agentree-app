@@ -10,6 +10,7 @@ import { agentClient, GitMergePreview } from '../../lib/agentClient';
 import { api } from '../../lib/api';
 import { cn } from '../../lib/utils';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../../lib/graphInteractionGate';
+import { persistMergeCommitGraph } from '../../lib/mergeCommitGraph';
 import { Button } from '../../../@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../@/components/ui/card';
 import { Label } from '../../../@/components/ui/label';
@@ -646,6 +647,15 @@ export function SetupStage() {
             },
           },
         },
+      });
+
+      await persistMergeCommitGraph({
+        workspaceId: session.workspaceId,
+        repoPath,
+        commitSha: result.commit_sha,
+        resultNodeId,
+        fallbackParents: [session.target.commitSha, ...currentSourceShas],
+        fallbackSubject: commitMessage,
       });
 
       void scheduleMessagesRefreshWhenGraphIdle(queryClient, session.workspaceId, {

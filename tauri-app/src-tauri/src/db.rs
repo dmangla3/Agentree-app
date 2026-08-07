@@ -16,6 +16,170 @@ fn unix_timestamp() -> i64 {
         .as_secs() as i64
 }
 
+fn is_structured_timeline_event_type(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "tool_use" | "tool_result" | "tool_output_delta" | "thinking" | "error" | "stderr"
+    )
+}
+
+fn timeline_has_structured_events(timeline: Option<&Vec<JsonValue>>) -> bool {
+    timeline
+        .map(|entries| {
+            entries.iter().any(|entry| {
+                entry
+                    .get("type")
+                    .and_then(|value| value.as_str())
+                    .map(is_structured_timeline_event_type)
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn execution_data_has_structured_timeline(execution_data: &JsonValue) -> bool {
+    timeline_has_structured_events(
+        execution_data
+            .get("timeline")
+            .and_then(|value| value.as_array()),
+    )
+}
+
+fn payload_has_structured_timeline(payload: &JsonValue) -> bool {
+    payload
+        .get("execution_data")
+        .map(execution_data_has_structured_timeline)
+        .unwrap_or(false)
+}
+
+fn timeline_tool_use_id(event: &JsonValue) -> Option<&str> {
+    event
+        .get("toolUseId")
+        .or_else(|| event.get("tool_use_id"))
+        .or_else(|| event.get("id"))
+        .and_then(|value| value.as_str())
+}
+
+fn append_tool_output_delta_to_timeline(
+    timeline: &mut Vec<JsonValue>,
+    tool_use_id: &str,
+    delta: &str,
+) {
+    for event in timeline.iter_mut().rev() {
+        if event.get("type").and_then(|value| value.as_str()) != Some("tool_use") {
+            continue;
+        }
+        if timeline_tool_use_id(event) != Some(tool_use_id) {
+            continue;
+        }
+        let existing = event
+            .get("toolOutput")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if let Some(object) = event.as_object_mut() {
+            object.insert(
+                "toolOutput".to_string(),
+                JsonValue::String(format!("{}{}", existing, delta)),
+            );
+        }
+        return;
+    }
+}
+
+fn normalize_journal_timeline_event(event: &JsonValue) -> Option<JsonValue> {
+    let event_type = event.get("type")?.as_str()?;
+    let timestamp = event
+        .get("timestamp")
+        .and_then(|value| value.as_i64())
+        .unwrap_or_else(|| unix_timestamp() * 1000);
+
+    match event_type {
+        "thinking" => Some(serde_json::json!({
+            "type": "thinking",
+            "timestamp": timestamp,
+            "content": event.get("thinking").cloned()
+                .or_else(|| event.get("content").cloned())
+                .unwrap_or(JsonValue::Null),
+        })),
+        "tool_use" => Some(serde_json::json!({
+            "type": "tool_use",
+            "timestamp": timestamp,
+            "toolName": event.get("toolName").cloned()
+                .or_else(|| event.get("name").cloned())
+                .or_else(|| event.get("tool_name").cloned())
+                .unwrap_or(JsonValue::Null),
+            "toolInput": event.get("toolInput").cloned()
+                .or_else(|| event.get("tool_input").cloned())
+                .or_else(|| event.get("input").cloned())
+                .unwrap_or(JsonValue::Null),
+            "toolUseId": event.get("toolUseId").cloned()
+                .or_else(|| event.get("tool_use_id").cloned())
+                .or_else(|| event.get("id").cloned())
+                .unwrap_or(JsonValue::Null),
+            "commandActions": event.get("commandActions").cloned()
+                .or_else(|| event.get("command_actions").cloned())
+                .or_else(|| event.get("provider_item").and_then(|item| item.get("commandActions")).cloned())
+                .unwrap_or(JsonValue::Null),
+            "providerItem": event.get("providerItem").cloned()
+                .or_else(|| event.get("provider_item").cloned())
+                .unwrap_or(JsonValue::Null),
+            "provider_item_id": event.get("provider_item_id").cloned()
+                .or_else(|| event.get("id").cloned())
+                .unwrap_or(JsonValue::Null),
+        })),
+        "tool_result" => Some(serde_json::json!({
+            "type": "tool_result",
+            "timestamp": timestamp,
+            "toolName": event.get("toolName").cloned()
+                .or_else(|| event.get("tool_name").cloned())
+                .or_else(|| event.get("name").cloned())
+                .unwrap_or(JsonValue::Null),
+            "toolOutput": event.get("toolOutput").cloned()
+                .or_else(|| event.get("tool_output").cloned())
+                .or_else(|| event.get("content").cloned())
+                .or_else(|| event.get("output").cloned())
+                .unwrap_or(JsonValue::Null),
+            "isError": event.get("isError").cloned()
+                .or_else(|| event.get("is_error").cloned())
+                .unwrap_or(JsonValue::Bool(false)),
+            "toolUseId": event.get("toolUseId").cloned()
+                .or_else(|| event.get("tool_use_id").cloned())
+                .or_else(|| event.get("id").cloned())
+                .unwrap_or(JsonValue::Null),
+        })),
+        "error" | "stderr" => Some(serde_json::json!({
+            "type": "error",
+            "timestamp": timestamp,
+            "content": event.get("content").cloned()
+                .or_else(|| event.get("data").cloned())
+                .unwrap_or(JsonValue::Null),
+        })),
+        _ => None,
+    }
+}
+
+fn merge_timeline_into_payload(payload: &mut JsonValue, timeline: Vec<JsonValue>) {
+    if timeline.is_empty() {
+        return;
+    }
+    if !payload.is_object() {
+        return;
+    }
+    let Some(payload_object) = payload.as_object_mut() else {
+        return;
+    };
+    let execution_data = payload_object
+        .entry("execution_data".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !execution_data.is_object() {
+        *execution_data = serde_json::json!({});
+    }
+    if let Some(execution_object) = execution_data.as_object_mut() {
+        execution_object.insert("timeline".to_string(), JsonValue::Array(timeline));
+    }
+}
+
 pub struct TelemetryDb {
     conn: Mutex<Connection>,
     db_path: PathBuf,
@@ -1213,6 +1377,127 @@ impl TelemetryDb {
         Ok(rows)
     }
 
+    fn structured_timeline_from_existing_local_node(
+        conn: &Connection,
+        node_id: &str,
+    ) -> Result<Option<Vec<JsonValue>>, String> {
+        let existing = conn
+            .query_row(
+                "SELECT execution_data_json FROM local_nodes WHERE id = ?1 AND deleted_at IS NULL",
+                params![node_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten();
+        let Some(existing) = existing else {
+            return Ok(None);
+        };
+        let Ok(existing_execution_data) = serde_json::from_str::<JsonValue>(&existing) else {
+            return Ok(None);
+        };
+        let Some(timeline) = existing_execution_data
+            .get("timeline")
+            .and_then(|value| value.as_array())
+        else {
+            return Ok(None);
+        };
+        if !timeline_has_structured_events(Some(timeline)) {
+            return Ok(None);
+        }
+        Ok(Some(timeline.clone()))
+    }
+
+    fn structured_timeline_from_agent_run_journal(
+        conn: &Connection,
+        node_id: &str,
+    ) -> Result<Option<Vec<JsonValue>>, String> {
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT event_type, payload
+                FROM agent_run_events
+                WHERE assistant_node_id = ?1
+                  AND event_type IN ('thinking', 'tool_use', 'tool_result', 'tool_output_delta', 'error', 'stderr')
+                ORDER BY seq ASC
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![node_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        let mut timeline = Vec::new();
+        for (event_type, payload) in rows {
+            let Ok(mut event) = serde_json::from_str::<JsonValue>(&payload) else {
+                continue;
+            };
+            if event.get("type").and_then(|value| value.as_str()).is_none() {
+                if let Some(object) = event.as_object_mut() {
+                    object.insert("type".to_string(), JsonValue::String(event_type));
+                }
+            }
+            if event.get("type").and_then(|value| value.as_str()) == Some("tool_output_delta") {
+                let tool_use_id = event
+                    .get("toolUseId")
+                    .or_else(|| event.get("tool_use_id"))
+                    .or_else(|| event.get("id"))
+                    .and_then(|value| value.as_str());
+                let delta = event.get("delta").and_then(|value| value.as_str());
+                if let (Some(tool_use_id), Some(delta)) = (tool_use_id, delta) {
+                    append_tool_output_delta_to_timeline(&mut timeline, tool_use_id, delta);
+                }
+                continue;
+            }
+            if let Some(timeline_event) = normalize_journal_timeline_event(&event) {
+                timeline.push(timeline_event);
+            }
+        }
+
+        if timeline_has_structured_events(Some(&timeline)) {
+            Ok(Some(timeline))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn repair_payload_timeline_if_needed(
+        conn: &Connection,
+        node_id: &str,
+        payload: &mut JsonValue,
+    ) -> Result<(), String> {
+        if payload_has_structured_timeline(payload) {
+            return Ok(());
+        }
+
+        let mut timeline = payload
+            .get("execution_data")
+            .and_then(|execution_data| execution_data.get("timeline"))
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        if let Some(existing_timeline) =
+            Self::structured_timeline_from_existing_local_node(conn, node_id)?
+        {
+            merge_timeline_into_payload(payload, existing_timeline);
+            return Ok(());
+        }
+
+        let Some(mut journal_timeline) =
+            Self::structured_timeline_from_agent_run_journal(conn, node_id)?
+        else {
+            return Ok(());
+        };
+        timeline.append(&mut journal_timeline);
+        merge_timeline_into_payload(payload, timeline);
+        Ok(())
+    }
+
     pub fn upsert_local_node(
         &self,
         node_id: &str,
@@ -1221,7 +1506,10 @@ impl TelemetryDb {
     ) -> Result<(), String> {
         let now = unix_timestamp();
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let payload_value = serde_json::from_str::<JsonValue>(payload).unwrap_or(JsonValue::Null);
+        let mut payload_value =
+            serde_json::from_str::<JsonValue>(payload).unwrap_or(JsonValue::Null);
+        Self::repair_payload_timeline_if_needed(&conn, node_id, &mut payload_value)?;
+        let payload = serde_json::to_string(&payload_value).map_err(|e| e.to_string())?;
         let parent_id = payload_value
             .get("parentId")
             .and_then(|value| value.as_str());
@@ -1449,27 +1737,7 @@ impl TelemetryDb {
                     deleted_at, local_updated_at, server_ack_at
                 )
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, ?19, ?20)
-                ON CONFLICT(id) DO UPDATE SET
-                    workspace_id = excluded.workspace_id,
-                    parent_id = excluded.parent_id,
-                    role = excluded.role,
-                    content = excluded.content,
-                    status = excluded.status,
-                    execution_data_json = excluded.execution_data_json,
-                    payload_json = excluded.payload_json,
-                    prompt_tokens = excluded.prompt_tokens,
-                    completion_tokens = excluded.completion_tokens,
-                    total_tokens = excluded.total_tokens,
-                    base_commit_sha = excluded.base_commit_sha,
-                    output_commit_sha = COALESCE(excluded.output_commit_sha, local_nodes.output_commit_sha),
-                    base_selected_from_node_id = excluded.base_selected_from_node_id,
-                    git_branch_name = excluded.git_branch_name,
-                    scope_id = excluded.scope_id,
-                    updated_at = excluded.updated_at,
-                    deleted_at = local_nodes.deleted_at,
-                    local_updated_at = excluded.local_updated_at,
-                    server_ack_at = excluded.server_ack_at
-                WHERE local_nodes.deleted_at IS NULL
+                ON CONFLICT(id) DO NOTHING
                 "#,
                 params![
                     node_id,
@@ -1641,6 +1909,33 @@ impl TelemetryDb {
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
+        drop(stmt);
+        for row in rows.iter_mut() {
+            let Ok(mut payload) = serde_json::from_str::<JsonValue>(&row.payload) else {
+                continue;
+            };
+            if payload_has_structured_timeline(&payload) {
+                continue;
+            }
+            Self::repair_payload_timeline_if_needed(&conn, &row.node_id, &mut payload)?;
+            if payload_has_structured_timeline(&payload) {
+                row.payload = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+                let execution_data_json = payload
+                    .get("execution_data")
+                    .and_then(|value| serde_json::to_string(value).ok());
+                conn.execute(
+                    r#"
+                    UPDATE local_nodes
+                    SET payload_json = ?2,
+                        execution_data_json = ?3
+                    WHERE id = ?1
+                      AND deleted_at IS NULL
+                    "#,
+                    params![row.node_id, row.payload, execution_data_json],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
         rows.sort_by_key(|row| row.finalized_at);
         Ok(rows)
     }
@@ -3481,12 +3776,12 @@ mod tests {
     }
 
     #[test]
-    fn server_hydration_preserves_local_output_commit_in_render_payload() {
+    fn server_hydration_does_not_replace_existing_local_node() {
         let (_dir, db) = open_test_db();
         db.upsert_local_node(
             "assistant-with-commit",
             "workspace-1",
-            r#"{"id":"assistant-with-commit","workspaceId":"workspace-1","role":"assistant","content":"local final","status":"completed","output_commit_sha":"local-commit-sha"}"#,
+            r#"{"id":"assistant-with-commit","workspaceId":"workspace-1","role":"assistant","content":"local final","status":"completed","output_commit_sha":"local-commit-sha","execution_data":{"timeline":[{"type":"message","text":"local final"},{"type":"tool_use","name":"shell"},{"type":"tool_result","content":"ok"}]}}"#,
         )
         .expect("local upsert");
 
@@ -3497,6 +3792,7 @@ mod tests {
             "content": "server final",
             "status": "completed",
             "output_commit_sha": null,
+            "execution_data": { "timeline": [{ "type": "message", "text": "server final" }] },
             "createdAt": "2026-05-08T00:00:00Z",
             "updatedAt": "2026-05-08T00:00:01Z"
         });
@@ -3506,14 +3802,228 @@ mod tests {
                 vec![serde_json::to_string(&server_payload).expect("payload")],
             )
             .expect("hydrate");
-        assert_eq!(hydrated, 1);
+        assert_eq!(hydrated, 0);
 
         let rows = db
             .list_local_nodes_for_workspace("workspace-1")
             .expect("local nodes");
         let payload: serde_json::Value =
             serde_json::from_str(&rows[0].payload).expect("payload json");
+        assert_eq!(payload["content"], "local final");
         assert_eq!(payload["output_commit_sha"], "local-commit-sha");
+        assert_eq!(
+            payload["execution_data"]["timeline"]
+                .as_array()
+                .expect("timeline")
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn local_node_upsert_preserves_existing_structured_timeline() {
+        let (_dir, db) = open_test_db();
+        db.upsert_local_node(
+            "assistant-with-tools",
+            "workspace-1",
+            r#"{"id":"assistant-with-tools","workspaceId":"workspace-1","role":"assistant","content":"full","status":"completed","execution_data":{"timeline":[{"type":"message","content":"full"},{"type":"tool_use","toolName":"shell","toolUseId":"call-1"},{"type":"tool_result","toolUseId":"call-1","toolOutput":"ok"}]}}"#,
+        )
+        .expect("initial local upsert");
+
+        db.upsert_local_node(
+            "assistant-with-tools",
+            "workspace-1",
+            r#"{"id":"assistant-with-tools","workspaceId":"workspace-1","role":"assistant","content":"summary","status":"completed","execution_data":{"timeline":[{"type":"message","content":"summary"}]}}"#,
+        )
+        .expect("summary local upsert");
+
+        let rows = db
+            .list_local_nodes_for_workspace("workspace-1")
+            .expect("local nodes");
+        let payload: serde_json::Value =
+            serde_json::from_str(&rows[0].payload).expect("payload json");
+        let timeline = payload["execution_data"]["timeline"]
+            .as_array()
+            .expect("timeline");
+        assert_eq!(timeline.len(), 3);
+        assert_eq!(timeline[1]["type"], "tool_use");
+        assert_eq!(timeline[2]["type"], "tool_result");
+    }
+
+    #[test]
+    fn local_node_upsert_repairs_structured_timeline_from_agent_run_events() {
+        let (_dir, db) = open_test_db();
+        upsert_run(&db, "assistant-journal", "running", "running");
+        db.append_agent_run_event(
+            "run-assistant-journal",
+            "assistant-journal",
+            "tool_use",
+            None,
+            None,
+            r#"{"type":"tool_use","id":"call-1","name":"commandExecution","tool_input":{"command":"sed -n '1,20p' package.json"},"commandActions":[{"type":"read","path":"package.json"}],"timestamp":1778917768000}"#,
+        )
+        .expect("tool use");
+        db.append_agent_run_event(
+            "run-assistant-journal",
+            "assistant-journal",
+            "tool_output_delta",
+            None,
+            None,
+            r#"{"type":"tool_output_delta","toolUseId":"call-1","delta":"partial ","timestamp":1778917768500}"#,
+        )
+        .expect("tool output delta");
+        db.append_agent_run_event(
+            "run-assistant-journal",
+            "assistant-journal",
+            "tool_result",
+            None,
+            None,
+            r#"{"type":"tool_result","toolUseId":"call-1","toolName":"commandExecution","toolOutput":"{\"name\":\"agentree\"}","timestamp":1778917769000}"#,
+        )
+        .expect("tool result");
+
+        db.upsert_local_node(
+            "assistant-journal",
+            "workspace-1",
+            r#"{"id":"assistant-journal","workspaceId":"workspace-1","role":"assistant","content":"summary","status":"completed","execution_data":{"timeline":[{"type":"message","content":"summary"}]}}"#,
+        )
+        .expect("summary local upsert");
+
+        let rows = db
+            .list_local_nodes_for_workspace("workspace-1")
+            .expect("local nodes");
+        let payload: serde_json::Value =
+            serde_json::from_str(&rows[0].payload).expect("payload json");
+        let timeline = payload["execution_data"]["timeline"]
+            .as_array()
+            .expect("timeline");
+        assert_eq!(timeline.len(), 3);
+        assert_eq!(timeline[0]["type"], "message");
+        assert_eq!(timeline[1]["type"], "tool_use");
+        assert_eq!(timeline[1]["toolName"], "commandExecution");
+        assert_eq!(timeline[1]["toolOutput"], "partial ");
+        assert_eq!(timeline[2]["type"], "tool_result");
+        assert_eq!(timeline[2]["toolOutput"], "{\"name\":\"agentree\"}");
+    }
+
+    #[test]
+    fn local_node_upsert_repairs_journal_events_without_payload_type() {
+        let (_dir, db) = open_test_db();
+        upsert_run(&db, "assistant-journal-no-type", "running", "running");
+        db.append_agent_run_event(
+            "run-assistant-journal-no-type",
+            "assistant-journal-no-type",
+            "tool_use",
+            None,
+            None,
+            r#"{"id":"call-1","name":"commandExecution","tool_input":{"command":"sed -n '1,20p' package.json"},"commandActions":[{"type":"read","path":"package.json"}],"timestamp":1778917768000}"#,
+        )
+        .expect("tool use");
+        db.append_agent_run_event(
+            "run-assistant-journal-no-type",
+            "assistant-journal-no-type",
+            "tool_result",
+            None,
+            None,
+            r#"{"toolUseId":"call-1","toolName":"commandExecution","toolOutput":"ok","timestamp":1778917769000}"#,
+        )
+        .expect("tool result");
+
+        db.upsert_local_node(
+            "assistant-journal-no-type",
+            "workspace-1",
+            r#"{"id":"assistant-journal-no-type","workspaceId":"workspace-1","role":"assistant","content":"summary","status":"completed","execution_data":{"timeline":[{"type":"message","content":"summary"}]}}"#,
+        )
+        .expect("summary local upsert");
+
+        let rows = db
+            .list_local_nodes_for_workspace("workspace-1")
+            .expect("local nodes");
+        let payload: serde_json::Value =
+            serde_json::from_str(&rows[0].payload).expect("payload json");
+        let timeline = payload["execution_data"]["timeline"]
+            .as_array()
+            .expect("timeline");
+        assert_eq!(timeline.len(), 3);
+        assert_eq!(timeline[1]["type"], "tool_use");
+        assert_eq!(timeline[1]["toolName"], "commandExecution");
+        assert_eq!(timeline[2]["type"], "tool_result");
+        assert_eq!(timeline[2]["toolOutput"], "ok");
+    }
+
+    #[test]
+    fn list_local_nodes_repairs_existing_summary_timeline_from_journal() {
+        let (_dir, db) = open_test_db();
+        upsert_run(&db, "assistant-existing-bad", "completed", "cleaned");
+        db.append_agent_run_event(
+            "run-assistant-existing-bad",
+            "assistant-existing-bad",
+            "tool_use",
+            None,
+            None,
+            r#"{"type":"tool_use","id":"call-1","name":"commandExecution","tool_input":{"command":"sed -n '1,20p' package.json"},"timestamp":1778917768000}"#,
+        )
+        .expect("tool use");
+        db.append_agent_run_event(
+            "run-assistant-existing-bad",
+            "assistant-existing-bad",
+            "tool_result",
+            None,
+            None,
+            r#"{"type":"tool_result","toolUseId":"call-1","toolName":"commandExecution","toolOutput":"ok","timestamp":1778917769000}"#,
+        )
+        .expect("tool result");
+
+        {
+            let conn = db.conn.lock().expect("conn");
+            conn.execute(
+                r#"
+                INSERT INTO local_nodes (
+                    id, workspace_id, parent_id, role, content, status,
+                    execution_data_json, payload_json, created_at, updated_at,
+                    deleted_at, local_updated_at
+                )
+                VALUES (?1, ?2, ?3, 'assistant', 'summary', 'completed', ?4, ?5, ?6, ?6, NULL, ?7)
+                "#,
+                params![
+                    "assistant-existing-bad",
+                    "workspace-1",
+                    "user-assistant-existing-bad",
+                    r#"{"timeline":[{"type":"message","content":"summary"}]}"#,
+                    r#"{"id":"assistant-existing-bad","workspaceId":"workspace-1","parentId":"user-assistant-existing-bad","role":"assistant","content":"summary","status":"completed","execution_data":{"timeline":[{"type":"message","content":"summary"}]}}"#,
+                    "2026-05-16T00:00:00Z",
+                    1_i64,
+                ],
+            )
+            .expect("insert bad local node");
+        }
+
+        let rows = db
+            .list_local_nodes_for_workspace("workspace-1")
+            .expect("local nodes");
+        let payload: serde_json::Value =
+            serde_json::from_str(&rows[0].payload).expect("payload json");
+        let timeline = payload["execution_data"]["timeline"]
+            .as_array()
+            .expect("timeline");
+        assert_eq!(timeline.len(), 3);
+        assert_eq!(timeline[0]["type"], "message");
+        assert_eq!(timeline[1]["type"], "tool_use");
+        assert_eq!(timeline[2]["type"], "tool_result");
+
+        let conn = db.conn.lock().expect("db lock");
+        let execution_data_json: String = conn
+            .query_row(
+                "SELECT execution_data_json FROM local_nodes WHERE id = ?1",
+                params!["assistant-existing-bad"],
+                |row| row.get(0),
+            )
+            .expect("execution data json");
+        let execution_data: serde_json::Value =
+            serde_json::from_str(&execution_data_json).expect("execution data");
+        let persisted_timeline = execution_data["timeline"].as_array().expect("timeline");
+        assert_eq!(persisted_timeline.len(), 3);
+        assert_eq!(persisted_timeline[1]["type"], "tool_use");
     }
 
     #[test]

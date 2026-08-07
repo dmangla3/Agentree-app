@@ -22,6 +22,7 @@ interface ScopedNodeContextMenuProps {
   onDeleteTargets?: (targets: { messageIds: string[]; commitShas: string[] }) => void;
   onAddCommitsToMergePanel?: (messageIds: string[]) => void;
   onAddCommitToNode?: (messageId: string) => void;
+  onViewSubgraph?: (messageId: string) => void;
   onShareNode?: (messageId: string) => void;
 }
 
@@ -33,6 +34,7 @@ export function ScopedNodeContextMenu({
   onDeleteTargets,
   onAddCommitsToMergePanel,
   onAddCommitToNode,
+  onViewSubgraph,
   onShareNode,
 }: ScopedNodeContextMenuProps) {
   const scopedIds = contextMenu?.scopedIds ?? [];
@@ -89,9 +91,10 @@ export function ScopedNodeContextMenu({
   const canDelete = (deletableMessageIds.length > 0 || deletableCommitShas.length > 0) && (!!onDeleteTargets || !!onDeleteMessages);
   const canAddToMergePanel = mergeableCommitIds.length > 0 && !!onAddCommitsToMergePanel;
   const canAddCommit = !!actionNodeId && !!onAddCommitToNode;
+  const canViewSubgraph = !!actionNodeId && !!onViewSubgraph;
   const canShareNode = !!actionNodeId && !!onShareNode;
 
-  if (!canDelete && !canAddToMergePanel && !canAddCommit && !canShareNode) {
+  if (!canDelete && !canAddToMergePanel && !canAddCommit && !canViewSubgraph && !canShareNode) {
     return null;
   }
 
@@ -116,6 +119,17 @@ export function ScopedNodeContextMenu({
         />
       </DropdownMenuTrigger>
       <DropdownMenuContent className="w-56" onCloseAutoFocus={(e) => e.preventDefault()}>
+        {canViewSubgraph ? (
+          <DropdownMenuItem
+            onClick={() => {
+              onViewSubgraph?.(actionNodeId!);
+              onClose();
+            }}
+          >
+            View subgraph
+          </DropdownMenuItem>
+        ) : null}
+
         {canShareNode ? (
           <DropdownMenuItem
             onClick={() => {

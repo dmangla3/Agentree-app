@@ -8,7 +8,7 @@ import { ROLE_COLORS, withHexAlpha } from '../../../lib/visualTokens';
 import { getAgentColorClass } from '../../../lib/graphUtils';
 import { useAgents } from '../../../hooks/useAgents';
 import type { AgentStatus } from '@shared/agentStatus';
-import { buildTimelineRows, formatToolPayload, getToolSummary, type TimelineRow } from '../../ExecutionTimeline';
+import { buildTimelineRows, getToolSummary, ToolPayloadDisplay, type TimelineRow } from '../../ExecutionTimeline';
 import { useUpdateTags } from '../../../hooks/useMessages';
 import { mergeLiveMessage } from '../../../hooks/useLiveMessages';
 import { Badge } from '../../../../@/components/ui/badge';
@@ -16,6 +16,7 @@ import { TagInputPopover } from '../../ui/TagInputPopover';
 import { getAgentVisualState } from '../../../lib/agentStateUI';
 import { useAgentRunProjectionStore } from '../../../stores/agentRunProjectionStore';
 import { resolveNodeState } from '../../../lib/runStateResolver';
+import { agentRunManager } from '../../../agent-runs/agentRunManager';
 
 const AgentChip = ({ agentId, aiLabel }: { agentId?: string | null, aiLabel?: string | null }) => {
   const { data: agents = [] } = useAgents();
@@ -256,10 +257,10 @@ function InterleavedToolCard({ row }: { row: Extract<TimelineRow, { kind: 'tool'
       {isExpanded ? (
         <div className="mt-1 ml-6 min-w-0 max-w-full space-y-2">
           {row.toolInput !== undefined ? (
-            <pre className="max-h-40 min-w-0 max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded-md bg-muted/25 p-2 text-[10px] text-muted-foreground">{formatToolPayload(row.toolInput)}</pre>
+            <ToolPayloadDisplay payload={row.toolInput} className="max-h-40 min-w-0 max-w-full" />
           ) : null}
           {row.toolOutput !== undefined ? (
-            <pre className="max-h-40 min-w-0 max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded-md bg-muted/25 p-2 text-[10px] text-muted-foreground">{formatToolPayload(row.toolOutput)}</pre>
+            <ToolPayloadDisplay payload={row.toolOutput} className="max-h-40 min-w-0 max-w-full" />
           ) : null}
         </div>
       ) : null}
@@ -315,9 +316,7 @@ function InterleavedExplorationCard({ row }: { row: Extract<TimelineRow, { kind:
       {isExpanded ? (
         <div className="mt-1 ml-6 min-w-0 max-w-full space-y-2">
           {row.toolCalls.map((call, index) => (
-            <pre key={call.key || index} className="max-h-40 min-w-0 max-w-full overflow-x-auto rounded-md bg-muted/25 p-2 text-[10px] text-muted-foreground whitespace-pre-wrap break-all">
-              {formatToolPayload(call.toolInput)}
-            </pre>
+            <ToolPayloadDisplay key={call.key || index} payload={call.toolInput} className="max-h-40 min-w-0 max-w-full" />
           ))}
         </div>
       ) : null}
@@ -356,6 +355,13 @@ export const ChatAssistantCard = memo(({
   const [copiedMessageId, setCopiedMessageId] = useState(false);
   const updateTagsMutation = useUpdateTags();
   const messageId = entity.message?.id ?? entity.messageId ?? null;
+  useEffect(() => {
+    if (!messageId) return;
+    agentRunManager.watch(messageId, 'chat-focus');
+    return () => {
+      agentRunManager.unwatch(messageId, 'chat-focus');
+    };
+  }, [messageId]);
   const liveMessage = useAgentRunProjectionStore((state) => (
     messageId ? state.projectionsById[messageId] ?? null : null
   ));

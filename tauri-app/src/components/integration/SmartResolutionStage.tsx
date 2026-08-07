@@ -30,6 +30,7 @@ import { agentClient, ConflictResolution, MergeReviewTimelineEvent } from '../..
 import { api } from '../../lib/api';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../../lib/graphInteractionGate';
 import { getMessageOutputCommitSha } from '../../lib/graph/commitAccessors';
+import { persistMergeCommitGraph } from '../../lib/mergeCommitGraph';
 
 const parseCliArgs = (cliArgs: string | null | undefined) => {
   const tokens = String(cliArgs || '').split(/\s+/).filter(Boolean);
@@ -491,6 +492,15 @@ export function SmartResolutionStage() {
             },
           },
         },
+      });
+
+      await persistMergeCommitGraph({
+        workspaceId: session.workspaceId,
+        repoPath: session.repoPath,
+        commitSha: result.commit_sha,
+        resultNodeId,
+        fallbackParents: [session.target.commitSha, ...sourceShas],
+        fallbackSubject: commitMessage,
       });
 
       void scheduleMessagesRefreshWhenGraphIdle(queryClient, session.workspaceId, {

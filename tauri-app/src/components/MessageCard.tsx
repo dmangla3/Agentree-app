@@ -33,7 +33,7 @@ import {
 } from "../../@/components/ui/accordion";
 import { Popover, PopoverContent, PopoverTrigger } from "../../@/components/ui/popover";
 import { ScrollArea } from "../../@/components/ui/scroll-area";
-import { ExecutionTimeline, TimelineEvent, buildTimelineRows, type TimelineRow, formatToolPayload, getToolSummary } from './ExecutionTimeline';
+import { ExecutionTimeline, TimelineEvent, buildTimelineRows, type TimelineRow, getToolSummary, ToolPayloadDisplay } from './ExecutionTimeline';
 import { useNodeEvents } from '../hooks/useNodeEvents';
 import { FileChangePreview } from './FileChangePreview';
 
@@ -148,11 +148,11 @@ function InterleavedToolCard({ row }: { row: Extract<TimelineRow, { kind: 'tool'
       {isExpanded ? (
         <div className="mt-1 ml-6 space-y-2">
           {row.toolInput !== undefined ? (
-            <pre className="max-h-40 overflow-x-auto rounded-md bg-muted/25 p-2 text-[10px] text-muted-foreground">{formatToolPayload(row.toolInput)}</pre>
+            <ToolPayloadDisplay payload={row.toolInput} className="max-h-40" />
           ) : null}
           {row.toolOutput !== undefined ? (
             <div>
-              <pre className="max-h-40 overflow-x-auto rounded-md bg-muted/25 p-2 text-[10px] text-muted-foreground">{formatToolPayload(row.toolOutput)}</pre>
+              <ToolPayloadDisplay payload={row.toolOutput} className="max-h-40" />
             </div>
           ) : null}
         </div>
@@ -209,9 +209,7 @@ function InterleavedExplorationCard({ row }: { row: Extract<TimelineRow, { kind:
       {isExpanded ? (
         <div className="mt-1 ml-6 space-y-2">
           {row.toolCalls.map((call, index) => (
-            <pre key={call.key || index} className="max-h-40 overflow-x-auto rounded-md bg-muted/25 p-2 text-[10px] text-muted-foreground whitespace-pre-wrap break-all">
-              {formatToolPayload(call.toolInput)}
-            </pre>
+            <ToolPayloadDisplay key={call.key || index} payload={call.toolInput} className="max-h-40" />
           ))}
         </div>
       ) : null}

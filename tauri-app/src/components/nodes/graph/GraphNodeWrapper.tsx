@@ -5,6 +5,7 @@ import { cn } from '../../../lib/utils';
 import { withHexAlpha, CARD_TOKENS } from '../../../lib/visualTokens';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../../@/components/ui/hover-card';
 import type { FocusTriggerMetrics } from '../../../types/nodes';
+import { agentRunManager } from '../../../agent-runs/agentRunManager';
 
 interface GraphNodeWrapperProps {
   nodeId?: string;
@@ -207,6 +208,14 @@ export const GraphNodeWrapper = memo(({
       setHoverOpen(false);
     }
   }, [shouldDisableHoverCard]);
+
+  useEffect(() => {
+    if (!nodeId || !hoverOpen || shouldDisableHoverCard) return;
+    agentRunManager.watch(nodeId, 'hover');
+    return () => {
+      agentRunManager.unwatch(nodeId, 'hover');
+    };
+  }, [hoverOpen, nodeId, shouldDisableHoverCard]);
 
   if (!hoverCardContent) {
     return nodeBody;

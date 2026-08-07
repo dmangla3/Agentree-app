@@ -4,12 +4,18 @@ import type { ProjectedCommitEntity } from '../../../domain/workspaceProjection'
 import { CopyCommitShaButton } from '../../CopyCommitShaButton';
 import { cn } from '../../../lib/utils';
 import { GraphNodeWrapper } from './GraphNodeWrapper';
+import type { FocusTriggerMetrics } from '../../../types/nodes';
 
 interface GraphCanonicalCommitNodeProps {
   commit: ProjectedCommitEntity;
   isFocused?: boolean;
   isSelected?: boolean;
   isComposerBaseCommit?: boolean;
+  disableHoverCard?: boolean;
+  hoverCardContent?: React.ReactNode;
+  onFocus?: (metrics?: FocusTriggerMetrics) => void;
+  onSelect?: (multi: boolean) => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 const sourceLabel = (commit: ProjectedCommitEntity): string => {
@@ -25,6 +31,11 @@ export const GraphCanonicalCommitNode = memo(({
   isFocused = false,
   isSelected = false,
   isComposerBaseCommit = false,
+  disableHoverCard,
+  hoverCardContent,
+  onFocus = () => {},
+  onSelect = () => {},
+  onContextMenu = () => {},
 }: GraphCanonicalCommitNodeProps) => {
   const parentCount = commit.parentShas.length;
   const isMergeCommit = parentCount > 1;
@@ -38,9 +49,12 @@ export const GraphCanonicalCommitNode = memo(({
       isFocused={isFocused}
       isSelected={isSelected}
       isComposerBaseCommit={isComposerBaseCommit}
-      onFocus={() => {}}
-      onSelect={() => {}}
-      onContextMenu={() => {}}
+      disableHoverCard={disableHoverCard}
+      hoverOpenDelay={180}
+      hoverCardContent={hoverCardContent}
+      onFocus={onFocus}
+      onSelect={onSelect}
+      onContextMenu={onContextMenu}
       className={cn(
         'bg-emerald-50/90 border-emerald-300/65 dark:bg-emerald-950/25 dark:border-emerald-800/70',
         'rounded-l-[2px] rounded-r-[7px] shadow-none',

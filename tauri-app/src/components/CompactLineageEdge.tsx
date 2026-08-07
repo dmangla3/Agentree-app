@@ -1,5 +1,5 @@
 import { BaseEdge, type EdgeProps } from '@xyflow/react';
-import { ContextResetCut } from './ContextResetCut';
+import { ContextResetCut, getContextResetCutPosition } from './ContextResetCut';
 
 const SHORT_EDGE_THRESHOLD = 140;
 const NEAR_VERTICAL_THRESHOLD = 28;
@@ -10,6 +10,7 @@ export const CompactLineageEdge = ({
   sourceY,
   targetX,
   targetY,
+  targetPosition,
   style,
   markerEnd,
   data,
@@ -24,13 +25,22 @@ export const CompactLineageEdge = ({
   const path = shouldUseLine
     ? `M ${sourceX} ${sourceY} L ${targetX} ${targetY}`
     : `M ${sourceX} ${sourceY} Q ${controlX} ${controlY} ${targetX} ${targetY}`;
-  const labelX = shouldUseLine ? (sourceX + targetX) / 2 : controlX;
-  const labelY = shouldUseLine ? (sourceY + targetY) / 2 : controlY;
+  const contextBoundary = (data as any)?.contextBoundary;
+  const contextResetCutPosition = getContextResetCutPosition({
+    targetX,
+    targetY,
+    targetPosition,
+    anchor: contextBoundary?.anchor,
+  });
   return (
     <>
       <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />
-      {(data as any)?.contextBoundary?.type === 'fresh' && (
-        <ContextResetCut x={labelX} y={labelY} />
+      {contextBoundary?.type === 'fresh' && (
+        <ContextResetCut
+          x={contextResetCutPosition.x}
+          y={contextResetCutPosition.y}
+          orientation={contextResetCutPosition.orientation}
+        />
       )}
     </>
   );

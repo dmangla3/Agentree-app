@@ -40,6 +40,8 @@ import { useWorkspaceProjection } from '../hooks/useWorkspaceProjection';
 import { clearCachedGraphSnapshot, graphSnapshotToSummaries, useGraphSnapshot } from '../hooks/useGraphSnapshot';
 // Utils
 import { LlmNodeData, getLlmLegend } from '../lib/graphUtils';
+import { mapLocalCommitToCommitEntity } from '../lib/localCommitGraphProjection';
+import { createSubgraphFilterState, getSubgraphMessageIds } from '../lib/graphSubgraphScope';
 import { buildComposerContextPathIds } from '../lib/composerContext';
 import { collectDeleteBranchMessageIds, getDeleteBranchPreview, getTopLevelDeleteBranchIds } from '../domain/deleteBranchPreview';
 import { getBranchPointerCommitSha, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
@@ -76,7 +78,7 @@ import { AddCommitDialog } from './AddCommitDialog';
 import { DeleteBranchDialog, type DeleteBranchDialogPhase } from './DeleteBranchDialog';
 import { classifyMessageNodeKind } from '../domain/nodes';
 
-import { Activity } from 'lucide-react';
+import { Activity, GitBranch, X } from 'lucide-react';
 import { agentClient } from '../lib/agentClient';
 import { createProfilerOnRender, startFocusInteraction } from '../lib/interactionProfiler';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
@@ -484,6 +486,7 @@ function GraphViewInternal({
         ].filter(Boolean))).sort().join('|')
     ), [activeRunStatusNodeIds, activeSendFlowMessageIdKey]);
     const [graphResetNonce, setGraphResetNonce] = useState(0);
+    const [subgraphRootNodeId, setSubgraphRootNodeId] = useState<string | null>(null);
 
     // ─────────────────────────────────────────────────────────────────────────
     // DATA QUERIES
@@ -526,23 +529,10 @@ function GraphViewInternal({
     const localCommitGraph = localCommitGraphQuery.data;
     const snapshotCommits = useMemo(() => {
         if (agentClient.hasRuntime()) {
-            return (localCommitGraph?.commits ?? []).map((commit) => ({
-                sha: commit.sha,
-                subject: commit.subject ?? null,
-                author_name: commit.authorName ?? null,
-                author_email: commit.authorEmail ?? null,
-                authored_at: commit.authoredAt ?? null,
-                committed_at: commit.committedAt ?? null,
-                source_kind: commit.sourceKind ?? 'unknown',
-                produced_by_node_id: commit.producedByNodeId ?? null,
-                first_parent_sha: commit.firstParentSha ?? null,
-                files_changed_count: commit.filesChangedCount ?? null,
-                total_additions: commit.totalAdditions ?? null,
-                total_deletions: commit.totalDeletions ?? null,
-            }));
+            return (localCommitGraph?.commits ?? []).map((commit) => mapLocalCommitToCommitEntity(commit, selectedWorkspaceId ?? ''));
         }
         return graphSnapshotQuery.data?.commits ?? [];
-    }, [graphSnapshotQuery.data?.commits, localCommitGraph?.commits]);
+    }, [graphSnapshotQuery.data?.commits, localCommitGraph?.commits, selectedWorkspaceId]);
     const snapshotCommitParents = useMemo(() => {
         if (agentClient.hasRuntime()) {
             return (localCommitGraph?.commitParents ?? []).map((parent) => ({
@@ -880,6 +870,18 @@ function GraphViewInternal({
             .filter((ref) => Boolean(ref.commit_sha))
             .map((ref) => [ref.git_ref, ref.commit_sha])
     ), [gitRefSnapshot]);
+    const pinnedCommitShas = useMemo(() => {
+        const shas = new Set<string>();
+        for (const pointer of branchPointers) {
+            const commitSha = getBranchPointerCommitSha(pointer)?.trim();
+            if (commitSha) shas.add(commitSha);
+        }
+        for (const commitSha of trackedRefTipByRef.values()) {
+            const normalized = commitSha?.trim();
+            if (normalized) shas.add(normalized);
+        }
+        return shas;
+    }, [branchPointers, trackedRefTipByRef]);
     const pendingTrackedRefSyncKey = useMemo(() => trackedRefsNeedingSync
         .map((ref) => `${ref.git_ref}:${trackedRefTipByRef.get(ref.git_ref) ?? ''}`)
         .sort()
@@ -1463,6 +1465,44 @@ function GraphViewInternal({
         ? `agentree.graphFilters.v1.workspace.${selectedWorkspaceId}`
         : 'agentree.graphFilters.v1.workspace.none';
     const tagFilter = useTagFilter(graphComputationMessages, branchPointers, scopes, graphFilterStorageKey);
+    const subgraphMessageIds = useMemo(
+        () => getSubgraphMessageIds(graphComputationMessages, subgraphRootNodeId),
+        [graphComputationMessages, subgraphRootNodeId]
+    );
+    const subgraphRootMessage = useMemo(() => {
+        if (!subgraphRootNodeId) return null;
+        return (graphComputationMessages as Message[]).find((message) => message.id === subgraphRootNodeId) ?? null;
+    }, [graphComputationMessages, subgraphRootNodeId]);
+    const subgraphRootLabel = useMemo(() => {
+        if (!subgraphRootMessage) return 'Selected node';
+        const preview = cleanNodePreview(subgraphRootMessage.content);
+        if (preview) return preview.length > 72 ? `${preview.slice(0, 72)}...` : preview;
+        return subgraphRootMessage.role === 'user' ? 'User node' : 'Assistant node';
+    }, [subgraphRootMessage]);
+    const graphFilterState = useMemo(() => (
+        createSubgraphFilterState(subgraphRootNodeId, subgraphMessageIds, {
+            matchingMessageIds: tagFilter.matchingMessageIds,
+            filterActive: tagFilter.filterActive,
+            hasNodeTypeFilter: tagFilter.hasNodeTypeFilter,
+            keepAncestors: tagFilter.keepAncestors,
+            keepDescendants: tagFilter.keepDescendants,
+        })
+    ), [
+        subgraphRootNodeId,
+        tagFilter.filterActive,
+        tagFilter.hasNodeTypeFilter,
+        tagFilter.keepAncestors,
+        tagFilter.keepDescendants,
+        tagFilter.matchingMessageIds,
+        subgraphMessageIds,
+    ]);
+
+    useEffect(() => {
+        if (!subgraphRootNodeId) return;
+        if (subgraphRootMessage) return;
+        setSubgraphRootNodeId(null);
+    }, [subgraphRootMessage, subgraphRootNodeId]);
+
     const graphNodeSectionCounts = useMemo<Record<GraphNodeSectionId, number>>(() => {
         const messageById = new Map((graphComputationMessages as Message[]).map((message) => [message.id, message]));
         let conversation = 0;
@@ -2347,6 +2387,17 @@ function GraphViewInternal({
         });
     }, [centerFocusedNode, dispatchFocus, nodeSelection.clearSelection]);
 
+    const handleViewSubgraph = useCallback((messageId: string) => {
+        setSubgraphRootNodeId(messageId);
+        setViewMode('branch');
+        nodeSelection.clearSelection();
+        dispatchFocus({
+            messageId,
+            source: 'graph',
+            metadata: { reason: 'view-subgraph' },
+        });
+    }, [dispatchFocus, nodeSelection.clearSelection]);
+
     const { nodes: layoutNodes, edges: layoutEdges } = useGraphLayout({
         projection: workspaceProjection,
         messages: graphComputationMessages,
@@ -2358,11 +2409,13 @@ function GraphViewInternal({
         focusedMessageId,
         contextPathMessageIds: contextPathMessageIdSet,
         composerBaseCommitSha,
-        matchingMessageIds: tagFilter.matchingMessageIds,
-        filterActive: tagFilter.filterActive,
-        hasNodeTypeFilter: tagFilter.hasNodeTypeFilter,
-        keepAncestors: tagFilter.keepAncestors,
-        keepDescendants: tagFilter.keepDescendants,
+        matchingMessageIds: graphFilterState.matchingMessageIds,
+        filterActive: graphFilterState.filterActive,
+        hasNodeTypeFilter: graphFilterState.hasNodeTypeFilter,
+        keepAncestors: graphFilterState.keepAncestors,
+        keepDescendants: graphFilterState.keepDescendants,
+        scopedCommitFiltering: Boolean(subgraphRootNodeId),
+        pinnedCommitShas,
         visibleNodeSections,
         insights,
         showInsightsInGraph,
@@ -2380,6 +2433,26 @@ function GraphViewInternal({
         onMeasureNodeHeight: handleMeasureNodeHeight,
         onContextMenu: handleScopedNodeContextMenu
     } as any);
+
+    const subgraphStats = useMemo(() => {
+        let nodes = 0;
+        let commits = 0;
+        for (const node of layoutNodes) {
+            if (node.type === 'canonical_commit' || node.type === 'commit_message') {
+                commits += 1;
+                continue;
+            }
+            if (node.type === 'layout_derived_commit_group') {
+                const shas = (node.data as any)?.group?.commitShas;
+                commits += Array.isArray(shas) ? shas.length : 1;
+                continue;
+            }
+            if (node.type === 'user_message' || node.type === 'assistant_message' || node.type === 'summary_block') {
+                nodes += 1;
+            }
+        }
+        return { nodes, commits };
+    }, [layoutNodes]);
 
     useLayoutEffect(() => {
         layoutNodesRef.current = layoutNodes;
@@ -2697,10 +2770,11 @@ function GraphViewInternal({
             laneStrategy,
             layoutNodes.length,
             layoutEdges.length,
-            tagFilter.activeFilterCount,
-            tagFilter.matchingCount,
-            tagFilter.keepAncestors ? 'ancestors' : 'no-ancestors',
-            tagFilter.keepDescendants ? 'descendants' : 'no-descendants',
+            graphFilterState.filterActive ? 'filter-active' : 'filter-inactive',
+            graphFilterState.matchingMessageIds.size,
+            graphFilterState.keepAncestors ? 'ancestors' : 'no-ancestors',
+            graphFilterState.keepDescendants ? 'descendants' : 'no-descendants',
+            subgraphRootNodeId ?? 'full-graph',
             showInsightsInGraph ? insights.length : 0,
             graphResetNonce,
         ].join(':');
@@ -2733,10 +2807,11 @@ function GraphViewInternal({
         scopeViewMode,
         selectedWorkspaceId,
         showInsightsInGraph,
-        tagFilter.activeFilterCount,
-        tagFilter.keepAncestors,
-        tagFilter.keepDescendants,
-        tagFilter.matchingCount,
+        graphFilterState.filterActive,
+        graphFilterState.keepAncestors,
+        graphFilterState.keepDescendants,
+        graphFilterState.matchingMessageIds,
+        subgraphRootNodeId,
         viewMode,
     ]);
 
@@ -3897,12 +3972,12 @@ function GraphViewInternal({
         focusNonce,
         graphResetNonce,
         tagFilterKey: [
-            tagFilter.filterActive ? 1 : 0,
-            tagFilter.hasNodeTypeFilter ? 1 : 0,
-            tagFilter.activeFilterCount,
-            tagFilter.matchingCount,
-            tagFilter.keepAncestors ? 1 : 0,
-            tagFilter.keepDescendants ? 1 : 0,
+            graphFilterState.filterActive ? 1 : 0,
+            graphFilterState.hasNodeTypeFilter ? 1 : 0,
+            graphFilterState.matchingMessageIds.size,
+            graphFilterState.keepAncestors ? 1 : 0,
+            graphFilterState.keepDescendants ? 1 : 0,
+            subgraphRootNodeId ?? 'full',
         ].join(':'),
         activeScopeId,
         viewMode,
@@ -4250,11 +4325,12 @@ function GraphViewInternal({
                 running: runningCount,
             },
             filters: {
-                active: tagFilter.filterActive,
+                active: graphFilterState.filterActive,
                 activeFilterCount: tagFilter.activeFilterCount,
-                matchingCount: tagFilter.matchingCount,
-                keepAncestors: tagFilter.keepAncestors,
-                keepDescendants: tagFilter.keepDescendants,
+                matchingCount: graphFilterState.matchingMessageIds.size,
+                keepAncestors: graphFilterState.keepAncestors,
+                keepDescendants: graphFilterState.keepDescendants,
+                subgraphRootNodeId,
                 scopeViewMode,
             },
             viewport: {
@@ -4341,10 +4417,11 @@ function GraphViewInternal({
         summaries,
         summariesQuery.status,
         tagFilter.activeFilterCount,
-        tagFilter.filterActive,
-        tagFilter.keepAncestors,
-        tagFilter.keepDescendants,
-        tagFilter.matchingCount,
+        graphFilterState.filterActive,
+        graphFilterState.keepAncestors,
+        graphFilterState.keepDescendants,
+        graphFilterState.matchingMessageIds,
+        subgraphRootNodeId,
         viewMode,
         contextPathMessageIds,
     ]);
@@ -4429,6 +4506,30 @@ function GraphViewInternal({
 
             {/* Content Area */}
             <div className="flex-1 overflow-hidden relative">
+                {subgraphRootNodeId && subgraphRootMessage ? (
+                    <div className="absolute left-4 top-4 z-40 flex max-w-[min(720px,calc(100%-2rem))] items-center gap-2 rounded-full border border-slate-200/80 bg-white/[0.92] px-3 py-2 text-xs text-slate-700 shadow-sm backdrop-blur-md dark:border-slate-700/80 dark:bg-slate-950/[0.88] dark:text-slate-200">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-950">
+                            <GitBranch className="h-3.5 w-3.5" />
+                        </span>
+                        <span className="min-w-0 truncate">
+                            <span className="font-semibold text-slate-950 dark:text-slate-50">Subgraph</span>
+                            <span className="mx-1.5 text-slate-400">/</span>
+                            <span title={subgraphRootLabel}>{subgraphRootLabel}</span>
+                        </span>
+                        <span className="shrink-0 rounded-full bg-slate-100 px-2 py-1 font-medium tabular-nums text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                            {subgraphStats.nodes} {subgraphStats.nodes === 1 ? 'node' : 'nodes'}, {subgraphStats.commits} {subgraphStats.commits === 1 ? 'commit' : 'commits'}
+                        </span>
+                        <button
+                            type="button"
+                            onClick={() => setSubgraphRootNodeId(null)}
+                            className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-950 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+                            aria-label="Exit subgraph view"
+                            title="Exit subgraph view"
+                        >
+                            <X className="h-3.5 w-3.5" />
+                        </button>
+                    </div>
+                ) : null}
                 {viewMode === 'branch' ? (
                     <div
                         ref={branchCanvasRef}
@@ -4613,8 +4714,8 @@ function GraphViewInternal({
                             projection={workspaceProjection}
                             focusedMessageId={focusedMessageId}
                             onNodeClick={handleNodeClick}
-                            filterActive={tagFilter.filterActive}
-                            matchingMessageIds={tagFilter.matchingMessageIds}
+                            filterActive={graphFilterState.filterActive}
+                            matchingMessageIds={graphFilterState.matchingMessageIds}
                             topOffset={controlsHeight}
                             activeScopeId={activeScopeId}
                             scopeViewMode={scopeViewMode}
@@ -4657,6 +4758,7 @@ function GraphViewInternal({
                 }}
                 onAddCommitsToMergePanel={handleAddCommitsToMergePanel}
                 onAddCommitToNode={setAddCommitTargetId}
+                onViewSubgraph={handleViewSubgraph}
                 onShareNode={handleShareNode}
             />
             <AddCommitDialog

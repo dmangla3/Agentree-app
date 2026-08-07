@@ -2,6 +2,7 @@ import type { AgentStatus } from '@shared/agentStatus';
 import type { CommitEntity, CommitObservationEntity, CommitParentEntity, Message, Scope, Summary } from '../stores/workspaceStore';
 import { getGraphParentId } from '../lib/graph/lineage';
 import { isRedundantCommitNode } from '../lib/graph/turnUtils';
+import { getMessageBaseCommitSha } from '../lib/graph/commitAccessors';
 import { resolveNodeState } from '../lib/runStateResolver';
 import { buildScopedFocusRoute, isImportedGitMessage, type ScopedFocusRoute } from './scopedFocusRoute';
 import {
@@ -55,6 +56,8 @@ export type ProjectedCommitKind =
   | 'merge_commit'
   | 'unknown_commit';
 
+export type ProjectedCommitOwnerKind = 'agentree' | 'external' | 'manual' | 'unknown';
+
 export interface ProjectedCommitEntity {
   entityId: string;
   kind: ProjectedCommitKind;
@@ -62,10 +65,16 @@ export interface ProjectedCommitEntity {
   shortSha: string;
   subject: string;
   sourceKind: string;
+  ownerKind: ProjectedCommitOwnerKind;
   placement: CommitPlacement;
   producedByNodeId: string | null;
+  visualOwnerNodeId: string | null;
   parentShas: string[];
   parentRows: CommitParentEntity[];
+  isMerge: boolean;
+  isProminentMerge: boolean;
+  layoutParentSha: string | null;
+  secondaryParentShas: string[];
   observations: CommitObservationEntity[];
   commit: CommitEntity;
   sortTs: number;
@@ -450,11 +459,41 @@ const getProjectedCommitKind = (
   return 'unknown_commit';
 };
 
+const isExternalSyncMessage = (message: Message): boolean => {
+  const meta = (((message.execution_data as any)?.meta || {}) as Record<string, unknown>);
+  return meta.sync_source === 'external_git';
+};
+
+const getMergeMetadata = (message: Message | null | undefined): Record<string, any> | null => {
+  const metadata = (message?.execution_data as any)?.merge_metadata;
+  return metadata && typeof metadata === 'object' ? metadata as Record<string, any> : null;
+};
+
+const getMergeTargetCommitSha = (message: Message | null | undefined): string | null => {
+  const targetSha = getMergeMetadata(message)?.target?.commitSha;
+  return typeof targetSha === 'string' && targetSha.trim() ? targetSha.trim() : null;
+};
+
+const getMergePrimaryParentNodeId = (message: Message | null | undefined): string | null => {
+  const nodeId = getMergeMetadata(message)?.lineage?.primary_parent_node_id;
+  return typeof nodeId === 'string' && nodeId.trim() ? nodeId.trim() : null;
+};
+
 const buildCommitProjection = (
   commits: CommitEntity[] = [],
   commitParents: CommitParentEntity[] = [],
   commitObservations: CommitObservationEntity[] = [],
+  messages: Message[] = [],
+  messageMap: Map<string, Message> = new Map(),
 ) => {
+  const outputOwnerBySha = new Map<string, Message>();
+  for (const message of messages) {
+    if (message.role !== 'assistant' || isExternalSyncMessage(message)) continue;
+    const outputSha = getCommitSha(message);
+    if (!outputSha) continue;
+    outputOwnerBySha.set(outputSha, message);
+  }
+
   const parentsByChildSha = new Map<string, CommitParentEntity[]>();
   for (const parent of commitParents) {
     const childParents = parentsByChildSha.get(parent.child_sha) ?? [];
@@ -483,6 +522,16 @@ const buildCommitProjection = (
     const observations = observationsBySha.get(commit.sha) ?? [];
     const sourceKind = normalizeSourceKind(commit.source_kind);
     const producedByNodeId = commit.produced_by_node_id ?? null;
+    const outputOwner = outputOwnerBySha.get(commit.sha) ?? null;
+    const visualOwnerNodeId = producedByNodeId ?? outputOwner?.id ?? null;
+    const ownerKind: ProjectedCommitOwnerKind = visualOwnerNodeId
+      ? 'agentree'
+      : sourceKind === 'manual' || observations.some((observation) => observation.source_kind === 'manual')
+        ? 'manual'
+        : sourceKind === 'external' || observations.some((observation) => observation.source_kind === 'external')
+          ? 'external'
+          : 'unknown';
+    const isMerge = sourceKind === 'merge' || parentRows.length > 1;
     const projected: ProjectedCommitEntity = {
       entityId: `commit:${commit.sha}`,
       kind: getProjectedCommitKind(commit, observations, parentRows),
@@ -490,16 +539,68 @@ const buildCommitProjection = (
       shortSha: commit.sha.slice(0, 8),
       subject: commit.subject?.trim() || `Commit ${commit.sha.slice(0, 8)}`,
       sourceKind,
-      placement: producedByNodeId ? 'conversation_sidecar' : 'commit_lineage',
+      ownerKind,
+      placement: visualOwnerNodeId ? 'conversation_sidecar' : 'commit_lineage',
       producedByNodeId,
+      visualOwnerNodeId,
       parentShas: parentRows.map((parent) => parent.parent_sha),
       parentRows,
+      isMerge,
+      isProminentMerge: false,
+      layoutParentSha: parentRows[0]?.parent_sha ?? null,
+      secondaryParentShas: [],
       observations,
       commit,
       sortTs: getCommitSortTs(commit),
     };
     commitBySha.set(commit.sha, projected);
   }
+
+  const agentreeOwnedShas = new Set(
+    Array.from(commitBySha.values())
+      .filter((commit) => commit.ownerKind === 'agentree')
+      .map((commit) => commit.sha)
+  );
+
+  const resolveOwnerMessage = (commit: ProjectedCommitEntity): Message | null => {
+    const ownerId = commit.visualOwnerNodeId;
+    return ownerId ? messageMap.get(ownerId) ?? null : null;
+  };
+
+  const chooseLayoutParentSha = (commit: ProjectedCommitEntity): string | null => {
+    if (commit.parentShas.length === 0) return null;
+    const parentSet = new Set(commit.parentShas);
+    if (!commit.isMerge) return commit.parentRows[0]?.parent_sha ?? commit.parentShas[0] ?? null;
+
+    const ownerMessage = resolveOwnerMessage(commit);
+    const explicitBaseSha = ownerMessage ? getMessageBaseCommitSha(ownerMessage) : null;
+    if (explicitBaseSha && parentSet.has(explicitBaseSha)) return explicitBaseSha;
+
+    const targetSha = getMergeTargetCommitSha(ownerMessage);
+    if (targetSha && parentSet.has(targetSha)) return targetSha;
+
+    const primaryParentNodeId = getMergePrimaryParentNodeId(ownerMessage);
+    const primaryParentMessage = primaryParentNodeId ? messageMap.get(primaryParentNodeId) ?? null : null;
+    const primaryParentOutputSha = primaryParentMessage ? getCommitSha(primaryParentMessage) : null;
+    if (primaryParentOutputSha && parentSet.has(primaryParentOutputSha)) return primaryParentOutputSha;
+
+    const agentreeParentSha = commit.parentShas.find((sha) => agentreeOwnedShas.has(sha));
+    if (agentreeParentSha && commit.ownerKind !== 'agentree') return agentreeParentSha;
+
+    return commit.parentRows[0]?.parent_sha ?? commit.parentShas[0] ?? null;
+  };
+
+  commitBySha.forEach((commit) => {
+    const layoutParentSha = chooseLayoutParentSha(commit);
+    const hasAgentreeParent = commit.parentShas.some((sha) => agentreeOwnedShas.has(sha));
+    commit.layoutParentSha = layoutParentSha;
+    commit.secondaryParentShas = commit.parentShas.filter((sha) => sha !== layoutParentSha);
+    commit.isProminentMerge = commit.isMerge && (
+      commit.ownerKind === 'agentree'
+      || commit.sourceKind === 'merge'
+      || hasAgentreeParent
+    );
+  });
 
   const sortedCommits = Array.from(commitBySha.values()).sort((left, right) => {
     if (left.sortTs !== right.sortTs) return left.sortTs - right.sortTs;
@@ -514,6 +615,7 @@ const buildCommitProjection = (
 
   const isGroupable = (commit: ProjectedCommitEntity): boolean => {
     if (commit.placement !== 'commit_lineage') return false;
+    if (commit.isProminentMerge) return false;
     return getGroupSourceKind(commit) !== null;
   };
 
@@ -532,12 +634,13 @@ const buildCommitProjection = (
   for (const commit of sortedCommits) {
     if (!isGroupable(commit)) continue;
     const sourceKind = getGroupSourceKind(commit);
-    commit.parentShas.forEach((parentSha) => {
+    const parentSha = commit.layoutParentSha;
+    if (parentSha) {
       const parent = commitBySha.get(parentSha);
-      if (!parent || !isGroupable(parent)) return;
-      if (getGroupSourceKind(parent) !== sourceKind) return;
+      if (!parent || !isGroupable(parent)) continue;
+      if (getGroupSourceKind(parent) !== sourceKind) continue;
       addNeighbor(commit.sha, parent.sha);
-    });
+    }
   }
 
   const pickBoundaryCommit = (
@@ -547,12 +650,12 @@ const buildCommitProjection = (
     const componentShas = new Set(component.map((commit) => commit.sha));
     const candidates = component.filter((commit) => {
       if (direction === 'root') {
-        return !commit.parentShas.some((parentSha) => componentShas.has(parentSha));
+        return !commit.layoutParentSha || !componentShas.has(commit.layoutParentSha);
       }
       return !Array.from(neighborsBySha.get(commit.sha) ?? [])
         .some((neighborSha) => {
           const neighbor = commitBySha.get(neighborSha);
-          return neighbor?.parentShas.includes(commit.sha) ?? false;
+          return neighbor?.layoutParentSha === commit.sha;
         });
     });
     return (candidates.length > 0 ? candidates : component)
@@ -592,7 +695,7 @@ const buildCommitProjection = (
       commitShas: component.map((commit) => commit.sha).sort((left, right) => left.localeCompare(right)),
       firstSha: first.sha,
       lastSha: last.sha,
-      parentSha: first.parentShas[0] ?? null,
+      parentSha: first.layoutParentSha ?? null,
       childSha: null,
       sortTs: first.sortTs,
       expanded: false,
@@ -928,7 +1031,7 @@ function getStableWorkspaceProjectionBase(
   const entitiesBySummaryId = new Map(summaryEntities.map((entity) => [entity.summary!.id, entity]));
   const childEntityIdsByParentEntityId = new Map<string, string[]>();
   const commitEntityIdsByAssistantEntityId = new Map<string, string[]>();
-  const commitProjection = buildCommitProjection(commits, commitParents, commitObservations);
+  const commitProjection = buildCommitProjection(commits, commitParents, commitObservations, sortedMessages, messageMap);
 
   for (const entity of messageEntities) {
     if (entity.parentEntityId) {

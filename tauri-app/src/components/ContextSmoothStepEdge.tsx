@@ -1,5 +1,5 @@
 import { BaseEdge, type EdgeProps, getSmoothStepPath } from '@xyflow/react';
-import { ContextResetCut } from './ContextResetCut';
+import { ContextResetCut, getContextResetCutPosition } from './ContextResetCut';
 
 export const ContextSmoothStepEdge = ({
   id,
@@ -13,7 +13,7 @@ export const ContextSmoothStepEdge = ({
   markerEnd,
   data,
 }: EdgeProps) => {
-  const [path, labelX, labelY] = getSmoothStepPath({
+  const [path] = getSmoothStepPath({
     sourceX,
     sourceY,
     sourcePosition,
@@ -21,11 +21,22 @@ export const ContextSmoothStepEdge = ({
     targetY,
     targetPosition,
   });
+  const contextBoundary = (data as any)?.contextBoundary;
+  const contextResetCutPosition = getContextResetCutPosition({
+    targetX,
+    targetY,
+    targetPosition,
+    anchor: contextBoundary?.anchor,
+  });
   return (
     <>
       <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />
-      {(data as any)?.contextBoundary?.type === 'fresh' && (
-        <ContextResetCut x={labelX} y={labelY} />
+      {contextBoundary?.type === 'fresh' && (
+        <ContextResetCut
+          x={contextResetCutPosition.x}
+          y={contextResetCutPosition.y}
+          orientation={contextResetCutPosition.orientation}
+        />
       )}
     </>
   );

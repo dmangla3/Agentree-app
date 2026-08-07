@@ -13,6 +13,7 @@ export function NodeHoverCardContent({ entity, projection }: NodeHoverCardConten
   const openFloatingChatInput = useWorkspaceStore((state) => state.openFloatingChatInput);
   if (!entity || !projection) return null;
   const replyParentId = entity.focusMessageId || entity.messageId || null;
+  const showReplyAction = entity.kind !== 'commit_message';
 
   return (
     <div
@@ -29,6 +30,7 @@ export function NodeHoverCardContent({ entity, projection }: NodeHoverCardConten
           <div className="min-w-0 rounded-[20px] bg-background/55 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.24)] dark:bg-white/[0.03]">
             <ChatNodeDispatcher
               entityId={entity.entityId}
+              entityOverride={entity}
               projection={projection}
               focusedMessageId={null}
               isSelected={false}
@@ -39,7 +41,7 @@ export function NodeHoverCardContent({ entity, projection }: NodeHoverCardConten
           </div>
         </div>
       </div>
-      {replyParentId && (
+      {showReplyAction && replyParentId && (
         <div className="mt-3 flex justify-end border-t border-border/60 pt-3">
           <Button
             type="button"

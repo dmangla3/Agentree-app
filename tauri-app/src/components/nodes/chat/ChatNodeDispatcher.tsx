@@ -3,10 +3,12 @@ import { ChatUserCard } from './ChatUserCard';
 import { ChatAssistantCard } from './ChatAssistantCard';
 import { ChatCommitCard } from './ChatCommitCard';
 import { ChatSummaryCard } from './ChatSummaryCard';
+import type { ProjectedNodeEntity } from '../../../domain/workspaceProjection';
 
 
 interface ChatNodeDispatcherProps {
   entityId?: string;
+  entityOverride?: ProjectedNodeEntity;
   projection: any; // workspace projection
   scopeColorById?: Map<string, string | null>;
   scopeNameById?: Map<string, string>;
@@ -19,6 +21,7 @@ interface ChatNodeDispatcherProps {
 
 export const ChatNodeDispatcher = memo(({
   entityId,
+  entityOverride,
   projection,
   scopeColorById,
   scopeNameById,
@@ -28,7 +31,7 @@ export const ChatNodeDispatcher = memo(({
   onSelect,
   onContextMenu
 }: ChatNodeDispatcherProps) => {
-  const entity = entityId ? projection.entitiesById.get(entityId) : null;
+  const entity = entityOverride ?? (entityId ? projection.entitiesById.get(entityId) : null);
 
   const handleFocus = useCallback(() => {
     if (entity?.focusMessageId) {

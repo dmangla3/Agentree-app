@@ -1,5 +1,7 @@
-import { assign, createMachine } from 'xstate';
-import type { AgentRunEvent, AgentRunInput, AgentRunSnapshot, AgentRunStatus } from './agentRun.types';
+import { assign, setup } from 'xstate';
+import type { AgentRunEvent, AgentRunInput, AgentRunPhase, AgentRunSnapshot, AgentRunStatus } from './agentRun.types';
+
+type MachineContext = { snapshot: AgentRunSnapshot };
 
 const TERMINAL_STATUSES = new Set<string>(['completed', 'failed', 'cancelled', 'error']);
 const RUNNING_OR_LATER_STATUSES = new Set<string>(['running', 'streaming', 'completed', 'failed', 'cancelled', 'error']);
@@ -98,6 +100,24 @@ const mergeExecutionData = (current: Record<string, any>, patch: Record<string, 
 
 const appendTimelineEvent = (timeline: any[], nextEvent: any) => {
   const nextTimeline = [...timeline];
+  if (nextEvent?.type === 'tool_output_delta') {
+    const toolUseId = nextEvent.toolUseId || nextEvent.tool_use_id || nextEvent.id;
+    const delta = typeof nextEvent.delta === 'string' ? nextEvent.delta : '';
+    if (!toolUseId || !delta) return nextTimeline;
+    const priorIndex = [...nextTimeline].reverse().findIndex((event: any) => (
+      event?.type === 'tool_use' &&
+      (event.toolUseId || event.tool_use_id || event.id) === toolUseId
+    ));
+    if (priorIndex === -1) return nextTimeline;
+    const index = nextTimeline.length - 1 - priorIndex;
+    const prior = nextTimeline[index];
+    const existingOutput = typeof prior?.toolOutput === 'string' ? prior.toolOutput : '';
+    nextTimeline[index] = {
+      ...prior,
+      toolOutput: existingOutput ? `${existingOutput}${delta}` : delta,
+    };
+    return nextTimeline;
+  }
   if (nextEvent?.type === 'tool_result') {
     const toolUseId = nextEvent.toolUseId || nextEvent.tool_use_id || nextEvent.id;
     if (toolUseId) {
@@ -363,26 +383,73 @@ export const reduceAgentRunSnapshot = (
   }
 };
 
-export const agentRunMachine = createMachine({
+const AGENT_RUN_PHASES: AgentRunPhase[] = [
+  'idle',
+  'optimistic',
+  'setup',
+  'running',
+  'streaming',
+  'finalizing',
+  'terminal',
+  'cleanup',
+];
+
+const agentRunMachineSetup = setup({
   types: {} as {
-    context: { snapshot: AgentRunSnapshot };
+    context: MachineContext;
     events: AgentRunEvent;
     input: AgentRunInput;
   },
+  actions: {
+    assignReducedSnapshot: assign({
+      snapshot: ({ context, event }) => reduceAgentRunSnapshot(context.snapshot, event),
+    }),
+  },
+});
+
+const transitionForReducedPhase = (phase: AgentRunPhase) => ({
+  target: `#agentRun.${phase}`,
+  guard: ({ context, event }: { context: MachineContext; event: AgentRunEvent }) => (
+    reduceAgentRunSnapshot(context.snapshot, event).phase === phase
+  ),
+  actions: 'assignReducedSnapshot' as const,
+});
+
+const routeByReducedPhase = [
+  ...AGENT_RUN_PHASES.map(transitionForReducedPhase),
+  { actions: 'assignReducedSnapshot' as const },
+];
+
+const initialPhaseTransition = (phase: AgentRunPhase) => ({
+  target: `#agentRun.${phase}`,
+  guard: ({ context }: { context: MachineContext }) => context.snapshot.phase === phase,
+});
+
+const routeInitialSnapshotPhase = AGENT_RUN_PHASES
+  .filter((phase) => phase !== 'idle')
+  .map(initialPhaseTransition);
+
+const phaseState = (phase: AgentRunPhase) => ({
+  ...(phase === 'idle' ? { always: routeInitialSnapshotPhase } : {}),
+  on: {
+    '*': routeByReducedPhase,
+  },
+});
+
+export const agentRunMachine = agentRunMachineSetup.createMachine({
   id: 'agentRun',
   context: ({ input }) => ({
     snapshot: initialSnapshot(input),
   }),
-  initial: 'live',
+  initial: 'idle',
   states: {
-    live: {
-      on: {
-        '*': {
-          actions: assign({
-            snapshot: ({ context, event }) => reduceAgentRunSnapshot(context.snapshot, event as AgentRunEvent),
-          }),
-        },
-      },
-    },
+    idle: phaseState('idle'),
+    optimistic: phaseState('optimistic'),
+    setup: phaseState('setup'),
+    running: phaseState('running'),
+    streaming: phaseState('streaming'),
+    finalizing: phaseState('finalizing'),
+    terminal: phaseState('terminal'),
+    cleanup: phaseState('cleanup'),
   },
 });

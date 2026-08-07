@@ -129,6 +129,33 @@ describe('agentRun.machine', () => {
     expect(snapshot.lastSeq).toBe(11);
   });
 
+  it('appends tool output deltas to the matching timeline tool row', () => {
+    const snapshot = reduce([
+      {
+        type: 'timeline_event',
+        event: {
+          type: 'tool_use',
+          timestamp: 1,
+          toolName: 'commandExecution',
+          toolUseId: 'tool-1',
+          toolInput: { command: "printf 'a\\nb\\n'" },
+        },
+      },
+      {
+        type: 'timeline_event',
+        event: { type: 'tool_output_delta', timestamp: 2, toolUseId: 'tool-1', delta: 'a\n' },
+      },
+      {
+        type: 'timeline_event',
+        event: { type: 'tool_output_delta', timestamp: 3, toolUseId: 'tool-1', delta: 'b\n' },
+      },
+    ]);
+
+    expect(snapshot.timeline).toHaveLength(1);
+    expect(snapshot.timeline[0].toolOutput).toBe('a\nb\n');
+    expect(snapshot.executionData.timeline[0].toolOutput).toBe('a\nb\n');
+  });
+
   it('keeps a run active from provider stop until finalize ack', () => {
     const beforeAck = reduce([
       { type: 'status', status: 'running', progress: 'Running...' },
@@ -297,6 +324,43 @@ describe('agentRun.machine', () => {
     expect(snapshot.content).toBe('final answer');
     expect(snapshot.lastStreamSeq).toBe(2);
     expect(snapshot.timeline).toHaveLength(2);
+  });
+
+  it('keeps the actor-owned structured timeline through terminal finalization', () => {
+    const snapshot = reduce([
+      { type: 'content', content: 'Inspecting files', appendedText: 'Inspecting files', streamSeq: 1, timestamp: 10 },
+      {
+        type: 'timeline_event',
+        event: {
+          type: 'tool_use',
+          toolName: 'commandExecution',
+          toolUseId: 'call-1',
+          timestamp: 20,
+        },
+      },
+      {
+        type: 'timeline_event',
+        event: {
+          type: 'tool_result',
+          toolName: 'commandExecution',
+          toolUseId: 'call-1',
+          toolOutput: 'ok',
+          timestamp: 30,
+        },
+      },
+      {
+        type: 'terminal',
+        status: 'completed',
+        content: 'Final summary',
+        reason: 'completed',
+        holdMs: 10,
+      },
+    ]);
+
+    expect(snapshot.status).toBe('completed');
+    expect(snapshot.content).toBe('Final summary');
+    expect(snapshot.timeline.map((event: any) => event.type)).toEqual(['message', 'tool_use', 'tool_result']);
+    expect(snapshot.executionData.timeline).toBe(snapshot.timeline);
   });
 
   it('replaces optimistic node ids without losing streamed content', () => {

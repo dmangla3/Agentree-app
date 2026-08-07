@@ -241,6 +241,10 @@ fn parent_id_from_execution_data(execution_data: &JsonValue) -> Option<String> {
         .map(|value| value.to_string())
 }
 
+fn run_ledger_user_node_id_from_context(context: &AgentRunContext) -> Option<String> {
+    parent_id_from_execution_data(&context.execution_data)
+}
+
 fn base_selected_from_node_id_from_execution_data(execution_data: &JsonValue) -> Option<String> {
     execution_data
         .get("base_selected_from_node_id")
@@ -274,7 +278,7 @@ fn upsert_run_ledger_for_context(
     let workspace_id = workspace_id_from_execution_data(&context.execution_data);
     let run = crate::db::AgentRunLedgerUpsert {
         run_id: context.run_id.clone(),
-        user_node_id: None,
+        user_node_id: run_ledger_user_node_id_from_context(context),
         assistant_node_id: session_id.to_string(),
         workspace_id,
         repo_path: context.repo_path.clone(),
@@ -735,6 +739,40 @@ fn append_message_timeline_segment(run_state: &mut AgentRunState, text: &str, ti
     }));
 }
 
+fn timeline_tool_use_id(event: &JsonValue) -> Option<&str> {
+    event
+        .get("toolUseId")
+        .or_else(|| event.get("tool_use_id"))
+        .or_else(|| event.get("id"))
+        .and_then(|value| value.as_str())
+}
+
+fn append_tool_output_delta(run_state: &mut AgentRunState, tool_use_id: &str, delta: &str) {
+    if delta.is_empty() {
+        return;
+    }
+    for event in run_state.timeline.iter_mut().rev() {
+        if event.get("type").and_then(|value| value.as_str()) != Some("tool_use") {
+            continue;
+        }
+        if timeline_tool_use_id(event) != Some(tool_use_id) {
+            continue;
+        }
+        let existing = event
+            .get("toolOutput")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if let Some(object) = event.as_object_mut() {
+            object.insert(
+                "toolOutput".to_string(),
+                JsonValue::String(merge_text_output(&existing, delta)),
+            );
+        }
+        return;
+    }
+}
+
 fn normalize_timeline_event(event: &JsonValue) -> Option<JsonValue> {
     let event_type = event.get("type")?.as_str()?;
     let timestamp = event
@@ -917,6 +955,18 @@ fn update_run_state_from_event(run_state: &mut AgentRunState, event: &JsonValue)
         "provider_meta" => {
             if let Some(meta) = event.get("meta").and_then(|value| value.as_object()) {
                 merge_json_maps(&mut run_state.meta, meta);
+            }
+        }
+        "tool_output_delta" => {
+            if let (Some(tool_use_id), Some(delta)) = (
+                event
+                    .get("toolUseId")
+                    .or_else(|| event.get("tool_use_id"))
+                    .or_else(|| event.get("id"))
+                    .and_then(|value| value.as_str()),
+                event.get("delta").and_then(|value| value.as_str()),
+            ) {
+                append_tool_output_delta(run_state, tool_use_id, delta);
             }
         }
         "session" => {
@@ -2012,7 +2062,7 @@ pub fn start_agent_run(
     ))?;
     let initial_run = crate::db::AgentRunLedgerUpsert {
         run_id: intent.run_id.clone(),
-        user_node_id: None,
+        user_node_id: run_ledger_user_node_id_from_context(&intent.run_context),
         assistant_node_id: intent.assistant_node_id.clone(),
         workspace_id: intent.workspace_id.clone(),
         repo_path: Some(intent.repo_path.clone()),
@@ -2295,7 +2345,24 @@ pub fn get_agent_run_state(
 
 #[cfg(test)]
 mod tests {
-    use super::{cleanup_requires_server_final_persisted, cleanup_terminal_status_allows_cleanup};
+    use super::{
+        cleanup_requires_server_final_persisted, cleanup_terminal_status_allows_cleanup,
+        run_ledger_user_node_id_from_context, update_run_state_from_event, AgentRunContext,
+        AgentRunState,
+    };
+    use serde_json::json;
+
+    fn test_run_state() -> AgentRunState {
+        AgentRunState::new(AgentRunContext {
+            run_id: "run-1".to_string(),
+            execution_data: json!({}),
+            git_branch_name: None,
+            repo_path: None,
+            parent_commit: None,
+            author_name: None,
+            prompt_fallback: None,
+        })
+    }
 
     #[test]
     fn cleanup_blocks_non_terminal_statuses() {
@@ -2313,5 +2380,71 @@ mod tests {
         assert!(!cleanup_requires_server_final_persisted("failed"));
         assert!(!cleanup_requires_server_final_persisted("cancelled"));
         assert!(!cleanup_requires_server_final_persisted("failed_spawn"));
+    }
+
+    #[test]
+    fn run_ledger_user_node_id_comes_from_assistant_parent_id() {
+        let context = AgentRunContext {
+            run_id: "run-1".to_string(),
+            execution_data: json!({
+                "parentId": "user-1",
+                "meta": {
+                    "context_parent_node_id": "assistant-before-user"
+                }
+            }),
+            git_branch_name: None,
+            repo_path: None,
+            parent_commit: None,
+            author_name: None,
+            prompt_fallback: None,
+        };
+
+        assert_eq!(
+            run_ledger_user_node_id_from_context(&context).as_deref(),
+            Some("user-1")
+        );
+    }
+
+    #[test]
+    fn message_deltas_preserve_newlines_in_content_and_timeline() {
+        let mut state = test_run_state();
+        update_run_state_from_event(
+            &mut state,
+            &json!({"type": "message_delta", "delta": "first\n", "timestamp": 1}),
+        );
+        update_run_state_from_event(
+            &mut state,
+            &json!({"type": "message_delta", "delta": "\nsecond", "timestamp": 2}),
+        );
+
+        assert_eq!(state.content, "first\n\nsecond");
+        assert_eq!(state.timeline.len(), 1);
+        assert_eq!(state.timeline[0]["content"], "first\n\nsecond");
+    }
+
+    #[test]
+    fn tool_output_deltas_append_to_existing_tool_use_without_extra_rows() {
+        let mut state = test_run_state();
+        update_run_state_from_event(
+            &mut state,
+            &json!({
+                "type": "tool_use",
+                "id": "tool-1",
+                "name": "commandExecution",
+                "input": {"command": "printf 'a\\nb\\n'"},
+                "timestamp": 1
+            }),
+        );
+        update_run_state_from_event(
+            &mut state,
+            &json!({"type": "tool_output_delta", "toolUseId": "tool-1", "delta": "a\n", "timestamp": 2}),
+        );
+        update_run_state_from_event(
+            &mut state,
+            &json!({"type": "tool_output_delta", "toolUseId": "tool-1", "delta": "b\n", "timestamp": 3}),
+        );
+
+        assert_eq!(state.timeline.len(), 1);
+        assert_eq!(state.timeline[0]["toolOutput"], "a\nb\n");
     }
 }

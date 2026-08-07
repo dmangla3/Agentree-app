@@ -547,7 +547,41 @@ def _thread_user_turn_count(thread: Any) -> int | None:
         return None
 
 
+def _enum_value(value: Any) -> Any:
+    return getattr(value, "value", value)
+
+
+def _tool_output_from_item(item: Any, output_deltas_by_item_id: dict[str, str]) -> Any:
+    item_id = getattr(item, "id", None)
+    delta_output = output_deltas_by_item_id.get(item_id or "")
+    aggregated_output = getattr(item, "aggregated_output", None)
+    if isinstance(aggregated_output, str) and aggregated_output:
+        return aggregated_output
+    if isinstance(delta_output, str) and delta_output:
+        return delta_output
+    return aggregated_output
+
+
+def _map_mcp_tool_name(item: Any) -> str:
+    server = getattr(item, "server", None)
+    tool = getattr(item, "tool", None)
+    if isinstance(server, str) and server and isinstance(tool, str) and tool:
+        return f"{server}.{tool}"
+    if isinstance(tool, str) and tool:
+        return tool
+    return "mcpToolCall"
+
+
 def _map_tool_event(item: Any, *, completed: bool) -> dict[str, Any] | None:
+    return _map_tool_event_with_output(item, completed=completed, output_deltas_by_item_id={})
+
+
+def _map_tool_event_with_output(
+    item: Any,
+    *,
+    completed: bool,
+    output_deltas_by_item_id: dict[str, str],
+) -> dict[str, Any] | None:
     item_type = getattr(item, "type", None)
     item_id = getattr(item, "id", None)
     item_payload = _json_default(item)
@@ -558,8 +592,9 @@ def _map_tool_event(item: Any, *, completed: bool) -> dict[str, Any] | None:
                 "type": "tool_result",
                 "toolName": "commandExecution",
                 "toolUseId": item_id,
-                "toolOutput": getattr(item, "aggregated_output", None),
-                "status": getattr(getattr(item, "status", None), "value", getattr(item, "status", None)),
+                "toolOutput": _tool_output_from_item(item, output_deltas_by_item_id),
+                "status": _enum_value(getattr(item, "status", None)),
+                "durationMs": getattr(item, "duration_ms", None),
                 "item_type": item_type,
                 "provider_item_id": item_id,
                 "provider_item": item_payload,
@@ -579,22 +614,150 @@ def _map_tool_event(item: Any, *, completed: bool) -> dict[str, Any] | None:
         }
 
     if item_type == "mcpToolCall":
+        tool_name = _map_mcp_tool_name(item)
         if completed:
+            error = getattr(item, "error", None)
             return {
                 "type": "tool_result",
-                "toolName": getattr(item, "name", "mcpToolCall"),
+                "toolName": tool_name,
                 "toolUseId": item_id,
                 "toolOutput": getattr(item, "result", None),
-                "is_error": getattr(item, "is_error", None),
+                "is_error": error is not None or _enum_value(getattr(item, "status", None)) == "failed",
+                "durationMs": getattr(item, "duration_ms", None),
                 "item_type": item_type,
                 "provider_item_id": item_id,
                 "provider_item": item_payload,
             }
         return {
             "type": "tool_use",
-            "name": getattr(item, "name", "mcpToolCall"),
+            "name": tool_name,
             "id": item_id,
             "input": getattr(item, "arguments", None),
+            "item_type": item_type,
+            "provider_item_id": item_id,
+            "provider_item": item_payload,
+        }
+
+    if item_type == "fileChange":
+        if completed:
+            return {
+                "type": "tool_result",
+                "toolName": "fileChange",
+                "toolUseId": item_id,
+                "toolOutput": {
+                    "status": _enum_value(getattr(item, "status", None)),
+                    "output": output_deltas_by_item_id.get(item_id or ""),
+                },
+                "is_error": _enum_value(getattr(item, "status", None)) == "failed",
+                "item_type": item_type,
+                "provider_item_id": item_id,
+                "provider_item": item_payload,
+            }
+        return {
+            "type": "tool_use",
+            "name": "fileChange",
+            "id": item_id,
+            "input": {"changes": getattr(item, "changes", None)},
+            "item_type": item_type,
+            "provider_item_id": item_id,
+            "provider_item": item_payload,
+        }
+
+    if item_type == "dynamicToolCall":
+        tool_name = getattr(item, "tool", None) or "dynamicToolCall"
+        if completed:
+            return {
+                "type": "tool_result",
+                "toolName": tool_name,
+                "toolUseId": item_id,
+                "toolOutput": getattr(item, "content_items", None),
+                "is_error": getattr(item, "success", None) is False,
+                "durationMs": getattr(item, "duration_ms", None),
+                "item_type": item_type,
+                "provider_item_id": item_id,
+                "provider_item": item_payload,
+            }
+        return {
+            "type": "tool_use",
+            "name": tool_name,
+            "id": item_id,
+            "input": getattr(item, "arguments", None),
+            "item_type": item_type,
+            "provider_item_id": item_id,
+            "provider_item": item_payload,
+        }
+
+    if item_type == "webSearch":
+        if completed:
+            return {
+                "type": "tool_result",
+                "toolName": "webSearch",
+                "toolUseId": item_id,
+                "toolOutput": getattr(item, "action", None),
+                "item_type": item_type,
+                "provider_item_id": item_id,
+                "provider_item": item_payload,
+            }
+        return {
+            "type": "tool_use",
+            "name": "webSearch",
+            "id": item_id,
+            "input": {"query": getattr(item, "query", None)},
+            "item_type": item_type,
+            "provider_item_id": item_id,
+            "provider_item": item_payload,
+        }
+
+    if item_type == "imageGeneration":
+        if completed:
+            return {
+                "type": "tool_result",
+                "toolName": "imageGeneration",
+                "toolUseId": item_id,
+                "toolOutput": {
+                    "status": getattr(item, "status", None),
+                    "revisedPrompt": getattr(item, "revised_prompt", None),
+                    "result": getattr(item, "result", None),
+                },
+                "item_type": item_type,
+                "provider_item_id": item_id,
+                "provider_item": item_payload,
+            }
+        return {
+            "type": "tool_use",
+            "name": "imageGeneration",
+            "id": item_id,
+            "input": {},
+            "item_type": item_type,
+            "provider_item_id": item_id,
+            "provider_item": item_payload,
+        }
+
+    if item_type == "collabAgentToolCall":
+        tool_name = getattr(item, "tool", None) or "collabAgentToolCall"
+        if completed:
+            return {
+                "type": "tool_result",
+                "toolName": tool_name,
+                "toolUseId": item_id,
+                "toolOutput": {
+                    "status": _enum_value(getattr(item, "status", None)),
+                    "receiverThreadIds": getattr(item, "receiver_thread_ids", None),
+                    "agentsStates": getattr(item, "agents_states", None),
+                },
+                "item_type": item_type,
+                "provider_item_id": item_id,
+                "provider_item": item_payload,
+            }
+        return {
+            "type": "tool_use",
+            "name": tool_name,
+            "id": item_id,
+            "input": {
+                "prompt": getattr(item, "prompt", None),
+                "model": getattr(item, "model", None),
+                "reasoningEffort": getattr(item, "reasoning_effort", None),
+            },
             "item_type": item_type,
             "provider_item_id": item_id,
             "provider_item": item_payload,
@@ -632,6 +795,7 @@ def main() -> int:
     branch_point_mapping_confidence = "unknown"
     cumulative_text = ""
     last_provider_error: dict[str, Any] | None = None
+    output_deltas_by_item_id: dict[str, str] = {}
 
     def _fail_provider_thread_reuse(
         *,
@@ -941,10 +1105,32 @@ def main() -> int:
                     item = _extract_item(getattr(payload, "item", None))
                     if item is None:
                         continue
-                    mapped_tool = _map_tool_event(item, completed=False)
+                    mapped_tool = _map_tool_event_with_output(
+                        item,
+                        completed=False,
+                        output_deltas_by_item_id=output_deltas_by_item_id,
+                    )
                     if mapped_tool:
                         mapped_tool["timestamp"] = now_ms
                         _emit(mapped_tool)
+                    continue
+
+                if method in ("item/commandExecution/outputDelta", "item/fileChange/outputDelta"):
+                    delta = getattr(payload, "delta", "")
+                    item_id = getattr(payload, "item_id", None)
+                    if isinstance(delta, str) and delta and isinstance(item_id, str) and item_id:
+                        output_deltas_by_item_id[item_id] = output_deltas_by_item_id.get(item_id, "") + delta
+                        _emit(
+                            {
+                                "type": "tool_output_delta",
+                                "toolUseId": item_id,
+                                "delta": delta,
+                                "provider_item_id": item_id,
+                                "provider_thread_id": getattr(payload, "thread_id", None),
+                                "provider_turn_id": getattr(payload, "turn_id", None),
+                                "timestamp": now_ms,
+                            }
+                        )
                     continue
 
                 if method == "item/completed":
@@ -974,15 +1160,25 @@ def main() -> int:
                             _emit({"type": "thinking", "content": text, "timestamp": now_ms})
                         continue
 
-                    mapped_tool = _map_tool_event(item, completed=True)
+                    mapped_tool = _map_tool_event_with_output(
+                        item,
+                        completed=True,
+                        output_deltas_by_item_id=output_deltas_by_item_id,
+                    )
                     if mapped_tool:
                         mapped_tool["timestamp"] = now_ms
                         _emit(mapped_tool)
                     continue
 
-                if method in ("item/reasoningSummaryText/delta", "item/reasoningText/delta", "item/plan/delta"):
+                if method in (
+                    "item/reasoningSummaryText/delta",
+                    "item/reasoningText/delta",
+                    "item/reasoning/summaryTextDelta",
+                    "item/reasoning/textDelta",
+                    "item/plan/delta",
+                ):
                     text_delta = getattr(payload, "delta", "")
-                    if isinstance(text_delta, str) and text_delta.strip():
+                    if isinstance(text_delta, str) and text_delta:
                         _emit({"type": "thinking", "content": text_delta, "timestamp": now_ms})
                     continue
 
