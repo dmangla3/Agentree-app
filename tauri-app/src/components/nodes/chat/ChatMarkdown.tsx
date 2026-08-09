@@ -1,7 +1,10 @@
+import { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import { cn } from '../../../lib/utils';
+
+const chatMarkdownPlugins = [remarkGfm, remarkBreaks];
 
 export const chatMarkdownComponents = {
   code: (props: any) => {
@@ -65,10 +68,12 @@ export const chatMarkdownComponents = {
   hr: (props: any) => <hr className="my-3 max-w-full border-border/70" {...props} />,
 };
 
-export function ChatMarkdown({ children }: { children: string }) {
+export const ChatMarkdown = memo(function ChatMarkdown({ children }: { children: string }) {
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={chatMarkdownComponents}>
+    <ReactMarkdown remarkPlugins={chatMarkdownPlugins} components={chatMarkdownComponents}>
       {children}
     </ReactMarkdown>
   );
-}
+});
+
+ChatMarkdown.displayName = 'ChatMarkdown';

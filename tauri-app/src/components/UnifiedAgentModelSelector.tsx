@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronRight, CircleGauge, Sparkles } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { flushSync } from 'react-dom';
+import { Check, ChevronRight, CircleGauge, Minus, Plus, Sparkles, X } from 'lucide-react';
 import { useAgents, type Agent } from '../hooks/useAgents';
 import { runtimeModels } from '../lib/runtimeModels';
 import { ScrollArea } from "../../@/components/ui/scroll-area";
-import { Popover, PopoverContent, PopoverTrigger } from "../../@/components/ui/popover";
+import { Checkbox } from "../../@/components/ui/checkbox";
 import { cn } from '../lib/utils';
 import {
     getProviderLimitSeverity,
@@ -16,6 +17,8 @@ import {
 interface UnifiedAgentModelSelectorProps {
     onSelectAgent: (agentId: string) => void;
     selectedAgentId: string | null;
+    agentRunCounts?: Record<string, number>;
+    onAgentRunCountChange?: (agentId: string, count: number) => void;
 }
 
 type AgentModelConfig = {
@@ -44,9 +47,6 @@ type AgentFamily = {
 };
 
 const providerEffortNoun = (provider: string) => (provider === 'claude' ? 'Thinking' : 'Reasoning');
-const FLYOUT_OPEN_DELAY_MS = 180;
-const FLYOUT_CLOSE_DELAY_MS = 120;
-const SCROLL_SETTLE_DELAY_MS = 220;
 
 const providerAccentClasses = (provider: string) => {
     if (provider === 'claude') {
@@ -200,76 +200,32 @@ function AnthropicMark({ className }: { className?: string }) {
 
 export function UnifiedAgentModelSelector({
     onSelectAgent,
-    selectedAgentId
+    selectedAgentId,
+    agentRunCounts,
+    onAgentRunCountChange,
 }: UnifiedAgentModelSelectorProps) {
     const { data: agentsData } = useAgents();
     const agents = useMemo(() => agentsData ?? [], [agentsData]);
     const providerLimits = useProviderLimitsStore((state) => state.byProvider);
     const [hoveredFamilyKey, setHoveredFamilyKey] = useState<string | null>(null);
-    const openFlyoutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const closeFlyoutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const scrollSettleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const isListScrolling = useRef(false);
+    const supportsMultiRun = Boolean(onAgentRunCountChange);
+    const totalSelectedRuns = useMemo(() => (
+        Object.values(agentRunCounts ?? {}).reduce((total, count) => total + Math.max(0, count || 0), 0)
+    ), [agentRunCounts]);
 
-    const clearFlyoutClose = () => {
-        if (closeFlyoutTimer.current) {
-            clearTimeout(closeFlyoutTimer.current);
-            closeFlyoutTimer.current = null;
-        }
+    const getAgentRunCount = (agentId: string) => agentRunCounts?.[agentId] ?? (agentId === selectedAgentId ? 1 : 0);
+
+    const updateAgentRunCount = (agentId: string, count: number) => {
+        onSelectAgent(agentId);
+        onAgentRunCountChange?.(agentId, count);
     };
 
-    const clearFlyoutOpen = () => {
-        if (openFlyoutTimer.current) {
-            clearTimeout(openFlyoutTimer.current);
-            openFlyoutTimer.current = null;
-        }
+    const activateFamily = (familyKey: string) => {
+        if (hoveredFamilyKey === familyKey) return;
+        flushSync(() => {
+            setHoveredFamilyKey(familyKey);
+        });
     };
-
-    const openFamilyFlyoutSoon = (familyKey: string) => {
-        clearFlyoutOpen();
-        clearFlyoutClose();
-
-        if (isListScrolling.current) {
-            return;
-        }
-
-        openFlyoutTimer.current = setTimeout(() => {
-            if (!isListScrolling.current) {
-                setHoveredFamilyKey(familyKey);
-            }
-        }, FLYOUT_OPEN_DELAY_MS);
-    };
-
-    const closeFamilyFlyoutSoon = (familyKey: string) => {
-        clearFlyoutOpen();
-        clearFlyoutClose();
-        closeFlyoutTimer.current = setTimeout(() => {
-            setHoveredFamilyKey((current) => current === familyKey ? null : current);
-        }, FLYOUT_CLOSE_DELAY_MS);
-    };
-
-    const handleModelListWheel = () => {
-        isListScrolling.current = true;
-        clearFlyoutOpen();
-
-        if (scrollSettleTimer.current) {
-            clearTimeout(scrollSettleTimer.current);
-        }
-
-        scrollSettleTimer.current = setTimeout(() => {
-            isListScrolling.current = false;
-        }, SCROLL_SETTLE_DELAY_MS);
-    };
-
-    useEffect(() => {
-        return () => {
-            clearFlyoutOpen();
-            clearFlyoutClose();
-            if (scrollSettleTimer.current) {
-                clearTimeout(scrollSettleTimer.current);
-            }
-        };
-    }, []);
 
     const groupedAgents = useMemo(() => {
         const providerGroups = new Map<string, Map<string, AgentFamily>>();
@@ -285,7 +241,7 @@ export function UnifiedAgentModelSelector({
             const existing = providerFamilies.get(familyKey);
             if (existing) {
                 existing.models.push(agent);
-                if (agent.id === selectedAgentId) {
+                if (agent.id === selectedAgentId || (agentRunCounts?.[agent.id] ?? 0) > 0) {
                     existing.selectedAgentId = agent.id;
                 }
             } else {
@@ -297,7 +253,7 @@ export function UnifiedAgentModelSelector({
                     modesCount: 1,
                     models: [agent],
                     defaultAgentId: null,
-                    selectedAgentId: agent.id === selectedAgentId ? agent.id : null,
+                    selectedAgentId: agent.id === selectedAgentId || (agentRunCounts?.[agent.id] ?? 0) > 0 ? agent.id : null,
                 });
             }
             providerGroups.set(provider, providerFamilies);
@@ -324,7 +280,7 @@ export function UnifiedAgentModelSelector({
                         modesCount: sortedModels.length,
                         models: sortedModels,
                         defaultAgentId: defaultAgent?.id ?? null,
-                        selectedAgentId: sortedModels.find((model) => model.id === selectedAgentId)?.id ?? null,
+                        selectedAgentId: sortedModels.find((model) => model.id === selectedAgentId || (agentRunCounts?.[model.id] ?? 0) > 0)?.id ?? null,
                     };
                 }).sort(sortModelFamilies);
 
@@ -333,7 +289,24 @@ export function UnifiedAgentModelSelector({
                     families: providerFamilies,
                 };
             });
-    }, [agents, selectedAgentId]);
+    }, [agents, selectedAgentId, agentRunCounts]);
+
+    const familyList = useMemo(() => groupedAgents.flatMap((group) => group.families), [groupedAgents]);
+    const activeFamily = useMemo(() => {
+        return familyList.find((family) => family.key === hoveredFamilyKey)
+            ?? familyList.find((family) => family.selectedAgentId != null)
+            ?? familyList[0]
+            ?? null;
+    }, [familyList, hoveredFamilyKey]);
+
+    useEffect(() => {
+        if (familyList.length === 0) {
+            setHoveredFamilyKey(null);
+            return;
+        }
+        if (hoveredFamilyKey && familyList.some((family) => family.key === hoveredFamilyKey)) return;
+        setHoveredFamilyKey((familyList.find((family) => family.selectedAgentId != null) ?? familyList[0]).key);
+    }, [familyList, hoveredFamilyKey]);
 
     const providerMeta = (provider: string) => {
         if (provider === 'claude') {
@@ -363,109 +336,107 @@ export function UnifiedAgentModelSelector({
                 </div>
             </div>
 
-            <ScrollArea className="flex-1" onWheelCapture={handleModelListWheel} onViewportScroll={handleModelListWheel}>
-                <div className="space-y-3 p-2.5">
-                    {groupedAgents.length === 0 ? (
-                        <div className="flex min-h-[220px] flex-col items-center justify-center rounded-lg bg-background/65 px-5 text-center shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.7)]">
-                            <Sparkles className="h-4 w-4 text-muted-foreground" />
-                            <div className="mt-2 text-[13px] font-semibold text-foreground">No runtimes available</div>
-                            <p className="mt-1 max-w-[26ch] text-[11px] leading-relaxed text-muted-foreground">
-                                Add an agent provider before selecting a composer model.
-                            </p>
-                        </div>
-                    ) : (
-                        groupedAgents.map(({ provider, families }) => {
-                            const meta = providerMeta(provider);
-                            const accent = providerAccentClasses(provider);
-                            const limitsSnapshot = provider === 'claude' || provider === 'codex'
-                                ? providerLimits[provider]
-                                : null;
-                            const limitWindows = getProviderLimitWindows(limitsSnapshot);
-                            const limitSeverity = getProviderLimitSeverity(limitsSnapshot);
-                            const showSeverityHint = limitSeverity !== 'normal';
-                            const displayedLimitWindows = visibleLimitWindows(limitsSnapshot ?? null, limitWindows);
-                            return (
-                                <section
-                                    key={provider}
-                                    className="rounded-lg bg-background/72 p-2 shadow-[0_12px_34px_-30px_rgba(15,23,42,0.45),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]"
-                                >
-                                    <div className="mb-2 flex items-center justify-between gap-3 px-1">
-                                        <div className="flex min-w-0 items-center gap-2.5">
-                                            <div className={cn("flex h-8 w-8 items-center justify-center rounded-md", accent.iconSurface)}>
-                                                {provider === 'claude' ? (
-                                                    <AnthropicMark className={cn("h-4 w-4", accent.iconText)} />
-                                                ) : (
-                                                    <OpenAiMark className={cn("h-4 w-4", accent.iconText)} />
-                                                )}
-                                            </div>
-                                            <div className="min-w-0">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="text-[13px] font-semibold text-foreground">{meta.title}</span>
-                                                    <span className="text-[10.5px] text-muted-foreground">{meta.badge}</span>
+            {groupedAgents.length === 0 ? (
+                <div className="flex flex-1 items-center justify-center p-2.5">
+                    <div className="flex min-h-[220px] w-full flex-col items-center justify-center rounded-lg bg-background/65 px-5 text-center shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.7)]">
+                        <Sparkles className="h-4 w-4 text-muted-foreground" />
+                        <div className="mt-2 text-[13px] font-semibold text-foreground">No runtimes available</div>
+                        <p className="mt-1 max-w-[26ch] text-[11px] leading-relaxed text-muted-foreground">
+                            Add an agent provider before selecting a composer model.
+                        </p>
+                    </div>
+                </div>
+            ) : (
+                <div className="flex min-h-0 flex-1">
+                    <ScrollArea className="w-[312px] shrink-0 border-r border-[hsl(var(--app-border)/0.62)]">
+                        <div className="space-y-3 p-2.5">
+                            {groupedAgents.map(({ provider, families }) => {
+                                const meta = providerMeta(provider);
+                                const accent = providerAccentClasses(provider);
+                                const limitsSnapshot = provider === 'claude' || provider === 'codex'
+                                    ? providerLimits[provider]
+                                    : null;
+                                const limitWindows = getProviderLimitWindows(limitsSnapshot);
+                                const limitSeverity = getProviderLimitSeverity(limitsSnapshot);
+                                const showSeverityHint = limitSeverity !== 'normal';
+                                const displayedLimitWindows = visibleLimitWindows(limitsSnapshot ?? null, limitWindows);
+                                return (
+                                    <section
+                                        key={provider}
+                                        className="rounded-lg bg-background/72 p-2 shadow-[0_12px_34px_-30px_rgba(15,23,42,0.45),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]"
+                                    >
+                                        <div className="mb-2 flex items-center justify-between gap-3 px-1">
+                                            <div className="flex min-w-0 items-center gap-2.5">
+                                                <div className={cn("flex h-8 w-8 items-center justify-center rounded-md", accent.iconSurface)}>
+                                                    {provider === 'claude' ? (
+                                                        <AnthropicMark className={cn("h-4 w-4", accent.iconText)} />
+                                                    ) : (
+                                                        <OpenAiMark className={cn("h-4 w-4", accent.iconText)} />
+                                                    )}
                                                 </div>
-                                                <div className="mt-0.5 text-[10.5px] text-muted-foreground">
-                                                    {families.length} {families.length === 1 ? 'family' : 'families'} available
+                                                <div className="min-w-0">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="text-[13px] font-semibold text-foreground">{meta.title}</span>
+                                                        <span className="text-[10.5px] text-muted-foreground">{meta.badge}</span>
+                                                    </div>
+                                                    <div className="mt-0.5 text-[10.5px] text-muted-foreground">
+                                                        {families.length} {families.length === 1 ? 'family' : 'families'} available
+                                                    </div>
                                                 </div>
                                             </div>
+                                            {displayedLimitWindows.length > 0 ? (
+                                                <div className="grid shrink-0 gap-1" aria-label={`${meta.title} usage availability`}>
+                                                    {displayedLimitWindows.map((window) => {
+                                                        const rowStyle = usageRowClasses(window.severity);
+                                                        return (
+                                                            <div
+                                                                key={window.id}
+                                                                className={cn(
+                                                                    "flex h-5 min-w-[74px] items-center justify-between gap-2 rounded px-1.5 text-[10px] font-semibold tabular-nums",
+                                                                    rowStyle.row
+                                                                )}
+                                                            >
+                                                                <span className="flex min-w-0 items-center gap-1.5">
+                                                                    <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", rowStyle.dot)} aria-hidden="true" />
+                                                                    <span className="truncate">{window.shortLabel}</span>
+                                                                </span>
+                                                                <span className="text-foreground/82 dark:text-current">
+                                                                    {window.percent != null ? `${window.percent}%` : 'n/a'}
+                                                                </span>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            ) : null}
                                         </div>
-                                        {displayedLimitWindows.length > 0 ? (
-                                            <div className="grid shrink-0 gap-1" aria-label={`${meta.title} usage availability`}>
-                                                {displayedLimitWindows.map((window) => {
-                                                    const rowStyle = usageRowClasses(window.severity);
-                                                    return (
-                                                        <div
-                                                            key={window.id}
-                                                            className={cn(
-                                                                "flex h-5 min-w-[74px] items-center justify-between gap-2 rounded px-1.5 text-[10px] font-semibold tabular-nums",
-                                                                rowStyle.row
-                                                            )}
-                                                        >
-                                                            <span className="flex min-w-0 items-center gap-1.5">
-                                                                <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", rowStyle.dot)} aria-hidden="true" />
-                                                                <span className="truncate">{window.shortLabel}</span>
-                                                            </span>
-                                                            <span className="text-foreground/82 dark:text-current">
-                                                                {window.percent != null ? `${window.percent}%` : 'n/a'}
-                                                            </span>
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        ) : null}
-                                    </div>
-                                    <div className="space-y-1">
-                                        {families.map((family) => {
-                                            const isSelected = family.selectedAgentId === selectedAgentId;
-                                            const isHovered = hoveredFamilyKey === family.key;
-                                            return (
-                                                <Popover
-                                                    key={family.key}
-                                                    open={isHovered}
-                                                    onOpenChange={(open) => {
-                                                        if (!open) {
-                                                            setHoveredFamilyKey((current) => current === family.key ? null : current);
-                                                        }
-                                                    }}
-                                                >
-                                                    <PopoverTrigger asChild>
+                                        <div className="space-y-1">
+                                            {families.map((family) => {
+                                                const isSelected = family.selectedAgentId != null;
+                                                const isActive = activeFamily?.key === family.key;
+                                                return (
                                                     <button
+                                                        key={family.key}
                                                         type="button"
-                                                        onPointerEnter={() => openFamilyFlyoutSoon(family.key)}
-                                                        onPointerLeave={() => closeFamilyFlyoutSoon(family.key)}
-                                                        onClick={() => onSelectAgent(family.selectedAgentId ?? family.defaultAgentId ?? family.models[0]?.id ?? '')}
+                                                        onPointerEnter={() => activateFamily(family.key)}
+                                                        onPointerOver={() => activateFamily(family.key)}
+                                                        onPointerMove={() => activateFamily(family.key)}
+                                                        onMouseEnter={() => activateFamily(family.key)}
+                                                        onFocus={() => activateFamily(family.key)}
+                                                        onClick={() => activateFamily(family.key)}
                                                         className={cn(
-                                                            "group relative flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-2.5 text-left outline-none transition-[background-color,box-shadow,transform] duration-200 ease-out",
-                                                            "focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1 focus-visible:ring-offset-background active:translate-y-px",
+                                                            "group relative flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-2.5 text-left outline-none transition-[background-color,box-shadow,transform] duration-150 ease-out",
+                                                            "focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1 focus-visible:ring-offset-background active:scale-[0.96]",
                                                             accent.hoverSurface,
-                                                            isHovered ? accent.selectedSurface : "bg-transparent",
+                                                            isActive ? accent.selectedSurface : "bg-transparent",
                                                             isSelected && "shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.4)]"
                                                         )}
+                                                        aria-pressed={isActive}
                                                     >
                                                         <span
                                                             className={cn(
-                                                                "absolute left-0 top-2 bottom-2 w-0.5 rounded-full opacity-0 transition-opacity duration-200",
+                                                                "absolute left-0 top-2 bottom-2 w-0.5 rounded-full opacity-0 transition-opacity duration-150",
                                                                 accent.rail,
-                                                                (isSelected || isHovered) && "opacity-100"
+                                                                (isSelected || isActive) && "opacity-100"
                                                             )}
                                                             aria-hidden="true"
                                                         />
@@ -476,10 +447,8 @@ export function UnifiedAgentModelSelector({
                                                             )}>
                                                                 {family.label}
                                                             </div>
-                                                            <div className="mt-1 flex min-w-0 items-center gap-2">
-                                                                <div className="truncate text-[10.5px] leading-none text-muted-foreground">
-                                                                    {family.description}
-                                                                </div>
+                                                            <div className="mt-1 truncate text-[10.5px] leading-none text-muted-foreground">
+                                                                {family.description}
                                                             </div>
                                                         </div>
                                                         <div className="flex shrink-0 items-center gap-2 pl-2">
@@ -495,91 +464,174 @@ export function UnifiedAgentModelSelector({
                                                                     aria-hidden="true"
                                                                 />
                                                             ) : null}
-                                                            <ChevronRight className={cn("h-3.5 w-3.5 text-muted-foreground/60 transition-transform duration-200", isHovered && "translate-x-0.5")} aria-hidden="true" />
+                                                            <ChevronRight className={cn("h-3.5 w-3.5 text-muted-foreground/60 transition-transform duration-150", isActive && "translate-x-0.5")} aria-hidden="true" />
                                                         </div>
                                                     </button>
-                                                    </PopoverTrigger>
-                                                    <PopoverContent
-                                                        side="right"
-                                                        align="start"
-                                                        sideOffset={7}
-                                                        collisionPadding={12}
-                                                        onPointerEnter={() => {
-                                                            clearFlyoutOpen();
-                                                            clearFlyoutClose();
-                                                            setHoveredFamilyKey(family.key);
-                                                        }}
-                                                        onPointerLeave={() => closeFamilyFlyoutSoon(family.key)}
-                                                        className="w-[248px] origin-[var(--radix-popover-content-transform-origin)] rounded-lg border border-[hsl(var(--app-border)/0.78)] bg-[hsl(var(--app-bg-elevated))] p-2 shadow-[0_18px_42px_-18px_rgba(15,23,42,0.38)] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-98 data-[side=right]:slide-in-from-left-1 data-[side=left]:slide-in-from-right-1"
-                                                    >
-                                                        <div className="border-b border-[hsl(var(--app-border)/0.58)] px-2 pb-2">
-                                                            <div className="text-[11px] font-medium text-muted-foreground">
-                                                                {providerEffortNoun(provider)} effort
-                                                            </div>
-                                                            <div className="mt-1 truncate text-[13px] font-semibold leading-tight text-foreground">
-                                                                {family.label}
-                                                            </div>
-                                                        </div>
-                                                        <div className="mt-2 space-y-1">
-                                                            {family.models.map((agent) => {
-                                                            const isSelected = selectedAgentId === agent.id;
-                                                            const effortLabel = agent.model_config?.effortLabel ?? agent.model_config?.reasoningEffort ?? 'default';
-                                                            const effortDescription = agent.model_config?.effortDescription ?? 'Available mode';
-                                                            return (
-                                                                <button
-                                                                    key={agent.id}
-                                                                    type="button"
-                                                                    onClick={() => {
-                                                                        onSelectAgent(agent.id);
-                                                                        setHoveredFamilyKey(null);
+                                                );
+                                            })}
+                                        </div>
+                                    </section>
+                                );
+                            })}
+                        </div>
+                    </ScrollArea>
+                    <div className="min-w-0 flex-1 bg-[hsl(var(--app-bg-elevated))] p-2.5">
+                        {activeFamily ? (() => {
+                            const provider = activeFamily.provider;
+                            const accent = providerAccentClasses(provider);
+                            return (
+                                <div
+                                    data-model-effort-panel={activeFamily.key}
+                                    className="h-full rounded-lg bg-background/74 p-2 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72)]"
+                                >
+                                    <div className="border-b border-[hsl(var(--app-border)/0.58)] px-2 pb-2">
+                                        <div className="text-[11px] font-medium text-muted-foreground">
+                                            {providerEffortNoun(provider)} effort
+                                        </div>
+                                        <div className="mt-1 truncate text-[13px] font-semibold leading-tight text-foreground">
+                                            {activeFamily.label}
+                                        </div>
+                                    </div>
+                                    <div className="mt-2 space-y-1">
+                                        {activeFamily.models.map((agent) => {
+                                            const count = getAgentRunCount(agent.id);
+                                            const isSelected = count > 0;
+                                            const canRemove = totalSelectedRuns > count;
+                                            const effortLabel = agent.model_config?.effortLabel ?? agent.model_config?.reasoningEffort ?? 'default';
+                                            const effortDescription = agent.model_config?.effortDescription ?? 'Available mode';
+                                            const increment = () => updateAgentRunCount(agent.id, count + 1);
+                                            const decrement = () => updateAgentRunCount(agent.id, count - 1);
+                                            const remove = () => updateAgentRunCount(agent.id, 0);
+                                            return (
+                                                <div
+                                                    key={agent.id}
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    onClick={() => {
+                                                        if (supportsMultiRun) {
+                                                            if (!isSelected) {
+                                                                updateAgentRunCount(agent.id, 1);
+                                                            } else {
+                                                                onSelectAgent(agent.id);
+                                                            }
+                                                            return;
+                                                        }
+                                                        onSelectAgent(agent.id);
+                                                    }}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                                                        event.preventDefault();
+                                                        if (supportsMultiRun) {
+                                                            updateAgentRunCount(agent.id, isSelected ? Math.max(1, count) : 1);
+                                                            return;
+                                                        }
+                                                        onSelectAgent(agent.id);
+                                                    }}
+                                                    className={cn(
+                                                        "group/effort flex w-full items-start justify-between gap-3 rounded-md px-2.5 py-2.5 text-left outline-none transition-[background-color,box-shadow,transform] duration-150 ease-out",
+                                                        "hover:bg-[hsl(var(--app-bg-elevated))] focus-visible:bg-[hsl(var(--app-bg-elevated))] focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1 focus-visible:ring-offset-background active:scale-[0.96]",
+                                                        isSelected ? "bg-[hsl(var(--app-bg-elevated))] shadow-[0_10px_24px_-22px_rgba(15,23,42,0.7),inset_0_0_0_1px_hsl(var(--app-border)/0.8)]" : "bg-transparent"
+                                                    )}
+                                                >
+                                                    <div className="flex min-w-0 flex-1 gap-2.5 pr-1">
+                                                        {supportsMultiRun ? (
+                                                            <span
+                                                                className="mt-0.5 shrink-0"
+                                                                onClick={(event) => event.stopPropagation()}
+                                                                onPointerDown={(event) => event.stopPropagation()}
+                                                            >
+                                                                <Checkbox
+                                                                    checked={isSelected}
+                                                                    indicatorMode="check"
+                                                                    onCheckedChange={(checked) => {
+                                                                        updateAgentRunCount(agent.id, checked === true ? Math.max(1, count) : 0);
                                                                     }}
-                                                                    className={cn(
-                                                                        "group flex w-full items-start justify-between gap-3 rounded-md px-2.5 py-2.5 text-left outline-none transition-[background-color,box-shadow,transform] duration-200 ease-out",
-                                                                        "hover:bg-background/88 focus-visible:bg-background focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1 focus-visible:ring-offset-background active:translate-y-px",
-                                                                        isSelected ? "bg-background shadow-[0_10px_24px_-22px_rgba(15,23,42,0.7),inset_0_0_0_1px_hsl(var(--app-border)/0.8)]" : "bg-transparent"
-                                                                    )}
-                                                                >
-                                                                    <div className="flex min-w-0 flex-1 gap-2.5">
-                                                                        <span
-                                                                            className={cn(
-                                                                                "mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full opacity-60 transition-opacity duration-200",
-                                                                                accent.dot,
-                                                                                isSelected && "opacity-100"
-                                                                            )}
-                                                                            aria-hidden="true"
-                                                                        />
-                                                                        <div className="min-w-0 flex-1">
-                                                                        <div className={cn(
-                                                                            "text-[13px] leading-tight",
-                                                                            isSelected ? "font-semibold text-foreground" : "font-medium text-foreground/82 group-hover:text-foreground"
-                                                                        )}>
-                                                                            {effortLabel}
-                                                                        </div>
-                                                                        <div className="mt-1 truncate text-[10.5px] leading-none text-muted-foreground">
-                                                                            {effortDescription}
-                                                                        </div>
-                                                                        </div>
-                                                                    </div>
-                                                                    <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-muted/40 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.55)]">
-                                                                        {isSelected ? (
-                                                                            <Check className={cn("h-3.5 w-3.5", accent.text)} strokeWidth={2.5} />
-                                                                        ) : null}
-                                                                    </div>
-                                                                </button>
-                                                            );
-                                                        })}
+                                                                    disabled={isSelected && !canRemove}
+                                                                    aria-label={`${isSelected ? 'Remove' : 'Add'} ${effortLabel}`}
+                                                                />
+                                                            </span>
+                                                        ) : (
+                                                            <span
+                                                                className={cn(
+                                                                    "mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full opacity-60 transition-opacity duration-150",
+                                                                    accent.dot,
+                                                                    isSelected && "opacity-100"
+                                                                )}
+                                                                aria-hidden="true"
+                                                            />
+                                                        )}
+                                                        <div className="min-w-0 flex-1">
+                                                            <div className={cn(
+                                                                "text-[13px] leading-tight",
+                                                                isSelected ? "font-semibold text-foreground" : "font-medium text-foreground/82 group-hover/effort:text-foreground"
+                                                            )}>
+                                                                {effortLabel}
+                                                            </div>
+                                                            <div className="mt-1 truncate text-[10.5px] leading-none text-muted-foreground">
+                                                                {effortDescription}
+                                                            </div>
                                                         </div>
-                                                    </PopoverContent>
-                                                </Popover>
+                                                    </div>
+                                                    <div
+                                                        className={cn(
+                                                            "flex min-h-7 shrink-0 items-center gap-1.5 rounded-md bg-muted/35 p-0.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.55)] transition-[opacity,transform,background-color,box-shadow] duration-150 ease-out",
+                                                            supportsMultiRun && !isSelected && "opacity-0 group-hover/effort:opacity-100 group-focus-visible/effort:opacity-100",
+                                                            isSelected && "bg-background shadow-[0_8px_20px_-16px_rgba(15,23,42,0.8),inset_0_0_0_1px_hsl(var(--app-border)/0.8)]"
+                                                        )}
+                                                        onClick={(event) => event.stopPropagation()}
+                                                        onPointerDown={(event) => event.stopPropagation()}
+                                                    >
+                                                        {supportsMultiRun ? (
+                                                            <>
+                                                                {isSelected ? (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={remove}
+                                                                        disabled={!canRemove}
+                                                                        className="flex h-6 w-6 items-center justify-center rounded bg-background text-muted-foreground shadow-[0_1px_2px_rgba(15,23,42,0.08),inset_0_0_0_1px_hsl(var(--app-border)/0.8)] transition-[background-color,color,transform,opacity] duration-150 hover:bg-red-50 hover:text-red-600 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+                                                                        aria-label={`Remove ${effortLabel}`}
+                                                                    >
+                                                                        <X className="h-3.5 w-3.5" strokeWidth={2.4} />
+                                                                    </button>
+                                                                ) : null}
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={decrement}
+                                                                    disabled={!isSelected || !canRemove}
+                                                                    className="flex h-6 w-6 items-center justify-center rounded bg-background text-muted-foreground shadow-[0_1px_2px_rgba(15,23,42,0.08),inset_0_0_0_1px_hsl(var(--app-border)/0.8)] transition-[background-color,color,transform,opacity] duration-150 hover:bg-muted hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
+                                                                    aria-label={`Decrease ${effortLabel}`}
+                                                                >
+                                                                    <Minus className="h-3.5 w-3.5" strokeWidth={2.4} />
+                                                                </button>
+                                                                <span className="min-w-5 text-center text-[11px] font-semibold tabular-nums text-foreground">
+                                                                    {count}
+                                                                </span>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={increment}
+                                                                    className={cn(
+                                                                        "flex h-6 w-6 items-center justify-center rounded text-white shadow-[0_8px_18px_-12px_rgba(16,185,129,0.7)] transition-[background-color,transform,box-shadow] duration-150 active:scale-[0.96]",
+                                                                        provider === 'claude' ? "bg-[#b6814f] hover:bg-[#a47346]" : "bg-emerald-600 hover:bg-emerald-700"
+                                                                    )}
+                                                                    aria-label={`Increase ${effortLabel}`}
+                                                                >
+                                                                    <Plus className="h-3.5 w-3.5" strokeWidth={2.6} />
+                                                                </button>
+                                                            </>
+                                                        ) : isSelected ? (
+                                                            <Check className={cn("h-3.5 w-3.5", accent.text)} strokeWidth={2.5} />
+                                                        ) : null}
+                                                    </div>
+                                                </div>
                                             );
                                         })}
                                     </div>
-                                </section>
+                                </div>
                             );
-                        })
-                    )}
+                        })() : null}
+                    </div>
                 </div>
-            </ScrollArea>
+            )}
         </div>
     );
 }

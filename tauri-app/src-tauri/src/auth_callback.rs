@@ -30,6 +30,17 @@ pub fn auth_callback_base_url() -> String {
     format!("http://127.0.0.1:{}/kinde/callback", port)
 }
 
+pub fn is_auth_callback_url(_url: &tauri::Url) -> bool {
+    let Ok(callback_base_url) = tauri::Url::parse(&auth_callback_base_url()) else {
+        return false;
+    };
+
+    _url.scheme() == callback_base_url.scheme()
+        && _url.host_str() == callback_base_url.host_str()
+        && _url.port_or_known_default() == callback_base_url.port_or_known_default()
+        && _url.path() == callback_base_url.path()
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn get_auth_callback_base_url() -> String {
@@ -180,4 +191,19 @@ async fn handle_kinde_callback(OriginalUri(uri): OriginalUri) -> impl IntoRespon
         heading = heading,
         body = body
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_configured_auth_callback_navigation() {
+        let url = tauri::Url::parse(
+            "http://127.0.0.1:34117/kinde/callback?code=abc&state=state",
+        )
+        .expect("valid callback url");
+
+        assert!(is_auth_callback_url(&url));
+    }
 }

@@ -1,4 +1,4 @@
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -204,6 +204,26 @@ pub fn run() {
     export_specta_bindings(&specta_builder);
 
     let mut builder = tauri::Builder::default()
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("agentree-auth-callback-navigation-guard")
+                .on_navigation(|webview, url| {
+                    if auth_callback::is_auth_callback_url(url) {
+                        crate::app_log!(
+                            "[Auth] Intercepted main webview Kinde callback navigation: {}",
+                            url
+                        );
+                        if let Err(error) = webview.emit("kinde-auth-callback", url.as_str()) {
+                            crate::app_log!(
+                                "[Auth] Failed to emit intercepted Kinde callback event: {}",
+                                error
+                            );
+                        }
+                        return false;
+                    }
+                    true
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

@@ -133,6 +133,30 @@ const ACTIVE_GRAPH_WINDOW_SPATIAL_CELL_SIZE = 900;
 const ACTIVE_GRAPH_RUN_STATUSES = new Set(['pending', 'creating', 'initializing', 'running', 'streaming']);
 const GRAPH_GEOMETRY_DIAGNOSTICS_ENABLED = import.meta.env.VITE_GRAPH_GEOMETRY_DIAGNOSTICS === 'true';
 
+export const shouldTreatGraphMoveAsViewportInteraction = ({
+    eventType,
+    eventTargetIsNode,
+    programmaticFocusCenterActive,
+}: {
+    eventType: string | null | undefined;
+    eventTargetIsNode: boolean;
+    programmaticFocusCenterActive: boolean;
+}) => {
+    if (eventType !== 'wheel' && eventTargetIsNode) return false;
+    if (programmaticFocusCenterActive && eventType !== 'wheel' && eventType !== 'touchstart') return false;
+    return true;
+};
+
+const useStableGraphCallback = <Args extends unknown[], ReturnValue>(
+    callback: (...args: Args) => ReturnValue
+) => {
+    const callbackRef = useRef(callback);
+    useLayoutEffect(() => {
+        callbackRef.current = callback;
+    }, [callback]);
+    return useCallback((...args: Args) => callbackRef.current(...args), []);
+};
+
 const cleanNodePreview = (value: string | null | undefined): string => (
     (value || '')
         .replace(/```[\s\S]*?```/g, '[Code]')
@@ -927,7 +951,6 @@ function GraphViewInternal({
     const activeRunGraphRenderRef = useRef<{ nodes: Node<any>[]; edges: Edge[]; mode: 'full' | 'hold-visible' } | null>(null);
     const previousGraphRenderRefsRef = useRef<{ nodes: Node<any>[] | null; edges: Edge[] | null }>({ nodes: null, edges: null });
     const previewEdgeTimeoutRef = useRef<number | null>(null);
-    const [isViewportInteractingState, setIsViewportInteractingState] = useState(false);
     const [activeGraphWindowViewportVersion, setActiveGraphWindowViewportVersion] = useState(0);
     const viewportMoveStartedAtRef = useRef<number | null>(null);
     const isViewportInteractingRef = useRef(false);
@@ -954,6 +977,7 @@ function GraphViewInternal({
     const focusCenterEndTimeoutRef = useRef<number | null>(null);
     const focusCenterRetryFrameRef = useRef<number | null>(null);
     const focusCenterRetryTokenRef = useRef(0);
+    const programmaticFocusCenterActiveRef = useRef(false);
     const deferredGraphFocusFrameRef = useRef<number | null>(null);
     const pendingGraphFocusRef = useRef<{
         interactionId: string;
@@ -1456,6 +1480,11 @@ function GraphViewInternal({
         } else {
             delete canvas.dataset.viewportInteracting;
         }
+        window.dispatchEvent(new CustomEvent(
+            interacting
+                ? 'agentree:graph-viewport-interaction-start'
+                : 'agentree:graph-viewport-interaction-end'
+        ));
     }, []);
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1846,7 +1875,6 @@ function GraphViewInternal({
         if (!isViewportInteractingRef.current) return;
 
         isViewportInteractingRef.current = false;
-        setIsViewportInteractingState(false);
         if (viewportInteractionStaleTimeoutRef.current !== null) {
             window.clearTimeout(viewportInteractionStaleTimeoutRef.current);
             viewportInteractionStaleTimeoutRef.current = null;
@@ -1883,6 +1911,7 @@ function GraphViewInternal({
     const startViewportInteraction = useCallback((viewport: { x: number; y: number; zoom: number }) => {
         if (isViewportInteractingRef.current) return;
 
+        programmaticFocusCenterActiveRef.current = false;
         focusCenterRetryTokenRef.current += 1;
         if (focusCenterRetryFrameRef.current !== null) {
             window.cancelAnimationFrame(focusCenterRetryFrameRef.current);
@@ -1902,7 +1931,6 @@ function GraphViewInternal({
         }, { source: 'GraphView' });
 
         isViewportInteractingRef.current = true;
-        setIsViewportInteractingState(true);
         const startedAt = performance.now();
         viewportMoveStartedAtRef.current = startedAt;
         setViewportInteractingDomState(true);
@@ -2048,6 +2076,7 @@ function GraphViewInternal({
     }, [ensureViewportInteractionStarted, reactFlowInstance, reactFlowStore, recordRootFallbackGeometry, stopViewportInteraction]);
 
     const clearFocusCenterTimers = useCallback(() => {
+        programmaticFocusCenterActiveRef.current = false;
         if (focusCenterFirstFrameRef.current !== null) {
             window.cancelAnimationFrame(focusCenterFirstFrameRef.current);
             focusCenterFirstFrameRef.current = null;
@@ -2179,6 +2208,7 @@ function GraphViewInternal({
             pointerDownToCenterStartMs,
         }, { source: 'GraphView' });
 
+        programmaticFocusCenterActiveRef.current = true;
         reactFlowInstance.setViewport(finalViewport, { duration: animationDurationMs });
         focusCenterFirstFrameRef.current = window.requestAnimationFrame(() => {
             const now = performance.now();
@@ -2196,6 +2226,7 @@ function GraphViewInternal({
             focusCenterFirstFrameRef.current = null;
         });
         focusCenterEndTimeoutRef.current = window.setTimeout(() => {
+            programmaticFocusCenterActiveRef.current = false;
             recordPerfEvent('graph.focus-center.end', {
                 focusedMessageId: messageId,
                 targetNodeId: targetNode.id,
@@ -2303,7 +2334,7 @@ function GraphViewInternal({
         selectedWorkspaceId,
     ]);
 
-    const handleFocus = useCallback((id: string, triggerMetrics?: FocusTriggerMetrics) => {
+    const handleFocusImpl = useCallback((id: string, triggerMetrics?: FocusTriggerMetrics) => {
         const message = graphComputationMessagesRef.current.find((candidate) => candidate.id === id) ?? null;
         const interaction = startFocusInteraction({
             source: message?.role === 'assistant'
@@ -2386,6 +2417,7 @@ function GraphViewInternal({
             deferredGraphFocusFrameRef.current = null;
         });
     }, [centerFocusedNode, dispatchFocus, nodeSelection.clearSelection]);
+    const handleFocus = useStableGraphCallback(handleFocusImpl);
 
     const handleViewSubgraph = useCallback((messageId: string) => {
         setSubgraphRootNodeId(messageId);
@@ -3644,15 +3676,39 @@ function GraphViewInternal({
                 'dark:bg-[size:auto,auto,20px_20px,auto]'
             ].join('')
         );
+    const preparedGraphNodeCacheRef = useRef(new Map<string, {
+        source: Node<any>;
+        selected: boolean;
+        prepared: Node<any>;
+    }>());
     const branchNodesForRender = useMemo(() => {
         const startedAt = performance.now();
-        const result = layoutNodes.map((node) => withExplicitReactFlowNodeDimensions({
-            ...node,
-            selected: nodeSelection.selectedNodeIds.has(node.id),
-        }));
+        const nextCache = new Map<string, {
+            source: Node<any>;
+            selected: boolean;
+            prepared: Node<any>;
+        }>();
+        let reusedCount = 0;
+        const result = layoutNodes.map((node) => {
+            const selected = nodeSelection.selectedNodeIds.has(node.id);
+            const cached = preparedGraphNodeCacheRef.current.get(node.id);
+            if (cached?.source === node && cached.selected === selected) {
+                nextCache.set(node.id, cached);
+                reusedCount += 1;
+                return cached.prepared;
+            }
+            const baseNode = Boolean(node.selected) === selected
+                ? node
+                : { ...node, selected };
+            const prepared = withExplicitReactFlowNodeDimensions(baseNode);
+            nextCache.set(node.id, { source: node, selected, prepared });
+            return prepared;
+        });
+        preparedGraphNodeCacheRef.current = nextCache;
         recordFundamentalCounter('graph.render.prepare-nodes', {
             nodeCount: layoutNodes.length,
             selectedCount: nodeSelection.selectedNodeIds.size,
+            reusedCount,
             runningCount: runningCountRef.current,
             activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
         }, performance.now() - startedAt);
@@ -3953,8 +4009,8 @@ function GraphViewInternal({
     const graphInteractionContextValue = useMemo(() => ({
         selectedNodeIds: nodeSelection.selectedNodeIds,
         isSelectionGestureActive: nodeSelection.isSelectionGestureActive,
-        isViewportInteracting: isViewportInteractingState,
-    }), [isViewportInteractingState, nodeSelection.isSelectionGestureActive, nodeSelection.selectedNodeIds]);
+        isViewportInteracting: false,
+    }), [nodeSelection.isSelectionGestureActive, nodeSelection.selectedNodeIds]);
 
     currentGraphCommitSnapshotRef.current = {
         selectedWorkspaceId,
@@ -4576,11 +4632,17 @@ function GraphViewInternal({
                                                 const pointerEventTargetIsNode = event?.type !== 'wheel'
                                                     && target
                                                     && getGraphPointerDebugInfo(target).isInsideNode;
-                                                if (pointerEventTargetIsNode) {
+                                                const shouldStartViewportInteraction = shouldTreatGraphMoveAsViewportInteraction({
+                                                    eventType: event?.type,
+                                                    eventTargetIsNode: Boolean(pointerEventTargetIsNode),
+                                                    programmaticFocusCenterActive: programmaticFocusCenterActiveRef.current,
+                                                });
+                                                if (!shouldStartViewportInteraction) {
                                                     recordPerfEvent('graph.viewport-move.start.ignored', {
-                                                        reason: 'node-target',
+                                                        reason: pointerEventTargetIsNode ? 'node-target' : 'focus-center',
                                                         eventType: event?.type ?? null,
                                                         targetDataId: target?.getAttribute('data-id') ?? null,
+                                                        programmaticFocusCenterActive: programmaticFocusCenterActiveRef.current,
                                                     }, { source: 'GraphView' });
                                                     return;
                                                 }

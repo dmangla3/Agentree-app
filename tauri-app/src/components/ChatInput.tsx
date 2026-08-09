@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
 import { Button } from '../../@/components/ui/button';
-import { Send, X, Reply, FileText, FileTextIcon, GitBranchIcon, Loader2, ChevronDown, ChevronRight, Layers3, Bot, Clipboard, Check, Pencil, AtSign, RotateCcw, Plus } from 'lucide-react';
+import { Send, X, Reply, FileText, FileTextIcon, GitBranchIcon, Loader2, ChevronDown, ChevronRight, Layers3, Bot, Clipboard, Check, Pencil, AtSign, RotateCcw, Plus, Minus } from 'lucide-react';
 import { useWorkspaceStore, AttachmentMetadata, Message, Workspace, Scope, CommitEntity } from '../stores/workspaceStore';
 import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 import { useQueryClient } from '@tanstack/react-query';
@@ -43,12 +43,21 @@ import { isFirstClassCommitMessage } from '../lib/graph/turnUtils';
 import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { getMergeVisualParentEntries, isMergeResultNode } from '../lib/graph/lineage';
 import { reconstructContext } from '../lib/contextUtils';
+import { resolveSendParentMessageId } from '../lib/composerSendParent';
 import { hasFreshContextBoundary } from '../lib/messageContext';
 import {
     scheduleMessagesRefreshWhenGraphIdle,
 } from '../lib/graphInteractionGate';
 import { createSendFlowId, recordSendFlowEvent, recordSendFlowMark } from '../perf/sendFlow';
 import { agentRunManager } from '../agent-runs/agentRunManager';
+import {
+    deriveIncrementalText,
+    dispatchAgentRunUsage,
+    dispatchProviderStreamEvent,
+    dispatchStreamingAssistantText,
+    extractMessageText,
+    mergeStreamingOutput,
+} from '../agent-runs/agentRunStreamDispatch';
 import {
     parseStdoutAgentEvent,
     shouldAcceptFinalizeAckForRun,
@@ -351,23 +360,6 @@ const parseCliArgs = (cliArgs: string | null | undefined) => {
     return { model, permissionMode };
 };
 
-const deriveIncrementalText = (previousText: string, nextText: string) => {
-    const previous = typeof previousText === 'string' ? previousText : '';
-    const next = typeof nextText === 'string' ? nextText : '';
-    if (!next) return '';
-    if (!previous) return next;
-    if (next === previous) return '';
-    if (next.startsWith(previous)) return next.slice(previous.length);
-    if (previous.startsWith(next)) return '';
-    const maxOverlap = Math.min(previous.length, next.length);
-    for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
-        if (previous.endsWith(next.slice(0, overlap))) {
-            return next.slice(overlap);
-        }
-    }
-    return previous.includes(next) ? '' : next;
-};
-
 import { useMessages, useSendMessage, useCommitDescendants, useCommitAncestors } from '../hooks/useMessages';
 import { useWorkspaceMessages } from '../hooks/useLiveMessages';
 import { localNodeKeys, useLocalNodes } from '../hooks/useLocalNodes';
@@ -380,9 +372,15 @@ import { agentClient } from '../lib/agentClient';
 import { buildComposerContextManifest, buildComposerContextSelection, type ComposerContextManifest } from '../lib/composerContext';
 import { AGENT_STATUS, TERMINAL_STATUSES } from '@shared/agentStatus';
 import type { TerminalStatus } from '@shared/agentStatus';
-import { createOptimisticNodePair, categorizeError, formatErrorMessage, isOptimisticId } from '../lib/optimisticMessages';
+import { createOptimisticAssistantMessage, createOptimisticNodePair, categorizeError, formatErrorMessage, isOptimisticId } from '../lib/optimisticMessages';
+import {
+    buildComposerAgentTurnTopology,
+    buildComposerAgentRuns,
+    normalizeComposerAgentRunCounts,
+    updateComposerAgentRunCount,
+    type ComposerAgentRunCounts,
+} from '../lib/composerAgentRuns';
 import { getFuzzyMatchScore } from '../lib/fuzzySearch';
-import { useProviderLimitsStore } from '../stores/providerLimitsStore';
 import { resolveNodeState } from '../lib/runStateResolver';
 
 interface ChatInputProps {
@@ -424,6 +422,13 @@ const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, message: 
             window.clearTimeout(timeoutId);
         }
     }
+};
+
+const areAgentRunCountsEqual = (left: ComposerAgentRunCounts, right: ComposerAgentRunCounts) => {
+    const leftKeys = Object.keys(left);
+    const rightKeys = Object.keys(right);
+    if (leftKeys.length !== rightKeys.length) return false;
+    return leftKeys.every((key) => left[key] === right[key]);
 };
 
 // --- Component ---
@@ -571,7 +576,33 @@ export function ChatInput({
     const messageLookupMessages = messages;
     const { data: agentsData } = useAgents();
     const agents = useMemo(() => agentsData ?? [], [agentsData]);
+    const [selectedAgentRunCounts, setSelectedAgentRunCounts] = useState<ComposerAgentRunCounts>({});
+    const normalizedSelectedAgentRunCounts = useMemo(
+        () => normalizeComposerAgentRunCounts(agents, selectedAgentId, selectedAgentRunCounts),
+        [agents, selectedAgentId, selectedAgentRunCounts]
+    );
     const selectedAgent = agents.find(a => a.id === selectedAgentId);
+    const selectedAgentRuns = useMemo(
+        () => buildComposerAgentRuns(agents, normalizedSelectedAgentRunCounts),
+        [agents, normalizedSelectedAgentRunCounts]
+    );
+    const selectedAgentRunItems = useMemo(() => (
+        selectedAgentRuns
+            .map((run) => ({
+                ...run,
+                agent: agents.find((agent) => agent.id === run.agentId) ?? null,
+            }))
+            .filter((run): run is typeof run & { agent: NonNullable<typeof run.agent> } => run.agent != null)
+    ), [agents, selectedAgentRuns]);
+    const selectedAgentRunChips = useMemo(() => (
+        agents
+            .map((agent) => ({
+                agent,
+                count: normalizedSelectedAgentRunCounts[agent.id] ?? 0,
+            }))
+            .filter((entry) => entry.count > 0)
+    ), [agents, normalizedSelectedAgentRunCounts]);
+    const selectedRunTotal = selectedAgentRuns.length;
     const sendMessageMutation = useSendMessage();
     // Track agent setup operations separately from message sending
     const agentSetupControllersRef = useRef<Map<string, AbortController>>(new Map());
@@ -938,35 +969,6 @@ export function ChatInput({
         return trace.traceId;
     }, [assignSendFlowKey, ensureLatencyTrace, getSendFlowIdForKey]);
 
-    const extractMessageText = useCallback((payload: any): string => {
-        if (!payload) return '';
-        if (typeof payload.content === 'string') return payload.content;
-        if (typeof payload.message === 'string') return payload.message;
-        if (typeof payload.text === 'string') return payload.text;
-        if (payload.message?.content && Array.isArray(payload.message.content)) {
-            return payload.message.content
-                .map((block: any) => {
-                    if (!block) return '';
-                    if (typeof block.text === 'string') return block.text;
-                    if (typeof block.content === 'string') return block.content;
-                    return '';
-                })
-                .join('');
-        }
-        if (Array.isArray(payload.content)) {
-            return payload.content
-                .map((block: any) => {
-                    if (!block) return '';
-                    if (typeof block === 'string') return block;
-                    if (typeof block.text === 'string') return block.text;
-                    if (typeof block.content === 'string') return block.content;
-                    return '';
-                })
-                .join('');
-        }
-        return '';
-    }, []);
-
     const maybeShowCodexAuthToast = useCallback((message: string) => {
         if (codexAuthToastShownRef.current) return;
         if (!message) return;
@@ -983,162 +985,6 @@ export function ChatInput({
             },
         });
     }, [addToast]);
-
-    const updateAgentRunUsage = useCallback((usage: any, nodeId: string, parentId: string, workspaceId: string, agentId?: string | null) => {
-        if (!usage) return;
-        agentRunManager.dispatch(nodeId, { type: 'usage', usage }, {
-            workspaceId,
-            parentId,
-            role: 'assistant',
-            agentId: agentId || null,
-            executionData: { timeline: [] },
-        });
-    }, []);
-
-    const applyStreamingAssistantText = useCallback((
-        nextContent: string,
-        options: {
-            nodeId: string;
-            parentId: string;
-            workspaceId: string;
-            agentId?: string | null;
-            appendedText?: string;
-            timestamp?: number;
-            streamSeq?: number | null;
-        }
-    ) => {
-        agentRunManager.dispatch(options.nodeId, {
-            type: 'content',
-            content: nextContent,
-            appendedText: options.appendedText || '',
-            timestamp: options.timestamp ?? Date.now(),
-            streamSeq: options.streamSeq ?? null,
-        }, {
-            workspaceId: options.workspaceId,
-            parentId: options.parentId,
-            role: 'assistant',
-            agentId: options.agentId || null,
-            content: nextContent,
-            executionData: { timeline: [] },
-        });
-    }, []);
-
-    const mergeStreamingOutput = useCallback((currentOutput: string, nextText: string) => {
-        const incoming = typeof nextText === 'string' ? nextText : '';
-        if (!incoming) return currentOutput;
-        if (!currentOutput) return incoming;
-        if (incoming.startsWith(currentOutput)) return incoming;
-        if (currentOutput.startsWith(incoming)) return currentOutput;
-        if (currentOutput.endsWith(incoming)) return currentOutput;
-        return `${currentOutput}${incoming}`;
-    }, []);
-
-    const addTimelineEvent = useCallback((event: any, nodeId: string, parentId: string, content: string, workspaceId: string, agentId?: string | null) => {
-        agentRunManager.dispatch(nodeId, { type: 'timeline_event', event }, {
-            workspaceId,
-            parentId,
-            role: 'assistant',
-            agentId: agentId || null,
-            content,
-            executionData: { timeline: [] },
-        });
-    }, []);
-
-    const processAgentEvent = useCallback((data: any, currentOutput: string, nodeId: string, parentId: string, workspaceId: string, agentId: string | null | undefined) => {
-        const maybePromoteLiveActivity = (text: string | null) => {
-            if ((currentOutput || '').trim().length > 0) return;
-            const normalized = (text || '').replace(/\s+/g, ' ').trim();
-            if (!normalized) return;
-            setSetupProgress(nodeId, normalized.slice(0, 140));
-        };
-
-        const mergeProviderMeta = (meta: Record<string, any>) => {
-            mergeAgentRunExecutionData(nodeId, { meta });
-            const providerFromMeta = typeof meta.provider === 'string' ? meta.provider : null;
-            const providerFromAgent = agents.find((agent) => agent.id === agentId)?.type ?? null;
-            const provider = (providerFromMeta || providerFromAgent) as RuntimeProvider | null;
-            if (provider === 'claude' || provider === 'codex') {
-                useProviderLimitsStore.getState().upsertFromMeta(provider, meta);
-            }
-        };
-
-        if (data.type === 'provider_meta' && data.meta && typeof data.meta === 'object') {
-            mergeProviderMeta(data.meta);
-        } else if (data.type === 'thinking') {
-            maybePromoteLiveActivity(data.thinking || data.content || null);
-            const thinkingEvent = { type: 'thinking', timestamp: Date.now(), content: data.thinking || data.content };
-            addTimelineEvent(thinkingEvent, nodeId, parentId, currentOutput, workspaceId, agentId);
-        } else if (data.type === 'tool_use') {
-            maybePromoteLiveActivity(`Running ${data.name || data.toolName || data.tool_name || 'tool'}...`);
-            if (data.tool_input?.description) {
-                addTimelineEvent({ type: 'thinking', timestamp: Date.now(), content: data.tool_input.description }, nodeId, parentId, currentOutput, workspaceId, agentId);
-            }
-            addTimelineEvent({
-                type: 'tool_use',
-                timestamp: Date.now(),
-                toolName: data.name || data.toolName || data.tool_name,
-                toolInput: data.tool_input ?? data.toolInput ?? data.input,
-                toolUseId: data.id || data.toolUseId || data.tool_use_id,
-                commandActions: data.commandActions ?? data.command_actions ?? data.provider_item?.commandActions ?? data.provider_item?.command_actions,
-                providerItem: data.provider_item ?? data.providerItem,
-                provider_item_id: data.provider_item_id ?? data.id ?? data.toolUseId ?? data.tool_use_id,
-            }, nodeId, parentId, currentOutput, workspaceId, agentId);
-        } else if (data.type === 'tool_result') {
-            maybePromoteLiveActivity(`Finished ${data.toolName || data.tool_name || data.name || 'tool'}`);
-            addTimelineEvent({
-                type: 'tool_result',
-                timestamp: Date.now(),
-                toolName: data.toolName || data.tool_name || data.name || 'unknown',
-                toolOutput: data.content ?? data.toolOutput ?? data.tool_output ?? data.output,
-                isError: data.is_error,
-                toolUseId: data.toolUseId || data.tool_use_id || data.id
-            }, nodeId, parentId, currentOutput, workspaceId, agentId);
-        } else if (data.type === 'tool_output_delta') {
-            addTimelineEvent({
-                type: 'tool_output_delta',
-                timestamp: Date.now(),
-                toolUseId: data.toolUseId || data.tool_use_id || data.id,
-                delta: data.delta,
-            }, nodeId, parentId, currentOutput, workspaceId, agentId);
-        } else if (data.type === 'stop' || data.type === 'provider_stop' || data.type === 'result') {
-            // Inner stop/result events are emitted on stdout by wrappers.
-            // Do not teardown here; wait for top-level exit/stop event so git finalization always runs.
-            addTimelineEvent(
-                {
-                    type: 'thinking',
-                    timestamp: Date.now(),
-                    content: '[Agent run completed, finalizing changes…]'
-                },
-                nodeId,
-                parentId,
-                currentOutput,
-                workspaceId,
-                agentId
-            );
-        } else if (data.type === 'message') {
-            const current = getAgentRunProjection(nodeId);
-            const currentContent = typeof current?.content === 'string' ? current.content : '';
-            const appended = deriveIncrementalText(currentContent, currentOutput);
-            applyStreamingAssistantText(currentOutput, {
-                nodeId,
-                parentId,
-                workspaceId,
-                agentId,
-                appendedText: appended,
-                timestamp: Date.now(),
-            });
-        } else if (data.type === 'error') {
-            const errorText = typeof data.data === 'string' ? data.data : (typeof data.content === 'string' ? data.content : '');
-            if (errorText) {
-                addTimelineEvent({ type: 'error', timestamp: Date.now(), content: errorText }, nodeId, parentId, currentOutput, workspaceId, agentId);
-            }
-        } else if (data.type === 'stderr') {
-            const warningText = typeof data.data === 'string' ? data.data : (typeof data.content === 'string' ? data.content : '');
-            if (warningText) {
-                addTimelineEvent({ type: 'error', timestamp: Date.now(), content: warningText }, nodeId, parentId, currentOutput, workspaceId, agentId);
-            }
-        }
-    }, [addTimelineEvent, agents, applyStreamingAssistantText, getAgentRunProjection, mergeAgentRunExecutionData, setSetupProgress]);
 
     useEffect(() => {
         return () => {
@@ -1528,7 +1374,7 @@ export function ChatInput({
             if (currentContent === output) return;
 
             const appended = deriveIncrementalText(currentContent, output);
-            applyStreamingAssistantText(output, {
+            dispatchStreamingAssistantText(output, {
                 nodeId,
                 parentId,
                 workspaceId,
@@ -1713,6 +1559,28 @@ export function ChatInput({
             }
         };
 
+        const dispatchStreamEvent = (eventData: any, agentId: string | null | undefined = undefined) => {
+            dispatchProviderStreamEvent(eventData, {
+                nodeId,
+                parentId,
+                workspaceId,
+                agentId: agentId ?? null,
+                currentOutput: output,
+                getProjection: getAgentRunProjection,
+                getAgents: () => agents,
+                setSetupProgress,
+            });
+        };
+
+        const dispatchUsage = (usage: any, agentId: string | null | undefined = undefined) => {
+            dispatchAgentRunUsage(usage, {
+                nodeId,
+                parentId,
+                workspaceId,
+                agentId: agentId ?? null,
+            });
+        };
+
         // Future: add observer-driven backend fanout as a secondary stream path.
         streamHandlerMapRef.current.set(nodeId, (data: any) => {
             try {
@@ -1786,14 +1654,14 @@ export function ChatInput({
                             timestamp: data.timestamp,
                         });
                     } else if (data.type === 'usage' && data.usage) {
-                        updateAgentRunUsage(data.usage, nodeId, parentId, workspaceId, data.agent_id);
+                        dispatchUsage(data.usage, data.agent_id);
                     } else if (data.type === 'codex_event' && data.usage) {
-                        updateAgentRunUsage(data.usage, nodeId, parentId, workspaceId, data.agent_id);
+                        dispatchUsage(data.usage, data.agent_id);
                     } else if (data.type === 'provider_meta' || data.type === 'thinking' || data.type === 'tool_use' || data.type === 'tool_result' || data.type === 'tool_output_delta' || data.type === 'error') {
                         if (data.type === 'error' && typeof data.content === 'string') {
                             maybeShowCodexAuthToast(data.content);
                         }
-                        processAgentEvent(data, output, nodeId, parentId, workspaceId, data.agent_id);
+                        dispatchStreamEvent(data, data.agent_id);
                     }
                     return;
                 }
@@ -1847,7 +1715,7 @@ export function ChatInput({
                                         timestamp: innerData.timestamp ?? data.timestamp,
                                     });
                                 } else if (block.type === 'tool_use') {
-                                    processAgentEvent({
+                                    dispatchStreamEvent({
                                         type: 'tool_use',
                                         id: block.id,
                                         name: block.name,
@@ -1855,15 +1723,15 @@ export function ChatInput({
                                         commandActions: (block as any).commandActions ?? (block as any).command_actions,
                                         provider_item: (block as any).provider_item,
                                         provider_item_id: (block as any).provider_item_id,
-                                    }, output, nodeId, parentId, workspaceId, data.agent_id);
+                                    }, data.agent_id);
                                 } else if (block.type === 'tool_result') {
-                                    processAgentEvent({ type: 'tool_result', toolName: block.name, tool_output: block.content ?? block.output, is_error: block.is_error }, output, nodeId, parentId, workspaceId, data.agent_id);
+                                    dispatchStreamEvent({ type: 'tool_result', toolName: block.name, tool_output: block.content ?? block.output, is_error: block.is_error }, data.agent_id);
                                 } else if (block.type === 'thinking') {
-                                    processAgentEvent({ type: 'thinking', thinking: block.thinking || block.text || block.content }, output, nodeId, parentId, workspaceId, data.agent_id);
+                                    dispatchStreamEvent({ type: 'thinking', thinking: block.thinking || block.text || block.content }, data.agent_id);
                                 }
                             }
                             if (innerData.message?.usage) {
-                                updateAgentRunUsage(innerData.message.usage, nodeId, parentId, workspaceId, data.agent_id);
+                                dispatchUsage(innerData.message.usage, data.agent_id);
                             }
                             if (blocks.some((b: any) => b?.type === 'text') && output.trim().length > 0) {
                                 recordLatencyMark(nodeId, 'first_visible_text_rendered', {
@@ -1879,17 +1747,17 @@ export function ChatInput({
                             for (const block of blocks) {
                                 if (!block) continue;
                                 if (block.type === 'tool_result') {
-                                    processAgentEvent({ type: 'tool_result', toolName: block.name, tool_output: block.content ?? block.output, is_error: block.is_error, tool_use_id: block.tool_use_id }, output, nodeId, parentId, workspaceId, data.agent_id);
+                                    dispatchStreamEvent({ type: 'tool_result', toolName: block.name, tool_output: block.content ?? block.output, is_error: block.is_error, tool_use_id: block.tool_use_id }, data.agent_id);
                                 }
                             }
                             return;
                         }
                         if (innerData.type === 'usage' && innerData.usage) {
-                            updateAgentRunUsage(innerData.usage, nodeId, parentId, workspaceId, data.agent_id);
+                            dispatchUsage(innerData.usage, data.agent_id);
                             return;
                         }
                         if (innerData.type === 'result' && innerData.usage) {
-                            updateAgentRunUsage(innerData.usage, nodeId, parentId, workspaceId, data.agent_id);
+                            dispatchUsage(innerData.usage, data.agent_id);
                         }
                         if (innerData.type === 'message') {
                             const inferredRole = innerData.role || innerData.message?.role || (innerData.payload?.item?.type === 'agent_message' ? 'assistant' : null);
@@ -1913,15 +1781,15 @@ export function ChatInput({
                         if (innerData.type === 'result' || innerData.type === 'stop' || innerData.type === 'provider_stop') {
                             streamDebug(`stdout_inner_terminal node=${nodeId}`, { type: innerData.type, stream_seq: data.stream_seq ?? null });
                         }
-                        processAgentEvent(innerData, output, nodeId, parentId, workspaceId, data.agent_id);
+                        dispatchStreamEvent(innerData, data.agent_id);
                     } else if (parsedStdout.kind === 'text') {
                         maybeShowCodexAuthToast(parsedStdout.text);
-                        processAgentEvent({ type: 'error', content: parsedStdout.text }, output, nodeId, parentId, workspaceId, data.agent_id);
+                        dispatchStreamEvent({ type: 'error', content: parsedStdout.text }, data.agent_id);
                     }
                 } else if (data.type === 'stderr') {
                     if (typeof data.data === 'string') {
                         maybeShowCodexAuthToast(data.data);
-                        processAgentEvent({ type: 'error', content: data.data }, output, nodeId, parentId, workspaceId, data.agent_id);
+                        dispatchStreamEvent({ type: 'error', content: data.data }, data.agent_id);
                     }
                 } else if (data.type === 'finalize_ack') {
                     const currentRunId = String((((getAgentRunProjection(nodeId)?.execution_data || {}) as any)?.current_run_id || nodeId));
@@ -2048,7 +1916,7 @@ export function ChatInput({
                         flushBufferedAssistantText({ force: true, agentId: data.agent_id, timestamp: data.timestamp });
                     }
                     if (data.usage) {
-                        updateAgentRunUsage(data.usage, nodeId, parentId, workspaceId, data.agent_id);
+                        dispatchUsage(data.usage, data.agent_id);
                     }
                     streamDebug(`terminal_stop node=${nodeId}`, {
                         providerStatus: providerTerminalStatus,
@@ -2160,20 +2028,18 @@ export function ChatInput({
         hasPendingCommitFocusForFlow,
         maybeShowCodexAuthToast,
         mergeStreamingOutput,
-        processAgentEvent,
         queueGeneratedCommitFocus,
         queryClient,
         recordLatencyMark,
         refreshPersistedAgentNode,
         releaseSendFlowKey,
         seedAgentRunProjection,
-        applyStreamingAssistantText,
         mergeAgentRunExecutionData,
         unregisterStreamHandler,
-        updateAgentRunUsage,
         dispatchFocus,
         setNodeStatus,
         setSetupProgress,
+        agents,
     ]);
 
     // --- NEW: State for Slash Command Popover ---
@@ -2479,6 +2345,13 @@ export function ChatInput({
             setSelectedAgentId(defaultAgentId);
         }
     }, [agents, selectedAgentId, setSelectedAgentId]);
+
+    useEffect(() => {
+        const normalized = normalizeComposerAgentRunCounts(agents, selectedAgentId, selectedAgentRunCounts);
+        if (!areAgentRunCountsEqual(normalized, selectedAgentRunCounts)) {
+            setSelectedAgentRunCounts(normalized);
+        }
+    }, [agents, selectedAgentId, selectedAgentRunCounts]);
 
     useEffect(() => {
         if (!selectedWorkspaceId) return;
@@ -2838,9 +2711,19 @@ export function ChatInput({
 
     const handleAgentSelect = (agentId: string) => {
         setSelectedAgentId(agentId);
-        setIsAgentPickerOpen(false);
         setTimeout(() => textareaRef.current?.focus(), 0);
     };
+
+    const handleAgentRunCountChange = useCallback((agentId: string, count: number) => {
+        const updated = updateComposerAgentRunCount(normalizedSelectedAgentRunCounts, agentId, count);
+        const normalized = normalizeComposerAgentRunCounts(agents, agentId, updated);
+        const nextSelectedAgentId = normalized[agentId] > 0
+            ? agentId
+            : Object.keys(normalized)[0] ?? agentId;
+
+        setSelectedAgentRunCounts(normalized);
+        setSelectedAgentId(nextSelectedAgentId);
+    }, [agents, normalizedSelectedAgentRunCounts, setSelectedAgentId]);
 
     const handleFileMentionSelect = useCallback((file: RepoMentionFile) => {
         if (!activeFileMention) {
@@ -3003,7 +2886,19 @@ export function ChatInput({
             });
             return;
         }
-        if (!selectedAgentId || !selectedAgent) {
+        const agentRunItemsForSend = selectedAgentRunItems.length > 0
+            ? selectedAgentRunItems
+            : (selectedAgent ? [{
+                agentId: selectedAgent.id,
+                agentName: selectedAgent.name,
+                ordinal: 1,
+                totalForAgent: 1,
+                agent: selectedAgent,
+            }] : []);
+        const primaryAgentRun = agentRunItemsForSend[0] ?? null;
+        const primarySelectedAgent = primaryAgentRun?.agent ?? null;
+
+        if (!primarySelectedAgent || agentRunItemsForSend.length === 0) {
             console.warn('[SEND_FLOW] BLOCKED at selectedAgent guard', {
                 selectedAgentId: selectedAgentId || '(none)',
                 selectedAgentFound: Boolean(selectedAgent),
@@ -3041,9 +2936,18 @@ export function ChatInput({
             }, { source: 'ChatInput' });
             return;
         }
-        const runtimeReadinessPromise = hasLocalAgentRuntime && (selectedAgent.type === 'codex' || selectedAgent.type === 'claude')
+        const agentTypesForReadiness = Array.from(new Set(
+            agentRunItemsForSend
+                .map((run) => run.agent.type)
+                .filter((type): type is 'codex' | 'claude' => type === 'codex' || type === 'claude')
+        ));
+        const runtimeReadinessPromise = hasLocalAgentRuntime && agentTypesForReadiness.length > 0
             ? withTimeout(
-                Promise.resolve().then(() => agentClient.checkRuntimeReadiness(selectedAgent.type)),
+                Promise.all(agentTypesForReadiness.map((agentType) => (
+                    Promise.resolve()
+                        .then(() => agentClient.checkRuntimeReadiness(agentType))
+                        .then((readiness) => ({ agentType, readiness }))
+                ))),
                 2000,
                 'Agent runtime readiness check timed out.'
             )
@@ -3075,16 +2979,28 @@ export function ChatInput({
         const shouldUseAgent = true;
         sendFlowDebug('validation complete', {
             hasLocalAgentRuntime,
-            selectedAgentType: selectedAgent?.type ?? null,
+            selectedAgentType: primarySelectedAgent?.type ?? null,
+            selectedRunCount: agentRunItemsForSend.length,
         });
-        const selectedAgentModelId =
-            (selectedAgent as any)?.model_config?.model ||
-            parseCliArgs(selectedAgent?.cliArgs).model ||
+        const getSelectedAgentModelId = (agent: typeof primarySelectedAgent) =>
+            (agent as any)?.model_config?.model ||
+            parseCliArgs(agent?.cliArgs).model ||
             null;
+        const selectedAgentModelId = getSelectedAgentModelId(primarySelectedAgent);
 
+        const focusStateAtSendStart = useWorkspaceStore.getState();
         const savedEditDraftSource = editDraftSource;
-        const rawSendParentMessageId = replyParentMessageId;
-        const sendParentMessageId = resolvePersistedMessageId(rawSendParentMessageId);
+        const sendParentMessageId = resolveSendParentMessageId({
+            hasEditDraftSource: Boolean(savedEditDraftSource),
+            editDraftSourceParentId: savedEditDraftSource?.parentId ?? null,
+            parentMessageIdOverride,
+            focusSnapshot: {
+                focusedMessageId: focusStateAtSendStart.focusedMessageId,
+                lastFocusSource: focusStateAtSendStart.lastFocusSource,
+                lastFocusMetadata: focusStateAtSendStart.lastFocusMetadata as Record<string, unknown> | null,
+            },
+            resolvePersistedMessageId,
+        });
         const resolvedParentMessage = sendParentMessageId ? messageById.get(sendParentMessageId) ?? null : null;
 
         const effectiveScopeMode = effectiveScopeModeForReply;
@@ -3093,8 +3009,20 @@ export function ChatInput({
             ? (trimmedNewScopeName && !isAutoScopeName(trimmedNewScopeName) ? trimmedNewScopeName : null)
             : null;
         const effectiveContextMode: ContextMode = contextPolicy === 'fresh' ? 'none' : contextMode;
-        const sendContextParentId = resolvePersistedMessageId(effectiveContextParentId || null);
-        const sendContextStartId = resolvePersistedMessageId(effectiveContextStartId || null);
+        const defaultSendContextParentMessage = resolveConversationContextMessage(sendParentMessageId, messageById);
+        const rawSendContextParentId = mergeContextOptions.length > 0
+            ? selectedMergeContextParentId
+            : defaultSendContextParentMessage?.id ?? null;
+        const sendContextParentId = resolvePersistedMessageId(
+            contextPolicy === 'fresh' ? null : rawSendContextParentId
+        );
+        const sendContextStartId = resolvePersistedMessageId(
+            contextPolicy === 'fresh'
+                ? null
+                : sendContextParentId === effectiveContextParentId
+                    ? effectiveContextStartId || null
+                    : resolveContextStartMessage(sendContextParentId, messageLookupMessages, messageById)?.id ?? null
+        );
         const sendScopeParentId = effectiveScopeMode === 'inherit'
             ? sendParentMessageId
             : null;
@@ -3109,29 +3037,95 @@ export function ChatInput({
             ? null
             : (effectiveScopeIdForReply || parentScopeId || null);
 
-        const optimisticPair = createOptimisticNodePair(
-            {
-                id: hasLocalAgentRuntime ? crypto.randomUUID() : undefined,
-                workspaceId: selectedWorkspaceId!,
-                parentId: sendParentMessageId,
-                content: prompt.trim(),
-                attachments: structuredAttachments,
-                scopeId: replyScopeId,
-                pathIds: parentPathIds,
-                depth: parentDepth + 1,
-                role: 'user',
-            },
-            {
-                id: hasLocalAgentRuntime ? crypto.randomUUID() : undefined,
-                llmModel: selectedAgentModelId,
-                llmProvider: selectedAgent?.type || null,
-                agentId: selectedAgentId || null,
-                status: 'pending',
-            }
+        const composerTurnTopology = buildComposerAgentTurnTopology(agentRunItemsForSend, sendParentMessageId);
+        const shouldCreateSiblingTurns = hasLocalAgentRuntime && composerTurnTopology.length > 1;
+        const optimisticTurns = (shouldCreateSiblingTurns ? composerTurnTopology : composerTurnTopology.slice(0, 1)).map((run) => {
+            const pair = createOptimisticNodePair(
+                {
+                    id: hasLocalAgentRuntime ? crypto.randomUUID() : undefined,
+                    workspaceId: selectedWorkspaceId!,
+                    parentId: run.userParentId,
+                    content: prompt.trim(),
+                    attachments: structuredAttachments,
+                    scopeId: replyScopeId,
+                    pathIds: parentPathIds,
+                    depth: parentDepth + 1,
+                    role: 'user',
+                },
+                {
+                    id: hasLocalAgentRuntime ? crypto.randomUUID() : undefined,
+                    llmModel: getSelectedAgentModelId(run.agent),
+                    llmProvider: run.agent.type || null,
+                    agentId: run.agentId,
+                    status: 'pending',
+                }
+            );
+
+            return {
+                ...run,
+                userMessage: pair.userMessage,
+                userMessageId: pair.userMessageId,
+                assistantMessage: pair.assistantMessage,
+                assistantMessageId: pair.assistantMessageId,
+            };
+        });
+        const optimisticPair = {
+            userMessage: optimisticTurns[0].userMessage,
+            assistantMessage: optimisticTurns[0].assistantMessage,
+            userMessageId: optimisticTurns[0].userMessageId,
+            assistantMessageId: optimisticTurns[0].assistantMessageId,
+        };
+        const assistantRunMessages = shouldCreateSiblingTurns
+            ? optimisticTurns
+            : agentRunItemsForSend.map((run, index) => {
+                if (index === 0) {
+                    return {
+                        ...run,
+                        userMessage: optimisticPair.userMessage,
+                        userMessageId: optimisticPair.userMessageId,
+                        assistantMessage: optimisticPair.assistantMessage,
+                        assistantMessageId: optimisticPair.assistantMessageId,
+                    };
+                }
+
+                const assistantMessage = createOptimisticAssistantMessage(
+                    {
+                        id: hasLocalAgentRuntime ? crypto.randomUUID() : undefined,
+                        workspaceId: selectedWorkspaceId!,
+                        parentId: optimisticPair.userMessageId,
+                        content: '',
+                        attachments: [],
+                        scopeId: replyScopeId,
+                        pathIds: optimisticPair.userMessage.path_ids ?? [optimisticPair.userMessageId],
+                        depth: optimisticPair.userMessage.depth ?? parentDepth + 1,
+                        role: 'assistant',
+                        llmModel: getSelectedAgentModelId(run.agent),
+                        llmProvider: run.agent.type || null,
+                        agentId: run.agentId,
+                        status: 'pending',
+                    },
+                    optimisticPair.userMessageId
+                );
+
+                return {
+                    ...run,
+                    userMessage: optimisticPair.userMessage,
+                    userMessageId: optimisticPair.userMessageId,
+                    assistantMessage,
+                    assistantMessageId: assistantMessage.id,
+                };
+            });
+        const optimisticUserMessageIds = Array.from(new Set(assistantRunMessages.map((run) => run.userMessageId)));
+        const optimisticUserMessages = Array.from(
+            new Map(assistantRunMessages.map((run) => [run.userMessageId, run.userMessage])).values()
         );
+        const optimisticAssistantMessageIds = assistantRunMessages
+            .map((run) => run.assistantMessageId)
+            .filter((id): id is string => Boolean(id));
         sendFlowDebug('optimistic pair created', {
             userMessageId: optimisticPair.userMessageId,
             assistantMessageId: optimisticPair.assistantMessageId ?? null,
+            assistantRunCount: assistantRunMessages.length,
         });
 
         const operationKey = optimisticPair.assistantMessageId || optimisticPair.userMessageId;
@@ -3139,18 +3133,15 @@ export function ChatInput({
         sendAcceptanceInFlightRef.current = true;
         setIsSendAcceptanceInFlight(true);
         assignSendFlowKey(operationKey, flowId);
-        assignSendFlowKey(optimisticPair.userMessageId, flowId);
-        if (optimisticPair.assistantMessageId) {
-            assignSendFlowKey(optimisticPair.assistantMessageId, flowId);
-        }
+        optimisticUserMessageIds.forEach((userMessageId) => assignSendFlowKey(userMessageId, flowId));
+        optimisticAssistantMessageIds.forEach((assistantMessageId) => assignSendFlowKey(assistantMessageId, flowId));
         const savedPrompt = prompt;
         const savedAttachments = [...attachments];
         const savedContextIds = [...contextIds];
         const shouldAutoCheckout = autoCheckoutOnAgentCommit;
-        const focusStateAtSendStart = useWorkspaceStore.getState();
         const optimisticNodeIds = [
-            optimisticPair.userMessageId,
-            ...(optimisticPair.assistantMessageId ? [optimisticPair.assistantMessageId] : []),
+            ...optimisticUserMessageIds,
+            ...optimisticAssistantMessageIds,
         ];
         const sendFlowFocusGuardIds = [
             focusStateAtSendStart.focusedMessageId,
@@ -3172,24 +3163,9 @@ export function ChatInput({
         };
 
         if (contextPolicy === 'fresh' || sendContextParentId) {
-            optimisticPair.userMessage.execution_data = {
-                meta: {
-                    context_policy: contextPolicy,
-                    context_boundary_from_node_id: contextPolicy === 'fresh' ? sendParentMessageId : null,
-                    context_parent_node_id: contextPolicy === 'fresh' ? null : sendContextParentId,
-                    context_base_node_id: sendParentMessageId,
-                },
-                context_profile: {
-                    context_parent_node_id: contextPolicy === 'fresh' ? null : sendContextParentId,
-                    base_node_id: sendParentMessageId,
-                    inherited_from_node_id: contextPolicy === 'fresh' ? null : sendParentMessageId,
-                },
-            };
-            if (optimisticPair.assistantMessage) {
-                optimisticPair.assistantMessage.execution_data = {
-                    ...(optimisticPair.assistantMessage.execution_data || {}),
+            for (const userMessage of optimisticUserMessages) {
+                userMessage.execution_data = {
                     meta: {
-                        ...(((optimisticPair.assistantMessage.execution_data as any)?.meta) || {}),
                         context_policy: contextPolicy,
                         context_boundary_from_node_id: contextPolicy === 'fresh' ? sendParentMessageId : null,
                         context_parent_node_id: contextPolicy === 'fresh' ? null : sendContextParentId,
@@ -3198,14 +3174,33 @@ export function ChatInput({
                     context_profile: {
                         context_parent_node_id: contextPolicy === 'fresh' ? null : sendContextParentId,
                         base_node_id: sendParentMessageId,
-                        inherited_from_node_id: contextPolicy === 'fresh' ? null : optimisticPair.userMessageId,
+                        inherited_from_node_id: contextPolicy === 'fresh' ? null : sendParentMessageId,
+                    },
+                };
+            }
+            for (const run of assistantRunMessages) {
+                if (!run.assistantMessage) continue;
+                run.assistantMessage.execution_data = {
+                    ...(run.assistantMessage.execution_data || {}),
+                    meta: {
+                        ...(((run.assistantMessage.execution_data as any)?.meta) || {}),
+                        context_policy: contextPolicy,
+                        context_boundary_from_node_id: contextPolicy === 'fresh' ? sendParentMessageId : null,
+                        context_parent_node_id: contextPolicy === 'fresh' ? null : sendContextParentId,
+                        context_base_node_id: sendParentMessageId,
+                    },
+                    context_profile: {
+                        context_parent_node_id: contextPolicy === 'fresh' ? null : sendContextParentId,
+                        base_node_id: sendParentMessageId,
+                        inherited_from_node_id: contextPolicy === 'fresh' ? null : run.userMessageId,
                     },
                 };
             }
         }
-        if (optimisticPair.assistantMessage) {
-            optimisticPair.assistantMessage.base_commit_sha = effectiveBaseCommitSha || null;
-            optimisticPair.assistantMessage.base_selected_from_node_id = selectedBaseCommit?.produced_by_node_id || null;
+        for (const run of assistantRunMessages) {
+            if (!run.assistantMessage) continue;
+            run.assistantMessage.base_commit_sha = effectiveBaseCommitSha || null;
+            run.assistantMessage.base_selected_from_node_id = selectedBaseCommit?.produced_by_node_id || null;
         }
 
         // Enter the bounded graph send mode before optimistic nodes are added.
@@ -3220,13 +3215,19 @@ export function ChatInput({
             phase: 'optimistic-user',
         });
         setActiveComposerSend({ flowId, nodeIds: optimisticNodeIds });
-        seedAgentRunProjection(optimisticPair.userMessageId, optimisticPair.userMessage);
-        if (optimisticPair.assistantMessage) {
-            seedAgentRunProjection(optimisticPair.assistantMessageId!, optimisticPair.assistantMessage);
+        for (const userMessage of optimisticUserMessages) {
+            seedAgentRunProjection(userMessage.id, userMessage);
         }
-        if (shouldUseAgent && optimisticPair.assistantMessageId) {
-            setNodeStatus(optimisticPair.assistantMessageId, 'initializing');
-            setSetupProgress(optimisticPair.assistantMessageId, 'Initializing agent...');
+        for (const run of assistantRunMessages) {
+            if (!run.assistantMessage || !run.assistantMessageId) continue;
+            seedAgentRunProjection(run.assistantMessageId, run.assistantMessage);
+        }
+        if (shouldUseAgent) {
+            for (const run of assistantRunMessages) {
+                if (!run.assistantMessageId) continue;
+                setNodeStatus(run.assistantMessageId, 'initializing');
+                setSetupProgress(run.assistantMessageId, 'Initializing agent...');
+            }
         }
         setPrompt('');
         setAttachments([]);
@@ -3241,9 +3242,10 @@ export function ChatInput({
         setCurrentAbortController(controller);
         track('Agent Message Submitted', {
             workspace_id: selectedWorkspaceId,
-            agent_id: selectedAgentId,
-            agent_provider: selectedAgent?.type ?? null,
+            agent_id: primarySelectedAgent.id,
+            agent_provider: primarySelectedAgent?.type ?? null,
             agent_model: selectedAgentModelId,
+            agent_run_count: agentRunItemsForSend.length,
             prompt_chars: savedPrompt.trim().length,
             attachment_count: savedAttachments.length,
             context_entry_count: savedContextIds.length,
@@ -3258,37 +3260,44 @@ export function ChatInput({
             attachmentCount: savedAttachments.length,
             contextEntryCount: savedContextIds.length,
             optimisticUserMessageId: optimisticPair.userMessageId,
+            optimisticUserMessageIds,
             optimisticAssistantMessageId: optimisticPair.assistantMessageId || null,
+            optimisticAssistantMessageIds,
         }, { source: 'ChatInput' });
         sendFlowDebug('optimistic pair stored');
 
-        recordSendFlowEvent('optimistic.user-created', {
-            flowId,
-            workspaceId: selectedWorkspaceId,
-            messageId: optimisticPair.userMessageId,
-            parentId: sendParentMessageId,
-        }, { source: 'ChatInput' });
-        if (optimisticPair.assistantMessageId) {
+        for (const userMessageId of optimisticUserMessageIds) {
+            recordSendFlowEvent('optimistic.user-created', {
+                flowId,
+                workspaceId: selectedWorkspaceId,
+                messageId: userMessageId,
+                parentId: sendParentMessageId,
+            }, { source: 'ChatInput' });
+        }
+        for (const run of assistantRunMessages) {
+            if (!run.assistantMessageId) continue;
             recordSendFlowEvent('optimistic.assistant-created', {
                 flowId,
                 workspaceId: selectedWorkspaceId,
-                messageId: optimisticPair.assistantMessageId,
-                parentId: optimisticPair.userMessageId,
+                messageId: run.assistantMessageId,
+                parentId: run.userMessageId,
             }, { source: 'ChatInput' });
         }
         const cleanupOptimisticPair = (delayMs: number, finalStatus: string) => {
             window.setTimeout(() => {
-                removeOptimisticNode(optimisticPair.userMessageId);
-                releaseSendFlowKey(optimisticPair.userMessageId);
-                if (optimisticPair.assistantMessageId) {
-                    removeOptimisticNode(optimisticPair.assistantMessageId);
-                    releaseSendFlowKey(optimisticPair.assistantMessageId);
-                }
+                optimisticUserMessageIds.forEach((userMessageId) => {
+                    removeOptimisticNode(userMessageId);
+                    releaseSendFlowKey(userMessageId);
+                });
+                optimisticAssistantMessageIds.forEach((assistantMessageId) => {
+                    removeOptimisticNode(assistantMessageId);
+                    releaseSendFlowKey(assistantMessageId);
+                });
                 releaseSendFlowKey(operationKey);
                 recordSendFlowEvent('cleanup.finished', {
                     flowId,
                     workspaceId: selectedWorkspaceId,
-                    nodeId: optimisticPair.assistantMessageId || optimisticPair.userMessageId,
+                    nodeId: optimisticAssistantMessageIds[0] || optimisticPair.userMessageId,
                     finalStatus,
                 }, { source: 'ChatInput' });
             }, delayMs);
@@ -3299,7 +3308,7 @@ export function ChatInput({
         recordLatencyMark(operationKey, 'send_clicked', {
             source: 'frontend',
             detail: {
-                agentType: selectedAgent?.type || null,
+                agentType: primarySelectedAgent?.type || null,
                 workspaceId: selectedWorkspaceId,
             },
         });
@@ -3314,28 +3323,32 @@ export function ChatInput({
 
             if (runtimeReadinessPromise) {
                 try {
-                    const readiness = await runtimeReadinessPromise;
-                    if (readiness.status !== 'ready') {
+                    const readinessResults = await runtimeReadinessPromise;
+                    const blockedReadiness = readinessResults.find((result) => result.readiness.status !== 'ready') ?? null;
+                    if (blockedReadiness) {
                         console.warn('[SEND_FLOW] BLOCKED at readiness guard (not ready)');
-                        const label = selectedAgent.type === 'codex' ? 'Codex' : 'Claude Code';
+                        const label = blockedReadiness.agentType === 'codex' ? 'Codex' : 'Claude Code';
                         addToast({
-                            title: readiness.status === 'keychain_unavailable' ? `${label} login unavailable to Agentree` : `${label} setup required`,
-                            description: readiness.recommendedCommand
-                                ? `${readiness.message} Run: ${readiness.recommendedCommand}`
-                                : readiness.message,
+                            title: blockedReadiness.readiness.status === 'keychain_unavailable' ? `${label} login unavailable to Agentree` : `${label} setup required`,
+                            description: blockedReadiness.readiness.recommendedCommand
+                                ? `${blockedReadiness.readiness.message} Run: ${blockedReadiness.readiness.recommendedCommand}`
+                                : blockedReadiness.readiness.message,
                             variant: 'error',
                             persistent: true,
                         });
-                        markNodeFailed(optimisticPair.userMessageId, readiness.message);
-                        if (optimisticPair.assistantMessageId) {
-                            markNodeFailed(optimisticPair.assistantMessageId, readiness.message);
-                        }
+                        markNodeFailed(optimisticPair.userMessageId, blockedReadiness.readiness.message);
+                        optimisticUserMessageIds
+                            .filter((userMessageId) => userMessageId !== optimisticPair.userMessageId)
+                            .forEach((userMessageId) => markNodeFailed(userMessageId, blockedReadiness.readiness.message));
+                        optimisticAssistantMessageIds.forEach((assistantMessageId) => {
+                            markNodeFailed(assistantMessageId, blockedReadiness.readiness.message);
+                        });
                         recordSendFlowEvent('lifecycle.failed', {
                             flowId,
                             workspaceId: selectedWorkspaceId,
                             operationKey,
                             errorType: 'RUNTIME_NOT_READY',
-                            errorMessage: readiness.message,
+                            errorMessage: blockedReadiness.readiness.message,
                         }, { source: 'ChatInput' });
                         endSendFlowFocus(flowId);
                         commitFocusHandledByFlowRef.current.delete(flowId);
@@ -3351,14 +3364,17 @@ export function ChatInput({
                     } else {
                         addToast({
                             title: 'Agent setup check failed',
-                            description: error instanceof Error ? error.message : `Agentree could not verify ${selectedAgent.type} before sending.`,
+                            description: error instanceof Error ? error.message : `Agentree could not verify selected models before sending.`,
                             variant: 'error',
                         });
                         const errorMessage = error instanceof Error ? error.message : 'Agent setup check failed';
                         markNodeFailed(optimisticPair.userMessageId, errorMessage);
-                        if (optimisticPair.assistantMessageId) {
-                            markNodeFailed(optimisticPair.assistantMessageId, errorMessage);
-                        }
+                        optimisticUserMessageIds
+                            .filter((userMessageId) => userMessageId !== optimisticPair.userMessageId)
+                            .forEach((userMessageId) => markNodeFailed(userMessageId, errorMessage));
+                        optimisticAssistantMessageIds.forEach((assistantMessageId) => {
+                            markNodeFailed(assistantMessageId, errorMessage);
+                        });
                         recordSendFlowEvent('lifecycle.failed', {
                             flowId,
                             workspaceId: selectedWorkspaceId,
@@ -3375,20 +3391,27 @@ export function ChatInput({
                 }
             }
 
-            if (hasLocalAgentRuntime && optimisticPair.assistantMessage) {
-                sendFlowDebug('Persisting local-first message pair');
+            if (hasLocalAgentRuntime && optimisticAssistantMessageIds.length > 0) {
+                sendFlowDebug('Persisting local-first composer messages');
                 setSetupProgress(optimisticPair.userMessageId, 'Starting locally...');
+                const assistantMessages = assistantRunMessages
+                    .map((run) => run.assistantMessage)
+                    .filter((message): message is Message => Boolean(message));
                 await Promise.all([
-                    agentClient.upsertLocalNode(selectedWorkspaceId!, optimisticPair.userMessageId, optimisticPair.userMessage),
-                    agentClient.upsertLocalNode(selectedWorkspaceId!, optimisticPair.assistantMessageId!, optimisticPair.assistantMessage),
+                    ...optimisticUserMessages.map((userMessage) => (
+                        agentClient.upsertLocalNode(selectedWorkspaceId!, userMessage.id, userMessage)
+                    )),
+                    ...assistantMessages.map((assistantMessage) => (
+                        agentClient.upsertLocalNode(selectedWorkspaceId!, assistantMessage.id, assistantMessage)
+                    )),
                 ]);
                 queryClient.setQueryData<Message[]>(['messages', selectedWorkspaceId], (current) => {
                     const existing = current ?? [];
-                    const ids = new Set([optimisticPair.userMessageId, optimisticPair.assistantMessageId!]);
+                    const ids = new Set([...optimisticUserMessageIds, ...optimisticAssistantMessageIds]);
                     return [
                         ...existing.filter((message) => !ids.has(message.id)),
-                        optimisticPair.userMessage as Message,
-                        optimisticPair.assistantMessage as Message,
+                        ...(optimisticUserMessages as Message[]),
+                        ...assistantMessages,
                     ].sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
                 });
                 void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(selectedWorkspaceId!) });
@@ -3396,60 +3419,68 @@ export function ChatInput({
                     flowId,
                     workspaceId: selectedWorkspaceId,
                     userMessageId: optimisticPair.userMessageId,
+                    userMessageIds: optimisticUserMessageIds,
                     assistantMessageId: optimisticPair.assistantMessageId,
+                    assistantMessageIds: optimisticAssistantMessageIds,
                 }, { source: 'ChatInput' });
                 releaseSendAcceptance('local-first-persisted');
 
                 const token = await getAccessToken();
-                attachLatencyTraceToNode(operationKey, optimisticPair.assistantMessageId!, token);
-                recordLatencyMark(optimisticPair.assistantMessageId!, 'assistant_node_created', {
-                    authToken: token,
-                    nodeId: optimisticPair.assistantMessageId!,
-                    detail: { local_first: true },
+                optimisticAssistantMessageIds.forEach((assistantMessageId) => {
+                    attachLatencyTraceToNode(operationKey, assistantMessageId, token);
+                    recordLatencyMark(assistantMessageId, 'assistant_node_created', {
+                        authToken: token,
+                        nodeId: assistantMessageId,
+                        detail: { local_first: true },
+                    });
                 });
                 dispatchSendFlowFocus({
                     flowId,
-                    messageId: optimisticPair.assistantMessageId!,
+                    messageId: optimisticAssistantMessageIds[0],
                     phase: 'real-assistant',
                     allowedCurrentFocusIds: [
                         optimisticPair.userMessageId,
-                        optimisticPair.assistantMessageId,
+                        ...optimisticAssistantMessageIds,
                         sendParentMessageId,
                     ],
                 });
                 advanceSendFlowFocus({
                     flowId,
-                    preferredMessageId: optimisticPair.assistantMessageId!,
-                    addGuardedMessageIds: [optimisticPair.userMessageId, optimisticPair.assistantMessageId!],
+                    preferredMessageId: optimisticAssistantMessageIds[0],
+                    addGuardedMessageIds: [optimisticPair.userMessageId, ...optimisticAssistantMessageIds],
                     phase: 'real-assistant',
                 });
-                startStreamForNode(optimisticPair.assistantMessage as Message, {
-                    waitForReady: false,
-                    authToken: token,
-                    parentId: optimisticPair.userMessageId,
-                }).catch(err => {
-                    console.warn('[SEND_FLOW] Streaming error:', err);
+                assistantMessages.forEach((assistantMessage) => {
+                    const run = assistantRunMessages.find((candidate) => candidate.assistantMessageId === assistantMessage.id);
+                    startStreamForNode(assistantMessage, {
+                        waitForReady: false,
+                        authToken: token,
+                        parentId: run?.userMessageId ?? optimisticPair.userMessageId,
+                    }).catch(err => {
+                        console.warn('[SEND_FLOW] Streaming error:', err);
+                    });
                 });
 
-                if (selectedAgentId && selectedAgent) {
-                    let expandedPromptForAgent = savedPrompt.trim();
-                    try {
-                        expandedPromptForAgent = await expandRepoMentionContext(savedPrompt.trim());
-                    } catch (error) {
-                        console.warn('[ChatInput] Failed to expand repo mention context:', error);
-                    }
+                let expandedPromptForAgent = savedPrompt.trim();
+                try {
+                    expandedPromptForAgent = await expandRepoMentionContext(savedPrompt.trim());
+                } catch (error) {
+                    console.warn('[ChatInput] Failed to expand repo mention context:', error);
+                }
+                for (const run of assistantRunMessages) {
+                    if (!run.assistantMessage || !run.assistantMessageId) continue;
                     if (shouldAutoCheckout) {
-                        autoCheckoutPendingRef.current.add(optimisticPair.assistantMessageId!);
+                        autoCheckoutPendingRef.current.add(run.assistantMessageId);
                     }
                     runAgentSetupInBackground({
-                        nodeId: optimisticPair.assistantMessageId!,
-                        assistantMsg: optimisticPair.assistantMessage as Message,
+                        nodeId: run.assistantMessageId,
+                        assistantMsg: run.assistantMessage as Message,
                         prompt: expandedPromptForAgent,
                         authToken: token,
                         autoCheckout: shouldAutoCheckout,
                         scopeMode: effectiveScopeMode,
                         contextPolicy,
-                        parentMessageId: optimisticPair.userMessageId,
+                        parentMessageId: run.userMessageId,
                         baseMessageId: sendParentMessageId,
                         contextParentMessageId: sendContextParentId,
                         contextStartMessageId: sendContextStartId,
@@ -3490,8 +3521,8 @@ export function ChatInput({
                 contextMode: effectiveContextMode,
                 contextPolicy,
                 useAgent: true,
-                agentId: selectedAgentId,
-                agentProvider: selectedAgent?.type || null,
+                agentId: primarySelectedAgent.id,
+                agentProvider: primarySelectedAgent?.type || null,
                 agentModel: selectedAgentModelId,
                 activeScopeId: activeScopeId || null,
                 scopeId: effectiveScopeMode === 'existing' ? effectiveScopeIdForReply : null,
@@ -3645,7 +3676,7 @@ export function ChatInput({
                 });
 
                 // --- 7. PARALLEL AGENT SETUP (if applicable) ---
-                if (selectedAgentId && selectedAgent && realAssistantId) {
+                if (primarySelectedAgent && realAssistantId) {
                     let expandedPromptForAgent = savedPrompt.trim();
                     try {
                         expandedPromptForAgent = await expandRepoMentionContext(savedPrompt.trim());
@@ -3695,27 +3726,26 @@ export function ChatInput({
 
             // Mark optimistic nodes as failed
             markNodeFailed(optimisticPair.userMessageId, formatErrorMessage(categorizedError));
-            if (optimisticPair.assistantMessageId) {
-                markNodeFailed(optimisticPair.assistantMessageId, formatErrorMessage(categorizedError));
-            }
+            optimisticUserMessageIds
+                .filter((userMessageId) => userMessageId !== optimisticPair.userMessageId)
+                .forEach((userMessageId) => markNodeFailed(userMessageId, formatErrorMessage(categorizedError)));
+            optimisticAssistantMessageIds.forEach((assistantMessageId) => {
+                markNodeFailed(assistantMessageId, formatErrorMessage(categorizedError));
+            });
 
             // Handle based on error type
             if (categorizedError.type === 'CANCELLED') {
                 // User cancelled - remove immediately
-                removeOptimisticNode(optimisticPair.userMessageId);
-                if (optimisticPair.assistantMessageId) {
-                    removeOptimisticNode(optimisticPair.assistantMessageId);
-                }
+                optimisticUserMessageIds.forEach((userMessageId) => removeOptimisticNode(userMessageId));
+                optimisticAssistantMessageIds.forEach((assistantMessageId) => removeOptimisticNode(assistantMessageId));
                 recordSendFlowEvent('cleanup.finished', {
                     flowId,
                     workspaceId: selectedWorkspaceId,
-                    nodeId: optimisticPair.assistantMessageId || optimisticPair.userMessageId,
+                    nodeId: optimisticAssistantMessageIds[0] || optimisticPair.userMessageId,
                     finalStatus: 'cancelled',
                 }, { source: 'ChatInput' });
-                releaseSendFlowKey(optimisticPair.userMessageId);
-                if (optimisticPair.assistantMessageId) {
-                    releaseSendFlowKey(optimisticPair.assistantMessageId);
-                }
+                optimisticUserMessageIds.forEach((userMessageId) => releaseSendFlowKey(userMessageId));
+                optimisticAssistantMessageIds.forEach((assistantMessageId) => releaseSendFlowKey(assistantMessageId));
             } else if (categorizedError.type === 'CONFLICT_ERROR') {
                 // 409 - parent still running
                 addToast({
@@ -3725,20 +3755,16 @@ export function ChatInput({
                 });
                 // Remove optimistic nodes after showing error
                 setTimeout(() => {
-                    removeOptimisticNode(optimisticPair.userMessageId);
-                    if (optimisticPair.assistantMessageId) {
-                        removeOptimisticNode(optimisticPair.assistantMessageId);
-                    }
+                    optimisticUserMessageIds.forEach((userMessageId) => removeOptimisticNode(userMessageId));
+                    optimisticAssistantMessageIds.forEach((assistantMessageId) => removeOptimisticNode(assistantMessageId));
                     recordSendFlowEvent('cleanup.finished', {
                         flowId,
                         workspaceId: selectedWorkspaceId,
-                        nodeId: optimisticPair.assistantMessageId || optimisticPair.userMessageId,
+                        nodeId: optimisticAssistantMessageIds[0] || optimisticPair.userMessageId,
                         finalStatus: 'conflict-error',
                     }, { source: 'ChatInput' });
-                    releaseSendFlowKey(optimisticPair.userMessageId);
-                    if (optimisticPair.assistantMessageId) {
-                        releaseSendFlowKey(optimisticPair.assistantMessageId);
-                    }
+                    optimisticUserMessageIds.forEach((userMessageId) => releaseSendFlowKey(userMessageId));
+                    optimisticAssistantMessageIds.forEach((assistantMessageId) => releaseSendFlowKey(assistantMessageId));
                 }, 3000);
             } else {
                 // Other errors - show toast and keep failed node visible briefly
@@ -3750,20 +3776,16 @@ export function ChatInput({
 
                 // Remove failed nodes after delay
                 setTimeout(() => {
-                    removeOptimisticNode(optimisticPair.userMessageId);
-                    if (optimisticPair.assistantMessageId) {
-                        removeOptimisticNode(optimisticPair.assistantMessageId);
-                    }
+                    optimisticUserMessageIds.forEach((userMessageId) => removeOptimisticNode(userMessageId));
+                    optimisticAssistantMessageIds.forEach((assistantMessageId) => removeOptimisticNode(assistantMessageId));
                     recordSendFlowEvent('cleanup.finished', {
                         flowId,
                         workspaceId: selectedWorkspaceId,
-                        nodeId: optimisticPair.assistantMessageId || optimisticPair.userMessageId,
+                        nodeId: optimisticAssistantMessageIds[0] || optimisticPair.userMessageId,
                         finalStatus: categorizedError.type,
                     }, { source: 'ChatInput' });
-                    releaseSendFlowKey(optimisticPair.userMessageId);
-                    if (optimisticPair.assistantMessageId) {
-                        releaseSendFlowKey(optimisticPair.assistantMessageId);
-                    }
+                    optimisticUserMessageIds.forEach((userMessageId) => releaseSendFlowKey(userMessageId));
+                    optimisticAssistantMessageIds.forEach((assistantMessageId) => releaseSendFlowKey(assistantMessageId));
                 }, 5000);
             }
 
@@ -3811,6 +3833,7 @@ export function ChatInput({
         selectedBaseCommit,
         selectedAgentId,
         selectedAgent,
+        selectedAgentRunItems,
         isParentIncomplete,
         contextMode,
         messageLookupMessages,
@@ -3825,7 +3848,6 @@ export function ChatInput({
         setSetupProgress,
         setNodeStatus,
         getAgentRunProjection,
-        applyStreamingAssistantText,
         addToast,
         assignSendFlowKey,
         beginSendFlowFocus,
@@ -5294,7 +5316,7 @@ export function ChatInput({
                 {/* Bottom Action Bar */}
                 <div className="flex items-center justify-between gap-2.5 border-t border-[hsl(var(--app-border)/0.55)] bg-[hsl(var(--app-bg-elevated)/0.58)] px-2.5 py-1">
                     {/* Left Actions */}
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex min-w-0 items-center gap-1.5">
                         {/* Model Selector - Modern chip style */}
                         <Popover open={isAgentPickerOpen} onOpenChange={setIsAgentPickerOpen}>
                             <PopoverTrigger asChild>
@@ -5313,25 +5335,81 @@ export function ChatInput({
                                         <Bot className="h-3 w-3" />
                                     </div>
                                     <span className="max-w-[140px] truncate text-[11.5px] font-semibold text-foreground">
-                                        {selectedAgent?.name || 'Choose model'}
+                                        {selectedRunTotal > 1 ? `${selectedRunTotal} runs` : selectedAgent?.name || 'Choose model'}
                                     </span>
                                     <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/70" />
                                 </button>
                             </PopoverTrigger>
                             <PopoverContent
-                                className="w-[304px] p-0 data-[state=open]:animate-none data-[state=closed]:animate-none data-[state=open]:fade-in-100 data-[state=closed]:fade-out-100 data-[state=open]:zoom-in-100 data-[state=closed]:zoom-out-100"
+                                disableAnimation
+                                className="w-[620px] p-0"
                                 side="top"
                                 align="start"
                                 sideOffset={8}
                             >
-                                <div className="h-[360px]">
+                                <div className="h-[390px]">
                                     <UnifiedAgentModelSelector
                                         onSelectAgent={handleAgentSelect}
                                         selectedAgentId={selectedAgentId}
+                                        agentRunCounts={normalizedSelectedAgentRunCounts}
+                                        onAgentRunCountChange={handleAgentRunCountChange}
                                     />
                                 </div>
                             </PopoverContent>
                         </Popover>
+
+                        {selectedAgentRunChips.length > 0 ? (
+                            <div className="hidden min-w-0 items-center gap-1 sm:flex">
+                                {selectedAgentRunChips.slice(0, 3).map(({ agent, count }) => {
+                                    const canRemove = selectedRunTotal > count;
+                                    const canDecrement = count > 1 || selectedRunTotal > 1;
+                                    return (
+                                        <div
+                                            key={agent.id}
+                                            className="group/chip flex h-7 min-w-0 items-center gap-1 rounded-md bg-[hsl(var(--app-panel-strong))] pl-2 pr-1 text-[11px] font-semibold text-foreground shadow-[0_1px_2px_rgba(22,26,32,0.06),inset_0_0_0_1px_hsl(var(--app-border)/0.76)] transition-[background-color,box-shadow] duration-150 hover:bg-background hover:shadow-[0_4px_16px_-12px_rgba(15,23,42,0.65),inset_0_0_0_1px_hsl(var(--app-border-strong)/0.8)]"
+                                        >
+                                            <span className="max-w-[118px] truncate">{agent.name}</span>
+                                            <span className="rounded bg-muted/60 px-1 text-[10px] tabular-nums text-muted-foreground">
+                                                {count}x
+                                            </span>
+                                            <div className="ml-0.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover/chip:opacity-100 group-focus-within/chip:opacity-100">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleAgentRunCountChange(agent.id, 0)}
+                                                    disabled={!canRemove}
+                                                    className="flex h-5 w-5 items-center justify-center rounded bg-background text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.75)] transition-[background-color,color,transform,opacity] duration-150 hover:bg-red-50 hover:text-red-600 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+                                                    aria-label={`Remove ${agent.name}`}
+                                                >
+                                                    <X className="h-3 w-3" strokeWidth={2.5} />
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleAgentRunCountChange(agent.id, count - 1)}
+                                                    disabled={!canDecrement}
+                                                    className="flex h-5 w-5 items-center justify-center rounded bg-background text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.75)] transition-[background-color,color,transform,opacity] duration-150 hover:bg-muted hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
+                                                    aria-label={`Decrease ${agent.name}`}
+                                                >
+                                                    <Minus className="h-3 w-3" strokeWidth={2.5} />
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleAgentRunCountChange(agent.id, count + 1)}
+                                                    className="flex h-5 w-5 items-center justify-center rounded bg-emerald-600 text-white shadow-[0_6px_16px_-10px_rgba(16,185,129,0.7)] transition-[background-color,transform] duration-150 hover:bg-emerald-700 active:scale-[0.96]"
+                                                    aria-label={`Increase ${agent.name}`}
+                                                >
+                                                    <Plus className="h-3 w-3" strokeWidth={2.6} />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                                {selectedAgentRunChips.length > 3 ? (
+                                    <span className="rounded bg-muted/55 px-1.5 py-0.5 text-[10.5px] font-semibold text-muted-foreground">
+                                        +{selectedAgentRunChips.length - 3}
+                                    </span>
+                                ) : null}
+                            </div>
+                        ) : null}
 
                     </div>
 

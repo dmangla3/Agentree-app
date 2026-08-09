@@ -317,7 +317,11 @@ const configureDesktopAuthRuntime = () => {
 };
 
 export const isTauriRuntime = () => (
-  typeof window !== 'undefined' && (isTauri() || '__TAURI_INTERNALS__' in window)
+  typeof window !== 'undefined' && (
+    isTauri() ||
+    '__TAURI_INTERNALS__' in window ||
+    '__TAURI__' in window
+  )
 );
 
 export const shouldUseDesktopBrowserAuth = () => (

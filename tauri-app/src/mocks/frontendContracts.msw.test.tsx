@@ -2,7 +2,7 @@
 import '../test/setup';
 import type { Node } from '@xyflow/react';
 import { renderHook, waitFor, act } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useGraphSnapshot } from '../hooks/useGraphSnapshot';
 import { useMessages, useSendMessage } from '../hooks/useMessages';
 import { useWorkspaces } from '../hooks/useWorkspaces';
@@ -22,6 +22,12 @@ vi.mock('../lib/agentClient', () => ({
 }));
 
 describe('MSW frontend API contracts', () => {
+  beforeEach(() => {
+    vi.mocked(agentClient.hasRuntime).mockReturnValue(false);
+    vi.mocked(agentClient.listLocalNodes).mockResolvedValue([]);
+    vi.mocked(agentClient.hydrateLocalNodesFromServer).mockResolvedValue(0);
+  });
+
   it('loads workspaces through MSW and applies local deletion filtering', async () => {
     const { Wrapper } = createQueryWrapper();
 
@@ -79,6 +85,19 @@ describe('MSW frontend API contracts', () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data?.map((message) => message.id)).toEqual(messages.map((message) => message.id));
+  });
+
+  it('hydrates Tauri local messages from the server when local nodes are missing', async () => {
+    vi.mocked(agentClient.hasRuntime).mockReturnValue(true);
+    vi.mocked(agentClient.listLocalNodes).mockResolvedValue([]);
+
+    const { Wrapper } = createQueryWrapper();
+
+    const { result } = renderHook(() => useMessages(workspaceId), { wrapper: Wrapper });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.map((message) => message.id)).toEqual(messages.map((message) => message.id));
+    expect(agentClient.hydrateLocalNodesFromServer).toHaveBeenCalledWith(workspaceId, messages);
   });
 
   it('updates the browser/API-backed message cache after a mocked send', async () => {

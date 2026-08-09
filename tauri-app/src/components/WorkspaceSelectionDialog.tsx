@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { formatDistanceToNowStrict } from 'date-fns';
 import { open as openFolderDialog } from '@tauri-apps/plugin-dialog';
 import { 
@@ -49,6 +50,7 @@ import { getErrorMessage } from '../lib/api';
 import { Alert, AlertDescription, AlertTitle } from '../../@/components/ui/alert';
 import { finalizeCreatedWorkspace } from '../lib/finalizeCreatedWorkspace';
 import { WorkspaceDeleteDialog } from './WorkspaceDeleteDialog';
+import { ChangedFilesSummary } from './ChangedFilesSummary';
 
 interface WorkspaceSelectionDialogProps {
   isOpen: boolean;
@@ -359,6 +361,7 @@ RepoSection.displayName = 'RepoSection';
 
 export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSelectionDialogProps) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { selectWorkspace, selectedWorkspaceId, dispatchFocus } = useWorkspaceStore();
   const { data: workspacesData, isLoading, isError, error, refetch } = useWorkspaces();
   const createWorkspace = useCreateWorkspace();
@@ -376,6 +379,10 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
 
   const workspaces = useMemo(() => workspacesData ?? [], [workspacesData]);
   const repoGroups = useMemo(() => groupWorkspacesByRepo(workspaces), [workspaces]);
+  const openWorkspace = useCallback((workspaceId: string, options?: { replace?: boolean }) => {
+    selectWorkspace(workspaceId);
+    navigate(`/workspaces/${encodeURIComponent(workspaceId)}`, { replace: options?.replace ?? false });
+  }, [navigate, selectWorkspace]);
 
   // Filter repos based on search
   const filteredRepoGroups = useMemo(() => {
@@ -441,13 +448,13 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
         ? {
             label: 'Open Workspace',
             onClick: () => {
-              selectWorkspace(primaryWorkspace.id);
+              openWorkspace(primaryWorkspace.id);
               onOpenChange(false);
             },
           }
         : undefined,
     });
-  }, [addToast, onOpenChange, selectWorkspace]);
+  }, [addToast, onOpenChange, openWorkspace]);
 
   const createWorkspaceForFolder = useCallback(async (
     folderPath: string,
@@ -470,6 +477,7 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
       setPendingFolderPath(null);
       if (created?.id) {
         onOpenChange(false);
+        navigate(`/workspaces/${encodeURIComponent(created.id)}`);
         void finalizeCreatedWorkspace({
           created,
           fallbackFolderPath: folderPath,
@@ -500,7 +508,7 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
         variant: 'error',
       });
     }
-  }, [addToast, createWorkspace, dispatchFocus, onOpenChange, queryClient, selectWorkspace]);
+  }, [addToast, createWorkspace, dispatchFocus, navigate, onOpenChange, queryClient, selectWorkspace]);
 
   const handleCreateRepo = async () => {
     if (createWorkspace.isPending) return;
@@ -658,6 +666,7 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
                 <AlertTitle>This repository has local changes</AlertTitle>
                 <AlertDescription>
                   <p>Choose a base for the new workspace.</p>
+                  <ChangedFilesSummary files={setupRequirement.workspace.changed_files} />
                   <Input
                     value={checkpointMessage}
                     onChange={(event) => setCheckpointMessage(event.target.value)}
@@ -768,7 +777,7 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
                     repo={repo}
                     selectedWorkspaceId={selectedWorkspaceId}
                     searchTerm={searchTerm}
-                    onSelectWorkspace={selectWorkspace}
+                    onSelectWorkspace={openWorkspace}
                     onAddWorkspace={handleAddWorkspaceToRepo}
                     onRenameWorkspace={handleRenameWorkspace}
                     onDeleteWorkspace={handleRequestDeleteWorkspace}

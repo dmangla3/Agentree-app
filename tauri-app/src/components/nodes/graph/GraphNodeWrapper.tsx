@@ -210,6 +210,14 @@ export const GraphNodeWrapper = memo(({
   }, [shouldDisableHoverCard]);
 
   useEffect(() => {
+    const closeHoverCardForViewportMove = () => setHoverOpen(false);
+    window.addEventListener('agentree:graph-viewport-interaction-start', closeHoverCardForViewportMove);
+    return () => {
+      window.removeEventListener('agentree:graph-viewport-interaction-start', closeHoverCardForViewportMove);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!nodeId || !hoverOpen || shouldDisableHoverCard) return;
     agentRunManager.watch(nodeId, 'hover');
     return () => {

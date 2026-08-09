@@ -2097,6 +2097,18 @@ export const mapMessagesToGraphElements = (
         .filter((group) => group.sourceKind === 'external')
         .sort((left, right) => left.sortTs - right.sortTs || left.groupId.localeCompare(right.groupId))[0]?.groupId ?? null
       : null;
+    const firstAnchoredImportedCommitSha = projection.originMessageId && !firstImportedGroupId
+      ? projection.commitLaneRows
+        .filter((row) => row.type === 'commit' && row.commitSha && shouldRenderCanonicalCommitSha(row.commitSha))
+        .map((row) => row.commitSha!)
+        .map((sha) => projection.commitBySha.get(sha) ?? null)
+        .filter((commit): commit is ProjectedCommitEntity => (
+          commit !== null &&
+          commit.placement === 'commit_lineage' &&
+          commit.sourceKind === 'external'
+        ))
+        .sort((left, right) => left.sortTs - right.sortTs || left.sha.localeCompare(right.sha))[0]?.sha ?? null
+      : null;
 
     if (showCommitNodes) visibleLayoutDerivedCommitGroups.forEach((group) => {
       nodes.push({
@@ -2136,6 +2148,9 @@ export const mapMessagesToGraphElements = (
         data: {
           commit,
           projection,
+          ...(commit.sha === firstAnchoredImportedCommitSha && projection.originMessageId
+            ? { layoutAnchorNodeId: projection.originMessageId }
+            : {}),
           sortTs: commit.sortTs,
           isSelected: false,
           isFocused: false,

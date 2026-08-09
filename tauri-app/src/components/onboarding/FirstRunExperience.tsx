@@ -27,6 +27,7 @@ import { getErrorMessage } from '../../lib/api';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { finalizeCreatedWorkspace } from '../../lib/finalizeCreatedWorkspace';
 import { useToast } from '../Toast';
+import { ChangedFilesSummary } from '../ChangedFilesSummary';
 import type { Workspace } from '../../stores/workspaceStore';
 import logoSrc from '../../assets/logo.png';
 import { track, trackOnboardingStepViewed } from '../../lib/analytics';
@@ -649,7 +650,8 @@ export function FirstRunExperience({
                           <p className="mb-3">
                             Choose whether Agentree should use the current last commit as the base, or create a checkpoint commit before workspace creation.
                           </p>
-                          <div className="space-y-3">
+                          <ChangedFilesSummary files={setupRequirement.workspace.changed_files} />
+                          <div className="mt-3 space-y-3">
                             <Input
                               value={checkpointMessage}
                               onChange={(event) => setCheckpointMessage(event.target.value)}

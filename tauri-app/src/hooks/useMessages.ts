@@ -95,6 +95,47 @@ export const useMessages = (
                     .map(parseLocalNode)
                     .filter((row): row is NonNullable<ReturnType<typeof parseLocalNode>> => Boolean(row));
                 const localRenderMessages = applyLocalNodeMessages([], localMessages, workspaceId);
+                if (localRenderMessages.length === 0) {
+                    try {
+                        const serverMessages = await fetchServerMessages(workspaceId);
+                        if (serverMessages.length > 0) {
+                            try {
+                                await agentClient.hydrateLocalNodesFromServer(workspaceId, serverMessages);
+                                queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(workspaceId) });
+                            } catch (hydrateError) {
+                                recordPerfEvent('query.messages.local-restore-hydrate-failed', {
+                                    elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
+                                    workspaceId,
+                                    messageCount: serverMessages.length,
+                                    error: hydrateError instanceof Error ? hydrateError.message : String(hydrateError),
+                                }, {
+                                    source: 'useMessages',
+                                    durationMs: Number((performance.now() - startedAt).toFixed(2)),
+                                });
+                            }
+                        }
+                        recordPerfEvent('query.messages.local-restore-server-fetch', {
+                            elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
+                            workspaceId,
+                            localRowCount: localRows.length,
+                            messageCount: serverMessages.length,
+                        }, {
+                            source: 'useMessages',
+                            durationMs: Number((performance.now() - startedAt).toFixed(2)),
+                        });
+                        return serverMessages;
+                    } catch (error) {
+                        recordPerfEvent('query.messages.local-restore-server-fetch-failed', {
+                            elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
+                            workspaceId,
+                            localRowCount: localRows.length,
+                            error: error instanceof Error ? error.message : String(error),
+                        }, {
+                            source: 'useMessages',
+                            durationMs: Number((performance.now() - startedAt).toFixed(2)),
+                        });
+                    }
+                }
                 recordPerfEvent('query.messages.local-read-model', {
                     elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
                     workspaceId,

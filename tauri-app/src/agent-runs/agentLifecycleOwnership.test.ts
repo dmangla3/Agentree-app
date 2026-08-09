@@ -26,4 +26,12 @@ describe('agent lifecycle ownership boundaries', () => {
       expect(surroundingSource).toContain('optimisticPair');
     }
   });
+
+  it('keeps stream projection dispatch outside ChatInput', () => {
+    const source = readChatInputSource();
+    expect(source).not.toContain('const processAgentEvent');
+    expect(source).not.toContain('const addTimelineEvent');
+    expect(source).not.toContain('const updateAgentRunUsage');
+    expect(source).toContain('agentRunStreamDispatch');
+  });
 });

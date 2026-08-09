@@ -467,7 +467,8 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 scopeColorById,
                 onFocus,
                 onSelect,
-                onContextMenu
+                onContextMenu,
+                previousVisual?.result ?? null
             );
             visualCacheRef.current = {
                 cachedNodes: layoutCacheRef.current.nodes,
@@ -657,11 +658,14 @@ function applyVisualProperties(
     scopeColorById: Map<string, string | null>,
     onFocus: (id: string) => void,
     onSelect: (id: string, multi: boolean) => void,
-    onContextMenu: (id: string, e: React.MouseEvent) => void
+    onContextMenu: (id: string, e: React.MouseEvent) => void,
+    previousResult?: UseGraphLayoutResult | null
 ): { nodes: Node<any>[]; edges: Edge[] } {
     const startedAt = performance.now();
     const messageMap = new Map(messages.map(m => [m.id, m]));
     const nodeById = new Map(cachedNodes.map(node => [node.id, node]));
+    const previousNodeById = previousResult ? new Map(previousResult.nodes.map(node => [node.id, node])) : null;
+    const previousEdgeById = previousResult ? new Map(previousResult.edges.map(edge => [edge.id, edge])) : null;
     const contextPathNodes = new Set<string>(contextPathMessageIds);
     const contextPathEdges = new Set<string>();
     const contextPathVisualEdges = new Set<string>();
@@ -721,6 +725,9 @@ function applyVisualProperties(
         return contextPathVisualEdges.has(`${edge.source}->${edge.target}`);
     };
 
+    let reusedNodeCount = 0;
+    let reusedEdgeCount = 0;
+
     const updatedNodes = cachedNodes.map(node => {
         // Handle hulls separately or just pass through
         if (node.type === 'turn_group_hull') return node;
@@ -742,32 +749,39 @@ function applyVisualProperties(
             : contextPathNodes.has(focusId) || (data.batch?.messageIds.some((id: string) => contextPathNodes.has(id)));
         const matchesTagFilter = !filterActive || matchingMessageIds.has(selectionId) || (data.batch?.messageIds.some((id: string) => matchingMessageIds.has(id)));
 
+        const nextData = {
+            ...data,
+            ...(latestEntity ? { entity: latestEntity } : {}),
+            ...(latestMessage ? {
+                message: latestMessage,
+                agentStatus: resolveNodeState(latestMessage, null).status ?? (latestMessage.agent_id ? 'pending' : null),
+                isAgentRunning: ['pending', 'running', 'streaming'].includes(String(resolveNodeState(latestMessage, null).status ?? '')),
+                agentId: latestMessage.agent_id ?? null,
+                collapsed: latestMessage.collapsed,
+            } : {}),
+            onFocus,
+            onSelect,
+            onContextMenu,
+            isFocused,
+            isComposerBaseCommit,
+            isInContextPath,
+            matchesTagFilter,
+            filterActive,
+            // Update specific entity data if needed
+            scopeName: data.entity?.scopeId ? (readLookupValue(scopeNameById, data.entity.scopeId) || null) : data.scopeName,
+            scopeColor: data.entity?.scopeId ? (readLookupValue(scopeColorById, data.entity.scopeId) || null) : data.scopeColor,
+        };
+
+        const previousNode = previousNodeById?.get(node.id);
+        if (previousNode && canReuseVisualNode(previousNode, node, nextData)) {
+            reusedNodeCount += 1;
+            return previousNode;
+        }
+
         // Pass the latest callbacks and visual state
         return {
             ...node,
-            data: {
-                ...data,
-                ...(latestEntity ? { entity: latestEntity } : {}),
-                ...(latestMessage ? {
-                    message: latestMessage,
-                    agentStatus: resolveNodeState(latestMessage, null).status ?? (latestMessage.agent_id ? 'pending' : null),
-                    isAgentRunning: ['pending', 'running', 'streaming'].includes(String(resolveNodeState(latestMessage, null).status ?? '')),
-                    agentId: latestMessage.agent_id ?? null,
-                    collapsed: latestMessage.collapsed,
-                } : {}),
-                onFocus,
-                onSelect,
-                onContextMenu,
-                focusedMessageId,
-                isFocused,
-                isComposerBaseCommit,
-                isInContextPath,
-                matchesTagFilter,
-                filterActive,
-                // Update specific entity data if needed
-                scopeName: data.entity?.scopeId ? (readLookupValue(scopeNameById, data.entity.scopeId) || null) : data.scopeName,
-                scopeColor: data.entity?.scopeId ? (readLookupValue(scopeColorById, data.entity.scopeId) || null) : data.scopeColor,
-            },
+            data: nextData,
         };
     });
 
@@ -814,23 +828,43 @@ function applyVisualProperties(
             : relationship === 'git-parent' || relationship === 'base-used'
                 ? 0.86
                 : 1;
+        const nextData = {
+            ...(edge.data as Record<string, unknown> | undefined),
+            isOnContextPath,
+        };
+        const nextStyle = {
+            ...edge.style,
+            stroke: isOnContextPath ? activeStroke : inactiveStroke,
+            strokeWidth: isSummaryEdge
+                ? (isOnContextPath ? FOCUSED_SUMMARY_EDGE_STROKE_WIDTH : DEFAULT_SUMMARY_EDGE_STROKE_WIDTH)
+                : (isOnContextPath ? CONTEXT_PATH_EDGE_STROKE_WIDTH : defaultStrokeWidth),
+            strokeDasharray: defaultDash,
+            opacity: isOnContextPath ? 1 : defaultOpacity,
+        };
+        const nextZIndex = isOnContextPath ? 40 : (isSummaryEdge ? -3 : semanticEdgeZIndex);
+        const previousEdge = previousEdgeById?.get(edge.id);
+        if (
+            previousEdge &&
+            previousEdge.source === edge.source &&
+            previousEdge.target === edge.target &&
+            previousEdge.type === edge.type &&
+            previousEdge.sourceHandle === edge.sourceHandle &&
+            previousEdge.targetHandle === edge.targetHandle &&
+            previousEdge.animated === isOnContextPath &&
+            previousEdge.zIndex === nextZIndex &&
+            shallowEqualRecord(previousEdge.data as Record<string, unknown> | undefined, nextData) &&
+            shallowEqualRecord(previousEdge.style as Record<string, unknown> | undefined, nextStyle)
+        ) {
+            reusedEdgeCount += 1;
+            return previousEdge;
+        }
+
         return {
             ...edge,
             animated: isOnContextPath,
-            data: {
-                ...(edge.data as Record<string, unknown> | undefined),
-                isOnContextPath,
-            },
-            style: {
-                ...edge.style,
-                stroke: isOnContextPath ? activeStroke : inactiveStroke,
-                strokeWidth: isSummaryEdge
-                    ? (isOnContextPath ? FOCUSED_SUMMARY_EDGE_STROKE_WIDTH : DEFAULT_SUMMARY_EDGE_STROKE_WIDTH)
-                    : (isOnContextPath ? CONTEXT_PATH_EDGE_STROKE_WIDTH : defaultStrokeWidth),
-                strokeDasharray: defaultDash,
-                opacity: isOnContextPath ? 1 : defaultOpacity,
-            },
-            zIndex: isOnContextPath ? 40 : (isSummaryEdge ? -3 : semanticEdgeZIndex),
+            data: nextData,
+            style: nextStyle,
+            zIndex: nextZIndex,
         };
     });
 
@@ -842,7 +876,112 @@ function applyVisualProperties(
         contextPathEdgeCount: contextPathEdges.size,
         focusedMessageId,
         filterActive,
+        reusedNodeCount,
+        reusedEdgeCount,
     }, performance.now() - startedAt);
 
     return { nodes: updatedNodes, edges: updatedEdges };
 }
+
+const shallowEqualRecord = (
+    left: Record<string, unknown> | null | undefined,
+    right: Record<string, unknown> | null | undefined
+): boolean => {
+    if (left === right) return true;
+    const leftKeys = Object.keys(left ?? {});
+    const rightKeys = Object.keys(right ?? {});
+    if (leftKeys.length !== rightKeys.length) return false;
+    for (const key of leftKeys) {
+        if ((left as Record<string, unknown>)[key] !== (right as Record<string, unknown>)[key]) return false;
+    }
+    return true;
+};
+
+const messageVisualKey = (message: any): string => {
+    if (!message) return '';
+    const branchPointerKey = Array.isArray(message.branchPointers)
+        ? message.branchPointers.map((pointer: any) => `${pointer.name ?? ''}:${pointer.commitSha ?? pointer.sha ?? ''}`).join(',')
+        : '';
+    return [
+        message.id ?? '',
+        message.status ?? '',
+        message.agent_id ?? '',
+        message.updatedAt ?? '',
+        message.content ?? '',
+        message.output_commit_sha ?? '',
+        message.base_commit_sha ?? '',
+        message.git_branch_name ?? '',
+        message.collapsed ?? '',
+        message.commit?.sha ?? '',
+        message.commit?.subject ?? '',
+        branchPointerKey,
+    ].join('|');
+};
+
+const entityVisualKey = (entity: any): string | null => {
+    if (!entity) return null;
+    return [
+        entity.kind ?? '',
+        entity.messageId ?? '',
+        entity.focusMessageId ?? '',
+        entity.summary?.id ?? '',
+        entity.preview ?? '',
+        entity.shortLabel ?? '',
+        entity.shortSha ?? '',
+        entity.status ?? '',
+        entity.toolCallCount ?? '',
+        entity.totalTokens ?? '',
+        entity.commitCount ?? '',
+        entity.importedFromRef ?? '',
+        entity.scopeId ?? '',
+        Array.isArray(entity.parentShas) ? entity.parentShas.join(',') : '',
+        messageVisualKey(entity.message),
+    ].join('|');
+};
+
+const canReuseVisualNode = (
+    previousNode: Node<any>,
+    sourceNode: Node<any>,
+    nextData: Record<string, unknown>
+): boolean => {
+    if (
+        previousNode.type !== sourceNode.type ||
+        previousNode.parentId !== sourceNode.parentId ||
+        previousNode.sourcePosition !== sourceNode.sourcePosition ||
+        previousNode.targetPosition !== sourceNode.targetPosition ||
+        previousNode.width !== sourceNode.width ||
+        previousNode.height !== sourceNode.height ||
+        previousNode.initialWidth !== sourceNode.initialWidth ||
+        previousNode.initialHeight !== sourceNode.initialHeight ||
+        previousNode.position?.x !== sourceNode.position?.x ||
+        previousNode.position?.y !== sourceNode.position?.y ||
+        previousNode.style !== sourceNode.style
+    ) {
+        return false;
+    }
+
+    const previousData = previousNode.data as Record<string, unknown>;
+    const keysToCompare = [
+        'message',
+        'agentStatus',
+        'isAgentRunning',
+        'agentId',
+        'collapsed',
+        'onFocus',
+        'onSelect',
+        'onContextMenu',
+        'isFocused',
+        'isComposerBaseCommit',
+        'isInContextPath',
+        'matchesTagFilter',
+        'filterActive',
+        'scopeName',
+        'scopeColor',
+    ];
+
+    for (const key of keysToCompare) {
+        if (previousData[key] !== nextData[key]) return false;
+    }
+
+    return entityVisualKey(previousData.entity) === entityVisualKey(nextData.entity);
+};

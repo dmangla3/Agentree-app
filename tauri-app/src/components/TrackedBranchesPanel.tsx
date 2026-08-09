@@ -277,7 +277,7 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
   }
 
   return (
-    <div className={cn('flex flex-row items-center w-full gap-3 border-b border-border/40 bg-background/92 px-3 py-1.5 backdrop-blur-md', className)}>
+    <div className={cn('flex flex-row items-center w-full gap-3 border-b border-border/40 bg-background/95 px-3 py-1.5 backdrop-blur-md', className)}>
       {/* 1. Checked Out Zone */}
       <HoverCard openDelay={500}>
         <HoverCardTrigger asChild>
@@ -368,7 +368,7 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
         {/* Track New Branch Selector */}
         <div className="flex shrink-0 items-center gap-1 ml-1 border-l border-border/40 pl-2">
           <select
-            className="h-5 flex-1 rounded bg-transparent px-1 text-[10px] text-muted-foreground font-medium outline-none border-none hover:text-foreground hover:bg-muted/40 transition-colors w-auto cursor-pointer"
+            className="h-5 flex-1 cursor-pointer rounded border border-border/40 bg-muted/30 px-1 text-[10px] font-medium text-muted-foreground outline-none transition-colors [color-scheme:light] hover:bg-muted/45 hover:text-foreground focus:border-primary/40 dark:bg-slate-900/80 dark:text-slate-300 dark:[color-scheme:dark] dark:hover:bg-slate-800/90 dark:hover:text-slate-50 w-auto"
             value={selectedRef}
             onChange={(event) => {
               const val = event.target.value;
@@ -387,9 +387,9 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
               });
             }}
           >
-            <option value="">+ Track Branch</option>
+            <option value="" className="bg-popover text-popover-foreground">+ Track Branch</option>
             {trackableRefs.map((ref) => (
-              <option key={ref.git_ref} value={ref.git_ref}>
+              <option key={ref.git_ref} value={ref.git_ref} className="bg-popover text-popover-foreground">
                 {ref.short_name}
               </option>
             ))}

@@ -883,6 +883,42 @@ describe('graph layout geometry QA', () => {
     expect((edge?.data as any)?.edgeRole).toBe('commit-lineage');
   });
 
+  it('anchors the first short imported commit near origin', () => {
+    const messages = [
+      makeMessage({
+        id: 'origin-assistant',
+        role: 'assistant',
+        parentId: null,
+        content: 'Origin assistant message.',
+        status: 'completed',
+      }, 0),
+    ];
+    const commitGraph = buildCanonicalImportedCommitChain();
+    const shortCommitGraph = {
+      commits: commitGraph.commits.slice(0, 2),
+      commitParents: commitGraph.commitParents.slice(0, 2),
+      commitObservations: commitGraph.commitObservations.slice(0, 2),
+    };
+
+    const mapped = buildMappedGraph(messages, 'origin-assistant', shortCommitGraph);
+    expect(getNode(mapped.nodes, 'imported0001').type).toBe('canonical_commit');
+    expect(getNode(mapped.nodes, 'imported0002').type).toBe('canonical_commit');
+
+    [getTidyTreeLayoutedElements, getLayoutedElements].forEach((layoutFn) => {
+      const layouted = layoutFn(mapped.nodes, mapped.edges);
+      const origin = getNode(layouted.nodes, 'origin-assistant');
+      const firstImportedCommit = getNode(layouted.nodes, 'imported0001');
+      const secondImportedCommit = getNode(layouted.nodes, 'imported0002');
+      const originRight = origin.position.x + numberStyle(origin.style?.width);
+
+      expect(firstImportedCommit.position.x).toBeGreaterThan(origin.position.x);
+      expect(firstImportedCommit.position.x - originRight).toBeLessThanOrEqual(8);
+      expect(Math.abs(firstImportedCommit.position.y - origin.position.y)).toBeLessThanOrEqual(8);
+      expect(secondImportedCommit.position.y).toBeGreaterThan(firstImportedCommit.position.y);
+      expect(layouted.edges.some((edge) => edge.source === 'origin-assistant' && edge.target === 'imported0001')).toBe(false);
+    });
+  });
+
   it('filters canonical imported commits to commits linked to visible subgraph messages', () => {
     const messages = [
       makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),

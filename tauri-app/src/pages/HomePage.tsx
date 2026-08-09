@@ -75,6 +75,14 @@ export function HomePage() {
   const hasCompletedOnboarding = useOnboardingStore((state) => state.hasCompletedForUser(user?.id));
   const markCompletedOnboarding = useOnboardingStore((state) => state.markCompleted);
   const workspaces = workspacesData ?? [];
+  const navigateToWorkspace = useCallback((id: string, options?: { replace?: boolean; messageId?: string | null }) => {
+    const search = options?.messageId ? `?messageId=${encodeURIComponent(options.messageId)}` : '';
+    navigate(`/workspaces/${encodeURIComponent(id)}${search}`, { replace: options?.replace ?? false });
+  }, [navigate]);
+  const selectAndNavigateWorkspace = useCallback((id: string, initialFocusId?: string | null, options?: { replace?: boolean }) => {
+    selectWorkspace(id, initialFocusId);
+    navigateToWorkspace(id, { replace: options?.replace, messageId: initialFocusId });
+  }, [navigateToWorkspace, selectWorkspace]);
   devLogLazy(() => [
     `[ROUTE][HomePage] user=${!!user} workspaceIdParam=${workspaceId ?? 'none'} selectedWorkspaceId=${selectedWorkspaceId ?? 'none'} workspaces=${workspaces.length} isLoadingWorkspaces=${isLoadingWorkspaces} hasCompletedOnboarding=${user ? hasCompletedOnboarding : 'no-user'}`
   ]);
@@ -115,8 +123,8 @@ export function HomePage() {
 
   useEffect(() => {
     if (workspaceId || selectedWorkspaceId || workspaces.length === 0) return;
-    selectWorkspace(workspaces[0].id);
-  }, [selectedWorkspaceId, selectWorkspace, workspaceId, workspaces]);
+    selectAndNavigateWorkspace(workspaces[0].id, null, { replace: true });
+  }, [selectedWorkspaceId, selectAndNavigateWorkspace, workspaceId, workspaces]);
 
   useEffect(() => {
     if (workspaceId || isLoadingWorkspaces || !selectedWorkspaceId) return;
@@ -124,12 +132,12 @@ export function HomePage() {
     if (selectedWorkspaceExists) return;
 
     if (workspaces.length > 0) {
-      selectWorkspace(workspaces[0].id);
+      selectAndNavigateWorkspace(workspaces[0].id, null, { replace: true });
       return;
     }
 
     clearSelectedWorkspace();
-  }, [clearSelectedWorkspace, isLoadingWorkspaces, selectedWorkspaceId, selectWorkspace, workspaceId, workspaces]);
+  }, [clearSelectedWorkspace, isLoadingWorkspaces, selectedWorkspaceId, selectAndNavigateWorkspace, workspaceId, workspaces]);
 
   // Keyboard shortcuts for search
   useEffect(() => {
@@ -146,7 +154,7 @@ export function HomePage() {
 
   // Handle navigation to message from search results
   const handleNavigateToMessage = (messageId: string, workspaceId: string) => {
-    selectWorkspace(workspaceId, messageId);
+    selectAndNavigateWorkspace(workspaceId, messageId);
     setIsSearchPanelOpen(false);
     setActiveView('chat'); // Switch to chat view
   };
@@ -202,7 +210,7 @@ export function HomePage() {
         <FirstRunExperience
           userName={user.name}
           workspaces={workspaces}
-          onSelectWorkspace={selectWorkspace}
+          onSelectWorkspace={(workspaceId) => selectAndNavigateWorkspace(workspaceId, null, { replace: true })}
           onComplete={(workspaceId) => markCompletedOnboarding(user.id, workspaceId)}
         />
       </Suspense>
