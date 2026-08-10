@@ -29,6 +29,8 @@ const makeProjection = (): WorkspaceProjection => ({
   commitLaneRows: [],
   layoutDerivedCommitGroups: [],
   groupIdByCommitSha: new Map(),
+  threadRootIds: [],
+  threadRootIdByMessageId: new Map(),
   turnGroups: [],
   turnGroupById: new Map(),
   originMessage: null,

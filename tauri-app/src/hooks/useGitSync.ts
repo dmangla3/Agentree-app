@@ -299,11 +299,9 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
     onSuccess: (result) => {
       if (!workspaceId) return;
       if (!result?.didSync) return;
-      if ((result.importedCount ?? 0) > 0) {
-        void queryClient.invalidateQueries({ queryKey: ['graph-snapshot', workspaceId], refetchType: 'active' });
-        void queryClient.invalidateQueries({ queryKey: ['local-commits', workspaceId], refetchType: 'active' });
-        void queryClient.invalidateQueries({ queryKey: ['local-commit-graph', workspaceId], refetchType: 'active' });
-      }
+      // Callers own graph refresh timing. GraphView batches graph/local commit
+      // refetches after sync, so eager active refetches here duplicate the most
+      // expensive work during the 1-minute background sync path.
       queryClient.invalidateQueries({ queryKey: trackedRefKeys.workspace(workspaceId) });
       queryClient.invalidateQueries({ queryKey: branchKeys.workspace(workspaceId) });
     },

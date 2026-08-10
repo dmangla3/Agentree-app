@@ -1,16 +1,18 @@
 use once_cell::sync::{Lazy, OnceCell};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::ffi::OsStr;
-use std::fs::{create_dir_all, read_to_string, write, OpenOptions};
+use std::fs::{create_dir_all, read_dir, read_to_string, write, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
 static LOG_DIR: OnceCell<PathBuf> = OnceCell::new();
 static WRITE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+static METRIC_KIT_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize, specta::Type)]
 pub struct LogPaths {
@@ -25,6 +27,8 @@ pub struct DiagnosticsLogBundle {
     pub log_paths: LogPaths,
     pub frontend_excerpt: String,
     pub backend_excerpt: String,
+    pub metric_kit_excerpt: String,
+    pub metric_kit_diagnostic_files: Vec<String>,
     pub max_lines_per_log: usize,
 }
 
@@ -54,6 +58,21 @@ pub struct PerfCaptureExportRequest {
 pub struct PerfCaptureExportResult {
     pub export_dir: String,
     pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricKitPayloadSummary {
+    pub payload_bytes: usize,
+    pub hang_diagnostics_count: usize,
+    pub crash_diagnostics_count: usize,
+    pub cpu_exception_diagnostics_count: usize,
+    pub disk_write_exception_diagnostics_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct MetricKitPersistedDiagnostic {
+    pub path: String,
+    pub summary: MetricKitPayloadSummary,
 }
 
 fn now_millis() -> u128 {
@@ -105,6 +124,14 @@ fn frontend_log_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn perf_capture_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(ensure_log_dir(app)?.join("perf-captures"))
+}
+
+fn metric_kit_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(ensure_log_dir(app)?.join("metric-kit"))
+}
+
+fn metric_kit_log_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(metric_kit_dir(app)?.join("metric-kit.log"))
 }
 
 fn backend_log_path_without_app() -> Option<PathBuf> {
@@ -189,6 +216,133 @@ fn tail_log(path: &PathBuf, max_lines: usize) -> String {
     }
 }
 
+fn count_diagnostic_entries(value: &Value, key: &str) -> usize {
+    match value {
+        Value::Object(map) => map
+            .iter()
+            .map(|(current_key, current_value)| {
+                let current_count = if current_key == key {
+                    current_value
+                        .as_array()
+                        .map(|items| items.len())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                current_count + count_diagnostic_entries(current_value, key)
+            })
+            .sum(),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| count_diagnostic_entries(item, key))
+            .sum(),
+        _ => 0,
+    }
+}
+
+pub fn summarize_metric_kit_payload(payload_json: &str) -> MetricKitPayloadSummary {
+    let parsed = serde_json::from_str::<Value>(payload_json).ok();
+    MetricKitPayloadSummary {
+        payload_bytes: payload_json.len(),
+        hang_diagnostics_count: parsed
+            .as_ref()
+            .map(|value| count_diagnostic_entries(value, "hangDiagnostics"))
+            .unwrap_or(0),
+        crash_diagnostics_count: parsed
+            .as_ref()
+            .map(|value| count_diagnostic_entries(value, "crashDiagnostics"))
+            .unwrap_or(0),
+        cpu_exception_diagnostics_count: parsed
+            .as_ref()
+            .map(|value| count_diagnostic_entries(value, "cpuExceptionDiagnostics"))
+            .unwrap_or(0),
+        disk_write_exception_diagnostics_count: parsed
+            .as_ref()
+            .map(|value| count_diagnostic_entries(value, "diskWriteExceptionDiagnostics"))
+            .unwrap_or(0),
+    }
+}
+
+fn metric_kit_payload_document(
+    payload_json: &str,
+    received_at_ms: u128,
+    summary: &MetricKitPayloadSummary,
+) -> Value {
+    json!({
+        "receivedAtMs": received_at_ms,
+        "summary": {
+            "payloadBytes": summary.payload_bytes,
+            "hangDiagnosticsCount": summary.hang_diagnostics_count,
+            "crashDiagnosticsCount": summary.crash_diagnostics_count,
+            "cpuExceptionDiagnosticsCount": summary.cpu_exception_diagnostics_count,
+            "diskWriteExceptionDiagnosticsCount": summary.disk_write_exception_diagnostics_count,
+        },
+        "payload": serde_json::from_str::<Value>(payload_json)
+            .unwrap_or_else(|_| Value::String(payload_json.to_string())),
+    })
+}
+
+fn list_metric_kit_diagnostic_files(
+    app: &AppHandle,
+    max_files: usize,
+) -> Result<Vec<String>, String> {
+    let dir = metric_kit_dir(app)?;
+    let entries = match read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+
+    let mut files = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_string_lossy();
+            if !name.starts_with("diagnostic-") || path.extension()? != "json" {
+                return None;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok();
+            Some((modified, path.display().to_string()))
+        })
+        .collect::<Vec<_>>();
+
+    files.sort_by(|left, right| right.0.cmp(&left.0));
+    Ok(files
+        .into_iter()
+        .take(max_files)
+        .map(|(_, path)| path)
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summarizes_metric_kit_hang_diagnostics_from_payload_json() {
+        let payload = r#"{
+            "diagnostics": {
+                "hangDiagnostics": [
+                    { "diagnosticMetaData": { "exceptionType": "hang" } },
+                    { "diagnosticMetaData": { "exceptionType": "hang" } }
+                ],
+                "crashDiagnostics": [
+                    { "diagnosticMetaData": { "exceptionType": "crash" } }
+                ]
+            }
+        }"#;
+
+        let summary = summarize_metric_kit_payload(payload);
+
+        assert_eq!(summary.hang_diagnostics_count, 2);
+        assert_eq!(summary.crash_diagnostics_count, 1);
+        assert!(summary.payload_bytes > 0);
+    }
+}
+
 pub fn init_logging(app: &AppHandle) -> Result<LogPaths, String> {
     let log_dir = ensure_log_dir(app)?.clone();
     let paths = LogPaths {
@@ -214,6 +368,40 @@ pub fn append_backend_line_without_app(message: &str) -> Result<(), String> {
     let path = backend_log_path_without_app()
         .ok_or_else(|| "logging has not been initialized".to_string())?;
     append_lines(&path, &[format!("[{}] {}", now_millis(), message)])
+}
+
+pub fn persist_metric_kit_diagnostic_payload(
+    app: &AppHandle,
+    payload_json: &str,
+) -> Result<MetricKitPersistedDiagnostic, String> {
+    let received_at_ms = now_millis();
+    let summary = summarize_metric_kit_payload(payload_json);
+    let dir = metric_kit_dir(app)?;
+    create_dir_all(&dir).map_err(|err| err.to_string())?;
+
+    let sequence = METRIC_KIT_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!("diagnostic-{received_at_ms}-{sequence}.json"));
+    let document = metric_kit_payload_document(payload_json, received_at_ms, &summary);
+    let contents = serde_json::to_string_pretty(&document).map_err(|err| err.to_string())?;
+    write(&path, contents).map_err(|err| err.to_string())?;
+
+    let persisted = MetricKitPersistedDiagnostic {
+        path: path.display().to_string(),
+        summary,
+    };
+    let line = format!(
+        "[{}] [METRICKIT] event=diagnostic_payload_received path={} payloadBytes={} hangDiagnostics={} crashDiagnostics={} cpuExceptionDiagnostics={} diskWriteExceptionDiagnostics={}",
+        received_at_ms,
+        persisted.path,
+        persisted.summary.payload_bytes,
+        persisted.summary.hang_diagnostics_count,
+        persisted.summary.crash_diagnostics_count,
+        persisted.summary.cpu_exception_diagnostics_count,
+        persisted.summary.disk_write_exception_diagnostics_count,
+    );
+    append_lines(&metric_kit_log_path(app)?, &[line])?;
+
+    Ok(persisted)
 }
 
 #[tauri::command]
@@ -252,6 +440,8 @@ pub fn get_diagnostics_logs(
         log_paths,
         frontend_excerpt: tail_log(&frontend_path, max_lines),
         backend_excerpt: tail_log(&backend_path, max_lines),
+        metric_kit_excerpt: tail_log(&metric_kit_log_path(&app)?, max_lines),
+        metric_kit_diagnostic_files: list_metric_kit_diagnostic_files(&app, 10)?,
         max_lines_per_log: max_lines,
     })
 }

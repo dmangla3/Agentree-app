@@ -13,6 +13,8 @@ import { useGraphHoverProjectionInput } from '../../graph/GraphHoverProjectionCo
 import { useWorkspaceProjection } from '../../../hooks/useWorkspaceProjection';
 import type { FocusTriggerMetrics } from '../../../types/nodes';
 import { createCommitHoverEntity } from './commitHoverEntity';
+import { useWorkspaceStore } from '../../../stores/workspaceStore';
+import { getMessageOutputCommitSha } from '../../../lib/graph/commitAccessors';
 
 
 export interface GraphNodeData {
@@ -67,6 +69,8 @@ function GraphNodeHoverCardContent({
 export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
   const { data, selected: isSelectedInFlow } = props;
   const { isSelectionGestureActive, isViewportInteracting } = useGraphInteractionContext();
+  const selectedWorkspaceId = useWorkspaceStore(state => state.selectedWorkspaceId);
+  const setComposerBaseCommitOverride = useWorkspaceStore(state => state.setComposerBaseCommitOverride);
 
   const handleFocus = useCallback((metrics?: FocusTriggerMetrics) => {
     if (data.entity?.focusMessageId) {
@@ -82,11 +86,44 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
   }, [data]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
-    const id = data.entity?.focusMessageId || data.entity?.messageId || data.entity?.summary?.id;
+    const commitSha = data.entity?.kind === 'commit_message'
+      ? getMessageOutputCommitSha(data.entity.message)
+      : null;
+    const id = commitSha
+      ? `commit:${commitSha}`
+      : data.entity?.focusMessageId || data.entity?.messageId || data.entity?.summary?.id;
     if (id) {
       data.onContextMenu(id, e);
     }
   }, [data]);
+  const handleCommitFocus = useCallback((commitSha: string, metrics?: FocusTriggerMetrics) => {
+    data.onFocus(commitSha, {
+      pointerDownAt: metrics?.pointerDownAt ?? null,
+      clickAt: metrics?.clickAt ?? performance.now(),
+      metadata: {
+        ...(metrics?.metadata ?? {}),
+        commitSha,
+      },
+    });
+  }, [data]);
+  const handleCanonicalCommitFocus = useCallback((metrics?: FocusTriggerMetrics) => {
+    if (!data.commit?.sha) return;
+    handleCommitFocus(data.commit.sha, metrics);
+  }, [data.commit?.sha, handleCommitFocus]);
+  const handleCanonicalCommitContextMenu = useCallback((e: React.MouseEvent) => {
+    if (!data.commit?.sha) return;
+    data.onContextMenu(`commit:${data.commit.sha}`, e);
+  }, [data]);
+  const handleCommitSelectBase = useCallback((commit: ProjectedCommitEntity) => {
+    const workspaceId = commit.commit.workspace_id || selectedWorkspaceId;
+    if (!workspaceId) return;
+    setComposerBaseCommitOverride({
+      workspaceId,
+      commitSha: commit.sha,
+      label: commit.subject || commit.shortSha || commit.sha,
+      source: 'graph-header',
+    });
+  }, [selectedWorkspaceId, setComposerBaseCommitOverride]);
 
   // Use scopeColor from node data (set by graphUtils using DB scope color)
   const scopeColor = data.entity?.scopeId ? (data as any).scopeColor || null : null;
@@ -120,6 +157,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
         isFocused={!!data.isFocused}
         isSelected={data.isSelected || isSelectedInFlow}
         isComposerBaseCommit={!!data.isComposerBaseCommit}
+        onCommitSelectBase={handleCommitSelectBase}
       />
     );
   }
@@ -133,6 +171,8 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
         isSelected={data.isSelected || isSelectedInFlow}
         isComposerBaseCommit={!!data.isComposerBaseCommit}
         disableHoverCard={isSelectionGestureActive || isViewportInteracting}
+        onFocus={handleCanonicalCommitFocus}
+        onContextMenu={handleCanonicalCommitContextMenu}
         hoverCardContent={(
           <GraphNodeHoverCardContent
             entity={hoverEntity}

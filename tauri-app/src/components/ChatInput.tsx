@@ -64,6 +64,7 @@ import {
     summarizeFinalizeAck,
     summarizeProviderStop,
 } from '../agent-runs/agentRunEventIngestor';
+import { patchFinalizedLocalNodes, patchFinalizedMessages } from '../agent-runs/agentRunFinalizeCache';
 import { requestAgentWorkspaceRefresh } from '../agent-runs/agentRunWorkspaceRefresh';
 
 
@@ -86,6 +87,7 @@ interface UrlAttachment {
 type Attachment = FileAttachment | UrlAttachment | AttachmentMetadata;
 type ContextMode = 'active' | 'none';
 type ContextPolicy = 'continue' | 'fresh';
+type ComposerTargetMode = 'reply' | 'new-thread';
 type PendingGeneratedCommitFocus = {
     flowId: string | null;
     workspaceId: string;
@@ -362,7 +364,7 @@ const parseCliArgs = (cliArgs: string | null | undefined) => {
 
 import { useMessages, useSendMessage, useCommitDescendants, useCommitAncestors } from '../hooks/useMessages';
 import { useWorkspaceMessages } from '../hooks/useLiveMessages';
-import { localNodeKeys, useLocalNodes } from '../hooks/useLocalNodes';
+import { localNodeKeys, useLocalNodes, type LocalNodeMessage } from '../hooks/useLocalNodes';
 
 import { useKnowledgeTree } from '../hooks/useKnowledge';
 import { useAgents, findDefaultCodexAgentId } from '../hooks/useAgents';
@@ -555,6 +557,7 @@ export function ChatInput({
     const [isNewScopeEditorOpen, setIsNewScopeEditorOpen] = useState(false);
     const [newScopeName, setNewScopeName] = useState('');
     const [contextPolicy, setContextPolicy] = useState<ContextPolicy>('continue');
+    const [composerTargetMode, setComposerTargetMode] = useState<ComposerTargetMode>('reply');
     const [sendPressFeedback, setSendPressFeedback] = useState(false);
     const sendPressFeedbackTimerRef = useRef<number | null>(null);
 
@@ -638,11 +641,13 @@ export function ChatInput({
         if (!metadataCommitSha) return null;
         return !focusedMessageId || focusedMessageId === metadataCommitSha ? metadataCommitSha : null;
     }, [focusedMessageId, lastFocusMetadata, lastFocusSource]);
-    const parentMessageId = parentMessageIdOverride !== undefined
+    const isNewThreadTarget = composerTargetMode === 'new-thread' && !editDraftSource;
+    const replyCandidateMessageId = parentMessageIdOverride !== undefined
         ? parentMessageIdOverride
         : focusedCommitSha
             ? null
             : focusedMessageId;
+    const parentMessageId = isNewThreadTarget ? null : replyCandidateMessageId;
     const replyParentMessageId = editDraftSource
         ? (editDraftSource.parentId ?? null)
         : parentMessageId;
@@ -1826,31 +1831,28 @@ export function ChatInput({
                         commitSha: finalizedOutputCommitSha,
                         elapsedMs: Math.round(performance.now() - streamStartedAt),
                     });
-                    if (finalizedOutputCommitSha) {
-                        queryClient.setQueryData<Message[]>(['messages', workspaceId], (current) => {
-                            if (!current) return current;
-                            let changed = false;
-                            const next = current.map((message) => {
-                                if (message.id !== nodeId) return message;
-                                changed = true;
-                                const executionData = (message.execution_data || {}) as Record<string, any>;
-                                const meta = (executionData.meta || {}) as Record<string, any>;
-                                return {
-                                    ...message,
-                                    output_commit_sha: finalizedOutputCommitSha,
-                                    execution_data: {
-                                        ...executionData,
-                                        meta: {
-                                            ...meta,
-                                            output_commit_sha: finalizedOutputCommitSha,
-                                            commit_created: true,
-                                        },
-                                    },
-                                };
-                            });
-                            return changed ? next : current;
-                        });
-                    }
+                    const ackStatus = typeof data.status === 'string' ? data.status : AGENT_STATUS.completed;
+                    const finalizedCachePatch = {
+                        nodeId,
+                        status: ackStatus,
+                        outputCommitSha: finalizedOutputCommitSha,
+                        gitBranchName: typeof data.git_branch_name === 'string'
+                            ? data.git_branch_name
+                            : typeof data.gitBranchName === 'string'
+                                ? data.gitBranchName
+                                : null,
+                        commitCreated: finalizeAckSummary.commitCreated,
+                        updatedAt: new Date().toISOString(),
+                    };
+                    queryClient.setQueryData<Message[]>(
+                        ['messages', workspaceId],
+                        (current) => patchFinalizedMessages(current, finalizedCachePatch)
+                    );
+                    queryClient.setQueryData<LocalNodeMessage[]>(
+                        localNodeKeys.workspace(workspaceId),
+                        (current) => patchFinalizedLocalNodes(current, finalizedCachePatch)
+                    );
+                    void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(workspaceId) });
                     requestAgentWorkspaceRefresh(queryClient, workspaceId, {
                         reason: 'agent-finalize-ack',
                         includeCommitGraph: Boolean(finalizedOutputCommitSha),
@@ -1875,7 +1877,6 @@ export function ChatInput({
                         });
                     }
                     if (!terminalFinalized) {
-                        const ackStatus = typeof data.status === 'string' ? data.status : AGENT_STATUS.completed;
                         finalizeAgentRunMessage(ackStatus);
                     }
                 } else if (data.type === 'finalize_progress') {
@@ -2308,8 +2309,8 @@ export function ChatInput({
         setIsCreatingNewScope(false);
         setIsNewScopeEditorOpen(false);
         setNewScopeName('');
-        setContextPolicy('continue');
-    }, [replyParentMessageId]);
+        setContextPolicy(isNewThreadTarget ? 'fresh' : 'continue');
+    }, [isNewThreadTarget, replyParentMessageId]);
 
     const handleCreateScopeFromComposer = useCallback(() => {
         setIsCreatingNewScope(true);
@@ -2994,6 +2995,7 @@ export function ChatInput({
             hasEditDraftSource: Boolean(savedEditDraftSource),
             editDraftSourceParentId: savedEditDraftSource?.parentId ?? null,
             parentMessageIdOverride,
+            forceRootParent: isNewThreadTarget,
             focusSnapshot: {
                 focusedMessageId: focusStateAtSendStart.focusedMessageId,
                 lastFocusSource: focusStateAtSendStart.lastFocusSource,
@@ -3008,16 +3010,17 @@ export function ChatInput({
         const effectiveNewScopeName = effectiveScopeMode === 'new'
             ? (trimmedNewScopeName && !isAutoScopeName(trimmedNewScopeName) ? trimmedNewScopeName : null)
             : null;
-        const effectiveContextMode: ContextMode = contextPolicy === 'fresh' ? 'none' : contextMode;
+        const sendContextPolicy: ContextPolicy = isNewThreadTarget ? 'fresh' : contextPolicy;
+        const effectiveContextMode: ContextMode = sendContextPolicy === 'fresh' ? 'none' : contextMode;
         const defaultSendContextParentMessage = resolveConversationContextMessage(sendParentMessageId, messageById);
         const rawSendContextParentId = mergeContextOptions.length > 0
             ? selectedMergeContextParentId
             : defaultSendContextParentMessage?.id ?? null;
         const sendContextParentId = resolvePersistedMessageId(
-            contextPolicy === 'fresh' ? null : rawSendContextParentId
+            sendContextPolicy === 'fresh' ? null : rawSendContextParentId
         );
         const sendContextStartId = resolvePersistedMessageId(
-            contextPolicy === 'fresh'
+            sendContextPolicy === 'fresh'
                 ? null
                 : sendContextParentId === effectiveContextParentId
                     ? effectiveContextStartId || null
@@ -3162,19 +3165,19 @@ export function ChatInput({
             }, { source: 'ChatInput' });
         };
 
-        if (contextPolicy === 'fresh' || sendContextParentId) {
+        if (sendContextPolicy === 'fresh' || sendContextParentId) {
             for (const userMessage of optimisticUserMessages) {
                 userMessage.execution_data = {
                     meta: {
-                        context_policy: contextPolicy,
-                        context_boundary_from_node_id: contextPolicy === 'fresh' ? sendParentMessageId : null,
-                        context_parent_node_id: contextPolicy === 'fresh' ? null : sendContextParentId,
+                        context_policy: sendContextPolicy,
+                        context_boundary_from_node_id: sendContextPolicy === 'fresh' ? sendParentMessageId : null,
+                        context_parent_node_id: sendContextPolicy === 'fresh' ? null : sendContextParentId,
                         context_base_node_id: sendParentMessageId,
                     },
                     context_profile: {
-                        context_parent_node_id: contextPolicy === 'fresh' ? null : sendContextParentId,
+                        context_parent_node_id: sendContextPolicy === 'fresh' ? null : sendContextParentId,
                         base_node_id: sendParentMessageId,
-                        inherited_from_node_id: contextPolicy === 'fresh' ? null : sendParentMessageId,
+                        inherited_from_node_id: sendContextPolicy === 'fresh' ? null : sendParentMessageId,
                     },
                 };
             }
@@ -3184,15 +3187,15 @@ export function ChatInput({
                     ...(run.assistantMessage.execution_data || {}),
                     meta: {
                         ...(((run.assistantMessage.execution_data as any)?.meta) || {}),
-                        context_policy: contextPolicy,
-                        context_boundary_from_node_id: contextPolicy === 'fresh' ? sendParentMessageId : null,
-                        context_parent_node_id: contextPolicy === 'fresh' ? null : sendContextParentId,
+                        context_policy: sendContextPolicy,
+                        context_boundary_from_node_id: sendContextPolicy === 'fresh' ? sendParentMessageId : null,
+                        context_parent_node_id: sendContextPolicy === 'fresh' ? null : sendContextParentId,
                         context_base_node_id: sendParentMessageId,
                     },
                     context_profile: {
-                        context_parent_node_id: contextPolicy === 'fresh' ? null : sendContextParentId,
+                        context_parent_node_id: sendContextPolicy === 'fresh' ? null : sendContextParentId,
                         base_node_id: sendParentMessageId,
-                        inherited_from_node_id: contextPolicy === 'fresh' ? null : run.userMessageId,
+                        inherited_from_node_id: sendContextPolicy === 'fresh' ? null : run.userMessageId,
                     },
                 };
             }
@@ -3479,7 +3482,7 @@ export function ChatInput({
                         authToken: token,
                         autoCheckout: shouldAutoCheckout,
                         scopeMode: effectiveScopeMode,
-                        contextPolicy,
+                        contextPolicy: sendContextPolicy,
                         parentMessageId: run.userMessageId,
                         baseMessageId: sendParentMessageId,
                         contextParentMessageId: sendContextParentId,
@@ -3519,7 +3522,7 @@ export function ChatInput({
                 attachments: structuredAttachments,
                 contextIds: savedContextIds,
                 contextMode: effectiveContextMode,
-                contextPolicy,
+                contextPolicy: sendContextPolicy,
                 useAgent: true,
                 agentId: primarySelectedAgent.id,
                 agentProvider: primarySelectedAgent?.type || null,
@@ -3694,7 +3697,7 @@ export function ChatInput({
                         authToken: token,
                         autoCheckout: shouldAutoCheckout,
                         scopeMode: effectiveScopeMode,
-                        contextPolicy,
+                        contextPolicy: sendContextPolicy,
                         parentMessageId: response.userMessage!.id,
                         baseMessageId: sendParentMessageId,
                         contextParentMessageId: sendContextParentId,
@@ -3834,6 +3837,7 @@ export function ChatInput({
         selectedAgentId,
         selectedAgent,
         selectedAgentRunItems,
+        isNewThreadTarget,
         isParentIncomplete,
         contextMode,
         messageLookupMessages,
@@ -4676,14 +4680,14 @@ export function ChatInput({
             setSendPressFeedback(false);
         }, 260);
     };
-    const composerMetaClass = "flex min-h-8 min-w-[138px] max-w-full items-center gap-1.5 rounded-md bg-[hsl(var(--app-bg-muted))] px-2 py-0.5 text-[hsl(var(--app-text-soft))] shadow-[inset_0_1px_0_rgba(255,255,255,0.54),inset_0_0_0_1px_rgba(25,28,33,0.032)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04),inset_0_0_0_1px_rgba(255,255,255,0.035)]";
     const composerControlClass = "flex min-h-8 min-w-[154px] max-w-full items-center gap-1.5 rounded-md border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong))] px-2 py-0.5 text-left shadow-[0_1px_2px_rgba(22,26,32,0.05),0_10px_24px_-21px_rgba(22,26,32,0.5)] transition-[background-color,border-color,box-shadow,transform] duration-150 hover:border-[hsl(var(--app-border-strong))] hover:bg-background hover:shadow-[0_2px_5px_rgba(22,26,32,0.07),0_16px_30px_-25px_rgba(22,26,32,0.58)] active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50";
-    const composerIconClass = "flex h-5 w-5 shrink-0 items-center justify-center rounded bg-[hsl(var(--app-panel))] text-[hsl(var(--app-text-soft))] shadow-[inset_0_0_0_1px_rgba(24,28,36,0.04)] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]";
     const composerControlIconClass = "flex h-6 w-6 shrink-0 items-center justify-center rounded bg-[hsl(var(--app-bg-muted))] text-[hsl(var(--app-text-soft))] shadow-[inset_0_0_0_1px_rgba(24,28,36,0.04)] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]";
     const composerEyebrowClass = "text-[8px] font-semibold uppercase leading-none tracking-[0.11em] text-muted-foreground/72";
     const composerValueClass = "truncate text-[11px] font-semibold leading-tight text-foreground";
-    const hasReplyParent = Boolean(replyParentMessageId);
     const replyParentDisplayLabel = replyParentLabel || selectedNodeMessage?.content || replyParentMessageId || 'Selected node';
+    const replyTargetControlLabel = isNewThreadTarget ? 'New thread' : replyParentDisplayLabel;
+    const replyTargetEyebrow = isNewThreadTarget ? 'Target' : 'Reply to';
+    const canReplyToSelectedNode = Boolean(replyCandidateMessageId || selectedNodeMessage?.id);
 
     // --- Render ---
     return (
@@ -4720,17 +4724,74 @@ export function ChatInput({
                 {/* Run context summary */}
                 <div className={cn("border-b border-[hsl(var(--app-border)/0.70)] bg-[hsl(var(--app-bg-elevated)/0.74)] px-2.5 py-1.5", (!branchParentMessage && !selectedWorkspaceId) && "hidden")}>
                     <div className="custom-scrollbar flex min-w-0 flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5">
-                        <div className={cn(composerMetaClass, "flex-[1_1_180px]", !hasReplyParent && "invisible")}>
-                            <div className={composerIconClass}>
-                                <Reply className="h-2.5 w-2.5" />
-                            </div>
-                            <div className="min-w-0">
-                                <div className={composerEyebrowClass}>Reply to</div>
-                                <div className="truncate text-[11px] font-semibold leading-tight text-[hsl(var(--app-text-soft))]">
-                                    {truncateText(replyParentDisplayLabel, 64)}
-                                </div>
-                            </div>
-                        </div>
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                                <button
+                                    type="button"
+                                    className={cn(
+                                        composerControlClass,
+                                        "flex-[1_1_180px]",
+                                        isNewThreadTarget && "border-[hsl(var(--app-accent)/0.45)]"
+                                    )}
+                                    aria-label="Select reply target"
+                                >
+                                    <div className={composerControlIconClass}>
+                                        {isNewThreadTarget ? <Plus className="h-3 w-3" /> : <Reply className="h-3 w-3" />}
+                                    </div>
+                                    <div className="min-w-0">
+                                        <div className={composerEyebrowClass}>{replyTargetEyebrow}</div>
+                                        <div className={composerValueClass}>
+                                            {truncateText(replyTargetControlLabel, 64)}
+                                        </div>
+                                    </div>
+                                    <ChevronDown className="ml-auto h-3 w-3 shrink-0 text-foreground/70" />
+                                </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent
+                                align="start"
+                                side="top"
+                                sideOffset={6}
+                                collisionPadding={12}
+                                className="w-[min(18rem,calc(100vw-1.5rem))] rounded-lg border border-border/70 bg-popover/95 p-1 shadow-[0_16px_42px_-20px_rgba(15,23,42,0.50),0_6px_18px_-14px_rgba(15,23,42,0.38)] backdrop-blur-xl"
+                            >
+                                <DropdownMenuLabel className="px-1.5 py-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Reply target</DropdownMenuLabel>
+                                <DropdownMenuItem
+                                    disabled={!canReplyToSelectedNode}
+                                    onClick={() => {
+                                        setComposerTargetMode('reply');
+                                        setContextPolicy('continue');
+                                    }}
+                                    className="min-h-10 gap-2 rounded-md"
+                                >
+                                    <Reply className="h-3.5 w-3.5" />
+                                    <div className="min-w-0">
+                                        <div className="text-sm font-medium">Reply to selected node</div>
+                                        <div className="truncate text-[11px] text-muted-foreground">
+                                            {canReplyToSelectedNode ? truncateText(replyParentDisplayLabel, 56) : 'Select a message node first'}
+                                        </div>
+                                    </div>
+                                    {!isNewThreadTarget && <Check className="ml-auto h-3.5 w-3.5" />}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                    onClick={() => {
+                                        setComposerTargetMode('new-thread');
+                                        setContextPolicy('fresh');
+                                        setSelectedContextStartId(null);
+                                        setSelectedMergeContextParentId(null);
+                                    }}
+                                    className="min-h-10 gap-2 rounded-md"
+                                >
+                                    <Plus className="h-3.5 w-3.5" />
+                                    <div className="min-w-0">
+                                        <div className="text-sm font-medium">Start new thread</div>
+                                        <div className="truncate text-[11px] text-muted-foreground">
+                                            Fresh thread with no parent
+                                        </div>
+                                    </div>
+                                    {isNewThreadTarget && <Check className="ml-auto h-3.5 w-3.5" />}
+                                </DropdownMenuItem>
+                            </DropdownMenuContent>
+                        </DropdownMenu>
 
                         <DropdownMenu>
                             <Tooltip>
@@ -4917,6 +4978,7 @@ export function ChatInput({
                                         return (
                                             <DropdownMenuItem
                                                 key={option.id}
+                                                disabled={isNewThreadTarget}
                                                 onClick={() => {
                                                     setContextPolicy('continue');
                                                     setSelectedMergeContextParentId(option.id);
@@ -4935,6 +4997,7 @@ export function ChatInput({
                                     })
                                 ) : (
                                     <DropdownMenuItem
+                                        disabled={isNewThreadTarget}
                                         onClick={() => setContextPolicy('continue')}
                                         className="min-h-11 gap-2 rounded-lg"
                                         title={getMessagePreviewText(effectiveContextParentMessage) || 'Use inferred conversation context'}
@@ -4949,7 +5012,7 @@ export function ChatInput({
                                         {contextPolicy === 'continue' && <Check className="ml-auto h-3.5 w-3.5" />}
                                     </DropdownMenuItem>
                                 )}
-                                {contextPolicy === 'continue' && contextStartOptions.length > 0 && (
+                                {!isNewThreadTarget && contextPolicy === 'continue' && contextStartOptions.length > 0 && (
                                     <>
                                         <DropdownMenuSeparator />
                                         <DropdownMenuLabel className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">Start context</DropdownMenuLabel>
@@ -5187,7 +5250,7 @@ export function ChatInput({
                     <PopoverAnchor asChild>
                         <div className="relative flex w-full flex-1 border-t border-[hsl(var(--app-border)/0.45)] bg-background/35">
                             {activeFileMention && (
-                                <div className="absolute inset-x-2 bottom-[calc(100%+8px)] z-20 overflow-hidden rounded-xl border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong)/0.97)] shadow-[0_20px_60px_-28px_rgba(15,23,42,0.45)] backdrop-blur-xl">
+                                <div className="absolute inset-x-2 bottom-[calc(100%+8px)] z-[80] overflow-hidden rounded-xl border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong)/0.97)] shadow-[0_20px_60px_-28px_rgba(15,23,42,0.45)] backdrop-blur-xl">
                                     <div className="flex items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5">
                                         <div className="min-w-0">
                                             <div className="flex items-center gap-2 text-[11px] font-semibold text-foreground">

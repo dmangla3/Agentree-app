@@ -51,6 +51,10 @@ describe('agentRunEventIngestor helpers', () => {
       outputCommitSha: null,
       commitCreated: false,
     });
+    expect(summarizeFinalizeAck({ commitCreated: false })).toEqual({
+      outputCommitSha: null,
+      commitCreated: false,
+    });
   });
 
   it('filters finalize ack events for stale run ids', () => {

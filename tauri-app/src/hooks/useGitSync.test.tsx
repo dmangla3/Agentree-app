@@ -96,4 +96,34 @@ describe('useGitSync', () => {
     expect(syncResult?.didSync).toBe(true);
     expect(syncResult?.importedCount).toBe(1);
   });
+
+  it('leaves graph refresh ownership to the caller after importing commits', async () => {
+    const { Wrapper, queryClient } = createQueryWrapper();
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    queryClient.setQueryData(trackedRefKeys.workspace('workspace-1'), [
+      {
+        id: 'tracked-main',
+        workspace_id: 'workspace-1',
+        git_ref: 'refs/heads/main',
+        display_name: 'main',
+        enabled: true,
+        last_seen_commit_sha: 'parent-sha',
+        createdAt: '2026-05-13T00:00:00Z',
+        updatedAt: '2026-05-13T00:00:00Z',
+      },
+    ]);
+
+    const { result } = renderHook(() => useGitSync('workspace-1', '/repo'), { wrapper: Wrapper });
+    await result.current.runSync();
+
+    await waitFor(() => {
+      expect(mockedAgentClient.importLocalCommits).toHaveBeenCalled();
+    });
+    expect(invalidateSpy).not.toHaveBeenCalledWith(expect.objectContaining({
+      queryKey: ['graph-snapshot', 'workspace-1'],
+    }));
+    expect(invalidateSpy).not.toHaveBeenCalledWith(expect.objectContaining({
+      queryKey: ['local-commit-graph', 'workspace-1'],
+    }));
+  });
 });

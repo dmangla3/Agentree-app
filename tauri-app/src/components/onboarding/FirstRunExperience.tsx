@@ -46,7 +46,7 @@ const onboardingTips = [
     icon: MessageSquare,
     eyebrow: 'Tip 01',
     title: 'Start with one concrete ask.',
-    body: 'Use the first run to test a narrow task on a real repository so you can see how Agentree records context, outputs, and branch history.',
+    body: 'Use the first run to test a narrow thread on a real repository so you can see how Agentree records context, outputs, and branch history.',
     caption: 'Best first prompt: a contained bug fix, refactor, or code review.',
   },
   {
@@ -103,18 +103,18 @@ function StatusRow({
     <div
       className={cn(
         'flex min-h-16 items-start gap-3 rounded-xl border px-4 py-3 transition-colors',
-        status === 'ready' && 'border-emerald-200 bg-emerald-50/70',
-        status === 'missing' && 'border-amber-200 bg-amber-50/70',
-        status === 'checking' && 'border-sky-200 bg-sky-50/70',
+        status === 'ready' && 'border-emerald-200 bg-emerald-50/70 dark:border-emerald-500/30 dark:bg-emerald-950/30',
+        status === 'missing' && 'border-amber-200 bg-amber-50/70 dark:border-amber-500/30 dark:bg-amber-950/30',
+        status === 'checking' && 'border-sky-200 bg-sky-50/70 dark:border-sky-500/30 dark:bg-sky-950/30',
         status === 'pending' && 'border-border/60 bg-background/80'
       )}
     >
       <div
         className={cn(
           'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border bg-background',
-          status === 'ready' && 'border-emerald-200 text-emerald-700',
-          status === 'missing' && 'border-amber-200 text-amber-700',
-          status === 'checking' && 'border-sky-200 text-sky-700',
+          status === 'ready' && 'border-emerald-200 text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-950/60 dark:text-emerald-300',
+          status === 'missing' && 'border-amber-200 text-amber-700 dark:border-amber-500/40 dark:bg-amber-950/60 dark:text-amber-300',
+          status === 'checking' && 'border-sky-200 text-sky-700 dark:border-sky-500/40 dark:bg-sky-950/60 dark:text-sky-300',
           status === 'pending' && 'border-border text-muted-foreground'
         )}
       >
@@ -131,9 +131,9 @@ function StatusRow({
             variant="outline"
             className={cn(
               'w-fit rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em]',
-              status === 'ready' && 'border-emerald-200 bg-emerald-50 text-emerald-700',
-              status === 'missing' && 'border-amber-200 bg-amber-50 text-amber-700',
-              status === 'checking' && 'border-sky-200 bg-sky-50 text-sky-700',
+              status === 'ready' && 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/35 dark:bg-emerald-500/12 dark:text-emerald-300',
+              status === 'missing' && 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/35 dark:bg-amber-500/12 dark:text-amber-300',
+              status === 'checking' && 'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/35 dark:bg-sky-500/12 dark:text-sky-300',
               status === 'pending' && 'border-border bg-muted/40 text-muted-foreground'
             )}
           >
@@ -375,8 +375,8 @@ export function FirstRunExperience({
   };
 
   return (
-    <div className="relative flex min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.18),_transparent_32%),linear-gradient(135deg,_hsl(var(--background))_0%,_hsl(215_45%_98%)_46%,_hsl(205_55%_96%)_100%)] text-foreground">
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(to_bottom,rgba(148,163,184,0.08)_1px,transparent_1px)] bg-[size:72px_72px] opacity-50" />
+    <div className="relative flex min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.18),_transparent_32%),linear-gradient(135deg,_hsl(var(--background))_0%,_hsl(215_45%_98%)_46%,_hsl(205_55%_96%)_100%)] text-foreground dark:bg-[radial-gradient(circle_at_top_left,_rgba(56,189,248,0.12),_transparent_30%),linear-gradient(135deg,_hsl(var(--background))_0%,_hsl(var(--app-bg-elevated))_48%,_hsl(var(--app-bg-muted))_100%)]">
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(to_bottom,rgba(148,163,184,0.08)_1px,transparent_1px)] bg-[size:72px_72px] opacity-50 dark:opacity-20" />
       <div className="relative hidden w-[38%] flex-col justify-between border-r border-border/50 bg-slate-950 px-10 py-12 text-slate-50 lg:flex">
         <motion.div
           initial={{ opacity: 0, y: 18 }}
@@ -500,7 +500,7 @@ export function FirstRunExperience({
                           className={cn(
                             'w-fit rounded-full px-3 py-1 text-[11px] uppercase tracking-[0.14em]',
                             environmentReady
-                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/35 dark:bg-emerald-500/12 dark:text-emerald-300'
                               : 'border-border bg-background text-muted-foreground'
                           )}
                         >
@@ -522,16 +522,16 @@ export function FirstRunExperience({
                     </div>
 
                     {!environmentReady && (
-                      <Alert className="border-amber-200 bg-amber-50/80 text-amber-950">
+                      <Alert className="border-amber-200 bg-amber-50/80 text-amber-950 dark:border-amber-500/30 dark:bg-amber-950/35 dark:text-amber-100">
                         <Terminal className="h-4 w-4" />
                         <AlertTitle>Finish the local setup</AlertTitle>
-                        <AlertDescription>
+                        <AlertDescription className="text-amber-900 dark:text-amber-100/85">
                           <p>Run the missing checks above. Agentree requires Git plus at least one authenticated runtime: Codex or Claude Code.</p>
-                          <p className="font-mono text-xs text-amber-900/90">git --version</p>
-                          <p className="break-all font-mono text-xs text-amber-900/90">
+                          <p className="font-mono text-xs text-amber-900/90 dark:text-amber-100/80">git --version</p>
+                          <p className="break-all font-mono text-xs text-amber-900/90 dark:text-amber-100/80">
                             {codexReadiness?.recommendedCommand || 'CODEX_HOME=~/.codex codex -c \'cli_auth_credentials_store="file"\' login --device-auth'}
                           </p>
-                          <p className="break-all font-mono text-xs text-amber-900/90">
+                          <p className="break-all font-mono text-xs text-amber-900/90 dark:text-amber-100/80">
                             {claudeReadiness?.recommendedCommand || 'claude auth login'}
                           </p>
                         </AlertDescription>
@@ -605,16 +605,16 @@ export function FirstRunExperience({
                       </div>
 
                       {existingWorkspaceForSelection?.id && (
-                        <Alert className="mt-4 border-sky-200 bg-sky-50/80 text-sky-950">
+                        <Alert className="mt-4 border-sky-200 bg-sky-50/80 text-sky-950 dark:border-sky-500/30 dark:bg-sky-950/35 dark:text-sky-100">
                           <CheckCircle2 className="h-4 w-4" />
                           <AlertTitle>Existing workspace found</AlertTitle>
-                          <AlertDescription>
+                          <AlertDescription className="text-sky-900 dark:text-sky-100/85">
                             <p>
                               <span className="font-medium">{existingWorkspaceForSelection.name}</span> is already attached to this path.
                             </p>
                             <Button
                               variant="link"
-                              className="mt-1 h-auto p-0 text-sky-800"
+                              className="mt-1 h-auto p-0 text-sky-800 dark:text-sky-200"
                               onClick={() => completeWithWorkspace(existingWorkspaceForSelection.id)}
                             >
                               Open existing workspace
@@ -625,10 +625,10 @@ export function FirstRunExperience({
                     </div>
 
                     {setupRequirement?.type === 'git_init' && (
-                      <Alert className="border-orange-200 bg-orange-50/80 text-orange-950">
+                      <Alert className="border-orange-200 bg-orange-50/80 text-orange-950 dark:border-orange-500/30 dark:bg-orange-950/35 dark:text-orange-100">
                         <GitBranch className="h-4 w-4" />
                         <AlertTitle>This folder is not a Git repository yet</AlertTitle>
-                        <AlertDescription>
+                        <AlertDescription className="text-orange-900 dark:text-orange-100/85">
                           <p className="mb-3">Agentree can initialize Git and create the first base commit automatically.</p>
                           <div className="flex flex-wrap gap-3">
                             <Button size="sm" className="rounded-xl" onClick={() => void handleCreateWorkspace({ allowGitInit: true })}>
@@ -643,10 +643,10 @@ export function FirstRunExperience({
                     )}
 
                     {setupRequirement?.type === 'commit_checkpoint' && (
-                      <Alert className="border-orange-200 bg-orange-50/80 text-orange-950">
+                      <Alert className="border-orange-200 bg-orange-50/80 text-orange-950 dark:border-orange-500/30 dark:bg-orange-950/35 dark:text-orange-100">
                         <Sparkles className="h-4 w-4" />
                         <AlertTitle>This repository has local changes</AlertTitle>
-                        <AlertDescription>
+                        <AlertDescription className="text-orange-900 dark:text-orange-100/85">
                           <p className="mb-3">
                             Choose whether Agentree should use the current last commit as the base, or create a checkpoint commit before workspace creation.
                           </p>
@@ -656,7 +656,7 @@ export function FirstRunExperience({
                               value={checkpointMessage}
                               onChange={(event) => setCheckpointMessage(event.target.value)}
                               placeholder="Checkpoint commit message"
-                              className="rounded-xl border-orange-200 bg-white"
+                              className="rounded-xl border-orange-200 bg-white text-orange-950 dark:border-orange-500/30 dark:bg-background/80 dark:text-foreground"
                             />
                             <div className="flex flex-wrap gap-3">
                               <Button
@@ -672,7 +672,7 @@ export function FirstRunExperience({
                               <Button
                                 size="sm"
                                 variant="outline"
-                                className="rounded-xl border-orange-200 bg-white"
+                                className="rounded-xl border-orange-200 bg-white dark:border-orange-500/30 dark:bg-background/80"
                                 onClick={() => void handleCreateWorkspace({ dirtyStrategy: 'last-commit' })}
                               >
                                 Use last commit

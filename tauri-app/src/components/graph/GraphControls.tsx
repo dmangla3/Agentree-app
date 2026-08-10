@@ -48,6 +48,7 @@ import {
     User,
     Layers3,
     Leaf,
+    ChevronDown,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { Insight, Scope } from '../../stores/workspaceStore';
@@ -77,6 +78,17 @@ export interface LeafNodeNavigationItem {
     statusLabel: string;
     statusTone: 'active' | 'success' | 'danger' | 'muted';
     timestampLabel: string;
+}
+
+export interface ThreadNavigationItem {
+    threadRootId: string;
+    label: string;
+    turnCount: number;
+    commitCount: number;
+    updatedLabel: string;
+    runningCount: number;
+    hidden: boolean;
+    current: boolean;
 }
 
 export interface GraphControlsProps {
@@ -141,6 +153,11 @@ export interface GraphControlsProps {
     onToggleShowInsightsInGraph: () => void;
 
     // Actions
+    threadItems: ThreadNavigationItem[];
+    onThreadFocus: (threadRootId: string) => void;
+    onThreadHide: (threadRootId: string) => void;
+    onThreadRestore: (threadRootId: string) => void;
+    onRestoreAllHiddenThreads: () => void;
     leafNodes: LeafNodeNavigationItem[];
     onLeafNodeFocus: (id: string) => void;
     onResetLayout: () => void;
@@ -224,6 +241,11 @@ export function GraphControls({
     showInsightsInGraph,
     onToggleInsightsVisible,
     onToggleShowInsightsInGraph,
+    threadItems,
+    onThreadFocus,
+    onThreadHide,
+    onThreadRestore,
+    onRestoreAllHiddenThreads,
     leafNodes,
     onLeafNodeFocus,
     onResetLayout,
@@ -281,6 +303,9 @@ export function GraphControls({
         if (!nextDueAt) return null;
         return formatCountdownLabel(nextDueAt - clockNow);
     }, [autoRefreshEligible, clockNow, syncStatusItems]);
+    const hiddenThreadCount = useMemo(() => threadItems.filter((thread) => thread.hidden).length, [threadItems]);
+    const hasCurrentThread = threadItems.some((thread) => thread.current);
+    const hasActiveThread = threadItems.some((thread) => thread.runningCount > 0);
     const timeLabel = timePreset === 'all'
         ? null
         : timePreset === '1h'
@@ -847,6 +872,146 @@ export function GraphControls({
                             <span className="hidden sm:inline">Timeline</span>
                         </button>
                     </div>
+
+                    {threadItems.length > 0 ? (
+                        <DropdownMenu>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <DropdownMenuTrigger asChild>
+                                        <button
+                                            type="button"
+                                            className={cn(
+                                                "group relative flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-all duration-200 active:scale-95",
+                                                hasCurrentThread
+                                                    ? "border-indigo-300/70 bg-indigo-50 text-indigo-700 shadow-sm shadow-indigo-500/10 dark:border-indigo-700/70 dark:bg-indigo-950/40 dark:text-indigo-200"
+                                                    : "border-border/45 bg-gradient-to-br from-background to-muted/40 text-muted-foreground shadow-sm hover:border-border/70 hover:text-foreground hover:shadow-md",
+                                                hasActiveThread && !hasCurrentThread && "border-amber-300/70 bg-amber-50/70 text-amber-800 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-200"
+                                            )}
+                                            aria-label={`Threads (${threadItems.length})`}
+                                        >
+                                            <GitBranch size={14} strokeWidth={2} />
+                                            <span className="hidden lg:inline">Threads</span>
+                                            <span className="rounded-md bg-background/70 px-1.5 py-0 text-[10px] font-semibold tabular-nums text-foreground/80 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/70 dark:text-slate-200">
+                                                {threadItems.length}
+                                            </span>
+                                            {hiddenThreadCount > 0 ? (
+                                                <span className="rounded-md bg-slate-900 px-1.5 py-0 text-[10px] font-semibold tabular-nums text-white dark:bg-slate-100 dark:text-slate-950">
+                                                    {hiddenThreadCount} hidden
+                                                </span>
+                                            ) : null}
+                                            <ChevronDown size={12} strokeWidth={2.2} className="text-current/65" />
+                                        </button>
+                                    </DropdownMenuTrigger>
+                                </TooltipTrigger>
+                                <TooltipContent side="bottom" align="end">
+                                    Thread roots in this workspace graph.
+                                </TooltipContent>
+                            </Tooltip>
+                            <DropdownMenuContent
+                                className="w-[min(24rem,calc(100vw-2rem))] overflow-hidden p-0"
+                                align="end"
+                            >
+                                <div className="border-b border-border/30 bg-gradient-to-b from-muted/35 to-transparent px-3 py-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div className="flex min-w-0 items-center gap-2">
+                                            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-700 dark:bg-indigo-400/10 dark:text-indigo-300">
+                                                <GitBranch size={14} />
+                                            </div>
+                                            <div className="min-w-0">
+                                                <p className="text-sm font-semibold leading-none text-foreground">Threads</p>
+                                                <p className="mt-1 text-[11px] text-muted-foreground">
+                                                    {threadItems.length} root {threadItems.length === 1 ? 'branch' : 'branches'}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        {hiddenThreadCount > 0 ? (
+                                            <button
+                                                type="button"
+                                                onClick={onRestoreAllHiddenThreads}
+                                                className="shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                            >
+                                                Restore hidden
+                                            </button>
+                                        ) : null}
+                                    </div>
+                                </div>
+                                <div
+                                    className="max-h-[min(24rem,calc(100vh-9rem))] overflow-y-auto overscroll-contain p-1.5 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
+                                    onWheelCapture={stopNestedScrollPropagation}
+                                    onTouchMoveCapture={stopNestedScrollPropagation}
+                                >
+                                    {threadItems.map((thread) => {
+                                        const metadata = `${thread.turnCount} ${thread.turnCount === 1 ? 'turn' : 'turns'} · ${thread.commitCount} ${thread.commitCount === 1 ? 'commit' : 'commits'} · ${thread.updatedLabel}`;
+                                        const activityLabel = thread.runningCount > 1 ? `${thread.runningCount} running` : 'Active';
+
+                                        return (
+                                            <div
+                                                key={thread.threadRootId}
+                                                className={cn(
+                                                    "group/thread flex items-center gap-2 rounded-lg px-2 py-2 transition-colors",
+                                                    thread.current
+                                                        ? "bg-indigo-50/90 dark:bg-indigo-950/35"
+                                                        : "hover:bg-muted/60",
+                                                    thread.hidden && "opacity-70"
+                                                )}
+                                            >
+                                                <button
+                                                    type="button"
+                                                    onClick={() => onThreadFocus(thread.threadRootId)}
+                                                    disabled={thread.hidden}
+                                                    aria-label={`Open thread ${thread.label}`}
+                                                    className="min-w-0 flex-1 rounded-md text-left outline-none transition-opacity disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                                                >
+                                                    <span className="flex min-w-0 items-center gap-1.5">
+                                                        <span className="min-w-0 truncate text-xs font-semibold text-foreground">
+                                                            {thread.label}
+                                                        </span>
+                                                        {thread.current ? (
+                                                            <span className="shrink-0 rounded-md bg-indigo-500/12 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-indigo-700 dark:text-indigo-300">
+                                                                Current
+                                                            </span>
+                                                        ) : null}
+                                                        {thread.hidden ? (
+                                                            <span className="shrink-0 rounded-md bg-slate-500/12 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-slate-600 dark:text-slate-300">
+                                                                Hidden
+                                                            </span>
+                                                        ) : null}
+                                                        {thread.runningCount > 0 ? (
+                                                            <span className="shrink-0 rounded-md bg-amber-500/12 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-amber-700 dark:text-amber-300">
+                                                                {activityLabel}
+                                                            </span>
+                                                        ) : null}
+                                                    </span>
+                                                    <span className="mt-1 block truncate text-[11px] leading-none text-muted-foreground">
+                                                        {metadata}
+                                                    </span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        if (thread.hidden) {
+                                                            onThreadRestore(thread.threadRootId);
+                                                        } else {
+                                                            onThreadHide(thread.threadRootId);
+                                                        }
+                                                    }}
+                                                    aria-label={`${thread.hidden ? 'Restore' : 'Hide'} thread ${thread.label}`}
+                                                    className={cn(
+                                                        "shrink-0 rounded-md px-2 py-1 text-[10px] font-semibold transition-colors",
+                                                        thread.hidden
+                                                            ? "text-indigo-700 hover:bg-indigo-100 dark:text-indigo-300 dark:hover:bg-indigo-950"
+                                                            : "text-muted-foreground opacity-70 hover:bg-muted hover:text-foreground group-hover/thread:opacity-100"
+                                                    )}
+                                                >
+                                                    {thread.hidden ? 'Restore' : 'Hide'}
+                                                </button>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                    ) : null}
 
                     {/* Leaf nodes */}
                     <DropdownMenu>

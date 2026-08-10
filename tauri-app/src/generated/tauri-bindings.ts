@@ -111,6 +111,7 @@ export const commands = {
 	deleteInstalledSkill: (skillId: string, opId: string | null) => __TAURI_INVOKE<null>("delete_installed_skill", { skillId, opId }),
 	setMcpAuthToken: (token: string) => __TAURI_INVOKE<null>("set_mcp_auth_token", { token }),
 	setMcpWorkspaceId: (workspaceId: string) => __TAURI_INVOKE<null>("set_mcp_workspace_id", { workspaceId }),
+	ensureAuthCallbackServerStarted: () => __TAURI_INVOKE<string>("ensure_auth_callback_server_started"),
 	getAuthCallbackBaseUrl: () => __TAURI_INVOKE<string>("get_auth_callback_base_url"),
 	readGraphSnapshotCache: (workspaceId: string) => __TAURI_INVOKE<string | null>("read_graph_snapshot_cache", { workspaceId }),
 	writeGraphSnapshotCache: (workspaceId: string, contents: string) => __TAURI_INVOKE<null>("write_graph_snapshot_cache", { workspaceId, contents }),
@@ -222,6 +223,8 @@ export type DiagnosticsLogBundle = {
 	logPaths: LogPaths,
 	frontendExcerpt: string,
 	backendExcerpt: string,
+	metricKitExcerpt: string,
+	metricKitDiagnosticFiles: string[],
 	maxLinesPerLog: number,
 };
 

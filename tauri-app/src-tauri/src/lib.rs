@@ -26,6 +26,7 @@ mod graph_snapshot_cache;
 mod logging;
 mod mcp;
 mod merge_review;
+mod metric_kit;
 mod runtime_readiness;
 mod runtime_scripts;
 mod skills;
@@ -178,6 +179,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             skills::delete_installed_skill,
             mcp::set_mcp_auth_token,
             mcp::set_mcp_workspace_id,
+            auth_callback::ensure_auth_callback_server_started,
             auth_callback::get_auth_callback_base_url,
             graph_snapshot_cache::read_graph_snapshot_cache,
             graph_snapshot_cache::write_graph_snapshot_cache,
@@ -267,6 +269,7 @@ pub fn run() {
                     paths.frontend_log,
                     paths.backend_log
                 );
+                metric_kit::start_metric_kit(app.handle().clone());
 
                 let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
                 let telemetry = TelemetryDb::open(&app_data_dir)?;
@@ -280,7 +283,6 @@ pub fn run() {
                 app.manage(telemetry);
 
                 crate::app_log!("[PERF][Setup] Starting MCP server...");
-                auth_callback::start_auth_callback_server(app.handle().clone());
                 mcp::start_mcp_server(app.handle().clone());
                 crate::app_log!(
                     "[PERF][Setup] MCP server started, total setup time: {:?}",

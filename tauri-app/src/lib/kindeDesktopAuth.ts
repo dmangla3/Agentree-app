@@ -151,8 +151,15 @@ const buildDesktopLogoutRedirectUri = () => {
   return url.toString();
 };
 
+const ensureKindeCallbackServerStarted = async () => {
+  if (!shouldUseDesktopBrowserAuth()) return getKindeRedirectUri();
+  kindeRedirectUriCache = await invoke<string>('ensure_auth_callback_server_started');
+  return kindeRedirectUriCache;
+};
+
 const openDesktopLogoutInBrowser = async () => {
   const domain = getKindeDomain();
+  await ensureKindeCallbackServerStarted();
   const logoutUri = buildDesktopLogoutRedirectUri();
   if (domain) {
     await openUrl(`${domain}/logout?redirect=${encodeURIComponent(logoutUri)}`);
@@ -358,7 +365,7 @@ export const initKindeDeepLinkHandler = async () => {
 
 export const openKindeAuthInSystemBrowser = async (intent: AuthIntent) => {
   const { clientId, domain } = ensureDesktopAuthConfig();
-  const redirectURL = getKindeRedirectUri();
+  const redirectURL = await ensureKindeCallbackServerStarted();
   const codeVerifier = randomHex(52);
   const state = randomHex(32);
   const codeChallenge = await toSha256Base64Url(codeVerifier);

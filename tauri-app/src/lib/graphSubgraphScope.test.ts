@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createSubgraphFilterState,
   getSubgraphMessageIds,
+  shouldClearSubgraphForFocus,
 } from './graphSubgraphScope';
 import type { Message } from '../stores/workspaceStore';
 
@@ -55,5 +56,14 @@ describe('graph subgraph scope', () => {
     expect(scoped.keepAncestors).toBe(false);
     expect(scoped.keepDescendants).toBe(false);
     expect(Array.from(scoped.matchingMessageIds).sort()).toEqual(['assistant-child', 'user-target']);
+  });
+
+  it('clears an active subgraph when focus moves outside it', () => {
+    const subgraphIds = new Set(['user-target', 'assistant-child']);
+
+    expect(shouldClearSubgraphForFocus('user-target', subgraphIds, 'assistant-child')).toBe(false);
+    expect(shouldClearSubgraphForFocus('user-target', subgraphIds, 'user-target')).toBe(false);
+    expect(shouldClearSubgraphForFocus('user-target', subgraphIds, 'new-root-thread')).toBe(true);
+    expect(shouldClearSubgraphForFocus(null, subgraphIds, 'new-root-thread')).toBe(false);
   });
 });

@@ -241,7 +241,7 @@ export const GraphNodeWrapper = memo(({
       <HoverCardTrigger asChild>
         {nodeBody}
       </HoverCardTrigger>
-      <HoverCardContent side="right" align="center" sideOffset={8} className="w-auto border-none bg-transparent p-0 shadow-none z-50">
+      <HoverCardContent side="right" align="center" sideOffset={8} className="z-[210] w-auto border-none bg-transparent p-0 shadow-none">
         {hoverCardContent}
       </HoverCardContent>
     </HoverCard>

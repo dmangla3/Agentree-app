@@ -24,6 +24,8 @@ type DiagnosticsLogBundle = {
   logPaths: LogPaths;
   frontendExcerpt: string;
   backendExcerpt: string;
+  metricKitExcerpt: string;
+  metricKitDiagnosticFiles: string[];
   maxLinesPerLog: number;
 };
 
@@ -84,12 +86,16 @@ const formatDiagnostics = ({
     `Log directory: ${logPaths?.log_dir ?? 'unavailable'}`,
     `Frontend log: ${logPaths?.frontend_log ?? 'unavailable'}`,
     `Backend log: ${logPaths?.backend_log ?? 'unavailable'}`,
+    `MetricKit diagnostics: ${diagnosticsLogs?.metricKitDiagnosticFiles?.length ? diagnosticsLogs.metricKitDiagnosticFiles.join(', ') : 'none captured'}`,
     '',
     `Recent frontend log${excerptLineCount ? ` (last ${excerptLineCount} lines)` : ''}`,
     diagnosticsLogs?.frontendExcerpt?.trim() || 'unavailable',
     '',
     `Recent backend log${excerptLineCount ? ` (last ${excerptLineCount} lines)` : ''}`,
     diagnosticsLogs?.backendExcerpt?.trim() || 'unavailable',
+    '',
+    `Recent MetricKit log${excerptLineCount ? ` (last ${excerptLineCount} lines)` : ''}`,
+    diagnosticsLogs?.metricKitExcerpt?.trim() || 'no MetricKit diagnostics captured',
   ];
 
   return lines.join('\n');

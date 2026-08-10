@@ -352,6 +352,11 @@ function buildCodexArgs(config, prompt) {
   return [path.join(__dirname, 'codex-app-server-adapter.py'), ...cliArgs, prompt];
 }
 
+function selectCodexPythonCommand(env = process.env) {
+  const explicit = String(env.PYTHON_BIN || '').trim();
+  return explicit || 'python3';
+}
+
 function buildClaudeArgs(config, prompt) {
   const cliArgs = tokenizeArgs(config.cliArgs);
   const cleaned = [];
@@ -384,7 +389,7 @@ function buildClaudeArgs(config, prompt) {
 
 async function runCodex(config, prompt, payload) {
   return new Promise((resolve, reject) => {
-    const child = spawn('python3', buildCodexArgs(config, prompt), {
+    const child = spawn(selectCodexPythonCommand(), buildCodexArgs(config, prompt), {
       cwd: config.worktreePath,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: process.env,
@@ -609,16 +614,22 @@ async function main() {
   });
 }
 
-main().catch((error) => {
-  emit({
-    type: 'error',
-    error: error?.message || 'Merge review failed',
+if (require.main === module) {
+  main().catch((error) => {
+    emit({
+      type: 'error',
+      error: error?.message || 'Merge review failed',
+    });
+    emit({
+      type: 'status',
+      status: 'failed',
+      phase: 'failed',
+      message: error?.message || 'Merge review failed',
+    });
+    process.exit(1);
   });
-  emit({
-    type: 'status',
-    status: 'failed',
-    phase: 'failed',
-    message: error?.message || 'Merge review failed',
-  });
-  process.exit(1);
-});
+}
+
+module.exports = {
+  selectCodexPythonCommand,
+};

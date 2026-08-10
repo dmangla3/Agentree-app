@@ -12,6 +12,7 @@ interface GraphDerivedCommitGroupNodeProps {
   isFocused?: boolean;
   isSelected?: boolean;
   isComposerBaseCommit?: boolean;
+  onCommitSelectBase?: (commit: ProjectedCommitEntity) => void;
 }
 
 const sourceLabelByKind: Record<ProjectedCommitGroup['sourceKind'], string> = {
@@ -39,10 +40,12 @@ function CommitBatchHoverCard({
   group,
   label,
   commits,
+  onCommitSelectBase,
 }: {
   group: ProjectedCommitGroup;
   label: string;
   commits: ProjectedCommitEntity[];
+  onCommitSelectBase?: (commit: ProjectedCommitEntity) => void;
 }) {
   return (
     <div className="nodrag nowheel w-[420px] overflow-hidden rounded-[14px] border border-zinc-200/90 bg-zinc-50/98 text-zinc-950 shadow-[0_24px_70px_-28px_rgba(15,23,42,0.5),0_4px_14px_-8px_rgba(15,23,42,0.22)] backdrop-blur-xl dark:border-zinc-800/90 dark:bg-zinc-950/98 dark:text-zinc-100 dark:shadow-[0_24px_70px_-30px_rgba(0,0,0,0.85)]">
@@ -69,7 +72,7 @@ function CommitBatchHoverCard({
         onWheelCapture={(event) => event.stopPropagation()}
       >
         {commits.map((commit) => (
-          <RichCommitRow key={commit.sha} commit={commit} />
+          <RichCommitRow key={commit.sha} commit={commit} onSelectBase={onCommitSelectBase} />
         ))}
       </div>
     </div>
@@ -82,6 +85,7 @@ export const GraphDerivedCommitGroupNode = memo(({
   isFocused = false,
   isSelected = false,
   isComposerBaseCommit = false,
+  onCommitSelectBase,
 }: GraphDerivedCommitGroupNodeProps) => {
   const commits = group.commitShas
     .map((sha) => projection?.commitBySha.get(sha))
@@ -172,8 +176,8 @@ export const GraphDerivedCommitGroupNode = memo(({
       <HoverCardTrigger asChild>
         {batchNode}
       </HoverCardTrigger>
-      <HoverCardContent side="right" align="center" sideOffset={10} className="z-50 w-auto border-none bg-transparent p-0 shadow-none">
-        <CommitBatchHoverCard group={group} label={label} commits={hoverCardCommits} />
+      <HoverCardContent side="right" align="center" sideOffset={10} className="z-[210] w-auto border-none bg-transparent p-0 shadow-none">
+        <CommitBatchHoverCard group={group} label={label} commits={hoverCardCommits} onCommitSelectBase={onCommitSelectBase} />
       </HoverCardContent>
     </HoverCard>
   );

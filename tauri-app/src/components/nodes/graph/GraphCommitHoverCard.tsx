@@ -9,7 +9,13 @@ const formatCommitDate = (value?: string | null): string => {
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(date);
 };
 
-export function RichCommitRow({ commit }: { commit: ProjectedCommitEntity }) {
+export function RichCommitRow({
+  commit,
+  onSelectBase,
+}: {
+  commit: ProjectedCommitEntity;
+  onSelectBase?: (commit: ProjectedCommitEntity) => void;
+}) {
   const filesChanged = commit.commit.files_changed_count ?? 0;
   const additions = commit.commit.total_additions ?? 0;
   const deletions = commit.commit.total_deletions ?? 0;
@@ -17,9 +23,13 @@ export function RichCommitRow({ commit }: { commit: ProjectedCommitEntity }) {
   const authoredAt = formatCommitDate(commit.commit.authored_at ?? commit.commit.committed_at ?? commit.commit.createdAt);
 
   return (
-    <div
-      className="group/commit relative rounded-[8px] border border-zinc-200/80 bg-white/88 px-3 py-2.5 text-left shadow-[0_1px_0_rgba(255,255,255,0.85)_inset] transition-all duration-200 hover:-translate-y-px hover:border-emerald-300/85 hover:bg-white hover:shadow-[0_14px_28px_-22px_rgba(4,120,87,0.78)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70 dark:border-zinc-800/80 dark:bg-zinc-950/72 dark:shadow-none dark:hover:border-emerald-700/80 dark:hover:bg-zinc-950"
-      tabIndex={0}
+    <button
+      type="button"
+      className="group/commit relative w-full rounded-[8px] border border-zinc-200/80 bg-white/88 px-3 py-2.5 text-left shadow-[0_1px_0_rgba(255,255,255,0.85)_inset] transition-all duration-200 hover:-translate-y-px hover:border-emerald-300/85 hover:bg-white hover:shadow-[0_14px_28px_-22px_rgba(4,120,87,0.78)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70 dark:border-zinc-800/80 dark:bg-zinc-950/72 dark:shadow-none dark:hover:border-emerald-700/80 dark:hover:bg-zinc-950"
+      onClick={(event) => {
+        event.stopPropagation();
+        onSelectBase?.(commit);
+      }}
     >
       <div className="flex min-w-0 items-start gap-2">
         <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px] bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/80 dark:bg-emerald-950/60 dark:text-emerald-300 dark:ring-emerald-800/70">
@@ -70,6 +80,6 @@ export function RichCommitRow({ commit }: { commit: ProjectedCommitEntity }) {
           {deletions}
         </span>
       </div>
-    </div>
+    </button>
   );
 }

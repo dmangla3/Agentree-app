@@ -51,3 +51,13 @@ export const createSubgraphFilterState = (
     keepDescendants: false,
   };
 };
+
+export const shouldClearSubgraphForFocus = (
+  rootMessageId: string | null,
+  subgraphMessageIds: Set<string>,
+  focusedMessageId: string | null,
+): boolean => {
+  if (!rootMessageId || !focusedMessageId) return false;
+  if (focusedMessageId === rootMessageId) return false;
+  return !subgraphMessageIds.has(focusedMessageId);
+};

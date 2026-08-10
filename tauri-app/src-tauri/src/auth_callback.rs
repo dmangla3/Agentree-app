@@ -9,7 +9,6 @@ use once_cell::sync::Lazy;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 static AUTH_CALLBACK_STARTED: AtomicBool = AtomicBool::new(false);
@@ -19,6 +18,9 @@ static AUTH_CALLBACK_LOGO_DATA_URI: Lazy<String> = Lazy::new(|| {
     format!("data:image/png;base64,{}", BASE64_STANDARD.encode(bytes))
 });
 
+#[cfg(debug_assertions)]
+const DEFAULT_AUTH_CALLBACK_PORT: u16 = 34118;
+#[cfg(not(debug_assertions))]
 const DEFAULT_AUTH_CALLBACK_PORT: u16 = 34117;
 
 pub fn auth_callback_base_url() -> String {
@@ -47,9 +49,15 @@ pub fn get_auth_callback_base_url() -> String {
     auth_callback_base_url()
 }
 
-pub fn start_auth_callback_server(app_handle: AppHandle) {
-    if AUTH_CALLBACK_STARTED.swap(true, Ordering::SeqCst) {
-        return;
+#[tauri::command]
+#[specta::specta]
+pub async fn ensure_auth_callback_server_started(app_handle: AppHandle) -> Result<String, String> {
+    let callback_url = auth_callback_base_url();
+    if AUTH_CALLBACK_STARTED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(callback_url);
     }
 
     if let Ok(mut guard) = AUTH_CALLBACK_APP.lock() {
@@ -64,31 +72,36 @@ pub fn start_auth_callback_server(app_handle: AppHandle) {
     let app = Router::new().route("/kinde/callback", get(handle_kinde_callback));
     let addr: SocketAddr = ([127, 0, 0, 1], port).into();
 
+    crate::app_log!("[Auth] Starting Kinde callback server on http://{}", addr);
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            let message = format!(
+                "[Auth] Failed to bind Kinde callback server on http://{addr}: address already in use. Another Agentree instance, often the installed /Applications app, is probably already running. Quit that app or set AGENTREE_AUTH_CALLBACK_PORT to an allowed Kinde redirect port. Original error: {error}"
+            );
+            crate::app_log!("{}", message);
+            AUTH_CALLBACK_STARTED.store(false, Ordering::SeqCst);
+            return Err(message);
+        }
+        Err(error) => {
+            let message = format!(
+                "[Auth] Failed to bind Kinde callback server on http://{addr}: {error}"
+            );
+            crate::app_log!("{}", message);
+            AUTH_CALLBACK_STARTED.store(false, Ordering::SeqCst);
+            return Err(message);
+        }
+    };
+
     tauri::async_runtime::spawn(async move {
-        crate::app_log!("[Auth] Starting Kinde callback server on http://{}", addr);
-
-        let mut retry_delay = Duration::from_millis(250);
-        let listener = loop {
-            match tokio::net::TcpListener::bind(addr).await {
-                Ok(listener) => break listener,
-                Err(error) => {
-                    crate::app_log!(
-                        "[Auth] Failed to bind Kinde callback server: {}; retrying in {:?}",
-                        error,
-                        retry_delay
-                    );
-                    tokio::time::sleep(retry_delay).await;
-                    retry_delay = (retry_delay * 2).min(Duration::from_secs(5));
-                }
-            }
-        };
-
         crate::app_log!("[Auth] Kinde callback server listening on http://{}", addr);
 
         if let Err(error) = axum::serve(listener, app).await {
             crate::app_log!("[Auth] Kinde callback server error: {}", error);
         }
     });
+
+    Ok(callback_url)
 }
 
 async fn handle_kinde_callback(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
@@ -196,14 +209,57 @@ async fn handle_kinde_callback(OriginalUri(uri): OriginalUri) -> impl IntoRespon
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_auth_callback_port_env<R>(value: Option<&str>, test: impl FnOnce() -> R) -> R {
+        let _guard = ENV_LOCK.lock().expect("auth callback env lock poisoned");
+        let previous = std::env::var("AGENTREE_AUTH_CALLBACK_PORT").ok();
+        match value {
+            Some(value) => std::env::set_var("AGENTREE_AUTH_CALLBACK_PORT", value),
+            None => std::env::remove_var("AGENTREE_AUTH_CALLBACK_PORT"),
+        }
+
+        let result = test();
+
+        match previous {
+            Some(value) => std::env::set_var("AGENTREE_AUTH_CALLBACK_PORT", value),
+            None => std::env::remove_var("AGENTREE_AUTH_CALLBACK_PORT"),
+        }
+
+        result
+    }
+
+    #[test]
+    fn debug_build_uses_separate_default_auth_callback_port() {
+        with_auth_callback_port_env(None, || {
+            assert_eq!(
+                auth_callback_base_url(),
+                "http://127.0.0.1:34118/kinde/callback"
+            );
+        });
+    }
+
+    #[test]
+    fn configured_auth_callback_port_overrides_default() {
+        with_auth_callback_port_env(Some("34119"), || {
+            assert_eq!(
+                auth_callback_base_url(),
+                "http://127.0.0.1:34119/kinde/callback"
+            );
+        });
+    }
 
     #[test]
     fn recognizes_configured_auth_callback_navigation() {
-        let url = tauri::Url::parse(
-            "http://127.0.0.1:34117/kinde/callback?code=abc&state=state",
-        )
-        .expect("valid callback url");
+        with_auth_callback_port_env(Some("34119"), || {
+            let url = tauri::Url::parse(
+                "http://127.0.0.1:34119/kinde/callback?code=abc&state=state",
+            )
+            .expect("valid callback url");
 
-        assert!(is_auth_callback_url(&url));
+            assert!(is_auth_callback_url(&url));
+        });
     }
 }

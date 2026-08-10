@@ -53,7 +53,7 @@ export const summarizeFinalizeAck = (event: Record<string, any>): FinalizeAckSum
         : null;
   return {
     outputCommitSha,
-    commitCreated: event.commit_created !== false,
+    commitCreated: event.commit_created !== false && event.commitCreated !== false,
   };
 };
 

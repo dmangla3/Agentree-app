@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { agentClient, GitCommitMetadata, GitLocalRefInfo } from '../lib/agentClient';
+import type { TrackedGitRef } from '../stores/workspaceStore';
+import { useTrackedRefs } from './useTrackedRefs';
 
 export interface CommitWithRef extends GitCommitMetadata {
   refName?: string;
@@ -14,12 +16,97 @@ interface UseCommitsOptions {
   excludeDescendantsOf?: string;
 }
 
+const isInternalAgentreeBranch = (ref: GitLocalRefInfo): boolean =>
+  ref.git_ref.startsWith('refs/heads/agentree/');
+
+const isAgentreePointer = (ref: GitLocalRefInfo): boolean =>
+  ref.git_ref.startsWith('refs/agentree/pointers/');
+
+const isHumanBranch = (ref: GitLocalRefInfo): boolean =>
+  ref.git_ref.startsWith('refs/heads/') && !isInternalAgentreeBranch(ref);
+
+const isPrimaryBranchName = (shortName: string): boolean =>
+  shortName === 'main' || shortName === 'master' || shortName === 'trunk';
+
+const trackedRefKeysForPriority = (trackedRefs: TrackedGitRef[] = []): Set<string> => {
+  const keys = new Set<string>();
+  for (const ref of trackedRefs) {
+    if (!ref.enabled) continue;
+    keys.add(ref.git_ref);
+    if (ref.git_ref.startsWith('refs/heads/')) {
+      keys.add(ref.git_ref.replace('refs/heads/', ''));
+    }
+    if (ref.display_name) {
+      keys.add(ref.display_name);
+    }
+  }
+  return keys;
+};
+
+const refPriority = (ref: GitLocalRefInfo, trackedKeys: Set<string>): number => {
+  let priority = 100;
+
+  if (isHumanBranch(ref)) {
+    priority = 0;
+  } else if (isAgentreePointer(ref)) {
+    priority = 40;
+  } else if (isInternalAgentreeBranch(ref)) {
+    priority = 200;
+  }
+
+  if (trackedKeys.has(ref.git_ref) || trackedKeys.has(ref.short_name)) {
+    priority -= 50;
+  }
+
+  if (isPrimaryBranchName(ref.short_name)) {
+    priority -= 20;
+  }
+
+  return priority;
+};
+
+export const buildPreferredRefNameBySha = (
+  refs: GitLocalRefInfo[],
+  trackedRefs: TrackedGitRef[] = []
+): Map<string, string> => {
+  const trackedKeys = trackedRefKeysForPriority(trackedRefs);
+  const preferredBySha = new Map<string, { refName: string; priority: number; nameLength: number; index: number }>();
+
+  refs.forEach((ref, index) => {
+    const priority = refPriority(ref, trackedKeys);
+    const candidate = {
+      refName: ref.short_name,
+      priority,
+      nameLength: ref.short_name.length,
+      index,
+    };
+    const existing = preferredBySha.get(ref.commit_sha);
+
+    if (
+      !existing ||
+      candidate.priority < existing.priority ||
+      (candidate.priority === existing.priority && candidate.nameLength < existing.nameLength) ||
+      (
+        candidate.priority === existing.priority &&
+        candidate.nameLength === existing.nameLength &&
+        candidate.index < existing.index
+      )
+    ) {
+      preferredBySha.set(ref.commit_sha, candidate);
+    }
+  });
+
+  return new Map(Array.from(preferredBySha.entries()).map(([sha, ref]) => [sha, ref.refName]));
+};
+
 /**
  * Hook to fetch git commits and refs for merge workflow.
  * Shows commits directly instead of nodes.
  * Fetches commits by walking back from branch tips and collecting all history.
  */
 export function useCommits({ repoPath, workspaceId, limit = 100, exclusions, excludeDescendantsOf }: UseCommitsOptions) {
+  const trackedRefsQuery = useTrackedRefs(workspaceId);
+
   // Fetch local refs (branches, tags) for marking branch tips
   const refsQuery = useQuery({
     queryKey: ['git-refs', repoPath, workspaceId],
@@ -33,17 +120,11 @@ export function useCommits({ repoPath, workspaceId, limit = 100, exclusions, exc
 
   // Fetch ALL commits
   const commitsQuery = useQuery({
-    queryKey: ['git-commits', repoPath, workspaceId, limit, exclusions, excludeDescendantsOf, refsQuery.data],
+    queryKey: ['git-commits', repoPath, workspaceId, limit, exclusions, excludeDescendantsOf, refsQuery.data, trackedRefsQuery.data],
     queryFn: async (): Promise<CommitWithRef[]> => {
       if (!repoPath || !refsQuery.data) return [];
       
-      // Build a map of commit SHAs to ref names
-      const refNameBySha = new Map<string, string>();
-      for (const ref of refsQuery.data) {
-        if (!refNameBySha.has(ref.commit_sha)) {
-          refNameBySha.set(ref.commit_sha, ref.short_name);
-        }
-      }
+      const refNameBySha = buildPreferredRefNameBySha(refsQuery.data, trackedRefsQuery.data ?? []);
       
       // Fetch commits using the new command
       try {

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { createJSONStorage, persist } from 'zustand/middleware';
 import { recordPerfEvent } from '../lib/perfRecorder';
+import { createBestEffortStorage } from '../lib/bestEffortStorage';
 import type { AgentStatus } from '@shared/agentStatus';
 
 export interface Workspace {
@@ -510,6 +511,15 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     }),
     {
       name: 'workspace-storage',
+      storage: createJSONStorage(() => createBestEffortStorage(
+        () => localStorage,
+        (error, key) => {
+          recordPerfEvent('workspace.persist.failed', {
+            key,
+            error: error instanceof Error ? error.message : String(error),
+          }, { source: 'workspace-store' });
+        }
+      )),
       partialize: (state) => ({
         selectedWorkspaceId: state.selectedWorkspaceId,
         focusedMessageId: state.focusedMessageId,

@@ -8,6 +8,7 @@ export type ResolveSendParentMessageIdInput = {
   hasEditDraftSource: boolean;
   editDraftSourceParentId?: string | null;
   parentMessageIdOverride?: string | null;
+  forceRootParent?: boolean;
   focusSnapshot: FocusSnapshot;
   resolvePersistedMessageId: (messageId: string | null) => string | null;
 };
@@ -27,9 +28,12 @@ export const resolveSendParentMessageId = ({
   hasEditDraftSource,
   editDraftSourceParentId = null,
   parentMessageIdOverride,
+  forceRootParent = false,
   focusSnapshot,
   resolvePersistedMessageId,
 }: ResolveSendParentMessageIdInput): string | null => {
+  if (forceRootParent && !hasEditDraftSource) return null;
+
   const focusedCommitSha = resolveFocusedCommitSha(focusSnapshot);
   const rawParentId = hasEditDraftSource
     ? editDraftSourceParentId

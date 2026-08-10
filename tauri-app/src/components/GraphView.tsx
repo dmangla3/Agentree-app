@@ -41,7 +41,8 @@ import { clearCachedGraphSnapshot, graphSnapshotToSummaries, useGraphSnapshot } 
 // Utils
 import { LlmNodeData, getLlmLegend } from '../lib/graphUtils';
 import { mapLocalCommitToCommitEntity } from '../lib/localCommitGraphProjection';
-import { createSubgraphFilterState, getSubgraphMessageIds } from '../lib/graphSubgraphScope';
+import { createSubgraphFilterState, getSubgraphMessageIds, shouldClearSubgraphForFocus } from '../lib/graphSubgraphScope';
+import { buildThreadRootIndex, getHiddenConversationMessageIds } from '../lib/graphThreadRoots';
 import { buildComposerContextPathIds } from '../lib/composerContext';
 import { collectDeleteBranchMessageIds, getDeleteBranchPreview, getTopLevelDeleteBranchIds } from '../domain/deleteBranchPreview';
 import { getBranchPointerCommitSha, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
@@ -60,7 +61,7 @@ import { HorizontalThenVerticalEdge } from './HorizontalThenVerticalEdge';
 import { ContextSmoothStepEdge } from './ContextSmoothStepEdge';
 
 // Components - Graph (extracted)
-import { GraphControls, type LeafNodeNavigationItem, ViewMode } from './graph/GraphControls';
+import { GraphControls, type LeafNodeNavigationItem, type ThreadNavigationItem, ViewMode } from './graph/GraphControls';
 import { GraphLegend } from './graph/GraphLegend';
 import { MiniMapPanel } from './graph/MiniMapPanel';
 import { GraphCanvasIndexPanel, type GraphEdgeLegendId, type GraphNodeSectionId } from './graph/GraphCanvasIndexPanel';
@@ -180,6 +181,28 @@ const formatLeafTimestamp = (message: Message): string => {
         day: 'numeric',
         hour: 'numeric',
         minute: '2-digit',
+    });
+};
+
+const formatThreadUpdatedLabel = (timestampMs: number, nowMs: number): string => {
+    if (!Number.isFinite(timestampMs) || timestampMs <= 0) return 'unknown';
+
+    const elapsedMs = Math.max(0, nowMs - timestampMs);
+    const elapsedSeconds = Math.floor(elapsedMs / 1000);
+    if (elapsedSeconds < 45) return 'now';
+
+    const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+    if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
+
+    const elapsedHours = Math.floor(elapsedMinutes / 60);
+    if (elapsedHours < 24) return `${elapsedHours}h ago`;
+
+    const elapsedDays = Math.floor(elapsedHours / 24);
+    if (elapsedDays < 7) return `${elapsedDays}d ago`;
+
+    return new Date(timestampMs).toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
     });
 };
 
@@ -511,6 +534,14 @@ function GraphViewInternal({
     ), [activeRunStatusNodeIds, activeSendFlowMessageIdKey]);
     const [graphResetNonce, setGraphResetNonce] = useState(0);
     const [subgraphRootNodeId, setSubgraphRootNodeId] = useState<string | null>(null);
+    const [hiddenThreadRootIds, setHiddenThreadRootIds] = useState<Set<string>>(() => new Set());
+    const [hiddenSubgraphRootIds, setHiddenSubgraphRootIds] = useState<Set<string>>(() => new Set());
+
+    useEffect(() => {
+        setHiddenThreadRootIds(new Set());
+        setHiddenSubgraphRootIds(new Set());
+        setSubgraphRootNodeId(null);
+    }, [selectedWorkspaceId]);
 
     // ─────────────────────────────────────────────────────────────────────────
     // DATA QUERIES
@@ -669,35 +700,82 @@ function GraphViewInternal({
             };
         })
     ), [branchPointersByNodeId, messages]);
+    const hiddenConversationMessageIds = useMemo(() => getHiddenConversationMessageIds({
+        messages: graphMessages as Message[],
+        hiddenThreadRootIds,
+        hiddenSubgraphRootIds,
+    }), [graphMessages, hiddenSubgraphRootIds, hiddenThreadRootIds]);
+    const hiddenGraphFilterCount = hiddenSubgraphRootIds.size;
+    const threadRootIndex = useMemo(() => buildThreadRootIndex(graphMessages as Message[]), [graphMessages]);
+    const currentThreadRootId = useMemo(() => (
+        subgraphRootNodeId ? threadRootIndex.threadRootIdByMessageId.get(subgraphRootNodeId) ?? null : null
+    ), [subgraphRootNodeId, threadRootIndex]);
+    const threadIndexItems = useMemo<ThreadNavigationItem[]>(() => {
+        const messageById = new Map((graphMessages as Message[]).map((message) => [message.id, message]));
+        const now = Date.now();
+        return threadRootIndex.threadRootIds.map((threadRootId) => {
+            const rootMessage = messageById.get(threadRootId) ?? null;
+            const threadMessageIds = Array.from(threadRootIndex.messageIdsByThreadRootId.get(threadRootId) ?? new Set<string>());
+            const threadMessages = threadMessageIds
+                .map((messageId) => messageById.get(messageId) ?? null)
+                .filter((message): message is Message => Boolean(message));
+            const lastUpdatedAt = threadMessages.reduce((latest, message) => {
+                const ts = new Date(message.updatedAt || message.createdAt).getTime();
+                return Number.isFinite(ts) ? Math.max(latest, ts) : latest;
+            }, 0);
+            const runningThreadCount = threadMessageIds.filter((messageId) => activeRunStatusNodeIds.has(messageId)).length;
+            const turnCount = threadMessages.filter((message) => message.role === 'user').length;
+            const commitCount = new Set(
+                threadMessages
+                    .map((message) => getMessageOutputCommitSha(message))
+                    .filter((sha): sha is string => Boolean(sha))
+            ).size;
+            const label = cleanNodePreview(rootMessage?.content || '') || rootMessage?.aiLabel || 'Untitled thread';
+            return {
+                threadRootId,
+                label: label.length > 56 ? `${label.slice(0, 56)}...` : label,
+                turnCount,
+                commitCount,
+                updatedLabel: formatThreadUpdatedLabel(lastUpdatedAt, now),
+                runningCount: runningThreadCount,
+                hidden: hiddenThreadRootIds.has(threadRootId),
+                current: currentThreadRootId === threadRootId,
+                lastUpdatedAt,
+            };
+        }).sort((left, right) => right.lastUpdatedAt - left.lastUpdatedAt || left.threadRootId.localeCompare(right.threadRootId));
+    }, [activeRunStatusNodeIds, currentThreadRootId, graphMessages, hiddenThreadRootIds, threadRootIndex]);
+    const visibleGraphMessages = useMemo(() => (
+        (graphMessages as Message[]).filter((message) => !hiddenConversationMessageIds.has(message.id))
+    ), [graphMessages, hiddenConversationMessageIds]);
     const leafNodeNavigationItems = useMemo(() => (
-        getLeafMessagesByRecency(graphMessages as Message[])
+        getLeafMessagesByRecency(visibleGraphMessages as Message[])
             .map((message) => toLeafNodeNavigationItem(message, agentLabelsById))
-    ), [agentLabelsById, graphMessages]);
+    ), [agentLabelsById, visibleGraphMessages]);
     const activeGraphComputationHold = runningCount > 0 || activeSendFlowFocus?.workspaceId === selectedWorkspaceId;
-    const graphComputationMessagesRef = useRef<Message[]>(graphMessages as Message[]);
+    const graphComputationMessagesRef = useRef<Message[]>(visibleGraphMessages as Message[]);
     const graphComputationMessages = useMemo(() => {
         const current = graphComputationMessagesRef.current;
         if (!activeGraphComputationHold) {
-            graphComputationMessagesRef.current = graphMessages as Message[];
+            graphComputationMessagesRef.current = visibleGraphMessages as Message[];
             recordFundamentalCounter('graph.computation-messages', {
                 mode: 'live',
-                messageCount: graphMessages.length,
+                messageCount: visibleGraphMessages.length,
                 runningCount,
                 activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
             });
-            return graphMessages as Message[];
+            return visibleGraphMessages as Message[];
         }
 
-        if (!current || current.length === 0 || graphMessages.length !== current.length) {
-            graphComputationMessagesRef.current = graphMessages as Message[];
+        if (!current || current.length === 0 || visibleGraphMessages.length !== current.length) {
+            graphComputationMessagesRef.current = visibleGraphMessages as Message[];
             recordFundamentalCounter('graph.computation-messages', {
                 mode: 'active-refresh',
-                messageCount: graphMessages.length,
+                messageCount: visibleGraphMessages.length,
                 previousMessageCount: current?.length ?? 0,
                 runningCount,
                 activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
             });
-            return graphMessages as Message[];
+            return visibleGraphMessages as Message[];
         }
 
         const activePinnedMessageIds = activePinnedMessageIdKey
@@ -705,31 +783,31 @@ function GraphViewInternal({
             : [];
         if (activePinnedMessageIds.length > 0) {
             const currentIds = new Set(current.map((message) => message.id));
-            const incomingIds = new Set((graphMessages as Message[]).map((message) => message.id));
+            const incomingIds = new Set((visibleGraphMessages as Message[]).map((message) => message.id));
             const hasNewPinnedMessage = activePinnedMessageIds.some((id) => incomingIds.has(id) && !currentIds.has(id));
             if (hasNewPinnedMessage) {
-                graphComputationMessagesRef.current = graphMessages as Message[];
+                graphComputationMessagesRef.current = visibleGraphMessages as Message[];
                 recordFundamentalCounter('graph.computation-messages', {
                     mode: 'active-refresh-pinned',
-                    messageCount: graphMessages.length,
+                    messageCount: visibleGraphMessages.length,
                     previousMessageCount: current.length,
                     pinnedMessageCount: activePinnedMessageIds.length,
                     runningCount,
                     activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
                 });
-                return graphMessages as Message[];
+                return visibleGraphMessages as Message[];
             }
         }
 
         recordFundamentalCounter('graph.computation-messages', {
             mode: 'active-held',
             messageCount: current.length,
-            incomingMessageCount: graphMessages.length,
+            incomingMessageCount: visibleGraphMessages.length,
             runningCount,
             activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
         });
         return current;
-    }, [activeGraphComputationHold, activePinnedMessageIdKey, activeSendFlowFocus?.workspaceId, graphMessages, runningCount, selectedWorkspaceId]);
+    }, [activeGraphComputationHold, activePinnedMessageIdKey, activeSendFlowFocus?.workspaceId, visibleGraphMessages, runningCount, selectedWorkspaceId]);
     const contextPathMessageIdSet = useMemo(() => {
         if (!composerContextPreview || composerContextPreview.workspaceId !== selectedWorkspaceId) {
             return new Set<string>();
@@ -1508,6 +1586,9 @@ function GraphViewInternal({
         if (preview) return preview.length > 72 ? `${preview.slice(0, 72)}...` : preview;
         return subgraphRootMessage.role === 'user' ? 'User node' : 'Assistant node';
     }, [subgraphRootMessage]);
+    const subgraphFocusLabel = subgraphRootNodeId && currentThreadRootId === subgraphRootNodeId
+        ? 'Thread'
+        : 'Subgraph';
     const graphFilterState = useMemo(() => (
         createSubgraphFilterState(subgraphRootNodeId, subgraphMessageIds, {
             matchingMessageIds: tagFilter.matchingMessageIds,
@@ -1531,6 +1612,11 @@ function GraphViewInternal({
         if (subgraphRootMessage) return;
         setSubgraphRootNodeId(null);
     }, [subgraphRootMessage, subgraphRootNodeId]);
+
+    useEffect(() => {
+        if (!shouldClearSubgraphForFocus(subgraphRootNodeId, subgraphMessageIds, focusedMessageId)) return;
+        setSubgraphRootNodeId(null);
+    }, [focusedMessageId, subgraphMessageIds, subgraphRootNodeId]);
 
     const graphNodeSectionCounts = useMemo<Record<GraphNodeSectionId, number>>(() => {
         const messageById = new Map((graphComputationMessages as Message[]).map((message) => [message.id, message]));
@@ -1697,6 +1783,54 @@ function GraphViewInternal({
             );
         }
     }, [messages, openMergeSession, selectedWorkspace, selectedWorkspaceId, toast]);
+
+    const handleAddCommitShasToMergePanel = useCallback((commitShas: string[]) => {
+        if (!selectedWorkspaceId) return;
+
+        const repoPath = selectedWorkspace?.git_repo_path || selectedWorkspace?.folderPath;
+        if (!repoPath) {
+            toast.error('No repository', 'This workspace has no git repository');
+            return;
+        }
+
+        const integrationState = useIntegrationStore.getState();
+        if (!integrationState.session || integrationState.session.workspaceId !== selectedWorkspaceId || integrationState.session.repoPath !== repoPath) {
+            openMergeSession(selectedWorkspaceId, repoPath);
+        }
+
+        const { addSource } = useIntegrationStore.getState();
+        const mergeableCommits = commitShas.map((sha) => ({
+            sha,
+            commit: workspaceProjection.commitBySha.get(sha) ?? null,
+        }));
+
+        let addedCount = 0;
+        for (const { sha, commit } of mergeableCommits) {
+            const sourceNodeId = commit?.producedByNodeId ?? commit?.visualOwnerNodeId ?? undefined;
+            const added = addSource({
+                id: sourceNodeId ?? sha,
+                type: sourceNodeId ? 'graph-node' : 'sha',
+                label: commit?.subject || commit?.shortSha || sha.slice(0, 8),
+                commitSha: sha,
+                nodeId: sourceNodeId,
+            });
+            if (added) addedCount += 1;
+        }
+
+        const duplicateCount = mergeableCommits.length - addedCount;
+        if (addedCount > 0) {
+            toast.success(
+                'Added to merge panel',
+                addedCount === 1 ? '1 commit added to merge sources.' : `${addedCount} commits added to merge sources.`
+            );
+        }
+        if (duplicateCount > 0) {
+            toast.info(
+                'Already in merge panel',
+                duplicateCount === 1 ? '1 commit was already present.' : `${duplicateCount} commits were already present.`
+            );
+        }
+    }, [openMergeSession, selectedWorkspace, selectedWorkspaceId, toast, workspaceProjection.commitBySha]);
 
     const handleToggleCollapse = useCallback((id: string, collapsed: boolean) => {
         if (!selectedWorkspaceId) return;
@@ -2429,6 +2563,55 @@ function GraphViewInternal({
             metadata: { reason: 'view-subgraph' },
         });
     }, [dispatchFocus, nodeSelection.clearSelection]);
+
+    const handleFocusThread = useCallback((threadRootId: string) => {
+        setSubgraphRootNodeId(threadRootId);
+        setViewMode('branch');
+        nodeSelection.clearSelection();
+        dispatchFocus({
+            messageId: threadRootId,
+            source: 'graph',
+            metadata: { reason: 'focus-thread' },
+        });
+    }, [dispatchFocus, nodeSelection.clearSelection]);
+
+    const handleHideThread = useCallback((threadRootId: string) => {
+        setHiddenThreadRootIds((current) => {
+            const next = new Set(current);
+            next.add(threadRootId);
+            return next;
+        });
+        if (subgraphRootNodeId === threadRootId) {
+            setSubgraphRootNodeId(null);
+        }
+        nodeSelection.clearSelection();
+        toast.success('Thread hidden', 'Use the Threads menu to restore it.');
+    }, [nodeSelection.clearSelection, subgraphRootNodeId, toast]);
+
+    const handleRestoreThread = useCallback((threadRootId: string) => {
+        setHiddenThreadRootIds((current) => {
+            const next = new Set(current);
+            next.delete(threadRootId);
+            return next;
+        });
+    }, []);
+
+    const handleRestoreAllHiddenThreads = useCallback(() => {
+        setHiddenThreadRootIds(new Set());
+    }, []);
+
+    const handleHideSubgraph = useCallback((messageId: string) => {
+        setHiddenSubgraphRootIds((current) => {
+            const next = new Set(current);
+            next.add(messageId);
+            return next;
+        });
+        if (subgraphRootNodeId === messageId) {
+            setSubgraphRootNodeId(null);
+        }
+        nodeSelection.clearSelection();
+        toast.success('Subgraph hidden', 'Use the hidden graph filter pill to restore it.');
+    }, [nodeSelection.clearSelection, subgraphRootNodeId, toast]);
 
     const { nodes: layoutNodes, edges: layoutEdges } = useGraphLayout({
         projection: workspaceProjection,
@@ -4545,6 +4728,11 @@ function GraphViewInternal({
                         showInsightsInGraph={showInsightsInGraph}
                         onToggleInsightsVisible={toggleInsightsVisible}
                         onToggleShowInsightsInGraph={toggleShowInsightsInGraph}
+                        threadItems={threadIndexItems}
+                        onThreadFocus={handleFocusThread}
+                        onThreadHide={handleHideThread}
+                        onThreadRestore={handleRestoreThread}
+                        onRestoreAllHiddenThreads={handleRestoreAllHiddenThreads}
                         leafNodes={leafNodeNavigationItems}
                         onLeafNodeFocus={handleFocus}
                         onResetLayout={handleResetLayout}
@@ -4562,13 +4750,29 @@ function GraphViewInternal({
 
             {/* Content Area */}
             <div className="flex-1 overflow-hidden relative">
+                {hiddenGraphFilterCount > 0 ? (
+                    <div className="absolute right-4 top-4 z-40 flex items-center gap-2 rounded-full border border-amber-300/80 bg-amber-50/[0.94] px-3 py-2 text-xs text-amber-900 shadow-sm backdrop-blur-md dark:border-amber-700/80 dark:bg-amber-950/[0.88] dark:text-amber-100">
+                        <span className="font-semibold tabular-nums">
+                            {hiddenGraphFilterCount} hidden {hiddenGraphFilterCount === 1 ? 'graph filter' : 'graph filters'}
+                        </span>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setHiddenSubgraphRootIds(new Set());
+                            }}
+                            className="rounded-full bg-amber-100 px-2 py-1 font-medium text-amber-950 transition-colors hover:bg-amber-200 dark:bg-amber-900 dark:text-amber-50 dark:hover:bg-amber-800"
+                        >
+                            Restore
+                        </button>
+                    </div>
+                ) : null}
                 {subgraphRootNodeId && subgraphRootMessage ? (
                     <div className="absolute left-4 top-4 z-40 flex max-w-[min(720px,calc(100%-2rem))] items-center gap-2 rounded-full border border-slate-200/80 bg-white/[0.92] px-3 py-2 text-xs text-slate-700 shadow-sm backdrop-blur-md dark:border-slate-700/80 dark:bg-slate-950/[0.88] dark:text-slate-200">
                         <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-950">
                             <GitBranch className="h-3.5 w-3.5" />
                         </span>
                         <span className="min-w-0 truncate">
-                            <span className="font-semibold text-slate-950 dark:text-slate-50">Subgraph</span>
+                            <span className="font-semibold text-slate-950 dark:text-slate-50">{subgraphFocusLabel}</span>
                             <span className="mx-1.5 text-slate-400">/</span>
                             <span title={subgraphRootLabel}>{subgraphRootLabel}</span>
                         </span>
@@ -4819,7 +5023,11 @@ function GraphViewInternal({
                     openBulkDeleteDialog(messageIds, commitShas);
                 }}
                 onAddCommitsToMergePanel={handleAddCommitsToMergePanel}
+                onAddCommitShasToMergePanel={handleAddCommitShasToMergePanel}
                 onAddCommitToNode={setAddCommitTargetId}
+                onFocusThread={handleFocusThread}
+                onHideThread={handleHideThread}
+                onHideSubgraph={handleHideSubgraph}
                 onViewSubgraph={handleViewSubgraph}
                 onShareNode={handleShareNode}
             />

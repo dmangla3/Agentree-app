@@ -77,6 +77,20 @@ describe('resolveSendParentMessageId', () => {
     })).toBeNull();
   });
 
+  it('forces a root parent for new thread sends without changing commit focus handling', () => {
+    expect(resolveSendParentMessageId({
+      hasEditDraftSource: false,
+      parentMessageIdOverride: undefined,
+      forceRootParent: true,
+      focusSnapshot: {
+        focusedMessageId: 'new-focus-parent',
+        lastFocusSource: 'system',
+        lastFocusMetadata: null,
+      },
+      resolvePersistedMessageId,
+    })).toBeNull();
+  });
+
   it('normalizes optimistic focus ids to persisted ids', () => {
     expect(resolveSendParentMessageId({
       hasEditDraftSource: false,

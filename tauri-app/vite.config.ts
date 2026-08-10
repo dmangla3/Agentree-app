@@ -1,5 +1,5 @@
 import path from "path";
-import { defineConfig } from "vite";
+import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 // @ts-expect-error process is a nodejs global
@@ -36,6 +36,9 @@ export default defineConfig(async () => ({
   clearScreen: false,
   build: {
     chunkSizeWarningLimit: 3000,
+  },
+  test: {
+    exclude: [...configDefaults.exclude, "src-tauri/**"],
   },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {

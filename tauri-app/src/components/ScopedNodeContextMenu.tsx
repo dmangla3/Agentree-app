@@ -21,7 +21,11 @@ interface ScopedNodeContextMenuProps {
   onDeleteMessages?: (messageIds: string[]) => void;
   onDeleteTargets?: (targets: { messageIds: string[]; commitShas: string[] }) => void;
   onAddCommitsToMergePanel?: (messageIds: string[]) => void;
+  onAddCommitShasToMergePanel?: (commitShas: string[]) => void;
   onAddCommitToNode?: (messageId: string) => void;
+  onFocusThread?: (threadRootId: string) => void;
+  onHideThread?: (threadRootId: string) => void;
+  onHideSubgraph?: (messageId: string) => void;
   onViewSubgraph?: (messageId: string) => void;
   onShareNode?: (messageId: string) => void;
 }
@@ -33,17 +37,23 @@ export function ScopedNodeContextMenu({
   onDeleteMessages,
   onDeleteTargets,
   onAddCommitsToMergePanel,
+  onAddCommitShasToMergePanel,
   onAddCommitToNode,
+  onFocusThread,
+  onHideThread,
+  onHideSubgraph,
   onViewSubgraph,
   onShareNode,
 }: ScopedNodeContextMenuProps) {
   const scopedIds = contextMenu?.scopedIds ?? [];
 
-  const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, actionNodeId } = useMemo(() => {
+  const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, mergeableCommitShas, actionNodeId, actionThreadRootId } = useMemo(() => {
     const deletableIds = new Set<string>();
     const deletableShas = new Set<string>();
     const mergeableIds = new Set<string>();
+    const mergeableShas = new Set<string>();
     let singleActionId: string | null = null;
+    let singleThreadRootId: string | null = null;
 
     const addMessageId = (messageId: string | null | undefined) => {
       if (messageId) deletableIds.add(messageId);
@@ -57,16 +67,28 @@ export function ScopedNodeContextMenu({
       }
     };
 
+    const addMergeableCommitSha = (commitSha: string | null | undefined, explicitCommitToken = false) => {
+      if (!commitSha) return;
+      if (explicitCommitToken || projection.commitBySha.has(commitSha)) {
+        mergeableShas.add(commitSha);
+      }
+    };
+
     for (const id of scopedIds) {
+      const entity = projection.entitiesByMessageId.get(id) ?? projection.entitiesById.get(id);
+
       if (id.startsWith('commit:')) {
         const sha = id.slice('commit:'.length);
         if (projection.commitBySha.has(sha)) deletableShas.add(sha);
+        addMergeableCommitSha(sha, true);
+      } else if (!entity) {
+        addMergeableCommitSha(id);
       }
 
-      const entity = projection.entitiesByMessageId.get(id) ?? projection.entitiesById.get(id);
       if (!entity) continue;
       if (scopedIds.length === 1 && entity.messageId) {
         singleActionId = entity.messageId;
+        singleThreadRootId = entity.threadRootId ?? null;
       }
 
       if (entity.kind === 'user_message' || entity.kind === 'assistant_message' || entity.kind === 'commit_message') {
@@ -82,27 +104,34 @@ export function ScopedNodeContextMenu({
       deletableMessageIds: Array.from(deletableIds),
       deletableCommitShas: Array.from(deletableShas),
       mergeableCommitIds: Array.from(mergeableIds),
+      mergeableCommitShas: Array.from(mergeableShas),
       actionNodeId: singleActionId,
+      actionThreadRootId: singleThreadRootId,
     };
   }, [projection.commitBySha, projection.entitiesById, projection.entitiesByMessageId, scopedIds]);
 
   if (!contextMenu) return null;
 
   const canDelete = (deletableMessageIds.length > 0 || deletableCommitShas.length > 0) && (!!onDeleteTargets || !!onDeleteMessages);
-  const canAddToMergePanel = mergeableCommitIds.length > 0 && !!onAddCommitsToMergePanel;
+  const canAddToMergePanel = (mergeableCommitIds.length > 0 && !!onAddCommitsToMergePanel)
+    || (mergeableCommitShas.length > 0 && !!onAddCommitShasToMergePanel);
   const canAddCommit = !!actionNodeId && !!onAddCommitToNode;
+  const canFocusThread = !!actionThreadRootId && !!onFocusThread;
+  const canHideThread = !!actionThreadRootId && !!onHideThread;
+  const canHideSubgraph = !!actionNodeId && !!onHideSubgraph;
   const canViewSubgraph = !!actionNodeId && !!onViewSubgraph;
   const canShareNode = !!actionNodeId && !!onShareNode;
 
-  if (!canDelete && !canAddToMergePanel && !canAddCommit && !canViewSubgraph && !canShareNode) {
+  if (!canDelete && !canAddToMergePanel && !canAddCommit && !canFocusThread && !canHideThread && !canHideSubgraph && !canViewSubgraph && !canShareNode) {
     return null;
   }
 
   const deleteCount = deletableMessageIds.length + deletableCommitShas.length;
   const deleteLabel = deleteCount === 1 ? 'Delete Node' : 'Delete Nodes';
-  const mergeLabel = mergeableCommitIds.length === 1
+  const mergeCount = mergeableCommitIds.length + mergeableCommitShas.length;
+  const mergeLabel = mergeCount === 1
     ? 'Add to merge panel'
-    : `Add ${mergeableCommitIds.length} commits to merge panel`;
+    : `Add ${mergeCount} commits to merge panel`;
 
   return (
     <DropdownMenu
@@ -119,6 +148,17 @@ export function ScopedNodeContextMenu({
         />
       </DropdownMenuTrigger>
       <DropdownMenuContent className="w-56" onCloseAutoFocus={(e) => e.preventDefault()}>
+        {canFocusThread ? (
+          <DropdownMenuItem
+            onClick={() => {
+              onFocusThread?.(actionThreadRootId!);
+              onClose();
+            }}
+          >
+            Focus thread
+          </DropdownMenuItem>
+        ) : null}
+
         {canViewSubgraph ? (
           <DropdownMenuItem
             onClick={() => {
@@ -141,6 +181,28 @@ export function ScopedNodeContextMenu({
           </DropdownMenuItem>
         ) : null}
 
+        {canHideThread ? (
+          <DropdownMenuItem
+            onClick={() => {
+              onHideThread?.(actionThreadRootId!);
+              onClose();
+            }}
+          >
+            Hide thread
+          </DropdownMenuItem>
+        ) : null}
+
+        {canHideSubgraph ? (
+          <DropdownMenuItem
+            onClick={() => {
+              onHideSubgraph?.(actionNodeId!);
+              onClose();
+            }}
+          >
+            Hide subgraph
+          </DropdownMenuItem>
+        ) : null}
+
         {canAddCommit ? (
           <DropdownMenuItem
             onClick={() => {
@@ -155,7 +217,12 @@ export function ScopedNodeContextMenu({
         {canAddToMergePanel ? (
           <DropdownMenuItem
             onClick={() => {
-              onAddCommitsToMergePanel?.(mergeableCommitIds);
+              if (mergeableCommitIds.length > 0) {
+                onAddCommitsToMergePanel?.(mergeableCommitIds);
+              }
+              if (mergeableCommitShas.length > 0) {
+                onAddCommitShasToMergePanel?.(mergeableCommitShas);
+              }
               onClose();
             }}
           >

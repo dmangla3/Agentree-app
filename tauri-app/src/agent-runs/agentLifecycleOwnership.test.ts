@@ -20,11 +20,25 @@ describe('agent lifecycle ownership boundaries', () => {
   it('limits ChatInput local-node writes to optimistic node creation', () => {
     const source = readChatInputSource();
     const callIndexes = [...source.matchAll(/agentClient\.upsertLocalNode/g)].map((match) => match.index ?? -1);
+    const localFirstRegionStart = source.indexOf(
+      'if (hasLocalAgentRuntime && optimisticAssistantMessageIds.length > 0)'
+    );
+    const localFirstRegionEnd = source.indexOf(
+      "releaseSendAcceptance('local-first-persisted');",
+      localFirstRegionStart
+    );
+    expect(localFirstRegionStart).toBeGreaterThan(-1);
+    expect(localFirstRegionEnd).toBeGreaterThan(localFirstRegionStart);
+    const localFirstRegion = source.slice(localFirstRegionStart, localFirstRegionEnd);
+
     expect(callIndexes).toHaveLength(2);
     for (const index of callIndexes) {
-      const surroundingSource = source.slice(Math.max(0, index - 160), index + 220);
-      expect(surroundingSource).toContain('optimisticPair');
+      expect(index).toBeGreaterThanOrEqual(localFirstRegionStart);
+      expect(index).toBeLessThan(localFirstRegionEnd);
     }
+    expect(localFirstRegion).toContain('optimisticPair');
+    expect(localFirstRegion).toContain('optimisticUserMessages');
+    expect(localFirstRegion).toContain('assistantMessages');
   });
 
   it('keeps stream projection dispatch outside ChatInput', () => {
