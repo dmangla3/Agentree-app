@@ -35,25 +35,40 @@ describe('agentRunEventIngestor helpers', () => {
   });
 
   it('summarizes finalize ack commit metadata variants', () => {
-    expect(summarizeFinalizeAck({ output_commit_sha: 'commit-1' })).toEqual({
+    expect(summarizeFinalizeAck({ output_commit_sha: 'commit-1' })).toMatchObject({
+      status: 'completed',
       outputCommitSha: 'commit-1',
       commitCreated: true,
+      gitBranchName: null,
+      persisted: null,
+      serverAckAt: null,
     });
-    expect(summarizeFinalizeAck({ outputCommitSha: 'commit-2' })).toEqual({
+    expect(summarizeFinalizeAck({ outputCommitSha: 'commit-2' })).toMatchObject({
       outputCommitSha: 'commit-2',
       commitCreated: true,
     });
-    expect(summarizeFinalizeAck({ commit_sha: 'commit-3', commit_created: false })).toEqual({
+    expect(summarizeFinalizeAck({ commit_sha: 'commit-3', commit_created: false })).toMatchObject({
       outputCommitSha: 'commit-3',
       commitCreated: false,
     });
-    expect(summarizeFinalizeAck({ commit_created: false })).toEqual({
+    expect(summarizeFinalizeAck({ commit_created: false })).toMatchObject({
       outputCommitSha: null,
       commitCreated: false,
     });
-    expect(summarizeFinalizeAck({ commitCreated: false })).toEqual({
+    expect(summarizeFinalizeAck({ commitCreated: false })).toMatchObject({
       outputCommitSha: null,
       commitCreated: false,
+    });
+    expect(summarizeFinalizeAck({
+      status: 'failed',
+      git_branch_name: 'agent/run-1',
+      persisted: true,
+      server_ack_at: '2026-05-19T10:00:00.000Z',
+    })).toMatchObject({
+      status: 'failed',
+      gitBranchName: 'agent/run-1',
+      persisted: true,
+      serverAckAt: '2026-05-19T10:00:00.000Z',
     });
   });
 

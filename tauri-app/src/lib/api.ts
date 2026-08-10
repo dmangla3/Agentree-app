@@ -58,6 +58,8 @@ export const getErrorMessage = (error: unknown): string => {
         return error.response?.data?.error || error.response?.data?.message || error.message || 'An API error occurred';
     } else if (error instanceof Error) {
         return error.message;
+    } else if (typeof error === 'string') {
+        return error.trim() || 'An unknown error occurred';
     }
     return 'An unknown error occurred';
 };

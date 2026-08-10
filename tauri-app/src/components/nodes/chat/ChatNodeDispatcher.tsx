@@ -10,8 +10,6 @@ interface ChatNodeDispatcherProps {
   entityId?: string;
   entityOverride?: ProjectedNodeEntity;
   projection: any; // workspace projection
-  scopeColorById?: Map<string, string | null>;
-  scopeNameById?: Map<string, string>;
   focusedMessageId: string | null;
   isSelected: boolean;
   onFocus: (id: string, metadata?: Record<string, unknown>) => void;
@@ -23,8 +21,6 @@ export const ChatNodeDispatcher = memo(({
   entityId,
   entityOverride,
   projection,
-  scopeColorById,
-  scopeNameById,
   focusedMessageId,
   isSelected,
   onFocus,
@@ -53,16 +49,11 @@ export const ChatNodeDispatcher = memo(({
     }
   }, [entity, onContextMenu]);
 
-  const resolvedScopeColorById = scopeColorById ?? projection.scopeColorById;
-  const resolvedScopeNameById = scopeNameById ?? projection.scopeNameById;
-  const scopeColor = entity?.scopeId ? resolvedScopeColorById?.get(entity.scopeId) || null : null;
-  const scopeName = entity?.scopeId ? resolvedScopeNameById?.get(entity.scopeId) || null : null;
-  
   const sharedProps = {
     isFocused: entity?.focusMessageId === focusedMessageId,
     isSelected,
-    scopeColor,
-    scopeName,
+    scopeColor: null,
+    scopeName: null,
     layout: 'chat' as const,
     onFocus: handleFocus,
     onSelect: handleSelect,

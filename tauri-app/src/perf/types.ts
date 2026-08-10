@@ -65,6 +65,16 @@ export type SendFlowSessionReport = {
   sessionId: string | null;
   sessionLabel: string | null;
   flowCount: number;
+  runtime: {
+    eventLoopStallCount: number;
+    eventLoopFreezeCount: number;
+    maxEventLoopStallMs: number | null;
+    rafStallCount: number;
+    rafFreezeCount: number;
+    maxRafStallMs: number | null;
+    longTaskCount: number;
+    maxLongTaskMs: number | null;
+  };
   flows: SendFlowSummary[];
   findings: SendFlowFinding[];
 };

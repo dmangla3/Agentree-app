@@ -1,7 +1,13 @@
 import { createActor, type ActorRefFrom } from 'xstate';
 import { agentRunMachine, isTerminalAgentRunStatus, reduceAgentRunSnapshot } from './agentRun.machine';
 import { normalizeAgentAdapterEventForRun } from './agentRunEventNormalizer';
-import { clearAgentRunProjection, projectAgentRunSnapshot, projectAgentRunStatusSnapshot } from './agentRunEffects';
+import {
+  applyAgentRunFinalizeSnapshotEffects,
+  clearAgentRunEffectsForNode,
+  clearAgentRunProjection,
+  projectAgentRunSnapshot,
+  projectAgentRunStatusSnapshot,
+} from './agentRunEffects';
 import { logAgentRunTransition } from './agentRunDebug';
 import type { AgentRunEvent, AgentRunInput, AgentRunSnapshot } from './agentRun.types';
 import type { Message } from '../stores/workspaceStore';
@@ -41,6 +47,7 @@ const snapshotProjectionKey = (snapshot: AgentRunSnapshot) => JSON.stringify({
   usage: snapshot.usage,
   terminalStatus: snapshot.terminalStatus,
   terminalReason: snapshot.terminalReason,
+  finalizeAck: snapshot.finalizeAck,
   terminalHoldUntil: snapshot.terminalHoldUntil,
   cleanupAt: snapshot.cleanupAt,
 });
@@ -243,6 +250,10 @@ const dispatch = (nodeId: string, event: AgentRunEvent, input?: Partial<AgentRun
     ...(shouldProjectFull ? ['project_snapshot'] : []),
   ];
   managed.actor.send(event as any);
+  const nextSnapshot = managed.actor.getSnapshot().context.snapshot;
+  if (event.type === 'finalize_ack' || event.type === 'terminal' || becameTerminal) {
+    applyAgentRunFinalizeSnapshotEffects(nextSnapshot, { force: event.type === 'terminal' });
+  }
   if (becameTerminal) {
     clearRecentSendProjectionTimer(nodeId);
     watchTerminalHoldProjection(nodeId, predicted);
@@ -331,6 +342,7 @@ export const agentRunManager = {
       projectionWatchers.delete(nodeId);
       clearRecentSendProjectionTimer(nodeId);
       clearTerminalHoldProjectionTimer(nodeId);
+      clearAgentRunEffectsForNode(nodeId);
       clearAgentRunProjection(nodeId);
       return;
     }
@@ -339,6 +351,7 @@ export const agentRunManager = {
     projectionWatchers.delete(nodeId);
     clearRecentSendProjectionTimer(nodeId);
     clearTerminalHoldProjectionTimer(nodeId);
+    clearAgentRunEffectsForNode(nodeId);
     const previousStatus = managed.actor.getSnapshot().context.snapshot.status;
     managed.actor.send({ type: 'cleanup' } as any);
     managed.unsubscribe.unsubscribe();
@@ -369,6 +382,7 @@ export const agentRunManager = {
       lastProjectionAt.delete(nodeId);
       managed.unsubscribe.unsubscribe();
       managed.actor.stop();
+      clearAgentRunEffectsForNode(nodeId);
       clearAgentRunProjection(nodeId);
     }
     actors.clear();

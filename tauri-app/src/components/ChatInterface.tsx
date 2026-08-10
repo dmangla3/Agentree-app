@@ -239,20 +239,6 @@ export function ChatInterface() {
   const scopes = useMemo(() => (scopesQuery.data?.scopes ?? []), [scopesQuery.data?.scopes]);
   const disabledSummaryIdsSet = useMemo(() => new Set(disabledSummaryIds), [disabledSummaryIds]);
   const projection = useWorkspaceProjection(chatProjectionMessages, scopes, summaries, projectionFocusMessageId, disabledSummaryIdsSet, 'chat');
-  const scopeColorById = useMemo(() => {
-    const map = new Map<string, string | null>();
-    for (const scope of scopes) {
-      map.set(scope.id, scope.color || null);
-    }
-    return map;
-  }, [scopes]);
-  const scopeNameById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const scope of scopes) {
-      map.set(scope.id, scope.name);
-    }
-    return map;
-  }, [scopes]);
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -844,8 +830,6 @@ export function ChatInterface() {
                     <ChatNodeDispatcher
                       entityId={turn.userEntityId}
                       projection={projection}
-                      scopeColorById={scopeColorById}
-                      scopeNameById={scopeNameById}
                       focusedMessageId={focusedMessageId}
                       isSelected={selectedMessageIdsSet.has(getEntitySelectionId(projection, turn.userEntityId) || '')}
                       onFocus={handleFocus}
@@ -859,8 +843,6 @@ export function ChatInterface() {
                           <ChatNodeDispatcher
                             entityId={aeid}
                             projection={projection}
-                            scopeColorById={scopeColorById}
-                            scopeNameById={scopeNameById}
                             focusedMessageId={focusedMessageId}
                             isSelected={selectedMessageIdsSet.has(getEntitySelectionId(projection, aeid) || '')}
                             onFocus={handleFocus}
@@ -872,8 +854,6 @@ export function ChatInterface() {
                               <ChatNodeDispatcher
                                 entityId={ceid}
                                 projection={projection}
-                                scopeColorById={scopeColorById}
-                                scopeNameById={scopeNameById}
                                 focusedMessageId={focusedMessageId}
                                 isSelected={selectedMessageIdsSet.has(getEntitySelectionId(projection, ceid) || '')}
                                 onFocus={handleFocus}
@@ -895,8 +875,6 @@ export function ChatInterface() {
                   <ChatNodeDispatcher
                     entityId={(item as any).entityId || (item as any).userEntityId}
                     projection={projection}
-                    scopeColorById={scopeColorById}
-                    scopeNameById={scopeNameById}
                     focusedMessageId={focusedMessageId}
                     isSelected={selectedMessageIdsSet.has(getEntitySelectionId(projection, (item as any).entityId || (item as any).userEntityId) || '')}
                     onFocus={handleFocus}

@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import '../../test/setup';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { TooltipProvider } from '../../../@/components/ui/tooltip';
@@ -21,16 +23,10 @@ const makeProps = (overrides: Partial<GraphControlsProps> = {}): GraphControlsPr
   uniqueAgentIds: [],
   agentLabelsById: new Map(),
   selectedAgentIds: new Set(),
-  availableScopes: [],
-  scopeFilterMode: 'all',
-  selectedScopeIds: new Set(),
   selectedNodeTypes: new Set(),
   agentOperator: 'any_of',
   onAgentOperatorChange: vi.fn(),
   onAgentFilterChange: vi.fn(),
-  onScopeFilterChange: vi.fn(),
-  onSelectAllScopes: vi.fn(),
-  onSelectNoScopes: vi.fn(),
   onNodeTypeFilterChange: vi.fn(),
   uniqueTags: [],
   selectedFilterTags: new Set(),
@@ -75,6 +71,29 @@ const makeProps = (overrides: Partial<GraphControlsProps> = {}): GraphControlsPr
 });
 
 describe('GraphControls', () => {
+  it('keeps graph control styling tokenized without gradient utility classes', () => {
+    const source = readFileSync(join(process.cwd(), 'src/components/graph/GraphControls.tsx'), 'utf8');
+
+    expect(source).not.toContain('bg-gradient-');
+  });
+
+  it('does not expose scope filtering in the graph controls', () => {
+    render(
+      <TooltipProvider>
+        <GraphControls {...makeProps()} />
+      </TooltipProvider>
+    );
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Filters0' }), {
+      button: 0,
+      ctrlKey: false,
+    });
+
+    expect(screen.queryByText('Scopes')).toBeNull();
+    expect(screen.queryByPlaceholderText('Search scopes...')).toBeNull();
+    expect(screen.queryByText('Frontend')).toBeNull();
+  });
+
   it('shows compact thread navigation in the toolbar dropdown', async () => {
     const onThreadFocus = vi.fn();
     const onThreadHide = vi.fn();

@@ -1,5 +1,6 @@
 import { devInfo } from '../lib/appLogger';
 import { exportPerfCaptureBundle } from './captureExport';
+import { startRuntimeFreezeProbe, type RuntimeFreezeProbeController } from './freezeProbe';
 import type { PerfEvent, PerfExportStatus, PerfSession } from './types';
 
 const PERF_STORAGE_KEY = 'agentree.perf.events.v1';
@@ -13,6 +14,7 @@ const PERF_STORAGE_WRITE_DELAY_MS = 500;
 
 let storedEventsCache: PerfEvent[] | null = null;
 let storedEventsWriteTimer: number | null = null;
+let runtimeFreezeProbe: RuntimeFreezeProbeController | null = null;
 
 declare global {
   interface Window {
@@ -176,12 +178,19 @@ const shouldLogPerfEvent = (name: string, hasActiveSession: boolean) => {
   if (!hasActiveSession) return true;
   return (
     name.startsWith('perf.') ||
+    name.startsWith('runtime.') ||
     name.startsWith('send-flow.') ||
     name.startsWith('run-status.') ||
     name.startsWith('query.message-deltas.') ||
     name.startsWith('chat.focus-scroll.') ||
     name === 'browser.long-task'
   );
+};
+
+const stopRuntimeFreezeProbe = () => {
+  if (!runtimeFreezeProbe) return;
+  runtimeFreezeProbe.stop();
+  runtimeFreezeProbe = null;
 };
 
 export const getAppStartTimeMs = (): number | null => {
@@ -223,6 +232,7 @@ export const recordPerfEvent = (
 };
 
 export const startPerfCapture = (label = 'send-message-capture'): PerfSession => {
+  stopRuntimeFreezeProbe();
   const session: PerfSession = {
     id: `perf-${Date.now()}`,
     label,
@@ -240,6 +250,7 @@ export const startPerfCapture = (label = 'send-message-capture'): PerfSession =>
   recordPerfEvent('perf.capture.start', {
     startedAt: session.startedAt,
   }, { source: 'perf-recorder' });
+  runtimeFreezeProbe = startRuntimeFreezeProbe(recordPerfEvent);
   return session;
 };
 
@@ -251,6 +262,7 @@ export const stopPerfCapture = async () => {
     startedAt: activeSession.startedAt,
     stoppedAt,
   }, { source: 'perf-recorder' });
+  stopRuntimeFreezeProbe();
   flushStoredEvents();
   const sessionEvents = readStoredEvents().filter((event) => event.sessionId === activeSession.id);
   writeActiveSession(null);

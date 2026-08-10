@@ -1,5 +1,12 @@
 import { assign, setup } from 'xstate';
-import type { AgentRunEvent, AgentRunInput, AgentRunPhase, AgentRunSnapshot, AgentRunStatus } from './agentRun.types';
+import type {
+  AgentRunEvent,
+  AgentRunFinalizeAck,
+  AgentRunInput,
+  AgentRunPhase,
+  AgentRunSnapshot,
+  AgentRunStatus,
+} from './agentRun.types';
 
 type MachineContext = { snapshot: AgentRunSnapshot };
 
@@ -8,6 +15,17 @@ const RUNNING_OR_LATER_STATUSES = new Set<string>(['running', 'streaming', 'comp
 const PRE_RUNNING_STATUSES = new Set<string>(['pending', 'creating', 'initializing']);
 
 const nowIso = () => new Date().toISOString();
+
+const cleanString = (value: unknown): string | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+};
+
+const optionalBoolean = (value: unknown): boolean | null => (
+  typeof value === 'boolean' ? value : null
+);
 
 export const isTerminalAgentRunStatus = (status: unknown) => (
   typeof status === 'string' && TERMINAL_STATUSES.has(status)
@@ -42,6 +60,48 @@ const progressForTerminalStatus = (status: AgentRunStatus) => {
   return 'Failed';
 };
 
+const normalizeFinalizeAck = (
+  event: Extract<AgentRunEvent, { type: 'finalize_ack' }>,
+): AgentRunFinalizeAck => {
+  const meta = event.meta ?? {};
+  const status = event.status ?? 'completed';
+  const outputCommitSha = cleanString(event.outputCommitSha)
+    ?? cleanString(meta.output_commit_sha)
+    ?? cleanString(meta.outputCommitSha)
+    ?? cleanString(meta.commit_sha);
+  const gitBranchName = cleanString(event.gitBranchName)
+    ?? cleanString(meta.git_branch_name)
+    ?? cleanString(meta.gitBranchName);
+  const commitCreated = event.commitCreated
+    ?? optionalBoolean(meta.commit_created)
+    ?? optionalBoolean(meta.commitCreated)
+    ?? (outputCommitSha ? true : null);
+  const persisted = event.persisted ?? optionalBoolean(meta.persisted);
+  const serverAckAt = cleanString(event.serverAckAt)
+    ?? cleanString(meta.server_ack_at)
+    ?? cleanString(meta.serverAckAt);
+  return {
+    status,
+    outputCommitSha,
+    commitCreated,
+    gitBranchName,
+    persisted,
+    serverAckAt,
+  };
+};
+
+const finalizeAckMeta = (
+  event: Extract<AgentRunEvent, { type: 'finalize_ack' }>,
+  ack: AgentRunFinalizeAck,
+) => ({
+  ...(event.meta ?? {}),
+  ...(ack.outputCommitSha ? { output_commit_sha: ack.outputCommitSha } : {}),
+  ...(ack.gitBranchName ? { git_branch_name: ack.gitBranchName } : {}),
+  ...(ack.commitCreated !== null ? { commit_created: ack.commitCreated } : {}),
+  ...(ack.persisted !== null ? { persisted: ack.persisted } : {}),
+  ...(ack.serverAckAt ? { server_ack_at: ack.serverAckAt } : {}),
+});
+
 const runStatusFromNativeEvent = (nativeEvent: Record<string, any>): AgentRunStatus | null => {
   // Adapter payloads can describe nested work, e.g. tool_result.status=completed.
   // Only protocol-level exit is allowed to terminalize a run from raw native events.
@@ -75,6 +135,7 @@ const initialSnapshot = (input: AgentRunInput): AgentRunSnapshot => {
     usage: typeof executionData.usage === 'object' && executionData.usage ? executionData.usage : null,
     terminalStatus: isTerminalAgentRunStatus(status) ? status : null,
     terminalReason: typeof executionData.last_terminal_status === 'string' ? executionData.last_terminal_status : null,
+    finalizeAck: null,
     terminalHoldUntil: null,
     cleanupAt: null,
     updatedAt: nowIso(),
@@ -329,11 +390,15 @@ export const reduceAgentRunSnapshot = (
         }),
       };
     case 'finalize_ack':
+      {
+        const ack = normalizeFinalizeAck(event);
       return {
-        ...updateStatus(snapshot, 'completed', event.commitCreated ? 'Commit generated' : snapshot.progress),
+        ...updateStatus(snapshot, ack.status, ack.commitCreated ? 'Commit generated' : snapshot.progress),
         phase: 'terminal',
-        executionData: mergeExecutionData(snapshot.executionData, { meta: event.meta }),
+        finalizeAck: ack,
+        executionData: mergeExecutionData(snapshot.executionData, { meta: finalizeAckMeta(event, ack) }),
       };
+      }
     case 'terminal': {
       const nextSnapshot = updateStatus(snapshot, event.status, progressForTerminalStatus(event.status));
       const acceptedTerminalStatus = nextSnapshot.status === event.status;

@@ -1,14 +1,13 @@
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
 import { Button } from '../../@/components/ui/button';
-import { Send, X, Reply, FileText, FileTextIcon, GitBranchIcon, Loader2, ChevronDown, ChevronRight, Layers3, Bot, Clipboard, Check, Pencil, AtSign, RotateCcw, Plus, Minus } from 'lucide-react';
-import { useWorkspaceStore, AttachmentMetadata, Message, Workspace, Scope, CommitEntity } from '../stores/workspaceStore';
+import { Send, X, Reply, FileText, FileTextIcon, GitBranchIcon, Loader2, ChevronDown, ChevronRight, Bot, Clipboard, Check, Pencil, AtSign, RotateCcw, Plus, Minus } from 'lucide-react';
+import { useWorkspaceStore, AttachmentMetadata, Message, Workspace, CommitEntity, BranchPointer } from '../stores/workspaceStore';
 import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 import { useQueryClient } from '@tanstack/react-query';
 import { UnifiedAgentModelSelector } from './UnifiedAgentModelSelector';
 import { AttachmentPreview } from './AttachmentPreview';
 import { Badge } from "../../@/components/ui/badge";
-import { Input } from "../../@/components/ui/input";
 import { Alert, AlertDescription } from "../../@/components/ui/alert";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../@/components/ui/tooltip";
 import {
@@ -37,10 +36,10 @@ import { Popover, PopoverContent, PopoverAnchor, PopoverTrigger } from '../../@/
 import { Checkbox } from '../../@/components/ui/checkbox';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../@/components/ui/hover-card';
 import { useShallow } from 'zustand/react/shallow';
-import { branchKeys } from '../hooks/useBranches';
+import { branchKeys, useBranches } from '../hooks/useBranches';
 import { primeHotSendMessageDeltaCursor, useHotSendMessageDeltas } from '../hooks/useHotSendMessageDeltas';
 import { isFirstClassCommitMessage } from '../lib/graph/turnUtils';
-import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
+import { getBranchPointerNamesForCommit, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { getMergeVisualParentEntries, isMergeResultNode } from '../lib/graph/lineage';
 import { reconstructContext } from '../lib/contextUtils';
 import { resolveSendParentMessageId } from '../lib/composerSendParent';
@@ -49,7 +48,18 @@ import {
     scheduleMessagesRefreshWhenGraphIdle,
 } from '../lib/graphInteractionGate';
 import { createSendFlowId, recordSendFlowEvent, recordSendFlowMark } from '../perf/sendFlow';
+import {
+    clearAgentRunVisibilityTrace,
+    recordAssistantTextProjected,
+    recordAssistantTextReceived,
+    registerAgentRunVisibilityTrace,
+} from '../perf/agentRunVisibilityPerf';
 import { agentRunManager } from '../agent-runs/agentRunManager';
+import { registerAgentRunEffectsQueryClient } from '../agent-runs/agentRunEffects';
+import {
+    materializePersistedOptimisticUserMessage,
+    shouldClearPersistedOptimisticUserProjection,
+} from '../agent-runs/agentRunOptimisticProjectionCleanup';
 import {
     deriveIncrementalText,
     dispatchAgentRunUsage,
@@ -64,7 +74,6 @@ import {
     summarizeFinalizeAck,
     summarizeProviderStop,
 } from '../agent-runs/agentRunEventIngestor';
-import { patchFinalizedLocalNodes, patchFinalizedMessages } from '../agent-runs/agentRunFinalizeCache';
 import { requestAgentWorkspaceRefresh } from '../agent-runs/agentRunWorkspaceRefresh';
 
 
@@ -184,8 +193,6 @@ const extractRepoMentionPaths = (value: string): string[] => {
     return matches.map((match) => match.trim().slice(1));
 };
 const collapseFuzzyText = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
-const AUTO_SCOPE_NAME_PATTERN = /^Untitled scope \d+$/i;
-const isAutoScopeName = (value: string): boolean => AUTO_SCOPE_NAME_PATTERN.test(value.trim());
 const normalizePreviewText = (value: string | null | undefined): string => (
     String(value || '').replace(/\s+/g, ' ').trim()
 );
@@ -364,12 +371,11 @@ const parseCliArgs = (cliArgs: string | null | undefined) => {
 
 import { useMessages, useSendMessage, useCommitDescendants, useCommitAncestors } from '../hooks/useMessages';
 import { useWorkspaceMessages } from '../hooks/useLiveMessages';
-import { localNodeKeys, useLocalNodes, type LocalNodeMessage } from '../hooks/useLocalNodes';
+import { localNodeKeys, upsertMessagesIntoLocalNodeCache, useLocalNodes, type LocalNodeMessage } from '../hooks/useLocalNodes';
 
 import { useKnowledgeTree } from '../hooks/useKnowledge';
 import { useAgents, findDefaultCodexAgentId } from '../hooks/useAgents';
 import { useWorkspaces } from '../hooks/useWorkspaces';
-import { useScopes } from '../hooks/useScopes';
 import { agentClient } from '../lib/agentClient';
 import { buildComposerContextManifest, buildComposerContextSelection, type ComposerContextManifest } from '../lib/composerContext';
 import { AGENT_STATUS, TERMINAL_STATUSES } from '@shared/agentStatus';
@@ -468,7 +474,6 @@ export function ChatInput({
         advanceSendFlowFocus,
         endSendFlowFocus,
         dispatchFocus,
-        setActiveScopeId,
         setAutoCheckoutOnAgentCommit,
         selectedAgentId,
         setSelectedAgentId,
@@ -487,7 +492,6 @@ export function ChatInput({
             advanceSendFlowFocus: state.advanceSendFlowFocus,
             endSendFlowFocus: state.endSendFlowFocus,
             dispatchFocus: state.dispatchFocus,
-            setActiveScopeId: state.setActiveScopeId,
             setAutoCheckoutOnAgentCommit: state.setAutoCheckoutOnAgentCommit,
             selectedAgentId: state.selectedAgentId,
             setSelectedAgentId: state.setSelectedAgentId,
@@ -550,12 +554,6 @@ export function ChatInput({
         () => selectedWorkspace?.git_repo_path?.trim() || selectedWorkspace?.folderPath?.trim() || null,
         [selectedWorkspace?.folderPath, selectedWorkspace?.git_repo_path]
     );
-    const scopesQuery = useScopes(selectedWorkspaceId);
-    const scopes = useMemo(() => (scopesQuery.data?.scopes ?? []) as Scope[], [scopesQuery.data?.scopes]);
-    const [selectedScopeIdOverride, setSelectedScopeIdOverride] = useState<string | null>(null);
-    const [isCreatingNewScope, setIsCreatingNewScope] = useState(false);
-    const [isNewScopeEditorOpen, setIsNewScopeEditorOpen] = useState(false);
-    const [newScopeName, setNewScopeName] = useState('');
     const [contextPolicy, setContextPolicy] = useState<ContextPolicy>('continue');
     const [composerTargetMode, setComposerTargetMode] = useState<ComposerTargetMode>('reply');
     const [sendPressFeedback, setSendPressFeedback] = useState(false);
@@ -570,10 +568,15 @@ export function ChatInput({
     }, []);
 
     const { data: messagesData } = useMessages(selectedWorkspaceId);
+    const { data: branchPointersData } = useBranches(selectedWorkspaceId);
     const localNodesQuery = useLocalNodes(selectedWorkspaceId);
     const persistedMessages = useMemo(
         () => (messagesData ?? []) as Message[],
         [messagesData]
+    );
+    const workspaceBranchPointers = useMemo(
+        () => (branchPointersData ?? []) as BranchPointer[],
+        [branchPointersData]
     );
     const messages = useWorkspaceMessages(selectedWorkspaceId, persistedMessages, localNodesQuery.data);
     const messageLookupMessages = messages;
@@ -628,6 +631,8 @@ export function ChatInput({
     const [queuedReplayVersion, setQueuedReplayVersion] = useState(0);
     const queryClient = useQueryClient();
     useHotSendMessageDeltas(selectedWorkspaceId);
+
+    useEffect(() => registerAgentRunEffectsQueryClient(queryClient), [queryClient]);
 
     const refreshPersistedAgentNode = useCallback((workspaceId: string, reason: string) => {
         requestAgentWorkspaceRefresh(queryClient, workspaceId, { reason });
@@ -695,10 +700,12 @@ export function ChatInput({
         status === AGENT_STATUS.running ||
         status === AGENT_STATUS.streaming
     ), []);
+    const selectedNodeRole = selectedProjection?.role ?? selectedNodeMessage?.role ?? null;
     const isSelectedNodeRunning = useMemo(() => {
         if (!selectedNodeId) return false;
+        if (selectedNodeRole !== 'assistant') return false;
         return isInProgressStatus(selectedResolvedState.status);
-    }, [isInProgressStatus, selectedNodeId, selectedResolvedState.status]);
+    }, [isInProgressStatus, selectedNodeId, selectedNodeRole, selectedResolvedState.status]);
 
     const [attachments, setAttachments] = useState<Attachment[]>([]);
     // Removed isModelDialogOpen
@@ -728,6 +735,7 @@ export function ChatInput({
     const releaseSendFlowKey = useCallback((key: string | null | undefined) => {
         if (!key) return;
         sendFlowByKeyRef.current.delete(key);
+        clearAgentRunVisibilityTrace(key);
     }, []);
     const getSendFlowIdForKey = useCallback((key: string | null | undefined) => {
         if (!key) return null;
@@ -967,6 +975,11 @@ export function ChatInput({
         }
         if (flowId) {
             assignSendFlowKey(nodeId, flowId);
+            registerAgentRunVisibilityTrace({
+                nodeId,
+                flowId,
+                traceId: trace.traceId,
+            });
         }
         for (const name of trace.marks.keys()) {
             trace.emitted.add(name);
@@ -1317,6 +1330,7 @@ export function ChatInput({
                 workspaceId,
                 parentId,
             }, { source: 'ChatInput' });
+            registerAgentRunVisibilityTrace({ nodeId, flowId });
         }
         recordLatencyMark(nodeId, 'tauri_stream_registered', { authToken, nodeId });
 
@@ -1356,6 +1370,39 @@ export function ChatInput({
             lastPersistedAgentEventSeq = latestAgentEventSeq;
             mergeAgentRunExecutionData(nodeId, { last_agent_event_seq: latestAgentEventSeq });
         };
+        const currentTraceId = () => latencyTraceRef.current.get(nodeId)?.traceId ?? null;
+        const currentFlowId = () => getSendFlowIdForKey(nodeId) ?? flowId ?? null;
+        const nativeEventTimestampMs = (value: unknown) => (
+            typeof value === 'number' && Number.isFinite(value) ? value : null
+        );
+        const recordFirstAssistantTextReceived = (
+            transport: string,
+            timestamp?: unknown,
+            streamSeq?: number | null,
+        ) => {
+            if (output.trim().length === 0) return;
+            const nativeTs = nativeEventTimestampMs(timestamp);
+            const detail = {
+                transport,
+                streamSeq: streamSeq ?? latestStreamSeq,
+                contentLength: output.length,
+                nativeToFrontendMs: nativeTs === null ? null : Math.max(0, Date.now() - nativeTs),
+            };
+            recordLatencyMark(nodeId, 'first_assistant_text_received', {
+                authToken,
+                nodeId,
+                detail,
+            });
+            recordAssistantTextReceived({
+                nodeId,
+                flowId: currentFlowId(),
+                traceId: currentTraceId(),
+                transport,
+                nativeEventTimestampMs: nativeTs,
+                streamSeq: streamSeq ?? latestStreamSeq,
+                contentLength: output.length,
+            });
+        };
 
         const flushBufferedAssistantText = (options?: {
             force?: boolean;
@@ -1388,6 +1435,23 @@ export function ChatInput({
                 timestamp: pendingContentFlushTimestamp ?? Date.now(),
                 streamSeq: latestStreamSeq,
             });
+            if (output.trim().length > 0) {
+                recordLatencyMark(nodeId, 'first_assistant_text_projected', {
+                    authToken,
+                    nodeId,
+                    detail: {
+                        contentLength: output.length,
+                        streamSeq: latestStreamSeq,
+                    },
+                });
+                recordAssistantTextProjected({
+                    nodeId,
+                    flowId: currentFlowId(),
+                    traceId: currentTraceId(),
+                    contentLength: output.length,
+                    streamSeq: latestStreamSeq,
+                });
+            }
             if (options?.force) {
                 uiDebug(`flush node=${nodeId}`, {
                     nodeId,
@@ -1607,7 +1671,18 @@ export function ChatInput({
                 if (typeof data.stream_seq === 'number') {
                     latestStreamSeq = data.stream_seq;
                 }
-                recordLatencyMark(nodeId, 'first_tauri_event_received', { authToken, nodeId });
+                {
+                    const nativeTs = nativeEventTimestampMs(data.timestamp);
+                    recordLatencyMark(nodeId, 'first_tauri_event_received', {
+                        authToken,
+                        nodeId,
+                        detail: {
+                            eventType: data.type ?? null,
+                            streamSeq: data.stream_seq ?? null,
+                            nativeToFrontendMs: nativeTs === null ? null : Math.max(0, Date.now() - nativeTs),
+                        },
+                    });
+                }
                 markRunningOnce();
 
                 if (
@@ -1624,13 +1699,7 @@ export function ChatInput({
                             nodeId,
                             detail: { transport: 'tauri_message_delta' },
                         });
-                        if (output.trim().length > 0) {
-                            recordLatencyMark(nodeId, 'first_visible_text_rendered', {
-                                authToken,
-                                nodeId,
-                                detail: { transport: 'tauri_message_delta' },
-                            });
-                        }
+                        recordFirstAssistantTextReceived('tauri_message_delta', data.timestamp, data.stream_seq);
                         scheduleBufferedAssistantTextFlush({
                             agentId: data.agent_id,
                             timestamp: data.timestamp,
@@ -1638,6 +1707,7 @@ export function ChatInput({
                     } else if (data.type === 'message_completed' && typeof data.content === 'string') {
                         const nextOutput = mergeStreamingOutput(output, data.content);
                         output = nextOutput;
+                        recordFirstAssistantTextReceived('tauri_message_completed', data.timestamp, data.stream_seq);
                         scheduleBufferedAssistantTextFlush({
                             force: true,
                             agentId: data.agent_id,
@@ -1646,13 +1716,7 @@ export function ChatInput({
                     } else if (data.type === 'message' && typeof data.content === 'string') {
                         const nextOutput = mergeStreamingOutput(output, data.content);
                         output = nextOutput;
-                        if (output.trim().length > 0) {
-                            recordLatencyMark(nodeId, 'first_visible_text_rendered', {
-                                authToken,
-                                nodeId,
-                                detail: { transport: 'tauri_message' },
-                            });
-                        }
+                        recordFirstAssistantTextReceived('tauri_message', data.timestamp, data.stream_seq);
                         scheduleBufferedAssistantTextFlush({
                             force: true,
                             agentId: data.agent_id,
@@ -1685,13 +1749,7 @@ export function ChatInput({
                                 nodeId,
                                 detail: { transport: 'tauri_stdout_message_delta' },
                             });
-                            if (output.trim().length > 0) {
-                                recordLatencyMark(nodeId, 'first_visible_text_rendered', {
-                                    authToken,
-                                    nodeId,
-                                    detail: { transport: 'tauri_stdout_message_delta' },
-                                });
-                            }
+                            recordFirstAssistantTextReceived('tauri_stdout_message_delta', innerData.timestamp ?? data.timestamp, data.stream_seq);
                             scheduleBufferedAssistantTextFlush({
                                 agentId: data.agent_id,
                                 timestamp: innerData.timestamp ?? data.timestamp,
@@ -1701,6 +1759,7 @@ export function ChatInput({
                         if (innerData.type === 'message_completed' && typeof innerData.content === 'string') {
                             const nextOutput = mergeStreamingOutput(output, innerData.content);
                             output = nextOutput;
+                            recordFirstAssistantTextReceived('tauri_stdout_message_completed', innerData.timestamp ?? data.timestamp, data.stream_seq);
                             scheduleBufferedAssistantTextFlush({
                                 force: true,
                                 agentId: data.agent_id,
@@ -1739,11 +1798,7 @@ export function ChatInput({
                                 dispatchUsage(innerData.message.usage, data.agent_id);
                             }
                             if (blocks.some((b: any) => b?.type === 'text') && output.trim().length > 0) {
-                                recordLatencyMark(nodeId, 'first_visible_text_rendered', {
-                                    authToken,
-                                    nodeId,
-                                    detail: { transport: 'tauri_stdout_assistant_block' },
-                                });
+                                recordFirstAssistantTextReceived('tauri_stdout_assistant_block', innerData.timestamp ?? data.timestamp, data.stream_seq);
                             }
                             return;
                         }
@@ -1769,17 +1824,11 @@ export function ChatInput({
                             if (inferredRole === 'assistant' || inferredRole == null) {
                                 const nextOutput = mergeStreamingOutput(output, extractMessageText(innerData));
                                 output = nextOutput;
+                                recordFirstAssistantTextReceived('tauri_stdout_message', innerData.timestamp ?? data.timestamp, data.stream_seq);
                                 scheduleBufferedAssistantTextFlush({
                                     force: true,
                                     agentId: data.agent_id,
                                     timestamp: innerData.timestamp ?? data.timestamp,
-                                });
-                            }
-                            if (output.trim().length > 0) {
-                                recordLatencyMark(nodeId, 'first_visible_text_rendered', {
-                                    authToken,
-                                    nodeId,
-                                    detail: { transport: 'tauri_stdout_message' },
                                 });
                             }
                         }
@@ -1808,14 +1857,13 @@ export function ChatInput({
                     const currentMeta = (((currentProjection?.execution_data || {}) as any)?.meta || {}) as Record<string, any>;
                     agentRunManager.dispatch(nodeId, {
                         type: 'finalize_ack',
+                        status: finalizeAckSummary.status as any,
+                        outputCommitSha: finalizedOutputCommitSha,
+                        gitBranchName: finalizeAckSummary.gitBranchName,
                         commitCreated: finalizeAckSummary.commitCreated,
-                        meta: {
-                            ...currentMeta,
-                            ...(finalizedOutputCommitSha
-                                ? { output_commit_sha: finalizedOutputCommitSha }
-                                : {}),
-                            ...(!finalizeAckSummary.commitCreated ? { commit_created: false } : {}),
-                        },
+                        persisted: finalizeAckSummary.persisted,
+                        serverAckAt: finalizeAckSummary.serverAckAt,
+                        meta: currentMeta,
                     }, {
                         workspaceId,
                         parentId,
@@ -1825,39 +1873,13 @@ export function ChatInput({
                         executionData: (currentProjection?.execution_data || node.execution_data || {}) as Record<string, any>,
                     });
 
-                    uiDebug(`finalize-ack:refetch node=${nodeId}`, {
+                    uiDebug(`finalize-ack:received node=${nodeId}`, {
                         nodeId,
                         persisted: data.persisted,
                         commitSha: finalizedOutputCommitSha,
                         elapsedMs: Math.round(performance.now() - streamStartedAt),
                     });
-                    const ackStatus = typeof data.status === 'string' ? data.status : AGENT_STATUS.completed;
-                    const finalizedCachePatch = {
-                        nodeId,
-                        status: ackStatus,
-                        outputCommitSha: finalizedOutputCommitSha,
-                        gitBranchName: typeof data.git_branch_name === 'string'
-                            ? data.git_branch_name
-                            : typeof data.gitBranchName === 'string'
-                                ? data.gitBranchName
-                                : null,
-                        commitCreated: finalizeAckSummary.commitCreated,
-                        updatedAt: new Date().toISOString(),
-                    };
-                    queryClient.setQueryData<Message[]>(
-                        ['messages', workspaceId],
-                        (current) => patchFinalizedMessages(current, finalizedCachePatch)
-                    );
-                    queryClient.setQueryData<LocalNodeMessage[]>(
-                        localNodeKeys.workspace(workspaceId),
-                        (current) => patchFinalizedLocalNodes(current, finalizedCachePatch)
-                    );
-                    void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(workspaceId) });
-                    requestAgentWorkspaceRefresh(queryClient, workspaceId, {
-                        reason: 'agent-finalize-ack',
-                        includeCommitGraph: Boolean(finalizedOutputCommitSha),
-                        catchUpHotDeltas: Boolean(finalizedOutputCommitSha),
-                    });
+                    const ackStatus = finalizeAckSummary.status || AGENT_STATUS.completed;
                     if (finalizedOutputCommitSha) {
                         const flowId = getSendFlowIdForKey(nodeId);
                         if (flowId) {
@@ -1908,6 +1930,7 @@ export function ChatInput({
                     if (typeof data.final_content === 'string' && data.final_content.length > 0) {
                         const nextOutput = mergeStreamingOutput(output, data.final_content);
                         output = nextOutput;
+                        recordFirstAssistantTextReceived('tauri_stop_final_content', data.timestamp, data.stream_seq);
                         scheduleBufferedAssistantTextFlush({
                             force: true,
                             agentId: data.agent_id,
@@ -2254,88 +2277,68 @@ export function ChatInput({
                 ? 'Parent running'
                 : 'Parent still running';
     const showCancel = isSelectedNodeRunning;
-    const nextUntitledScopeName = useMemo(() => {
-        const existingNames = new Set(
-            scopes
-                .map((scope) => scope.name?.trim().toLowerCase())
-                .filter((name): name is string => Boolean(name))
-        );
-
-        let index = 1;
-        while (existingNames.has(`untitled scope ${index}`)) {
-            index += 1;
-        }
-
-        return `Untitled scope ${index}`;
-    }, [scopes]);
-    const effectiveScopeModeForReply = useMemo<'inherit' | 'existing' | 'new'>(() => {
-        if (isCreatingNewScope) {
-            return 'new';
-        }
-        if (selectedScopeIdOverride) {
-            return 'existing';
-        }
-        return 'inherit';
-    }, [isCreatingNewScope, selectedScopeIdOverride]);
+    const effectiveScopeModeForReply = 'inherit' as const;
     const effectiveScopeIdForReply = useMemo<string | null>(() => {
-        if (effectiveScopeModeForReply === 'new') {
-            return null;
-        }
-        if (selectedScopeIdOverride) {
-            return selectedScopeIdOverride;
-        }
         if (replyParentMessageId) return branchParentScopeId;
         return activeScopeId || null;
-    }, [activeScopeId, branchParentScopeId, effectiveScopeModeForReply, replyParentMessageId, selectedScopeIdOverride]);
-    const effectiveScope = useMemo(
-        () => effectiveScopeIdForReply ? scopes.find((scope) => scope.id === effectiveScopeIdForReply) ?? null : null,
-        [effectiveScopeIdForReply, scopes]
-    );
-    const pendingNewScopeName = newScopeName.trim() || nextUntitledScopeName;
-    const effectiveScopeLabel = isCreatingNewScope
-        ? pendingNewScopeName
-        : (effectiveScope?.name || 'Default');
+    }, [activeScopeId, branchParentScopeId, replyParentMessageId]);
     const codeParentCommit = effectiveBaseCommitSha;
+    const composerBranchPointers = useMemo<BranchPointer[]>(() => {
+        const pointers = [...workspaceBranchPointers];
+
+        for (const message of messageLookupMessages) {
+            if (Array.isArray(message.branchPointers)) {
+                pointers.push(...message.branchPointers);
+            }
+
+            const commitSha = getMessageOutputCommitSha(message);
+            const branchName = normalizePreviewText(message.git_branch_name);
+            if (!commitSha || !branchName) continue;
+
+            pointers.push({
+                id: `message-${message.id}-${branchName}`,
+                workspace_id: message.workspaceId,
+                name: branchName,
+                node_id: message.id,
+                commit_sha: commitSha,
+                git_ref: branchName,
+                is_ship_path: false,
+                createdAt: message.createdAt,
+                updatedAt: message.updatedAt,
+                commit: message.commit ?? null,
+                node: null,
+            });
+        }
+
+        return pointers;
+    }, [messageLookupMessages, workspaceBranchPointers]);
+    const codeParentBranchNames = useMemo(
+        () => getBranchPointerNamesForCommit(codeParentCommit, composerBranchPointers),
+        [codeParentCommit, composerBranchPointers]
+    );
+    const codeParentUsesBranchName = codeParentBranchNames.length > 0;
+    const codeParentDisplayLabel = codeParentUsesBranchName
+        ? codeParentBranchNames.join(', ')
+        : formatCommitLabel(codeParentCommit);
+    const codeParentTooltipLabel = codeParentUsesBranchName && codeParentCommit
+        ? `${codeParentDisplayLabel} (${formatCommitLabel(codeParentCommit)})`
+        : codeParentDisplayLabel;
+    const codeParentTooltipNoun = codeParentBranchNames.length > 1
+        ? 'branches'
+        : codeParentUsesBranchName
+            ? 'branch'
+            : 'commit';
+    const effectiveBaseDetailLabel = normalizePreviewText(effectiveBaseCommitLabel);
+    const codeParentTooltipSuffix = effectiveBaseDetailLabel &&
+        effectiveBaseDetailLabel !== codeParentCommit &&
+        effectiveBaseDetailLabel !== codeParentDisplayLabel &&
+        !codeParentBranchNames.includes(effectiveBaseDetailLabel)
+        ? `: ${effectiveBaseDetailLabel}`
+        : '';
 
     useEffect(() => {
-        if (!selectedWorkspaceId) return;
-        const serverActiveScopeId = scopesQuery.data?.activeScopeId ?? null;
-        if ((serverActiveScopeId ?? null) === (activeScopeId ?? null)) return;
-        setActiveScopeId(serverActiveScopeId);
-    }, [selectedWorkspaceId, scopesQuery.data?.activeScopeId, activeScopeId, setActiveScopeId]);
-
-    useEffect(() => {
-        setSelectedScopeIdOverride(null);
-        setIsCreatingNewScope(false);
-        setIsNewScopeEditorOpen(false);
-        setNewScopeName('');
         setContextPolicy(isNewThreadTarget ? 'fresh' : 'continue');
     }, [isNewThreadTarget, replyParentMessageId]);
-
-    const handleCreateScopeFromComposer = useCallback(() => {
-        setIsCreatingNewScope(true);
-        setIsNewScopeEditorOpen(true);
-        setSelectedScopeIdOverride(null);
-        setNewScopeName((current) => {
-            const trimmed = current.trim();
-            if (trimmed && !isAutoScopeName(trimmed)) return current;
-            return nextUntitledScopeName;
-        });
-    }, [nextUntitledScopeName]);
-    const handleSaveNewScopeName = useCallback(() => {
-        setNewScopeName((current) => {
-            const trimmed = current.trim();
-            return trimmed || nextUntitledScopeName;
-        });
-        setIsCreatingNewScope(true);
-        setSelectedScopeIdOverride(null);
-        setIsNewScopeEditorOpen(false);
-    }, [nextUntitledScopeName]);
-    const handleCancelNewScopeName = useCallback(() => {
-        setIsCreatingNewScope(false);
-        setIsNewScopeEditorOpen(false);
-        setNewScopeName('');
-    }, []);
 
     useEffect(() => {
         if (agents.length === 0) return;
@@ -2363,6 +2366,16 @@ export function ChatInput({
             if (projection.workspaceId !== selectedWorkspaceId) continue;
             const persisted = persistedMessages.find((message: Message) => message.id === nodeId);
             if (!persisted) continue;
+            if (shouldClearPersistedOptimisticUserProjection(projection, persisted, selectedWorkspaceId)) {
+                uiDebug(`persisted-user:clear-overlay node=${nodeId}`, {
+                    nodeId,
+                    contentLength: persisted.content?.length || 0,
+                });
+                cleanupAgentRunProjection(nodeId);
+                releaseSendFlowKey(nodeId);
+                unregisterStreamHandler(nodeId);
+                continue;
+            }
             if (!persisted.status || !TERMINAL_STATUSES.includes(persisted.status as TerminalStatus)) continue;
             const expectedContentLength = projection._terminalContentLength ?? projection.content?.length ?? 0;
             if ((persisted.content?.length ?? 0) < expectedContentLength) continue;
@@ -3006,10 +3019,7 @@ export function ChatInput({
         const resolvedParentMessage = sendParentMessageId ? messageById.get(sendParentMessageId) ?? null : null;
 
         const effectiveScopeMode = effectiveScopeModeForReply;
-        const trimmedNewScopeName = newScopeName.trim();
-        const effectiveNewScopeName = effectiveScopeMode === 'new'
-            ? (trimmedNewScopeName && !isAutoScopeName(trimmedNewScopeName) ? trimmedNewScopeName : null)
-            : null;
+        const effectiveNewScopeName = null;
         const sendContextPolicy: ContextPolicy = isNewThreadTarget ? 'fresh' : contextPolicy;
         const effectiveContextMode: ContextMode = sendContextPolicy === 'fresh' ? 'none' : contextMode;
         const defaultSendContextParentMessage = resolveConversationContextMessage(sendParentMessageId, messageById);
@@ -3035,10 +3045,7 @@ export function ChatInput({
         const parentDepth = resolvedParentMessage?.depth ?? -1;
         const parentScopeId = resolvedParentMessage?.scope_id || branchParentScopeId;
 
-        // New scopes do not have a persisted ID until the server creates them.
-        const replyScopeId = effectiveScopeMode === 'new'
-            ? null
-            : (effectiveScopeIdForReply || parentScopeId || null);
+        const replyScopeId = effectiveScopeIdForReply || parentScopeId || null;
 
         const composerTurnTopology = buildComposerAgentTurnTopology(agentRunItemsForSend, sendParentMessageId);
         const shouldCreateSiblingTurns = hasLocalAgentRuntime && composerTurnTopology.length > 1;
@@ -3400,8 +3407,13 @@ export function ChatInput({
                 const assistantMessages = assistantRunMessages
                     .map((run) => run.assistantMessage)
                     .filter((message): message is Message => Boolean(message));
+                const persistedUserMessages = optimisticUserMessages.map(materializePersistedOptimisticUserMessage);
+                const localFirstMessages = [
+                    ...persistedUserMessages,
+                    ...assistantMessages,
+                ];
                 await Promise.all([
-                    ...optimisticUserMessages.map((userMessage) => (
+                    ...persistedUserMessages.map((userMessage) => (
                         agentClient.upsertLocalNode(selectedWorkspaceId!, userMessage.id, userMessage)
                     )),
                     ...assistantMessages.map((assistantMessage) => (
@@ -3413,10 +3425,17 @@ export function ChatInput({
                     const ids = new Set([...optimisticUserMessageIds, ...optimisticAssistantMessageIds]);
                     return [
                         ...existing.filter((message) => !ids.has(message.id)),
-                        ...(optimisticUserMessages as Message[]),
+                        ...persistedUserMessages,
                         ...assistantMessages,
                     ].sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
                 });
+                queryClient.setQueryData<LocalNodeMessage[]>(
+                    localNodeKeys.workspace(selectedWorkspaceId!),
+                    (current) => upsertMessagesIntoLocalNodeCache(current, selectedWorkspaceId!, localFirstMessages, {
+                        syncStatus: 'local_only',
+                        finalizedAt: Math.floor(Date.now() / 1000),
+                    })
+                );
                 void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(selectedWorkspaceId!) });
                 recordSendFlowEvent('local-first.persisted', {
                     flowId,
@@ -3528,7 +3547,7 @@ export function ChatInput({
                 agentProvider: primarySelectedAgent?.type || null,
                 agentModel: selectedAgentModelId,
                 activeScopeId: activeScopeId || null,
-                scopeId: effectiveScopeMode === 'existing' ? effectiveScopeIdForReply : null,
+                scopeId: null,
                 scopeMode: effectiveScopeMode,
                 contextParentId: sendContextParentId,
                 scopeParentId: sendScopeParentId,
@@ -3827,10 +3846,7 @@ export function ChatInput({
         effectiveContextStartId,
         effectiveScopeIdForReply,
         effectiveScopeModeForReply,
-        selectedScopeIdOverride,
         contextPolicy,
-        newScopeName,
-        nextUntitledScopeName,
         branchParentMessage,
         effectiveBaseCommitSha,
         selectedBaseCommit,
@@ -4808,8 +4824,11 @@ export function ChatInput({
                                             </div>
                                             <div className="min-w-0">
                                                 <div className={composerEyebrowClass}>Code base</div>
-                                                <div className="truncate font-mono text-[11px] font-semibold leading-tight text-foreground">
-                                                    {formatCommitLabel(codeParentCommit)}
+                                                <div className={cn(
+                                                    "truncate text-[11px] font-semibold leading-tight text-foreground",
+                                                    !codeParentUsesBranchName && "font-mono"
+                                                )}>
+                                                    {codeParentDisplayLabel}
                                                 </div>
                                             </div>
                                             <ChevronDown className="ml-auto h-3 w-3 shrink-0 text-foreground/70" />
@@ -4817,7 +4836,7 @@ export function ChatInput({
                                     </DropdownMenuTrigger>
                                 </TooltipTrigger>
                                 <TooltipContent side="bottom" align="start" className="max-w-72">
-                                    <div>Run starts from commit {formatCommitLabel(codeParentCommit)}{effectiveBaseCommitLabel !== codeParentCommit ? `: ${effectiveBaseCommitLabel}` : ''}.</div>
+                                    <div>Run starts from {codeParentTooltipNoun} {codeParentTooltipLabel}{codeParentTooltipSuffix}.</div>
                                     <div className="mt-1 text-muted-foreground">Changing the base can make the graph harder to follow.</div>
                                 </TooltipContent>
                             </Tooltip>
@@ -4962,7 +4981,7 @@ export function ChatInput({
                                 </TooltipTrigger>
                                 <TooltipContent side="bottom" align="start" className="max-w-72">
                                     {contextPolicy === 'fresh'
-                                        ? 'Start without inherited conversation context. The node still belongs to the selected scope.'
+                                        ? 'Start without inherited conversation context.'
                                         : `Context starts at ${contextStartLabel} and ends at ${contextParentLabel}.`}
                                 </TooltipContent>
                             </Tooltip>
@@ -5053,147 +5072,6 @@ export function ChatInput({
                                     </div>
                                     {contextPolicy === 'fresh' && <Check className="ml-auto h-3.5 w-3.5" />}
                                 </DropdownMenuItem>
-                            </DropdownMenuContent>
-                        </DropdownMenu>
-
-                        <DropdownMenu>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <DropdownMenuTrigger asChild>
-                                        <button
-                                            type="button"
-                                            className={cn(composerControlClass, "flex-[0_1_162px]")}
-                                            aria-label="Select scope"
-                                        >
-                                            <div className={composerControlIconClass}>
-                                                <Layers3 className="h-3 w-3" />
-                                            </div>
-                                            <div className="min-w-0">
-                                                <div className={composerEyebrowClass}>Scope</div>
-                                                <div className={composerValueClass}>{effectiveScopeLabel}</div>
-                                            </div>
-                                            <ChevronDown className="ml-auto h-3 w-3 shrink-0 text-foreground/70" />
-                                        </button>
-                                    </DropdownMenuTrigger>
-                                </TooltipTrigger>
-                                <TooltipContent side="bottom" align="start" className="max-w-72">
-                                    Select the workstream this node belongs to. Scope does not affect AI context.
-                                </TooltipContent>
-                            </Tooltip>
-                            <DropdownMenuContent
-                                align="end"
-                                sideOffset={8}
-                                collisionPadding={12}
-                                className="max-h-[min(20rem,var(--radix-dropdown-menu-content-available-height))] w-72 overflow-y-auto rounded-xl border border-border/70 bg-popover/95 p-1.5 shadow-[0_18px_48px_-18px_rgba(15,23,42,0.45),0_8px_20px_-12px_rgba(15,23,42,0.35)] backdrop-blur-xl dark:shadow-[0_18px_48px_-18px_rgba(0,0,0,0.75),0_8px_20px_-12px_rgba(0,0,0,0.6)]"
-                            >
-                                <DropdownMenuLabel className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">Scopes</DropdownMenuLabel>
-                                {scopes.length === 0 ? (
-                                    <DropdownMenuItem
-                                        onClick={() => {
-                                            setIsCreatingNewScope(false);
-                                            setIsNewScopeEditorOpen(false);
-                                            setSelectedScopeIdOverride(null);
-                                            setNewScopeName('');
-                                        }}
-                                        className="min-h-9 gap-2 rounded-lg"
-                                    >
-                                        <span className="h-2.5 w-2.5 rounded-full bg-slate-400" />
-                                        <span className="truncate">Default</span>
-                                        {!isCreatingNewScope && !selectedScopeIdOverride && <Check className="ml-auto h-3.5 w-3.5" />}
-                                    </DropdownMenuItem>
-                                ) : scopes.map((scope) => {
-                                    const selected = !isCreatingNewScope && effectiveScopeIdForReply === scope.id;
-                                    return (
-                                        <DropdownMenuItem
-                                            key={scope.id}
-                                            onClick={() => {
-                                                setIsCreatingNewScope(false);
-                                                setIsNewScopeEditorOpen(false);
-                                                setSelectedScopeIdOverride(scope.id);
-                                                setNewScopeName('');
-                                            }}
-                                            className="min-h-9 gap-2 rounded-lg"
-                                        >
-                                            <span
-                                                className="h-2.5 w-2.5 rounded-full bg-slate-400"
-                                                style={scope.color ? { backgroundColor: scope.color } : undefined}
-                                            />
-                                            <span className="truncate">{scope.name}</span>
-                                            {selected && <Check className="ml-auto h-3.5 w-3.5" />}
-                                        </DropdownMenuItem>
-                                    );
-                                })}
-                                {isCreatingNewScope && !isNewScopeEditorOpen && (
-                                    <DropdownMenuItem
-                                        onClick={() => setIsNewScopeEditorOpen(true)}
-                                        className="min-h-10 gap-2 rounded-lg bg-emerald-500/10 text-emerald-800 focus:bg-emerald-500/15 dark:text-emerald-300"
-                                    >
-                                        <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
-                                        <div className="min-w-0 flex-1">
-                                            <div className="truncate text-sm font-medium">{pendingNewScopeName}</div>
-                                            <div className="truncate text-[10px] text-emerald-700/75 dark:text-emerald-300/75">Will be created when sent</div>
-                                        </div>
-                                        <Check className="ml-auto h-3.5 w-3.5 shrink-0" />
-                                    </DropdownMenuItem>
-                                )}
-                                <DropdownMenuSeparator />
-                                <DropdownMenuItem
-                                    onSelect={(event) => {
-                                        event.preventDefault();
-                                        handleCreateScopeFromComposer();
-                                    }}
-                                    className="min-h-9 gap-2 rounded-lg"
-                                >
-                                    <Plus className="h-3.5 w-3.5" />
-                                    {isCreatingNewScope ? 'Edit new scope' : 'Create scope'}
-                                </DropdownMenuItem>
-                                {isCreatingNewScope && isNewScopeEditorOpen && (
-                                    <div
-                                        className="mt-1 rounded-lg bg-[hsl(var(--app-panel-strong))] p-2 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.35),0_8px_22px_-18px_rgba(16,185,129,0.55)]"
-                                        onKeyDown={(event) => {
-                                            event.stopPropagation();
-                                            if (event.key === 'Enter') {
-                                                event.preventDefault();
-                                                handleSaveNewScopeName();
-                                            }
-                                            if (event.key === 'Escape') {
-                                                event.preventDefault();
-                                                handleCancelNewScopeName();
-                                            }
-                                        }}
-                                    >
-                                        <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-emerald-700 dark:text-emerald-300">
-                                            <Pencil className="h-3 w-3" />
-                                            New scope
-                                        </div>
-                                        <div className="flex items-center gap-1.5">
-                                            <Input
-                                                value={newScopeName}
-                                                onChange={(event) => setNewScopeName(event.target.value)}
-                                                placeholder={nextUntitledScopeName}
-                                                className="h-8 min-w-0 flex-1 rounded-md border-border/60 bg-background/80 px-2 text-xs font-medium shadow-none focus-visible:ring-2 focus-visible:ring-emerald-500/35"
-                                                aria-label="Scope name"
-                                                autoFocus
-                                            />
-                                            <button
-                                                type="button"
-                                                className="flex h-8 shrink-0 items-center justify-center gap-1 rounded-md bg-emerald-600 px-2.5 text-xs font-semibold text-white shadow-[0_8px_18px_-12px_rgba(16,185,129,0.85)] transition-colors hover:bg-emerald-700 active:scale-[0.96]"
-                                                onClick={handleSaveNewScopeName}
-                                            >
-                                                <Check className="h-3.5 w-3.5" />
-                                                Save
-                                            </button>
-                                            <button
-                                                type="button"
-                                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground active:scale-[0.96]"
-                                                aria-label="Cancel new scope"
-                                                onClick={handleCancelNewScopeName}
-                                            >
-                                                <X className="h-3.5 w-3.5" />
-                                            </button>
-                                        </div>
-                                    </div>
-                                )}
                             </DropdownMenuContent>
                         </DropdownMenu>
 

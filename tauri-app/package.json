@@ -14,6 +14,7 @@
     "perf:send-flow:tauri": "node ./tests/perf/tauri-pilot-send-flow-autonomous.mjs",
     "perf:send-flow:tauri:polling": "node ./tests/perf/tauri-pilot-send-flow-repro.mjs",
     "perf:scroll-behavior:tauri": "node ./tests/perf/tauri-pilot-scroll-behavior-flow.mjs",
+    "perf:latest-summary": "node ./scripts/perf-latest-summary.mjs",
     "smoke:send-flow:tauri": "node ./tests/perf/tauri-pilot-send-stream-status-smoke.mjs",
     "pilot:install": "cargo install tauri-pilot-cli --locked",
     "pilot:dev": "npm run tauri -- dev",

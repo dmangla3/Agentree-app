@@ -229,20 +229,15 @@ export function HomePage() {
 
   devLogLazy(() => ['[ROUTE][HomePage] Rendering main workspace shell']);
   return (
-    <div className="app-shell-background flex h-screen w-full flex-col">
-      {/* Top Header - Full Width */}
-      {activeView === 'chat' && (
-        <AppHeader
-          selectedWorkspaceId={selectedWorkspaceId}
-          selectedWorkspaceName={selectedWorkspace?.name || null}
-          onOpenWorkspaceSelector={() => setIsWorkspaceSelectorOpen(true)}
-          onOpenSearch={() => setIsSearchPanelOpen(true)}
-        />
-      )}
+    <div className="app-shell-background flex h-screen w-full flex-col overflow-hidden">
+      <AppHeader
+        selectedWorkspaceId={selectedWorkspaceId}
+        selectedWorkspaceName={selectedWorkspace?.name || null}
+        onOpenWorkspaceSelector={() => setIsWorkspaceSelectorOpen(true)}
+        onOpenSearch={() => setIsSearchPanelOpen(true)}
+      />
 
-      {/* Main Content Area with Sidebar */}
-      <div className="flex-1 flex min-h-0 overflow-hidden">
-        {/* Sidebar Navigation Rail - Below Header */}
+      <div className="app-shell-content flex min-h-0 flex-1 overflow-hidden">
         <Sidebar
           activeView={activeView}
           onViewChange={setActiveView}
@@ -250,15 +245,13 @@ export function HomePage() {
           selectedWorkspaceName={selectedWorkspace?.name || null}
         />
 
-        {/* Content Area */}
-        <main className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
+        <main className="app-shell-stage flex h-full min-w-0 flex-1 flex-col overflow-hidden" aria-label="Agentree workspace shell">
           {activeView === 'chat' ? (
             selectedWorkspaceId ? (
               <>
-                {/* Panels */}
                 <ResizablePanelGroup
                   direction="horizontal"
-                  className="flex-1 min-h-0 w-full rounded-lg border-0"
+                  className="min-h-0 w-full flex-1 border-0"
                   onLayout={handleGraphChatLayout}
                 >
                   <ResizablePanel
@@ -276,11 +269,11 @@ export function HomePage() {
                       </div>
                     </div>
                   </ResizablePanel>
-                  <ResizableHandle>
+                  <ResizableHandle className="app-resizable-handle">
                     <button
                       type="button"
                       onClick={toggleChatPanelCollapsed}
-                      className={`group relative z-20 flex items-center justify-center rounded-full border border-border/70 bg-background/95 text-muted-foreground shadow-[0_10px_28px_-16px_rgba(15,23,42,0.55)] ring-1 ring-black/5 transition-[width,height,background-color,color,box-shadow,transform] duration-300 [transition-timing-function:cubic-bezier(0.32,_0.72,_0,_1)] hover:bg-accent hover:text-foreground hover:shadow-[0_14px_34px_-18px_rgba(15,23,42,0.65)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-95 dark:ring-white/10 ${isChatCollapsed ? 'h-11 w-14 -translate-x-3' : 'h-8 w-5 hover:w-7'}`}
+                      className={`app-split-handle group ${isChatCollapsed ? 'h-10 w-10 translate-x-2' : 'h-7 w-4 translate-x-2'}`}
                       aria-label={isChatCollapsed ? 'Restore chat panel' : 'Hide chat panel'}
                       title={isChatCollapsed ? 'Restore chat panel' : 'Hide chat panel'}
                     >
@@ -299,7 +292,7 @@ export function HomePage() {
                     collapsedSize={0}
                   >
                     {/* Right Panel: Chat/Merge */}
-                    <div className="flex min-w-0 h-full flex-col overflow-hidden bg-background">
+                    <div className="flex h-full min-w-0 flex-col overflow-hidden border-l border-[hsl(var(--app-border)/0.72)] bg-[hsl(var(--app-panel)/0.96)]">
                       {/* Chat Sub-Header */}
                       <ChatPanelHeader
                         rightPanelTab={rightPanelTab}
@@ -327,32 +320,58 @@ export function HomePage() {
                 </ResizablePanelGroup>
               </>
             ) : (
-              <div className="flex h-full items-center justify-center bg-background/70 px-6">
-                <button
-                  type="button"
-                  onClick={() => setIsWorkspaceSelectorOpen(true)}
-                  className="app-command-button app-focus-ring rounded-lg px-3 py-2 text-sm font-semibold"
-                >
-                  Select workspace
-                </button>
+              <div className="app-view-surface flex h-full items-center justify-center px-6">
+                <div className="app-panel max-w-md rounded-2xl p-6 text-center">
+                  <div className="text-sm font-semibold text-foreground">No workspace selected</div>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                    Choose a workspace to load its graph, chat, and merge history.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setIsWorkspaceSelectorOpen(true)}
+                    className="app-command-button app-focus-ring mt-5 rounded-lg px-3 py-2 text-sm font-semibold"
+                  >
+                    Select workspace
+                  </button>
+                </div>
               </div>
             )
           ) : activeView === 'skills' ? (
-            <div className="h-full w-full overflow-auto bg-background/60 p-5">
-              <div className="max-w-4xl mx-auto h-full">
-                <Suspense fallback={<PanelLoading />}>
-                  <SkillsPanel className="app-panel h-full rounded-xl" />
-                </Suspense>
+            <div className="app-view-surface h-full w-full overflow-auto p-5">
+              <div className="app-view-frame mx-auto flex h-full w-full max-w-5xl flex-col">
+                <header className="app-view-header">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[hsl(var(--app-accent))]">Workspace tools</p>
+                    <h1 className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-foreground">Skills</h1>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+                      Manage installed skills and workspace knowledge from the same shell.
+                    </p>
+                  </div>
+                </header>
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <Suspense fallback={<PanelLoading />}>
+                    <SkillsPanel className="app-panel h-full overflow-hidden rounded-2xl" />
+                  </Suspense>
+                </div>
               </div>
             </div>
           ) : (
-            /* Knowledge Base View */
-            <div className="h-full w-full bg-background/60 p-5">
-              <h1 className="mb-4 text-xl font-semibold tracking-[-0.01em]">Knowledge Base</h1>
-              <div className="app-panel h-[calc(100%-3rem)] overflow-hidden rounded-xl">
-                <Suspense fallback={<PanelLoading />}>
-                  <KnowledgeBase />
-                </Suspense>
+            <div className="app-view-surface h-full w-full p-5">
+              <div className="app-view-frame mx-auto flex h-full w-full max-w-6xl flex-col">
+                <header className="app-view-header">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[hsl(var(--app-accent))]">Workspace context</p>
+                    <h1 className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-foreground">Knowledge base</h1>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+                      Keep project documents, references, and folders close to the current workspace.
+                    </p>
+                  </div>
+                </header>
+                <div className="app-panel min-h-0 flex-1 overflow-hidden rounded-2xl">
+                  <Suspense fallback={<PanelLoading />}>
+                    <KnowledgeBase />
+                  </Suspense>
+                </div>
               </div>
             </div>
           )}

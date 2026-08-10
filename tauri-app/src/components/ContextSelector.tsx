@@ -78,7 +78,7 @@ export function ContextSelector({
                 {contextMode === 'active' && contextNodes.length > 0 && (
                     <div className="mt-2 border-t pt-2">
                         <div className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                            Branch ∩ Scope nodes
+                            Active context nodes
                         </div>
                         <div className="max-h-52 overflow-y-auto pr-1">
                             {contextNodes.map((node) => (

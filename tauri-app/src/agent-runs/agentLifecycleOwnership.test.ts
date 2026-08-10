@@ -48,4 +48,18 @@ describe('agent lifecycle ownership boundaries', () => {
     expect(source).not.toContain('const updateAgentRunUsage');
     expect(source).toContain('agentRunStreamDispatch');
   });
+
+  it('does not patch terminal finalize caches directly from ChatInput', () => {
+    const source = readChatInputSource();
+    expect(source).not.toContain('patchFinalizedMessages');
+    expect(source).not.toContain('patchFinalizedLocalNodes');
+    expect(source).not.toContain("queryClient.setQueryData<Message[]>(\n                        ['messages', workspaceId]");
+    expect(source).not.toContain('finalize-ack:refetch');
+  });
+
+  it('does not let user message lifecycle metadata drive the composer cancel state', () => {
+    const source = readChatInputSource();
+    expect(source).toContain("const selectedNodeRole = selectedProjection?.role ?? selectedNodeMessage?.role ?? null;");
+    expect(source).toContain("if (selectedNodeRole !== 'assistant') return false;");
+  });
 });

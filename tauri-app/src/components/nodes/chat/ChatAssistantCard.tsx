@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { Wrench, ChevronDown, Terminal, Tag, X, Hash, Sigma, Sparkles, AlertTriangle, Copy, Check, CheckCircle2, GitCommitHorizontal, Zap, Layers3 } from 'lucide-react';
+import { Wrench, ChevronDown, Terminal, Tag, X, Hash, Sigma, Sparkles, AlertTriangle, Copy, Check, CheckCircle2, GitCommitHorizontal, Zap } from 'lucide-react';
 import { ChatCardWrapper } from './ChatCardWrapper';
 import { ChatMarkdown } from './ChatMarkdown';
 import { SharedNodeProps } from '../../../types/nodes';
@@ -8,7 +8,7 @@ import { ROLE_COLORS, withHexAlpha } from '../../../lib/visualTokens';
 import { getAgentColorClass } from '../../../lib/graphUtils';
 import { useAgents } from '../../../hooks/useAgents';
 import type { AgentStatus } from '@shared/agentStatus';
-import { buildTimelineRows, getToolSummary, ToolPayloadDisplay, type TimelineRow } from '../../ExecutionTimeline';
+import { buildTimelineRows, getToolSummary, summarizeFileChangesPayload, ToolPayloadDisplay, type TimelineRow } from '../../ExecutionTimeline';
 import { useUpdateTags } from '../../../hooks/useMessages';
 import { mergeLiveMessage } from '../../../hooks/useLiveMessages';
 import { Badge } from '../../../../@/components/ui/badge';
@@ -17,6 +17,7 @@ import { getAgentVisualState } from '../../../lib/agentStateUI';
 import { useAgentRunProjectionStore } from '../../../stores/agentRunProjectionStore';
 import { resolveNodeState } from '../../../lib/runStateResolver';
 import { agentRunManager } from '../../../agent-runs/agentRunManager';
+import { recordAssistantTextVisible } from '../../../perf/agentRunVisibilityPerf';
 
 const AgentChip = ({ agentId, aiLabel }: { agentId?: string | null, aiLabel?: string | null }) => {
   const { data: agents = [] } = useAgents();
@@ -224,6 +225,11 @@ const formatTokenValue = (value: number | null | undefined): string | null => {
 function InterleavedToolCard({ row }: { row: Extract<TimelineRow, { kind: 'tool' }> }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const summary = getToolSummary(row.toolName, row.toolInput) || row.toolName;
+  const fileChangesPayload = summarizeFileChangesPayload(row.toolInput)
+    ? row.toolInput
+    : summarizeFileChangesPayload(row.toolOutput)
+      ? row.toolOutput
+      : null;
   const duration = row.durationMs ? (row.durationMs < 1000 ? `${row.durationMs}ms` : `${(row.durationMs / 1000).toFixed(1)}s`) : null;
   const stopCardFocus = (event: React.MouseEvent) => {
     event.stopPropagation();
@@ -237,18 +243,32 @@ function InterleavedToolCard({ row }: { row: Extract<TimelineRow, { kind: 'tool'
           event.stopPropagation();
           setIsExpanded((value) => !value);
         }}
-        className="flex min-w-0 w-full max-w-full items-start gap-2 px-0 py-0.5 text-left transition-colors hover:text-foreground/90"
+        className={cn(
+          "flex min-w-0 w-full max-w-full items-start gap-2 rounded-md px-0 py-0.5 text-left",
+          "transition-[background-color,color] duration-150 hover:text-foreground/90",
+          fileChangesPayload && "-mx-1 px-1 py-0.5 hover:bg-muted/30"
+        )}
         aria-expanded={isExpanded}
       >
-        <div className="flex h-4 w-4 shrink-0 items-center justify-center">
+        <div className={cn(
+          "flex h-4 w-4 shrink-0 items-center justify-center",
+          fileChangesPayload && "mt-1"
+        )}>
           {row.isError ? <AlertTriangle size={11} className="text-red-500/80" /> : row.toolOutput !== undefined ? <CheckCircle2 size={11} className="text-emerald-600/80 dark:text-emerald-400/80" /> : <Terminal size={11} className="text-muted-foreground/55" />}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="break-all font-mono text-[11px] leading-relaxed text-muted-foreground/55" title={summary}>
-            {summary}
-          </div>
+          {fileChangesPayload ? (
+            <ToolPayloadDisplay payload={fileChangesPayload} className="shadow-none" />
+          ) : (
+            <div className="break-all font-mono text-[11px] leading-relaxed text-muted-foreground/55" title={summary}>
+              {summary}
+            </div>
+          )}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className={cn(
+          "flex shrink-0 items-center gap-2",
+          fileChangesPayload && "pt-1"
+        )}>
           {duration ? <span className="text-[10px] font-mono text-muted-foreground/45">{duration}</span> : null}
           <ChevronDown size={11} className={cn("text-muted-foreground/45 transition-transform", isExpanded && "rotate-180")} />
         </div>
@@ -257,10 +277,10 @@ function InterleavedToolCard({ row }: { row: Extract<TimelineRow, { kind: 'tool'
       {isExpanded ? (
         <div className="mt-1 ml-6 min-w-0 max-w-full space-y-2">
           {row.toolInput !== undefined ? (
-            <ToolPayloadDisplay payload={row.toolInput} className="max-h-40 min-w-0 max-w-full" />
+            <ToolPayloadDisplay payload={row.toolInput} className="max-h-40 min-w-0 max-w-full" variant="raw" />
           ) : null}
           {row.toolOutput !== undefined ? (
-            <ToolPayloadDisplay payload={row.toolOutput} className="max-h-40 min-w-0 max-w-full" />
+            <ToolPayloadDisplay payload={row.toolOutput} className="max-h-40 min-w-0 max-w-full" variant="raw" />
           ) : null}
         </div>
       ) : null}
@@ -316,7 +336,7 @@ function InterleavedExplorationCard({ row }: { row: Extract<TimelineRow, { kind:
       {isExpanded ? (
         <div className="mt-1 ml-6 min-w-0 max-w-full space-y-2">
           {row.toolCalls.map((call, index) => (
-            <ToolPayloadDisplay key={call.key || index} payload={call.toolInput} className="max-h-40 min-w-0 max-w-full" />
+            <ToolPayloadDisplay key={call.key || index} payload={call.toolInput} className="max-h-40 min-w-0 max-w-full" variant="raw" />
           ))}
         </div>
       ) : null}
@@ -347,7 +367,6 @@ export const ChatAssistantCard = memo(({
   isFocused,
   isSelected,
   scopeColor,
-  scopeName,
   onFocus,
   onSelect,
   onContextMenu,
@@ -370,6 +389,17 @@ export const ChatAssistantCard = memo(({
     [entity.message, liveMessage]
   );
   const displayStatus = resolveNodeState(entity.message ?? null, liveMessage).status ?? entity.status;
+  const contentLength = typeof message?.content === 'string' ? message.content.length : 0;
+  const hasRenderableContent = contentLength > 0 && Boolean(message?.content?.trim());
+
+  useEffect(() => {
+    if (!messageId || !hasRenderableContent) return;
+    recordAssistantTextVisible({
+      nodeId: messageId,
+      contentLength,
+      status: displayStatus ?? null,
+    });
+  }, [contentLength, displayStatus, hasRenderableContent, messageId]);
 
   const workspaceId = message?.workspaceId ?? null;
   const tags = useMemo(() => message?.tags ?? [], [message?.tags]);
@@ -483,15 +513,6 @@ export const ChatAssistantCard = memo(({
             <div className="min-w-0 flex-1">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <AgentChip agentId={message?.agent_id} aiLabel={message?.aiLabel} />
-                {scopeName && (
-                  <span
-                    className="inline-flex min-w-0 max-w-[180px] items-center gap-1 rounded-full border border-border/60 bg-background/80 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
-                    title={scopeName}
-                  >
-                    <Layers3 size={9} strokeWidth={2.5} className="shrink-0" style={scopeColor ? { color: scopeColor } : undefined} />
-                    <span className="truncate">{scopeName}</span>
-                  </span>
-                )}
                 <StatusBadge status={displayStatus as any} />
                 {entity.toolCallCount ? (
                   <span className="inline-flex items-center gap-1 rounded-full border border-amber-200/70 bg-amber-50/80 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">

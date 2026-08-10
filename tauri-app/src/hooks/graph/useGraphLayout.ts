@@ -6,6 +6,7 @@ import { collapseRenderedFocusRoute } from '../../domain/scopedFocusRoute';
 import { recordPerfEvent } from '../../lib/perfRecorder';
 import { recordFundamentalCounter } from '../../perf/fundamentalCounters';
 import {
+    createMessageHeightKey,
     mapMessagesToGraphElements,
     getLayoutedElements,
     getLaneLayoutedElements,
@@ -14,6 +15,7 @@ import {
 } from '../../lib/graphUtils';
 import { resolveNodeState } from '../../lib/runStateResolver';
 import { getMessageOutputCommitSha } from '../../lib/graph/commitAccessors';
+import { getAssistantCommitCount, getToolCallCount } from '../../domain/nodes';
 import type { GraphNodeSectionId } from '../../components/graph/GraphCanvasIndexPanel';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -186,6 +188,11 @@ const createMessagesVisualFingerprint = (messages: Message[]): string => {
         (m.content || '').trim().length,
         (m.content || '').trim().slice(0, 96),
     ].join('|')).join(';');
+};
+
+const readChangedFilesCount = (message: Message): number | undefined => {
+    const files = (message.execution_data as any)?.files_changed;
+    return Array.isArray(files) && files.length > 0 ? files.length : undefined;
 };
 
 const DEFAULT_EDGE_STROKE_WIDTH = 4;
@@ -741,6 +748,24 @@ function applyVisualProperties(
                 ? projection.entitiesBySummaryId.get(data.entity.summary.id)
                 : undefined;
         const latestMessage = data.message?.id ? messageMap.get(data.message.id) : undefined;
+        const nodeKind = node.type === 'user_message' || node.type === 'assistant_message' || node.type === 'commit_message'
+            ? node.type
+            : undefined;
+        const branchPointers = Array.isArray(data.branchPointers) ? data.branchPointers as BranchPointer[] : [];
+        const toolCallCount = latestMessage ? getToolCallCount(latestMessage) : data.toolCallCount;
+        const commitCount = latestMessage ? getAssistantCommitCount(latestMessage, messages, messageMap) : data.commitCount;
+        const changedFilesCount = latestMessage ? readChangedFilesCount(latestMessage) : data.changedFilesCount;
+        const heightKey = latestMessage && latestEntity && nodeKind
+            ? createMessageHeightKey({
+                message: latestMessage,
+                entity: latestEntity as any,
+                nodeKind,
+                branchPointers,
+                toolCallCount: typeof toolCallCount === 'number' ? toolCallCount : undefined,
+                commitCount: typeof commitCount === 'number' ? commitCount : undefined,
+                changedFilesCount: typeof changedFilesCount === 'number' ? changedFilesCount : undefined,
+            })
+            : data.heightKey;
         const isSummaryNode = node.type === 'summary_block';
         const isFocused = isGraphNodeVisuallyFocused(node, focusedMessageId);
         const isComposerBaseCommit = isComposerBaseCommitVisualNode(node, composerBaseCommitSha);
@@ -758,6 +783,10 @@ function applyVisualProperties(
                 isAgentRunning: ['pending', 'running', 'streaming'].includes(String(resolveNodeState(latestMessage, null).status ?? '')),
                 agentId: latestMessage.agent_id ?? null,
                 collapsed: latestMessage.collapsed,
+                heightKey,
+                toolCallCount,
+                commitCount,
+                changedFilesCount,
             } : {}),
             onFocus,
             onSelect,
@@ -963,6 +992,10 @@ const canReuseVisualNode = (
     const previousData = previousNode.data as Record<string, unknown>;
     const keysToCompare = [
         'message',
+        'heightKey',
+        'toolCallCount',
+        'commitCount',
+        'changedFilesCount',
         'agentStatus',
         'isAgentRunning',
         'agentId',

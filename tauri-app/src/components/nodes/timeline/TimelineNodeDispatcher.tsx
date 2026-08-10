@@ -11,7 +11,6 @@ interface TimelineNodeDispatcherProps {
   entityId?: string;
   rowId?: string;
   projection: any; // workspace projection
-  scopeColorById?: Map<string, string | null>;
   isSelected: boolean;
   showSelectionControl?: boolean;
   onFocus: (id: string, metadata?: Record<string, unknown>) => void;
@@ -23,7 +22,6 @@ export const TimelineNodeDispatcher = memo(({
   entityId,
   rowId,
   projection,
-  scopeColorById,
   isSelected,
   showSelectionControl = false,
   onFocus,
@@ -55,13 +53,10 @@ export const TimelineNodeDispatcher = memo(({
     }
   }, [entity, onContextMenu]);
 
-  // Get scope color from the map (DB stored color)
-  const scopeColor = entity?.scopeId ? scopeColorById?.get(entity.scopeId) || null : null;
-  
   const sharedProps = {
     isFocused: entity?.focusMessageId === focusedMessageId,
     isSelected,
-    scopeColor,
+    scopeColor: null,
     layout: 'timeline' as const,
     hoverCardContent: <NodeHoverCardContent entity={hoverEntity} projection={projection} />,
     onFocus: handleFocus,

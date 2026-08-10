@@ -125,15 +125,12 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
     });
   }, [selectedWorkspaceId, setComposerBaseCommitOverride]);
 
-  // Use scopeColor from node data (set by graphUtils using DB scope color)
-  const scopeColor = data.entity?.scopeId ? (data as any).scopeColor || null : null;
-  
   const sharedProps = {
     nodeId: props.id,
     isFocused: !!data.isFocused,
     isSelected: data.isSelected || isSelectedInFlow,
     isComposerBaseCommit: !!data.isComposerBaseCommit,
-    scopeColor,
+    scopeColor: null,
     layout: 'graph' as const,
     heightKey: data.heightKey,
     onMeasureHeight: data.onMeasureHeight,

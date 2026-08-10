@@ -1359,6 +1359,100 @@ fn normalize_commit_message_fallback(prompt_fallback: Option<&str>) -> Option<St
     }
 }
 
+fn record_output_commit_for_snapshot(
+    app_handle: &AppHandle,
+    snapshot: &mut AgentRunSnapshot,
+    repo_path: &str,
+    parent_commit: &str,
+    commit: crate::git_workspace::GitCommitMetadata,
+    meta_commit_message: Option<String>,
+) -> Result<(), String> {
+    let commit_sha = commit.sha.clone();
+    let commit_subject = if commit.subject.trim().is_empty() {
+        meta_commit_message
+            .clone()
+            .unwrap_or_else(|| "Agent changes".to_string())
+    } else {
+        commit.subject.clone()
+    };
+    let commit_message = meta_commit_message.unwrap_or_else(|| commit_subject.clone());
+    let diff = tauri::async_runtime::block_on(crate::git_workspace::diff_commits(
+        repo_path.to_string(),
+        parent_commit.to_string(),
+        commit_sha.clone(),
+        false,
+    ))?;
+    let changed_files = diff
+        .files
+        .into_iter()
+        .map(|file| JsonValue::String(file.path))
+        .collect::<Vec<_>>();
+    let files_changed_count = changed_files.len() as i64;
+
+    if let Some(execution_object) = snapshot.execution_data.as_object_mut() {
+        execution_object.insert("files_changed".to_string(), JsonValue::Array(changed_files));
+        execution_object.insert(
+            "files_changed_count".to_string(),
+            JsonValue::from(files_changed_count),
+        );
+        let meta = execution_object
+            .entry("meta".to_string())
+            .or_insert_with(|| JsonValue::Object(JsonMap::new()));
+        if let Some(meta_object) = meta.as_object_mut() {
+            meta_object.insert("commit_created".to_string(), JsonValue::Bool(true));
+            meta_object.insert(
+                "commit_message".to_string(),
+                JsonValue::String(commit_message.clone()),
+            );
+        }
+    }
+
+    snapshot.output_commit_sha = Some(commit_sha.clone());
+    let _ = app_handle
+        .state::<crate::db::TelemetryDb>()
+        .record_agent_run_output_commit(&snapshot.node_id, &commit_sha);
+    if let Some(workspace_id) = workspace_id_from_execution_data(&snapshot.execution_data) {
+        let fallback_timestamp = chrono_like_now();
+        let parents = if commit.parents.is_empty() {
+            vec![parent_commit.to_string()]
+        } else {
+            commit.parents.clone()
+        };
+        let _ = app_handle
+            .state::<crate::db::TelemetryDb>()
+            .import_local_commits_with_parent_closure(
+                &workspace_id,
+                vec![crate::db::LocalCommitImport {
+                    sha: commit_sha,
+                    parents,
+                    subject: Some(commit_subject),
+                    author_name: commit
+                        .author_name
+                        .clone()
+                        .or_else(|| snapshot.author_name.clone()),
+                    author_email: commit.author_email.clone(),
+                    authored_at: commit
+                        .authored_at
+                        .clone()
+                        .or_else(|| Some(fallback_timestamp.clone())),
+                    committed_at: commit.authored_at.clone().or(Some(fallback_timestamp)),
+                    source_kind: Some("agent".to_string()),
+                    produced_by_node_id: Some(snapshot.node_id.clone()),
+                    files_changed_count: commit
+                        .files_changed_count
+                        .map(|value| value as i64)
+                        .or(Some(files_changed_count)),
+                    total_additions: commit.total_additions.map(|value| value as i64),
+                    total_deletions: commit.total_deletions.map(|value| value as i64),
+                }],
+                Some("agent"),
+                Some(repo_path),
+            );
+    }
+
+    Ok(())
+}
+
 fn finalize_run_snapshot(
     app_handle: &AppHandle,
     snapshot: &mut AgentRunSnapshot,
@@ -1442,69 +1536,45 @@ fn finalize_run_snapshot(
                 let commit_sha = finalize_result.commit_sha.ok_or_else(|| {
                     "Commit SHA missing after finalize_agent_worktree".to_string()
                 })?;
-                let diff = tauri::async_runtime::block_on(crate::git_workspace::diff_commits(
-                    repo_path.clone(),
-                    parent_commit.clone(),
-                    commit_sha.clone(),
-                    false,
-                ))?;
-                if let Some(execution_object) = snapshot.execution_data.as_object_mut() {
-                    let changed_files = diff
-                        .files
-                        .into_iter()
-                        .map(|file| JsonValue::String(file.path))
-                        .collect::<Vec<_>>();
-                    execution_object.insert(
-                        "files_changed".to_string(),
-                        JsonValue::Array(changed_files.clone()),
-                    );
-                    execution_object.insert(
-                        "files_changed_count".to_string(),
-                        JsonValue::from(changed_files.len() as i64),
-                    );
-                    let meta = execution_object
-                        .entry("meta".to_string())
-                        .or_insert_with(|| JsonValue::Object(JsonMap::new()));
-                    if let Some(meta_object) = meta.as_object_mut() {
-                        meta_object.insert("commit_created".to_string(), JsonValue::Bool(true));
-                        meta_object.insert(
-                            "commit_message".to_string(),
-                            JsonValue::String(commit_message.clone()),
-                        );
-                    }
-                }
-                snapshot.output_commit_sha = Some(commit_sha.clone());
-                let _ = app_handle
-                    .state::<crate::db::TelemetryDb>()
-                    .record_agent_run_output_commit(&snapshot.node_id, &commit_sha);
-                if let Some(workspace_id) =
-                    workspace_id_from_execution_data(&snapshot.execution_data)
-                {
-                    let _ = app_handle
-                        .state::<crate::db::TelemetryDb>()
-                        .import_local_commits_with_parent_closure(
-                            &workspace_id,
-                            vec![crate::db::LocalCommitImport {
-                                sha: commit_sha.clone(),
-                                parents: vec![parent_commit.clone()],
-                                subject: Some(commit_message.clone()),
-                                author_name: snapshot.author_name.clone(),
-                                author_email: None,
-                                authored_at: Some(chrono_like_now()),
-                                committed_at: Some(chrono_like_now()),
-                                source_kind: Some("agent".to_string()),
-                                produced_by_node_id: Some(snapshot.node_id.clone()),
-                                files_changed_count: snapshot
-                                    .execution_data
-                                    .get("files_changed_count")
-                                    .and_then(|value| value.as_i64()),
-                                total_additions: None,
-                                total_deletions: None,
-                            }],
-                            Some("agent"),
-                            Some(&repo_path),
-                        );
-                }
+                let commit_metadata =
+                    crate::git_workspace::read_commit_metadata_sync(&repo_path, &commit_sha)?;
+                record_output_commit_for_snapshot(
+                    app_handle,
+                    snapshot,
+                    &repo_path,
+                    &parent_commit,
+                    commit_metadata,
+                    Some(commit_message),
+                )?;
+                commit_created = true;
+            } else if let Some(commit_metadata) =
+                crate::git_workspace::agent_worktree_head_commit_if_advanced(
+                    &repo_path,
+                    &snapshot.node_id,
+                    &parent_commit,
+                )?
+            {
+                crate::app_log!(
+                    "[AGENT_WORKTREE] event=finalize_snapshot.head_advanced node_id={} repo={} parent_commit={} output_commit={}",
+                    snapshot.node_id,
+                    repo_path,
+                    parent_commit,
+                    commit_metadata.sha
+                );
+                emit_finalize_progress(
+                    app_handle,
+                    &snapshot.node_id,
+                    "git_commit",
+                    "Recording generated commit...",
+                );
+                record_output_commit_for_snapshot(
+                    app_handle,
+                    snapshot,
+                    &repo_path,
+                    &parent_commit,
+                    commit_metadata,
+                    None,
+                )?;
                 commit_created = true;
             } else if let Some(execution_object) = snapshot.execution_data.as_object_mut() {
                 execution_object.insert("files_changed".to_string(), JsonValue::Array(Vec::new()));

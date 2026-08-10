@@ -184,9 +184,39 @@
 @layer components {
   .app-shell-background {
     background:
-      radial-gradient(circle at 12% 0%, hsl(var(--app-accent) / 0.09), transparent 25rem),
-      radial-gradient(circle at 92% 8%, hsl(var(--app-success) / 0.08), transparent 22rem),
-      linear-gradient(180deg, hsl(var(--app-bg-elevated)) 0%, hsl(var(--app-bg)) 42%, hsl(var(--app-bg-muted)) 100%);
+      radial-gradient(circle at 12% 0%, hsl(var(--app-accent) / 0.075), transparent 26rem),
+      linear-gradient(180deg, hsl(var(--app-bg-elevated)) 0%, hsl(var(--app-bg)) 44%, hsl(var(--app-bg-muted)) 100%);
+  }
+
+  .app-shell-content {
+    background:
+      linear-gradient(90deg, hsl(var(--app-bg-muted) / 0.62), transparent 24rem),
+      hsl(var(--app-bg) / 0.72);
+  }
+
+  .app-shell-stage {
+    position: relative;
+    background:
+      radial-gradient(circle at 72% 8%, hsl(var(--app-accent) / 0.045), transparent 22rem),
+      hsl(var(--app-bg) / 0.58);
+  }
+
+  .app-view-surface {
+    background:
+      linear-gradient(180deg, hsl(var(--app-bg-elevated) / 0.74), hsl(var(--app-bg) / 0.86));
+  }
+
+  .app-view-frame {
+    gap: 1rem;
+  }
+
+  .app-view-header {
+    display: flex;
+    min-height: 5.75rem;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.25rem 0.25rem 0.75rem;
   }
 
   .app-panel {
@@ -200,14 +230,18 @@
     border-bottom: 1px solid hsl(var(--app-border) / 0.78);
     background:
       linear-gradient(180deg, hsl(var(--app-panel-strong) / 0.96), hsl(var(--app-panel) / 0.9));
-    box-shadow: var(--app-shadow-soft);
+    box-shadow: 0 12px 34px -30px hsl(220 40% 16% / 0.5), 0 1px 0 hsl(0 0% 100% / 0.72) inset;
     backdrop-filter: blur(18px);
+  }
+
+  .dark .app-toolbar {
+    box-shadow: 0 14px 42px -30px hsl(0 0% 0% / 0.85), 0 1px 0 hsl(0 0% 100% / 0.06) inset;
   }
 
   .app-side-rail {
     border-right: 1px solid hsl(var(--app-border) / 0.78);
     background:
-      linear-gradient(180deg, hsl(var(--app-panel) / 0.82), hsl(var(--app-bg-muted) / 0.72));
+      linear-gradient(180deg, hsl(var(--app-panel) / 0.9), hsl(var(--app-bg-muted) / 0.78));
     box-shadow: 1px 0 0 hsl(0 0% 100% / 0.55) inset;
     backdrop-filter: blur(18px);
   }
@@ -255,6 +289,8 @@
     width: 2.75rem;
     align-items: center;
     justify-content: center;
+    gap: 0.65rem;
+    border: 1px solid transparent;
     border-radius: 0.7rem;
     color: hsl(var(--muted-foreground));
     transition: background-color 180ms ease, color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
@@ -267,6 +303,7 @@
   }
 
   .app-rail-button[data-active="true"] {
+    border-color: hsl(var(--app-accent) / 0.12);
     background: hsl(var(--app-accent-soft) / 0.9);
     color: hsl(var(--app-accent));
     box-shadow: 0 10px 26px -20px hsl(var(--app-accent) / 0.55);
@@ -281,6 +318,67 @@
     width: 0.18rem;
     border-radius: 999px;
     background: hsl(var(--app-accent));
+  }
+
+  .app-resizable-handle {
+    width: 0.125rem !important;
+    background:
+      linear-gradient(180deg, transparent, hsl(var(--app-border) / 0.72), transparent);
+  }
+
+  .app-resizable-handle::after {
+    width: 0.25rem !important;
+  }
+
+  .app-split-handle {
+    --tw-translate-x: 0;
+    --tw-translate-y: 0;
+    --tw-rotate: 0;
+    --tw-skew-x: 0;
+    --tw-skew-y: 0;
+    position: relative;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    border: 1px solid hsl(var(--app-border) / 0.78);
+    background: hsl(var(--app-panel-strong) / 0.96);
+    color: hsl(var(--muted-foreground));
+    box-shadow: var(--app-shadow-floating);
+    outline: none;
+    transition:
+      width 300ms cubic-bezier(0.32, 0.72, 0, 1),
+      height 300ms cubic-bezier(0.32, 0.72, 0, 1),
+      background-color 180ms ease,
+      border-color 180ms ease,
+      color 180ms ease,
+      box-shadow 220ms ease,
+      transform 220ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  .app-split-handle:hover {
+    border-color: hsl(var(--app-accent) / 0.28);
+    background: hsl(var(--app-accent-soft) / 0.86);
+    color: hsl(var(--foreground));
+    box-shadow: 0 22px 54px -28px hsl(var(--app-accent) / 0.55), 0 1px 0 hsl(0 0% 100% / 0.7) inset;
+  }
+
+  .app-split-handle:active {
+    transform:
+      translate(var(--tw-translate-x), var(--tw-translate-y))
+      rotate(var(--tw-rotate))
+      skewX(var(--tw-skew-x))
+      skewY(var(--tw-skew-y))
+      scaleX(0.96)
+      scaleY(0.96);
+  }
+
+  .app-split-handle:focus-visible {
+    box-shadow:
+      0 0 0 2px hsl(var(--background)),
+      0 0 0 4px hsl(var(--app-focus) / 0.56),
+      var(--app-shadow-floating);
   }
 
   .app-skeleton {

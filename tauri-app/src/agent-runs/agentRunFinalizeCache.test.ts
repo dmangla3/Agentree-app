@@ -61,6 +61,7 @@ describe('agent run finalize cache patching', () => {
     expect(patched.execution_data.meta).toEqual({
       existing: true,
       output_commit_sha: 'commit-1',
+      git_branch_name: 'agent/branch',
       commit_created: true,
     });
   });

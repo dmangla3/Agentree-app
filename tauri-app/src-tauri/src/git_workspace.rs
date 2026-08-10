@@ -1299,6 +1299,49 @@ pub async fn agent_worktree_has_changes(
     Ok(!status.trim().is_empty())
 }
 
+pub fn agent_worktree_head_commit_if_advanced(
+    repo_path: &str,
+    node_id: &str,
+    parent_commit: &str,
+) -> Result<Option<GitCommitMetadata>, String> {
+    let parent_commit = parent_commit.trim();
+    if parent_commit.is_empty() {
+        return Ok(None);
+    }
+
+    let worktree_path = worktree_root(repo_path)?.join(node_id);
+    let worktree_path_string = worktree_path.to_string_lossy().to_string();
+    let normalized_parent = run_git(
+        &worktree_path_string,
+        &["rev-parse", &format!("{}^{{commit}}", parent_commit)],
+    )?
+    .trim()
+    .to_string();
+    let head = run_git(&worktree_path_string, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_string();
+
+    if head.is_empty() || head == normalized_parent {
+        return Ok(None);
+    }
+
+    if !run_git_success(
+        &worktree_path_string,
+        &["merge-base", "--is-ancestor", &normalized_parent, &head],
+    ) {
+        log_agent_worktree_lifecycle(
+            "head_advanced.non_ancestor",
+            repo_path,
+            node_id,
+            &worktree_path,
+            &format!("parent={} head={}", normalized_parent, head),
+        );
+        return Ok(None);
+    }
+
+    read_commit_metadata_sync(&worktree_path_string, &head).map(Some)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn finalize_agent_worktree(
@@ -1456,8 +1499,39 @@ pub async fn cleanup_worktree_owned(
 
 #[cfg(test)]
 mod tests {
-    use super::is_env_file;
+    use super::{agent_worktree_head_commit_if_advanced, is_env_file, worktree_root};
+    use std::fs;
     use std::path::Path;
+    use std::process::Command;
+
+    fn run_test_git(repo_path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn init_test_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("repo tempdir");
+        run_test_git(dir.path(), &["init"]);
+        run_test_git(dir.path(), &["config", "user.name", "Agentree Test"]);
+        run_test_git(
+            dir.path(),
+            &["config", "user.email", "agentree@example.com"],
+        );
+        fs::write(dir.path().join("base.txt"), "base\n").expect("write base file");
+        run_test_git(dir.path(), &["add", "base.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "base commit"]);
+        dir
+    }
 
     #[test]
     fn env_file_detection_matches_dotenv_variants() {
@@ -1466,6 +1540,41 @@ mod tests {
         assert!(is_env_file(Path::new("nested/.env.production")));
         assert!(!is_env_file(Path::new("README.md")));
         assert!(!is_env_file(Path::new(".gitignore")));
+    }
+
+    #[test]
+    fn agent_worktree_head_commit_if_advanced_detects_clean_committed_output() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-clean-commit";
+        let worktree_path = worktree_root(&repo_path)
+            .expect("worktree root")
+            .join(node_id);
+        let worktree_path_string = worktree_path.to_string_lossy().to_string();
+        run_test_git(
+            dir.path(),
+            &[
+                "worktree",
+                "add",
+                &worktree_path_string,
+                "-B",
+                &format!("agentree/{node_id}"),
+                &parent_commit,
+            ],
+        );
+        fs::write(worktree_path.join("assistant.txt"), "assistant output\n")
+            .expect("write assistant output");
+        run_test_git(&worktree_path, &["add", "assistant.txt"]);
+        run_test_git(&worktree_path, &["commit", "-m", "assistant output"]);
+        assert!(run_test_git(&worktree_path, &["status", "--porcelain"]).is_empty());
+
+        let detected = agent_worktree_head_commit_if_advanced(&repo_path, node_id, &parent_commit)
+            .expect("detect advanced head")
+            .expect("advanced head commit");
+
+        assert_eq!(detected.subject, "assistant output");
+        assert_eq!(detected.parents, vec![parent_commit]);
     }
 }
 

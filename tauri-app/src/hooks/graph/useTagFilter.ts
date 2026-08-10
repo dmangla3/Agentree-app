@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { subHours, subDays, startOfDay, endOfDay } from 'date-fns';
-import { BranchPointer, Message, Scope } from '../../stores/workspaceStore';
+import { BranchPointer, Message } from '../../stores/workspaceStore';
 import { classifyMessageNodeKind } from '../../domain/nodes';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -12,21 +12,17 @@ export type AgentOperator = 'any_of' | 'none_of';
 export type TagOperator = 'has_any' | 'has_all' | 'has_none';
 export type GroupOperator = 'and' | 'or';
 export type MessageNodeType = 'user_message' | 'assistant_message' | 'commit_message';
-export type ScopeFilterMode = 'all' | 'custom';
 
 export interface UseTagFilterResult {
     // Available filter values
     uniqueTags: string[];
     uniqueAgentIds: string[];
-    availableScopes: Scope[];
 
     // Current filter state
     timePreset: TimePreset;
     customTimeFrom: string;
     customTimeTo: string;
     selectedAgentIds: Set<string>;
-    scopeFilterMode: ScopeFilterMode;
-    selectedScopeIds: Set<string>;
     selectedFilterTags: Set<string>;
     selectedNodeTypes: Set<MessageNodeType>;
     agentOperator: AgentOperator;
@@ -43,9 +39,6 @@ export interface UseTagFilterResult {
     setCustomTimeFrom: (value: string) => void;
     setCustomTimeTo: (value: string) => void;
     handleAgentFilterChange: (agentId: string, checked: boolean) => void;
-    handleScopeFilterChange: (scopeId: string, checked: boolean) => void;
-    handleSelectAllScopes: () => void;
-    handleSelectNoScopes: () => void;
     handleTagFilterChange: (tag: string, checked: boolean) => void;
     handleNodeTypeFilterChange: (nodeType: MessageNodeType, checked: boolean) => void;
     setAgentOperator: (op: AgentOperator) => void;
@@ -69,8 +62,6 @@ interface PersistedGraphFilterState {
     customTimeFrom?: string;
     customTimeTo?: string;
     selectedAgentIds?: string[];
-    scopeFilterMode?: ScopeFilterMode;
-    selectedScopeIds?: string[];
     selectedFilterTags?: string[];
     selectedNodeTypes?: MessageNodeType[];
     agentOperator?: AgentOperator;
@@ -113,7 +104,6 @@ const writePersistedGraphFilterState = (storageKey: string, state: PersistedGrap
 export function useTagFilter(
     messages: Message[],
     _branchPointers: BranchPointer[] = [],
-    scopes: Scope[] = [],
     storageKey: string = DEFAULT_GRAPH_FILTER_STORAGE_KEY,
 ): UseTagFilterResult {
     const [persistedStorageKey, setPersistedStorageKey] = useState(storageKey);
@@ -122,8 +112,6 @@ export function useTagFilter(
     const [customTimeFrom, setCustomTimeFrom] = useState(() => initialState.customTimeFrom ?? '');
     const [customTimeTo, setCustomTimeTo] = useState(() => initialState.customTimeTo ?? '');
     const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(() => new Set(initialState.selectedAgentIds ?? []));
-    const [scopeFilterMode, setScopeFilterMode] = useState<ScopeFilterMode>(() => initialState.scopeFilterMode ?? 'all');
-    const [selectedScopeIds, setSelectedScopeIds] = useState<Set<string>>(() => new Set(initialState.selectedScopeIds ?? []));
     const [selectedFilterTags, setSelectedFilterTags] = useState<Set<string>>(() => new Set(initialState.selectedFilterTags ?? []));
     const [selectedNodeTypes, setSelectedNodeTypes] = useState<Set<MessageNodeType>>(() => new Set(initialState.selectedNodeTypes ?? []));
     const [agentOperator, setAgentOperator] = useState<AgentOperator>(() => initialState.agentOperator ?? 'any_of');
@@ -141,8 +129,6 @@ export function useTagFilter(
         setCustomTimeFrom(nextState.customTimeFrom ?? '');
         setCustomTimeTo(nextState.customTimeTo ?? '');
         setSelectedAgentIds(new Set(nextState.selectedAgentIds ?? []));
-        setScopeFilterMode(nextState.scopeFilterMode ?? 'all');
-        setSelectedScopeIds(new Set(nextState.selectedScopeIds ?? []));
         setSelectedFilterTags(new Set(nextState.selectedFilterTags ?? []));
         setSelectedNodeTypes(new Set(nextState.selectedNodeTypes ?? []));
         setAgentOperator(nextState.agentOperator ?? 'any_of');
@@ -187,30 +173,6 @@ export function useTagFilter(
         return Array.from(ids).sort((a, b) => a.localeCompare(b));
     }, [assistantMessages]);
 
-    const availableScopes = useMemo(
-        () => scopes.filter((scope) => scope.status !== 'archived').sort((a, b) => a.name.localeCompare(b.name)),
-        [scopes]
-    );
-
-    useEffect(() => {
-        if (scopeFilterMode === 'all') {
-            if (selectedScopeIds.size === 0) return;
-            setSelectedScopeIds(new Set());
-            return;
-        }
-        if (availableScopes.length === 0 && selectedScopeIds.size === 0) return;
-        const availableScopeIds = new Set(availableScopes.map((scope) => scope.id));
-        setSelectedScopeIds((prev) => {
-            const next = new Set(Array.from(prev).filter((scopeId) => availableScopeIds.has(scopeId)));
-            if (availableScopes.length > 0 && next.size === availableScopes.length) {
-                setScopeFilterMode('all');
-                return new Set();
-            }
-            if (next.size === prev.size) return prev;
-            return next;
-        });
-    }, [availableScopes, scopeFilterMode, selectedScopeIds.size]);
-
     // Calculate unique tags from messages
     const uniqueTags = useMemo(() => {
         const tagsSet = new Set<string>();
@@ -253,11 +215,6 @@ export function useTagFilter(
         return !isSelected;
     }, [agentOperator, selectedAgentIds]);
 
-    const evaluateScopeMatch = useCallback((scopeId: string | null | undefined): boolean => {
-        if (scopeFilterMode === 'all') return true;
-        return !!scopeId && selectedScopeIds.has(scopeId);
-    }, [scopeFilterMode, selectedScopeIds]);
-
     const evaluateTagMatch = useCallback((tags: string[] | null | undefined): boolean => {
         if (selectedFilterTags.size === 0) return true;
         const messageTags = new Set((tags ?? []).map((tag) => tag.toLowerCase()));
@@ -284,13 +241,11 @@ export function useTagFilter(
 
     const hasNodeTypeFilter = selectedNodeTypes.size > 0;
     const hasAgentFilter = selectedAgentIds.size > 0;
-    const hasScopeFilter = scopeFilterMode === 'custom';
     const hasTagFilter = selectedFilterTags.size > 0;
     const activeFilterCount =
         Number(hasTimeFilter) +
         Number(hasNodeTypeFilter) +
         Number(hasAgentFilter) +
-        Number(hasScopeFilter) +
         Number(hasTagFilter);
     const messageNodeCount = messages.length;
 
@@ -309,7 +264,6 @@ export function useTagFilter(
             if (hasTimeFilter) clauseResults.push(evaluateTimeMatch(msg.createdAt));
             if (hasNodeTypeFilter) clauseResults.push(evaluateNodeTypeMatch(nodeTypeByMessageId.get(msg.id) ?? 'assistant_message'));
             if (hasAgentFilter) clauseResults.push(evaluateAgentMatch(msg.agent_id));
-            if (hasScopeFilter) clauseResults.push(evaluateScopeMatch(msg.scope_id));
             if (hasTagFilter) clauseResults.push(evaluateTagMatch(msg.tags));
 
             if (clauseResults.length === 0) {
@@ -329,13 +283,11 @@ export function useTagFilter(
         activeFilterCount,
         evaluateAgentMatch,
         evaluateNodeTypeMatch,
-        evaluateScopeMatch,
         evaluateTagMatch,
         evaluateTimeMatch,
         groupOperator,
         hasAgentFilter,
         hasNodeTypeFilter,
-        hasScopeFilter,
         hasTagFilter,
         hasTimeFilter,
         messages,
@@ -348,8 +300,6 @@ export function useTagFilter(
             customTimeFrom,
             customTimeTo,
             selectedAgentIds: Array.from(selectedAgentIds),
-            scopeFilterMode,
-            selectedScopeIds: Array.from(selectedScopeIds),
             selectedFilterTags: Array.from(selectedFilterTags),
             selectedNodeTypes: Array.from(selectedNodeTypes),
             agentOperator,
@@ -369,8 +319,6 @@ export function useTagFilter(
         selectedAgentIds,
         selectedFilterTags,
         selectedNodeTypes,
-        scopeFilterMode,
-        selectedScopeIds,
         tagOperator,
         timePreset,
     ]);
@@ -386,35 +334,6 @@ export function useTagFilter(
             }
             return next;
         });
-    }, []);
-
-    const handleScopeFilterChange = useCallback((scopeId: string, checked: boolean) => {
-        setSelectedScopeIds((prev: Set<string>) => {
-            const next = scopeFilterMode === 'all'
-                ? new Set(availableScopes.map((scope) => scope.id))
-                : new Set(prev);
-            if (checked) {
-                next.add(scopeId);
-            } else {
-                next.delete(scopeId);
-            }
-            if (availableScopes.length > 0 && next.size === availableScopes.length) {
-                setScopeFilterMode('all');
-                return new Set();
-            }
-            setScopeFilterMode('custom');
-            return next;
-        });
-    }, [availableScopes, scopeFilterMode]);
-
-    const handleSelectAllScopes = useCallback(() => {
-        setScopeFilterMode('all');
-        setSelectedScopeIds(new Set());
-    }, []);
-
-    const handleSelectNoScopes = useCallback(() => {
-        setScopeFilterMode('custom');
-        setSelectedScopeIds(new Set());
     }, []);
 
     const handleTagFilterChange = useCallback((tag: string, checked: boolean) => {
@@ -449,8 +368,6 @@ export function useTagFilter(
         setCustomTimeFrom('');
         setCustomTimeTo('');
         setSelectedAgentIds(new Set());
-        setScopeFilterMode('all');
-        setSelectedScopeIds(new Set());
         setSelectedFilterTags(new Set());
         setSelectedNodeTypes(new Set());
         setAgentOperator('any_of');
@@ -468,13 +385,10 @@ export function useTagFilter(
     return {
         uniqueTags,
         uniqueAgentIds,
-        availableScopes,
         timePreset,
         customTimeFrom,
         customTimeTo,
         selectedAgentIds,
-        scopeFilterMode,
-        selectedScopeIds,
         selectedFilterTags,
         selectedNodeTypes,
         agentOperator,
@@ -489,9 +403,6 @@ export function useTagFilter(
         setCustomTimeFrom,
         setCustomTimeTo,
         handleAgentFilterChange,
-        handleScopeFilterChange,
-        handleSelectAllScopes,
-        handleSelectNoScopes,
         handleTagFilterChange,
         handleNodeTypeFilterChange,
         setAgentOperator,

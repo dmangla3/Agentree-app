@@ -1,5 +1,5 @@
 import { memo, type MouseEvent } from 'react';
-import { Sparkles, Clock, Pencil, Layers3 } from 'lucide-react';
+import { Sparkles, Clock, Pencil } from 'lucide-react';
 import { ChatCardWrapper } from './ChatCardWrapper';
 import { ChatMarkdown } from './ChatMarkdown';
 import { SharedNodeProps } from '../../../types/nodes';
@@ -11,7 +11,6 @@ export const ChatUserCard = memo(({
   isFocused,
   isSelected,
   scopeColor,
-  scopeName,
   onFocus,
   onSelect,
   onContextMenu,
@@ -51,15 +50,6 @@ export const ChatUserCard = memo(({
             <Sparkles size={10} strokeWidth={2} />
             <span>You</span>
           </div>
-          {scopeName && (
-            <span
-              className="inline-flex min-w-0 max-w-[180px] items-center gap-1 rounded-full border border-border/60 bg-background/70 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
-              title={scopeName}
-            >
-              <Layers3 size={9} strokeWidth={2.5} className="shrink-0" style={scopeColor ? { color: scopeColor } : undefined} />
-              <span className="truncate">{scopeName}</span>
-            </span>
-          )}
         </div>
 
         {timestamp && (

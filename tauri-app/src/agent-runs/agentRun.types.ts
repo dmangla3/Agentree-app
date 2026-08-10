@@ -25,6 +25,15 @@ export type AgentRunPhase =
   | 'terminal'
   | 'cleanup';
 
+export interface AgentRunFinalizeAck {
+  status: AgentRunStatus;
+  outputCommitSha: string | null;
+  commitCreated: boolean | null;
+  gitBranchName: string | null;
+  persisted: boolean | null;
+  serverAckAt: string | null;
+}
+
 export interface AgentRunSnapshot {
   nodeId: string;
   workspaceId: string | null;
@@ -44,6 +53,7 @@ export interface AgentRunSnapshot {
   usage: Record<string, any> | null;
   terminalStatus: AgentRunStatus | null;
   terminalReason: string | null;
+  finalizeAck: AgentRunFinalizeAck | null;
   terminalHoldUntil: number | null;
   cleanupAt: number | null;
   updatedAt: string;
@@ -74,7 +84,16 @@ export type AgentRunEvent =
   | { type: 'execution_data'; patch: Record<string, any> }
   | { type: 'usage'; usage: Record<string, any> }
   | { type: 'finalize_progress'; progress: string; phase?: string | null }
-  | { type: 'finalize_ack'; meta: Record<string, any>; commitCreated?: boolean | null }
+  | {
+      type: 'finalize_ack';
+      status?: AgentRunStatus | null;
+      outputCommitSha?: string | null;
+      commitCreated?: boolean | null;
+      gitBranchName?: string | null;
+      persisted?: boolean | null;
+      serverAckAt?: string | null;
+      meta?: Record<string, any>;
+    }
   | { type: 'terminal'; status: AgentRunStatus; content?: string | null; reason?: string | null; holdMs?: number }
   | { type: 'cancel'; reason?: string | null }
   | { type: 'cleanup' }

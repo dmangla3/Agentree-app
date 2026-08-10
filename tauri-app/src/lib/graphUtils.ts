@@ -94,7 +94,7 @@ const getFilesChanged = (message: Message): Array<{ additions?: number; deletion
   return Array.isArray(files) ? files : [];
 };
 
-const createMessageHeightKey = ({
+export const createMessageHeightKey = ({
   message,
   entity,
   nodeKind,

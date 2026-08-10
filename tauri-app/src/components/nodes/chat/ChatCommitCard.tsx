@@ -1,5 +1,5 @@
 import { memo, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, FileCode2, GitCommitHorizontal, Loader2, Files, GitBranch, Layers3 } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileCode2, GitCommitHorizontal, Loader2, Files, GitBranch } from 'lucide-react';
 import { ChatCardWrapper } from './ChatCardWrapper';
 import { SharedNodeProps } from '../../../types/nodes';
 import { cn } from '../../../lib/utils';
@@ -24,7 +24,6 @@ export const ChatCommitCard = memo(({
   isFocused,
   isSelected,
   scopeColor,
-  scopeName,
   onFocus,
   onSelect,
   onContextMenu,
@@ -145,15 +144,6 @@ export const ChatCommitCard = memo(({
                 {entity.shortSha}
                 <CopyCommitShaButton commitSha={nodeCommit} className="h-3.5 w-3.5 text-emerald-700/70 dark:text-emerald-300/70" />
               </code>
-              {scopeName && (
-                <span
-                  className="inline-flex min-w-0 max-w-[180px] items-center gap-1 rounded-full border border-border/60 bg-background/80 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
-                  title={scopeName}
-                >
-                  <Layers3 size={9} strokeWidth={2.5} className="shrink-0" style={scopeColor ? { color: scopeColor } : undefined} />
-                  <span className="truncate">{scopeName}</span>
-                </span>
-              )}
               <span className="min-w-0 break-words text-[11px] text-muted-foreground">
                 {entity.authorName}
               </span>

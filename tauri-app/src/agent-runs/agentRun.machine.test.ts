@@ -22,6 +22,7 @@ const baseSnapshot = (overrides: Partial<AgentRunSnapshot> = {}): AgentRunSnapsh
   usage: null,
   terminalStatus: null,
   terminalReason: null,
+  finalizeAck: null,
   terminalHoldUntil: null,
   cleanupAt: null,
   updatedAt: '2026-05-06T00:00:00.000Z',
@@ -185,6 +186,36 @@ describe('agentRun.machine', () => {
     expect(snapshot.phase).toBe('terminal');
     expect(snapshot.progress).toBe('Commit generated');
     expect(snapshot.executionData.meta.output_commit_sha).toBe('commit-1');
+  });
+
+  it('stores typed finalize ack metadata on the actor snapshot', () => {
+    const snapshot = reduce([
+      {
+        type: 'finalize_ack',
+        status: 'completed',
+        outputCommitSha: 'commit-1',
+        gitBranchName: 'agent/run-1',
+        commitCreated: true,
+        persisted: true,
+        serverAckAt: '2026-05-19T10:00:00.000Z',
+      } as any,
+    ]);
+
+    expect((snapshot as any).finalizeAck).toEqual({
+      status: 'completed',
+      outputCommitSha: 'commit-1',
+      gitBranchName: 'agent/run-1',
+      commitCreated: true,
+      persisted: true,
+      serverAckAt: '2026-05-19T10:00:00.000Z',
+    });
+    expect(snapshot.executionData.meta).toMatchObject({
+      output_commit_sha: 'commit-1',
+      git_branch_name: 'agent/run-1',
+      commit_created: true,
+      persisted: true,
+      server_ack_at: '2026-05-19T10:00:00.000Z',
+    });
   });
 
   it('covers the full adapter lifecycle contract through finalize ack and exit', () => {

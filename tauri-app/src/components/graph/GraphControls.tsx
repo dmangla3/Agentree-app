@@ -1,5 +1,4 @@
 import { ReactNode, RefObject, TouchEvent, WheelEvent, useEffect, useMemo, useState } from 'react';
-import { Badge } from '../../../@/components/ui/badge';
 import { Button } from '../../../@/components/ui/button';
 import {
     HoverCard,
@@ -46,14 +45,39 @@ import {
     Zap,
     RotateCcw,
     User,
-    Layers3,
     Leaf,
-    ChevronDown,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { Insight, Scope } from '../../stores/workspaceStore';
+import { Insight } from '../../stores/workspaceStore';
 import { LayoutMode, LaneStrategy } from '../../hooks/graph/useGraphLayout';
-import { AgentOperator, GroupOperator, MessageNodeType, ScopeFilterMode, TagOperator, TimePreset } from '../../hooks/graph/useTagFilter';
+import { AgentOperator, GroupOperator, MessageNodeType, TagOperator, TimePreset } from '../../hooks/graph/useTagFilter';
+
+function ParallelThreadsIcon({ size = 15, strokeWidth = 2 }: { size?: number; strokeWidth?: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={strokeWidth}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+            focusable="false"
+        >
+            <path d="M7 4c-2 3-2 5 0 8s2 5 0 8" />
+            <path d="M12 4c-2 3-2 5 0 8s2 5 0 8" />
+            <path d="M17 4c-2 3-2 5 0 8s2 5 0 8" />
+            <circle cx="7" cy="4" r="1" fill="currentColor" stroke="none" />
+            <circle cx="12" cy="4" r="1" fill="currentColor" stroke="none" />
+            <circle cx="17" cy="4" r="1" fill="currentColor" stroke="none" />
+            <circle cx="7" cy="20" r="1" fill="currentColor" stroke="none" />
+            <circle cx="12" cy="20" r="1" fill="currentColor" stroke="none" />
+            <circle cx="17" cy="20" r="1" fill="currentColor" stroke="none" />
+        </svg>
+    );
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -115,16 +139,10 @@ export interface GraphControlsProps {
     uniqueAgentIds: string[];
     agentLabelsById: Map<string, string>;
     selectedAgentIds: Set<string>;
-    availableScopes: Scope[];
-    scopeFilterMode: ScopeFilterMode;
-    selectedScopeIds: Set<string>;
     selectedNodeTypes: Set<MessageNodeType>;
     agentOperator: AgentOperator;
     onAgentOperatorChange: (op: AgentOperator) => void;
     onAgentFilterChange: (agentId: string, checked: boolean) => void;
-    onScopeFilterChange: (scopeId: string, checked: boolean) => void;
-    onSelectAllScopes: () => void;
-    onSelectNoScopes: () => void;
     onNodeTypeFilterChange: (nodeType: MessageNodeType, checked: boolean) => void;
     uniqueTags: string[];
     selectedFilterTags: Set<string>;
@@ -207,16 +225,10 @@ export function GraphControls({
     uniqueAgentIds,
     agentLabelsById,
     selectedAgentIds,
-    availableScopes,
-    scopeFilterMode,
-    selectedScopeIds,
     selectedNodeTypes,
     agentOperator,
     onAgentOperatorChange,
     onAgentFilterChange,
-    onScopeFilterChange,
-    onSelectAllScopes,
-    onSelectNoScopes,
     onNodeTypeFilterChange,
     uniqueTags,
     selectedFilterTags,
@@ -256,7 +268,6 @@ export function GraphControls({
 }: GraphControlsProps) {
     const insightsCount = insights.length;
     const [agentSearch, setAgentSearch] = useState('');
-    const [scopeSearch, setScopeSearch] = useState('');
     const [tagSearch, setTagSearch] = useState('');
     const filteredAgentIds = useMemo(() => {
         const q = agentSearch.trim().toLowerCase();
@@ -266,11 +277,6 @@ export function GraphControls({
             return label.toLowerCase().includes(q);
         });
     }, [agentLabelsById, agentSearch, uniqueAgentIds]);
-    const filteredScopes = useMemo(() => {
-        const q = scopeSearch.trim().toLowerCase();
-        if (!q) return availableScopes;
-        return availableScopes.filter((scope) => scope.name.toLowerCase().includes(q));
-    }, [availableScopes, scopeSearch]);
     const filteredTags = useMemo(() => {
         const q = tagSearch.trim().toLowerCase();
         if (!q) return uniqueTags;
@@ -325,11 +331,6 @@ export function GraphControls({
     const selectedNodeTypesLabel = selectedNodeTypes.size > 0
         ? `Types: ${selectedNodeTypes.size}`
         : null;
-    const selectedScopesLabel = scopeFilterMode === 'custom'
-        ? selectedScopeIds.size === 0
-            ? 'Scopes: none'
-            : `Scopes: ${selectedScopeIds.size}`
-        : null;
     const selectedTagsLabel = selectedFilterTags.size > 0
         ? `${tagOperator.replace('_', ' ')}: ${selectedFilterTags.size}`
         : null;
@@ -358,15 +359,17 @@ export function GraphControls({
             tone: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-300',
         },
     ];
-    const pillClass = "inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-gradient-to-r from-primary/10 to-primary/5 px-2.5 py-0.5 text-[11px] font-medium text-primary shadow-sm";
-    const sectionClass = "rounded-xl border border-border/40 bg-gradient-to-b from-muted/30 to-muted/10 p-3 space-y-2.5 shadow-sm";
+    const toolbarButtonClass = "border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel-strong)/0.74)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)] transition-[background-color,border-color,color,box-shadow,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.75)] hover:bg-[hsl(var(--app-accent-soft)/0.52)] hover:text-foreground active:scale-[0.98]";
+    const activeToolbarButtonClass = "border-[hsl(var(--app-accent)/0.35)] bg-[hsl(var(--app-accent-soft)/0.72)] text-[hsl(var(--app-accent))] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.05)]";
+    const toolbarDividerClass = "h-5 w-px bg-[hsl(var(--app-border)/0.68)]";
+    const pillClass = "inline-flex items-center gap-1.5 rounded-md border border-[hsl(var(--app-accent)/0.18)] bg-[hsl(var(--app-accent-soft)/0.48)] px-2 py-0.5 text-[11px] font-medium text-[hsl(var(--app-accent))]";
+    const sectionClass = "rounded-xl border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel-strong)/0.62)] p-3 space-y-2.5 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]";
     const toggleButtonClass = "h-7 px-2.5 text-[11px] font-medium transition-all duration-150";
-    
-    // Modern icon button styles with enhanced visual effects
-    const iconButtonBase = "group relative flex items-center justify-center rounded-lg transition-all duration-200 ease-out";
-    const iconButtonGhost = "h-8 w-8 hover:bg-gradient-to-br hover:from-muted/80 hover:to-muted/40 hover:shadow-sm hover:shadow-black/5 active:scale-95";
-    const iconContainer = "flex items-center justify-center transition-transform duration-200 group-hover:scale-110 group-active:scale-95";
-    const iconGlow = "absolute inset-0 rounded-lg bg-gradient-to-br from-primary/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200";
+
+    const iconButtonBase = "group relative flex items-center justify-center rounded-lg transition-all duration-150 ease-out";
+    const iconButtonGhost = cn("h-8 w-8 px-0", toolbarButtonClass);
+    const iconContainer = "flex items-center justify-center transition-transform duration-150 group-active:scale-95";
+    const iconGlow = "absolute inset-0 rounded-lg bg-[hsl(var(--app-accent-soft)/0.28)] opacity-0 transition-opacity duration-150 group-hover:opacity-100";
     const leafStatusToneClass = {
         active: 'bg-amber-500/12 text-amber-700 dark:bg-amber-400/12 dark:text-amber-300',
         success: 'bg-emerald-500/12 text-emerald-700 dark:bg-emerald-400/12 dark:text-emerald-300',
@@ -377,12 +380,12 @@ export function GraphControls({
     return (
         <div
             ref={controlsRef}
-            className="border-b border-border/30 bg-background/95 backdrop-blur-md flex-shrink-0 z-20"
+            className="z-20 flex-shrink-0 border-b border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel)/0.92)] shadow-[inset_0_-1px_0_hsl(var(--foreground)/0.03)] backdrop-blur-md"
         >
             {/* Main Row - Compact */}
-            <div className="flex items-center justify-between px-3 py-1.5">
+            <div className="flex items-center justify-between gap-3 px-3 py-1.5">
                 {/* LEFT GROUP: Compact Actions */}
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-2">
                     {/* Filter - Modern Compact */}
                     <div className="relative">
                     <DropdownMenu>
@@ -391,29 +394,28 @@ export function GraphControls({
                             type="button"
                             className={cn(
                                 iconButtonBase,
-                                "h-8 pl-2.5 gap-1.5 text-xs font-medium transition-all duration-200",
+                                toolbarButtonClass,
+                                "h-8 gap-1.5 pl-2.5 text-xs font-medium",
                                 activeFilterCount > 0 ? "pr-7" : "pr-2",
-                                activeFilterCount > 0
-                                    ? "bg-gradient-to-br from-primary/90 to-primary/70 text-primary-foreground shadow-md shadow-primary/25 hover:shadow-lg hover:shadow-primary/30 hover:from-primary to-primary/80 border-0"
-                                    : "bg-gradient-to-br from-background to-muted/50 text-muted-foreground hover:text-foreground border border-border/40 shadow-sm hover:shadow-md hover:border-border/60"
+                                activeFilterCount > 0 && activeToolbarButtonClass
                             )}
                         >
-                            <span className={cn(iconContainer, activeFilterCount > 0 && "drop-shadow-sm")}>
+                            <span className={iconContainer}>
                                 <SlidersHorizontal size={13} strokeWidth={2} />
                             </span>
                             <span className="hidden md:inline font-medium">{filterButtonText}</span>
                             <span className={cn(
-                                "rounded-full px-1.5 py-0 text-[10px] font-semibold min-w-[1.25rem] text-center transition-all",
+                                "min-w-[1.25rem] rounded-md border px-1.5 py-0 text-center text-[10px] font-semibold tabular-nums transition-all",
                                 activeFilterCount > 0
-                                    ? "bg-white/25 text-white"
-                                    : "bg-muted text-muted-foreground"
+                                    ? "border-[hsl(var(--app-accent)/0.22)] bg-[hsl(var(--app-accent)/0.12)] text-[hsl(var(--app-accent))]"
+                                    : "border-[hsl(var(--app-border)/0.55)] bg-[hsl(var(--background)/0.72)] text-muted-foreground"
                             )}>
                                 {matchingCount}
                             </span>
                         </button>
                     </DropdownMenuTrigger>
                         <DropdownMenuContent className="w-[min(420px,calc(100vw-2rem))] p-0 overflow-hidden" align="start">
-                            <div className="p-4 pb-3 bg-gradient-to-b from-muted/30 to-transparent">
+                            <div className="border-b border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-panel-strong)/0.64)] p-4 pb-3">
                                 <div className="flex items-center justify-between">
                                     <div className="flex items-center gap-2">
                                         <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-primary/10 text-primary">
@@ -436,7 +438,7 @@ export function GraphControls({
                                         Clear all
                                     </Button>
                                 </div>
-                                <div className="mt-4 flex items-center justify-between rounded-xl border border-border/40 bg-background/50 backdrop-blur-sm px-3 py-2.5 shadow-sm">
+                                <div className="mt-4 flex items-center justify-between rounded-xl border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.78)] px-3 py-2.5 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)] backdrop-blur-sm">
                                     <div className="flex items-center gap-2">
                                         <div className="flex items-center justify-center w-6 h-6 rounded-md bg-muted/60">
                                             <Settings2 size={12} className="text-muted-foreground" />
@@ -450,7 +452,7 @@ export function GraphControls({
                                             </p>
                                         </div>
                                     </div>
-                                    <div className="flex items-center gap-1 p-0.5 rounded-lg bg-muted/30">
+                                    <div className="flex items-center gap-1 rounded-lg bg-[hsl(var(--app-bg-muted)/0.72)] p-0.5">
                                         <Button
                                             size="sm"
                                             variant={groupOperator === 'and' ? 'default' : 'ghost'}
@@ -511,7 +513,7 @@ export function GraphControls({
                                 <div className="space-y-3 pr-2">
                                     <div className={sectionClass}>
                                         <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                            <div className="flex items-center justify-center w-5 h-5 rounded-md bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400">
+                                            <div className="flex h-5 w-5 items-center justify-center rounded-md bg-[hsl(var(--app-accent-soft)/0.66)] text-[hsl(var(--app-accent))]">
                                                 <Clock3 size={11} />
                                             </div>
                                             Time Range
@@ -558,7 +560,7 @@ export function GraphControls({
 
                                     <div className={sectionClass}>
                                         <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                            <div className="flex items-center justify-center w-5 h-5 rounded-md bg-fuchsia-100 dark:bg-fuchsia-900/30 text-fuchsia-600 dark:text-fuchsia-400">
+                                            <div className="flex h-5 w-5 items-center justify-center rounded-md bg-[hsl(var(--app-accent-soft)/0.66)] text-[hsl(var(--app-accent))]">
                                                 <GitCommitHorizontal size={11} />
                                             </div>
                                             Node Type
@@ -572,8 +574,8 @@ export function GraphControls({
                                                     className={cn(
                                                         "flex items-center justify-between rounded-lg border px-2.5 py-2 text-left transition-all",
                                                         selectedNodeTypes.has(option.id)
-                                                            ? "border-primary/40 bg-primary/10 shadow-sm"
-                                                            : "border-border/50 bg-background/60 hover:bg-muted/50"
+                                                            ? "border-[hsl(var(--app-accent)/0.35)] bg-[hsl(var(--app-accent-soft)/0.66)]"
+                                                            : "border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.38)]"
                                                     )}
                                                 >
                                                     <span className="flex items-center gap-2 min-w-0">
@@ -589,8 +591,8 @@ export function GraphControls({
                                                         <span className={cn(
                                                             "flex h-4 w-4 items-center justify-center rounded-sm border",
                                                             selectedNodeTypes.has(option.id)
-                                                                ? "border-primary/40 bg-primary text-primary-foreground"
-                                                                : "border-border/60 bg-background"
+                                                                ? "border-[hsl(var(--app-accent)/0.4)] bg-[hsl(var(--app-accent))] text-primary-foreground"
+                                                                : "border-[hsl(var(--app-border)/0.62)] bg-background"
                                                         )}>
                                                             <Check size={10} className={cn(!selectedNodeTypes.has(option.id) && "opacity-0")} />
                                                         </span>
@@ -603,74 +605,12 @@ export function GraphControls({
                                     <div className={sectionClass}>
                                         <div className="flex items-center justify-between">
                                             <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                                <div className="flex items-center justify-center w-5 h-5 rounded-md bg-cyan-100 dark:bg-cyan-900/30 text-cyan-600 dark:text-cyan-400">
-                                                    <Layers3 size={11} />
-                                                </div>
-                                                Scopes
-                                            </div>
-                                            <div className="flex items-center gap-1">
-                                                <Button
-                                                    size="sm"
-                                                    variant={scopeFilterMode === 'all' ? 'default' : 'outline'}
-                                                    className={toggleButtonClass}
-                                                    onClick={onSelectAllScopes}
-                                                >
-                                                    All
-                                                </Button>
-                                                <Button
-                                                    size="sm"
-                                                    variant={scopeFilterMode === 'custom' && selectedScopeIds.size === 0 ? 'default' : 'outline'}
-                                                    className={toggleButtonClass}
-                                                    onClick={onSelectNoScopes}
-                                                >
-                                                    None
-                                                </Button>
-                                            </div>
-                                        </div>
-                                        <div className="relative">
-                                            <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                                            <Input
-                                                value={scopeSearch}
-                                                onChange={(e) => setScopeSearch(e.target.value)}
-                                                placeholder="Search scopes..."
-                                                className="h-8 pl-8 text-xs bg-background/50 border-border/40 focus:border-primary/30"
-                                            />
-                                        </div>
-                                        {availableScopes.length > 0 ? (
-                                            <ScrollArea
-                                                className="max-h-36 overscroll-contain rounded-md border border-border/60 bg-background/70"
-                                                onWheelCapture={stopNestedScrollPropagation}
-                                                onTouchMoveCapture={stopNestedScrollPropagation}
-                                            >
-                                                <div className="p-1">
-                                                    {filteredScopes.map((scope) => (
-                                                        <DropdownMenuCheckboxItem
-                                                            key={scope.id}
-                                                            checked={scopeFilterMode === 'all' || selectedScopeIds.has(scope.id)}
-                                                            onCheckedChange={(checked: boolean) => onScopeFilterChange(scope.id, !!checked)}
-                                                            onSelect={(e: Event) => e.preventDefault()}
-                                                            className="rounded-sm text-xs"
-                                                        >
-                                                            <span className="mr-2 h-2.5 w-2.5 rounded-full" style={{ backgroundColor: scope.color || '#94a3b8' }} />
-                                                            {scope.name}
-                                                        </DropdownMenuCheckboxItem>
-                                                    ))}
-                                                </div>
-                                            </ScrollArea>
-                                        ) : (
-                                            <DropdownMenuItem disabled>No scopes available</DropdownMenuItem>
-                                        )}
-                                    </div>
-
-                                    <div className={sectionClass}>
-                                        <div className="flex items-center justify-between">
-                                            <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                                <div className="flex items-center justify-center w-5 h-5 rounded-md bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400">
+                                                <div className="flex h-5 w-5 items-center justify-center rounded-md bg-[hsl(var(--app-accent-soft)/0.66)] text-[hsl(var(--app-accent))]">
                                                     <Bot size={11} />
                                                 </div>
                                                 Agent
                                             </div>
-                                            <div className="flex items-center gap-1 p-0.5 rounded-lg bg-muted/30">
+                                            <div className="flex items-center gap-1 rounded-lg bg-[hsl(var(--app-bg-muted)/0.72)] p-0.5">
                                                 <Button
                                                     size="sm"
                                                     variant={agentOperator === 'any_of' ? 'default' : 'ghost'}
@@ -726,12 +666,12 @@ export function GraphControls({
                                     <div className={sectionClass}>
                                         <div className="flex items-center justify-between">
                                             <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                                <div className="flex items-center justify-center w-5 h-5 rounded-md bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">
+                                                <div className="flex h-5 w-5 items-center justify-center rounded-md bg-[hsl(var(--app-accent-soft)/0.66)] text-[hsl(var(--app-accent))]">
                                                     <Tags size={11} />
                                                 </div>
                                                 Tags
                                             </div>
-                                            <div className="flex items-center gap-1 p-0.5 rounded-lg bg-muted/30">
+                                            <div className="flex items-center gap-1 rounded-lg bg-[hsl(var(--app-bg-muted)/0.72)] p-0.5">
                                                 <Button
                                                     size="sm"
                                                     variant={tagOperator === 'has_any' ? 'default' : 'ghost'}
@@ -796,7 +736,6 @@ export function GraphControls({
                                             <div className="flex flex-wrap items-center gap-1.5">
                                                 {timeLabel && <span className={pillClass}>{timeLabel}</span>}
                                                 {selectedNodeTypesLabel && <span className={pillClass}>{selectedNodeTypesLabel}</span>}
-                                                {selectedScopesLabel && <span className={pillClass}>{selectedScopesLabel}</span>}
                                                 {selectedAgentsLabel && <span className={pillClass}>{selectedAgentsLabel}</span>}
                                                 {selectedTagsLabel && <span className={pillClass}>{selectedTagsLabel}</span>}
                                                 {(groupOperator === 'or' && activeFilterCount > 1) && (
@@ -840,17 +779,17 @@ export function GraphControls({
                 </div>
 
                 {/* RIGHT GROUP: Compact */}
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-2">
                     {/* View Mode Toggle - Pill Style (matches chat/merge tabs) */}
-                    <div className="flex items-center p-0.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                    <div className="flex items-center rounded-lg border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-bg-muted)/0.72)] p-0.5 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]">
                         <button
                             type="button"
                             onClick={() => onViewModeChange('branch')}
                             className={cn(
-                                "flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all",
+                                "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-[background-color,color,box-shadow] duration-150",
                                 viewMode === 'branch'
-                                    ? "bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-sm ring-1 ring-slate-200 dark:ring-slate-600"
-                                    : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                                    ? "bg-[hsl(var(--app-panel))] text-[hsl(var(--app-accent))] shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72),0_1px_2px_hsl(var(--foreground)/0.05)]"
+                                    : "text-muted-foreground hover:bg-[hsl(var(--app-panel)/0.58)] hover:text-foreground"
                             )}
                             title="Branch View"
                         >
@@ -861,10 +800,10 @@ export function GraphControls({
                             type="button"
                             onClick={() => onViewModeChange('timeline')}
                             className={cn(
-                                "flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all",
+                                "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-[background-color,color,box-shadow] duration-150",
                                 viewMode === 'timeline'
-                                    ? "bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-sm ring-1 ring-slate-200 dark:ring-slate-600"
-                                    : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                                    ? "bg-[hsl(var(--app-panel))] text-[hsl(var(--app-accent))] shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72),0_1px_2px_hsl(var(--foreground)/0.05)]"
+                                    : "text-muted-foreground hover:bg-[hsl(var(--app-panel)/0.58)] hover:text-foreground"
                             )}
                             title="Timeline View"
                         >
@@ -872,6 +811,8 @@ export function GraphControls({
                             <span className="hidden sm:inline">Timeline</span>
                         </button>
                     </div>
+
+                    <span className={toolbarDividerClass} aria-hidden="true" />
 
                     {threadItems.length > 0 ? (
                         <DropdownMenu>
@@ -881,25 +822,26 @@ export function GraphControls({
                                         <button
                                             type="button"
                                             className={cn(
-                                                "group relative flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-all duration-200 active:scale-95",
+                                                iconButtonBase,
+                                                toolbarButtonClass,
+                                                "h-8 w-8 px-0",
                                                 hasCurrentThread
-                                                    ? "border-indigo-300/70 bg-indigo-50 text-indigo-700 shadow-sm shadow-indigo-500/10 dark:border-indigo-700/70 dark:bg-indigo-950/40 dark:text-indigo-200"
-                                                    : "border-border/45 bg-gradient-to-br from-background to-muted/40 text-muted-foreground shadow-sm hover:border-border/70 hover:text-foreground hover:shadow-md",
-                                                hasActiveThread && !hasCurrentThread && "border-amber-300/70 bg-amber-50/70 text-amber-800 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-200"
+                                                    ? activeToolbarButtonClass
+                                                    : "",
+                                                hasActiveThread && !hasCurrentThread && "border-[hsl(var(--app-warning)/0.38)] bg-[hsl(var(--app-warning)/0.1)] text-[hsl(var(--app-warning))]"
                                             )}
                                             aria-label={`Threads (${threadItems.length})`}
                                         >
-                                            <GitBranch size={14} strokeWidth={2} />
-                                            <span className="hidden lg:inline">Threads</span>
-                                            <span className="rounded-md bg-background/70 px-1.5 py-0 text-[10px] font-semibold tabular-nums text-foreground/80 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-slate-900/70 dark:text-slate-200">
+                                            <span className={iconGlow} />
+                                            <span className={iconContainer}>
+                                                <ParallelThreadsIcon size={15} strokeWidth={2} />
+                                            </span>
+                                            <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--background)/0.92)] px-1 text-[9px] font-semibold leading-none tabular-nums text-foreground shadow-sm">
                                                 {threadItems.length}
                                             </span>
                                             {hiddenThreadCount > 0 ? (
-                                                <span className="rounded-md bg-slate-900 px-1.5 py-0 text-[10px] font-semibold tabular-nums text-white dark:bg-slate-100 dark:text-slate-950">
-                                                    {hiddenThreadCount} hidden
-                                                </span>
+                                                <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-[hsl(var(--background))] bg-[hsl(var(--app-warning))]" />
                                             ) : null}
-                                            <ChevronDown size={12} strokeWidth={2.2} className="text-current/65" />
                                         </button>
                                     </DropdownMenuTrigger>
                                 </TooltipTrigger>
@@ -911,16 +853,16 @@ export function GraphControls({
                                 className="w-[min(24rem,calc(100vw-2rem))] overflow-hidden p-0"
                                 align="end"
                             >
-                                <div className="border-b border-border/30 bg-gradient-to-b from-muted/35 to-transparent px-3 py-3">
+                                <div className="border-b border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-panel-strong)/0.64)] px-3 py-3">
                                     <div className="flex items-center justify-between gap-3">
                                         <div className="flex min-w-0 items-center gap-2">
-                                            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-700 dark:bg-indigo-400/10 dark:text-indigo-300">
-                                                <GitBranch size={14} />
+                                            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--app-accent-soft)/0.66)] text-[hsl(var(--app-accent))]">
+                                                <ParallelThreadsIcon size={14} strokeWidth={2} />
                                             </div>
                                             <div className="min-w-0">
                                                 <p className="text-sm font-semibold leading-none text-foreground">Threads</p>
                                                 <p className="mt-1 text-[11px] text-muted-foreground">
-                                                    {threadItems.length} root {threadItems.length === 1 ? 'branch' : 'branches'}
+                                                    {threadItems.length} graph {threadItems.length === 1 ? 'thread' : 'threads'}
                                                 </p>
                                             </div>
                                         </div>
@@ -950,8 +892,8 @@ export function GraphControls({
                                                 className={cn(
                                                     "group/thread flex items-center gap-2 rounded-lg px-2 py-2 transition-colors",
                                                     thread.current
-                                                        ? "bg-indigo-50/90 dark:bg-indigo-950/35"
-                                                        : "hover:bg-muted/60",
+                                                        ? "bg-[hsl(var(--app-accent-soft)/0.58)]"
+                                                        : "hover:bg-[hsl(var(--app-accent-soft)/0.34)]",
                                                     thread.hidden && "opacity-70"
                                                 )}
                                             >
@@ -967,17 +909,17 @@ export function GraphControls({
                                                             {thread.label}
                                                         </span>
                                                         {thread.current ? (
-                                                            <span className="shrink-0 rounded-md bg-indigo-500/12 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-indigo-700 dark:text-indigo-300">
+                                                            <span className="shrink-0 rounded-md bg-[hsl(var(--app-accent)/0.12)] px-1.5 py-0.5 text-[9px] font-semibold leading-none text-[hsl(var(--app-accent))]">
                                                                 Current
                                                             </span>
                                                         ) : null}
                                                         {thread.hidden ? (
-                                                            <span className="shrink-0 rounded-md bg-slate-500/12 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-slate-600 dark:text-slate-300">
+                                                            <span className="shrink-0 rounded-md bg-[hsl(var(--app-bg-muted))] px-1.5 py-0.5 text-[9px] font-semibold leading-none text-muted-foreground">
                                                                 Hidden
                                                             </span>
                                                         ) : null}
                                                         {thread.runningCount > 0 ? (
-                                                            <span className="shrink-0 rounded-md bg-amber-500/12 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-amber-700 dark:text-amber-300">
+                                                            <span className="shrink-0 rounded-md bg-[hsl(var(--app-warning)/0.12)] px-1.5 py-0.5 text-[9px] font-semibold leading-none text-[hsl(var(--app-warning))]">
                                                                 {activityLabel}
                                                             </span>
                                                         ) : null}
@@ -999,7 +941,7 @@ export function GraphControls({
                                                     className={cn(
                                                         "shrink-0 rounded-md px-2 py-1 text-[10px] font-semibold transition-colors",
                                                         thread.hidden
-                                                            ? "text-indigo-700 hover:bg-indigo-100 dark:text-indigo-300 dark:hover:bg-indigo-950"
+                                                            ? "text-[hsl(var(--app-accent))] hover:bg-[hsl(var(--app-accent-soft)/0.58)]"
                                                             : "text-muted-foreground opacity-70 hover:bg-muted hover:text-foreground group-hover/thread:opacity-100"
                                                     )}
                                                 >
@@ -1035,9 +977,9 @@ export function GraphControls({
                             </TooltipContent>
                         </Tooltip>
                         <DropdownMenuContent className="w-80 overflow-hidden p-0" align="end">
-                            <div className="border-b border-border/30 bg-gradient-to-b from-muted/30 to-transparent p-3">
+                            <div className="border-b border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-panel-strong)/0.64)] p-3">
                                 <div className="flex items-center gap-2">
-                                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
+                                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[hsl(var(--app-accent-soft)/0.66)] text-[hsl(var(--app-accent))]">
                                         <Leaf size={14} />
                                     </div>
                                     <div>
@@ -1090,6 +1032,7 @@ export function GraphControls({
                         <DropdownMenuTrigger asChild>
                             <button
                                 type="button"
+                                aria-label="Display settings"
                                 className={cn(
                                     iconButtonBase,
                                     iconButtonGhost
@@ -1102,9 +1045,9 @@ export function GraphControls({
                             </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent className="w-64 overflow-hidden p-0" align="end">
-                            <div className="border-b border-border/30 bg-gradient-to-b from-muted/30 to-transparent p-3">
+                            <div className="border-b border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-panel-strong)/0.64)] p-3">
                                 <div className="flex items-center gap-2">
-                                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[hsl(var(--app-accent-soft)/0.66)] text-[hsl(var(--app-accent))]">
                                         <Settings2 size={14} />
                                     </div>
                                     <div>
@@ -1170,6 +1113,8 @@ export function GraphControls({
                         </DropdownMenuContent>
                     </DropdownMenu>
 
+                    <span className={toolbarDividerClass} aria-hidden="true" />
+
                     {/* Graph reset */}
                     <HoverCard openDelay={500} closeDelay={80}>
                         <HoverCardTrigger asChild>
@@ -1182,7 +1127,7 @@ export function GraphControls({
                                         iconButtonGhost,
                                         "relative overflow-hidden",
                                         viewMode !== 'branch' && "cursor-not-allowed opacity-40",
-                                        isRefreshingGraph && "bg-gradient-to-br from-primary/10 to-primary/5 text-primary"
+                                        isRefreshingGraph && "border-[hsl(var(--app-accent)/0.35)] bg-[hsl(var(--app-accent-soft)/0.72)] text-[hsl(var(--app-accent))]"
                                     )}
                                     disabled={viewMode !== 'branch' || isRefreshingGraph}
                                     aria-label="Reset graph"
@@ -1206,12 +1151,11 @@ export function GraphControls({
                                     <Tooltip>
                                         <TooltipTrigger asChild>
                                             <span className="inline-flex">
-                                                <Badge
-                                                    variant="outline"
-                                                    className="h-5 min-w-10 cursor-help justify-center rounded-full border-primary/20 bg-gradient-to-r from-primary/10 to-primary/5 px-2 text-[10px] font-semibold text-primary shadow-sm shadow-primary/10 [font-variant-numeric:tabular-nums]"
+                                                <span
+                                                    className="inline-flex h-5 min-w-10 cursor-help items-center justify-center rounded-md border border-[hsl(var(--app-accent)/0.2)] bg-[hsl(var(--app-accent-soft)/0.54)] px-2 text-[10px] font-semibold text-[hsl(var(--app-accent))] [font-variant-numeric:tabular-nums]"
                                                 >
                                                     {nextRefreshLabel}
-                                                </Badge>
+                                                </span>
                                             </span>
                                         </TooltipTrigger>
                                         <TooltipContent side="bottom" align="end">
@@ -1245,17 +1189,16 @@ export function GraphControls({
                                                     <div className="text-[11px] text-muted-foreground">{item.source}</div>
                                                 </div>
                                                 <div className="flex shrink-0 items-center gap-1">
-                                                    <Badge
-                                                        variant="outline"
+                                                    <span
                                                         className={cn(
-                                                            "h-5 rounded-full px-1.5 text-[10px] font-medium [font-variant-numeric:tabular-nums]",
+                                                            "inline-flex h-5 items-center rounded-md border px-1.5 text-[10px] font-medium [font-variant-numeric:tabular-nums]",
                                                             item.tone === 'muted'
                                                                 ? "border-border/50 bg-muted/40 text-muted-foreground"
-                                                                : "border-primary/20 bg-primary/5 text-primary"
+                                                                : "border-[hsl(var(--app-accent)/0.2)] bg-[hsl(var(--app-accent-soft)/0.46)] text-[hsl(var(--app-accent))]"
                                                         )}
                                                     >
                                                         {item.countdownLabel}
-                                                    </Badge>
+                                                    </span>
                                                     <Button
                                                         type="button"
                                                         variant="ghost"

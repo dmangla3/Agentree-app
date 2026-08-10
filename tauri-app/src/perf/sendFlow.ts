@@ -43,6 +43,18 @@ const durationBetween = (startMs: number | null, endMs: number | null): number |
   return Number((endMs - startMs).toFixed(2));
 };
 
+const getDuration = (event: PerfEvent): number | null => (
+  typeof event.durationMs === 'number' && Number.isFinite(event.durationMs)
+    ? event.durationMs
+    : null
+);
+
+const maxDuration = (events: PerfEvent[]): number | null => {
+  const values = events.map(getDuration).filter((value): value is number => value !== null);
+  if (values.length === 0) return null;
+  return Number(Math.max(...values).toFixed(2));
+};
+
 const addFinding = (
   findings: SendFlowFinding[],
   summary: SendFlowSummary,
@@ -120,6 +132,19 @@ const buildSummary = (flowId: string, events: PerfEvent[]): SendFlowSummary => {
     flowEvents,
     (event) => event.name === `${SEND_FLOW_PREFIX}mark` && getStringDetail(event, 'markName') === 'first_tauri_event_received'
   );
+  const firstAssistantText = findFirstEvent(
+    flowEvents,
+    (event) =>
+      event.name === `${SEND_FLOW_PREFIX}mark` &&
+      (
+        getStringDetail(event, 'markName') === 'first_assistant_text_received' ||
+        getStringDetail(event, 'markName') === 'first_assistant_delta'
+      )
+  );
+  const firstProjectedText = findFirstEvent(
+    flowEvents,
+    (event) => event.name === `${SEND_FLOW_PREFIX}mark` && getStringDetail(event, 'markName') === 'first_assistant_text_projected'
+  );
   const firstVisibleText = findFirstEvent(
     flowEvents,
     (event) => event.name === `${SEND_FLOW_PREFIX}mark` && getStringDetail(event, 'markName') === 'first_visible_text_rendered'
@@ -146,6 +171,8 @@ const buildSummary = (flowId: string, events: PerfEvent[]): SendFlowSummary => {
   const apiEndMs = parseEventTimeMs(apiEnd);
   const assistantPersistedMs = parseEventTimeMs(persistedAssistant);
   const firstEventMs = parseEventTimeMs(firstEvent);
+  const firstAssistantTextMs = parseEventTimeMs(firstAssistantText);
+  const firstProjectedTextMs = parseEventTimeMs(firstProjectedText);
   const firstVisibleMs = parseEventTimeMs(firstVisibleText);
   const focusObservedMs = parseEventTimeMs(focusObserved);
   const terminalMs = parseEventTimeMs(terminalEvent);
@@ -186,6 +213,8 @@ const buildSummary = (flowId: string, events: PerfEvent[]): SendFlowSummary => {
     ['api.response-received', apiEnd],
     ['assistant.persisted', persistedAssistant],
     ['mark.first_tauri_event_received', firstEvent],
+    ['mark.first_assistant_text_received', firstAssistantText],
+    ['mark.first_assistant_text_projected', firstProjectedText],
     ['mark.first_visible_text_rendered', firstVisibleText],
     ['focus.observed', focusObserved],
     ['lifecycle.terminal', terminalEvent],
@@ -202,11 +231,16 @@ const buildSummary = (flowId: string, events: PerfEvent[]): SendFlowSummary => {
     ['sendToApiAck', durationBetween(startedAtMs, apiEndMs)],
     ['sendToAssistantPersisted', durationBetween(startedAtMs, assistantPersistedMs)],
     ['sendToFirstRuntimeEvent', durationBetween(startedAtMs, firstEventMs)],
+    ['sendToFirstAssistantText', durationBetween(startedAtMs, firstAssistantTextMs)],
     ['sendToFirstVisibleText', durationBetween(startedAtMs, firstVisibleMs)],
     ['sendToFocusObserved', durationBetween(startedAtMs, focusObservedMs)],
     ['sendToTerminal', durationBetween(startedAtMs, terminalMs)],
     ['apiRoundTrip', durationBetween(apiStartMs, apiEndMs)],
     ['persistedToFirstVisibleText', durationBetween(assistantPersistedMs, firstVisibleMs)],
+    ['firstRuntimeEventToFirstAssistantText', durationBetween(firstEventMs, firstAssistantTextMs)],
+    ['firstAssistantTextToProjection', durationBetween(firstAssistantTextMs, firstProjectedTextMs)],
+    ['firstProjectionToVisibleText', durationBetween(firstProjectedTextMs, firstVisibleMs)],
+    ['firstAssistantTextToVisibleText', durationBetween(firstAssistantTextMs, firstVisibleMs)],
   ];
 
   for (const [key, value] of durationEntries) {
@@ -336,11 +370,24 @@ export const buildSendFlowSessionReport = (events: PerfEvent[]): SendFlowSession
   const validEvents = events.filter(isPerfEvent);
   const flowIds = collectSessionFlowIds(validEvents);
   const flows = flowIds.map((flowId) => buildSummary(flowId, validEvents));
+  const eventLoopStalls = validEvents.filter((event) => event.name === 'runtime.event-loop-stall');
+  const rafStalls = validEvents.filter((event) => event.name === 'runtime.raf-stall');
+  const longTasks = validEvents.filter((event) => event.name === 'browser.long-task');
   return {
     generatedAt: new Date().toISOString(),
     sessionId: flows[0]?.sessionId ?? null,
     sessionLabel: flows[0]?.sessionLabel ?? null,
     flowCount: flows.length,
+    runtime: {
+      eventLoopStallCount: eventLoopStalls.length,
+      eventLoopFreezeCount: eventLoopStalls.filter((event) => getStringDetail(event, 'severity') === 'freeze').length,
+      maxEventLoopStallMs: maxDuration(eventLoopStalls),
+      rafStallCount: rafStalls.length,
+      rafFreezeCount: rafStalls.filter((event) => getStringDetail(event, 'severity') === 'freeze').length,
+      maxRafStallMs: maxDuration(rafStalls),
+      longTaskCount: longTasks.length,
+      maxLongTaskMs: maxDuration(longTasks),
+    },
     findings: flows.flatMap((flow) => flow.findings),
     flows,
   };

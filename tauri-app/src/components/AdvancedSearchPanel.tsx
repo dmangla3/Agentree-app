@@ -469,9 +469,9 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
           {/* Divider */}
           <div className="h-6 w-px bg-border hidden sm:block" />
 
-          {/* Scope */}
+          {/* Search location */}
           <div className="flex items-center gap-3">
-            <span className="text-sm font-medium text-muted-foreground">Scope</span>
+            <span className="text-sm font-medium text-muted-foreground">Search in</span>
             <SegmentedControl
               value={scope}
               onChange={(v) => setScope(v)}

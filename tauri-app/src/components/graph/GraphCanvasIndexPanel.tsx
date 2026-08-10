@@ -1,9 +1,6 @@
 import { useMemo } from 'react';
 import { Check, Eye, EyeOff, GitCommitHorizontal, MessageSquareText, Route, type LucideIcon } from 'lucide-react';
-import type { Node } from '@xyflow/react';
 import type { Message } from '../../stores/workspaceStore';
-import type { LlmNodeData } from '../../lib/graphUtils';
-import { getGraphParentId } from '../../lib/graph/lineage';
 import { cn } from '../../lib/utils';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../@/components/ui/tooltip';
 
@@ -16,12 +13,8 @@ interface GraphCanvasIndexPanelProps {
   visibleNodeSections: Set<GraphNodeSectionId>;
   onToggleNodeSection: (sectionId: GraphNodeSectionId) => void;
   nodeSectionCounts: Record<GraphNodeSectionId, number>;
-  onFocusMessage: (messageId: string) => void;
-  nodes: Node<any>[];
   messages: Message[];
   agentLabelsById: Map<string, string>;
-  scopeNameById: Map<string, string>;
-  scopeColorById: Map<string, string | null>;
 }
 
 const EDGE_LEGEND = [
@@ -111,22 +104,9 @@ export function GraphCanvasIndexPanel({
   visibleNodeSections,
   onToggleNodeSection,
   nodeSectionCounts,
-  onFocusMessage,
-  nodes,
   messages,
   agentLabelsById,
-  scopeNameById,
-  scopeColorById,
 }: GraphCanvasIndexPanelProps) {
-  const readLookupValue = <T,>(
-    lookup: Map<string, T> | Record<string, T> | null | undefined,
-    key: string
-  ): T | undefined => {
-    if (!lookup) return undefined;
-    if (lookup instanceof Map) return lookup.get(key);
-    return lookup[key];
-  };
-
   const agentLegend = useMemo(() => {
     const assistantAgentMessages = messages.filter(
       (message) => message.role === 'assistant' && typeof message.agent_id === 'string' && message.agent_id.trim().length > 0
@@ -146,85 +126,6 @@ export function GraphCanvasIndexPanel({
       }))
       .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
   }, [agentLabelsById, messages]);
-
-  const scopeLegend = useMemo(() => {
-    const messageById = new Map(messages.map((message) => [message.id, message]));
-    const depthByMessageId = new Map<string, number>();
-    const getMessageDepth = (message: Message): number => {
-      if (typeof message.depth === 'number') return message.depth;
-
-      const cached = depthByMessageId.get(message.id);
-      if (cached !== undefined) return cached;
-
-      let depth = 0;
-      let current: Message | undefined = message;
-      const visited = new Set<string>();
-
-      while (current && !visited.has(current.id)) {
-        visited.add(current.id);
-        const parentId = getGraphParentId(current, messageById);
-        if (!parentId) break;
-        const parent = messageById.get(parentId);
-        if (!parent) break;
-        depth += 1;
-        current = parent;
-      }
-
-      depthByMessageId.set(message.id, depth);
-      return depth;
-    };
-
-    const isBetterScopeFocusTarget = (candidate: Message, current: Message | null): boolean => {
-      if (!current) return true;
-
-      const candidateDepth = getMessageDepth(candidate);
-      const currentDepth = getMessageDepth(current);
-      if (candidateDepth !== currentDepth) return candidateDepth < currentDepth;
-
-      const candidateCreatedAt = new Date(candidate.createdAt).getTime();
-      const currentCreatedAt = new Date(current.createdAt).getTime();
-      if (candidateCreatedAt !== currentCreatedAt) return candidateCreatedAt < currentCreatedAt;
-
-      return candidate.id.localeCompare(current.id) < 0;
-    };
-
-    const legendByScope = new Map<string, { id: string; name: string; color: string; count: number; focusMessageId: string | null }>();
-
-    nodes.forEach((node) => {
-      const data = node.data as LlmNodeData | undefined;
-      const scopeId = data?.entity?.scopeId || data?.scopeId || null;
-      if (!scopeId) return;
-
-      const existing = legendByScope.get(scopeId);
-      const scopeName = data?.scopeName || readLookupValue(scopeNameById, scopeId) || scopeId.slice(0, 8);
-      const scopeColor = data?.scopeColor || readLookupValue(scopeColorById, scopeId) || '#94a3b8';
-
-      if (existing) {
-        existing.count += 1;
-        const focusMessageId = data?.entity?.focusMessageId || data?.entity?.messageId || data?.message?.id || null;
-        const focusMessage = focusMessageId ? messageById.get(focusMessageId) ?? null : null;
-        const currentFocusMessage = existing.focusMessageId ? messageById.get(existing.focusMessageId) ?? null : null;
-
-        if (focusMessage && isBetterScopeFocusTarget(focusMessage, currentFocusMessage)) {
-          existing.focusMessageId = focusMessage.id;
-        }
-        return;
-      }
-
-      const focusMessageId = data?.entity?.focusMessageId || data?.entity?.messageId || data?.message?.id || null;
-      const focusMessage = focusMessageId ? messageById.get(focusMessageId) ?? null : null;
-
-      legendByScope.set(scopeId, {
-        id: scopeId,
-        name: scopeName,
-        color: scopeColor,
-        count: 1,
-        focusMessageId: focusMessage?.id ?? null,
-      });
-    });
-
-    return Array.from(legendByScope.values()).sort((left, right) => right.count - left.count);
-  }, [messages, nodes, scopeColorById, scopeNameById]);
 
   // Modern icon button styles
   const iconButtonBase = "group relative flex items-center justify-center rounded-lg transition-all duration-200 ease-out";
@@ -416,37 +317,6 @@ export function GraphCanvasIndexPanel({
             </div>
           )}
 
-          {scopeLegend.length > 0 && (
-            <div>
-              <div className="text-[9px] font-medium text-muted-foreground dark:text-slate-500 uppercase tracking-wide mb-1 px-0.5">
-                Scopes
-              </div>
-              <div className="space-y-0.5">
-                {scopeLegend.map(({ id, name, color, count, focusMessageId }) => (
-                  <button
-                    key={id}
-                    type="button"
-                    className="flex w-full items-center gap-1.5 group cursor-pointer hover:bg-muted/50 dark:hover:bg-slate-800/50 rounded px-0.5 py-px transition-colors text-left outline-none focus-visible:bg-muted/60 dark:focus-visible:bg-slate-800/60 disabled:cursor-default disabled:hover:bg-transparent"
-                    onClick={() => {
-                      if (focusMessageId) onFocusMessage(focusMessageId);
-                    }}
-                    disabled={!focusMessageId}
-                    aria-label={`Focus first node in ${name}`}
-                    title={id}
-                  >
-                    <div
-                      className="w-0.5 h-3 rounded-sm flex-shrink-0"
-                      style={{ backgroundColor: color }}
-                    />
-                    <span className="text-foreground dark:text-slate-300 truncate flex-1 text-[10px]">
-                      {name}
-                    </span>
-                    <span className="text-muted-foreground dark:text-slate-400 text-[9px] bg-muted dark:bg-slate-800 px-1 rounded">{count}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       ) : (
         <div className="absolute top-3 right-3 z-20">

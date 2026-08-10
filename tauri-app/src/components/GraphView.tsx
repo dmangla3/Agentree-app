@@ -649,19 +649,11 @@ function GraphViewInternal({
         return labels;
     }, [agents, messages]);
     const scopeNameById = useMemo(() => {
-        const map = new Map<string, string>();
-        for (const scope of scopes) {
-            map.set(scope.id, scope.name);
-        }
-        return map;
-    }, [scopes]);
+        return new Map<string, string>();
+    }, []);
     const scopeColorById = useMemo(() => {
-        const map = new Map<string, string | null>();
-        for (const scope of scopes) {
-            map.set(scope.id, scope.color || null);
-        }
-        return map;
-    }, [scopes]);
+        return new Map<string, string | null>();
+    }, []);
     const branchPointersByNodeId = useMemo(() => {
         const map = new Map<string, typeof branchPointers>();
         const pointersByCommit = new Map<string, typeof branchPointers>();
@@ -1571,7 +1563,7 @@ function GraphViewInternal({
     const graphFilterStorageKey = selectedWorkspaceId
         ? `agentree.graphFilters.v1.workspace.${selectedWorkspaceId}`
         : 'agentree.graphFilters.v1.workspace.none';
-    const tagFilter = useTagFilter(graphComputationMessages, branchPointers, scopes, graphFilterStorageKey);
+    const tagFilter = useTagFilter(graphComputationMessages, branchPointers, graphFilterStorageKey);
     const subgraphMessageIds = useMemo(
         () => getSubgraphMessageIds(graphComputationMessages, subgraphRootNodeId),
         [graphComputationMessages, subgraphRootNodeId]
@@ -4694,16 +4686,10 @@ function GraphViewInternal({
                         uniqueAgentIds={tagFilter.uniqueAgentIds}
                         agentLabelsById={agentLabelsById}
                         selectedAgentIds={tagFilter.selectedAgentIds}
-                        availableScopes={tagFilter.availableScopes}
-                        scopeFilterMode={tagFilter.scopeFilterMode}
-                        selectedScopeIds={tagFilter.selectedScopeIds}
                         selectedNodeTypes={tagFilter.selectedNodeTypes}
                         agentOperator={tagFilter.agentOperator}
                         onAgentOperatorChange={tagFilter.setAgentOperator}
                         onAgentFilterChange={tagFilter.handleAgentFilterChange}
-                        onScopeFilterChange={tagFilter.handleScopeFilterChange}
-                        onSelectAllScopes={tagFilter.handleSelectAllScopes}
-                        onSelectNoScopes={tagFilter.handleSelectNoScopes}
                         onNodeTypeFilterChange={tagFilter.handleNodeTypeFilterChange}
                         uniqueTags={tagFilter.uniqueTags}
                         selectedFilterTags={tagFilter.selectedFilterTags}
@@ -4939,12 +4925,8 @@ function GraphViewInternal({
                                     visibleNodeSections={visibleNodeSections}
                                     onToggleNodeSection={handleToggleNodeSection}
                                     nodeSectionCounts={graphNodeSectionCounts}
-                                    onFocusMessage={handleFocus}
-                                    nodes={graphRenderElements.nodes}
                                     messages={graphMessages as Message[]}
                                     agentLabelsById={agentLabelsById}
-                                    scopeNameById={scopeNameById}
-                                    scopeColorById={scopeColorById}
                                 />
                             </>
                         )}
@@ -4983,9 +4965,6 @@ function GraphViewInternal({
                             filterActive={graphFilterState.filterActive}
                             matchingMessageIds={graphFilterState.matchingMessageIds}
                             topOffset={controlsHeight}
-                            activeScopeId={activeScopeId}
-                            scopeViewMode={scopeViewMode}
-                            scopeNameById={scopeNameById}
                             onStopAgent={handleStopAgent}
                             selectedNodeIds={nodeSelection.selectedNodeIds}
                             onSelectionChange={nodeSelection.onSelectionChange}

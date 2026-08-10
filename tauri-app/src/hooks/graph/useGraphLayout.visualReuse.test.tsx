@@ -48,16 +48,20 @@ const callbacks = {
   onMeasureNodeHeight: vi.fn(),
 };
 
-const renderLayout = (focusedMessageId: string, contextPathMessageIds: string[]) => {
+const renderLayout = (
+  focusedMessageId: string,
+  contextPathMessageIds: string[],
+  inputMessages: Message[] = messages,
+) => {
   const projection = buildWorkspaceProjection({
-    messages,
+    messages: inputMessages,
     summaries: [],
     focusedMessageId,
   });
 
   return useGraphLayout({
     projection,
-    messages,
+    messages: inputMessages,
     summaries: [],
     measuredNodeHeights: new Map(),
     layoutMode: 'dagre',
@@ -115,5 +119,41 @@ describe('useGraphLayout visual reuse', () => {
     expect(result.current.nodes.find((node) => node.id === 'user-1')).toBe(unchangedNode);
     expect(result.current.edges[0]).toBe(unchangedPathEdge);
     expect(result.current.nodes.find((node) => node.id === 'assistant-1')).not.toBe(previouslyFocusedNode);
+  });
+
+  it('updates message height keys when status changes through the visual-only path', () => {
+    const runningMessages: Message[] = [
+      messages[0],
+      makeMessage({
+        id: 'assistant-1',
+        role: 'assistant',
+        parentId: 'user-1',
+        content: 'First reply.',
+        status: 'running',
+        agent_id: 'codex:test',
+      }, 1),
+    ];
+    const completedMessages: Message[] = [
+      runningMessages[0],
+      {
+        ...runningMessages[1],
+        status: 'completed' as const,
+        updatedAt: isoAt(4),
+      },
+    ];
+
+    const { result, rerender } = renderHook(
+      ({ inputMessages }) => renderLayout('assistant-1', ['user-1', 'assistant-1'], inputMessages),
+      { initialProps: { inputMessages: runningMessages } },
+    );
+
+    expect(result.current.nodes.find((node) => node.id === 'assistant-1')?.data.heightKey)
+      .toContain('status:running');
+
+    rerender({ inputMessages: completedMessages });
+
+    const node = result.current.nodes.find((candidate) => candidate.id === 'assistant-1');
+    expect(node?.data.message.status).toBe('completed');
+    expect(node?.data.heightKey).toContain('status:completed');
   });
 });

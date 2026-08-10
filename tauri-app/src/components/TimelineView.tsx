@@ -4,7 +4,6 @@ import { TimelineNodeDispatcher } from './nodes/timeline/TimelineNodeDispatcher'
 import type { WorkspaceProjection, ProjectedTimelineItem } from '../domain/workspaceProjection';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { Clock } from 'lucide-react';
-import { useScopes } from '../hooks/useScopes';
 import { format, isToday, isYesterday, parseISO } from 'date-fns';
 import { ScopedNodeContextMenu, type ScopedContextMenuState } from './ScopedNodeContextMenu';
 
@@ -14,10 +13,6 @@ interface TimelineViewProps {
   onNodeClick?: (messageId: string) => void;
   filterActive: boolean;
   matchingMessageIds: Set<string>;
-  activeScopeId?: string | null;
-  scopeViewMode?: 'project' | 'scope';
-  scopeNameById?: Map<string, string>;
-  scopeColorById?: Map<string, string | null>;
   onStopAgent?: (nodeId: string) => void;
   selectedNodeIds?: Set<string>;
   onSelectionChange?: (params: { nodes: any[] }) => void;
@@ -99,7 +94,6 @@ export const TimelineView = memo(({
   focusedMessageId,
   filterActive,
   matchingMessageIds,
-  scopeColorById: externalScopeColorById,
   selectedNodeIds = new Set<string>(),
   onSelectionChange,
   onRequestDeleteMessages,
@@ -114,18 +108,6 @@ export const TimelineView = memo(({
   const dispatchFocus = useWorkspaceStore(state => state.dispatchFocus);
   const selectedWorkspaceId = useWorkspaceStore(state => state.selectedWorkspaceId);
 
-  // Get scopes from DB for consistent coloring
-  const scopesQuery = useScopes(selectedWorkspaceId);
-  const scopes = useMemo(() => (scopesQuery.data?.scopes ?? []), [scopesQuery.data?.scopes]);
-  const internalScopeColorById = useMemo(() => {
-    const map = new Map<string, string | null>();
-    for (const scope of scopes) {
-      map.set(scope.id, scope.color || null);
-    }
-    return map;
-  }, [scopes]);
-
-  const finalScopeColorById = externalScopeColorById || internalScopeColorById;
   const showSelectionControl = selectedNodeIds.size > 1;
 
   const handleFocus = useCallback((id: string, metadata?: Record<string, unknown>) => {
@@ -315,7 +297,6 @@ export const TimelineView = memo(({
                           rowId={getTimelineRowDomId(item)}
                           entityId={item.entityId}
                           projection={projection}
-                          scopeColorById={finalScopeColorById}
                           isSelected={selectionId ? selectedNodeIds.has(selectionId) : false}
                           showSelectionControl={showSelectionControl}
                           onFocus={handleFocus}

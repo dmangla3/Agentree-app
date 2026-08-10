@@ -355,7 +355,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                                         ) : null}
                                     </div>
                                     {call.toolInput !== undefined ? (
-                                        <ToolPayloadDisplay payload={call.toolInput} className="max-h-32" />
+                                        <ToolPayloadDisplay payload={call.toolInput} className="max-h-32" variant="raw" />
                                     ) : null}
                                 </div>
                             ))}
@@ -448,7 +448,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                                     <div className="w-1 h-1 rounded-full bg-blue-400" />
                                     <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/60">Input</span>
                                 </div>
-                                <ToolPayloadDisplay payload={row.toolInput} className="max-h-32" />
+                                <ToolPayloadDisplay payload={row.toolInput} className="max-h-32" variant="raw" />
                             </div>
                         )}
                         {row.toolOutput !== undefined && (
@@ -457,7 +457,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                                     <div className="w-1 h-1 rounded-full bg-emerald-400" />
                                     <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/60">Output</span>
                                 </div>
-                                <ToolPayloadDisplay payload={row.toolOutput} className="max-h-32" />
+                                <ToolPayloadDisplay payload={row.toolOutput} className="max-h-32" variant="raw" />
                             </div>
                         )}
                         {row.isError && row.toolOutput == null && (
@@ -721,49 +721,115 @@ export function summarizeFileChangesPayload(payload: unknown): FileChangesSummar
     };
 }
 
-function FileChangesSummaryView({ summary }: { summary: FileChangesSummary }) {
+export function formatFileChangesSummaryLabel(summary: FileChangesSummary): string {
     const fileLabel = summary.files.length === 1 ? 'file' : 'files';
+    return `${summary.files.length} ${fileLabel} changed (+${summary.totalAdditions}/-${summary.totalDeletions})`;
+}
+
+function FileChangesSummaryView({ summary, className }: { summary: FileChangesSummary; className?: string }) {
+    const fileLabel = summary.files.length === 1 ? 'file' : 'files';
+    const visibleFiles = summary.files.slice(0, 3);
+    const hiddenFileCount = Math.max(0, summary.files.length - visibleFiles.length);
     return (
-        <div className="rounded-lg border bg-muted/35 p-2.5 text-[10px] text-muted-foreground/85">
-            <div className="mb-2 flex items-center justify-between gap-3">
-                <span className="font-semibold text-foreground/75">
-                    {summary.files.length} {fileLabel} changed
-                </span>
-                <span className="shrink-0 font-mono tabular-nums">
-                    <span className="text-emerald-600 dark:text-emerald-400">+{summary.totalAdditions}</span>
-                    <span className="px-1 text-muted-foreground/45">/</span>
-                    <span className="text-red-500 dark:text-red-400">-{summary.totalDeletions}</span>
-                </span>
+        <div
+            className={cn(
+                "overflow-hidden rounded-md border border-[hsl(var(--app-border)/0.62)]",
+                "bg-[hsl(var(--app-panel)/0.72)]",
+                "text-[10px] text-muted-foreground/80",
+                "shadow-[0_1px_2px_rgba(15,23,42,0.04),inset_0_1px_0_rgba(255,255,255,0.5)]",
+                "dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
+                className
+            )}
+        >
+            <div className="flex items-center justify-between gap-3 border-b border-[hsl(var(--app-border)/0.52)] bg-muted/40 px-2.5 py-1.5">
+                <div className="min-w-0">
+                    <span className="block truncate text-[11px] font-semibold leading-none text-foreground/80">
+                        {summary.files.length} {fileLabel} changed
+                    </span>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] leading-none tabular-nums">
+                    <span className="rounded border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-emerald-700 dark:text-emerald-300">
+                        +{summary.totalAdditions}
+                    </span>
+                    <span className="rounded border border-red-500/20 bg-red-500/10 px-1.5 py-0.5 text-red-600 dark:text-red-300">
+                        -{summary.totalDeletions}
+                    </span>
+                </div>
             </div>
-            <div className="space-y-1">
-                {summary.files.map((file, index) => (
-                    <div key={`${file.path}_${index}`} className="flex min-w-0 items-center gap-2 font-mono">
-                        <span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span>
-                        <span className="shrink-0 rounded border border-border/60 px-1 py-0.5 text-[9px] uppercase text-muted-foreground/65">
-                            {file.kind}
+            <div className="px-2 py-1.5">
+                <div className="space-y-1">
+                    {visibleFiles.map((file, index) => (
+                        <div
+                            key={`${file.path}_${index}`}
+                            className="flex min-w-0 items-center gap-2"
+                        >
+                            <span className={cn(
+                                "inline-flex w-8 shrink-0 justify-center rounded border px-1 py-0.5 font-mono text-[8px] font-semibold leading-none",
+                                getFileChangeToneClass(file.kind)
+                            )}>
+                                {formatFileChangeKind(file.kind)}
+                            </span>
+                            <span className="min-w-0 flex-1 truncate font-mono text-[10px] leading-tight text-foreground/75" title={file.path}>
+                                {file.path}
+                            </span>
+                            <span className="shrink-0 font-mono text-[9px] leading-none tabular-nums">
+                                <span className="text-emerald-600 dark:text-emerald-400">+{file.additions}</span>
+                                <span className="px-0.5 text-muted-foreground/40">/</span>
+                                <span className="text-red-500 dark:text-red-400">-{file.deletions}</span>
+                            </span>
+                        </div>
+                    ))}
+                </div>
+                {hiddenFileCount > 0 ? (
+                    <div className="mt-1.5 flex items-center justify-between gap-2 border-t border-[hsl(var(--app-border)/0.42)] pt-1.5">
+                        <span className="text-[10px] font-medium text-muted-foreground/70">
+                            {hiddenFileCount} more {hiddenFileCount === 1 ? 'file' : 'files'}
                         </span>
-                        <span className="shrink-0 tabular-nums">
-                            <span className="text-emerald-600 dark:text-emerald-400">+{file.additions}</span>
-                            <span className="px-1 text-muted-foreground/45">/</span>
-                            <span className="text-red-500 dark:text-red-400">-{file.deletions}</span>
+                        <span className="text-[9px] font-medium text-muted-foreground/60">
+                            expand for full diff
                         </span>
                     </div>
-                ))}
+                ) : null}
             </div>
         </div>
     );
 }
 
+function formatFileChangeKind(kind: string): string {
+    const normalized = kind.toLowerCase();
+    if (normalized === 'add' || normalized === 'added' || normalized === 'create') return 'ADD';
+    if (normalized === 'delete' || normalized === 'deleted' || normalized === 'remove') return 'DEL';
+    if (normalized === 'move' || normalized === 'rename') return 'REN';
+    if (normalized === 'update' || normalized === 'modify' || normalized === 'modified') return 'MOD';
+    return normalized.slice(0, 3).toUpperCase() || 'CHG';
+}
+
+function getFileChangeToneClass(kind: string): string {
+    const normalized = kind.toLowerCase();
+    if (normalized === 'add' || normalized === 'added' || normalized === 'create') {
+        return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
+    }
+    if (normalized === 'delete' || normalized === 'deleted' || normalized === 'remove') {
+        return 'border-red-500/25 bg-red-500/10 text-red-600 dark:text-red-300';
+    }
+    if (normalized === 'move' || normalized === 'rename') {
+        return 'border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300';
+    }
+    return 'border-border/50 bg-muted/40 text-muted-foreground/80';
+}
+
 export function ToolPayloadDisplay({
     payload,
     className,
+    variant = 'summary',
 }: {
     payload: unknown;
     className?: string;
+    variant?: 'summary' | 'raw';
 }): ReactNode {
     const fileChangesSummary = summarizeFileChangesPayload(payload);
-    if (fileChangesSummary) {
-        return <FileChangesSummaryView summary={fileChangesSummary} />;
+    if (variant === 'summary' && fileChangesSummary) {
+        return <FileChangesSummaryView summary={fileChangesSummary} className={className} />;
     }
 
     return (
@@ -779,6 +845,8 @@ export function ToolPayloadDisplay({
 export function getToolSummary(toolName: string, toolInput: any): string {
     if (!toolInput) return '';
     const name = toolName?.toLowerCase?.() ?? '';
+    const fileChangesSummary = summarizeFileChangesPayload(toolInput);
+    if (fileChangesSummary) return formatFileChangesSummaryLabel(fileChangesSummary);
 
     if (typeof toolInput === 'string') return toolInput;
     if (name === 'commandexecution') {

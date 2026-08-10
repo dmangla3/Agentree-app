@@ -7,6 +7,8 @@ export type FinalizeCachePatch = {
   outputCommitSha?: string | null;
   gitBranchName?: string | null;
   commitCreated?: boolean | null;
+  persisted?: boolean | null;
+  serverAckAt?: string | number | null;
   updatedAt?: string;
 };
 
@@ -32,6 +34,13 @@ const patchFinalizedMessage = <T extends Partial<Message> & { id: string }>(
       ...(patch.commitCreated !== undefined && patch.commitCreated !== null
         ? { commit_created: patch.commitCreated }
         : {}),
+      ...(patch.gitBranchName ? { git_branch_name: patch.gitBranchName } : {}),
+      ...(patch.persisted !== undefined && patch.persisted !== null
+        ? { persisted: patch.persisted }
+        : {}),
+      ...(patch.serverAckAt !== undefined && patch.serverAckAt !== null
+        ? { server_ack_at: patch.serverAckAt }
+        : {}),
     },
   };
 
@@ -47,6 +56,14 @@ const patchFinalizedMessage = <T extends Partial<Message> & { id: string }>(
     output_commit_sha: outputCommitSha ?? message.output_commit_sha ?? null,
     git_branch_name: patch.gitBranchName ?? message.git_branch_name ?? null,
   };
+};
+
+const normalizeServerAckAt = (value: string | number | null | undefined): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  if (/^\d+$/.test(value.trim())) return Number(value.trim());
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
 };
 
 export const patchFinalizedMessages = (
@@ -72,8 +89,11 @@ export const patchFinalizedLocalNodes = (
   const next = current.map((local) => {
     if (local.nodeId !== patch.nodeId || local.message.id !== patch.nodeId) return local;
     changed = true;
+    const serverAckAt = normalizeServerAckAt(patch.serverAckAt);
     return {
       ...local,
+      ...(patch.persisted === true ? { syncStatus: 'persisted' as const } : {}),
+      ...(serverAckAt !== null ? { serverAckAt } : {}),
       message: patchFinalizedMessage(local.message, patch),
     };
   });

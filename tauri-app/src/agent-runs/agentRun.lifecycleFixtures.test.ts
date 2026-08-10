@@ -23,6 +23,7 @@ const baseSnapshot = (overrides: Partial<AgentRunSnapshot> = {}): AgentRunSnapsh
   usage: null,
   terminalStatus: null,
   terminalReason: null,
+  finalizeAck: null,
   terminalHoldUntil: null,
   cleanupAt: null,
   updatedAt: '2026-05-16T00:00:00.000Z',
