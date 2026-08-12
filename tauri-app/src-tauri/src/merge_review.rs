@@ -482,7 +482,12 @@ fn run_sync_runner_with_events<T: for<'de> Deserialize<'de>>(
         .current_dir(worktree_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    crate::command_guards::apply_agent_command_env(&mut command, app)?;
+    crate::command_guards::apply_agent_command_env(
+        &mut command,
+        app,
+        run_id,
+        Path::new(worktree_path),
+    )?;
     let mut child = command
         .spawn()
         .map_err(|e| format!("Failed to spawn merge review runner: {}", e))?;
@@ -671,7 +676,12 @@ pub fn start_merge_review(
         .current_dir(&workspace.worktree_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    crate::command_guards::apply_agent_command_env(&mut command, &app)?;
+    crate::command_guards::apply_agent_command_env(
+        &mut command,
+        &app,
+        &run_id,
+        Path::new(&workspace.worktree_path),
+    )?;
     let mut child = command
         .spawn()
         .map_err(|e| format!("Failed to spawn merge review runner: {}", e))?;

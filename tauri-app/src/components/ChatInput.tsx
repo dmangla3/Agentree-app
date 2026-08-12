@@ -42,7 +42,18 @@ import { isFirstClassCommitMessage } from '../lib/graph/turnUtils';
 import { getBranchPointerNamesForCommit, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { getMergeVisualParentEntries, isMergeResultNode } from '../lib/graph/lineage';
 import { reconstructContext } from '../lib/contextUtils';
-import { resolveSendParentMessageId } from '../lib/composerSendParent';
+import {
+    resolveComposerTargetModeAfterSuccessfulSend,
+    resolveSendParentMessageId,
+    type ComposerTargetMode,
+} from '../lib/composerSendParent';
+import {
+    buildRepoMentionSearchIndex,
+    extractRepoMentionPaths,
+    getMentionedRepoPathSet,
+    getRepoMentionMatches,
+    type RepoMentionFile,
+} from '../lib/composerRepoMentions';
 import { hasFreshContextBoundary } from '../lib/messageContext';
 import {
     scheduleMessagesRefreshWhenGraphIdle,
@@ -96,7 +107,6 @@ interface UrlAttachment {
 type Attachment = FileAttachment | UrlAttachment | AttachmentMetadata;
 type ContextMode = 'active' | 'none';
 type ContextPolicy = 'continue' | 'fresh';
-type ComposerTargetMode = 'reply' | 'new-thread';
 type PendingGeneratedCommitFocus = {
     flowId: string | null;
     workspaceId: string;
@@ -135,11 +145,6 @@ interface ActiveFileMention {
     start: number;
     end: number;
     query: string;
-}
-
-interface RepoMentionFile {
-    path: string;
-    name: string;
 }
 
 // --- Constants ---
@@ -188,11 +193,6 @@ const getActiveFileMention = (value: string, cursorPosition: number): ActiveFile
         query,
     };
 };
-const extractRepoMentionPaths = (value: string): string[] => {
-    const matches = value.match(/(^|\s)@([^\s@]+)/g) ?? [];
-    return matches.map((match) => match.trim().slice(1));
-};
-const collapseFuzzyText = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
 const normalizePreviewText = (value: string | null | undefined): string => (
     String(value || '').replace(/\s+/g, ' ').trim()
 );
@@ -274,7 +274,7 @@ const resolveContextStartMessage = (
 };
 
 const DEFAULT_CODEX_AUTH_COMMAND = `CODEX_HOME=/Users/example/.codex codex -c 'cli_auth_credentials_store="file"' login --device-auth`;
-const DEPENDENCY_GUARD_INSTRUCTION = 'Dependency rule: some dependency and build directories in this worktree are symlinked and must be treated as read-only. Do not install, remove, upgrade, rebuild, or delete project dependencies or write build output into those symlinked directories. If you need to build, test, or install dependencies in a way that would write there, avoid doing it yourself and explicitly tell the user what needs to be run so they can do it outside the agent worktree.';
+const DEPENDENCY_GUARD_INSTRUCTION = 'Dependency rule: some dependency and build directories in this worktree are symlinked and must be treated as read-only. Do not install, remove, upgrade, rebuild, or delete project dependencies or write build output into those symlinked directories. It is okay to run read-only checks, tests, and builds when their caches and build output are redirected outside those symlinked directories. If you need to build, test, or install dependencies in a way that would write there, avoid doing it yourself and explicitly tell the user what needs to be run so they can do it outside the agent worktree.';
 const EMPTY_COMPOSER_CONTEXT_MANIFEST = buildComposerContextManifest([], new Set<string>());
 
 const extractRecommendedCommand = (message: string) => {
@@ -377,6 +377,7 @@ import { useKnowledgeTree } from '../hooks/useKnowledge';
 import { useAgents, findDefaultCodexAgentId } from '../hooks/useAgents';
 import { useWorkspaces } from '../hooks/useWorkspaces';
 import { agentClient } from '../lib/agentClient';
+import { resolveComposerDefaultAgentId } from '../lib/composerModelDefaults';
 import { buildComposerContextManifest, buildComposerContextSelection, type ComposerContextManifest } from '../lib/composerContext';
 import { AGENT_STATUS, TERMINAL_STATUSES } from '@shared/agentStatus';
 import type { TerminalStatus } from '@shared/agentStatus';
@@ -388,7 +389,6 @@ import {
     updateComposerAgentRunCount,
     type ComposerAgentRunCounts,
 } from '../lib/composerAgentRuns';
-import { getFuzzyMatchScore } from '../lib/fuzzySearch';
 import { resolveNodeState } from '../lib/runStateResolver';
 
 interface ChatInputProps {
@@ -447,6 +447,8 @@ export function ChatInput({
     onSendComplete,
 }: ChatInputProps = {}) {
     const [prompt, setPrompt] = useState('');
+    const promptRef = useRef('');
+    const [promptHasContent, setPromptHasContent] = useState(false);
     const [editDraftSource, setEditDraftSource] = useState<Message | null>(null);
     // --- NEW: Knowledge Base Context State ---
     const { data: filesData } = useKnowledgeTree();
@@ -558,6 +560,9 @@ export function ChatInput({
     const [composerTargetMode, setComposerTargetMode] = useState<ComposerTargetMode>('reply');
     const [sendPressFeedback, setSendPressFeedback] = useState(false);
     const sendPressFeedbackTimerRef = useRef<number | null>(null);
+    const resetComposerTargetAfterSuccessfulSend = useCallback(() => {
+        setComposerTargetMode((current) => resolveComposerTargetModeAfterSuccessfulSend(current));
+    }, []);
 
     useEffect(() => {
         return () => {
@@ -582,6 +587,8 @@ export function ChatInput({
     const messageLookupMessages = messages;
     const { data: agentsData } = useAgents();
     const agents = useMemo(() => agentsData ?? [], [agentsData]);
+    const autoSelectedAgentIdRef = useRef<string | null>(null);
+    const manuallySelectedAgentIdRef = useRef<string | null>(null);
     const [selectedAgentRunCounts, setSelectedAgentRunCounts] = useState<ComposerAgentRunCounts>({});
     const normalizedSelectedAgentRunCounts = useMemo(
         () => normalizeComposerAgentRunCounts(agents, selectedAgentId, selectedAgentRunCounts),
@@ -2070,6 +2077,15 @@ export function ChatInput({
     const [isCommandPopoverOpen, setIsCommandPopoverOpen] = useState(false);
     const textareaRef = useRef<HTMLTextAreaElement>(null); // Ref for the textarea
 
+    const setComposerPrompt = useCallback((nextPrompt: string) => {
+        promptRef.current = nextPrompt;
+        setPrompt(nextPrompt);
+        setPromptHasContent(nextPrompt.trim().length > 0);
+        if (textareaRef.current && textareaRef.current.value !== nextPrompt) {
+            textareaRef.current.value = nextPrompt;
+        }
+    }, []);
+
     const [isAgentPickerOpen, setIsAgentPickerOpen] = useState(false);
 
     useEffect(() => {
@@ -2136,6 +2152,11 @@ export function ChatInput({
         () => new Map(messageLookupMessages.map((m: Message) => [m.id, m])),
         [messageLookupMessages]
     );
+    const composerDefaultParentMessage = useMemo(() => {
+        if (!branchParentMessage) return null;
+        if (branchParentMessage.role === 'assistant') return branchParentMessage;
+        return branchParentMessage.parentId ? messageById.get(branchParentMessage.parentId) ?? null : null;
+    }, [branchParentMessage, messageById]);
     const resolvePersistedMessageId = useCallback((candidateId: string | null | undefined): string | null => {
         let cursorId = candidateId ?? null;
         if (!cursorId) return null;
@@ -2276,7 +2297,7 @@ export function ChatInput({
             : parentStatus === AGENT_STATUS.running
                 ? 'Parent running'
                 : 'Parent still running';
-    const showCancel = isSelectedNodeRunning;
+    const showCancel = isSelectedNodeRunning && !isNewThreadTarget;
     const effectiveScopeModeForReply = 'inherit' as const;
     const effectiveScopeIdForReply = useMemo<string | null>(() => {
         if (replyParentMessageId) return branchParentScopeId;
@@ -2342,13 +2363,35 @@ export function ChatInput({
 
     useEffect(() => {
         if (agents.length === 0) return;
-        if (selectedAgentId && agents.some((agent) => agent.id === selectedAgentId)) return;
 
-        const defaultAgentId = findDefaultCodexAgentId(agents);
-        if (defaultAgentId) {
+        const selectedAgentStillExists = Boolean(selectedAgentId && agents.some((agent) => agent.id === selectedAgentId));
+        const canAutoSelect = !selectedAgentStillExists
+            || !selectedAgentId
+            || selectedAgentId === autoSelectedAgentIdRef.current
+            || (
+                selectedAgentId === 'codex:gpt-5.4-mini:medium'
+                && selectedAgentId !== manuallySelectedAgentIdRef.current
+            );
+        if (!canAutoSelect) return;
+
+        const defaultAgentId = resolveComposerDefaultAgentId({
+            agents,
+            parentMessage: composerDefaultParentMessage,
+        }) ?? findDefaultCodexAgentId(agents);
+        if (defaultAgentId && defaultAgentId !== selectedAgentId) {
+            manuallySelectedAgentIdRef.current = null;
+            autoSelectedAgentIdRef.current = defaultAgentId;
+            setSelectedAgentRunCounts({ [defaultAgentId]: 1 });
             setSelectedAgentId(defaultAgentId);
+        } else if (defaultAgentId) {
+            manuallySelectedAgentIdRef.current = null;
+            autoSelectedAgentIdRef.current = defaultAgentId;
+            setSelectedAgentRunCounts((current) => {
+                const next = { [defaultAgentId]: 1 };
+                return areAgentRunCountsEqual(current, next) ? current : next;
+            });
         }
-    }, [agents, selectedAgentId, setSelectedAgentId]);
+    }, [agents, composerDefaultParentMessage, selectedAgentId, setSelectedAgentId]);
 
     useEffect(() => {
         const normalized = normalizeComposerAgentRunCounts(agents, selectedAgentId, selectedAgentRunCounts);
@@ -2503,7 +2546,7 @@ export function ChatInput({
         const handlePopulateChatInput = (event: CustomEvent<{ text: string }>) => {
             const { text } = event.detail;
             if (text && typeof text === 'string') {
-                setPrompt(text);
+                setComposerPrompt(text);
                 setEditDraftSource(null);
                 // Focus the textarea after setting the text
                 setTimeout(() => {
@@ -2517,7 +2560,7 @@ export function ChatInput({
         return () => {
             window.removeEventListener('populateChatInput', handlePopulateChatInput as EventListener);
         };
-    }, []);
+    }, [setComposerPrompt]);
 
     useEffect(() => {
         const handleEditUserMessage = (event: CustomEvent<{ message?: Message }>) => {
@@ -2526,7 +2569,7 @@ export function ChatInput({
             if (sourceMessage.workspaceId !== selectedWorkspaceId) return;
 
             setEditDraftSource(sourceMessage);
-            setPrompt(sourceMessage.content || '');
+            setComposerPrompt(sourceMessage.content || '');
             setAttachments(sourceMessage.attachments ? [...sourceMessage.attachments] : []);
             setContextIds([]);
             dispatchFocus({
@@ -2542,7 +2585,7 @@ export function ChatInput({
         return () => {
             window.removeEventListener('editUserMessage', handleEditUserMessage as EventListener);
         };
-    }, [dispatchFocus, selectedWorkspaceId]);
+    }, [dispatchFocus, selectedWorkspaceId, setComposerPrompt]);
 
 
     const handlePaste = useCallback(async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -2569,68 +2612,18 @@ export function ChatInput({
     useEffect(() => {
     }, []);
 
-    const repoMentionPathSet = useMemo(
-        () => new Set(extractRepoMentionPaths(prompt).filter((path) => repoMentionFiles.some((file) => file.path === path))),
-        [prompt, repoMentionFiles]
+    const repoMentionSearchIndex = useMemo(
+        () => buildRepoMentionSearchIndex(repoMentionFiles),
+        [repoMentionFiles]
     );
-    const rankRepoMentionFile = useCallback((query: string, file: RepoMentionFile): number | null => {
-        const normalizedQuery = query.trim().toLowerCase();
-        const collapsedQuery = collapseFuzzyText(normalizedQuery);
-        if (!collapsedQuery) return 0;
-
-        const normalizedPath = file.path.toLowerCase();
-        const normalizedName = file.name.toLowerCase();
-        const collapsedPath = collapseFuzzyText(normalizedPath);
-        const collapsedName = collapseFuzzyText(normalizedName);
-        const pathSegments = normalizedPath
-            .split('/')
-            .map((segment) => collapseFuzzyText(segment))
-            .filter(Boolean);
-        const basenameTokens = normalizedName
-            .split(/[^a-z0-9]+/)
-            .map((segment) => collapseFuzzyText(segment))
-            .filter(Boolean);
-
-        const candidateScores = [
-            getFuzzyMatchScore(normalizedQuery, normalizedName),
-            getFuzzyMatchScore(normalizedQuery, normalizedPath),
-            getFuzzyMatchScore(collapsedQuery, collapsedName),
-            getFuzzyMatchScore(collapsedQuery, collapsedPath),
-        ].filter((score): score is number => score !== null);
-
-        if (candidateScores.length === 0) return null;
-
-        let score = Math.min(...candidateScores.map((value, index) => {
-            if (index === 0) return value - 40;
-            if (index === 2) return value - 25;
-            if (index === 3) return value - 10;
-            return value;
-        }));
-
-        if (normalizedName.startsWith(normalizedQuery) || collapsedName.startsWith(collapsedQuery)) {
-            score -= 60;
-        }
-        if (pathSegments.some((segment) => segment.startsWith(collapsedQuery))) {
-            score -= 35;
-        }
-        if (basenameTokens.some((token) => token.startsWith(collapsedQuery))) {
-            score -= 45;
-        }
-
-        for (let splitIndex = 2; splitIndex <= collapsedQuery.length - 2; splitIndex += 1) {
-            const left = collapsedQuery.slice(0, splitIndex);
-            const right = collapsedQuery.slice(splitIndex);
-            if (
-                pathSegments.some((segment) => segment.startsWith(left)) &&
-                basenameTokens.some((token) => token.startsWith(right))
-            ) {
-                score -= 80;
-                break;
-            }
-        }
-
-        return score;
-    }, []);
+    const repoMentionFilePathSet = useMemo(
+        () => new Set(repoMentionFiles.map((file) => file.path)),
+        [repoMentionFiles]
+    );
+    const repoMentionPathSet = useMemo(
+        () => getMentionedRepoPathSet(prompt, repoMentionFilePathSet),
+        [prompt, repoMentionFilePathSet]
+    );
 
     useEffect(() => {
         let cancelled = false;
@@ -2684,22 +2677,8 @@ export function ChatInput({
     const activeMentionFiles = useMemo(() => {
         if (!activeFileMention) return [];
 
-        const query = activeFileMention.query.trim();
-        const matches = query
-            ? repoMentionFiles
-                .map((file) => {
-                    const score = rankRepoMentionFile(query, file);
-                    return score === null ? null : { file, score };
-                })
-                .filter((entry): entry is { file: RepoMentionFile; score: number } => entry !== null)
-                .sort((left, right) => left.score - right.score || left.file.path.localeCompare(right.file.path))
-                .map((entry) => entry.file)
-            : [...repoMentionFiles].sort((left, right) => (
-                left.path.localeCompare(right.path)
-            ));
-
-        return matches.slice(0, 8);
-    }, [activeFileMention, rankRepoMentionFile, repoMentionFiles]);
+        return getRepoMentionMatches(repoMentionSearchIndex, activeFileMention.query, 8);
+    }, [activeFileMention, repoMentionSearchIndex]);
 
     useEffect(() => {
         setActiveFileMentionIndex(0);
@@ -2724,11 +2703,15 @@ export function ChatInput({
     }, []);
 
     const handleAgentSelect = (agentId: string) => {
+        autoSelectedAgentIdRef.current = null;
+        manuallySelectedAgentIdRef.current = agentId;
         setSelectedAgentId(agentId);
         setTimeout(() => textareaRef.current?.focus(), 0);
     };
 
     const handleAgentRunCountChange = useCallback((agentId: string, count: number) => {
+        autoSelectedAgentIdRef.current = null;
+        manuallySelectedAgentIdRef.current = agentId;
         const updated = updateComposerAgentRunCount(normalizedSelectedAgentRunCounts, agentId, count);
         const normalized = normalizeComposerAgentRunCounts(agents, agentId, updated);
         const nextSelectedAgentId = normalized[agentId] > 0
@@ -2745,17 +2728,18 @@ export function ChatInput({
         }
 
         const mentionLabel = file.path;
-        const nextPrompt = `${prompt.slice(0, activeFileMention.start)}@${mentionLabel} ${prompt.slice(activeFileMention.end)}`;
+        const currentPrompt = promptRef.current;
+        const nextPrompt = `${currentPrompt.slice(0, activeFileMention.start)}@${mentionLabel} ${currentPrompt.slice(activeFileMention.end)}`;
         const nextCursor = activeFileMention.start + mentionLabel.length + 2;
 
-        setPrompt(nextPrompt);
+        setComposerPrompt(nextPrompt);
         setActiveFileMention(null);
 
         window.setTimeout(() => {
             textareaRef.current?.focus();
             textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
         }, 80);
-    }, [activeFileMention, prompt]);
+    }, [activeFileMention, setComposerPrompt]);
 
     const handlePromptSelectionChange = useCallback((event: React.SyntheticEvent<HTMLTextAreaElement>) => {
         syncActiveFileMention(event.currentTarget.value, event.currentTarget.selectionStart);
@@ -2763,18 +2747,34 @@ export function ChatInput({
 
     const handlePromptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
         const newPrompt = e.target.value;
-        setPrompt(newPrompt);
+        promptRef.current = newPrompt;
+
+        const nextHasContent = newPrompt.trim().length > 0;
+        if (nextHasContent !== promptHasContent) {
+            setPromptHasContent(nextHasContent);
+        }
 
         const nextMention = selectedWorkspaceId
             ? getActiveFileMention(newPrompt, e.target.selectionStart ?? newPrompt.length)
             : null;
-        setActiveFileMention(nextMention);
+        const currentMentionKey = activeFileMention
+            ? `${activeFileMention.start}:${activeFileMention.end}:${activeFileMention.query}`
+            : '';
+        const nextMentionKey = nextMention
+            ? `${nextMention.start}:${nextMention.end}:${nextMention.query}`
+            : '';
+        if (currentMentionKey !== nextMentionKey) {
+            setActiveFileMention(nextMention);
+        }
 
         if (nextMention) {
+            setPrompt(newPrompt);
             setIsCommandPopoverOpen(false);
         } else if (newPrompt.endsWith('/')) {
+            setPrompt(newPrompt);
             setIsCommandPopoverOpen(true);
         } else if (isCommandPopoverOpen && !newPrompt.includes('/')) {
+            setPrompt(newPrompt);
             setIsCommandPopoverOpen(false);
         }
     };
@@ -2784,7 +2784,7 @@ export function ChatInput({
 
         const mentionedPaths = Array.from(
             new Set(
-                extractRepoMentionPaths(rawPrompt).filter((path) => repoMentionFiles.some((file) => file.path === path))
+                extractRepoMentionPaths(rawPrompt).filter((path) => repoMentionFilePathSet.has(path))
             )
         );
 
@@ -2797,7 +2797,7 @@ export function ChatInput({
         }));
 
         return `${rawPrompt}\n\n[REPO FILE CONTEXT]\n${fileBlocks.join('\n\n')}`.trim();
-    }, [repoMentionCommit, repoMentionFiles, selectedWorkspaceRepoPath]);
+    }, [repoMentionCommit, repoMentionFilePathSet, selectedWorkspaceRepoPath]);
 
     const resolveWorkspaceWorkspace = useCallback(async () => {
         const attachedRepoPath = selectedWorkspace?.git_repo_path?.trim() || null;
@@ -2855,12 +2855,13 @@ export function ChatInput({
      */
     const handleSend = useCallback(async () => {
         try {
+        const currentPrompt = promptRef.current;
         const hasLocalAgentRuntime = agentClient.hasRuntime();
         sendFlowDebug('handleSend invoked', {
             selectedWorkspaceId,
             focusedMessageId,
             selectedAgentId,
-            promptLength: prompt.trim().length,
+            promptLength: currentPrompt.trim().length,
             attachmentCount: attachments.length,
             contextEntryCount: contextIds.length,
             isParentIncomplete,
@@ -2884,7 +2885,7 @@ export function ChatInput({
             });
             return;
         }
-        if (!prompt.trim() && attachments.length === 0 && contextIds.length === 0) return;
+        if (!currentPrompt.trim() && attachments.length === 0 && contextIds.length === 0) return;
 
         const hasWorkspaceRepo = !!(selectedWorkspace?.git_repo_path || selectedWorkspace?.folderPath);
         if (!hasWorkspaceRepo) {
@@ -2928,7 +2929,7 @@ export function ChatInput({
         if (sendAcceptanceInFlightRef.current && !queuedReplayInFlightRef.current) {
             const queuedSend: QueuedComposerSend = {
                 id: `queued-send-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                prompt,
+                prompt: currentPrompt,
                 attachments: [...attachments],
                 contextIds: [...contextIds],
                 editDraftSource,
@@ -2937,7 +2938,7 @@ export function ChatInput({
             };
             queuedComposerSendsRef.current.push(queuedSend);
             setQueuedComposerSendCount(queuedComposerSendsRef.current.length);
-            setPrompt('');
+            setComposerPrompt('');
             setAttachments([]);
             setContextIds([]);
             setEditDraftSource(null);
@@ -3055,7 +3056,7 @@ export function ChatInput({
                     id: hasLocalAgentRuntime ? crypto.randomUUID() : undefined,
                     workspaceId: selectedWorkspaceId!,
                     parentId: run.userParentId,
-                    content: prompt.trim(),
+                    content: currentPrompt.trim(),
                     attachments: structuredAttachments,
                     scopeId: replyScopeId,
                     pathIds: parentPathIds,
@@ -3145,7 +3146,7 @@ export function ChatInput({
         assignSendFlowKey(operationKey, flowId);
         optimisticUserMessageIds.forEach((userMessageId) => assignSendFlowKey(userMessageId, flowId));
         optimisticAssistantMessageIds.forEach((assistantMessageId) => assignSendFlowKey(assistantMessageId, flowId));
-        const savedPrompt = prompt;
+        const savedPrompt = currentPrompt;
         const savedAttachments = [...attachments];
         const savedContextIds = [...contextIds];
         const shouldAutoCheckout = autoCheckoutOnAgentCommit;
@@ -3239,7 +3240,7 @@ export function ChatInput({
                 setSetupProgress(run.assistantMessageId, 'Initializing agent...');
             }
         }
-        setPrompt('');
+        setComposerPrompt('');
         setAttachments([]);
         setContextIds([]);
         setEditDraftSource(null);
@@ -3510,6 +3511,7 @@ export function ChatInput({
                         console.error('[SEND_FLOW] Background agent setup error:', err);
                     });
                 }
+                resetComposerTargetAfterSuccessfulSend();
                 onSendComplete?.();
                 return;
             }
@@ -3686,6 +3688,7 @@ export function ChatInput({
                         message: runtimeUnavailableContent,
                     }, { source: 'ChatInput' });
                     endSendFlowFocus(flowId);
+                    resetComposerTargetAfterSuccessfulSend();
                     onSendComplete?.();
                     return;
                 }
@@ -3727,6 +3730,7 @@ export function ChatInput({
                 }
             }
 
+            resetComposerTargetAfterSuccessfulSend();
             onSendComplete?.();
 
         } catch (err: unknown) {
@@ -3812,7 +3816,7 @@ export function ChatInput({
             }
 
             // Restore input on error
-            setPrompt(savedPrompt);
+            setComposerPrompt(savedPrompt);
             setAttachments(savedAttachments);
             setContextIds(savedContextIds);
             setEditDraftSource(savedEditDraftSource);
@@ -3832,7 +3836,7 @@ export function ChatInput({
         }
     }, [
         attachments,
-        prompt,
+        setComposerPrompt,
         sendMessageMutation,
         parentMessageId,
         editDraftSource,
@@ -3878,6 +3882,7 @@ export function ChatInput({
         queryClient,
         recordLatencyMark,
         onSendComplete,
+        resetComposerTargetAfterSuccessfulSend,
         resolveWorkspaceWorkspace,
         expandRepoMentionContext,
         startStreamForNode,
@@ -3896,7 +3901,7 @@ export function ChatInput({
         queuedReplayInFlightRef.current = true;
         queuedReplayPendingSendRef.current = queuedSend;
         setQueuedComposerSendCount(queuedComposerSendsRef.current.length);
-        setPrompt(queuedSend.prompt);
+        setComposerPrompt(queuedSend.prompt);
         setAttachments(queuedSend.attachments);
         setContextIds(queuedSend.contextIds);
         setEditDraftSource(queuedSend.editDraftSource);
@@ -3919,7 +3924,7 @@ export function ChatInput({
             promptLength: queuedSend.prompt.trim().length,
         }, { source: 'ChatInput' });
         setQueuedReplayVersion((version) => version + 1);
-    }, [dispatchFocus, isSendAcceptanceInFlight, queuedComposerSendCount, queuedReplayVersion, selectedWorkspaceId]);
+    }, [dispatchFocus, isSendAcceptanceInFlight, queuedComposerSendCount, queuedReplayVersion, selectedWorkspaceId, setComposerPrompt]);
 
     useEffect(() => {
         const queuedSend = queuedReplayPendingSendRef.current;
@@ -3927,7 +3932,7 @@ export function ChatInput({
             return;
         }
         const replayStateReady =
-            prompt === queuedSend.prompt &&
+            promptRef.current === queuedSend.prompt &&
             attachments === queuedSend.attachments &&
             contextIds === queuedSend.contextIds &&
             editDraftSource === queuedSend.editDraftSource &&
@@ -3964,7 +3969,6 @@ export function ChatInput({
         focusedMessageId,
         isSendAcceptanceInFlight,
         parentMessageIdOverride,
-        prompt,
         queuedReplayVersion,
         selectedWorkspaceId,
     ]);
@@ -4545,7 +4549,7 @@ export function ChatInput({
             return;
         }
 
-        if (event.key === 'Escape' && !isCommandPopoverOpen && !prompt.trim() && attachments.length === 0 && contextIds.length === 0) {
+        if (event.key === 'Escape' && !isCommandPopoverOpen && !promptRef.current.trim() && attachments.length === 0 && contextIds.length === 0) {
             onRequestClose?.();
             event.preventDefault();
             event.stopPropagation();
@@ -4556,7 +4560,7 @@ export function ChatInput({
             event.preventDefault();
             handleSend();
         }
-    }, [activeFileMention, activeFileMentionIndex, activeMentionFiles, attachments.length, contextIds.length, handleFileMentionSelect, handleSend, isCommandPopoverOpen, onRequestClose, prompt]);
+    }, [activeFileMention, activeFileMentionIndex, activeMentionFiles, attachments.length, contextIds.length, handleFileMentionSelect, handleSend, isCommandPopoverOpen, onRequestClose]);
 
 
     const handleCancel = useCallback(async () => {
@@ -4663,7 +4667,7 @@ export function ChatInput({
     // (Merged into handlePromptChange above)
 
     const handleCommandSelect = (commandType: 'message' | 'branch') => {
-        setPrompt((prev: string) => prev.slice(0, -1) + `/insert ${commandType}:`); // Replace "/" with command stub
+        setComposerPrompt(promptRef.current.slice(0, -1) + `/insert ${commandType}:`); // Replace "/" with command stub
         setIsCommandPopoverOpen(false);
         // Focus textarea and place cursor at the end
         setTimeout(() => {
@@ -4676,11 +4680,11 @@ export function ChatInput({
 
     const handleCancelEditDraft = useCallback(() => {
         setEditDraftSource(null);
-        setPrompt('');
+        setComposerPrompt('');
         setAttachments([]);
         setContextIds([]);
         setTimeout(() => textareaRef.current?.focus(), 0);
-    }, []);
+    }, [setComposerPrompt]);
 
 
     // --- Existing Render Logic ---
@@ -4700,6 +4704,7 @@ export function ChatInput({
     const composerControlIconClass = "flex h-6 w-6 shrink-0 items-center justify-center rounded bg-[hsl(var(--app-bg-muted))] text-[hsl(var(--app-text-soft))] shadow-[inset_0_0_0_1px_rgba(24,28,36,0.04)] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]";
     const composerEyebrowClass = "text-[8px] font-semibold uppercase leading-none tracking-[0.11em] text-muted-foreground/72";
     const composerValueClass = "truncate text-[11px] font-semibold leading-tight text-foreground";
+    const composerPopupLayerClass = "z-[90]";
     const replyParentDisplayLabel = replyParentLabel || selectedNodeMessage?.content || replyParentMessageId || 'Selected node';
     const replyTargetControlLabel = isNewThreadTarget ? 'New thread' : replyParentDisplayLabel;
     const replyTargetEyebrow = isNewThreadTarget ? 'Target' : 'Reply to';
@@ -4768,7 +4773,7 @@ export function ChatInput({
                                 side="top"
                                 sideOffset={6}
                                 collisionPadding={12}
-                                className="w-[min(18rem,calc(100vw-1.5rem))] rounded-lg border border-border/70 bg-popover/95 p-1 shadow-[0_16px_42px_-20px_rgba(15,23,42,0.50),0_6px_18px_-14px_rgba(15,23,42,0.38)] backdrop-blur-xl"
+                                className={cn(composerPopupLayerClass, "w-[min(18rem,calc(100vw-1.5rem))] rounded-lg border border-border/70 bg-popover/95 p-1 shadow-[0_16px_42px_-20px_rgba(15,23,42,0.50),0_6px_18px_-14px_rgba(15,23,42,0.38)] backdrop-blur-xl")}
                             >
                                 <DropdownMenuLabel className="px-1.5 py-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Reply target</DropdownMenuLabel>
                                 <DropdownMenuItem
@@ -4835,7 +4840,7 @@ export function ChatInput({
                                         </button>
                                     </DropdownMenuTrigger>
                                 </TooltipTrigger>
-                                <TooltipContent side="bottom" align="start" className="max-w-72">
+                                <TooltipContent side="bottom" align="start" className={cn(composerPopupLayerClass, "max-w-72")}>
                                     <div>Run starts from {codeParentTooltipNoun} {codeParentTooltipLabel}{codeParentTooltipSuffix}.</div>
                                     <div className="mt-1 text-muted-foreground">Changing the base can make the graph harder to follow.</div>
                                 </TooltipContent>
@@ -4845,7 +4850,7 @@ export function ChatInput({
                                 side="top"
                                 sideOffset={6}
                                 collisionPadding={12}
-                                className="max-h-[min(22rem,var(--radix-dropdown-menu-content-available-height))] w-[min(20rem,calc(100vw-1.5rem))] overflow-y-auto rounded-lg border border-border/70 bg-popover/95 p-1 shadow-[0_16px_42px_-20px_rgba(15,23,42,0.50),0_6px_18px_-14px_rgba(15,23,42,0.38)] backdrop-blur-xl dark:shadow-[0_16px_42px_-20px_rgba(0,0,0,0.78),0_6px_18px_-14px_rgba(0,0,0,0.62)]"
+                                className={cn(composerPopupLayerClass, "max-h-[min(22rem,var(--radix-dropdown-menu-content-available-height))] w-[min(20rem,calc(100vw-1.5rem))] overflow-y-auto rounded-lg border border-border/70 bg-popover/95 p-1 shadow-[0_16px_42px_-20px_rgba(15,23,42,0.50),0_6px_18px_-14px_rgba(15,23,42,0.38)] backdrop-blur-xl dark:shadow-[0_16px_42px_-20px_rgba(0,0,0,0.78),0_6px_18px_-14px_rgba(0,0,0,0.62)]")}
                             >
                                 <DropdownMenuLabel className="px-1.5 py-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Run from commit</DropdownMenuLabel>
                                 <DropdownMenuItem
@@ -4979,7 +4984,7 @@ export function ChatInput({
                                         </button>
                                     </DropdownMenuTrigger>
                                 </TooltipTrigger>
-                                <TooltipContent side="bottom" align="start" className="max-w-72">
+                                <TooltipContent side="bottom" align="start" className={cn(composerPopupLayerClass, "max-w-72")}>
                                     {contextPolicy === 'fresh'
                                         ? 'Start without inherited conversation context.'
                                         : `Context starts at ${contextStartLabel} and ends at ${contextParentLabel}.`}
@@ -4988,7 +4993,7 @@ export function ChatInput({
                             <DropdownMenuContent
                                 align="end"
                                 sideOffset={8}
-                                className="max-h-[calc(100vh-8rem)] w-80 overflow-y-auto rounded-xl border border-border/70 bg-popover/95 p-1.5 shadow-[0_18px_48px_-18px_rgba(15,23,42,0.45),0_8px_20px_-12px_rgba(15,23,42,0.35)] backdrop-blur-xl dark:shadow-[0_18px_48px_-18px_rgba(0,0,0,0.75),0_8px_20px_-12px_rgba(0,0,0,0.6)]"
+                                className={cn(composerPopupLayerClass, "max-h-[calc(100vh-8rem)] w-80 overflow-y-auto rounded-xl border border-border/70 bg-popover/95 p-1.5 shadow-[0_18px_48px_-18px_rgba(15,23,42,0.45),0_8px_20px_-12px_rgba(15,23,42,0.35)] backdrop-blur-xl dark:shadow-[0_18px_48px_-18px_rgba(0,0,0,0.75),0_8px_20px_-12px_rgba(0,0,0,0.6)]")}
                             >
                                 <DropdownMenuLabel className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">End context</DropdownMenuLabel>
                                 {mergeContextOptions.length > 0 ? (
@@ -5128,7 +5133,7 @@ export function ChatInput({
                     <PopoverAnchor asChild>
                         <div className="relative flex w-full flex-1 border-t border-[hsl(var(--app-border)/0.45)] bg-background/35">
                             {activeFileMention && (
-                                <div className="absolute inset-x-2 bottom-[calc(100%+8px)] z-[80] overflow-hidden rounded-xl border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong)/0.97)] shadow-[0_20px_60px_-28px_rgba(15,23,42,0.45)] backdrop-blur-xl">
+                                <div className={cn(composerPopupLayerClass, "absolute inset-x-2 bottom-[calc(100%+8px)] overflow-hidden rounded-xl border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong)/0.97)] shadow-[0_20px_60px_-28px_rgba(15,23,42,0.45)] backdrop-blur-xl")}>
                                     <div className="flex items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5">
                                         <div className="min-w-0">
                                             <div className="flex items-center gap-2 text-[11px] font-semibold text-foreground">
@@ -5202,7 +5207,7 @@ export function ChatInput({
                             <TextareaAutosize
                                 ref={textareaRef}
                                 data-testid="chat-composer-textarea"
-                                value={prompt}
+                                defaultValue=""
                                 onChange={handlePromptChange}
                                 onSelect={handlePromptSelectionChange}
                                 onKeyDown={handleKeyDown}
@@ -5225,7 +5230,7 @@ export function ChatInput({
                         </div>
                     </PopoverAnchor>
                     <PopoverContent
-                        className="w-60 p-1"
+                        className={cn(composerPopupLayerClass, "w-60 p-1")}
                         onOpenAutoFocus={(e) => e.preventDefault()}
                         onCloseAutoFocus={(e) => e.preventDefault()}
                         side="top"
@@ -5283,7 +5288,7 @@ export function ChatInput({
                             </PopoverTrigger>
                             <PopoverContent
                                 disableAnimation
-                                className="w-[620px] p-0"
+                                className={cn(composerPopupLayerClass, "w-[620px] p-0")}
                                 side="top"
                                 align="start"
                                 sideOffset={8}
@@ -5375,7 +5380,7 @@ export function ChatInput({
                                     <span className="whitespace-nowrap">Auto checkout</span>
                                 </label>
                             </HoverCardTrigger>
-                            <HoverCardContent className="w-64 rounded-xl border border-border/70 bg-popover px-3 py-2 text-xs leading-relaxed text-muted-foreground shadow-lg">
+                            <HoverCardContent className={cn(composerPopupLayerClass, "w-64 rounded-xl border border-border/70 bg-popover px-3 py-2 text-xs leading-relaxed text-muted-foreground shadow-lg")}>
                                 Automatically checks out the agent&apos;s new commit in detached HEAD after the run finishes. Skips checkout if your repo has uncommitted changes.
                             </HoverCardContent>
                         </HoverCard>
@@ -5388,7 +5393,7 @@ export function ChatInput({
                                 if (!showCancel) triggerSendPressFeedback();
                             }}
                             onClick={showCancel ? handleCancel : handleSend}
-                            disabled={showCancel ? false : isParentIncomplete || (!prompt.trim() && totalAttachments === 0 && contextIds.length === 0) || !selectedWorkspaceId}
+                            disabled={showCancel ? false : isParentIncomplete || (!promptHasContent && totalAttachments === 0 && contextIds.length === 0) || !selectedWorkspaceId}
                             className={cn(
                                 "flex-shrink-0 flex items-center justify-center gap-1.5",
                                 "h-7 px-3 rounded-md",

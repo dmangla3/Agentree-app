@@ -2,171 +2,16 @@ import React from 'react';
 import { 
   X, 
   GitMerge, 
-  ChevronRight, 
-  Check, 
   AlertTriangle, 
-  Loader2,
-  Settings2,
-  Sparkles,
-  Flag,
-  ArrowRight
+  Loader2
 } from 'lucide-react';
-import { cn } from '../../lib/utils';
-import { useIntegrationStore, IntegrationStage } from '../../stores/integrationStore';
+import { useIntegrationStore } from '../../stores/integrationStore';
 import { Separator } from '../../../@/components/ui/separator';
 import { ScrollArea } from '../../../@/components/ui/scroll-area';
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from '../../../@/components/ui/hover-card';
 
 // Stage Components
 import { SetupStage } from './SetupStage';
-import { SmartResolutionStage } from './SmartResolutionStage';
 import { ResultStage } from './ResultStage';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// STAGE CONFIGURATION
-// ═══════════════════════════════════════════════════════════════════════════
-
-const STAGES: { 
-  id: IntegrationStage; 
-  label: string; 
-  description: string;
-  tooltip: string;
-  icon: React.ElementType;
-  color: string;
-}[] = [
-  { 
-    id: 'setup', 
-    label: 'Setup', 
-    description: 'Select target and sources',
-    tooltip: 'Choose the target commit (base) and one or more source commits to merge into it. The target remains as the base, while sources bring their changes.',
-    icon: Settings2,
-    color: 'text-blue-600 bg-blue-50 border-blue-200 dark:bg-blue-950/30 dark:border-blue-800'
-  },
-  { 
-    id: 'smart-resolution', 
-    label: 'AI Resolve', 
-    description: 'Review and apply merge',
-    tooltip: 'Generate the merge preview, run an AI agent review for semantic conflicts, choose resolution options, and apply the final merge from the same page.',
-    icon: Sparkles,
-    color: 'text-violet-600 bg-violet-50 border-violet-200 dark:bg-violet-950/30 dark:border-violet-800'
-  },
-  { 
-    id: 'result', 
-    label: 'Result', 
-    description: 'Finalize and summarize',
-    tooltip: 'View the completed merge commit, see AI summary of changes, review resolved decisions, and optionally promote a branch pointer to reference the new commit.',
-    icon: Flag,
-    color: 'text-rose-600 bg-rose-50 border-rose-200 dark:bg-rose-950/30 dark:border-rose-800'
-  },
-];
-
-// ═══════════════════════════════════════════════════════════════════════════
-// STAGE INDICATOR COMPONENT
-// ═══════════════════════════════════════════════════════════════════════════
-
-function StageIndicator({ 
-  currentStage, 
-  onStageClick 
-}: { 
-  currentStage: IntegrationStage;
-  onStageClick?: (stage: IntegrationStage) => void;
-}) {
-  const currentIndex = STAGES.findIndex((s) => s.id === currentStage);
-  
-  return (
-    <div className="flex items-center gap-1 px-4 py-3">
-      {STAGES.map((stage, index) => {
-        const isActive = stage.id === currentStage;
-        const isCompleted = index < currentIndex;
-        const isPending = index > currentIndex;
-        
-        return (
-          <React.Fragment key={stage.id}>
-            <HoverCard openDelay={500} closeDelay={100}>
-              <HoverCardTrigger asChild>
-                <button
-                  onClick={() => onStageClick?.(stage.id)}
-                  disabled={isPending}
-                  className={cn(
-                    'flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-all',
-                    isActive && 'bg-primary text-primary-foreground',
-                    isCompleted && 'text-primary hover:bg-primary/10',
-                    isPending && 'cursor-not-allowed text-muted-foreground opacity-50'
-                  )}
-                >
-                  {isCompleted ? (
-                    <Check className="h-3.5 w-3.5" />
-                  ) : (
-                    <span className="flex h-4 w-4 items-center justify-center rounded-full border text-[10px]">
-                      {index + 1}
-                    </span>
-                  )}
-                  <span className="hidden sm:inline">{stage.label}</span>
-                </button>
-              </HoverCardTrigger>
-              <HoverCardContent 
-                side="bottom" 
-                align="center"
-                className="w-80 p-0 overflow-hidden border-border/50 shadow-xl"
-              >
-                <div className="bg-gradient-to-br from-muted/50 to-background p-4">
-                  {/* Header with icon */}
-                  <div className="flex items-start gap-3 mb-3">
-                    <div className={cn(
-                      "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border shadow-sm",
-                      stage.color
-                    )}>
-                      <stage.icon className="h-5 w-5" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-foreground">
-                          {stage.label}
-                        </span>
-                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
-                          {index + 1}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">
-                        Step {index + 1} of {STAGES.length}
-                      </p>
-                    </div>
-                  </div>
-                  
-                  {/* Divider */}
-                  <div className="h-px bg-gradient-to-r from-transparent via-border to-transparent my-3" />
-                  
-                  {/* Description */}
-                  <p className="text-xs text-muted-foreground leading-relaxed">
-                    {stage.tooltip}
-                  </p>
-                  
-                  {/* Next step hint */}
-                  {index < STAGES.length - 1 && (
-                    <>
-                      <div className="h-px bg-gradient-to-r from-transparent via-border to-transparent my-3" />
-                      <div className="flex items-center gap-2 text-[11px] text-muted-foreground/70">
-                        <ArrowRight className="h-3 w-3" />
-                        <span>Next: {STAGES[index + 1].label}</span>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </HoverCardContent>
-            </HoverCard>
-            {index < STAGES.length - 1 && (
-              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/50" />
-            )}
-          </React.Fragment>
-        );
-      })}
-    </div>
-  );
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SESSION HEADER COMPONENT
@@ -268,7 +113,7 @@ function useStageRenderer() {
       case 'setup':
         return <SetupStage />;
       case 'smart-resolution':
-        return <SmartResolutionStage />;
+        return <SetupStage />;
       case 'result':
         return <ResultStage />;
       default:
@@ -288,7 +133,7 @@ interface EmbeddedIntegrationWorkspaceProps {
 }
 
 export function EmbeddedIntegrationWorkspace({ onClose }: EmbeddedIntegrationWorkspaceProps) {
-  const { session, renderStage, moveToStage } = useStageRenderer();
+  const { session, renderStage } = useStageRenderer();
   const { closeMergeSession, isApplying } = useIntegrationStore();
   
   // Handle escape key to close
@@ -309,19 +154,7 @@ export function EmbeddedIntegrationWorkspace({ onClose }: EmbeddedIntegrationWor
   return (
     <div className="flex h-full flex-col bg-background">
       <SessionHeader onClose={onClose} />
-      
-      <StageIndicator 
-        currentStage={session.stage} 
-        onStageClick={(stage) => {
-          // Only allow navigating to previous stages or current stage
-          const currentIndex = STAGES.findIndex((s) => s.id === session.stage);
-          const targetIndex = STAGES.findIndex((s) => s.id === stage);
-          if (targetIndex <= currentIndex) {
-            moveToStage(stage);
-          }
-        }}
-      />
-      
+
       <Separator />
       
       <ErrorBanner />
@@ -352,7 +185,7 @@ export function EmbeddedIntegrationWorkspace({ onClose }: EmbeddedIntegrationWor
 
 export function IntegrationWorkspace() {
   const { isMergeOpen, session, closeMergeSession, isApplying } = useIntegrationStore();
-  const { renderStage, moveToStage } = useStageRenderer();
+  const { renderStage } = useStageRenderer();
   
   // Handle escape key
   React.useEffect(() => {
@@ -384,19 +217,7 @@ export function IntegrationWorkspace() {
       {/* Panel */}
       <div className="flex w-full max-w-5xl flex-col border-l bg-background shadow-2xl">
         <SessionHeader onClose={undefined} />
-        
-        <StageIndicator 
-          currentStage={session.stage} 
-          onStageClick={(stage) => {
-            // Only allow navigating to previous stages or current stage
-            const currentIndex = STAGES.findIndex((s) => s.id === session.stage);
-            const targetIndex = STAGES.findIndex((s) => s.id === stage);
-            if (targetIndex <= currentIndex) {
-              moveToStage(stage);
-            }
-          }}
-        />
-        
+
         <Separator />
         
         <ErrorBanner />

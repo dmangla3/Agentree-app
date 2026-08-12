@@ -53,6 +53,7 @@ describe('agentRun finalize effects', () => {
     resetAgentRunEffectsForTest();
     unregisterQueryClient = registerAgentRunEffectsQueryClient(queryClient);
     vi.spyOn(queryClient, 'invalidateQueries');
+    vi.spyOn(queryClient, 'refetchQueries');
     agentRunManager.clearAll();
   });
 
@@ -105,6 +106,17 @@ describe('agentRun finalize effects', () => {
       status: 'completed',
       output_commit_sha: 'commit-1',
       git_branch_name: 'agent/run-1',
+    });
+
+    vi.advanceTimersByTime(50);
+
+    expect(queryClient.refetchQueries).toHaveBeenCalledWith({
+      queryKey: ['local-commit-graph', 'workspace-1'],
+      type: 'active',
+    });
+    expect(queryClient.refetchQueries).toHaveBeenCalledWith({
+      queryKey: ['local-commits', 'workspace-1'],
+      type: 'active',
     });
   });
 
@@ -236,6 +248,14 @@ describe('agentRun finalize effects', () => {
     expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({
       queryKey: ['local-commits', 'workspace-1'],
       refetchType: 'active',
+    });
+    expect(queryClient.refetchQueries).not.toHaveBeenCalledWith({
+      queryKey: ['local-commit-graph', 'workspace-1'],
+      type: 'active',
+    });
+    expect(queryClient.refetchQueries).not.toHaveBeenCalledWith({
+      queryKey: ['local-commits', 'workspace-1'],
+      type: 'active',
     });
   });
 });

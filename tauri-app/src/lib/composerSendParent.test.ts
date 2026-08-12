@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { resolveFocusedCommitSha, resolveSendParentMessageId } from './composerSendParent';
+import {
+  resolveComposerTargetModeAfterSuccessfulSend,
+  resolveFocusedCommitSha,
+  resolveSendParentMessageId,
+} from './composerSendParent';
 
 const resolvePersistedMessageId = (messageId: string | null) => (
   messageId === 'optimistic-parent' ? 'persisted-parent' : messageId
@@ -102,5 +106,11 @@ describe('resolveSendParentMessageId', () => {
       },
       resolvePersistedMessageId,
     })).toBe('persisted-parent');
+  });
+});
+
+describe('resolveComposerTargetModeAfterSuccessfulSend', () => {
+  it('treats new thread as a one-shot explicit send target', () => {
+    expect(resolveComposerTargetModeAfterSuccessfulSend('new-thread')).toBe('reply');
   });
 });

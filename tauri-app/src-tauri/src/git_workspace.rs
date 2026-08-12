@@ -1437,6 +1437,150 @@ pub async fn finalize_agent_worktree(
     })
 }
 
+fn normalize_commit(repo_path: &str, commit: &str) -> Result<String, String> {
+    run_git(
+        repo_path,
+        &["rev-parse", &format!("{}^{{commit}}", commit.trim())],
+    )
+    .map(|value| value.trim().to_string())
+}
+
+fn normalize_target_branch_name(target_branch: &str) -> Option<String> {
+    let trimmed = target_branch.trim();
+    let name = trimmed
+        .strip_prefix("refs/heads/")
+        .unwrap_or(trimmed)
+        .trim();
+    if name.is_empty() || name.starts_with("agentree/") {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+fn advance_target_branch_to_commit(
+    repo_path: &str,
+    target_branch: Option<&str>,
+    expected_old_commit: &str,
+    new_commit: &str,
+) -> Result<bool, String> {
+    let Some(branch_name) = target_branch.and_then(normalize_target_branch_name) else {
+        return Ok(false);
+    };
+    let branch_ref = format!("refs/heads/{}", branch_name);
+    if !run_git_success(repo_path, &["check-ref-format", &branch_ref]) {
+        return Err(format!("Invalid target branch name: {}", branch_name));
+    }
+    if !run_git_success(repo_path, &["rev-parse", "--verify", &branch_ref]) {
+        return Ok(false);
+    }
+
+    let current_commit = normalize_commit(repo_path, &branch_ref)?;
+    let expected_old_commit = normalize_commit(repo_path, expected_old_commit)?;
+    if current_commit != expected_old_commit {
+        return Err(format!(
+            "Target branch {} moved while AI merge was running. Expected {}, found {}.",
+            branch_name, expected_old_commit, current_commit
+        ));
+    }
+
+    let checked_out_paths = list_worktrees_for_branch(repo_path, &branch_name)?;
+    if checked_out_paths.is_empty() {
+        run_git(
+            repo_path,
+            &["update-ref", &branch_ref, new_commit, &current_commit],
+        )?;
+        return Ok(true);
+    }
+
+    for path in &checked_out_paths {
+        let status = run_git(path, &["status", "--porcelain"])?;
+        if !status.trim().is_empty() {
+            return Err(format!(
+                "Target branch {} is checked out at {} with uncommitted changes. Commit or stash them before updating the branch to the AI merge result.",
+                branch_name, path
+            ));
+        }
+    }
+    run_git(&checked_out_paths[0], &["reset", "--hard", new_commit])?;
+    Ok(true)
+}
+
+pub fn finalize_agent_merge_worktree(
+    repo_path: &str,
+    node_id: &str,
+    target_commit: &str,
+    source_commits: &[String],
+    commit_message: &str,
+    author_name: Option<&str>,
+    target_branch: Option<&str>,
+) -> Result<(GitCommitMetadata, bool), String> {
+    if source_commits.is_empty() {
+        return Err("AI merge finalization requires at least one source commit.".to_string());
+    }
+
+    let worktree_path = worktree_root(repo_path)?.join(node_id);
+    let worktree_path_string = worktree_path.to_string_lossy().to_string();
+    log_agent_worktree_lifecycle(
+        "finalize_merge.start",
+        repo_path,
+        node_id,
+        &worktree_path,
+        &format!("sources={}", source_commits.len()),
+    );
+
+    with_repo_git_lock(repo_path, "worktree_finalize_merge", || {
+        run_git(&worktree_path_string, &["add", "-A"])?;
+        let tree_sha = run_git(&worktree_path_string, &["write-tree"])?
+            .trim()
+            .to_string();
+        let target_commit = normalize_commit(repo_path, target_commit)?;
+        let mut parents = vec![target_commit.clone()];
+        let mut seen = HashSet::from([target_commit.clone()]);
+        for source in source_commits {
+            let source_commit = normalize_commit(repo_path, source)?;
+            if seen.insert(source_commit.clone()) {
+                parents.push(source_commit);
+            }
+        }
+        if parents.len() < 2 {
+            return Err("AI merge finalization requires at least one source commit distinct from the target commit.".to_string());
+        }
+
+        let mut commit_args = vec![
+            "commit-tree".to_string(),
+            tree_sha,
+            "-p".to_string(),
+            parents[0].clone(),
+        ];
+        for parent in parents.iter().skip(1) {
+            commit_args.push("-p".to_string());
+            commit_args.push(parent.clone());
+        }
+        commit_args.push("-m".to_string());
+        commit_args.push(commit_message.to_string());
+        let commit_arg_refs = commit_args.iter().map(String::as_str).collect::<Vec<_>>();
+        let commit_sha = run_git_commit_with_author(repo_path, &commit_arg_refs, author_name)?
+            .trim()
+            .to_string();
+
+        run_git(&worktree_path_string, &["reset", "--hard", &commit_sha])?;
+        let target_updated =
+            advance_target_branch_to_commit(repo_path, target_branch, &target_commit, &commit_sha)?;
+        log_agent_worktree_lifecycle(
+            "finalize_merge.committed",
+            repo_path,
+            node_id,
+            &worktree_path,
+            &format!(
+                "commit_sha={} target_updated={}",
+                commit_sha, target_updated
+            ),
+        );
+        let metadata = read_commit_metadata_sync(repo_path, &commit_sha)?;
+        Ok((metadata, target_updated))
+    })
+}
+
 pub async fn cleanup_worktree_owned(
     repo_path: String,
     node_id: String,
@@ -1499,7 +1643,10 @@ pub async fn cleanup_worktree_owned(
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_worktree_head_commit_if_advanced, is_env_file, worktree_root};
+    use super::{
+        agent_worktree_head_commit_if_advanced, finalize_agent_merge_worktree, is_env_file,
+        worktree_root,
+    };
     use std::fs;
     use std::path::Path;
     use std::process::Command;
@@ -1575,6 +1722,70 @@ mod tests {
 
         assert_eq!(detected.subject, "assistant output");
         assert_eq!(detected.parents, vec![parent_commit]);
+    }
+
+    #[test]
+    fn finalize_agent_merge_worktree_creates_merge_commit_and_advances_target_branch() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        run_test_git(dir.path(), &["branch", "-M", "main"]);
+        let target_commit = run_test_git(dir.path(), &["rev-parse", "main"]);
+
+        run_test_git(dir.path(), &["checkout", "-b", "feature", "main"]);
+        fs::write(dir.path().join("feature.txt"), "feature\n").expect("write feature file");
+        run_test_git(dir.path(), &["add", "feature.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "feature commit"]);
+        let source_commit = run_test_git(dir.path(), &["rev-parse", "feature"]);
+        run_test_git(dir.path(), &["checkout", "main"]);
+
+        let node_id = "assistant-merge-commit";
+        let worktree_path = worktree_root(&repo_path)
+            .expect("worktree root")
+            .join(node_id);
+        let worktree_path_string = worktree_path.to_string_lossy().to_string();
+        run_test_git(
+            dir.path(),
+            &[
+                "worktree",
+                "add",
+                &worktree_path_string,
+                "-B",
+                &format!("agentree/{node_id}"),
+                &target_commit,
+            ],
+        );
+        fs::write(worktree_path.join("feature.txt"), "feature\n").expect("write resolved file");
+        fs::write(worktree_path.join("decision.txt"), "ai decision\n")
+            .expect("write decision file");
+
+        let (merge_commit, target_updated) = finalize_agent_merge_worktree(
+            &repo_path,
+            node_id,
+            &target_commit,
+            &[source_commit.clone()],
+            "AI merge result",
+            None,
+            Some("main"),
+        )
+        .expect("finalize merge worktree");
+
+        assert!(target_updated);
+        assert_eq!(
+            merge_commit.parents,
+            vec![target_commit.clone(), source_commit]
+        );
+        assert_eq!(merge_commit.subject, "AI merge result");
+        assert_eq!(
+            run_test_git(dir.path(), &["rev-parse", "main"]),
+            merge_commit.sha
+        );
+        assert_eq!(
+            run_test_git(
+                dir.path(),
+                &["show", &format!("{}:decision.txt", merge_commit.sha)]
+            ),
+            "ai decision"
+        );
     }
 }
 

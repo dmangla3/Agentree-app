@@ -710,6 +710,7 @@ const buildLayoutModel = (
   });
 
   const conversationChildrenByParent = new Map<string, string[]>();
+  const conversationParentsByTarget = new Map<string, string[]>();
   const lineageParentsByTarget = new Map<string, Array<{ sourceUnitId: string; edge: Edge }>>();
   const lineageChildrenByParent = new Map<string, string[]>();
   const commitOnlyLineageChildrenByParent = new Map<string, string[]>();
@@ -718,6 +719,9 @@ const buildLayoutModel = (
       const children = conversationChildrenByParent.get(sourceUnitId) ?? [];
       children.push(targetUnitId);
       conversationChildrenByParent.set(sourceUnitId, children);
+      const parents = conversationParentsByTarget.get(targetUnitId) ?? [];
+      parents.push(sourceUnitId);
+      conversationParentsByTarget.set(targetUnitId, parents);
     }
 
     if (!isUnitLineageEdge(edge)) return;
@@ -788,6 +792,7 @@ const buildLayoutModel = (
   unitEdgeCandidates.forEach(({ edge, sourceUnitId, targetUnitId }) => {
     if ((edge.data as any)?.relationship !== 'conversation') return;
     const conversationDescendants = collectConversationDescendants(targetUnitId);
+    const sourceConversationChildCount = new Set(conversationChildrenByParent.get(sourceUnitId) ?? []).size;
     const bridgeCandidates: Array<{ bridgeUnitId: string; distance: number; sortTs: number }> = [];
 
     const reachableDistances = getReachableCommitOnlyDistances(sourceUnitId);
@@ -795,6 +800,9 @@ const buildLayoutModel = (
       (lineageParentsByTarget.get(descendantUnitId) ?? []).forEach(({ sourceUnitId: lineageSourceUnitId }) => {
         const distance = reachableDistances.get(lineageSourceUnitId);
         if (distance === undefined || distance <= 0) return;
+        // A nested descendant's code base should not pull its parent sibling branch
+        // under that commit; only linear continuations get descendant-derived bridges.
+        if (descendantUnitId !== targetUnitId && sourceConversationChildCount > 1) return;
         const sortTs = layoutUnits.get(lineageSourceUnitId)?.sortTs ?? 0;
         bridgeCandidates.push({
           bridgeUnitId: lineageSourceUnitId,
@@ -820,16 +828,28 @@ const buildLayoutModel = (
 
   const conversationEdgesReroutedToBridge = new Set<string>();
 
+  const isReachableBridgeForConversationTarget = (sourceUnitId: string, targetUnitId: string): boolean => {
+    const conversationParents = conversationParentsByTarget.get(targetUnitId) ?? [];
+    return conversationParents.some((conversationParentUnitId) => {
+      const distance = getReachableCommitOnlyDistances(conversationParentUnitId).get(sourceUnitId);
+      return distance !== undefined && distance > 0;
+    });
+  };
+
   const pushLayoutEdge = (edge: Edge, sourceUnitId: string, targetUnitId: string) => {
     const sourceUnit = layoutUnits.get(sourceUnitId);
     const targetUnit = layoutUnits.get(targetUnitId);
     if (
       isUnitLineageEdge(edge) &&
-      targetHasConversationParent.has(targetUnitId) &&
-      sourceUnit?.hasConversationMembers &&
       targetUnit?.hasConversationMembers
     ) {
-      return;
+      if (sourceUnit?.hasConversationMembers) return;
+      // Commit/base edges rank conversation turns only when the commit is a real
+      // bridge below that turn's conversation parent.
+      if (
+        targetHasConversationParent.has(targetUnitId) &&
+        !isReachableBridgeForConversationTarget(sourceUnitId, targetUnitId)
+      ) return;
     }
 
     const data = edge.data as { edgeRole?: string; isReference?: boolean; layout?: boolean; relationship?: string } | undefined;
@@ -1869,6 +1889,7 @@ export const mapMessagesToGraphElements = (
             ? ((msg.execution_data as any).meta.git_authored_at as string)
             : msg.updatedAt ?? msg.createdAt ?? null,
           scopeId,
+          threadRootId: entity.threadRootId ?? null,
         };
         const commitFilesChanged = getFilesChanged(syntheticCommitMessage);
         nodes.push({
@@ -2796,11 +2817,34 @@ export const getLaneLayoutedElements = (
     return a.localeCompare(b);
   };
 
-  // Global temporal ordering
-  const timeOrdered = Array.from(laneNodeIds);
-  timeOrdered.sort(sortByTime);
+  const timeOrdered = Array.from(laneNodeIds).sort(sortByTime);
   const rowByNode = new Map<string, number>();
-  timeOrdered.forEach((id, idx) => rowByNode.set(id, idx));
+  const rowInDegree = new Map<string, number>();
+  laneNodeIds.forEach((id) => rowInDegree.set(id, incoming.get(id)?.size ?? 0));
+  const rowQueue = timeOrdered.filter((id) => (rowInDegree.get(id) ?? 0) === 0);
+
+  while (rowQueue.length > 0) {
+    const id = rowQueue.shift()!;
+    if (rowByNode.has(id)) continue;
+
+    const parents = Array.from(incoming.get(id) ?? []);
+    const parentRows = parents.map((parentId) => rowByNode.get(parentId)).filter((row): row is number => row !== undefined);
+    rowByNode.set(id, parentRows.length > 0 ? Math.max(...parentRows) + 1 : 0);
+
+    const children = Array.from(outgoing.get(id) ?? []).sort(sortByTime);
+    children.forEach((childId) => {
+      const nextDegree = (rowInDegree.get(childId) ?? 0) - 1;
+      rowInDegree.set(childId, nextDegree);
+      if (nextDegree === 0) rowQueue.push(childId);
+    });
+  }
+
+  timeOrdered.forEach((id) => {
+    if (rowByNode.has(id)) return;
+    const parents = Array.from(incoming.get(id) ?? []);
+    const parentRows = parents.map((parentId) => rowByNode.get(parentId)).filter((row): row is number => row !== undefined);
+    rowByNode.set(id, parentRows.length > 0 ? Math.max(...parentRows) + 1 : 0);
+  });
   const rowOffsets = buildCompactRankOffsets(
     timeOrdered.map((id) => ({ rank: rowByNode.get(id) ?? 0, height: getNodeHeight(nodesById.get(id)!) })),
   );

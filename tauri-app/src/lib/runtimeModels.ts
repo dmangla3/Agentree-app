@@ -173,7 +173,7 @@ const codexModels: RuntimeModel[] = codexModelBases.flatMap((model) =>
 
 export const runtimeModels: RuntimeModel[] = [...codexModels, ...claudeModels];
 
-export const defaultRuntimeModelKey = 'codex:gpt-5.4-mini:medium';
+export const defaultRuntimeModelKey = 'codex:gpt-5.5:high';
 
 export const getRuntimeModelByKey = (key?: string | null): RuntimeModel | null =>
   runtimeModels.find((model) => model.key === key) ?? null;

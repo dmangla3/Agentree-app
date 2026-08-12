@@ -4,6 +4,8 @@ type FocusSnapshot = {
   lastFocusMetadata?: Record<string, unknown> | null;
 };
 
+export type ComposerTargetMode = 'reply' | 'new-thread';
+
 export type ResolveSendParentMessageIdInput = {
   hasEditDraftSource: boolean;
   editDraftSourceParentId?: string | null;
@@ -45,3 +47,9 @@ export const resolveSendParentMessageId = ({
 
   return resolvePersistedMessageId(rawParentId ?? null);
 };
+
+export const resolveComposerTargetModeAfterSuccessfulSend = (
+  targetMode: ComposerTargetMode
+): ComposerTargetMode => (
+  targetMode === 'new-thread' ? 'reply' : targetMode
+);

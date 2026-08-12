@@ -2320,6 +2320,14 @@ impl TelemetryDb {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .unwrap_or("external");
+            let existing_commit: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM local_commits WHERE workspace_id = ?1 AND sha = ?2)",
+                    params![workspace_id, sha],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|e| e.to_string())?
+                != 0;
 
             tx.execute(
                 r#"
@@ -2336,7 +2344,7 @@ impl TelemetryDb {
                     authored_at = COALESCE(excluded.authored_at, local_commits.authored_at),
                     committed_at = COALESCE(excluded.committed_at, local_commits.committed_at),
                     source_kind = CASE
-                        WHEN local_commits.source_kind = 'agent' THEN local_commits.source_kind
+                        WHEN local_commits.source_kind IN ('agent', 'merge') THEN local_commits.source_kind
                         ELSE excluded.source_kind
                     END,
                     produced_by_node_id = COALESCE(excluded.produced_by_node_id, local_commits.produced_by_node_id),
@@ -2365,22 +2373,24 @@ impl TelemetryDb {
             )
             .map_err(|e| e.to_string())?;
 
-            tx.execute(
-                "DELETE FROM local_commit_parents WHERE workspace_id = ?1 AND child_sha = ?2",
-                params![workspace_id, sha],
-            )
-            .map_err(|e| e.to_string())?;
-            for (index, parent_sha) in parents.iter().enumerate() {
+            if !existing_commit || !parents.is_empty() {
                 tx.execute(
-                    r#"
-                    INSERT INTO local_commit_parents (
-                        workspace_id, child_sha, parent_sha, parent_index, local_updated_at
-                    )
-                    VALUES (?1, ?2, ?3, ?4, ?5)
-                    "#,
-                    params![workspace_id, sha, parent_sha, index as i64, now],
+                    "DELETE FROM local_commit_parents WHERE workspace_id = ?1 AND child_sha = ?2",
+                    params![workspace_id, sha],
                 )
                 .map_err(|e| e.to_string())?;
+                for (index, parent_sha) in parents.iter().enumerate() {
+                    tx.execute(
+                        r#"
+                        INSERT INTO local_commit_parents (
+                            workspace_id, child_sha, parent_sha, parent_index, local_updated_at
+                        )
+                        VALUES (?1, ?2, ?3, ?4, ?5)
+                        "#,
+                        params![workspace_id, sha, parent_sha, index as i64, now],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
             }
 
             tx.execute(
@@ -3551,6 +3561,78 @@ mod tests {
             .commit_parents
             .iter()
             .any(|parent| parent.child_sha == tip && parent.parent_sha == middle));
+    }
+
+    #[test]
+    fn local_commit_import_preserves_merge_parent_edges_across_sparse_ref_sync() {
+        let (_db_dir, db) = open_test_db();
+
+        db.import_local_commits(
+            "workspace-1",
+            vec![LocalCommitImport {
+                sha: "merge-sha".to_string(),
+                parents: vec!["target-sha".to_string(), "source-sha".to_string()],
+                subject: Some("Merge source into target".to_string()),
+                author_name: Some("Agentree".to_string()),
+                author_email: None,
+                authored_at: Some("2026-05-20T00:00:00.000Z".to_string()),
+                committed_at: Some("2026-05-20T00:00:00.000Z".to_string()),
+                source_kind: Some("merge".to_string()),
+                produced_by_node_id: Some("merge-result-node".to_string()),
+                files_changed_count: Some(2),
+                total_additions: Some(29),
+                total_deletions: Some(2),
+            }],
+            None,
+        )
+        .expect("seed merge commit");
+
+        db.import_local_commits(
+            "workspace-1",
+            vec![LocalCommitImport {
+                sha: "merge-sha".to_string(),
+                parents: Vec::new(),
+                subject: Some("Merge source into target".to_string()),
+                author_name: None,
+                author_email: None,
+                authored_at: None,
+                committed_at: None,
+                source_kind: Some("external".to_string()),
+                produced_by_node_id: None,
+                files_changed_count: None,
+                total_additions: None,
+                total_deletions: None,
+            }],
+            Some("refs/heads/main"),
+        )
+        .expect("sparse ref sync");
+
+        let snapshot = db
+            .list_local_commit_graph("workspace-1")
+            .expect("list local graph");
+        let commit = snapshot
+            .commits
+            .iter()
+            .find(|commit| commit.sha == "merge-sha")
+            .expect("merge commit");
+        assert_eq!(commit.source_kind, "merge");
+        assert_eq!(
+            commit.produced_by_node_id.as_deref(),
+            Some("merge-result-node")
+        );
+        assert_eq!(snapshot.commit_parents.len(), 2);
+        assert!(snapshot
+            .commit_parents
+            .iter()
+            .any(|parent| parent.child_sha == "merge-sha"
+                && parent.parent_sha == "target-sha"
+                && parent.parent_index == 0));
+        assert!(snapshot
+            .commit_parents
+            .iter()
+            .any(|parent| parent.child_sha == "merge-sha"
+                && parent.parent_sha == "source-sha"
+                && parent.parent_index == 1));
     }
 
     #[test]

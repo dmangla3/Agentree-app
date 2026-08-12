@@ -175,6 +175,7 @@ export interface GraphControlsProps {
     onThreadFocus: (threadRootId: string) => void;
     onThreadHide: (threadRootId: string) => void;
     onThreadRestore: (threadRootId: string) => void;
+    onHideAllThreads: () => void;
     onRestoreAllHiddenThreads: () => void;
     leafNodes: LeafNodeNavigationItem[];
     onLeafNodeFocus: (id: string) => void;
@@ -257,6 +258,7 @@ export function GraphControls({
     onThreadFocus,
     onThreadHide,
     onThreadRestore,
+    onHideAllThreads,
     onRestoreAllHiddenThreads,
     leafNodes,
     onLeafNodeFocus,
@@ -310,6 +312,7 @@ export function GraphControls({
         return formatCountdownLabel(nextDueAt - clockNow);
     }, [autoRefreshEligible, clockNow, syncStatusItems]);
     const hiddenThreadCount = useMemo(() => threadItems.filter((thread) => thread.hidden).length, [threadItems]);
+    const visibleThreadCount = threadItems.length - hiddenThreadCount;
     const hasCurrentThread = threadItems.some((thread) => thread.current);
     const hasActiveThread = threadItems.some((thread) => thread.runningCount > 0);
     const timeLabel = timePreset === 'all'
@@ -866,15 +869,26 @@ export function GraphControls({
                                                 </p>
                                             </div>
                                         </div>
-                                        {hiddenThreadCount > 0 ? (
-                                            <button
-                                                type="button"
-                                                onClick={onRestoreAllHiddenThreads}
-                                                className="shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                                            >
-                                                Restore hidden
-                                            </button>
-                                        ) : null}
+                                        <div className="flex shrink-0 items-center gap-1">
+                                            {visibleThreadCount > 0 ? (
+                                                <button
+                                                    type="button"
+                                                    onClick={onHideAllThreads}
+                                                    className="rounded-md px-2 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                                >
+                                                    Hide all
+                                                </button>
+                                            ) : null}
+                                            {hiddenThreadCount > 0 ? (
+                                                <button
+                                                    type="button"
+                                                    onClick={onRestoreAllHiddenThreads}
+                                                    className="rounded-md px-2 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                                >
+                                                    Restore hidden
+                                                </button>
+                                            ) : null}
+                                        </div>
                                     </div>
                                 </div>
                                 <div

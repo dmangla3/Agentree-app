@@ -3,6 +3,26 @@
 import { spawnSync } from 'node:child_process';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
+const FINAL_RESULT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['final_response', 'commit_subject', 'ai_label'],
+  properties: {
+    final_response: {
+      type: 'string',
+      description: 'User-visible final assistant response. Keep the normal summary, verification, and caveats here.',
+    },
+    commit_subject: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+      description: 'Concise imperative git commit subject for the changes made, 4-10 words, no trailing period. Use null if no files changed.',
+    },
+    ai_label: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+      description: 'Concise 5-10 word graph label for this assistant message. Describe the outcome, not the full response. No trailing period.',
+    },
+  },
+};
+
 function nowMs() {
   return Date.now();
 }
@@ -207,11 +227,16 @@ function extractAssistantText(message) {
     .join('');
 }
 
-function extractToolResults(message) {
+function extractToolResults(message, ignoredToolUseIds = new Set()) {
   const content = message?.message?.content;
   if (!Array.isArray(content)) return [];
   return content
-    .filter((block) => block?.type === 'tool_result')
+    .filter((block) => {
+      if (block?.type !== 'tool_result') return false;
+      if (isStructuredOutputBlock(block)) return false;
+      const toolUseId = block.tool_use_id ?? block.id ?? null;
+      return !(toolUseId && ignoredToolUseIds.has(toolUseId));
+    })
     .map((block) => ({
       type: 'tool_result',
       toolName: block.name ?? block.tool_name ?? 'tool',
@@ -259,6 +284,60 @@ function mapRateLimitInfo(rateLimitInfo) {
   };
 }
 
+function normalizeStructuredCommitSubject(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value
+    .replace(/[\n\r\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^["'`\-\s]+|["'`\s.]+$/g, '');
+  if (!normalized) return null;
+  return normalized.slice(0, 72).trim() || null;
+}
+
+function normalizeStructuredAiLabel(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`+/g, '')
+    .replace(/[\n\r\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^["'`\-\s]+|["'`\s.]+$/g, '');
+  if (!normalized) return null;
+  return normalized.slice(0, 80).trim() || null;
+}
+
+function normalizeStructuredFinalResponse(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function isStructuredOutputBlock(block) {
+  return block?.name === 'StructuredOutput';
+}
+
+function structuredFinalOutputFromInput(input) {
+  if (!input || typeof input !== 'object') return null;
+  const finalResponse = normalizeStructuredFinalResponse(input.final_response);
+  const commitSubject = normalizeStructuredCommitSubject(input.commit_subject);
+  const aiLabel = normalizeStructuredAiLabel(input.ai_label);
+  if (!finalResponse && !commitSubject && !aiLabel) return null;
+  return {
+    finalResponse,
+    commitSubject,
+    aiLabel,
+  };
+}
+
+function mergeStructuredFinalOutput(current, next) {
+  if (!next) return current;
+  return {
+    finalResponse: next.finalResponse ?? current?.finalResponse ?? null,
+    commitSubject: next.commitSubject ?? current?.commitSubject ?? null,
+    aiLabel: next.aiLabel ?? current?.aiLabel ?? null,
+  };
+}
+
 function summarizeToolInput(input, maxLength = 400) {
   try {
     const command = typeof input?.command === 'string' ? input.command : null;
@@ -272,6 +351,7 @@ function summarizeToolInput(input, maxLength = 400) {
 function emitToolStarted(block, seenToolUseIds) {
   if (!block || typeof block !== 'object') return;
   if (!['tool_use', 'server_tool_use', 'mcp_tool_use'].includes(block.type)) return;
+  if (isStructuredOutputBlock(block)) return;
   if (block.id && seenToolUseIds?.has(block.id)) return;
   if (block.id) seenToolUseIds?.add(block.id);
   const toolName = block.name ?? 'tool';
@@ -297,7 +377,9 @@ async function main() {
   let lastUsage = null;
   let deltaCount = 0;
   let firstDeltaTs = null;
+  let structuredFinalOutput = null;
   const seenToolUseIds = new Set();
+  const structuredOutputToolUseIds = new Set();
   const rawMessageTypes = new Set();
 
   emitTrace('adapter_started', { node_id: args.nodeId, cwd: process.cwd() });
@@ -451,6 +533,10 @@ async function main() {
       ...(canFork ? { forkSession: true } : {}),
       ...(resumeSessionAt ? { resumeSessionAt } : {}),
     } : args.sessionId ? { sessionId: args.sessionId } : {}),
+    outputFormat: {
+      type: 'json_schema',
+      schema: FINAL_RESULT_SCHEMA,
+    },
     canUseTool: async (toolName, input) => {
       if (toolName === 'ExitPlanMode') {
         const plan = typeof input?.plan === 'string' ? input.plan.trim() : '';
@@ -500,6 +586,10 @@ async function main() {
       if (message.type === 'stream_event') {
         const event = message.event;
         if (event?.type === 'content_block_start') {
+          if (isStructuredOutputBlock(event.content_block)) {
+            if (event.content_block?.id) structuredOutputToolUseIds.add(event.content_block.id);
+            continue;
+          }
           emitToolStarted(event.content_block, seenToolUseIds);
           continue;
         }
@@ -515,16 +605,9 @@ async function main() {
             if (delta.type === 'thinking_delta') {
               emit({ type: 'thinking', content: textDelta, timestamp: nowMs() });
             } else {
-              cumulativeText += textDelta;
+              // Structured-output turns may stream wrapper text; only expose the parsed final_response.
               deltaCount += 1;
               firstDeltaTs ??= nowMs();
-              emit({
-                type: 'message_delta',
-                delta: textDelta,
-                provider_thread_id: message.session_id ?? activeSessionId,
-                provider_item_id: event.item_id ?? null,
-                timestamp: nowMs(),
-              });
             }
           }
           continue;
@@ -534,8 +617,20 @@ async function main() {
 
       if (message.type === 'assistant') {
         lastAssistantUuid = message.uuid ?? lastAssistantUuid;
+        const content = message?.message?.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block?.type === 'tool_use' && isStructuredOutputBlock(block)) {
+              if (block.id) structuredOutputToolUseIds.add(block.id);
+              structuredFinalOutput = mergeStructuredFinalOutput(
+                structuredFinalOutput,
+                structuredFinalOutputFromInput(block.input)
+              );
+            }
+          }
+        }
         const text = extractAssistantText(message);
-        if (text) {
+        if (text && !structuredFinalOutput) {
           cumulativeText = text.length >= cumulativeText.length ? text : cumulativeText;
           emit({
             type: 'message_completed',
@@ -545,7 +640,6 @@ async function main() {
             timestamp: nowMs(),
           });
         }
-        const content = message?.message?.content;
         if (Array.isArray(content)) {
           for (const block of content) emitToolStarted(block, seenToolUseIds);
         }
@@ -553,7 +647,7 @@ async function main() {
       }
 
       if (message.type === 'user') {
-        for (const result of extractToolResults(message)) emit(result);
+        for (const result of extractToolResults(message, structuredOutputToolUseIds)) emit(result);
         continue;
       }
 
@@ -594,6 +688,21 @@ async function main() {
         const finalContent = typeof message.result === 'string' && message.result.length > 0
           ? message.result
           : cumulativeText;
+        const visibleFinalContent = structuredFinalOutput?.finalResponse || finalContent;
+        const structuredMeta = {};
+        if (structuredFinalOutput?.commitSubject) {
+          structuredMeta.commit_subject = structuredFinalOutput.commitSubject;
+        }
+        if (structuredFinalOutput?.aiLabel) {
+          structuredMeta.ai_label = structuredFinalOutput.aiLabel;
+        }
+        if (Object.keys(structuredMeta).length > 0) {
+          emit({
+            type: 'provider_meta',
+            meta: structuredMeta,
+            timestamp: nowMs(),
+          });
+        }
         emit({
           type: 'provider_meta',
           meta: {
@@ -611,7 +720,7 @@ async function main() {
           type: 'provider_stop',
           provider_stop_reason: message.stop_reason ?? message.subtype ?? 'end_turn',
           provider_status: message.is_error ? 'failed' : 'completed',
-          final_content: finalContent,
+          final_content: visibleFinalContent,
           provider_thread_id: message.session_id ?? activeSessionId,
           provider_turn_id: message.uuid ?? lastAssistantUuid,
           usage: lastUsage,

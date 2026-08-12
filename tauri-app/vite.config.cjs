@@ -1,13 +1,16 @@
-import path from "path";
-import { configDefaults, defineConfig } from "vitest/config";
-import react from "@vitejs/plugin-react";
+const path = require("node:path");
+const { configDefaults, defineConfig } = require("vitest/config");
+const react = require("@vitejs/plugin-react");
 
-// @ts-expect-error process is a nodejs global
+const reactPlugin = react.default ?? react;
 const host = process.env.TAURI_DEV_HOST;
+const agentSandbox = process.env.AGENT_SANDBOX;
+const agentreeViteCacheDir = agentSandbox ? path.join(agentSandbox, "vite-cache") : undefined;
 
 // https://vite.dev/config/
-export default defineConfig(async () => ({
-  plugins: [react()],
+module.exports = defineConfig(async () => ({
+  plugins: [reactPlugin()],
+  cacheDir: agentreeViteCacheDir || "/tmp/agentree-vite-cache",
   envDir: path.resolve(__dirname, ".env-files-disabled"),
   resolve: {
     alias: [

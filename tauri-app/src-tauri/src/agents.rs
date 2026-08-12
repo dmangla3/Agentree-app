@@ -54,7 +54,6 @@ struct AgentRunSnapshot {
     repo_path: Option<String>,
     parent_commit: Option<String>,
     author_name: Option<String>,
-    prompt_fallback: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -739,6 +738,17 @@ fn append_message_timeline_segment(run_state: &mut AgentRunState, text: &str, ti
     }));
 }
 
+fn replace_message_timeline_with_final_content(
+    run_state: &mut AgentRunState,
+    final_content: &str,
+    timestamp: i64,
+) {
+    run_state
+        .timeline
+        .retain(|event| event.get("type").and_then(|value| value.as_str()) != Some("message"));
+    append_message_timeline_segment(run_state, final_content, timestamp);
+}
+
 fn timeline_tool_use_id(event: &JsonValue) -> Option<&str> {
     event
         .get("toolUseId")
@@ -1014,11 +1024,9 @@ fn update_run_state_from_event(run_state: &mut AgentRunState, event: &JsonValue)
             }
             if let Some(final_content) = event.get("final_content").and_then(|value| value.as_str())
             {
-                let merged = merge_text_output(&run_state.content, final_content);
-                let appended = derive_incremental_text(&run_state.content, &merged);
-                run_state.content = merged;
+                run_state.content = final_content.to_string();
                 run_state.final_content_override = Some(final_content.to_string());
-                append_message_timeline_segment(run_state, &appended, timestamp);
+                replace_message_timeline_with_final_content(run_state, final_content, timestamp);
             }
         }
         _ => {}
@@ -1151,7 +1159,6 @@ fn build_finalize_snapshot(
         repo_path: run_state.context.repo_path.clone(),
         parent_commit: run_state.context.parent_commit.clone(),
         author_name: run_state.context.author_name.clone(),
-        prompt_fallback: run_state.context.prompt_fallback.clone(),
     })
 }
 
@@ -1210,6 +1217,7 @@ fn persist_local_node_snapshot(
         "workspaceId": workspace_id,
         "parentId": parent_id_from_execution_data(&snapshot.execution_data),
         "content": snapshot.final_content,
+        "aiLabel": ai_label_from_execution_data(&snapshot.execution_data),
         "status": snapshot.status,
         "execution_data": snapshot.execution_data,
         "promptTokens": snapshot.prompt_tokens,
@@ -1252,43 +1260,6 @@ fn store_finalize_ack(
     }
 }
 
-fn generate_commit_message(
-    client: &reqwest::blocking::Client,
-    auth_token: &str,
-    node_id: &str,
-    prompt_fallback: Option<&str>,
-    final_content: Option<&str>,
-) -> String {
-    let fallback = normalize_commit_message_fallback(prompt_fallback)
-        .unwrap_or_else(|| format!("Update {}", &node_id[..node_id.len().min(8)]));
-
-    let url = format!(
-        "{}/messages/{}/commit-message",
-        crate::config::server_base_url(),
-        node_id
-    );
-    match client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", auth_token))
-        .json(&serde_json::json!({
-            "finalContent": final_content.unwrap_or(""),
-            "promptFallback": prompt_fallback.unwrap_or(""),
-        }))
-        .send()
-    {
-        Ok(response) if response.status().is_success() => match response.json::<JsonValue>() {
-            Ok(body) => body
-                .get("commitMessage")
-                .and_then(|value| value.as_str())
-                .and_then(normalize_commit_message_subject)
-                .filter(|value| !value.is_empty())
-                .unwrap_or(fallback),
-            Err(_) => fallback,
-        },
-        _ => fallback,
-    }
-}
-
 fn normalize_commit_message_subject(value: &str) -> Option<String> {
     let normalized = value
         .replace(['\n', '\r', '\t'], " ")
@@ -1311,11 +1282,51 @@ fn normalize_commit_message_subject(value: &str) -> Option<String> {
     )
 }
 
-fn normalize_commit_message_fallback(prompt_fallback: Option<&str>) -> Option<String> {
-    let prompt = prompt_fallback?;
-    let cleaned = prompt
+fn normalize_ai_label(value: &str) -> Option<String> {
+    let without_code_fences = strip_markdown_code(value);
+    let normalized = without_code_fences
         .replace(['\n', '\r', '\t'], " ")
-        .replace('?', "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .trim_matches(|ch| ch == '"' || ch == '\'' || ch == '`' || ch == '-' || ch == '.')
+        .to_string();
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(
+        normalized
+            .chars()
+            .take(80)
+            .collect::<String>()
+            .trim()
+            .to_string(),
+    )
+}
+
+fn strip_markdown_code(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut in_fence = false;
+    for line in value.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            output.push(' ');
+            continue;
+        }
+        if !in_fence {
+            output.push_str(line);
+            output.push(' ');
+        }
+    }
+    output
+}
+
+fn normalize_commit_message_fallback(value: Option<&str>) -> Option<String> {
+    let raw = value?;
+    let cleaned = raw
+        .replace(['\n', '\r', '\t'], " ")
+        .replace(['?', '!', '.'], "")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
@@ -1359,6 +1370,82 @@ fn normalize_commit_message_fallback(prompt_fallback: Option<&str>) -> Option<St
     }
 }
 
+fn commit_subject_from_execution_data(execution_data: &JsonValue) -> Option<String> {
+    execution_data
+        .get("meta")
+        .and_then(|value| value.as_object())
+        .and_then(|meta| {
+            meta.get("commit_subject")
+                .or_else(|| meta.get("agent_commit_subject"))
+                .or_else(|| meta.get("runtime_commit_subject"))
+        })
+        .and_then(|value| value.as_str())
+        .and_then(normalize_commit_message_subject)
+}
+
+fn ai_label_from_execution_data(execution_data: &JsonValue) -> Option<String> {
+    execution_data
+        .get("meta")
+        .and_then(|value| value.as_object())
+        .and_then(|meta| {
+            meta.get("ai_label")
+                .or_else(|| meta.get("aiLabel"))
+                .or_else(|| meta.get("agent_ai_label"))
+                .or_else(|| meta.get("runtime_ai_label"))
+        })
+        .and_then(|value| value.as_str())
+        .and_then(normalize_ai_label)
+}
+
+fn commit_message_for_snapshot(snapshot: &AgentRunSnapshot) -> String {
+    commit_subject_from_execution_data(&snapshot.execution_data)
+        .or_else(|| normalize_commit_message_fallback(Some(snapshot.final_content.as_str())))
+        .unwrap_or_else(|| {
+            format!(
+                "Update {}",
+                &snapshot.node_id[..snapshot.node_id.len().min(8)]
+            )
+        })
+}
+
+fn is_merge_using_ai_execution_data(execution_data: &JsonValue) -> bool {
+    execution_data
+        .get("meta")
+        .and_then(|value| value.as_object())
+        .and_then(|meta| meta.get("workflow"))
+        .and_then(|value| value.as_str())
+        == Some("merge_using_ai")
+}
+
+fn merge_source_commits_from_execution_data(execution_data: &JsonValue) -> Vec<String> {
+    execution_data
+        .get("meta")
+        .and_then(|value| value.as_object())
+        .and_then(|meta| meta.get("merge_source_commits"))
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn merge_target_branch_from_execution_data(execution_data: &JsonValue) -> Option<String> {
+    execution_data
+        .get("meta")
+        .and_then(|value| value.as_object())
+        .and_then(|meta| meta.get("merge_target_branch"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
 fn record_output_commit_for_snapshot(
     app_handle: &AppHandle,
     snapshot: &mut AgentRunSnapshot,
@@ -1366,6 +1453,7 @@ fn record_output_commit_for_snapshot(
     parent_commit: &str,
     commit: crate::git_workspace::GitCommitMetadata,
     meta_commit_message: Option<String>,
+    source_kind: &str,
 ) -> Result<(), String> {
     let commit_sha = commit.sha.clone();
     let commit_subject = if commit.subject.trim().is_empty() {
@@ -1436,7 +1524,7 @@ fn record_output_commit_for_snapshot(
                         .clone()
                         .or_else(|| Some(fallback_timestamp.clone())),
                     committed_at: commit.authored_at.clone().or(Some(fallback_timestamp)),
-                    source_kind: Some("agent".to_string()),
+                    source_kind: Some(source_kind.to_string()),
                     produced_by_node_id: Some(snapshot.node_id.clone()),
                     files_changed_count: commit
                         .files_changed_count
@@ -1445,7 +1533,7 @@ fn record_output_commit_for_snapshot(
                     total_additions: commit.total_additions.map(|value| value as i64),
                     total_deletions: commit.total_deletions.map(|value| value as i64),
                 }],
-                Some("agent"),
+                Some(source_kind),
                 Some(repo_path),
             );
     }
@@ -1456,7 +1544,7 @@ fn record_output_commit_for_snapshot(
 fn finalize_run_snapshot(
     app_handle: &AppHandle,
     snapshot: &mut AgentRunSnapshot,
-    auth_token: &str,
+    _auth_token: &str,
 ) -> Result<FinalizeRunSnapshotOutcome, String> {
     let mut commit_created = false;
     crate::app_log!(
@@ -1496,48 +1584,46 @@ fn finalize_run_snapshot(
                 }
             }
 
-            let has_changes =
-                tauri::async_runtime::block_on(crate::git_workspace::agent_worktree_has_changes(
-                    repo_path.clone(),
-                    snapshot.node_id.clone(),
-                ))?;
-
-            if has_changes {
+            if is_merge_using_ai_execution_data(&snapshot.execution_data) {
                 emit_finalize_progress(
                     app_handle,
                     &snapshot.node_id,
                     "commit_message",
-                    "Generating commit message...",
+                    "Preparing AI merge commit...",
                 );
-                let commit_message_client = reqwest::blocking::Client::builder()
-                    .timeout(Duration::from_millis(4000))
-                    .build()
-                    .unwrap_or_else(|_| reqwest::blocking::Client::new());
-                let commit_message = generate_commit_message(
-                    &commit_message_client,
-                    auth_token,
-                    &snapshot.node_id,
-                    snapshot.prompt_fallback.as_deref(),
-                    Some(snapshot.final_content.as_str()),
-                );
+                let commit_message = commit_message_for_snapshot(snapshot);
+                let source_commits =
+                    merge_source_commits_from_execution_data(&snapshot.execution_data);
+                let target_branch =
+                    merge_target_branch_from_execution_data(&snapshot.execution_data);
                 emit_finalize_progress(
                     app_handle,
                     &snapshot.node_id,
                     "git_commit",
-                    "Creating git commit...",
+                    "Creating merge commit...",
                 );
-                let finalize_result =
-                    tauri::async_runtime::block_on(crate::git_workspace::finalize_agent_worktree(
-                        repo_path.clone(),
-                        snapshot.node_id.clone(),
-                        commit_message.clone(),
-                        snapshot.author_name.clone(),
-                    ))?;
-                let commit_sha = finalize_result.commit_sha.ok_or_else(|| {
-                    "Commit SHA missing after finalize_agent_worktree".to_string()
-                })?;
-                let commit_metadata =
-                    crate::git_workspace::read_commit_metadata_sync(&repo_path, &commit_sha)?;
+                let (commit_metadata, target_branch_updated) =
+                    crate::git_workspace::finalize_agent_merge_worktree(
+                        &repo_path,
+                        &snapshot.node_id,
+                        &parent_commit,
+                        &source_commits,
+                        &commit_message,
+                        snapshot.author_name.as_deref(),
+                        target_branch.as_deref(),
+                    )?;
+                if let Some(execution_object) = snapshot.execution_data.as_object_mut() {
+                    let meta = execution_object
+                        .entry("meta".to_string())
+                        .or_insert_with(|| JsonValue::Object(JsonMap::new()));
+                    if let Some(meta_object) = meta.as_object_mut() {
+                        meta_object.insert("commit_created".to_string(), JsonValue::Bool(true));
+                        meta_object.insert(
+                            "merge_target_branch_updated".to_string(),
+                            JsonValue::Bool(target_branch_updated),
+                        );
+                    }
+                }
                 record_output_commit_for_snapshot(
                     app_handle,
                     snapshot,
@@ -1545,40 +1631,89 @@ fn finalize_run_snapshot(
                     &parent_commit,
                     commit_metadata,
                     Some(commit_message),
+                    "merge",
                 )?;
                 commit_created = true;
-            } else if let Some(commit_metadata) =
-                crate::git_workspace::agent_worktree_head_commit_if_advanced(
-                    &repo_path,
-                    &snapshot.node_id,
-                    &parent_commit,
-                )?
-            {
-                crate::app_log!(
-                    "[AGENT_WORKTREE] event=finalize_snapshot.head_advanced node_id={} repo={} parent_commit={} output_commit={}",
-                    snapshot.node_id,
-                    repo_path,
-                    parent_commit,
-                    commit_metadata.sha
-                );
-                emit_finalize_progress(
-                    app_handle,
-                    &snapshot.node_id,
-                    "git_commit",
-                    "Recording generated commit...",
-                );
-                record_output_commit_for_snapshot(
-                    app_handle,
-                    snapshot,
-                    &repo_path,
-                    &parent_commit,
-                    commit_metadata,
-                    None,
+            } else {
+                let has_changes = tauri::async_runtime::block_on(
+                    crate::git_workspace::agent_worktree_has_changes(
+                        repo_path.clone(),
+                        snapshot.node_id.clone(),
+                    ),
                 )?;
-                commit_created = true;
-            } else if let Some(execution_object) = snapshot.execution_data.as_object_mut() {
-                execution_object.insert("files_changed".to_string(), JsonValue::Array(Vec::new()));
-                execution_object.insert("files_changed_count".to_string(), JsonValue::from(0));
+
+                if has_changes {
+                    emit_finalize_progress(
+                        app_handle,
+                        &snapshot.node_id,
+                        "commit_message",
+                        "Preparing commit message...",
+                    );
+                    let commit_message = commit_message_for_snapshot(snapshot);
+                    emit_finalize_progress(
+                        app_handle,
+                        &snapshot.node_id,
+                        "git_commit",
+                        "Creating git commit...",
+                    );
+                    let finalize_result = tauri::async_runtime::block_on(
+                        crate::git_workspace::finalize_agent_worktree(
+                            repo_path.clone(),
+                            snapshot.node_id.clone(),
+                            commit_message.clone(),
+                            snapshot.author_name.clone(),
+                        ),
+                    )?;
+                    let commit_sha = finalize_result.commit_sha.ok_or_else(|| {
+                        "Commit SHA missing after finalize_agent_worktree".to_string()
+                    })?;
+                    let commit_metadata =
+                        crate::git_workspace::read_commit_metadata_sync(&repo_path, &commit_sha)?;
+                    record_output_commit_for_snapshot(
+                        app_handle,
+                        snapshot,
+                        &repo_path,
+                        &parent_commit,
+                        commit_metadata,
+                        Some(commit_message),
+                        "agent",
+                    )?;
+                    commit_created = true;
+                } else if let Some(commit_metadata) =
+                    crate::git_workspace::agent_worktree_head_commit_if_advanced(
+                        &repo_path,
+                        &snapshot.node_id,
+                        &parent_commit,
+                    )?
+                {
+                    crate::app_log!(
+                        "[AGENT_WORKTREE] event=finalize_snapshot.head_advanced node_id={} repo={} parent_commit={} output_commit={}",
+                        snapshot.node_id,
+                        repo_path,
+                        parent_commit,
+                        commit_metadata.sha
+                    );
+                    emit_finalize_progress(
+                        app_handle,
+                        &snapshot.node_id,
+                        "git_commit",
+                        "Recording generated commit...",
+                    );
+                    record_output_commit_for_snapshot(
+                        app_handle,
+                        snapshot,
+                        &repo_path,
+                        &parent_commit,
+                        commit_metadata,
+                        None,
+                        "agent",
+                    )?;
+                    commit_created = true;
+                } else if let Some(execution_object) = snapshot.execution_data.as_object_mut() {
+                    execution_object
+                        .insert("files_changed".to_string(), JsonValue::Array(Vec::new()));
+                    execution_object.insert("files_changed_count".to_string(), JsonValue::from(0));
+                }
             }
 
             snapshot.git_branch_name = None;
@@ -1590,6 +1725,7 @@ fn finalize_run_snapshot(
         "runId": snapshot.run_id,
         "status": snapshot.status,
         "finalContent": snapshot.final_content,
+        "aiLabel": ai_label_from_execution_data(&snapshot.execution_data),
         "executionData": snapshot.execution_data,
         "promptTokens": snapshot.prompt_tokens,
         "completionTokens": snapshot.completion_tokens,
@@ -1764,7 +1900,12 @@ fn spawn_agent_internal(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    crate::command_guards::apply_agent_command_env(&mut command, &app)?;
+    crate::command_guards::apply_agent_command_env(
+        &mut command,
+        &app,
+        &session_id,
+        Path::new(&cwd),
+    )?;
 
     if agent_type.as_str() == "codex" {
         if let Some(codex_home) = resolve_codex_home() {
@@ -2416,9 +2557,10 @@ pub fn get_agent_run_state(
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_requires_server_final_persisted, cleanup_terminal_status_allows_cleanup,
-        run_ledger_user_node_id_from_context, update_run_state_from_event, AgentRunContext,
-        AgentRunState,
+        ai_label_from_execution_data, cleanup_requires_server_final_persisted,
+        cleanup_terminal_status_allows_cleanup, commit_message_for_snapshot,
+        commit_subject_from_execution_data, run_ledger_user_node_id_from_context,
+        update_run_state_from_event, AgentRunContext, AgentRunSnapshot, AgentRunState,
     };
     use serde_json::json;
 
@@ -2432,6 +2574,24 @@ mod tests {
             author_name: None,
             prompt_fallback: None,
         })
+    }
+
+    fn test_snapshot(execution_data: serde_json::Value, final_content: &str) -> AgentRunSnapshot {
+        AgentRunSnapshot {
+            node_id: "assistant-1234567890".to_string(),
+            run_id: "run-1".to_string(),
+            status: "completed".to_string(),
+            final_content: final_content.to_string(),
+            execution_data,
+            prompt_tokens: None,
+            completion_tokens: None,
+            total_tokens: None,
+            output_commit_sha: None,
+            git_branch_name: None,
+            repo_path: None,
+            parent_commit: None,
+            author_name: None,
+        }
     }
 
     #[test]
@@ -2476,6 +2636,52 @@ mod tests {
     }
 
     #[test]
+    fn commit_subject_comes_from_runtime_metadata() {
+        let execution_data = json!({
+            "meta": {
+                "commit_subject": "  `Add structured commit subjects.`  "
+            }
+        });
+
+        assert_eq!(
+            commit_subject_from_execution_data(&execution_data).as_deref(),
+            Some("Add structured commit subjects")
+        );
+        assert_eq!(
+            commit_message_for_snapshot(&test_snapshot(execution_data, "Implemented the feature."))
+                .as_str(),
+            "Add structured commit subjects"
+        );
+    }
+
+    #[test]
+    fn commit_message_falls_back_to_final_content_not_user_prompt() {
+        let message = commit_message_for_snapshot(&test_snapshot(
+            json!({ "meta": {} }),
+            "Implemented local commit subject handling and verified adapters.",
+        ));
+
+        assert_eq!(
+            message.as_str(),
+            "Implemented local commit subject handling"
+        );
+    }
+
+    #[test]
+    fn ai_label_comes_from_runtime_metadata() {
+        let execution_data = json!({
+            "meta": {
+                "ai_label": "  `Structured Label Generation.`  "
+            }
+        });
+
+        assert_eq!(
+            ai_label_from_execution_data(&execution_data).as_deref(),
+            Some("Structured Label Generation")
+        );
+    }
+
+    #[test]
     fn message_deltas_preserve_newlines_in_content_and_timeline() {
         let mut state = test_run_state();
         update_run_state_from_event(
@@ -2490,6 +2696,35 @@ mod tests {
         assert_eq!(state.content, "first\n\nsecond");
         assert_eq!(state.timeline.len(), 1);
         assert_eq!(state.timeline[0]["content"], "first\n\nsecond");
+    }
+
+    #[test]
+    fn provider_final_content_replaces_interim_message_snapshots_in_timeline() {
+        let mut state = test_run_state();
+        update_run_state_from_event(
+            &mut state,
+            &json!({"type": "message_completed", "content": "Working on the fix.", "timestamp": 1}),
+        );
+        update_run_state_from_event(
+            &mut state,
+            &json!({"type": "message_completed", "content": "Working on the fix. Checking tests.", "timestamp": 2}),
+        );
+        update_run_state_from_event(
+            &mut state,
+            &json!({"type": "provider_stop", "provider_status": "completed", "final_content": "Implemented.\n\nVerification passed.", "timestamp": 3}),
+        );
+
+        let message_events: Vec<_> = state
+            .timeline
+            .iter()
+            .filter(|event| event["type"] == "message")
+            .collect();
+        assert_eq!(state.content, "Implemented.\n\nVerification passed.");
+        assert_eq!(message_events.len(), 1);
+        assert_eq!(
+            message_events[0]["content"],
+            "Implemented.\n\nVerification passed."
+        );
     }
 
     #[test]

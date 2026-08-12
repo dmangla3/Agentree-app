@@ -94,6 +94,29 @@ describe('graph thread roots', () => {
     ]);
   });
 
+  it('treats the first user below a synthetic assistant root as a thread root', () => {
+    const messages = [
+      makeMessage('welcome', 'assistant', null),
+      makeMessage('thread-a', 'user', 'welcome'),
+      makeMessage('assistant-a', 'assistant', 'thread-a'),
+      makeMessage('thread-a-child', 'user', 'assistant-a'),
+      makeMessage('assistant-a-child', 'assistant', 'thread-a-child'),
+      makeMessage('thread-b', 'user', null),
+      makeMessage('assistant-b', 'assistant', 'thread-b'),
+    ];
+    const messageMap = new Map(messages.map((message) => [message.id, message]));
+    const index = buildThreadRootIndex(messages);
+
+    expect(getThreadRootId('assistant-a-child', messageMap)).toBe('thread-a');
+    expect(index.threadRootIds).toEqual(['thread-a', 'thread-b']);
+    expect(Array.from(getThreadDescendantIds('thread-a', messages)).sort()).toEqual([
+      'assistant-a',
+      'assistant-a-child',
+      'thread-a',
+      'thread-a-child',
+    ]);
+  });
+
   it('combines hidden thread roots and hidden subgraph descendants', () => {
     const messages = [
       makeMessage('thread-a', 'user', null),

@@ -1,5 +1,6 @@
-import { MessageSquare, GitMerge } from 'lucide-react';
+import { MessageSquare, GitMerge, Loader2, CheckCircle2 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import type { MergeTabRunIndicator } from '../stores/integrationStore';
 import {
     Tooltip,
     TooltipContent,
@@ -10,6 +11,7 @@ interface ChatPanelHeaderProps {
     rightPanelTab: 'chat' | 'merge';
     onTabChange: (tab: 'chat' | 'merge') => void;
     mergeSourceCount: number;
+    mergeTabRunIndicator: MergeTabRunIndicator;
     mergeTabAttentionActive: boolean;
 }
 
@@ -17,8 +19,12 @@ export function ChatPanelHeader({
     rightPanelTab,
     onTabChange,
     mergeSourceCount,
+    mergeTabRunIndicator,
     mergeTabAttentionActive,
 }: ChatPanelHeaderProps) {
+    const isMergeReviewRunning = mergeTabRunIndicator === 'running';
+    const isMergeReviewCompleted = mergeTabRunIndicator === 'completed';
+
     return (
         <div className="flex items-center justify-between border-b border-border/60 bg-background px-3 py-1.5 flex-shrink-0">
             {/* Chat/Merge Toggle - Pill Style */}
@@ -59,11 +65,21 @@ export function ChatPanelHeader({
                             >
                                 <GitMerge className="h-3.5 w-3.5" />
                                 Merge
+                                {isMergeReviewRunning ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-500" aria-label="Merge AI resolve running" />
+                                ) : null}
+                                {isMergeReviewCompleted ? (
+                                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" aria-label="Merge AI resolve completed" />
+                                ) : null}
                             </button>
                         </span>
                     </TooltipTrigger>
                     <TooltipContent side="bottom">
-                        Review selected commit sources before opening the merge workflow.
+                        {isMergeReviewRunning
+                            ? 'AI resolve is running. You can stay in chat and return when it completes.'
+                            : isMergeReviewCompleted
+                                ? 'AI resolve completed. Review and approve/apply from the merge tab.'
+                                : 'Review selected commit sources before opening the merge workflow.'}
                     </TooltipContent>
                 </Tooltip>
                 {mergeSourceCount > 0 && (

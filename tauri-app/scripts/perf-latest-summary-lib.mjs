@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-const PERF_CAPTURE_ROOT = 'src-tauri/runtime-logs/tauri/perf-captures';
+const PERF_CAPTURE_ROOT = 'runtime-logs/perf-captures';
 const PILOT_REPORT_ROOT = 'runtime-logs/tauri-pilot-diagnostics';
 
 const rel = (root, filePath) => path.relative(root, filePath) || filePath;

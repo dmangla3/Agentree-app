@@ -2,15 +2,19 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import { Target, GitBranch, X, ArrowRight, Loader2, Check, Bot, ChevronDown, Sparkles, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useIntegrationStore } from '../../stores/integrationStore';
-import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { useWorkspaceStore, type Message } from '../../stores/workspaceStore';
 import { useAgents, findDefaultCodexAgentId } from '../../hooks/useAgents';
-import { useCommits, CommitWithRef } from '../../hooks/useCommits';
+import { filterCommitsReachableFrom, useCommits, CommitWithRef } from '../../hooks/useCommits';
 import { useWorkspaces } from '../../hooks/useWorkspaces';
+import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from '../../hooks/useLocalNodes';
 import { agentClient, GitMergePreview } from '../../lib/agentClient';
 import { api } from '../../lib/api';
+import { getAccessToken } from '../../lib/authSession';
 import { cn } from '../../lib/utils';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../../lib/graphInteractionGate';
+import { buildMergeAgentArgs, buildMergeAgentPrompt, buildMergeAgentUserContent } from '../../lib/mergeAgentNode';
 import { persistMergeCommitGraph } from '../../lib/mergeCommitGraph';
+import { persistMergeResultNodeLocally } from './mergeResultNode';
 import { Button } from '../../../@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../@/components/ui/card';
 import { Label } from '../../../@/components/ui/label';
@@ -361,18 +365,20 @@ export function SetupStage() {
     setTarget, 
     addSource, 
     moveToStage, 
+    closeMergeSession,
     setPreview,
     initializeFileDecisions,
     setApplyState,
     setResult,
   } = useIntegrationStore();
   const [isCheckingConflicts, setIsCheckingConflicts] = useState(false);
+  const [isStartingAiMerge, setIsStartingAiMerge] = useState(false);
   const [isAgentPopoverOpen, setIsAgentPopoverOpen] = useState(false);
   const previewRequestIdRef = useRef(0);
   const previewReadyKeyRef = useRef<string | null>(null);
   const { data: agents = [] } = useAgents();
   const { data: workspacesData } = useWorkspaces();
-  const { selectedWorkspaceId, selectedAgentId, setSelectedAgentId } = useWorkspaceStore();
+  const { selectedWorkspaceId, selectedAgentId, setSelectedAgentId, dispatchFocus } = useWorkspaceStore();
   const queryClient = useQueryClient();
   
   const selectedWorkspace = useMemo(() => {
@@ -398,12 +404,10 @@ export function SetupStage() {
     workspaceId: selectedWorkspaceId,
   });
 
-  // Fetch filtered commits for source selection
-  const { commits: filteredSourceCommits, isLoading: isLoadingSource } = useCommits({
-    repoPath: repoPath || null,
-    workspaceId: selectedWorkspaceId,
-    exclusions: sourceExclusions,
-  });
+  const filteredSourceCommits = useMemo(
+    () => filterCommitsReachableFrom(targetCommits, sourceExclusions),
+    [targetCommits, sourceExclusions]
+  );
 
   if (!session) return null;
 
@@ -437,11 +441,11 @@ export function SetupStage() {
     return [...selectedAsCommits, ...uniqueFiltered];
   }, [session.sources, filteredSourceCommits, commitMetadataBySha]);
 
-  const isLoadingCommits = isLoadingTarget || isLoadingSource;
+  const isLoadingCommits = isLoadingTarget;
   const canProceed = Boolean(session.target && session.sources.length > 0);
   const sourceShas = session.sources.map((s) => s.commitSha);
   const selectionKey = session.target ? `${session.target.commitSha}::${sourceShas.join(',')}` : '';
-  const isPreviewCurrent = Boolean(canProceed && session.preview && previewReadyKeyRef.current === selectionKey);
+  const isPreviewCurrent = Boolean(canProceed && session.preview);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) || null;
   const displayName = selectedAgent?.name || 'Select model';
 
@@ -493,7 +497,7 @@ export function SetupStage() {
     setPreviewError(null);
   };
 
-  const loadPreview = async (moveToNextStage: boolean) => {
+  const loadPreview = async () => {
     if (!canProceed || !repoPath || !session.target) return false;
 
     const requestId = ++previewRequestIdRef.current;
@@ -512,9 +516,6 @@ export function SetupStage() {
       previewReadyKeyRef.current = selectionKey;
       setPreview(preview);
       initializeFileDecisions();
-      if (moveToNextStage) {
-        moveToStage('smart-resolution');
-      }
       return true;
     } catch (err) {
       if (requestId !== previewRequestIdRef.current) return false;
@@ -538,20 +539,174 @@ export function SetupStage() {
       return;
     }
 
-    if (previewReadyKeyRef.current === selectionKey) return;
-
-    loadPreview(false).catch(() => undefined);
-  }, [canProceed, repoPath, selectionKey, session.target]);
-
-  const handleGeneratePreview = async () => {
-    if (!canProceed || !repoPath) return;
-
-    if (isPreviewCurrent) {
-      moveToStage('smart-resolution');
+    if (session.preview) {
+      previewReadyKeyRef.current = selectionKey;
       return;
     }
 
-    await loadPreview(true);
+    if (previewReadyKeyRef.current === selectionKey) return;
+
+    loadPreview().catch(() => undefined);
+  }, [canProceed, repoPath, selectionKey, session.preview, session.target]);
+
+  const handleMergeUsingAi = async () => {
+    if (!canProceed || !repoPath || !session.target || !selectedAgent) return;
+
+    setIsStartingAiMerge(true);
+    setPreviewError(null);
+
+    try {
+      if (!agentClient.hasRuntime()) {
+        throw new Error('Local agent runtime is unavailable. Open the installed desktop app to run AI merges.');
+      }
+
+      const mergePromptInput = {
+        target: {
+          label: session.target.label,
+          commitSha: session.target.commitSha,
+        },
+        sources: session.sources.map((source) => ({
+          label: source.label,
+          commitSha: source.commitSha,
+          branchName: source.branchName,
+        })),
+      };
+      const prompt = buildMergeAgentPrompt(mergePromptInput);
+      const userContent = buildMergeAgentUserContent(mergePromptInput);
+      const userNodeId = crypto.randomUUID();
+      const nodeId = crypto.randomUUID();
+      const runId = crypto.randomUUID();
+      const now = new Date().toISOString();
+      const branchName = `agentree/${nodeId}`;
+      const graphParentId = session.target.nodeId ?? null;
+      const modelId = (selectedAgent as any)?.model_config?.model ?? null;
+      const sourceLabels = Object.fromEntries(session.sources.map((source) => [source.commitSha, source.label]));
+      const executionData = {
+        current_run_id: runId,
+        workspace_id: session.workspaceId,
+        parentId: userNodeId,
+        base_selected_from_node_id: graphParentId,
+        started_at: now,
+        meta: {
+          workflow: 'merge_using_ai',
+          merge_target_commit: session.target.commitSha,
+          merge_target_branch: session.target.branchName ?? null,
+          merge_target_node_id: graphParentId,
+          merge_source_commits: session.sources.map((source) => source.commitSha),
+          merge_source_labels: sourceLabels,
+          commit_subject: `AI merge ${session.sources.map((source) => source.label).join(', ')} into ${session.target.label}`,
+          git_branch_name: branchName,
+          base_commit_sha: session.target.commitSha,
+          base_selected_from_node_id: graphParentId,
+          context_parent_node_id: userNodeId,
+          context_base_node_id: graphParentId,
+          provider: selectedAgent.type,
+          provider_model: modelId,
+        },
+      };
+      const userMessage: Message = {
+        id: userNodeId,
+        role: 'user',
+        content: userContent,
+        parentId: null,
+        workspaceId: session.workspaceId,
+        createdAt: now,
+        updatedAt: now,
+        status: null,
+        base_commit_sha: session.target.commitSha,
+        base_selected_from_node_id: graphParentId,
+        output_commit_sha: null,
+      };
+      const message: Message = {
+        id: nodeId,
+        role: 'assistant',
+        content: '',
+        parentId: userNodeId,
+        workspaceId: session.workspaceId,
+        createdAt: now,
+        updatedAt: now,
+        status: 'pending',
+        aiLabel: `AI merge: ${session.sources.map((source) => source.label).join(', ')}`,
+        agent_id: selectedAgent.id,
+        base_commit_sha: session.target.commitSha,
+        base_selected_from_node_id: graphParentId,
+        output_commit_sha: null,
+        git_branch_name: branchName,
+        execution_data: executionData,
+      };
+
+      const authToken = await getAccessToken();
+      const readiness = await agentClient.checkRuntimeReadiness(selectedAgent.type);
+      if (readiness.status !== 'ready') {
+        throw new Error(readiness.recommendedCommand
+          ? `${readiness.message} Run: ${readiness.recommendedCommand}`
+          : readiness.message);
+      }
+      await Promise.all([
+        agentClient.setMcpAuthToken(authToken),
+        agentClient.setMcpWorkspaceId(session.workspaceId),
+      ]);
+
+      await Promise.all([
+        agentClient.upsertLocalNode(session.workspaceId, userNodeId, userMessage),
+        agentClient.upsertLocalNode(session.workspaceId, nodeId, message),
+      ]);
+      const localMessages = [userMessage, message];
+      queryClient.setQueryData<LocalNodeMessage[]>(
+        localNodeKeys.workspace(session.workspaceId),
+        (current) => upsertMessagesIntoLocalNodeCache(current, session.workspaceId, localMessages, {
+          syncStatus: 'local_only',
+        }),
+      );
+      queryClient.setQueryData<Message[]>(['messages', session.workspaceId], (current) => {
+        const existing = current ?? [];
+        const ids = new Set(localMessages.map((item) => item.id));
+        return [
+          ...existing.filter((item) => !ids.has(item.id)),
+          ...localMessages,
+        ].sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+      });
+      void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(session.workspaceId) });
+      dispatchFocus({
+        messageId: nodeId,
+        source: 'system',
+        metadata: {
+          reason: 'merge-using-ai-started',
+          userNodeId,
+          targetCommit: session.target.commitSha,
+        },
+      });
+
+      await agentClient.startAgentRun({
+        runId,
+        assistantNodeId: nodeId,
+        workspaceId: session.workspaceId,
+        repoPath,
+        parentCommit: session.target.commitSha,
+        agentType: selectedAgent.type,
+        args: buildMergeAgentArgs(selectedAgent.cliArgs, selectedAgent.promptFlag, prompt),
+        authToken,
+        traceId: null,
+        runContext: {
+          runId,
+          executionData,
+          gitBranchName: branchName,
+          repoPath,
+          parentCommit: session.target.commitSha,
+          authorName: selectedAgent.name,
+          promptFallback: prompt,
+        },
+      });
+
+      void scheduleMessagesRefreshWhenGraphIdle(queryClient, session.workspaceId, {
+        reason: 'merge-using-ai-started',
+      });
+      closeMergeSession();
+    } catch (error) {
+      setPreviewError(error instanceof Error ? error.message : 'Failed to start AI merge');
+    } finally {
+      setIsStartingAiMerge(false);
+    }
   };
 
   const handleMergeClean = async () => {
@@ -598,7 +753,7 @@ export function SetupStage() {
           log: `Git reported conflicts during apply:\n${result.conflicts.join('\n')}`,
           error: 'Git reported conflicts during apply.',
         });
-        setPreviewError('Git reported conflicts during apply. Run AI Preview to resolve them.');
+        setPreviewError('Git reported conflicts during apply. Use Merge Using AI to resolve them.');
         return;
       }
 
@@ -614,39 +769,54 @@ export function SetupStage() {
         skipAssistant: true,
       });
 
+      const aiLabel = `Merge: ${session.sources.map((source) => source.label).join(', ')}`;
+      const executionData = {
+        meta: {
+          merge_target_commit: session.target.commitSha,
+          merge_source_commits: currentSourceShas,
+        },
+        merge_metadata: {
+          sources: session.sources,
+          target: session.target,
+          policy: session.policy,
+          lineage: {
+            mode: promotedSourceNodeId ? 'promote-source' : 'keep-target',
+            primary_parent_node_id: promotedSourceNodeId ?? session.target.nodeId ?? null,
+            promoted_source_node_id: promotedSourceNodeId,
+            source_node_ids: session.sources
+              .map((source) => source.nodeId)
+              .filter((nodeId): nodeId is string => typeof nodeId === 'string' && nodeId.length > 0),
+          },
+          decisions: 0,
+          verified: true,
+          review: {
+            status: 'skipped-clean-git-check',
+            selected_agent_type: null,
+            selected_model_id: null,
+            summary: null,
+            issue_count: 0,
+            selected_issue_count: 0,
+          },
+        },
+      };
+      const resultParentNodeId = promotedSourceNodeId ?? session.target.nodeId ?? null;
+
       await api.patch(`/messages/${resultNodeId}`, {
         output_commit_sha: result.commit_sha,
         git_branch_name: null,
-        ai_label: `Merge: ${session.sources.map((source) => source.label).join(', ')}`,
-        execution_data: {
-          meta: {
-            merge_target_commit: session.target.commitSha,
-            merge_source_commits: currentSourceShas,
-          },
-          merge_metadata: {
-            sources: session.sources,
-            target: session.target,
-            policy: session.policy,
-            lineage: {
-              mode: promotedSourceNodeId ? 'promote-source' : 'keep-target',
-              primary_parent_node_id: promotedSourceNodeId ?? session.target.nodeId ?? null,
-              promoted_source_node_id: promotedSourceNodeId,
-              source_node_ids: session.sources
-                .map((source) => source.nodeId)
-                .filter((nodeId): nodeId is string => typeof nodeId === 'string' && nodeId.length > 0),
-            },
-            decisions: 0,
-            verified: true,
-            review: {
-              status: 'skipped-clean-git-check',
-              selected_agent_type: null,
-              selected_model_id: null,
-              summary: null,
-              issue_count: 0,
-              selected_issue_count: 0,
-            },
-          },
-        },
+        ai_label: aiLabel,
+        execution_data: executionData,
+      });
+
+      await persistMergeResultNodeLocally({
+        queryClient,
+        workspaceId: session.workspaceId,
+        resultNodeId,
+        parentId: resultParentNodeId,
+        content: commitMessage,
+        commitSha: result.commit_sha,
+        aiLabel,
+        executionData,
       });
 
       await persistMergeCommitGraph({
@@ -756,7 +926,7 @@ export function SetupStage() {
                   selectedShas={sourceShas}
                   onSelectionChange={handleSourceSelectionChange}
                   excludeSha={session.target.commitSha}
-                  isLoading={isLoadingSource}
+                  isLoading={isLoadingTarget}
                 />
               )}
             </CardContent>
@@ -782,15 +952,17 @@ export function SetupStage() {
             <span>Waiting for repository path...</span>
           ) : isCheckingConflicts ? (
             <span>Checking code-level git conflicts...</span>
+          ) : isStartingAiMerge ? (
+            <span>Starting AI merge agent...</span>
           ) : previewError ? (
-            <span className="text-destructive">Git conflict check failed. Retry AI preview to try again.</span>
+            <span className="text-destructive">{previewError}</span>
           ) : isPreviewCurrent && session.preview && !session.preview.has_conflicts ? (
             <span className="text-primary">
-              Clean git merge is ready. Merge now or run AI preview.
+              Clean git merge is ready. Merge now or start an AI merge agent.
             </span>
           ) : canProceed ? (
             <span className={cn(isPreviewCurrent && 'text-primary')}>
-              Ready to start AI preview
+              Ready to start an AI merge agent
             </span>
           ) : (
             <span>
@@ -818,19 +990,19 @@ export function SetupStage() {
           </Popover>
 
           <Button
-            onClick={handleGeneratePreview}
-            disabled={!canProceed || !repoPath || isCheckingConflicts || isLoadingCommits || isApplyingCleanMerge}
+            onClick={handleMergeUsingAi}
+            disabled={!canProceed || !repoPath || !selectedAgent || isCheckingConflicts || isLoadingCommits || isApplyingCleanMerge || isStartingAiMerge}
             className="gap-2"
           >
-            {isCheckingConflicts ? (
+            {isStartingAiMerge ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Checking...
+                Starting...
               </>
             ) : (
               <>
                 <Sparkles className="h-4 w-4" />
-                AI Preview
+                Merge Using AI
                 <ArrowRight className="h-4 w-4" />
               </>
             )}

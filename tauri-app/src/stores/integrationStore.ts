@@ -27,6 +27,94 @@ export interface MergeSource {
   nodeId?: string;
 }
 
+export interface MergeSourceCommitNode {
+  sha: string;
+  parentShas: string[];
+}
+
+export interface MergeSourcePrunePlan {
+  sourcesToAdd: MergeSource[];
+  sourceIdsToRemove: string[];
+  skippedSources: MergeSource[];
+}
+
+export function isCommitAncestorOf(
+  ancestorSha: string,
+  descendantSha: string,
+  commitsBySha: Map<string, Pick<MergeSourceCommitNode, 'sha' | 'parentShas'>>
+): boolean {
+  if (!ancestorSha || !descendantSha || ancestorSha === descendantSha) return false;
+
+  const seen = new Set<string>();
+  const stack = [...(commitsBySha.get(descendantSha)?.parentShas ?? [])];
+
+  while (stack.length > 0) {
+    const sha = stack.pop();
+    if (!sha || seen.has(sha)) continue;
+    if (sha === ancestorSha) return true;
+
+    seen.add(sha);
+    stack.push(...(commitsBySha.get(sha)?.parentShas ?? []));
+  }
+
+  return false;
+}
+
+export function getMergeSourcePrunePlan(
+  existingSources: MergeSource[],
+  incomingSources: MergeSource[],
+  commitsBySha: Map<string, Pick<MergeSourceCommitNode, 'sha' | 'parentShas'>>
+): MergeSourcePrunePlan {
+  const activeSources = [...existingSources];
+  const existingSourceIds = new Set(existingSources.map((source) => source.id));
+  const inactiveSourceIds = new Set<string>();
+  const sourceIdsToRemove = new Set<string>();
+  const sourcesToAdd: MergeSource[] = [];
+  const skippedSources: MergeSource[] = [];
+
+  const isActiveSource = (source: MergeSource) => !inactiveSourceIds.has(source.id);
+  const deactivateSource = (source: MergeSource) => {
+    inactiveSourceIds.add(source.id);
+    if (existingSourceIds.has(source.id)) {
+      sourceIdsToRemove.add(source.id);
+    } else {
+      skippedSources.push(source);
+    }
+  };
+
+  for (const incomingSource of incomingSources) {
+    const currentSources = activeSources.filter(isActiveSource);
+    const ancestorSourcesToPrune = currentSources.filter((source) => (
+      source.id !== incomingSource.id
+      && source.commitSha !== incomingSource.commitSha
+      && isCommitAncestorOf(source.commitSha, incomingSource.commitSha, commitsBySha)
+    ));
+    const isAlreadyCovered = currentSources.some((source) => (
+      source.id === incomingSource.id
+      || source.commitSha === incomingSource.commitSha
+      || isCommitAncestorOf(incomingSource.commitSha, source.commitSha, commitsBySha)
+    ));
+
+    for (const source of ancestorSourcesToPrune) {
+      deactivateSource(source);
+    }
+
+    if (isAlreadyCovered) {
+      skippedSources.push(incomingSource);
+      continue;
+    }
+
+    activeSources.push(incomingSource);
+    sourcesToAdd.push(incomingSource);
+  }
+
+  return {
+    sourcesToAdd: sourcesToAdd.filter(isActiveSource),
+    sourceIdsToRemove: Array.from(sourceIdsToRemove),
+    skippedSources,
+  };
+}
+
 export interface MergeTarget {
   id: string;
   type: 'graph-node' | 'tracked-ref' | 'external-commit' | 'sha';
@@ -105,6 +193,8 @@ export interface ApplyState {
   log?: string;
   error?: string;
 }
+
+export type MergeTabRunIndicator = 'idle' | 'running' | 'completed';
 
 export const defaultApplyState: ApplyState = {
   status: 'not-run',
@@ -900,4 +990,21 @@ export function countDecisionsByGroup(decisions: FileDecision[]): Record<FileGro
 
 export function areAllDecisionsResolved(decisions: FileDecision[]): boolean {
   return decisions.every((d) => d.action !== 'pending');
+}
+
+export function getMergeTabRunIndicator(session: IntegrationSession | null): MergeTabRunIndicator {
+  if (!session) return 'idle';
+
+  const isReviewRunning = session.reviewRun.status === 'running';
+  const isApplyRunning = session.applyState.status === 'running';
+  if (isReviewRunning || isApplyRunning) return 'running';
+
+  const hasReviewCompleted = session.reviewRun.status === 'completed';
+  const hasMergeApplied = session.applyState.status === 'passed'
+    || session.applyState.status === 'noop'
+    || session.stage === 'result'
+    || Boolean(session.resultCommitSha);
+
+  if (hasReviewCompleted && !hasMergeApplied) return 'completed';
+  return 'idle';
 }

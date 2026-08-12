@@ -12,7 +12,7 @@ import {
 import { WorkspaceSelectionDialog } from '../components/WorkspaceSelectionDialog';
 import { Sidebar } from '../components/Sidebar';
 import { useWorkspaces } from '../hooks/useWorkspaces';
-import { useIntegrationStore } from '../stores/integrationStore';
+import { getMergeTabRunIndicator, useIntegrationStore } from '../stores/integrationStore';
 import { AppHeader } from '../components/AppHeader';
 import { ChatPanelHeader } from '../components/ChatPanelHeader';
 import { useOnboardingStore } from '../stores/onboardingStore';
@@ -66,6 +66,7 @@ export function HomePage() {
   const [activeView, setActiveView] = useState<'chat' | 'knowledge' | 'skills'>('chat');
   const [mergeTabAttentionActive, setMergeTabAttentionActive] = useState(false);
   const mergeSourceCount = mergeSession?.sources.length ?? 0;
+  const mergeTabRunIndicator = getMergeTabRunIndicator(mergeSession);
   const [isWorkspaceSelectorOpen, setIsWorkspaceSelectorOpen] = useState(false);
   const [isChatCollapsed, setIsChatCollapsed] = useState(false);
   const shellReadyLoggedRef = useRef(false);
@@ -298,6 +299,7 @@ export function HomePage() {
                         rightPanelTab={rightPanelTab}
                         onTabChange={setRightPanelTab}
                         mergeSourceCount={mergeSourceCount}
+                        mergeTabRunIndicator={mergeTabRunIndicator}
                         mergeTabAttentionActive={mergeTabAttentionActive}
                       />
 

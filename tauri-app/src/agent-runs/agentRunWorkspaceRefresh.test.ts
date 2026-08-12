@@ -12,14 +12,20 @@ vi.mock('../hooks/useHotSendMessageDeltas', () => ({
   catchUpHotSendMessageDeltas: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock('../lib/perfRecorder', () => ({
+  recordPerfEvent: vi.fn(),
+}));
+
 import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
 import { catchUpHotSendMessageDeltas } from '../hooks/useHotSendMessageDeltas';
+import { recordPerfEvent } from '../lib/perfRecorder';
 
 describe('agentRunWorkspaceRefresh', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.mocked(scheduleMessagesRefreshWhenGraphIdle).mockClear();
     vi.mocked(catchUpHotSendMessageDeltas).mockClear();
+    vi.mocked(recordPerfEvent).mockClear();
     flushAgentWorkspaceRefreshesForTest();
   });
 
@@ -29,7 +35,10 @@ describe('agentRunWorkspaceRefresh', () => {
   });
 
   it('coalesces local-node and message refreshes by workspace', () => {
-    const queryClient = { invalidateQueries: vi.fn() } as any;
+    const queryClient = {
+      invalidateQueries: vi.fn(() => Promise.resolve()),
+      refetchQueries: vi.fn(() => Promise.resolve()),
+    } as any;
 
     requestAgentWorkspaceRefresh(queryClient, 'workspace-1', { reason: 'agent-terminal' });
     requestAgentWorkspaceRefresh(queryClient, 'workspace-1', { reason: 'agent-finalize-ack' });
@@ -51,7 +60,10 @@ describe('agentRunWorkspaceRefresh', () => {
   });
 
   it('coalesces commit graph refresh and hot delta catchup flags', () => {
-    const queryClient = { invalidateQueries: vi.fn() } as any;
+    const queryClient = {
+      invalidateQueries: vi.fn(() => Promise.resolve()),
+      refetchQueries: vi.fn(() => Promise.resolve()),
+    } as any;
 
     requestAgentWorkspaceRefresh(queryClient, 'workspace-1', { reason: 'agent-terminal' });
     requestAgentWorkspaceRefresh(queryClient, 'workspace-1', {
@@ -64,12 +76,25 @@ describe('agentRunWorkspaceRefresh', () => {
 
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
       queryKey: ['local-commit-graph', 'workspace-1'],
-      refetchType: 'active',
+      refetchType: 'none',
     });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
       queryKey: ['local-commits', 'workspace-1'],
-      refetchType: 'active',
+      refetchType: 'none',
     });
+    expect(queryClient.refetchQueries).toHaveBeenCalledWith({
+      queryKey: ['local-commit-graph', 'workspace-1'],
+      type: 'active',
+    });
+    expect(queryClient.refetchQueries).toHaveBeenCalledWith({
+      queryKey: ['local-commits', 'workspace-1'],
+      type: 'active',
+    });
+    expect(recordPerfEvent).toHaveBeenCalledWith('query.local-commit-graph.refresh', {
+      workspaceId: 'workspace-1',
+      reason: 'agent-terminal+agent-finalize-ack',
+      refetchActive: true,
+    }, { source: 'agentRunWorkspaceRefresh' });
     expect(catchUpHotSendMessageDeltas).toHaveBeenCalledWith(queryClient, 'workspace-1');
   });
 });

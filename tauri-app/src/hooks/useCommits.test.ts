@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPreferredRefNameBySha } from './useCommits';
+import { buildPreferredRefNameBySha, filterCommitsReachableFrom } from './useCommits';
 import type { GitLocalRefInfo } from '../lib/agentClient';
 import type { TrackedGitRef } from '../stores/workspaceStore';
 
@@ -56,5 +56,23 @@ describe('buildPreferredRefNameBySha', () => {
     );
 
     expect(refNameBySha.get('commit-a')).toBe('main');
+  });
+});
+
+describe('filterCommitsReachableFrom', () => {
+  it('removes excluded commits and their ancestors from an already-loaded commit list', () => {
+    const commits = [
+      { sha: 'tip', parents: ['middle'] },
+      { sha: 'middle', parents: ['root'] },
+      { sha: 'root', parents: [] },
+      { sha: 'other-tip', parents: ['other-root'] },
+      { sha: 'other-root', parents: [] },
+    ];
+
+    expect(filterCommitsReachableFrom(commits, ['middle']).map((commit) => commit.sha)).toEqual([
+      'tip',
+      'other-tip',
+      'other-root',
+    ]);
   });
 });

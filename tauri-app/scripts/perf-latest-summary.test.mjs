@@ -15,7 +15,7 @@ const writeJson = async (filePath, value) => {
 describe('perf latest summary', () => {
   it('prints compact freeze, first-text, convergence, and graph metrics', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'agentree-perf-summary-'));
-    const captureDir = path.join(root, 'src-tauri/runtime-logs/tauri/perf-captures/perf-1');
+    const captureDir = path.join(root, 'runtime-logs/perf-captures/perf-1');
     await writeJson(path.join(captureDir, 'send-flow-summary.json'), {
       generatedAt: '2026-05-19T00:00:05.000Z',
       sessionId: 'perf-1',

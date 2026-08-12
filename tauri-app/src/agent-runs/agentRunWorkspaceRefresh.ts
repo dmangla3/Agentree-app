@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
+import { recordPerfEvent } from '../lib/perfRecorder';
 import { catchUpHotSendMessageDeltas } from '../hooks/useHotSendMessageDeltas';
 import { localNodeKeys } from '../hooks/useLocalNodes';
 
@@ -31,13 +32,27 @@ const flushWorkspaceRefresh = (workspaceId: string) => {
   void scheduleMessagesRefreshWhenGraphIdle(pending.queryClient, workspaceId, { reason });
 
   if (pending.includeCommitGraph) {
+    recordPerfEvent('query.local-commit-graph.refresh', {
+      workspaceId,
+      reason,
+      refetchActive: true,
+    }, { source: 'agentRunWorkspaceRefresh' });
+
     void pending.queryClient.invalidateQueries({
       queryKey: ['local-commit-graph', workspaceId],
-      refetchType: 'active',
+      refetchType: 'none',
     });
     void pending.queryClient.invalidateQueries({
       queryKey: ['local-commits', workspaceId],
-      refetchType: 'active',
+      refetchType: 'none',
+    });
+    void pending.queryClient.refetchQueries({
+      queryKey: ['local-commit-graph', workspaceId],
+      type: 'active',
+    });
+    void pending.queryClient.refetchQueries({
+      queryKey: ['local-commits', workspaceId],
+      type: 'active',
     });
   }
 

@@ -13,11 +13,15 @@ export const getThreadRootId = (
 ): string | null => {
   let cursor = messageId ? messageMap.get(messageId) ?? null : null;
   const visited = new Set<string>();
+  let earliestUserId: string | null = null;
 
   while (cursor && !visited.has(cursor.id)) {
     visited.add(cursor.id);
+    if (cursor.role === 'user') {
+      earliestUserId = cursor.id;
+    }
     if (!cursor.parentId) {
-      return cursor.role === 'user' ? cursor.id : null;
+      return earliestUserId;
     }
     cursor = messageMap.get(cursor.parentId) ?? null;
   }
@@ -28,7 +32,7 @@ export const getThreadRootId = (
 export const buildThreadRootIndex = (messages: Message[]): ThreadRootIndex => {
   const messageMap = new Map(messages.map((message) => [message.id, message]));
   const threadRootIds = messages
-    .filter((message) => message.role === 'user' && message.parentId === null)
+    .filter((message) => message.role === 'user' && getThreadRootId(message.id, messageMap) === message.id)
     .sort((left, right) => {
       const leftTs = new Date(left.createdAt).getTime();
       const rightTs = new Date(right.createdAt).getTime();

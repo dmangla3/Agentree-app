@@ -30,6 +30,32 @@ if str(SDK_SRC) not in sys.path:
 
 from codex_app_server import AppServerClient, AppServerConfig, TextInput, Thread  # noqa: E402
 
+FINAL_RESULT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["final_response", "commit_subject", "ai_label"],
+    "properties": {
+        "final_response": {
+            "type": "string",
+            "description": "User-visible final assistant response. Keep the normal summary, verification, and caveats here.",
+        },
+        "commit_subject": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "description": (
+                "Concise imperative git commit subject for the changes made, "
+                "4-10 words, no trailing period. Use null if no files changed."
+            ),
+        },
+        "ai_label": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "description": (
+                "Concise 5-10 word graph label for this assistant message. "
+                "Describe the outcome, not the full response. No trailing period."
+            ),
+        },
+    },
+}
+
 
 def _approval_handler(method: str, params: dict[str, Any] | None) -> dict[str, Any]:
     if method == "item/commandExecution/requestApproval":
@@ -127,6 +153,132 @@ def _redact_sensitive_text(value: str) -> str:
 def _text_excerpt(value: str, limit: int = 500) -> str:
     compact = " ".join(value.strip().split())
     return _redact_sensitive_text(compact[:limit])
+
+
+def _normalize_commit_subject(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = re.sub(r"[\n\r\t]+", " ", value)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = normalized.strip("\"'`- .")
+    if not normalized:
+        return None
+    return normalized[:72].strip() or None
+
+
+def _normalize_ai_label(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = re.sub(r"```[\s\S]*?```", " ", value)
+    normalized = re.sub(r"`+", "", normalized)
+    normalized = re.sub(r"[\n\r\t]+", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = normalized.strip("\"'`- .")
+    if not normalized:
+        return None
+    return normalized[:80].strip() or None
+
+
+def _normalize_final_response(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _structured_final_output_from_text(value: Any) -> dict[str, str | None] | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    final_response = _normalize_final_response(parsed.get("final_response"))
+    commit_subject = _normalize_commit_subject(parsed.get("commit_subject"))
+    ai_label = _normalize_ai_label(parsed.get("ai_label"))
+    if final_response is None and commit_subject is None and ai_label is None:
+        return None
+    return {
+        "final_response": final_response,
+        "commit_subject": commit_subject,
+        "ai_label": ai_label,
+    }
+
+
+def _merge_structured_final_output(
+    current: dict[str, str | None] | None,
+    next_value: dict[str, str | None] | None,
+) -> dict[str, str | None] | None:
+    if next_value is None:
+        return current
+    return {
+        "final_response": next_value.get("final_response") or (current or {}).get("final_response"),
+        "commit_subject": next_value.get("commit_subject") or (current or {}).get("commit_subject"),
+        "ai_label": next_value.get("ai_label") or (current or {}).get("ai_label"),
+    }
+
+
+def _decode_json_string_prefix(value: str) -> str:
+    decoded: list[str] = []
+    index = 0
+    while index < len(value):
+        ch = value[index]
+        if ch != "\\":
+            decoded.append(ch)
+            index += 1
+            continue
+        if index + 1 >= len(value):
+            break
+        escaped = value[index + 1]
+        if escaped == "u":
+            hex_value = value[index + 2:index + 6]
+            if len(hex_value) < 4 or not re.fullmatch(r"[0-9a-fA-F]{4}", hex_value):
+                break
+            decoded.append(chr(int(hex_value, 16)))
+            index += 6
+            continue
+        replacements = {
+            '"': '"',
+            "\\": "\\",
+            "/": "/",
+            "b": "\b",
+            "f": "\f",
+            "n": "\n",
+            "r": "\r",
+            "t": "\t",
+        }
+        if escaped not in replacements:
+            break
+        decoded.append(replacements[escaped])
+        index += 2
+    return "".join(decoded)
+
+
+def _json_string_field_prefix(buffer: str, field_name: str) -> str | None:
+    match = re.search(rf'"{re.escape(field_name)}"\s*:\s*"', buffer)
+    if not match:
+        return None
+    start = match.end()
+    index = start
+    escaped = False
+    while index < len(buffer):
+        ch = buffer[index]
+        if escaped:
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == '"':
+            return _decode_json_string_prefix(buffer[start:index])
+        index += 1
+    return _decode_json_string_prefix(buffer[start:])
+
+
+def _suffix_after_prefix(previous: str, current: str) -> str:
+    if current.startswith(previous):
+        return current[len(previous):]
+    return current
 
 
 def _path_exists(path: str | Path) -> bool:
@@ -794,6 +946,8 @@ def main() -> int:
     rollback_turn_count: int | None = None
     branch_point_mapping_confidence = "unknown"
     cumulative_text = ""
+    structured_text_buffer = ""
+    structured_final_output: dict[str, str | None] | None = None
     last_provider_error: dict[str, Any] | None = None
     output_deltas_by_item_id: dict[str, str] = {}
 
@@ -1055,7 +1209,12 @@ def main() -> int:
             _emit({"type": "session", "session_id": active_thread_id, "provider": "codex", "transport": "app_server"})
             _emit_trace("thread_ready", {"provider_thread_id": active_thread_id, "strategy": thread_strategy})
 
-            turn = thread.turn(TextInput(prompt), model=args.model, cwd=args.cwd)
+            turn = thread.turn(
+                TextInput(prompt),
+                model=args.model,
+                cwd=args.cwd,
+                output_schema=FINAL_RESULT_SCHEMA,
+            )
             for event in turn.stream():
                 method = event.method
                 payload = event.payload
@@ -1083,22 +1242,27 @@ def main() -> int:
                 if method == "item/agentMessage/delta":
                     delta = getattr(payload, "delta", "")
                     if isinstance(delta, str) and delta:
-                        cumulative_text += delta
+                        structured_text_buffer += delta
                         delta_count += 1
                         if not first_delta_emitted:
                             first_delta_emitted = True
                             first_delta_ts_ms = now_ms
                             _emit_trace("first_assistant_delta", {"provider_turn_id": getattr(payload, "turn_id", None)})
-                        _emit(
-                            {
-                                "type": "message_delta",
-                                "delta": delta,
-                                "provider_item_id": getattr(payload, "item_id", None),
-                                "provider_thread_id": getattr(payload, "thread_id", None),
-                                "provider_turn_id": getattr(payload, "turn_id", None),
-                                "timestamp": now_ms,
-                            }
-                        )
+                        visible_prefix = _json_string_field_prefix(structured_text_buffer, "final_response")
+                        if visible_prefix:
+                            visible_delta = _suffix_after_prefix(cumulative_text, visible_prefix)
+                            if visible_delta:
+                                cumulative_text = visible_prefix
+                                _emit(
+                                    {
+                                        "type": "message_delta",
+                                        "delta": visible_delta,
+                                        "provider_item_id": getattr(payload, "item_id", None),
+                                        "provider_thread_id": getattr(payload, "thread_id", None),
+                                        "provider_turn_id": getattr(payload, "turn_id", None),
+                                        "timestamp": now_ms,
+                                    }
+                                )
                     continue
 
                 if method == "item/started":
@@ -1140,11 +1304,22 @@ def main() -> int:
                     if item_type == "agentMessage":
                         text = _extract_assistant_text(payload)
                         if isinstance(text, str) and text:
-                            cumulative_text = text if len(text) >= len(cumulative_text) else cumulative_text
+                            structured_final_output = _merge_structured_final_output(
+                                structured_final_output,
+                                _structured_final_output_from_text(text),
+                            )
+                            structured_text_buffer = text if len(text) >= len(structured_text_buffer) else structured_text_buffer
+                        visible_text = (
+                            structured_final_output.get("final_response")
+                            if structured_final_output
+                            else None
+                        ) or text
+                        if isinstance(visible_text, str) and visible_text:
+                            cumulative_text = visible_text
                         _emit(
                             {
                                 "type": "message_completed",
-                                "content": text,
+                                "content": visible_text,
                                 "provider_item_id": item_id,
                                 "provider_thread_id": getattr(payload, "thread_id", None),
                                 "provider_turn_id": getattr(payload, "turn_id", None),
@@ -1242,6 +1417,36 @@ def main() -> int:
                     if turn_id:
                         active_turn_id = turn_id
                     final_provider_user_turn_count = _thread_user_turn_count(thread)
+                    if structured_final_output is None:
+                        structured_final_output = _structured_final_output_from_text(structured_text_buffer)
+                    visible_final_content = (
+                        structured_final_output.get("final_response")
+                        if structured_final_output
+                        else None
+                    ) or cumulative_text
+                    commit_subject = (
+                        structured_final_output.get("commit_subject")
+                        if structured_final_output
+                        else None
+                    )
+                    ai_label = (
+                        structured_final_output.get("ai_label")
+                        if structured_final_output
+                        else None
+                    )
+                    structured_meta = {}
+                    if commit_subject:
+                        structured_meta["commit_subject"] = commit_subject
+                    if ai_label:
+                        structured_meta["ai_label"] = ai_label
+                    if structured_meta:
+                        _emit(
+                            {
+                                "type": "provider_meta",
+                                "meta": structured_meta,
+                                "timestamp": now_ms,
+                            }
+                        )
                     if status == "completed":
                         _emit_trace("turn_completed", {"status": status, "provider_turn_id": active_turn_id})
                     else:
@@ -1275,7 +1480,7 @@ def main() -> int:
                             "type": "provider_stop",
                             "provider_stop_reason": "end_turn" if status == "completed" else "error",
                             "provider_status": status,
-                            "final_content": cumulative_text
+                            "final_content": visible_final_content
                             if status == "completed"
                             else (
                                 last_provider_error.get("provider_error_message")
@@ -1316,7 +1521,10 @@ def main() -> int:
             "type": "provider_stop",
             "provider_stop_reason": "end_turn",
             "provider_status": "completed",
-            "final_content": cumulative_text,
+            "final_content": (
+                (structured_final_output or _structured_final_output_from_text(structured_text_buffer) or {}).get("final_response")
+                or cumulative_text
+            ),
             "provider_thread_id": active_thread_id,
             "provider_turn_id": active_turn_id,
             "timestamp": int(time.time() * 1000),

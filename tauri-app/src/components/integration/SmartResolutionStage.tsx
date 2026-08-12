@@ -31,6 +31,17 @@ import { api } from '../../lib/api';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../../lib/graphInteractionGate';
 import { getMessageOutputCommitSha } from '../../lib/graph/commitAccessors';
 import { persistMergeCommitGraph } from '../../lib/mergeCommitGraph';
+import { getMergeReviewTerminalReconciliation } from './mergeReviewReconcile';
+import { persistMergeResultNodeLocally } from './mergeResultNode';
+
+const autoStartedMergeReviewKeys = new Set<string>();
+
+const getAutoStartKey = (session: NonNullable<ReturnType<typeof useIntegrationStore.getState>['session']>) => [
+  session.id,
+  session.target?.commitSha ?? '',
+  session.sources.map((source) => source.commitSha).join(','),
+  session.preview?.base_commit ?? '',
+].join('|');
 
 const parseCliArgs = (cliArgs: string | null | undefined) => {
   const tokens = String(cliArgs || '').split(/\s+/).filter(Boolean);
@@ -80,7 +91,6 @@ export function SmartResolutionStage() {
   const [applyRunId, setApplyRunId] = useState<string | null>(null);
   const [agentPhase, setAgentPhase] = useState<'idle' | 'reviewing' | 'synthesizing' | 'applying' | 'completed' | 'failed'>('idle');
   const [agentTimeline, setAgentTimeline] = useState<MergeReviewTimelineEvent[]>([]);
-  const autoStartAttemptedRef = useRef(false);
   const reviewUnsubRef = useRef<null | (() => void)>(null);
 
   if (!session) return null;
@@ -139,7 +149,6 @@ export function SmartResolutionStage() {
   }, [agents, selectedAgentId, setSelectedAgentId]);
 
   useEffect(() => {
-    autoStartAttemptedRef.current = false;
     setAgentTimeline([]);
     setApplyRunId(null);
     setAgentPhase(session.reviewRun.status === 'running' ? 'reviewing' : 'idle');
@@ -233,13 +242,39 @@ export function SmartResolutionStage() {
   }, [appendReviewTimeline, applyRunId, completeReviewRun, session.reviewRun.runId, setReviewStatus]);
 
   useEffect(() => {
+    if (session.reviewRun.status !== 'running' || !session.reviewRun.runId) return;
+
+    let cancelled = false;
+    const runId = session.reviewRun.runId;
+    agentClient.isMergeReviewRunning(runId)
+      .then(async (isRunning) => {
+        if (cancelled || isRunning) return;
+        const snapshot = await agentClient.getSessionSnapshot(runId).catch(() => null);
+        if (cancelled) return;
+        const terminal = getMergeReviewTerminalReconciliation(snapshot);
+        if (!terminal) return;
+        appendReviewTimeline({
+          timestamp: Date.now(),
+          level: terminal.status === 'completed' ? 'info' : 'warning',
+          message: terminal.message,
+        });
+        if (terminal.status === 'completed' && terminal.result) {
+          completeReviewRun(terminal.result);
+          setAgentPhase('completed');
+          return;
+        }
+        setReviewStatus(terminal.status, {
+          error: terminal.status === 'completed' ? null : terminal.message,
+          canBypass: terminal.status !== 'completed',
+        });
+        setAgentPhase(terminal.status === 'completed' ? 'completed' : 'failed');
+      })
+      .catch(() => undefined);
+
     return () => {
-      const latest = useIntegrationStore.getState().session;
-      if (latest?.reviewRun.status === 'running' && latest.reviewRun.runId) {
-        agentClient.stopMergeReview(latest.reviewRun.runId).catch(() => undefined);
-      }
+      cancelled = true;
     };
-  }, []);
+  }, [appendReviewTimeline, completeReviewRun, session.reviewRun.runId, session.reviewRun.status, setReviewStatus]);
 
   const handleAnalyze = async () => {
     if (!session.target) return;
@@ -292,12 +327,15 @@ export function SmartResolutionStage() {
       !!session.target &&
       session.reviewRun.status === 'idle' &&
       !session.reviewSummary &&
-      !autoStartAttemptedRef.current;
+      !autoStartedMergeReviewKeys.has(getAutoStartKey(session));
 
     if (!shouldAutoStart) return;
 
-    autoStartAttemptedRef.current = true;
-    handleAnalyze().catch(() => undefined);
+    const autoStartKey = getAutoStartKey(session);
+    autoStartedMergeReviewKeys.add(autoStartKey);
+    handleAnalyze().catch(() => {
+      autoStartedMergeReviewKeys.delete(autoStartKey);
+    });
   }, [
     displayName,
     effectiveAgentType,
@@ -460,38 +498,52 @@ export function SmartResolutionStage() {
         skipAssistant: true,
       });
 
+      const aiLabel = `Merge: ${session.sources.map((source) => source.label).join(', ')}`;
+      const executionData = {
+        meta: {
+          merge_target_commit: session.target.commitSha,
+          merge_source_commits: sourceShas,
+        },
+        merge_metadata: {
+          sources: session.sources,
+          target: session.target,
+          visual_parent_node_ids: visualParentNodeIds,
+          policy: session.policy,
+          lineage: {
+            mode: 'latest-parent-layout',
+            primary_parent_node_id: newestParentNodeId,
+            promoted_source_node_id: null,
+            source_node_ids: resolvedSourceNodeIds,
+          },
+          decisions: session.reviewIssues.length,
+          verified: true,
+          review: {
+            status: session.reviewRun.status,
+            selected_agent_type: session.reviewRun.selectedAgentType,
+            selected_model_id: session.reviewRun.selectedModelId,
+            summary: session.reviewSummary,
+            issue_count: session.reviewIssues.length,
+            selected_issue_count: Object.keys(session.issueSelections).length,
+          },
+        },
+      };
+
       await api.patch(`/messages/${resultNodeId}`, {
         output_commit_sha: result.commit_sha,
         git_branch_name: null,
-        ai_label: `Merge: ${session.sources.map((source) => source.label).join(', ')}`,
-        execution_data: {
-          meta: {
-            merge_target_commit: session.target.commitSha,
-            merge_source_commits: sourceShas,
-          },
-          merge_metadata: {
-            sources: session.sources,
-            target: session.target,
-            visual_parent_node_ids: visualParentNodeIds,
-            policy: session.policy,
-            lineage: {
-              mode: 'latest-parent-layout',
-              primary_parent_node_id: newestParentNodeId,
-              promoted_source_node_id: null,
-              source_node_ids: resolvedSourceNodeIds,
-            },
-            decisions: session.reviewIssues.length,
-            verified: true,
-            review: {
-              status: session.reviewRun.status,
-              selected_agent_type: session.reviewRun.selectedAgentType,
-              selected_model_id: session.reviewRun.selectedModelId,
-              summary: session.reviewSummary,
-              issue_count: session.reviewIssues.length,
-              selected_issue_count: Object.keys(session.issueSelections).length,
-            },
-          },
-        },
+        ai_label: aiLabel,
+        execution_data: executionData,
+      });
+
+      await persistMergeResultNodeLocally({
+        queryClient,
+        workspaceId: session.workspaceId,
+        resultNodeId,
+        parentId: newestParentNodeId,
+        content: commitMessage,
+        commitSha: result.commit_sha,
+        aiLabel,
+        executionData,
       });
 
       await persistMergeCommitGraph({

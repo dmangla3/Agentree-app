@@ -66,6 +66,7 @@ const makeProps = (overrides: Partial<GraphControlsProps> = {}): GraphControlsPr
   onThreadFocus: vi.fn(),
   onThreadHide: vi.fn(),
   onThreadRestore: vi.fn(),
+  onHideAllThreads: vi.fn(),
   onRestoreAllHiddenThreads: vi.fn(),
   ...overrides,
 });
@@ -98,6 +99,8 @@ describe('GraphControls', () => {
     const onThreadFocus = vi.fn();
     const onThreadHide = vi.fn();
     const onThreadRestore = vi.fn();
+    const onHideAllThreads = vi.fn();
+    const onRestoreAllHiddenThreads = vi.fn();
 
     render(
       <TooltipProvider>
@@ -128,6 +131,8 @@ describe('GraphControls', () => {
             onThreadFocus,
             onThreadHide,
             onThreadRestore,
+            onHideAllThreads,
+            onRestoreAllHiddenThreads,
           })}
         />
       </TooltipProvider>
@@ -144,6 +149,12 @@ describe('GraphControls', () => {
     expect(screen.getByText('Active')).toBeTruthy();
     expect(screen.getByText('Old prompt experiment')).toBeTruthy();
     expect(screen.getByText('Hidden')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide all' }));
+    expect(onHideAllThreads).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restore hidden' }));
+    expect(onRestoreAllHiddenThreads).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole('button', { name: 'Open thread Fix checkout race condition' }));
     expect(onThreadFocus).toHaveBeenCalledWith('thread-active');

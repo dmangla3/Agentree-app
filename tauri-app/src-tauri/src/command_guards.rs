@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -8,6 +9,14 @@ use tauri::AppHandle;
 const PACKAGE_MANAGER_GUARD_COMMANDS: &[&str] = &[
     "npm", "pnpm", "yarn", "bun", "pip", "pip3", "poetry", "uv", "cargo",
 ];
+
+#[derive(Debug, Clone)]
+pub struct AgentSandboxEnv {
+    pub agent_id: String,
+    pub sandbox_path: PathBuf,
+    pub vars: BTreeMap<String, String>,
+    dirs: Vec<PathBuf>,
+}
 
 pub fn build_agent_path() -> String {
     let mut parts: Vec<PathBuf> = std::env::var_os("PATH")
@@ -33,6 +42,181 @@ pub fn build_agent_path() -> String {
         .unwrap_or_else(|_| {
             "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string()
         })
+}
+
+fn sandbox_root(override_root: Option<&Path>) -> PathBuf {
+    if let Some(root) = override_root {
+        return root.to_path_buf();
+    }
+
+    std::env::var_os("AGENTREE_AGENT_SANDBOX_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("agentree").join("agents"))
+}
+
+fn sanitize_sandbox_segment(raw: &str) -> String {
+    let mut sanitized = String::new();
+    let mut last_was_dash = false;
+
+    for character in raw.chars() {
+        if character.is_ascii_alphanumeric()
+            || character == '.'
+            || character == '_'
+            || character == '-'
+        {
+            sanitized.push(character);
+            last_was_dash = false;
+        } else if !last_was_dash {
+            sanitized.push('-');
+            last_was_dash = true;
+        }
+    }
+
+    let trimmed = sanitized.trim_matches('-');
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn path_string(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+fn insert_path_var(
+    vars: &mut BTreeMap<String, String>,
+    dirs: &mut Vec<PathBuf>,
+    key: &str,
+    path: PathBuf,
+) {
+    vars.insert(key.to_string(), path_string(&path));
+    dirs.push(path);
+}
+
+fn agent_sandbox_env(agent_id: &str, cwd: &Path, root_override: Option<&Path>) -> AgentSandboxEnv {
+    let agent_id = sanitize_sandbox_segment(agent_id);
+    let worktree_id = cwd
+        .file_name()
+        .and_then(|segment| segment.to_str())
+        .map(sanitize_sandbox_segment)
+        .unwrap_or_else(|| "unknown-worktree".to_string());
+    let sandbox_path = sandbox_root(root_override)
+        .join(worktree_id)
+        .join(&agent_id);
+
+    let mut vars = BTreeMap::new();
+    let mut dirs = Vec::new();
+
+    vars.insert("AGENT_ID".to_string(), agent_id.clone());
+    vars.insert("AGENTREE_AGENT_ID".to_string(), agent_id.clone());
+    vars.insert("AGENT_SANDBOX".to_string(), path_string(&sandbox_path));
+    vars.insert(
+        "AGENTREE_AGENT_SANDBOX".to_string(),
+        path_string(&sandbox_path),
+    );
+    dirs.push(sandbox_path.clone());
+
+    insert_path_var(&mut vars, &mut dirs, "TMPDIR", sandbox_path.join("tmp"));
+    insert_path_var(&mut vars, &mut dirs, "TMP", sandbox_path.join("tmp"));
+    insert_path_var(&mut vars, &mut dirs, "TEMP", sandbox_path.join("tmp"));
+    insert_path_var(
+        &mut vars,
+        &mut dirs,
+        "XDG_CACHE_HOME",
+        sandbox_path.join("cache"),
+    );
+    insert_path_var(
+        &mut vars,
+        &mut dirs,
+        "XDG_STATE_HOME",
+        sandbox_path.join("state"),
+    );
+    insert_path_var(
+        &mut vars,
+        &mut dirs,
+        "npm_config_cache",
+        sandbox_path.join("npm-cache"),
+    );
+    insert_path_var(
+        &mut vars,
+        &mut dirs,
+        "YARN_CACHE_FOLDER",
+        sandbox_path.join("yarn-cache"),
+    );
+    insert_path_var(
+        &mut vars,
+        &mut dirs,
+        "PNPM_HOME",
+        sandbox_path.join("pnpm-home"),
+    );
+    insert_path_var(
+        &mut vars,
+        &mut dirs,
+        "TURBO_CACHE_DIR",
+        sandbox_path.join("turbo"),
+    );
+    insert_path_var(
+        &mut vars,
+        &mut dirs,
+        "NX_CACHE_DIRECTORY",
+        sandbox_path.join("nx"),
+    );
+    insert_path_var(
+        &mut vars,
+        &mut dirs,
+        "PLAYWRIGHT_BROWSERS_PATH",
+        sandbox_path.join("playwright"),
+    );
+    insert_path_var(
+        &mut vars,
+        &mut dirs,
+        "CYPRESS_CACHE_FOLDER",
+        sandbox_path.join("cypress"),
+    );
+    insert_path_var(
+        &mut vars,
+        &mut dirs,
+        "PIP_CACHE_DIR",
+        sandbox_path.join("pip"),
+    );
+    insert_path_var(
+        &mut vars,
+        &mut dirs,
+        "UV_CACHE_DIR",
+        sandbox_path.join("uv"),
+    );
+    insert_path_var(
+        &mut vars,
+        &mut dirs,
+        "PYTHONPYCACHEPREFIX",
+        sandbox_path.join("pycache"),
+    );
+    insert_path_var(
+        &mut vars,
+        &mut dirs,
+        "GOCACHE",
+        sandbox_path.join("go-cache"),
+    );
+    insert_path_var(
+        &mut vars,
+        &mut dirs,
+        "CARGO_HOME",
+        sandbox_path.join("cargo"),
+    );
+    insert_path_var(
+        &mut vars,
+        &mut dirs,
+        "CARGO_TARGET_DIR",
+        sandbox_path.join("cargo-target"),
+    );
+
+    AgentSandboxEnv {
+        agent_id,
+        sandbox_path,
+        vars,
+        dirs,
+    }
 }
 
 fn command_guard_root() -> Result<PathBuf, String> {
@@ -101,12 +285,23 @@ fn prepend_path_entry(entry: &Path, existing_path: &str) -> Result<String, Strin
         .map_err(|e| format!("Failed to build guarded PATH: {}", e))
 }
 
-pub fn apply_agent_command_env(command: &mut Command, app: &AppHandle) -> Result<(), String> {
+pub fn apply_agent_command_env(
+    command: &mut Command,
+    app: &AppHandle,
+    agent_id: &str,
+    cwd: &Path,
+) -> Result<(), String> {
     let base_path = build_agent_path();
     let guard_bin = ensure_command_guard_bin()?;
     let guarded_path = prepend_path_entry(&guard_bin, &base_path)?;
     let guard_script =
         crate::runtime_scripts::runtime_script_path(app, "package-manager-guard.sh")?;
+    let sandbox = agent_sandbox_env(agent_id, cwd, None);
+
+    for dir in &sandbox.dirs {
+        fs::create_dir_all(dir)
+            .map_err(|e| format!("Failed to create agent sandbox dir {:?}: {}", dir, e))?;
+    }
 
     command
         .env("PATH", guarded_path)
@@ -115,7 +310,56 @@ pub fn apply_agent_command_env(command: &mut Command, app: &AppHandle) -> Result
         .env(
             "AGENTREE_PACKAGE_MANAGER_GUARD",
             guard_script.to_string_lossy().into_owned(),
-        );
+        )
+        .envs(sandbox.vars.iter());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{agent_sandbox_env, sanitize_sandbox_segment};
+    use std::path::Path;
+
+    #[test]
+    fn sandbox_env_uses_stable_worktree_and_agent_segments() {
+        let env = agent_sandbox_env(
+            "assistant/node:1",
+            Path::new("/repos/agentree/worktrees/worktree-123"),
+            Some(Path::new("/tmp/agentree-test")),
+        );
+
+        assert_eq!(env.agent_id, "assistant-node-1");
+        assert_eq!(
+            env.sandbox_path.to_string_lossy(),
+            "/tmp/agentree-test/worktree-123/assistant-node-1"
+        );
+
+        assert_eq!(
+            env.vars.get("AGENT_SANDBOX").map(String::as_str),
+            Some("/tmp/agentree-test/worktree-123/assistant-node-1")
+        );
+        assert_eq!(
+            env.vars.get("TMPDIR").map(String::as_str),
+            Some("/tmp/agentree-test/worktree-123/assistant-node-1/tmp")
+        );
+        assert_eq!(
+            env.vars.get("XDG_CACHE_HOME").map(String::as_str),
+            Some("/tmp/agentree-test/worktree-123/assistant-node-1/cache")
+        );
+        assert_eq!(
+            env.vars.get("CARGO_TARGET_DIR").map(String::as_str),
+            Some("/tmp/agentree-test/worktree-123/assistant-node-1/cargo-target")
+        );
+    }
+
+    #[test]
+    fn sandbox_segment_sanitizing_never_returns_empty_values() {
+        assert_eq!(
+            sanitize_sandbox_segment("agent 1/branch:x"),
+            "agent-1-branch-x"
+        );
+        assert_eq!(sanitize_sandbox_segment("///"), "unknown");
+        assert_eq!(sanitize_sandbox_segment(""), "unknown");
+    }
 }

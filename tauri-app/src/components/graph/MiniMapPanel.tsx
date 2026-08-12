@@ -4,9 +4,11 @@ import { Eye, EyeOff, LocateFixed, Maximize2, Minimize2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { type MinimapPosition, useMinimapStore } from '../../stores/minimapStore';
 import { LlmNodeData, extractColorFromClasses } from '../../lib/graphUtils';
+import { buildThreadBands, getThreadDividerRectsFromNodes } from '../../lib/graphThreadDividers';
 
 type MinimapNodeShape = {
     id: string;
+    threadRootId: string | null;
     x: number;
     y: number;
     width: number;
@@ -76,12 +78,18 @@ const getNodeStrokeColor = (node: Node<any>): string => {
     return 'transparent';
 };
 
+const getNodeThreadRootId = (node: Node<any>): string | null => {
+    const data = node.data as any;
+    return typeof data?.entity?.threadRootId === 'string' ? data.entity.threadRootId : null;
+};
+
 const toMinimapNodeShape = (node: Node<any>, absolutePosition: { x: number; y: number }): MinimapNodeShape | null => {
     const dimensions = getNodeDimensions(node);
     if (dimensions.width <= 0 || dimensions.height <= 0) return null;
 
     return {
         id: node.id,
+        threadRootId: getNodeThreadRootId(node),
         x: absolutePosition.x,
         y: absolutePosition.y,
         width: dimensions.width,
@@ -171,25 +179,33 @@ export function MiniMapPanel() {
     const { setCenter, getZoom } = useReactFlow();
     const minimapSize = isExpanded ? MINIMAP_EXPANDED_SIZE : MINIMAP_COLLAPSED_SIZE;
 
-    const { shapes, viewport, flowWidth, flowHeight, selectedCount, focusedCount } = useStore((state) => {
+    const { shapes, dividerRects, viewport, flowWidth, flowHeight, selectedCount, focusedCount } = useStore((state) => {
         const nextShapes: MinimapNodeShape[] = [];
+        const dividerNodes: Node<any>[] = [];
         let nextSelectedCount = 0;
         let nextFocusedCount = 0;
 
         state.nodeLookup.forEach((internalNode: any) => {
             const userNode = internalNode.internals?.userNode as Node<any> | undefined;
-            if (!userNode || !shouldRenderNodeInMinimap(userNode)) return;
+            if (!userNode || userNode.hidden) return;
             const data = userNode.data as (LlmNodeData & { isFocused?: boolean; isInContextPath?: boolean }) | undefined;
             if (userNode.selected) nextSelectedCount += 1;
             if (data?.isFocused || data?.isInContextPath) nextFocusedCount += 1;
 
             const positionAbsolute = internalNode.internals?.positionAbsolute ?? userNode.position;
+            dividerNodes.push({
+                ...userNode,
+                parentId: undefined,
+                position: positionAbsolute,
+            });
+            if (!shouldRenderNodeInMinimap(userNode)) return;
             const shape = toMinimapNodeShape(userNode, positionAbsolute);
             if (shape) nextShapes.push(shape);
         });
 
         return {
             shapes: nextShapes,
+            dividerRects: getThreadDividerRectsFromNodes(dividerNodes, new Map()),
             viewport: {
                 x: state.transform[0],
                 y: state.transform[1],
@@ -222,6 +238,10 @@ export function MiniMapPanel() {
             height: Math.max(1, bottomRight.y - topLeft.y),
         };
     }, [flowHeight, flowWidth, minimapSize.height, minimapSize.width, viewBox, viewport]);
+
+    const threadBands = useMemo(() => {
+        return buildThreadBands(dividerRects, { padding: 180, horizontalPadding: 56 });
+    }, [dividerRects]);
 
     const centerOnMinimapPoint = useCallback(
         (clientX: number, clientY: number, target: SVGSVGElement, duration: number) => {
@@ -455,6 +475,25 @@ export function MiniMapPanel() {
                         </filter>
                     </defs>
                     <rect width="100%" height="100%" fill="transparent" />
+                    {threadBands.map((band) => {
+                        const topLeft = mapToMinimap(band.left, band.top, viewBox, minimapSize.width, minimapSize.height);
+                        const bottomRight = mapToMinimap(band.right, band.bottom, viewBox, minimapSize.width, minimapSize.height);
+                        return (
+                            <rect
+                                key={band.id}
+                                x={topLeft.x}
+                                y={topLeft.y}
+                                width={Math.max(1, bottomRight.x - topLeft.x)}
+                                height={Math.max(1, bottomRight.y - topLeft.y)}
+                                fill="hsl(var(--foreground) / 0.045)"
+                                stroke="hsl(var(--foreground) / 0.12)"
+                                strokeWidth={0.75}
+                                rx={7}
+                                ry={7}
+                                pointerEvents="none"
+                            />
+                        );
+                    })}
                     {shapes.map((shape) => {
                         const topLeft = mapToMinimap(shape.x, shape.y, viewBox, minimapSize.width, minimapSize.height);
                         const bottomRight = mapToMinimap(shape.x + shape.width, shape.y + shape.height, viewBox, minimapSize.width, minimapSize.height);

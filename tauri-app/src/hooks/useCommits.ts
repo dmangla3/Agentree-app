@@ -99,6 +99,31 @@ export const buildPreferredRefNameBySha = (
   return new Map(Array.from(preferredBySha.entries()).map(([sha, ref]) => [sha, ref.refName]));
 };
 
+export const filterCommitsReachableFrom = <T extends Pick<GitCommitMetadata, 'sha' | 'parents'>>(
+  commits: T[],
+  exclusions: string[] = []
+): T[] => {
+  const commitBySha = new Map(commits.map((commit) => [commit.sha, commit]));
+  const excludedReachableShas = new Set<string>();
+  const stack = exclusions
+    .map((sha) => sha.trim())
+    .filter((sha) => sha.length > 0);
+
+  while (stack.length > 0) {
+    const sha = stack.pop();
+    if (!sha || excludedReachableShas.has(sha)) continue;
+
+    excludedReachableShas.add(sha);
+    const commit = commitBySha.get(sha);
+    if (commit) {
+      stack.push(...commit.parents);
+    }
+  }
+
+  if (excludedReachableShas.size === 0) return commits;
+  return commits.filter((commit) => !excludedReachableShas.has(commit.sha));
+};
+
 /**
  * Hook to fetch git commits and refs for merge workflow.
  * Shows commits directly instead of nodes.

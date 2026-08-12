@@ -7,6 +7,7 @@ const LABEL = process.env.AGENTREE_TAURI_PILOT_LABEL ?? `tauri-pilot-graph-inter
 const TEST_AGENT_MODEL = process.env.AGENTREE_TAURI_PILOT_AGENT_MODEL ?? 'gpt-5.4-mini';
 const RUN_TIMEOUT_MS = Number(process.env.AGENTREE_TAURI_PILOT_RUN_TIMEOUT_MS ?? 240000);
 const FOCUS_ONLY_CLICKS = Number(process.env.AGENTREE_TAURI_PILOT_FOCUS_ONLY_CLICKS ?? 0);
+const MIN_GRAPH_NODES = Number(process.env.AGENTREE_TAURI_PILOT_MIN_GRAPH_NODES ?? 0);
 const PROMPTS = (process.env.AGENTREE_TAURI_PILOT_PROMPTS
   ? JSON.parse(process.env.AGENTREE_TAURI_PILOT_PROMPTS)
   : [
@@ -92,6 +93,7 @@ const install = async () => pilotEval(`
   const testAgentModel = ${JSON.stringify(TEST_AGENT_MODEL)};
   const runTimeoutMs = ${JSON.stringify(RUN_TIMEOUT_MS)};
   const focusOnlyClicks = ${JSON.stringify(FOCUS_ONLY_CLICKS)};
+  const minGraphNodes = ${JSON.stringify(MIN_GRAPH_NODES)};
   if (document.visibilityState !== 'visible') {
     throw new Error('desktop visibility preflight failed: document.visibilityState=' + document.visibilityState);
   }
@@ -104,6 +106,7 @@ const install = async () => pilotEval(`
     label,
     testAgentModel,
     prompts,
+    minGraphNodes,
     startedAt: performance.now(),
     startedAtIso: new Date().toISOString(),
     actions: [],
@@ -144,6 +147,7 @@ const install = async () => pilotEval(`
     label: probe.label,
     testAgentModel: probe.testAgentModel,
     prompts: probe.prompts,
+    minGraphNodes: probe.minGraphNodes,
     focusOnlyClicks: probe.focusOnlyClicks,
     startedAtIso: probe.startedAtIso,
     done: probe.done,
@@ -879,6 +883,23 @@ const main = async () => {
   if (report.collect) {
     report.collect.graphEventContract = graphEventContract;
   }
+  const samples = report.collect?.probe?.samples ?? [];
+  const actions = report.collect?.probe?.actions ?? [];
+  const maxVisibleGraphNodes = samples.reduce((max, sample) => Math.max(max, Number(sample?.graph?.nodes ?? 0)), 0);
+  const validationErrors = [];
+  if (MIN_GRAPH_NODES > 0 && maxVisibleGraphNodes < MIN_GRAPH_NODES) {
+    validationErrors.push(`expected at least ${MIN_GRAPH_NODES} visible graph nodes, observed ${maxVisibleGraphNodes}`);
+  }
+  if (FOCUS_ONLY_CLICKS === 0 && !actions.some((action) => action.type === 'pan')) {
+    validationErrors.push('no graph pan action was observed');
+  }
+  if (!actions.some((action) => action.type === 'click-node')) {
+    validationErrors.push('no graph node click action was observed');
+  }
+  if (report.collect) {
+    report.collect.maxVisibleGraphNodes = maxVisibleGraphNodes;
+    report.collect.validationErrors = validationErrors;
+  }
   mkdirSync(OUT_DIR, { recursive: true });
   const reportPath = join(OUT_DIR, `${LABEL}.json`);
   writeFileSync(reportPath, JSON.stringify(report, null, 2));
@@ -895,9 +916,14 @@ const main = async () => {
     maxIntervalGapMs: report.collect?.probe?.maxIntervalGapMs ?? null,
     rafStallCount: report.collect?.probe?.rafStalls?.length ?? null,
     intervalStallCount: report.collect?.probe?.intervalStalls?.length ?? null,
+    maxVisibleGraphNodes,
+    validationErrors,
     graphEventContract,
     fundamentals: report.collect?.fundamentals ?? null,
   }, null, 2));
+  if (report.errors.length > 0 || (report.collect?.probe?.errors?.length ?? 0) > 0 || validationErrors.length > 0) {
+    process.exitCode = 1;
+  }
 };
 
 main().catch((error) => {

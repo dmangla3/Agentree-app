@@ -7,6 +7,7 @@ import {
     Node,
     ReactFlowProvider,
     useReactFlow,
+    useStore,
     useStoreApi,
     MarkerType,
 } from '@xyflow/react';
@@ -14,7 +15,7 @@ import '@xyflow/react/dist/style.css';
 
 // Stores
 import { useWorkspaceStore, Message, Summary, Scope } from '../stores/workspaceStore';
-import { useIntegrationStore } from '../stores/integrationStore';
+import { getMergeSourcePrunePlan, useIntegrationStore } from '../stores/integrationStore';
 
 // Hooks - Data
 import { useMessages, useSummaries, useDeleteMessageBranch, useToggleCollapse } from '../hooks/useMessages';
@@ -43,11 +44,12 @@ import { LlmNodeData, getLlmLegend } from '../lib/graphUtils';
 import { mapLocalCommitToCommitEntity } from '../lib/localCommitGraphProjection';
 import { createSubgraphFilterState, getSubgraphMessageIds, shouldClearSubgraphForFocus } from '../lib/graphSubgraphScope';
 import { buildThreadRootIndex, getHiddenConversationMessageIds } from '../lib/graphThreadRoots';
+import { buildThreadBands, getThreadDividerRectsFromNodes, type ThreadBand } from '../lib/graphThreadDividers';
 import { buildComposerContextPathIds } from '../lib/composerContext';
 import { collectDeleteBranchMessageIds, getDeleteBranchPreview, getTopLevelDeleteBranchIds } from '../domain/deleteBranchPreview';
 import { getBranchPointerCommitSha, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { addDeletedGraphCommitShas, readDeletedGraphCommitShas } from '../lib/graph/commitGraphTombstones';
-import { getLeafMessagesByRecency } from '../lib/graph/leafNodes';
+import { getLeafMessagesByRecency, getLeafNavigationLabel } from '../lib/graph/leafNodes';
 import { collapseRenderedFocusRoute } from '../domain/scopedFocusRoute';
 import { cn } from '../lib/utils';
 import { useDiff } from '../contexts/DiffContext';
@@ -247,14 +249,11 @@ const toLeafNodeNavigationItem = (
     message: Message,
     agentLabelsById: Map<string, string>,
 ): LeafNodeNavigationItem => {
-    const isCommit = Boolean(message.commit);
-    const fallbackLabel = isCommit ? 'Commit' : message.role === 'user' ? 'User message' : 'Assistant message';
-    const label = cleanNodePreview(message.aiLabel || message.commit?.subject || message.content) || fallbackLabel;
     const statusMeta = getLeafStatusMeta(message);
 
     return {
         id: message.id,
-        label: label.length > 72 ? `${label.slice(0, 69)}...` : label,
+        label: getLeafNavigationLabel(message),
         modelLabel: getLeafModelLabel(message, agentLabelsById),
         statusLabel: statusMeta.statusLabel,
         statusTone: statusMeta.statusTone,
@@ -325,6 +324,59 @@ type ActiveGraphWindowEntry = {
     centerY: number;
     index: number;
 };
+
+function ThreadBandOverlay({ bands, currentThreadRootId }: { bands: ThreadBand[]; currentThreadRootId: string | null }) {
+    const { transform, flowWidth, flowHeight } = useStore((state) => ({
+        transform: state.transform,
+        flowWidth: state.width,
+        flowHeight: state.height,
+    }));
+
+    if (bands.length === 0 || flowWidth <= 0 || flowHeight <= 0) return null;
+
+    const [translateX, translateY, zoom] = transform;
+    return (
+        <div className="pointer-events-none absolute inset-0 z-[1] overflow-hidden" aria-hidden="true">
+            {bands.map((band) => {
+                const screenLeft = band.left * zoom + translateX;
+                const screenRight = band.right * zoom + translateX;
+                const screenTop = band.top * zoom + translateY;
+                const screenBottom = band.bottom * zoom + translateY;
+                const width = Math.max(1, screenRight - screenLeft);
+                const height = Math.max(1, screenBottom - screenTop);
+                const isCurrent = currentThreadRootId === band.threadRootId;
+                const edgeInset = Math.min(32, Math.max(4, height * 0.08));
+                const radius = Math.min(18, Math.max(4, 18 * zoom));
+
+                if (screenRight < -96 || screenLeft > flowWidth + 96 || screenBottom < -96 || screenTop > flowHeight + 96) {
+                    return null;
+                }
+
+                return (
+                    <div
+                        key={band.id}
+                        className={cn(
+                            "absolute top-0 overflow-hidden rounded-[18px] border transition-opacity duration-300",
+                            isCurrent
+                                ? "border-slate-700/[0.13] bg-slate-700/[0.055] opacity-100 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.36)] dark:border-slate-100/[0.13] dark:bg-slate-100/[0.06] dark:shadow-[inset_0_0_0_1px_rgba(15,23,42,0.42)]"
+                                : "border-slate-700/[0.07] bg-slate-700/[0.028] opacity-90 dark:border-slate-100/[0.08] dark:bg-slate-100/[0.032]"
+                        )}
+                        style={{
+                            width,
+                            height,
+                            borderRadius: radius,
+                            transform: `translate3d(${screenLeft}px, ${screenTop}px, 0)`,
+                        }}
+                    >
+                        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_18%,rgba(148,163,184,0.12),transparent_36%),linear-gradient(90deg,transparent,rgba(100,116,139,0.05)_18%,rgba(100,116,139,0.05)_82%,transparent)] dark:bg-[radial-gradient(circle_at_50%_18%,rgba(226,232,240,0.10),transparent_36%),linear-gradient(90deg,transparent,rgba(226,232,240,0.045)_18%,rgba(226,232,240,0.045)_82%,transparent)]" />
+                        <div className="absolute left-0 w-px bg-slate-700/[0.11] dark:bg-slate-100/[0.12]" style={{ top: edgeInset, bottom: edgeInset }} />
+                        <div className="absolute right-0 w-px bg-slate-700/[0.08] dark:bg-slate-100/[0.10]" style={{ top: edgeInset, bottom: edgeInset }} />
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -1743,38 +1795,51 @@ function GraphViewInternal({
             openMergeSession(selectedWorkspaceId, repoPath);
         }
 
-        const { addSource } = useIntegrationStore.getState();
         const mergeableMessages = messageIds
             .map((id) => (messages as Message[]).find((message: Message) => message.id === id))
             .map((message) => ({ message, commitSha: getMessageOutputCommitSha(message) }))
             .filter((item): item is { message: Message; commitSha: string } => !!item.message && !!item.commitSha);
 
+        const incomingSources = mergeableMessages.map(({ message, commitSha }) => ({
+            id: message.id,
+            type: 'graph-node',
+            label: message.aiLabel || message.content.slice(0, 50) || message.id.slice(0, 8),
+            commitSha,
+            nodeId: message.id,
+        }));
+        const latestIntegrationState = useIntegrationStore.getState();
+        const prunePlan = getMergeSourcePrunePlan(
+            latestIntegrationState.session?.sources ?? [],
+            incomingSources,
+            workspaceProjection.commitBySha
+        );
+        const { addSource, removeSource } = useIntegrationStore.getState();
+
+        for (const sourceId of prunePlan.sourceIdsToRemove) {
+            removeSource(sourceId);
+        }
+
         let addedCount = 0;
-        for (const { message, commitSha } of mergeableMessages) {
-            const added = addSource({
-                id: message.id,
-                type: 'graph-node',
-                label: message.aiLabel || message.content.slice(0, 50) || message.id.slice(0, 8),
-                commitSha,
-                nodeId: message.id,
-            });
+        for (const source of prunePlan.sourcesToAdd) {
+            const added = addSource(source);
             if (added) addedCount += 1;
         }
 
-        const duplicateCount = mergeableMessages.length - addedCount;
+        const duplicateCount = prunePlan.skippedSources.length + (prunePlan.sourcesToAdd.length - addedCount);
         if (addedCount > 0) {
+            const removedCount = prunePlan.sourceIdsToRemove.length;
             toast.success(
                 'Added to merge panel',
-                addedCount === 1 ? '1 commit added to merge sources.' : `${addedCount} commits added to merge sources.`
+                `${addedCount === 1 ? '1 commit added to merge sources.' : `${addedCount} commits added to merge sources.`}${removedCount > 0 ? ` ${removedCount === 1 ? '1 ancestor source was removed.' : `${removedCount} ancestor sources were removed.`}` : ''}`
             );
         }
         if (duplicateCount > 0) {
             toast.info(
-                'Already in merge panel',
-                duplicateCount === 1 ? '1 commit was already present.' : `${duplicateCount} commits were already present.`
+                'Already covered',
+                duplicateCount === 1 ? '1 commit was already represented by the selected sources.' : `${duplicateCount} commits were already represented by the selected sources.`
             );
         }
-    }, [messages, openMergeSession, selectedWorkspace, selectedWorkspaceId, toast]);
+    }, [messages, openMergeSession, selectedWorkspace, selectedWorkspaceId, toast, workspaceProjection.commitBySha]);
 
     const handleAddCommitShasToMergePanel = useCallback((commitShas: string[]) => {
         if (!selectedWorkspaceId) return;
@@ -1790,36 +1855,51 @@ function GraphViewInternal({
             openMergeSession(selectedWorkspaceId, repoPath);
         }
 
-        const { addSource } = useIntegrationStore.getState();
         const mergeableCommits = commitShas.map((sha) => ({
             sha,
             commit: workspaceProjection.commitBySha.get(sha) ?? null,
         }));
 
-        let addedCount = 0;
-        for (const { sha, commit } of mergeableCommits) {
+        const incomingSources = mergeableCommits.map(({ sha, commit }) => {
             const sourceNodeId = commit?.producedByNodeId ?? commit?.visualOwnerNodeId ?? undefined;
-            const added = addSource({
+            return {
                 id: sourceNodeId ?? sha,
                 type: sourceNodeId ? 'graph-node' : 'sha',
                 label: commit?.subject || commit?.shortSha || sha.slice(0, 8),
                 commitSha: sha,
                 nodeId: sourceNodeId,
-            });
+            };
+        });
+        const latestIntegrationState = useIntegrationStore.getState();
+        const prunePlan = getMergeSourcePrunePlan(
+            latestIntegrationState.session?.sources ?? [],
+            incomingSources,
+            workspaceProjection.commitBySha
+        );
+        const { addSource, removeSource } = useIntegrationStore.getState();
+
+        for (const sourceId of prunePlan.sourceIdsToRemove) {
+            removeSource(sourceId);
+        }
+
+        let addedCount = 0;
+        for (const source of prunePlan.sourcesToAdd) {
+            const added = addSource(source);
             if (added) addedCount += 1;
         }
 
-        const duplicateCount = mergeableCommits.length - addedCount;
+        const duplicateCount = prunePlan.skippedSources.length + (prunePlan.sourcesToAdd.length - addedCount);
         if (addedCount > 0) {
+            const removedCount = prunePlan.sourceIdsToRemove.length;
             toast.success(
                 'Added to merge panel',
-                addedCount === 1 ? '1 commit added to merge sources.' : `${addedCount} commits added to merge sources.`
+                `${addedCount === 1 ? '1 commit added to merge sources.' : `${addedCount} commits added to merge sources.`}${removedCount > 0 ? ` ${removedCount === 1 ? '1 ancestor source was removed.' : `${removedCount} ancestor sources were removed.`}` : ''}`
             );
         }
         if (duplicateCount > 0) {
             toast.info(
-                'Already in merge panel',
-                duplicateCount === 1 ? '1 commit was already present.' : `${duplicateCount} commits were already present.`
+                'Already covered',
+                duplicateCount === 1 ? '1 commit was already represented by the selected sources.' : `${duplicateCount} commits were already represented by the selected sources.`
             );
         }
     }, [openMergeSession, selectedWorkspace, selectedWorkspaceId, toast, workspaceProjection.commitBySha]);
@@ -2587,6 +2667,13 @@ function GraphViewInternal({
             return next;
         });
     }, []);
+
+    const handleHideAllThreads = useCallback(() => {
+        setHiddenThreadRootIds(new Set(threadRootIndex.threadRootIds));
+        setSubgraphRootNodeId(null);
+        nodeSelection.clearSelection();
+        toast.success('All threads hidden', 'Use the Threads menu to restore them.');
+    }, [nodeSelection.clearSelection, threadRootIndex.threadRootIds, toast]);
 
     const handleRestoreAllHiddenThreads = useCallback(() => {
         setHiddenThreadRootIds(new Set());
@@ -3889,6 +3976,10 @@ function GraphViewInternal({
         }, performance.now() - startedAt);
         return result;
     }, [activeSendFlowFocus?.workspaceId, layoutNodes, nodeSelection.selectedNodeIds, selectedWorkspaceId]);
+    const threadBands = useMemo(() => {
+        const rects = getThreadDividerRectsFromNodes(branchNodesForRender, threadRootIndex.threadRootIdByMessageId);
+        return buildThreadBands(rects, { padding: 260, horizontalPadding: 88 });
+    }, [branchNodesForRender, threadRootIndex.threadRootIdByMessageId]);
     const activeGraphRenderHold = runningCount > 0 || activeSendFlowFocus?.workspaceId === selectedWorkspaceId;
     useEffect(() => {
         if (activeGraphRenderHold) {
@@ -4718,6 +4809,7 @@ function GraphViewInternal({
                         onThreadFocus={handleFocusThread}
                         onThreadHide={handleHideThread}
                         onThreadRestore={handleRestoreThread}
+                        onHideAllThreads={handleHideAllThreads}
                         onRestoreAllHiddenThreads={handleRestoreAllHiddenThreads}
                         leafNodes={leafNodeNavigationItems}
                         onLeafNodeFocus={handleFocus}
@@ -4906,6 +4998,7 @@ function GraphViewInternal({
                                             className="agentree-react-flow-root"
                                             style={{ width: '100%', height: '100%' }}
                                         >
+                                            <ThreadBandOverlay bands={threadBands} currentThreadRootId={currentThreadRootId} />
                                             <Controls showInteractive={false} />
                                         </ReactFlow>
                                     </Profiler>

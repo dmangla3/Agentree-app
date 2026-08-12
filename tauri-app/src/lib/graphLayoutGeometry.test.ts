@@ -2244,6 +2244,42 @@ describe('graph layout geometry QA', () => {
     expect(branchCGeneratedCommit.position.x).toBeGreaterThan(branchCAssistant.position.x);
   });
 
+  it('starts root threads in separate lane columns even when they reuse an older generated commit', () => {
+    const messages = [
+      makeMessage({ id: 'thread-a-user', role: 'user', parentId: null }, 0),
+      makeMessage({
+        id: 'thread-a-assistant',
+        role: 'assistant',
+        parentId: 'thread-a-user',
+        status: 'completed',
+        output_commit_sha: 'threada0001',
+        execution_data: { meta: { commit_message: 'Thread A output' } },
+      }, 1),
+      makeMessage({ id: 'thread-b-user', role: 'user', parentId: null }, 2),
+      makeMessage({
+        id: 'thread-b-assistant',
+        role: 'assistant',
+        parentId: 'thread-b-user',
+        status: 'completed',
+        base_commit_sha: 'threada0001',
+        output_commit_sha: 'threadb0001',
+        execution_data: { meta: { commit_message: 'Thread B output' } },
+      }, 3),
+    ];
+
+    const mapped = buildMappedGraph(messages, 'thread-b-assistant');
+    const layouted = getLaneLayoutedElements(mapped.nodes, mapped.edges);
+    const threadAUser = getNode(layouted.nodes, 'thread-a-user');
+    const threadBUser = getNode(layouted.nodes, 'thread-b-user');
+    const threadBCommit = getNode(layouted.nodes, 'commit:thread-b-assistant');
+
+    expect(threadBUser.position.x).toBeGreaterThan(threadAUser.position.x);
+    expect(Math.abs(threadBUser.position.y - threadAUser.position.y)).toBeLessThanOrEqual(1);
+    expect(threadBCommit.position.x).toBeGreaterThan(threadBUser.position.x);
+    expect(mapped.edges.some((edge) => edge.source === 'commit:thread-a-assistant' && edge.target === 'thread-b-assistant' && (edge.data as any)?.relationship === 'base-used')).toBe(true);
+    expect(mapped.edges.some((edge) => edge.source === 'commit:thread-a-assistant' && edge.target === 'commit:thread-b-assistant' && (edge.data as any)?.relationship === 'git-parent')).toBe(true);
+  });
+
   it('keeps a single observed imported ref batch even when merge commits are included', () => {
     const messages = [
       makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
@@ -2412,6 +2448,139 @@ describe('graph layout geometry QA', () => {
     const directBranchMidpoint = (Math.min(...directBranchCenters) + Math.max(...directBranchCenters)) / 2;
 
     expect(Math.abs(importedBaseCenter - directBranchMidpoint)).toBeLessThanOrEqual(350);
+  });
+
+  it('does not pull a parent conversation branch under a commit used only by its nested child', () => {
+    const messages = [
+      makeMessage({
+        id: 'origin-assistant',
+        role: 'assistant',
+        parentId: null,
+        content: 'Origin assistant message.',
+        status: 'completed',
+      }, 0),
+      makeMessage({
+        id: 'left-user',
+        role: 'user',
+        parentId: 'origin-assistant',
+        content: 'Left branch.',
+      }, 10),
+      makeMessage({
+        id: 'left-assistant',
+        role: 'assistant',
+        parentId: 'left-user',
+        content: 'Left reply.',
+        status: 'completed',
+      }, 11),
+      makeMessage({
+        id: 'right-user',
+        role: 'user',
+        parentId: 'origin-assistant',
+        content: 'Right branch without selecting the imported base.',
+      }, 12),
+      makeMessage({
+        id: 'right-assistant',
+        role: 'assistant',
+        parentId: 'right-user',
+        content: 'Right reply.',
+        status: 'completed',
+      }, 13),
+      makeMessage({
+        id: 'right-nested-user',
+        role: 'user',
+        parentId: 'right-assistant',
+        content: 'Continue right branch while selecting the imported base.',
+      }, 14),
+      makeMessage({
+        id: 'right-nested-assistant',
+        role: 'assistant',
+        parentId: 'right-nested-user',
+        content: 'Right nested reply.',
+        status: 'completed',
+        base_commit_sha: 'manualcommit0002',
+      }, 15),
+    ];
+    const importedGraph = buildCanonicalImportedCommitChain();
+    const manualCommits: CommitEntity[] = [1, 2].map((index) => ({
+      sha: `manualcommit000${index}`,
+      workspace_id: workspaceId,
+      subject: `Manual commit ${index}`,
+      source_kind: 'manual',
+      produced_by_node_id: null,
+      first_parent_sha: index === 1 ? 'postbatch0001' : 'manualcommit0001',
+      committed_at: isoAt(30 + index),
+      authored_at: isoAt(30 + index),
+    }));
+    const commitGraph = {
+      commits: [
+        ...importedGraph.commits,
+        {
+          sha: 'postbatch0001',
+          workspace_id: workspaceId,
+          subject: 'Commit after imported batch',
+          source_kind: 'external',
+          produced_by_node_id: null,
+          first_parent_sha: 'imported0004',
+          committed_at: isoAt(8),
+          authored_at: isoAt(8),
+        },
+        ...manualCommits,
+      ],
+      commitParents: [
+        ...importedGraph.commitParents,
+        { child_sha: 'postbatch0001', parent_sha: 'imported0004', parent_index: 0 },
+        { child_sha: 'manualcommit0001', parent_sha: 'postbatch0001', parent_index: 0 },
+        { child_sha: 'manualcommit0002', parent_sha: 'manualcommit0001', parent_index: 0 },
+      ],
+      commitObservations: [
+        ...importedGraph.commitObservations,
+        {
+          commit_sha: 'postbatch0001',
+          source_kind: 'external',
+          git_ref: 'refs/heads/main',
+          first_seen_at: isoAt(20),
+          last_seen_at: isoAt(21),
+        },
+        ...manualCommits.map((commit) => ({
+          commit_sha: commit.sha,
+          source_kind: 'manual',
+          git_ref: 'refs/heads/manual',
+          first_seen_at: isoAt(40),
+          last_seen_at: isoAt(41),
+        })),
+      ],
+    };
+
+    const mapped = buildMappedGraph(messages, 'right-nested-assistant', commitGraph);
+
+    const layoutFns: Array<[
+      string,
+      (nodes: Node[], edges: ReturnType<typeof buildMappedGraph>['edges']) => ReturnType<typeof getTidyTreeLayoutedElements>,
+    ]> = [
+      ['tidy', getTidyTreeLayoutedElements],
+      ['dagre', getLayoutedElements],
+      ['lane', getLaneLayoutedElements],
+      ['sugiyama', getSugiyamaLayoutedElements],
+    ];
+
+    layoutFns.forEach(([layoutName, layoutFn]) => {
+      const layouted = layoutFn(mapped.nodes, mapped.edges);
+      const leftUser = getNode(layouted.nodes, 'left-user');
+      const rightUser = getNode(layouted.nodes, 'right-user');
+      const rightNestedUser = getNode(layouted.nodes, 'right-nested-user');
+      const rightAssistant = getNode(layouted.nodes, 'right-assistant');
+
+      if (layoutName !== 'lane') {
+        expect(Math.abs(leftUser.position.y - rightUser.position.y)).toBeLessThanOrEqual(1);
+      }
+      expect(rightNestedUser.position.y).toBeGreaterThan(rightAssistant.position.y);
+      if (layoutName !== 'lane' && layoutName !== 'sugiyama') {
+        expect(Math.abs(rightNestedUser.position.x - rightUser.position.x)).toBeLessThanOrEqual(1);
+      }
+      if (layoutName === 'sugiyama') {
+        expect(verticalGapBetween(rightAssistant, rightNestedUser)).toBeLessThanOrEqual(80);
+      }
+    });
   });
 
   it('centers direct tidy children under their shared commit-only base before nested conversation fanout', () => {
