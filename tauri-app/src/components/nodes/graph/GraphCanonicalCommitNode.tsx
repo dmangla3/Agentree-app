@@ -5,12 +5,14 @@ import { CopyCommitShaButton } from '../../CopyCommitShaButton';
 import { cn } from '../../../lib/utils';
 import { GraphNodeWrapper } from './GraphNodeWrapper';
 import type { FocusTriggerMetrics } from '../../../types/nodes';
+import type { GraphNodeDetailLevel } from '../../../lib/graphNodeDetailLevel';
 
 interface GraphCanonicalCommitNodeProps {
   commit: ProjectedCommitEntity;
   isFocused?: boolean;
   isSelected?: boolean;
   isComposerBaseCommit?: boolean;
+  detailLevel?: GraphNodeDetailLevel;
   disableHoverCard?: boolean;
   hoverCardContent?: React.ReactNode;
   onFocus?: (metrics?: FocusTriggerMetrics) => void;
@@ -31,6 +33,7 @@ export const GraphCanonicalCommitNode = memo(({
   isFocused = false,
   isSelected = false,
   isComposerBaseCommit = false,
+  detailLevel = 'full',
   disableHoverCard,
   hoverCardContent,
   onFocus = () => {},
@@ -42,6 +45,8 @@ export const GraphCanonicalCommitNode = memo(({
   const filesChanged = commit.commit.files_changed_count ?? 0;
   const totalAdditions = commit.commit.total_additions ?? 0;
   const totalDeletions = commit.commit.total_deletions ?? 0;
+  const isFullDetail = detailLevel === 'full';
+  const isMinimalDetail = detailLevel === 'minimal';
 
   return (
     <GraphNodeWrapper
@@ -79,13 +84,23 @@ export const GraphCanonicalCommitNode = memo(({
 
         <div className="flex w-full items-center justify-between gap-1 rounded-[5px] border border-emerald-200/65 bg-white/60 px-1.5 py-1 font-mono text-[9px] leading-none text-emerald-900 dark:border-emerald-800/60 dark:bg-emerald-950/55 dark:text-emerald-200">
           <span className="min-w-0 truncate">{commit.shortSha}</span>
-          <CopyCommitShaButton commitSha={commit.sha} className="h-3.5 w-3.5 shrink-0 text-emerald-700/70 dark:text-emerald-300/70" />
+          {isFullDetail && (
+            <CopyCommitShaButton commitSha={commit.sha} className="h-3.5 w-3.5 shrink-0 text-emerald-700/70 dark:text-emerald-300/70" />
+          )}
         </div>
 
-        <p className="min-h-0 flex-1 text-left text-[11px] font-semibold leading-snug text-zinc-800 line-clamp-4 dark:text-zinc-200">
-          {commit.subject}
-        </p>
+        {isMinimalDetail ? (
+          <div className="min-h-0 flex-1" />
+        ) : (
+          <p className={cn(
+            'min-h-0 flex-1 text-left text-[11px] font-semibold leading-snug text-zinc-800 dark:text-zinc-200',
+            isFullDetail ? 'line-clamp-4' : 'line-clamp-1',
+          )}>
+            {commit.subject}
+          </p>
+        )}
 
+        {isFullDetail && (
         <div className="flex w-full items-center justify-start gap-1.5 border-t border-emerald-300/40 pt-1 text-[8px] leading-none text-zinc-600 dark:border-emerald-800/70 dark:text-zinc-400">
           {isMergeCommit && (
             <span className="flex items-center gap-0.5" title={`${parentCount} parents`}>
@@ -112,6 +127,7 @@ export const GraphCanonicalCommitNode = memo(({
             </span>
           )}
         </div>
+        )}
       </div>
     </GraphNodeWrapper>
   );

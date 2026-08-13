@@ -26,6 +26,20 @@ const DEFAULT_INTERVAL_MS = 100;
 
 const roundGap = (gapMs: number) => Number(gapMs.toFixed(2));
 
+export const createRuntimeFreezeProbeDetails = () => {
+  const activity = getRuntimeActivitySnapshot();
+  const currentDocument = typeof document !== 'undefined' ? document : null;
+  return {
+    visibility: currentDocument?.visibilityState ?? null,
+    hasFocus: currentDocument?.hasFocus?.() ?? null,
+    runtimeActivityCategory: activity?.category ?? null,
+    runtimeActivityName: activity?.name ?? null,
+    runtimeActivityAgeMs: activity?.ageMs ?? null,
+    runtimeActivityDepth: activity?.depth ?? 0,
+    runtimeActivityDetails: activity?.details ?? null,
+  };
+};
+
 export const classifyRuntimeGap = (
   gapMs: number,
   thresholds: RuntimeGapThresholds = {}
@@ -59,11 +73,6 @@ export const startRuntimeFreezeProbe = (
   let lastRafAt = performance.now();
   let rafId: number | null = null;
 
-  const commonDetails = () => ({
-    visibility: document.visibilityState,
-    hasFocus: document.hasFocus(),
-  });
-
   const intervalId = window.setInterval(() => {
     if (stopped) return;
     const now = performance.now();
@@ -72,7 +81,7 @@ export const startRuntimeFreezeProbe = (
     const classification = classifyRuntimeGap(gap, options);
     if (!classification) return;
     record('runtime.event-loop-stall', {
-      ...commonDetails(),
+      ...createRuntimeFreezeProbeDetails(),
       expectedIntervalMs: intervalMs,
       severity: classification.severity,
     }, {
@@ -91,7 +100,7 @@ export const startRuntimeFreezeProbe = (
       : null;
     if (classification) {
       record('runtime.raf-stall', {
-        ...commonDetails(),
+        ...createRuntimeFreezeProbeDetails(),
         severity: classification.severity,
       }, {
         source: 'runtime-freeze-probe',
@@ -113,3 +122,4 @@ export const startRuntimeFreezeProbe = (
     },
   };
 };
+import { getRuntimeActivitySnapshot } from './runtimeActivityContext';

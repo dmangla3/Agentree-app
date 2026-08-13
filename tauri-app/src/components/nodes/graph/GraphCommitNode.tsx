@@ -15,6 +15,7 @@ export const GraphCommitNode = memo(({
   isComposerBaseCommit,
   disableHoverCard,
   scopeColor,
+  detailLevel = 'full',
   heightKey,
   hoverCardContent,
   onFocus,
@@ -36,6 +37,8 @@ export const GraphCommitNode = memo(({
   const isMergeCommit = parentCount > 1;
   const sourceLabel = isExternal ? 'Import' : 'Gen';
   const shortSha = (entity.shortSha || outputCommitSha?.slice(0, 8) || 'commit').slice(0, 8);
+  const isFullDetail = detailLevel === 'full';
+  const isMinimalDetail = detailLevel === 'minimal';
 
   return (
     <GraphNodeWrapper
@@ -79,17 +82,26 @@ export const GraphCommitNode = memo(({
 
         <div className="flex w-full items-center justify-between gap-1 rounded-[5px] border border-emerald-200/65 bg-white/60 px-1.5 py-1 font-mono text-[9px] leading-none text-emerald-900 dark:border-emerald-800/60 dark:bg-emerald-950/55 dark:text-emerald-200" title={outputCommitSha || undefined}>
           <span className="min-w-0 truncate">{shortSha}</span>
-          <CopyCommitShaButton commitSha={outputCommitSha} className="h-3.5 w-3.5 shrink-0 text-emerald-700/70 dark:text-emerald-300/70" />
+          {isFullDetail && (
+            <CopyCommitShaButton commitSha={outputCommitSha} className="h-3.5 w-3.5 shrink-0 text-emerald-700/70 dark:text-emerald-300/70" />
+          )}
         </div>
 
-        <p
-          className="min-h-0 flex-1 text-left text-[11px] font-semibold leading-snug text-zinc-800 line-clamp-4 dark:text-zinc-200"
-          title={entity.preview}
-        >
-          {entity.preview}
-        </p>
+        {isMinimalDetail ? (
+          <div className="min-h-0 flex-1" />
+        ) : (
+          <p
+            className={cn(
+              'min-h-0 flex-1 text-left text-[11px] font-semibold leading-snug text-zinc-800 dark:text-zinc-200',
+              isFullDetail ? 'line-clamp-4' : 'line-clamp-1',
+            )}
+            title={entity.preview}
+          >
+            {entity.preview}
+          </p>
+        )}
 
-        {isPinnedCommit && (
+        {isFullDetail && isPinnedCommit && (
           <div className="flex w-full flex-col items-center gap-1">
             {hasHead && (
               <span className="w-full rounded-[4px] bg-emerald-600 px-1 py-0.5 text-[8px] font-semibold leading-none text-white">
@@ -108,6 +120,7 @@ export const GraphCommitNode = memo(({
           </div>
         )}
 
+        {isFullDetail && (
         <div className="flex w-full items-center justify-start gap-1.5 border-t border-emerald-300/40 pt-1 text-[8px] leading-none text-zinc-600 dark:border-emerald-800/70 dark:text-zinc-400">
           {isMergeCommit && (
             <span className="flex items-center gap-0.5" title={`${parentCount} parents`}>
@@ -134,6 +147,7 @@ export const GraphCommitNode = memo(({
             </span>
           )}
         </div>
+        )}
       </div>
     </GraphNodeWrapper>
   );

@@ -15,6 +15,7 @@ import type { FocusTriggerMetrics } from '../../../types/nodes';
 import { createCommitHoverEntity } from './commitHoverEntity';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { getMessageOutputCommitSha } from '../../../lib/graph/commitAccessors';
+import { shouldEnableGraphNodeHover, type GraphNodeDetailLevel } from '../../../lib/graphNodeDetailLevel';
 
 
 export interface GraphNodeData {
@@ -27,6 +28,7 @@ export interface GraphNodeData {
   focusedMessageId?: string | null;
   isSelected: boolean;
   isComposerBaseCommit?: boolean;
+  detailLevel?: GraphNodeDetailLevel;
   heightKey?: string;
   onMeasureHeight?: (id: string, height: number) => void;
   onFocus: (id: string, metrics?: FocusTriggerMetrics) => void;
@@ -71,6 +73,16 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
   const { isSelectionGestureActive, isViewportInteracting } = useGraphInteractionContext();
   const selectedWorkspaceId = useWorkspaceStore(state => state.selectedWorkspaceId);
   const setComposerBaseCommitOverride = useWorkspaceStore(state => state.setComposerBaseCommitOverride);
+  const isSelected = data.isSelected || isSelectedInFlow;
+  const isFocused = !!data.isFocused;
+  const isComposerBaseCommit = !!data.isComposerBaseCommit;
+  const detailLevel = data.detailLevel ?? 'full';
+  const enableHoverCard = shouldEnableGraphNodeHover({
+    detailLevel,
+    isFocused,
+    isSelected,
+    isComposerBaseCommit,
+  });
 
   const handleFocus = useCallback((metrics?: FocusTriggerMetrics) => {
     if (data.entity?.focusMessageId) {
@@ -127,20 +139,21 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
 
   const sharedProps = {
     nodeId: props.id,
-    isFocused: !!data.isFocused,
-    isSelected: data.isSelected || isSelectedInFlow,
-    isComposerBaseCommit: !!data.isComposerBaseCommit,
+    isFocused,
+    isSelected,
+    isComposerBaseCommit,
+    detailLevel,
     scopeColor: null,
     layout: 'graph' as const,
     heightKey: data.heightKey,
     onMeasureHeight: data.onMeasureHeight,
-    hoverCardContent: (
+    hoverCardContent: enableHoverCard ? (
       <GraphNodeHoverCardContent
         entity={data.entity}
         fallbackProjection={data.projection}
       />
-    ),
-    disableHoverCard: isSelectionGestureActive || isViewportInteracting,
+    ) : undefined,
+    disableHoverCard: !enableHoverCard || isSelectionGestureActive || isViewportInteracting,
     onFocus: handleFocus,
     onSelect: handleSelect,
     onContextMenu: handleContextMenu,
@@ -151,9 +164,10 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
       <GraphDerivedCommitGroupNode
         group={data.group}
         projection={data.projection}
-        isFocused={!!data.isFocused}
-        isSelected={data.isSelected || isSelectedInFlow}
-        isComposerBaseCommit={!!data.isComposerBaseCommit}
+        isFocused={isFocused}
+        isSelected={isSelected}
+        isComposerBaseCommit={isComposerBaseCommit}
+        detailLevel={detailLevel}
         onCommitSelectBase={handleCommitSelectBase}
       />
     );
@@ -164,18 +178,19 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
     return (
       <GraphCanonicalCommitNode
         commit={data.commit}
-        isFocused={!!data.isFocused}
-        isSelected={data.isSelected || isSelectedInFlow}
-        isComposerBaseCommit={!!data.isComposerBaseCommit}
-        disableHoverCard={isSelectionGestureActive || isViewportInteracting}
+        isFocused={isFocused}
+        isSelected={isSelected}
+        isComposerBaseCommit={isComposerBaseCommit}
+        detailLevel={detailLevel}
+        disableHoverCard={!enableHoverCard || isSelectionGestureActive || isViewportInteracting}
         onFocus={handleCanonicalCommitFocus}
         onContextMenu={handleCanonicalCommitContextMenu}
-        hoverCardContent={(
+        hoverCardContent={enableHoverCard ? (
           <GraphNodeHoverCardContent
             entity={hoverEntity}
             fallbackProjection={data.projection}
           />
-        )}
+        ) : undefined}
       />
     );
   }

@@ -12,6 +12,7 @@ export const GraphSummaryNode = memo(({
   isSelected,
   disableHoverCard,
   scopeColor,
+  detailLevel = 'full',
   heightKey,
   onMeasureHeight,
   hoverCardContent,
@@ -19,6 +20,8 @@ export const GraphSummaryNode = memo(({
   onSelect,
   onContextMenu,
 }: SharedNodeProps) => {
+  const isMinimalDetail = detailLevel === 'minimal';
+
   return (
     <GraphNodeWrapper
       nodeId={nodeId}
@@ -47,9 +50,16 @@ export const GraphSummaryNode = memo(({
         >
           <Layers size={10} />
         </div>
-        <p className="text-[11px] font-medium text-slate-700 dark:text-slate-300 line-clamp-3 leading-relaxed italic">
-          {entity.preview}
-        </p>
+        {isMinimalDetail ? (
+          <div className="mt-2 h-1.5 min-w-0 flex-1 rounded-full bg-violet-200/70 dark:bg-violet-900/60" />
+        ) : (
+          <p className={cn(
+            'text-[11px] font-medium text-slate-700 dark:text-slate-300 leading-relaxed italic',
+            detailLevel === 'compact' ? 'line-clamp-1' : 'line-clamp-3',
+          )}>
+            {entity.preview}
+          </p>
+        )}
       </div>
     </GraphNodeWrapper>
   );

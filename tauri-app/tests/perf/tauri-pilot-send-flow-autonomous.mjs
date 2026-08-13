@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CHAT_HOT_PATH_HELPERS_SOURCE } from './tauri-pilot-chat-hot-path-lib.mjs';
 
 const OUT_DIR = process.env.AGENTREE_TAURI_PILOT_OUT_DIR ?? 'runtime-logs/tauri-pilot-diagnostics';
 const LABEL = process.env.AGENTREE_TAURI_PILOT_LABEL ?? `tauri-pilot-send-flow-auto-${Date.now()}`;
@@ -59,6 +60,7 @@ const pilotEval = async (script, timeoutMs = 120000) => {
 const install = async () => {
   return await pilotEval(`
 (() => {
+  ${CHAT_HOT_PATH_HELPERS_SOURCE}
   const label = ${JSON.stringify(LABEL)};
   const prompts = ${JSON.stringify(PROMPTS)};
   const sendReadyTimeoutMs = ${JSON.stringify(SEND_READY_TIMEOUT_MS)};
@@ -96,20 +98,11 @@ const install = async () => {
     .filter((button) => button.visible)
     .slice(-20);
 
-  const findComposer = () =>
-    document.querySelector('[data-testid="chat-composer-textarea"]') ||
-    document.querySelector('textarea[placeholder^="Ask anything"]') ||
-    [...document.querySelectorAll('textarea')].find((textarea) => Boolean(textarea.offsetParent || textarea.getClientRects().length));
+  const chatHotPath = window.__AGENTREE_TAURI_PILOT_CHAT_HOT_PATH__;
+  const findComposer = () => chatHotPath.findComposer();
 
   const findSendControl = ({ includeCancel = true } = {}) => {
-    const byTestId = document.querySelector('[data-testid="chat-send-button"]');
-    if (byTestId) return byTestId;
-    return [...document.querySelectorAll('button')].find((button) => {
-      const aria = button.getAttribute('aria-label') || '';
-      const text = (button.textContent || '').trim();
-      if (aria === 'Send' || aria === 'Edit and run' || text === 'Send') return true;
-      return includeCancel && (aria === 'Cancel sending message' || text === 'Cancel');
-    }) || null;
+    return chatHotPath.findSendButton({ includeCancel });
   };
 
   const ensureTestAgentModel = async () => {
@@ -221,6 +214,7 @@ const install = async () => {
   mutationObserver.observe(chatRoot, { subtree: true, childList: true, characterData: true });
 
   const setPromptAndSend = async (prompt, index) => {
+    await chatHotPath.ensureChatHotPathReady({ waitMs: sendReadyTimeoutMs, requireSendButton: false });
     const textarea = findComposer();
     if (!textarea) throw new Error('composer textarea not found');
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;

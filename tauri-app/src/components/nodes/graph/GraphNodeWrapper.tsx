@@ -140,6 +140,7 @@ export const GraphNodeWrapper = memo(({
       }}
       style={{
         ...style,
+        contain: 'layout paint style',
         borderColor: isFocused || isFocusFeedbackActive
           ? '#6366f1'
           : isBaseCommitHighlighted
@@ -210,12 +211,13 @@ export const GraphNodeWrapper = memo(({
   }, [shouldDisableHoverCard]);
 
   useEffect(() => {
+    if (!hoverCardContent || !hoverOpen) return;
     const closeHoverCardForViewportMove = () => setHoverOpen(false);
     window.addEventListener('agentree:graph-viewport-interaction-start', closeHoverCardForViewportMove);
     return () => {
       window.removeEventListener('agentree:graph-viewport-interaction-start', closeHoverCardForViewportMove);
     };
-  }, []);
+  }, [hoverCardContent, hoverOpen]);
 
   useEffect(() => {
     if (!nodeId || !hoverOpen || shouldDisableHoverCard) return;
@@ -242,7 +244,7 @@ export const GraphNodeWrapper = memo(({
         {nodeBody}
       </HoverCardTrigger>
       <HoverCardContent side="right" align="center" sideOffset={8} className="z-[210] w-auto border-none bg-transparent p-0 shadow-none">
-        {hoverCardContent}
+        {hoverOpen ? hoverCardContent : null}
       </HoverCardContent>
     </HoverCard>
   );

@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CHAT_HOT_PATH_HELPERS_SOURCE } from './tauri-pilot-chat-hot-path-lib.mjs';
 
 const WAIT_MS = Number(process.env.AGENTREE_TAURI_PILOT_WAIT_MS ?? 120000);
 const OUT_DIR = process.env.AGENTREE_TAURI_PILOT_OUT_DIR ?? 'runtime-logs/tauri-pilot-diagnostics';
@@ -122,11 +123,12 @@ const waitForComposer = async () => {
   let latest = null;
   while (Date.now() - startedAt < WAIT_MS) {
     latest = (await pilotEval(`
-(() => {
-  const visible = (element) => Boolean(element && (element.offsetParent || element.getClientRects().length));
-  const textarea = document.querySelector(${JSON.stringify(TARGET)}) ||
-    [...document.querySelectorAll('textarea')].find(visible) ||
-    null;
+(async () => {
+  ${CHAT_HOT_PATH_HELPERS_SOURCE}
+  const helpers = window.__AGENTREE_TAURI_PILOT_CHAT_HOT_PATH__;
+  await helpers.ensureChatHotPathReady({ waitMs: 5000, requireSendButton: false });
+  const visible = helpers.visible;
+  const textarea = helpers.findComposer();
   const bodyText = document.body?.innerText ?? '';
   return {
     title: document.title,
@@ -158,9 +160,12 @@ const waitForComposer = async () => {
 };
 
 const installProbe = async () => (await pilotEval(`
-(() => {
+(async () => {
+  ${CHAT_HOT_PATH_HELPERS_SOURCE}
+  const helpers = window.__AGENTREE_TAURI_PILOT_CHAT_HOT_PATH__;
+  await helpers.ensureChatHotPathReady({ waitMs: 5000, requireSendButton: false });
   const target = ${JSON.stringify(TARGET)};
-  const textarea = document.querySelector(target);
+  const textarea = helpers.findComposer();
   if (!textarea) throw new Error('composer textarea not found');
   if (textarea.disabled) throw new Error('composer textarea is disabled');
 

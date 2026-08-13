@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import {
   collectLatestPerfSummary,
   formatPerfSummary,
+  summarizeRuntimeStallsByActivity,
+  summarizeRuntimeStallsByPhase,
 } from './perf-latest-summary-lib.mjs';
 
 const writeJson = async (filePath, value) => {
@@ -84,5 +86,144 @@ describe('perf latest summary', () => {
     expect(output).toContain('commitVisible=true');
     expect(output).toContain('graphChanging/send=2');
     expect(output.split('\n').length).toBeLessThan(70);
+  });
+
+  it('buckets runtime stalls by nearest lifecycle/worktree/finalization phase', () => {
+    const buckets = summarizeRuntimeStallsByPhase([
+      {
+        name: 'send-flow.agent-setup.worktree-create.requested',
+        ts: '2026-05-21T00:00:01.000Z',
+        details: { flowId: 'flow-1' },
+      },
+      {
+        name: 'runtime.raf-stall',
+        ts: '2026-05-21T00:00:01.250Z',
+        durationMs: 1200,
+        details: { severity: 'freeze' },
+      },
+      {
+        name: 'send-flow.agent-setup.spawn.returned',
+        ts: '2026-05-21T00:00:04.000Z',
+        details: { flowId: 'flow-1' },
+      },
+      {
+        name: 'runtime.event-loop-stall',
+        ts: '2026-05-21T00:00:04.300Z',
+        durationMs: 650,
+        details: { severity: 'stall' },
+      },
+      {
+        name: 'query.messages.refresh.deferred',
+        ts: '2026-05-21T00:00:08.000Z',
+        details: { reason: 'agent-terminal' },
+      },
+      {
+        name: 'runtime.raf-stall',
+        ts: '2026-05-21T00:00:08.100Z',
+        durationMs: 900,
+        details: { severity: 'stall' },
+      },
+      {
+        name: 'runtime.raf-stall',
+        ts: '2026-05-21T00:00:20.000Z',
+        durationMs: 400,
+        details: { severity: 'stall' },
+      },
+    ], { windowMs: 1000 });
+
+    expect(buckets).toEqual({
+      'cache-refresh': {
+        eventLoopCount: 0,
+        eventLoopMaxMs: null,
+        rafCount: 1,
+        rafMaxMs: 900,
+        totalCount: 1,
+      },
+      spawn: {
+        eventLoopCount: 1,
+        eventLoopMaxMs: 650,
+        rafCount: 0,
+        rafMaxMs: null,
+        totalCount: 1,
+      },
+      unclassified: {
+        eventLoopCount: 0,
+        eventLoopMaxMs: null,
+        rafCount: 1,
+        rafMaxMs: 400,
+        totalCount: 1,
+      },
+      worktree: {
+        eventLoopCount: 0,
+        eventLoopMaxMs: null,
+        rafCount: 1,
+        rafMaxMs: 1200,
+        totalCount: 1,
+      },
+    });
+  });
+
+  it('uses runtime activity details on stall events before nearest-event bucketing', () => {
+    const buckets = summarizeRuntimeStallsByPhase([
+      {
+        name: 'runtime.event-loop-stall',
+        ts: '2026-05-21T00:00:01.000Z',
+        durationMs: 1178,
+        details: {
+          severity: 'freeze',
+          runtimeActivityCategory: 'cache-refresh',
+          runtimeActivityName: 'local-nodes.invalidate',
+        },
+      },
+    ], { windowMs: 1000 });
+
+    expect(buckets).toEqual({
+      'cache-refresh': {
+        eventLoopCount: 1,
+        eventLoopMaxMs: 1178,
+        rafCount: 0,
+        rafMaxMs: null,
+        totalCount: 1,
+      },
+    });
+  });
+
+  it('summarizes stalls that happened during explicit runtime activities', () => {
+    const buckets = summarizeRuntimeStallsByActivity([
+      {
+        name: 'runtime.raf-stall',
+        ts: '2026-05-21T00:00:01.000Z',
+        durationMs: 1729,
+        details: {
+          runtimeActivityCategory: 'cache-refresh',
+          runtimeActivityName: 'local-nodes.invalidate',
+        },
+      },
+      {
+        name: 'runtime.event-loop-stall',
+        ts: '2026-05-21T00:00:02.000Z',
+        durationMs: 488,
+        details: {
+          runtimeActivityCategory: 'cache-refresh',
+          runtimeActivityName: 'local-nodes.invalidate',
+        },
+      },
+      {
+        name: 'runtime.raf-stall',
+        ts: '2026-05-21T00:00:03.000Z',
+        durationMs: 400,
+        details: {},
+      },
+    ]);
+
+    expect(buckets).toEqual({
+      'cache-refresh:local-nodes.invalidate': {
+        eventLoopCount: 1,
+        eventLoopMaxMs: 488,
+        rafCount: 1,
+        rafMaxMs: 1729,
+        totalCount: 2,
+      },
+    });
   });
 });

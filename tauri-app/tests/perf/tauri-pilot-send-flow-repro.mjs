@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CHAT_HOT_PATH_HELPERS_SOURCE } from './tauri-pilot-chat-hot-path-lib.mjs';
 
 const OUT_DIR = process.env.AGENTREE_TAURI_PILOT_OUT_DIR ?? 'runtime-logs/tauri-pilot-diagnostics';
 const LABEL = process.env.AGENTREE_TAURI_PILOT_LABEL ?? `tauri-pilot-send-flow-${Date.now()}`;
@@ -59,6 +60,7 @@ const pilotEval = async (script, timeoutMs = 60000) => {
 const setupProbe = async () => {
   return await pilotEval(`
 (() => {
+  ${CHAT_HOT_PATH_HELPERS_SOURCE}
   const label = ${JSON.stringify(LABEL)};
   window.__AGENTREE_PERF__?.clear?.();
   window.__AGENTREE_PERF__?.startCapture?.(label);
@@ -144,7 +146,7 @@ const setupProbe = async () => {
     label,
     url: location.href,
     hasPerf: Boolean(window.__AGENTREE_PERF__),
-    hasTextarea: Boolean(document.querySelector('textarea[placeholder^="Ask anything"]')),
+    hasTextarea: Boolean(window.__AGENTREE_TAURI_PILOT_CHAT_HOT_PATH__?.findComposer?.()),
     startedAtIso: probe.startedAtIso,
   };
 })()
@@ -154,13 +156,11 @@ const setupProbe = async () => {
 const sample = async (label) => {
   return await pilotEval(`
 (() => {
+  ${CHAT_HOT_PATH_HELPERS_SOURCE}
+  const chatHotPath = window.__AGENTREE_TAURI_PILOT_CHAT_HOT_PATH__;
   const probe = window.__SEND_FLOW_PILOT_REPRO__;
-  const textarea = document.querySelector('textarea[placeholder^="Ask anything"]');
-  const sendButton = [...document.querySelectorAll('button')].find((button) => {
-    const aria = button.getAttribute('aria-label') || '';
-    const text = button.textContent || '';
-    return aria === 'Send' || aria === 'Edit and run' || aria === 'Cancel sending message' || text.trim() === 'Send';
-  });
+  const textarea = chatHotPath.findComposer();
+  const sendButton = chatHotPath.findSendButton({ includeCancel: true });
   const viewport = document.querySelector('.react-flow__viewport');
   const chatRoot = document.querySelector('[data-radix-scroll-area-viewport]') ?? document.body;
   const perfEvents = window.__AGENTREE_PERF__?.readLatestSession?.() ?? [];
@@ -207,20 +207,19 @@ const sample = async (label) => {
 
 const sendPrompt = async (prompt, index) => {
   return await pilotEval(`
-(() => {
+(async () => {
+  ${CHAT_HOT_PATH_HELPERS_SOURCE}
+  const chatHotPath = window.__AGENTREE_TAURI_PILOT_CHAT_HOT_PATH__;
+  await chatHotPath.ensureChatHotPathReady({ waitMs: 5000, requireSendButton: false });
   const prompt = ${JSON.stringify(prompt)};
   const index = ${JSON.stringify(index)};
-  const textarea = document.querySelector('textarea[placeholder^="Ask anything"]');
+  const textarea = chatHotPath.findComposer();
   if (!textarea) throw new Error('composer textarea not found');
   const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
   setter?.call(textarea, prompt);
   textarea.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: prompt }));
   textarea.dispatchEvent(new Event('change', { bubbles: true }));
-  const sendButton = [...document.querySelectorAll('button')].find((button) => {
-    const aria = button.getAttribute('aria-label') || '';
-    const text = button.textContent || '';
-    return aria === 'Send' || aria === 'Edit and run' || text.trim() === 'Send';
-  });
+  const sendButton = chatHotPath.findSendButton();
   if (!sendButton) throw new Error('send button not found');
   if (sendButton.disabled) throw new Error('send button disabled before click');
   sendButton.click();

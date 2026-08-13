@@ -50,6 +50,7 @@ describe('agentRunWorkspaceRefresh', () => {
     expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(1);
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
       queryKey: ['local-nodes', 'workspace-1'],
+      refetchType: 'none',
     });
     expect(scheduleMessagesRefreshWhenGraphIdle).toHaveBeenCalledTimes(1);
     expect(scheduleMessagesRefreshWhenGraphIdle).toHaveBeenCalledWith(

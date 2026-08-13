@@ -22,7 +22,13 @@ const emit = (event) => {
     console.log(JSON.stringify(event));
 };
 
-console.error(`[BashAdapter] Running: bash -c "${command}"`);
+emit({
+    type: 'provider_meta',
+    meta: {
+        adapter: 'bash',
+        command
+    }
+});
 
 // Run bash -c command
 // We capture stdio to wrap it in JSON events

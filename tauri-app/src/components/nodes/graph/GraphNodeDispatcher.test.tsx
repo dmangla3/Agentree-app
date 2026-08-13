@@ -30,7 +30,20 @@ vi.mock('./GraphCanonicalCommitNode', () => ({
   ),
 }));
 
-vi.mock('./GraphUserNode', () => ({ GraphUserNode: () => <div /> }));
+vi.mock('./GraphUserNode', () => ({
+  GraphUserNode: ({
+    detailLevel,
+    hoverCardContent,
+  }: {
+    detailLevel?: string;
+    hoverCardContent?: React.ReactNode;
+  }) => (
+    <div>
+      <div data-testid="user-detail">{detailLevel ?? 'none'}</div>
+      {hoverCardContent}
+    </div>
+  ),
+}));
 vi.mock('./GraphAssistantNode', () => ({ GraphAssistantNode: () => <div /> }));
 vi.mock('./GraphCommitNode', () => ({
   GraphCommitNode: ({
@@ -333,5 +346,92 @@ describe('GraphNodeDispatcher', () => {
       label: 'Imported canonical commit',
       source: 'graph-header',
     });
+  });
+
+  it('passes graph detail level to rendered node cards and keeps low-detail hover content available', () => {
+    const props = {
+      id: 'user-1',
+      type: 'user_message',
+      selected: false,
+      isConnectable: false,
+      dragging: false,
+      zIndex: 0,
+      xPos: 0,
+      yPos: 0,
+      data: {
+        entity: {
+          entityId: 'message:user-1',
+          kind: 'user_message',
+          messageId: 'user-1',
+          focusMessageId: 'user-1',
+          sortTs: 0,
+          message: {
+            id: 'user-1',
+            role: 'user',
+            content: 'Create a dense graph',
+            createdAt: '2026-05-19T00:00:00.000Z',
+            updatedAt: '2026-05-19T00:00:00.000Z',
+          },
+          preview: 'Create a dense graph',
+          shortLabel: 'User',
+        },
+        detailLevel: 'minimal',
+        isSelected: false,
+        onFocus: () => {},
+        onSelect: () => {},
+        onContextMenu: () => {},
+      },
+    };
+
+    render(
+      React.createElement(GraphNodeDispatcher as any, props)
+    );
+
+    expect(screen.getByTestId('user-detail').textContent).toBe('minimal');
+    expect(screen.getByText('hover entity kind: user_message')).toBeTruthy();
+  });
+
+  it('keeps hover content for focused low-detail nodes', () => {
+    const props = {
+      id: 'user-1',
+      type: 'user_message',
+      selected: false,
+      isConnectable: false,
+      dragging: false,
+      zIndex: 0,
+      xPos: 0,
+      yPos: 0,
+      data: {
+        entity: {
+          entityId: 'message:user-1',
+          kind: 'user_message',
+          messageId: 'user-1',
+          focusMessageId: 'user-1',
+          sortTs: 0,
+          message: {
+            id: 'user-1',
+            role: 'user',
+            content: 'Create a dense graph',
+            createdAt: '2026-05-19T00:00:00.000Z',
+            updatedAt: '2026-05-19T00:00:00.000Z',
+          },
+          preview: 'Create a dense graph',
+          shortLabel: 'User',
+        },
+        detailLevel: 'minimal',
+        isFocused: true,
+        isSelected: false,
+        onFocus: () => {},
+        onSelect: () => {},
+        onContextMenu: () => {},
+      },
+    };
+
+    render(
+      React.createElement(GraphNodeDispatcher as any, props)
+    );
+
+    expect(screen.getByTestId('user-detail').textContent).toBe('minimal');
+    expect(screen.getByText('hover entity kind: user_message')).toBeTruthy();
   });
 });

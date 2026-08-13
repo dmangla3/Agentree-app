@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CHAT_HOT_PATH_HELPERS_SOURCE } from './tauri-pilot-chat-hot-path-lib.mjs';
 
 const OUT_DIR = process.env.AGENTREE_TAURI_PILOT_OUT_DIR ?? 'runtime-logs/tauri-pilot-diagnostics';
 const LABEL = process.env.AGENTREE_TAURI_PILOT_LABEL ?? `tauri-pilot-cancel-flow-${Date.now()}`;
@@ -104,14 +105,30 @@ const preflight = async () => {
   if (visible?.visibility !== 'visible' || visible?.hidden === true) {
     throw new Error(`Tauri webview is not visible: ${JSON.stringify(visible)}`);
   }
-  if (!visible?.composerCount) {
-    throw new Error(`Composer not found in visible Tauri webview: ${JSON.stringify(visible)}`);
+  let readyVisible = visible;
+  const startedAt = Date.now();
+  while (!readyVisible?.composerCount && Date.now() - startedAt < 5000) {
+    await sleep(150);
+    readyVisible = (await pilotEval(`
+(() => ({
+  visibility: document.visibilityState,
+  hidden: document.hidden,
+  hasFocus: document.hasFocus(),
+  url: location.href,
+  composerCount: document.querySelectorAll('textarea').length,
+  graphNodeCount: document.querySelectorAll('.react-flow__node,[data-agentree-graph-node-id]').length,
+}))()
+`, 30000)).value;
   }
-  return { inventory, visible };
+  if (!readyVisible?.composerCount) {
+    throw new Error(`Composer not found in visible Tauri webview: ${JSON.stringify(readyVisible)}`);
+  }
+  return { inventory, visible: readyVisible };
 };
 
 const installProbe = async () => pilotEval(`
 (() => {
+  ${CHAT_HOT_PATH_HELPERS_SOURCE}
   const label = ${JSON.stringify(LABEL)};
   const prompt = ${JSON.stringify(PROMPT)};
   const waitTimeoutMs = ${JSON.stringify(WAIT_TIMEOUT_MS)};
@@ -125,6 +142,7 @@ const installProbe = async () => pilotEval(`
     startedAt: performance.now(),
     startedAtIso: new Date().toISOString(),
     sentAtIso: null,
+    cancelVisibleAtIso: null,
     cancelClickedAtIso: null,
     flowId: null,
     assistantId: null,
@@ -136,13 +154,12 @@ const installProbe = async () => pilotEval(`
   const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
   const elapsedMs = () => Number((performance.now() - probe.startedAt).toFixed(2));
   const events = () => window.__AGENTREE_PERF__?.readLatestSession?.() ?? [];
-  const findComposer = () => document.querySelector('[data-testid="chat-composer-textarea"]') || document.querySelector('textarea');
-  const sendButton = () => document.querySelector('[data-testid="chat-send-button"]') || [...document.querySelectorAll('button')].find((button) => {
-    const labelText = button.getAttribute('aria-label') || (button.textContent || '').trim();
-    return labelText === 'Send' || labelText === 'Edit and run' || labelText === 'Cancel sending message' || labelText === 'Cancel';
-  }) || null;
+  const chatHotPath = window.__AGENTREE_TAURI_PILOT_CHAT_HOT_PATH__;
+  const findComposer = () => chatHotPath.findComposer();
+  const statusButton = () => chatHotPath.findSendButton({ includeCancel: true });
+  const sendButton = () => chatHotPath.findSendButton();
   const buttonLabel = () => {
-    const button = sendButton();
+    const button = statusButton();
     return button ? (button.getAttribute('aria-label') || button.textContent || '').trim() : null;
   };
   const latestFlowStarted = () => {
@@ -200,7 +217,7 @@ const installProbe = async () => pilotEval(`
       at: new Date().toISOString(),
       elapsedMs: elapsedMs(),
       buttonLabel: buttonLabel(),
-      buttonDisabled: sendButton()?.disabled ?? null,
+      buttonDisabled: statusButton()?.disabled ?? null,
       textareaDisabled: textarea?.disabled ?? null,
       textareaValueLength: textarea?.value?.length ?? null,
       flowId: probe.flowId,
@@ -214,15 +231,21 @@ const installProbe = async () => pilotEval(`
   };
 
   const send = async () => {
+    await chatHotPath.ensureChatHotPathReady({ waitMs: 5000, requireSendButton: false });
     const textarea = findComposer();
-    const button = sendButton();
-    if (!textarea || !button) throw new Error('composer or send button missing');
+    if (!textarea) throw new Error('composer textarea missing');
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
     setter?.call(textarea, prompt);
     textarea.focus();
     textarea.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: prompt }));
     textarea.dispatchEvent(new Event('change', { bubbles: true }));
-    await sleep(120);
+    const waitStartedAt = performance.now();
+    let button = sendButton();
+    while ((!button || button.disabled) && performance.now() - waitStartedAt < 5000) {
+      await sleep(100);
+      button = sendButton();
+    }
+    if (!button) throw new Error('send button missing after prompt');
     if (button.disabled) throw new Error('send button disabled before cancel flow send');
     probe.sentAtIso = new Date().toISOString();
     button.click();
@@ -233,14 +256,17 @@ const installProbe = async () => pilotEval(`
     const startedAt = performance.now();
     while (performance.now() - startedAt < 30000) {
       const current = sample('wait-cancel-button');
-      if (current.buttonLabel === 'Cancel sending message' || current.buttonLabel === 'Cancel') return current;
+      if (current.buttonLabel === 'Cancel sending message' || current.buttonLabel === 'Cancel') {
+        probe.cancelVisibleAtIso = probe.cancelVisibleAtIso ?? new Date().toISOString();
+        return current;
+      }
       await sleep(150);
     }
     throw new Error('cancel button did not appear after send');
   };
 
   const clickCancel = async () => {
-    const button = sendButton();
+    const button = statusButton();
     if (!button) throw new Error('cancel button missing');
     const labelText = buttonLabel();
     if (labelText !== 'Cancel sending message' && labelText !== 'Cancel') {
@@ -304,6 +330,7 @@ const waitForDone = async () => {
     flowId: probe?.flowId ?? null,
     assistantId: probe?.assistantId ?? null,
     sentAtIso: probe?.sentAtIso ?? null,
+    cancelVisibleAtIso: probe?.cancelVisibleAtIso ?? null,
     cancelClickedAtIso: probe?.cancelClickedAtIso ?? null,
     errors: probe?.errors ?? [],
     sampleCount: probe?.samples?.length ?? 0,
@@ -382,6 +409,11 @@ const main = async () => {
   if (finalSample?.terminalName !== 'send-flow.lifecycle.cancelled' && finalSample?.runStatus !== 'cancelled') {
     errors.push(`cancelled terminal status was not observed; terminal=${finalSample?.terminalName ?? 'none'} runStatus=${finalSample?.runStatus ?? 'none'}`);
   }
+  const msBetween = (startIso, endIso) => {
+    const start = Date.parse(startIso || '');
+    const end = Date.parse(endIso || '');
+    return Number.isFinite(start) && Number.isFinite(end) ? end - start : null;
+  };
 
   console.log(JSON.stringify({
     reportPath,
@@ -389,7 +421,10 @@ const main = async () => {
     flowId: probe?.flowId ?? null,
     assistantId: probe?.assistantId ?? null,
     sentAtIso: probe?.sentAtIso ?? null,
+    cancelVisibleAtIso: probe?.cancelVisibleAtIso ?? null,
     cancelClickedAtIso: probe?.cancelClickedAtIso ?? null,
+    sendToCancelVisibleMs: msBetween(probe?.sentAtIso, probe?.cancelVisibleAtIso),
+    sendToCancelClickedMs: msBetween(probe?.sentAtIso, probe?.cancelClickedAtIso),
     finalButtonLabel: finalSample?.buttonLabel ?? null,
     finalTextareaDisabled: finalSample?.textareaDisabled ?? null,
     runtime,

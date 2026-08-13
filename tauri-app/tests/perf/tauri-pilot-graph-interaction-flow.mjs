@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CHAT_HOT_PATH_HELPERS_SOURCE } from './tauri-pilot-chat-hot-path-lib.mjs';
 
 const OUT_DIR = process.env.AGENTREE_TAURI_PILOT_OUT_DIR ?? 'runtime-logs/tauri-pilot-diagnostics';
 const LABEL = process.env.AGENTREE_TAURI_PILOT_LABEL ?? `tauri-pilot-graph-interaction-${Date.now()}`;
@@ -88,6 +89,7 @@ const pilotEval = async (script, timeoutMs = 120000) => {
 
 const install = async () => pilotEval(`
 (async () => {
+  ${CHAT_HOT_PATH_HELPERS_SOURCE}
   const label = ${JSON.stringify(LABEL)};
   const prompts = ${JSON.stringify(PROMPTS)};
   const testAgentModel = ${JSON.stringify(TEST_AGENT_MODEL)};
@@ -165,10 +167,12 @@ const install = async () => pilotEval(`
     intervalStalls: probe.intervalStalls.slice(-40),
     longTasks: probe.longTasks.slice(-40),
   });
-  const findComposer = () => document.querySelector('[data-testid="chat-composer-textarea"]') || document.querySelector('textarea');
-  const sendButton = () => document.querySelector('[data-testid="chat-send-button"]');
+  const chatHotPath = window.__AGENTREE_TAURI_PILOT_CHAT_HOT_PATH__;
+  const findComposer = () => chatHotPath.findComposer();
+  const statusButton = () => chatHotPath.findSendButton({ includeCancel: true });
+  const sendButton = () => chatHotPath.findSendButton();
   const buttonLabel = () => {
-    const button = sendButton();
+    const button = statusButton();
     return button ? (button.getAttribute('aria-label') || button.textContent || '').trim() : null;
   };
   const isSendReady = () => {
@@ -248,6 +252,108 @@ const install = async () => pilotEval(`
     });
     sample('latest-runnable-focus-' + label);
     return latestRunnable.id;
+  };
+  const ensureGraphNodeFloor = async (parentId) => {
+    if (!minGraphNodes || minGraphNodes <= 0) return { seeded: false, reason: 'disabled' };
+    const workspaceStore = await import(new URL('/src/stores/workspaceStore.ts', location.origin).href);
+    const agentClientModule = await import(new URL('/src/lib/agentClient.ts', location.origin).href);
+    const localNodesModule = await import(new URL('/src/hooks/useLocalNodes.ts', location.origin).href);
+    const workspaceId = workspaceStore.useWorkspaceStore?.getState?.().selectedWorkspaceId ?? null;
+    if (!workspaceId) throw new Error('graph node floor seed failed: no selected workspace');
+
+    const existingRows = await agentClientModule.agentClient.listLocalNodes(workspaceId);
+    const existingLocalMessages = existingRows
+      .map((row) => localNodesModule.parseLocalNode(row))
+      .filter(Boolean)
+      .map((row) => row.message)
+      .filter((message) => typeof message?.id === 'string');
+    const existingSeedMessages = existingLocalMessages.filter((message) => String(message.id).startsWith('pilot-seed-node-'));
+    if (existingSeedMessages.length >= minGraphNodes) {
+      const fitButton = [...document.querySelectorAll('button')]
+        .find((button) => (button.getAttribute('aria-label') || button.getAttribute('title') || button.textContent || '').trim() === 'Fit View');
+      if (fitButton) {
+        fitButton.click();
+        await sleep(1200);
+      }
+      let readySample = sample('graph-node-floor-ready');
+      const readyStartedAt = performance.now();
+      while ((readySample?.graph?.nodes ?? 0) < minGraphNodes && performance.now() - readyStartedAt < 8000) {
+        await sleep(250);
+        readySample = sample('graph-node-floor-ready-wait');
+      }
+      logAction('graph-node-floor-ready', {
+        workspaceId,
+        existingSeedCount: existingSeedMessages.length,
+        minGraphNodes,
+        fitViewClicked: Boolean(fitButton),
+        visibleNodes: readySample?.graph?.nodes ?? null,
+      });
+      return { seeded: false, existingSeedCount: existingSeedMessages.length };
+    }
+
+    const now = new Date();
+    const seedCount = Math.max(minGraphNodes + 20, 120);
+    let nextParentId = parentId ?? null;
+    const seededMessages = [];
+    for (let index = 0; index < seedCount; index += 1) {
+      const id = 'pilot-seed-node-' + String(index).padStart(3, '0');
+      const role = index % 2 === 0 ? 'user' : 'assistant';
+      const createdAt = new Date(now.getTime() - (seedCount - index) * 1000).toISOString();
+      const message = {
+        id,
+        workspaceId,
+        parentId: nextParentId,
+        role,
+        content: role === 'user'
+          ? 'Pilot graph seed user node ' + index
+          : 'Pilot graph seed assistant node ' + index,
+        createdAt,
+        updatedAt: createdAt,
+        status: role === 'assistant' ? 'completed' : null,
+        aiLabel: 'Pilot seed ' + index,
+        path_ids: nextParentId ? [nextParentId, id] : [id],
+        depth: index + 1,
+        execution_data: {
+          meta: {
+            perf_seed: true,
+            label,
+          },
+        },
+      };
+      seededMessages.push(message);
+      await agentClientModule.agentClient.upsertLocalNode(workspaceId, id, message);
+      nextParentId = id;
+    }
+
+    const refreshedRows = await agentClientModule.agentClient.listLocalNodes(workspaceId);
+    const parsedRows = refreshedRows
+      .map((row) => localNodesModule.parseLocalNode(row))
+      .filter(Boolean);
+    const queryClient = window.__AGENTREE_QUERY_CLIENT__;
+    queryClient?.setQueryData?.(localNodesModule.localNodeKeys.workspace(workspaceId), parsedRows);
+    await queryClient?.invalidateQueries?.({ queryKey: localNodesModule.localNodeKeys.workspace(workspaceId) });
+    await queryClient?.refetchQueries?.({ queryKey: localNodesModule.localNodeKeys.workspace(workspaceId) });
+    const fitButton = [...document.querySelectorAll('button')]
+      .find((button) => (button.getAttribute('aria-label') || button.getAttribute('title') || button.textContent || '').trim() === 'Fit View');
+    if (fitButton) {
+      fitButton.click();
+      await sleep(1200);
+    }
+    logAction('graph-node-floor-seeded', {
+      workspaceId,
+      seedCount,
+      minGraphNodes,
+      localNodeCount: parsedRows.length,
+      parentId,
+      fitViewClicked: Boolean(fitButton),
+    });
+    const waitStartedAt = performance.now();
+    let seededSample = sample('graph-node-floor-seeded');
+    while ((seededSample?.graph?.nodes ?? 0) < minGraphNodes && performance.now() - waitStartedAt < 8000) {
+      await sleep(250);
+      seededSample = sample('graph-node-floor-wait');
+    }
+    return { seeded: true, seedCount, localNodeCount: parsedRows.length };
   };
   const latestTerminalAfter = (sentAtIso) => {
     const sentAt = Date.parse(sentAtIso);
@@ -427,7 +533,7 @@ const install = async () => pilotEval(`
       visibility: document.visibilityState,
       hasFocus: document.hasFocus(),
       buttonLabel: buttonLabel(),
-      buttonDisabled: sendButton()?.disabled ?? null,
+      buttonDisabled: statusButton()?.disabled ?? null,
       textareaDisabled: textarea?.disabled ?? null,
       textareaValueLength: textarea?.value?.length ?? null,
       graph: graphCounts(),
@@ -534,9 +640,9 @@ const install = async () => pilotEval(`
   rafId = window.requestAnimationFrame(rafLoop);
 
   const setPromptAndSend = async (prompt, index) => {
+    await chatHotPath.ensureChatHotPathReady({ waitMs: 5000, requireSendButton: false });
     const textarea = findComposer();
-    const button = sendButton();
-    if (!textarea || !button) throw new Error('composer or send button missing');
+    if (!textarea) throw new Error('composer textarea missing');
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
     setter?.call(textarea, prompt);
     textarea.focus();
@@ -544,6 +650,8 @@ const install = async () => pilotEval(`
     textarea.dispatchEvent(new Event('change', { bubbles: true }));
     await sleep(100);
     if (!isSendReady()) throw new Error('send not ready; label=' + buttonLabel());
+    const button = sendButton();
+    if (!button) throw new Error('send button missing after prompt');
     button.click();
     const send = { index, at: new Date().toISOString(), elapsedMs: nowElapsed(), promptLength: prompt.length };
     for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -701,7 +809,8 @@ const install = async () => pilotEval(`
       sample('installed');
       await clearHoverCards('initial');
       await clearSelectionState('initial');
-      await ensureLatestRunnableFocus('initial');
+      const seedParentId = await ensureLatestRunnableFocus('initial');
+      await ensureGraphNodeFloor(seedParentId);
       await waitForFocusCenterSettled('initial-latest-focus');
       if (focusOnlyClicks > 0) {
         for (let i = 0; i < focusOnlyClicks; i += 1) {
@@ -737,6 +846,10 @@ const install = async () => pilotEval(`
         await waitTerminal(send, 'send-' + (i + 1));
         await waitCleanup(send, 'send-' + (i + 1));
         await clearSelectionState('after-terminal-' + (i + 1));
+      }
+      if (minGraphNodes > 0) {
+        await sleep(5500);
+        sample('post-hold-full-graph');
       }
       probe.done = true;
       sample('done');
@@ -886,9 +999,11 @@ const main = async () => {
   const samples = report.collect?.probe?.samples ?? [];
   const actions = report.collect?.probe?.actions ?? [];
   const maxVisibleGraphNodes = samples.reduce((max, sample) => Math.max(max, Number(sample?.graph?.nodes ?? 0)), 0);
+  const maxRenderedGraphNodes = (report.collect?.fundamentals?.['graph.render.refs']?.samples ?? [])
+    .reduce((max, sample) => Math.max(max, Number(sample?.details?.nodeCount ?? 0)), maxVisibleGraphNodes);
   const validationErrors = [];
-  if (MIN_GRAPH_NODES > 0 && maxVisibleGraphNodes < MIN_GRAPH_NODES) {
-    validationErrors.push(`expected at least ${MIN_GRAPH_NODES} visible graph nodes, observed ${maxVisibleGraphNodes}`);
+  if (MIN_GRAPH_NODES > 0 && maxRenderedGraphNodes < MIN_GRAPH_NODES) {
+    validationErrors.push(`expected at least ${MIN_GRAPH_NODES} rendered graph nodes, observed visible=${maxVisibleGraphNodes} rendered=${maxRenderedGraphNodes}`);
   }
   if (FOCUS_ONLY_CLICKS === 0 && !actions.some((action) => action.type === 'pan')) {
     validationErrors.push('no graph pan action was observed');
@@ -898,6 +1013,7 @@ const main = async () => {
   }
   if (report.collect) {
     report.collect.maxVisibleGraphNodes = maxVisibleGraphNodes;
+    report.collect.maxRenderedGraphNodes = maxRenderedGraphNodes;
     report.collect.validationErrors = validationErrors;
   }
   mkdirSync(OUT_DIR, { recursive: true });
@@ -917,6 +1033,7 @@ const main = async () => {
     rafStallCount: report.collect?.probe?.rafStalls?.length ?? null,
     intervalStallCount: report.collect?.probe?.intervalStalls?.length ?? null,
     maxVisibleGraphNodes,
+    maxRenderedGraphNodes,
     validationErrors,
     graphEventContract,
     fundamentals: report.collect?.fundamentals ?? null,

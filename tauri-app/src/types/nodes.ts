@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { ProjectedNodeEntity } from '../domain/workspaceProjection';
+import type { GraphNodeDetailLevel } from '../lib/graphNodeDetailLevel';
 
 export type ViewLayout = 'chat' | 'graph' | 'timeline' | 'hovercard';
 
@@ -15,6 +16,7 @@ export interface SharedNodeProps {
   isFocused: boolean;
   isSelected: boolean;
   isComposerBaseCommit?: boolean;
+  detailLevel?: GraphNodeDetailLevel;
   disableHoverCard?: boolean;
   showSelectionControl?: boolean;
   scopeColor?: string | null;

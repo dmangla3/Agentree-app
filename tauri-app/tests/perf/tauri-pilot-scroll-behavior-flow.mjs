@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CHAT_HOT_PATH_HELPERS_SOURCE } from './tauri-pilot-chat-hot-path-lib.mjs';
 
 const OUT_DIR = process.env.AGENTREE_TAURI_PILOT_OUT_DIR ?? 'runtime-logs/tauri-pilot-diagnostics';
 const LABEL = process.env.AGENTREE_TAURI_PILOT_LABEL ?? `tauri-pilot-scroll-behavior-${Date.now()}`;
@@ -107,14 +108,31 @@ const preflight = async () => {
   if (visible?.visibility !== 'visible' || visible?.hidden === true) {
     throw new Error(`Tauri webview is not visible: ${JSON.stringify(visible)}`);
   }
-  if (!visible?.composerCount) {
-    throw new Error(`Composer not found in visible Tauri webview: ${JSON.stringify(visible)}`);
+  let readyVisible = visible;
+  const startedAt = Date.now();
+  while (!readyVisible?.composerCount && Date.now() - startedAt < 5000) {
+    await sleep(150);
+    readyVisible = (await pilotEval(`
+(() => ({
+  visibility: document.visibilityState,
+  hidden: document.hidden,
+  hasFocus: document.hasFocus(),
+  url: location.href,
+  composerCount: document.querySelectorAll('textarea').length,
+  chatFocusTargetCount: document.querySelectorAll('[data-chat-focus-id]').length,
+  graphNodeCount: document.querySelectorAll('.react-flow__node,[data-agentree-graph-node-id]').length,
+}))()
+`, 30000)).value;
   }
-  return { inventory, visible };
+  if (!readyVisible?.composerCount) {
+    throw new Error(`Composer not found in visible Tauri webview: ${JSON.stringify(readyVisible)}`);
+  }
+  return { inventory, visible: readyVisible };
 };
 
 const install = async () => pilotEval(`
 (() => {
+  ${CHAT_HOT_PATH_HELPERS_SOURCE}
   const label = ${JSON.stringify(LABEL)};
   const prompt = ${JSON.stringify(PROMPT)};
   const testAgentModel = ${JSON.stringify(TEST_AGENT_MODEL)};
@@ -156,17 +174,9 @@ const install = async () => pilotEval(`
       ? CSS.escape(value)
       : String(value).replace(/"/g, '\\\\$&')
   );
-  const findComposer = () =>
-    document.querySelector('[data-testid="chat-composer-textarea"]') ||
-    document.querySelector('textarea[placeholder^="Ask anything"]') ||
-    [...document.querySelectorAll('textarea')].find((textarea) => Boolean(textarea.offsetParent || textarea.getClientRects().length));
-  const findSendButton = () =>
-    document.querySelector('[data-testid="chat-send-button"]') ||
-    [...document.querySelectorAll('button')].find((button) => {
-      const aria = button.getAttribute('aria-label') || '';
-      const text = (button.textContent || '').trim();
-      return aria === 'Send' || aria === 'Edit and run' || text === 'Send';
-    }) || null;
+  const chatHotPath = window.__AGENTREE_TAURI_PILOT_CHAT_HOT_PATH__;
+  const findComposer = () => chatHotPath.findComposer();
+  const findSendButton = () => chatHotPath.findSendButton();
   const chatViewport = () => {
     const focusTarget = document.querySelector('[data-chat-focus-id]');
     const viewportFromTarget = focusTarget?.closest?.('[data-radix-scroll-area-viewport]');
@@ -306,6 +316,7 @@ const install = async () => pilotEval(`
   };
 
   const sendPrompt = async () => {
+    await chatHotPath.ensureChatHotPathReady({ waitMs: 5000, requireSendButton: false });
     await ensureTestAgentModel();
     const textarea = findComposer();
     if (!textarea) throw new Error('composer textarea not found');

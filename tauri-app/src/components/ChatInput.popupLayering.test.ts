@@ -19,6 +19,8 @@ describe('chat composer popup layering', () => {
   it('does not show the cancel affordance when new thread is selected over a running node', () => {
     const chatInputSource = readSource('src/components/ChatInput.tsx');
 
-    expect(chatInputSource).toContain('const showCancel = isSelectedNodeRunning && !isNewThreadTarget;');
+    expect(chatInputSource).toContain('const showCancel = shouldShowComposerCancel({');
+    expect(chatInputSource).toContain('isNewThreadTarget,');
+    expect(chatInputSource).toContain('isSelectedNodeRunning,');
   });
 });

@@ -39,6 +39,9 @@ const queryClient = new QueryClient({
     },
   },
 });
+if (import.meta.env.DEV) {
+  (window as any).__AGENTREE_QUERY_CLIENT__ = queryClient;
+}
 
 devLogLazy(() => [`[PERF][main.tsx] ${Date.now()} - QueryClient created, calling createRoot...`]);
 const root = createRoot(document.getElementById('root')!);

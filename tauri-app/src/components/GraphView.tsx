@@ -88,6 +88,14 @@ import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder'
 import { recordFundamentalCounter } from '../perf/fundamentalCounters';
 import { createGraphDiagnosticCapture, registerGraphDiagnosticProvider } from '../lib/graphDiagnostics';
 import { markGraphInteractionEnd, markGraphInteractionStart, scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
+import {
+    getGraphNodeDetailDensityCount,
+    getGraphNodeDetailEffectiveZoom,
+    getGraphNodeDetailLevel,
+    getGraphNodeDetailZoomBucket,
+    type GraphNodeDetailLevel,
+    type GraphNodeDetailZoomBucket,
+} from '../lib/graphNodeDetailLevel';
 import { withExplicitReactFlowNodeDimensions } from '../lib/reactFlowNodeDimensions';
 import type { FocusTriggerMetrics } from '../types/nodes';
 
@@ -127,8 +135,8 @@ const FOCUS_CENTER_MAX_RETRY_FRAMES = 18;
 const NODE_HEIGHT_MEASURE_EPSILON = 4;
 const GRAPH_HEIGHT_MEASURE_FLUSH_MS = 32;
 const VIEWPORT_INTERACTION_STALE_MS = 12_000;
-const ACTIVE_GRAPH_WINDOW_MAX_VISIBLE_NODES = 160;
-const ACTIVE_GRAPH_WINDOW_OVERSCAN_SCREENS = 1.35;
+const ACTIVE_GRAPH_WINDOW_MAX_VISIBLE_NODES = 96;
+const ACTIVE_GRAPH_WINDOW_OVERSCAN_SCREENS = 0.85;
 const ACTIVE_GRAPH_WINDOW_UPDATE_THROTTLE_MS = 80;
 const ACTIVE_GRAPH_WINDOW_FALLBACK_NODE_WIDTH = 120;
 const ACTIVE_GRAPH_WINDOW_FALLBACK_NODE_HEIGHT = 120;
@@ -149,6 +157,36 @@ export const shouldTreatGraphMoveAsViewportInteraction = ({
     if (programmaticFocusCenterActive && eventType !== 'wheel' && eventType !== 'touchstart') return false;
     return true;
 };
+
+export const shouldDispatchGraphFocusSynchronously = ({
+    activeRunCount,
+    activeSendFlowWorkspaceId,
+    selectedWorkspaceId,
+}: {
+    activeRunCount: number;
+    activeSendFlowWorkspaceId: string | null | undefined;
+    selectedWorkspaceId: string | null | undefined;
+}) => activeRunCount > 0 || (
+    activeSendFlowWorkspaceId != null
+    && selectedWorkspaceId != null
+    && activeSendFlowWorkspaceId === selectedWorkspaceId
+);
+
+export const shouldSkipActiveGraphClickCentering = ({
+    activeRunCount,
+    activeSendFlowWorkspaceId,
+    selectedWorkspaceId,
+    triggerVia,
+}: {
+    activeRunCount: number;
+    activeSendFlowWorkspaceId: string | null | undefined;
+    selectedWorkspaceId: string | null | undefined;
+    triggerVia: unknown;
+}) => triggerVia === 'react-flow-node-click' && shouldDispatchGraphFocusSynchronously({
+    activeRunCount,
+    activeSendFlowWorkspaceId,
+    selectedWorkspaceId,
+});
 
 const useStableGraphCallback = <Args extends unknown[], ReturnValue>(
     callback: (...args: Args) => ReturnValue
@@ -450,8 +488,12 @@ const formatCadenceLabel = (intervalMs: number) => {
 const GRAPH_DIAGNOSTIC_MAX_OVERLAPS = 200;
 const GRAPH_DIAGNOSTIC_MAX_MEASURE_EVENTS = 160;
 const GRAPH_DIAGNOSTIC_STALE_HEIGHT_EPSILON = 4;
-const GRAPH_MIN_ZOOM = 0.05;
+export const GRAPH_MIN_ZOOM = 0.2;
 const GRAPH_MAX_ZOOM = 2.5;
+
+export const clampGraphZoom = (zoom: number): number => (
+    Math.min(GRAPH_MAX_ZOOM, Math.max(GRAPH_MIN_ZOOM, zoom))
+);
 
 const roundMetric = (value: number | null | undefined, digits = 2) => (
     typeof value === 'number' && Number.isFinite(value)
@@ -1120,6 +1162,38 @@ function GraphViewInternal({
 
     const reactFlowInstance = useReactFlow();
     const reactFlowStore = useStoreApi();
+    const [graphDetailZoomBucket, setGraphDetailZoomBucket] = useState<GraphNodeDetailZoomBucket>(() => getGraphNodeDetailZoomBucket(1));
+    const [graphDetailViewportVersion, setGraphDetailViewportVersion] = useState(0);
+    const graphDetailZoomBucketRef = useRef(graphDetailZoomBucket);
+    const graphDetailZoomUpdateTimeoutRef = useRef<number | null>(null);
+
+    useEffect(() => {
+        graphDetailZoomBucketRef.current = graphDetailZoomBucket;
+    }, [graphDetailZoomBucket]);
+
+    const scheduleGraphDetailZoomBucketUpdate = useCallback((delayMs = 120) => {
+        if (graphDetailZoomUpdateTimeoutRef.current !== null) {
+            window.clearTimeout(graphDetailZoomUpdateTimeoutRef.current);
+        }
+        graphDetailZoomUpdateTimeoutRef.current = window.setTimeout(() => {
+            graphDetailZoomUpdateTimeoutRef.current = null;
+            const nextBucket = getGraphNodeDetailZoomBucket(reactFlowInstance.getZoom());
+            if (graphDetailZoomBucketRef.current !== nextBucket) {
+                graphDetailZoomBucketRef.current = nextBucket;
+                setGraphDetailZoomBucket(nextBucket);
+            }
+            setGraphDetailViewportVersion((version) => version + 1);
+        }, delayMs);
+    }, [reactFlowInstance]);
+
+    useEffect(() => {
+        return () => {
+            if (graphDetailZoomUpdateTimeoutRef.current !== null) {
+                window.clearTimeout(graphDetailZoomUpdateTimeoutRef.current);
+                graphDetailZoomUpdateTimeoutRef.current = null;
+            }
+        };
+    }, []);
 
     const graphProfilerOnRender = useMemo(() => createProfilerOnRender('graph-surface', () => {
         const current = currentGraphCommitSnapshotRef.current;
@@ -2237,7 +2311,7 @@ function GraphViewInternal({
             const isMac = /Mac|iPhone|iPad|iPod/.test(window.navigator.platform);
             const pinchFactor = isMac ? 10 : 1;
             const zoomDelta = -event.deltaY * deltaModeFactor * pinchFactor;
-            const nextZoom = Math.min(GRAPH_MAX_ZOOM, Math.max(GRAPH_MIN_ZOOM, viewport.zoom * Math.pow(2, zoomDelta)));
+            const nextZoom = clampGraphZoom(viewport.zoom * Math.pow(2, zoomDelta));
             if (d3Zoom && d3Selection) {
                 d3Zoom.scaleTo(d3Selection, nextZoom, [pointerX, pointerY], event.nativeEvent);
             } else {
@@ -2378,9 +2452,12 @@ function GraphViewInternal({
         const distanceProgress = Math.min(1, viewportDistance / FOCUS_DISTANCE_FOR_MAX_DURATION);
         const zoomProgress = Math.min(1, zoomDelta / 0.8);
         const animationProgress = Math.max(distanceProgress, zoomProgress);
-        const animationDurationMs = Math.round(
-            FOCUS_MIN_ANIMATION_MS + (FOCUS_MAX_ANIMATION_MS - FOCUS_MIN_ANIMATION_MS) * animationProgress
-        );
+        const activeFocusCenter = activeRunCount > 0 || activeSendFlowFocus?.workspaceId === selectedWorkspaceId;
+        const animationDurationMs = activeFocusCenter
+            ? 0
+            : Math.round(
+                FOCUS_MIN_ANIMATION_MS + (FOCUS_MAX_ANIMATION_MS - FOCUS_MIN_ANIMATION_MS) * animationProgress
+            );
         const centerStartedAt = performance.now();
         const pointerToClickMs = triggerMetrics?.pointerDownAt == null
             ? null
@@ -2442,7 +2519,9 @@ function GraphViewInternal({
                 animationDurationMs,
             }, { source: 'GraphView' });
             normalizeReactFlowLayerGeometry(`focus-center-end:${messageId}`);
-            captureGraphGeometrySnapshot(`focus-center-end:${messageId}`);
+            if (!activeFocusCenter) {
+                captureGraphGeometrySnapshot(`focus-center-end:${messageId}`);
+            }
             focusCenterEndTimeoutRef.current = null;
         }, animationDurationMs + 40);
         return {
@@ -2451,7 +2530,7 @@ function GraphViewInternal({
             viewportDistance: Number(viewportDistance.toFixed(2)),
             zoomDelta: Number(zoomDelta.toFixed(3)),
         };
-    }, [captureGraphGeometrySnapshot, clearFocusCenterTimers, normalizeReactFlowLayerGeometry, reactFlowInstance, sendFlowGraphDiagFlags.disableGraphAutoCenter, viewMode]);
+    }, [activeSendFlowFocus?.workspaceId, captureGraphGeometrySnapshot, clearFocusCenterTimers, normalizeReactFlowLayerGeometry, reactFlowInstance, selectedWorkspaceId, sendFlowGraphDiagFlags.disableGraphAutoCenter, viewMode]);
 
     const queueFocusedNodeCenter = useCallback((messageId: string, centerKey: string, options?: { respectImperativeCenter?: boolean }) => {
         if (viewMode !== 'branch') return;
@@ -2580,11 +2659,28 @@ function GraphViewInternal({
             dispatchScheduledAt: null,
             dispatchCommittedAt: null,
         };
-        const centerResult = centerFocusedNode(id, {
-            ...triggerMetrics,
-            interactionId: interaction.id,
-            allowDuringActiveRun: true,
+        const liveRunningCount = runningCountRef.current;
+        const skipCentering = shouldSkipActiveGraphClickCentering({
+            activeRunCount: liveRunningCount,
+            activeSendFlowWorkspaceId: activeSendFlowFocus?.workspaceId,
+            selectedWorkspaceId,
+            triggerVia: triggerMetrics?.metadata?.via,
         });
+        const centerResult = skipCentering
+            ? null
+            : centerFocusedNode(id, {
+                ...triggerMetrics,
+                interactionId: interaction.id,
+                allowDuringActiveRun: true,
+            });
+        if (skipCentering) {
+            recordPerfEvent('graph.focus-center.skipped', {
+                interactionId: interaction.id,
+                focusedMessageId: id,
+                reason: 'active-graph-node-click',
+                runningCount: liveRunningCount,
+            }, { source: 'GraphView' });
+        }
         if (centerResult) {
             imperativeCenteredMessageIdRef.current = id;
         }
@@ -2594,8 +2690,7 @@ function GraphViewInternal({
         if (deferredGraphFocusFrameRef.current !== null) {
             window.cancelAnimationFrame(deferredGraphFocusFrameRef.current);
         }
-        deferredGraphFocusFrameRef.current = window.requestAnimationFrame(() => {
-            const dispatchScheduledAt = performance.now();
+        const commitGraphFocusDispatch = (dispatchScheduledAt: number) => {
             if (pendingGraphFocusRef.current?.interactionId === interaction.id) {
                 pendingGraphFocusRef.current.dispatchScheduledAt = dispatchScheduledAt;
             }
@@ -2620,9 +2715,21 @@ function GraphViewInternal({
             startTransition(() => {
                 nodeSelection.clearSelection();
             });
+        };
+        if (shouldDispatchGraphFocusSynchronously({
+            activeRunCount: liveRunningCount,
+            activeSendFlowWorkspaceId: activeSendFlowFocus?.workspaceId,
+            selectedWorkspaceId,
+        })) {
+            commitGraphFocusDispatch(performance.now());
+            deferredGraphFocusFrameRef.current = null;
+            return;
+        }
+        deferredGraphFocusFrameRef.current = window.requestAnimationFrame(() => {
+            commitGraphFocusDispatch(performance.now());
             deferredGraphFocusFrameRef.current = null;
         });
-    }, [centerFocusedNode, dispatchFocus, nodeSelection.clearSelection]);
+    }, [activeSendFlowFocus?.workspaceId, centerFocusedNode, dispatchFocus, nodeSelection.clearSelection, selectedWorkspaceId]);
     const handleFocus = useStableGraphCallback(handleFocusImpl);
 
     const handleViewSubgraph = useCallback((messageId: string) => {
@@ -3943,6 +4050,11 @@ function GraphViewInternal({
         selected: boolean;
         prepared: Node<any>;
     }>());
+    const graphNodeDetailCacheRef = useRef(new Map<string, {
+        source: Node<any>;
+        detailLevel: GraphNodeDetailLevel;
+        prepared: Node<any>;
+    }>());
     const branchNodesForRender = useMemo(() => {
         const startedAt = performance.now();
         const nextCache = new Map<string, {
@@ -3976,11 +4088,12 @@ function GraphViewInternal({
         }, performance.now() - startedAt);
         return result;
     }, [activeSendFlowFocus?.workspaceId, layoutNodes, nodeSelection.selectedNodeIds, selectedWorkspaceId]);
+    const activeGraphRenderHold = runningCount > 0 || activeSendFlowFocus?.workspaceId === selectedWorkspaceId;
     const threadBands = useMemo(() => {
+        if (activeGraphRenderHold) return [];
         const rects = getThreadDividerRectsFromNodes(branchNodesForRender, threadRootIndex.threadRootIdByMessageId);
         return buildThreadBands(rects, { padding: 260, horizontalPadding: 88 });
-    }, [branchNodesForRender, threadRootIndex.threadRootIdByMessageId]);
-    const activeGraphRenderHold = runningCount > 0 || activeSendFlowFocus?.workspaceId === selectedWorkspaceId;
+    }, [activeGraphRenderHold, branchNodesForRender, threadRootIndex.threadRootIdByMessageId]);
     useEffect(() => {
         if (activeGraphRenderHold) {
             setGraphRenderHoldUntil(Number.POSITIVE_INFINITY);
@@ -4245,21 +4358,115 @@ function GraphViewInternal({
         return next;
     }, [activeGraphWindowSpatialIndex, activeGraphWindowViewportVersion, activePinnedGraphNodeIds, branchNodesForRender, previewEdges, reactFlowInstance, shouldHoldGraphRenderForSendFlow]);
 
+    const graphNodesForReactFlow = useMemo(() => {
+        const startedAt = performance.now();
+        const renderedNodeCount = graphRenderElements.nodes.length;
+        const renderedNodeIds = graphRenderElements.mode === 'full'
+            ? null
+            : new Set(graphRenderElements.nodes.map((node) => node.id));
+        const viewport = reactFlowInstance.getViewport();
+        const viewportZoom = Math.max(viewport.zoom || 1, 0.0001);
+        const viewportWidth = branchCanvasRef.current?.clientWidth || window.innerWidth || 1200;
+        const viewportHeight = branchCanvasRef.current?.clientHeight || window.innerHeight || 800;
+        const viewportLeft = -viewport.x / viewportZoom;
+        const viewportTop = -viewport.y / viewportZoom;
+        const viewportRect = {
+            left: viewportLeft,
+            right: viewportLeft + viewportWidth / viewportZoom,
+            top: viewportTop,
+            bottom: viewportTop + viewportHeight / viewportZoom,
+        };
+        const visibleDetailNodeIds = new Set(activeGraphWindowSpatialIndex
+            .query(viewportRect)
+            .filter((entry) => renderedNodeIds === null || renderedNodeIds.has(entry.id))
+            .map((entry) => entry.id));
+        const detailDensityNodeCount = getGraphNodeDetailDensityCount({
+            renderedNodeCount,
+            visibleNodeCount: visibleDetailNodeIds.size,
+        });
+        const nextCache = new Map<string, {
+            source: Node<any>;
+            detailLevel: GraphNodeDetailLevel;
+            prepared: Node<any>;
+        }>();
+        let reusedCount = 0;
+        let fullCount = 0;
+        let compactCount = 0;
+        let minimalCount = 0;
+        const nodes = graphRenderElements.nodes.map((node) => {
+            const data = node.data ?? {};
+            const isAnchorNode = Boolean(data.isFocused || data.isSelected || node.selected || data.isComposerBaseCommit);
+            const isInDetailViewport = isAnchorNode || visibleDetailNodeIds.has(node.id);
+            const effectiveZoom = getGraphNodeDetailEffectiveZoom({
+                bucket: graphDetailZoomBucket,
+                isInDetailViewport,
+            });
+            const detailLevel = getGraphNodeDetailLevel({
+                zoom: effectiveZoom,
+                renderedNodeCount: detailDensityNodeCount,
+                isFocused: Boolean(data.isFocused),
+                isSelected: Boolean(data.isSelected || node.selected),
+                isComposerBaseCommit: Boolean(data.isComposerBaseCommit),
+            });
+
+            if (detailLevel === 'minimal') minimalCount += 1;
+            else if (detailLevel === 'compact') compactCount += 1;
+            else fullCount += 1;
+
+            const cached = graphNodeDetailCacheRef.current.get(node.id);
+            if (cached?.source === node && cached.detailLevel === detailLevel) {
+                nextCache.set(node.id, cached);
+                reusedCount += 1;
+                return cached.prepared;
+            }
+
+            const prepared = data.detailLevel === detailLevel
+                ? node
+                : {
+                    ...node,
+                    data: {
+                        ...data,
+                        detailLevel,
+                    },
+                };
+            nextCache.set(node.id, { source: node, detailLevel, prepared });
+            return prepared;
+        });
+        graphNodeDetailCacheRef.current = nextCache;
+        recordFundamentalCounter('graph.render.detail-level', {
+            mode: graphRenderElements.mode,
+            zoomBucket: graphDetailZoomBucket,
+            viewportZoom: Number(viewportZoom.toFixed(3)),
+            nodeCount: renderedNodeCount,
+            visibleDetailNodeCount: visibleDetailNodeIds.size,
+            detailDensityNodeCount,
+            fullCount,
+            compactCount,
+            minimalCount,
+            reusedCount,
+        }, performance.now() - startedAt);
+        return nodes;
+    }, [activeGraphWindowSpatialIndex, graphDetailViewportVersion, graphDetailZoomBucket, graphRenderElements.mode, graphRenderElements.nodes, reactFlowInstance]);
+
+    useEffect(() => {
+        scheduleGraphDetailZoomBucketUpdate(180);
+    }, [graphRenderElements.mode, graphRenderElements.nodes.length, scheduleGraphDetailZoomBucketUpdate]);
+
     useEffect(() => {
         const previous = previousGraphRenderRefsRef.current;
         recordFundamentalCounter('graph.render.refs', {
             mode: graphRenderElements.mode,
-            nodeCount: graphRenderElements.nodes.length,
+            nodeCount: graphNodesForReactFlow.length,
             edgeCount: graphRenderElements.edges.length,
             runningCount,
             activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
-            nodesRefChanged: previous.nodes !== graphRenderElements.nodes,
+            nodesRefChanged: previous.nodes !== graphNodesForReactFlow,
             edgesRefChanged: previous.edges !== graphRenderElements.edges,
             focusedMessageId,
             viewportInteracting: isViewportInteractingRef.current,
         });
         previousGraphRenderRefsRef.current = {
-            nodes: graphRenderElements.nodes,
+            nodes: graphNodesForReactFlow,
             edges: graphRenderElements.edges,
         };
     }, [
@@ -4267,7 +4474,7 @@ function GraphViewInternal({
         focusedMessageId,
         graphRenderElements.edges,
         graphRenderElements.mode,
-        graphRenderElements.nodes,
+        graphNodesForReactFlow,
         runningCount,
         selectedWorkspaceId,
     ]);
@@ -4288,7 +4495,7 @@ function GraphViewInternal({
         measuredHeightsRef: measuredNodeHeights,
         layoutNodesRef: layoutNodes,
         layoutEdgesRef: layoutEdges,
-        renderNodesRef: graphRenderElements.nodes,
+        renderNodesRef: graphNodesForReactFlow,
         previewEdgesRef: graphRenderElements.edges,
         focusedMessageId,
         focusNonce,
@@ -4899,7 +5106,7 @@ function GraphViewInternal({
                                     <Profiler id="GraphSurface" onRender={graphProfilerOnRender}>
                                         <ReactFlow
                                             key={`graph-flow-${selectedWorkspaceId ?? 'none'}-${graphResetNonce}`}
-                                            nodes={graphRenderElements.nodes}
+                                            nodes={graphNodesForReactFlow}
                                             edges={graphRenderElements.edges}
                                             nodeTypes={nodeTypes}
                                             edgeTypes={edgeTypes}
@@ -4975,6 +5182,7 @@ function GraphViewInternal({
                                             }}
                                             onMoveEnd={(_event, viewport) => {
                                                 stopViewportInteraction(viewport);
+                                                scheduleGraphDetailZoomBucketUpdate(120);
                                                 if (graphRenderElements.mode === 'hold-visible') {
                                                     scheduleActiveGraphWindowUpdate('move-end', false);
                                                 }

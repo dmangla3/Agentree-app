@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, openSync, readFileSync, readSync, closeSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CHAT_HOT_PATH_HELPERS_SOURCE } from './tauri-pilot-chat-hot-path-lib.mjs';
 
 const OUT_DIR = process.env.AGENTREE_TAURI_PILOT_OUT_DIR ?? 'runtime-logs/tauri-pilot-diagnostics';
 const FRONTEND_LOG_PATH = process.env.AGENTREE_TAURI_PILOT_FRONTEND_LOG ?? 'runtime-logs/frontend.log';
@@ -13,6 +14,7 @@ const DISABLE_GRAPH_INTERACTIONS = process.env.AGENTREE_TAURI_PILOT_DISABLE_GRAP
 const DISABLE_GRAPH_CLICKS = process.env.AGENTREE_TAURI_PILOT_DISABLE_GRAPH_CLICKS === 'true';
 const GRAPH_INTERACTIONS_DURING_LAUNCH = process.env.AGENTREE_TAURI_PILOT_GRAPH_INTERACTIONS_DURING_LAUNCH !== 'false';
 const DISABLE_PERF_CAPTURE = process.env.AGENTREE_TAURI_PILOT_DISABLE_PERF_CAPTURE === 'true';
+const SKIP_CONVERGENCE_COLLECTION = process.env.AGENTREE_TAURI_PILOT_SKIP_CONVERGENCE_COLLECTION === 'true';
 const PROMPTS = (process.env.AGENTREE_TAURI_PILOT_PROMPTS
   ? JSON.parse(process.env.AGENTREE_TAURI_PILOT_PROMPTS)
   : [
@@ -60,6 +62,7 @@ const pilotEval = async (script, timeoutMs = 120000) => {
 
 const install = async () => pilotEval(`
 (() => {
+  ${CHAT_HOT_PATH_HELPERS_SOURCE}
   const label = ${JSON.stringify(LABEL)};
   const prompts = ${JSON.stringify(PROMPTS)};
   const testAgentModel = ${JSON.stringify(TEST_AGENT_MODEL)};
@@ -123,8 +126,10 @@ const install = async () => pilotEval(`
       return false;
     }
   };
-  const findComposer = () => document.querySelector('[data-testid="chat-composer-textarea"]') || document.querySelector('textarea');
-  const sendButton = () => document.querySelector('[data-testid="chat-send-button"]');
+  const chatHotPath = window.__AGENTREE_TAURI_PILOT_CHAT_HOT_PATH__;
+  const findComposer = () => chatHotPath.findComposer();
+  const statusButton = () => chatHotPath.findSendButton({ includeCancel: true });
+  const sendButton = () => chatHotPath.findSendButton();
   const installHarnessStyle = () => {
     const existing = document.getElementById('agentree-parallel-agent-flow-style');
     existing?.remove?.();
@@ -140,7 +145,7 @@ const install = async () => pilotEval(`
   const selectionDialogPresent = () => [...document.querySelectorAll('[role="status"], [role="dialog"], button, [data-state="open"]')]
     .some((element) => (element.textContent || '').includes('Select Merge Target'));
   const buttonLabel = () => {
-    const button = sendButton();
+    const button = statusButton();
     return button ? (button.getAttribute('aria-label') || button.textContent || '').trim() : null;
   };
   const graphCounts = () => ({
@@ -173,7 +178,7 @@ const install = async () => pilotEval(`
       visibility: document.visibilityState,
       hasFocus: document.hasFocus(),
       buttonLabel: buttonLabel(),
-      buttonDisabled: sendButton()?.disabled ?? null,
+      buttonDisabled: statusButton()?.disabled ?? null,
       textareaDisabled: textarea?.disabled ?? null,
       textareaValueLength: textarea?.value?.length ?? null,
       graph: graphCounts(),
@@ -223,7 +228,7 @@ const install = async () => pilotEval(`
     done: probe.done,
     sends: probe.sends,
     runningGraphInteractions: probe.runningGraphInteractions,
-    actions: probe.actions.slice(-120),
+    actions: probe.actions.slice(-400),
     samples: probe.samples.slice(-180),
     errors: probe.errors,
     maxRafGapMs: probe.maxRafGapMs,
@@ -243,7 +248,7 @@ const install = async () => pilotEval(`
     done: probe.done,
     sends: probe.sends,
     runningGraphInteractions: probe.runningGraphInteractions,
-    actions: probe.actions.slice(-80),
+    actions: probe.actions.slice(-200),
     samples: probe.samples.slice(-30),
     errors: probe.errors,
     maxRafGapMs: probe.maxRafGapMs,
@@ -427,7 +432,7 @@ const install = async () => pilotEval(`
     const labelText = buttonLabel();
     const runningCount = focusState()?.runningCount ?? 0;
     if ((labelText === 'Cancel sending message' || labelText === 'Cancel') && runningCount === 0) {
-      sendButton()?.click();
+      statusButton()?.click();
       await sleep(250);
       logAction('clear-stale-cancel-state', {
         actionLabel: label,
@@ -438,8 +443,9 @@ const install = async () => pilotEval(`
     }
   };
   const setPromptAndSend = async (prompt, index) => {
+    await chatHotPath.ensureChatHotPathReady({ waitMs: 5000, requireSendButton: false });
     const textarea = findComposer();
-    if (!textarea || !sendButton()) throw new Error('composer or send button missing');
+    if (!textarea) throw new Error('composer textarea missing');
     const before = sample('before-send-' + index);
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
     setter?.call(textarea, prompt);
@@ -480,7 +486,9 @@ const install = async () => pilotEval(`
       promptReadyWaitMs: Number((performance.now() - promptSetAt).toFixed(2)),
       textareaValueLength: findComposer()?.value?.length ?? null,
     });
-    sendButton()?.click();
+    const button = sendButton();
+    if (!button) throw new Error('send button missing after prompt for run ' + index);
+    button.click();
     const send = { index, at: new Date().toISOString(), elapsedMs: nowElapsed(), promptLength: prompt.length, blocked: false };
     for (let attempt = 0; attempt < 12; attempt += 1) {
       const startedEvent = latestFlowStartedAfter(send.at);
@@ -894,8 +902,12 @@ const install = async () => pilotEval(`
         zeroRunningSince = null;
       }
 
-      await panGraph('wait-terminals');
-      if (disableGraphClicks) {
+      if (disableGraphInteractions) {
+        logAction('graph-interactions-skipped', { actionLabel: 'wait-terminals' });
+      } else {
+        await panGraph('wait-terminals');
+      }
+      if (disableGraphInteractions || disableGraphClicks) {
         logAction('graph-click-skipped', { actionLabel: 'wait-terminals' });
       } else {
         await clickVisibleNode('wait-terminals', probe.sends.map((send) => send.optimisticAssistantMessageId));
@@ -1258,6 +1270,7 @@ const waitDoneFromPilot = async () => {
 
 const collect = async () => pilotEval(`
 (async () => {
+  const skipConvergenceCollection = ${JSON.stringify(SKIP_CONVERGENCE_COLLECTION)};
   const probe = window.__PARALLEL_AGENT_FLOW__;
   probe?.cleanup?.();
   try {
@@ -1358,10 +1371,12 @@ const collect = async () => pilotEval(`
     };
   };
   let convergence = null;
-  try {
-    convergence = await collectConvergence();
-  } catch (error) {
-    convergence = { error: String(error?.message || error), stack: error?.stack || null };
+  if (!skipConvergenceCollection) {
+    try {
+      convergence = await collectConvergence();
+    } catch (error) {
+      convergence = { error: String(error?.message || error), stack: error?.stack || null };
+    }
   }
   return {
     probe: window.__PARALLEL_AGENT_FLOW_SUMMARY__?.() ?? null,
@@ -1487,13 +1502,13 @@ const main = async () => {
     validationErrors.push('a subsequent send did not use the completed assistant node selected by the prior graph click');
   }
   const convergence = report.collect?.convergence ?? null;
-  if (report.collect && convergence?.error) {
+  if (!SKIP_CONVERGENCE_COLLECTION && report.collect && convergence?.error) {
     validationErrors.push(`convergence collection failed: ${convergence.error}`);
   }
-  if (report.collect && (convergence?.commitRunCount ?? 0) < 1) {
+  if (!SKIP_CONVERGENCE_COLLECTION && report.collect && (convergence?.commitRunCount ?? 0) < 1) {
     validationErrors.push('no run produced an output commit SHA');
   }
-  if (report.collect && (convergence?.visibleCommitRunCount ?? 0) < 1) {
+  if (!SKIP_CONVERGENCE_COLLECTION && report.collect && (convergence?.visibleCommitRunCount ?? 0) < 1) {
     validationErrors.push('no produced commit was visible in the local commit graph');
   }
   const graphEventContract = summarizeGraphEventContract(report.collect?.fundamentals, sendsStarted);

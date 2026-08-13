@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
 import { recordPerfEvent } from '../lib/perfRecorder';
+import { runCacheRefreshOperation } from '../lib/cacheRefreshPerf';
 import { catchUpHotSendMessageDeltas } from '../hooks/useHotSendMessageDeltas';
 import { localNodeKeys } from '../hooks/useLocalNodes';
 
@@ -28,7 +29,17 @@ const flushWorkspaceRefresh = (workspaceId: string) => {
   pendingByWorkspace.delete(workspaceId);
 
   const reason = Array.from(pending.reasons).join('+') || 'agent-run';
-  void pending.queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(workspaceId) });
+  void runCacheRefreshOperation({
+    phase: 'local-nodes.invalidate',
+    workspaceId,
+    reason,
+    queryKey: localNodeKeys.workspace(workspaceId),
+    refetchType: 'none',
+    source: 'agentRunWorkspaceRefresh',
+  }, () => pending.queryClient.invalidateQueries({
+    queryKey: localNodeKeys.workspace(workspaceId),
+    refetchType: 'none',
+  }));
   void scheduleMessagesRefreshWhenGraphIdle(pending.queryClient, workspaceId, { reason });
 
   if (pending.includeCommitGraph) {
@@ -38,26 +49,59 @@ const flushWorkspaceRefresh = (workspaceId: string) => {
       refetchActive: true,
     }, { source: 'agentRunWorkspaceRefresh' });
 
-    void pending.queryClient.invalidateQueries({
+    void runCacheRefreshOperation({
+      phase: 'local-commit-graph.invalidate',
+      workspaceId,
+      reason,
       queryKey: ['local-commit-graph', workspaceId],
       refetchType: 'none',
-    });
-    void pending.queryClient.invalidateQueries({
+      source: 'agentRunWorkspaceRefresh',
+    }, () => pending.queryClient.invalidateQueries({
+      queryKey: ['local-commit-graph', workspaceId],
+      refetchType: 'none',
+    }));
+    void runCacheRefreshOperation({
+      phase: 'local-commits.invalidate',
+      workspaceId,
+      reason,
       queryKey: ['local-commits', workspaceId],
       refetchType: 'none',
-    });
-    void pending.queryClient.refetchQueries({
+      source: 'agentRunWorkspaceRefresh',
+    }, () => pending.queryClient.invalidateQueries({
+      queryKey: ['local-commits', workspaceId],
+      refetchType: 'none',
+    }));
+    void runCacheRefreshOperation({
+      phase: 'local-commit-graph.refetch',
+      workspaceId,
+      reason,
+      queryKey: ['local-commit-graph', workspaceId],
+      refetchType: 'active',
+      source: 'agentRunWorkspaceRefresh',
+    }, () => pending.queryClient.refetchQueries({
       queryKey: ['local-commit-graph', workspaceId],
       type: 'active',
-    });
-    void pending.queryClient.refetchQueries({
+    }));
+    void runCacheRefreshOperation({
+      phase: 'local-commits.refetch',
+      workspaceId,
+      reason,
+      queryKey: ['local-commits', workspaceId],
+      refetchType: 'active',
+      source: 'agentRunWorkspaceRefresh',
+    }, () => pending.queryClient.refetchQueries({
       queryKey: ['local-commits', workspaceId],
       type: 'active',
-    });
+    }));
   }
 
   if (pending.catchUpHotDeltas) {
-    void catchUpHotSendMessageDeltas(pending.queryClient, workspaceId);
+    void runCacheRefreshOperation({
+      phase: 'hot-send-deltas.catch-up',
+      workspaceId,
+      reason,
+      source: 'agentRunWorkspaceRefresh',
+    }, () => catchUpHotSendMessageDeltas(pending.queryClient, workspaceId));
   }
 };
 

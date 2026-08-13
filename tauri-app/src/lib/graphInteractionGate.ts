@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { recordPerfEvent } from './perfRecorder';
+import { runCacheRefreshOperation } from './cacheRefreshPerf';
 
 const GRAPH_INTERACTION_IDLE_MS = 900;
 const GRAPH_INTERACTION_STALE_MS = 12_000;
@@ -56,10 +57,17 @@ const flushPendingMessageRefreshes = async () => {
       refetchActive,
       refetchType: refetchActive ? 'active' : 'none',
     }, { source: 'graphInteractionGate' });
-    await queryClient.invalidateQueries({
+    await runCacheRefreshOperation({
+      phase: 'messages.invalidate.flushed',
+      workspaceId,
+      reason: reason ?? null,
       queryKey: ['messages', workspaceId],
       refetchType: refetchActive ? 'active' : 'none',
-    });
+      source: 'graphInteractionGate',
+    }, () => queryClient.invalidateQueries({
+      queryKey: ['messages', workspaceId],
+      refetchType: refetchActive ? 'active' : 'none',
+    }));
   }));
 
   const pendingStructural = Array.from(pendingStructuralRefreshes.values());
@@ -79,20 +87,52 @@ const flushPendingMessageRefreshes = async () => {
       includeBranches,
       includeWorkspaces,
     }, { source: 'graphInteractionGate' });
-    await queryClient.invalidateQueries({
+    await runCacheRefreshOperation({
+      phase: 'graph-snapshot.invalidate.structural',
+      workspaceId,
+      reason: reason ?? null,
       queryKey: ['graph-snapshot', workspaceId],
       refetchType: refetchActiveMessages ? 'active' : 'none',
-    });
-    await queryClient.invalidateQueries({
+      source: 'graphInteractionGate',
+    }, () => queryClient.invalidateQueries({
+      queryKey: ['graph-snapshot', workspaceId],
+      refetchType: refetchActiveMessages ? 'active' : 'none',
+    }));
+    await runCacheRefreshOperation({
+      phase: 'messages.invalidate.structural',
+      workspaceId,
+      reason: reason ?? null,
       queryKey: ['messages', workspaceId],
       refetchType: refetchActiveMessages ? 'active' : 'none',
-    });
+      source: 'graphInteractionGate',
+    }, () => queryClient.invalidateQueries({
+      queryKey: ['messages', workspaceId],
+      refetchType: refetchActiveMessages ? 'active' : 'none',
+    }));
     if (includeBranches) {
-      await queryClient.invalidateQueries({ queryKey: ['branches', workspaceId] });
-      await queryClient.invalidateQueries({ queryKey: ['tracked-git-refs', workspaceId] });
+      await runCacheRefreshOperation({
+        phase: 'branches.invalidate.structural',
+        workspaceId,
+        reason: reason ?? null,
+        queryKey: ['branches', workspaceId],
+        source: 'graphInteractionGate',
+      }, () => queryClient.invalidateQueries({ queryKey: ['branches', workspaceId] }));
+      await runCacheRefreshOperation({
+        phase: 'tracked-git-refs.invalidate.structural',
+        workspaceId,
+        reason: reason ?? null,
+        queryKey: ['tracked-git-refs', workspaceId],
+        source: 'graphInteractionGate',
+      }, () => queryClient.invalidateQueries({ queryKey: ['tracked-git-refs', workspaceId] }));
     }
     if (includeWorkspaces) {
-      await queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+      await runCacheRefreshOperation({
+        phase: 'workspaces.invalidate.structural',
+        workspaceId,
+        reason: reason ?? null,
+        queryKey: ['workspaces'],
+        source: 'graphInteractionGate',
+      }, () => queryClient.invalidateQueries({ queryKey: ['workspaces'] }));
     }
   }));
 };
@@ -197,10 +237,17 @@ export const scheduleMessagesRefreshWhenGraphIdle = async (
       refetchActive: Boolean(options.refetchActive),
       refetchType: options.refetchActive ? 'active' : 'none',
     }, { source: 'graphInteractionGate' });
-    await queryClient.invalidateQueries({
+    await runCacheRefreshOperation({
+      phase: 'messages.invalidate.immediate',
+      workspaceId,
+      reason: options.reason ?? null,
       queryKey: ['messages', workspaceId],
       refetchType: options.refetchActive ? 'active' : 'none',
-    });
+      source: 'graphInteractionGate',
+    }, () => queryClient.invalidateQueries({
+      queryKey: ['messages', workspaceId],
+      refetchType: options.refetchActive ? 'active' : 'none',
+    }));
     return;
   }
 

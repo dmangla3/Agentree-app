@@ -33,6 +33,7 @@ export const GraphAssistantNode = memo(({
   isSelected,
   disableHoverCard,
   scopeColor,
+  detailLevel = 'full',
   heightKey,
   onMeasureHeight,
   hoverCardContent,
@@ -42,6 +43,8 @@ export const GraphAssistantNode = memo(({
 }: SharedNodeProps) => {
   const runStatus = useRunStatusStore(state => nodeId ? state.byNodeId[nodeId]?.status ?? null : null);
   const displayStatus = runStatus ?? entity.status;
+  const isFullDetail = detailLevel === 'full';
+  const isMinimalDetail = detailLevel === 'minimal';
 
   return (
     <GraphNodeWrapper
@@ -96,10 +99,20 @@ export const GraphAssistantNode = memo(({
         <StatusIcon status={displayStatus as any} />
       </div>
 
-      <p className="relative z-10 mb-2 line-clamp-2 flex-1 text-[12px] font-medium leading-snug text-zinc-900 dark:text-zinc-100">
-        {entity.preview}
-      </p>
+      {isMinimalDetail ? (
+        <div className="relative z-10 flex min-h-0 flex-1 items-center">
+          <div className="h-1.5 w-full rounded-full bg-zinc-200/70 dark:bg-zinc-800/75" />
+        </div>
+      ) : (
+        <p className={cn(
+          'relative z-10 mb-2 flex-1 text-[12px] font-medium leading-snug text-zinc-900 dark:text-zinc-100',
+          isFullDetail ? 'line-clamp-2' : 'line-clamp-1',
+        )}>
+          {entity.preview}
+        </p>
+      )}
 
+      {isFullDetail && (
       <div className="relative z-10 mt-auto flex items-center gap-3 border-t border-zinc-200/80 pt-1.5 text-[10px] text-zinc-500 dark:border-zinc-800/80 dark:text-zinc-400">
         {entity.toolCallCount !== undefined && entity.toolCallCount > 0 && (
           <div
@@ -129,6 +142,7 @@ export const GraphAssistantNode = memo(({
           </div>
         )}
       </div>
+      )}
     </GraphNodeWrapper>
   );
 });

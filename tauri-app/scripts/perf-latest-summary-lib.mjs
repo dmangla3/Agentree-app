@@ -45,6 +45,10 @@ const latestPerfSummaryPath = async (root) => {
   return latestByMtime(candidates);
 };
 
+const perfEventsPathForSummaryPath = (summaryPath) => (
+  summaryPath ? path.join(path.dirname(summaryPath), 'perf-events.json') : null
+);
+
 const latestPilotReportPath = async (root) => {
   const pilotRoot = path.join(root, PILOT_REPORT_ROOT);
   const entries = await listFiles(pilotRoot);
@@ -73,6 +77,129 @@ const boolValue = (value) => (
 const duration = (value) => valueOrDash(numberOrNull(value), 'ms');
 
 const coalesce = (...values) => values.find((value) => value !== null && value !== undefined);
+
+const parseTimestampMs = (value) => {
+  const parsed = Date.parse(value || '');
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const stallKind = (eventName) => {
+  if (eventName === 'runtime.raf-stall') return 'raf';
+  if (eventName === 'runtime.event-loop-stall') return 'eventLoop';
+  return null;
+};
+
+const lifecyclePhaseForRuntimeActivity = (event) => {
+  const category = String(event?.details?.runtimeActivityCategory ?? '').toLowerCase();
+  const name = String(event?.details?.runtimeActivityName ?? '').toLowerCase();
+  if (category === 'cache-refresh' || name.includes('cache-refresh')) return 'cache-refresh';
+  if (name.includes('worktree')) return 'worktree';
+  if (name.includes('spawn')) return 'spawn';
+  if (name.includes('commit-graph') || name.includes('commit graph')) return 'commit-graph';
+  return null;
+};
+
+const lifecyclePhaseForEvent = (event) => {
+  const name = event?.name ?? '';
+  const markName = event?.details?.markName ?? '';
+  const combined = `${name} ${markName}`.toLowerCase();
+  if (combined.includes('worktree')) return 'worktree';
+  if (combined.includes('spawn')) return 'spawn';
+  if (combined.includes('mcp_setup') || combined.includes('mcp-setup')) return 'mcp-setup';
+  if (combined.includes('finalize') || combined.includes('lifecycle.completed') || combined.includes('lifecycle.failed') || combined.includes('lifecycle.cancelled')) {
+    return 'finalization';
+  }
+  if (combined.includes('query.cache-refresh') || combined.includes('query.messages.refresh') || combined.includes('local-first') || combined.includes('local_node') || combined.includes('local-node')) {
+    return 'cache-refresh';
+  }
+  if (combined.includes('graph.commit') || combined.includes('commit graph') || combined.includes('commit-graph')) return 'commit-graph';
+  if (combined.includes('first_tauri') || combined.includes('first_assistant') || combined.includes('tauri_stream_registered')) return 'streaming';
+  return null;
+};
+
+const emptyPhaseBucket = () => ({
+  eventLoopCount: 0,
+  eventLoopMaxMs: null,
+  rafCount: 0,
+  rafMaxMs: null,
+  totalCount: 0,
+});
+
+const addStallToBucket = (bucket, kind, durationMs) => {
+  bucket.totalCount += 1;
+  if (kind === 'eventLoop') {
+    bucket.eventLoopCount += 1;
+    bucket.eventLoopMaxMs = Math.max(bucket.eventLoopMaxMs ?? 0, durationMs);
+    return;
+  }
+  if (kind === 'raf') {
+    bucket.rafCount += 1;
+    bucket.rafMaxMs = Math.max(bucket.rafMaxMs ?? 0, durationMs);
+  }
+};
+
+export const summarizeRuntimeStallsByPhase = (events, options = {}) => {
+  const windowMs = options.windowMs ?? 2000;
+  const phaseEvents = [];
+  const stalls = [];
+
+  for (const event of Array.isArray(events) ? events : []) {
+    const tsMs = parseTimestampMs(event?.ts);
+    if (tsMs === null) continue;
+    const kind = stallKind(event?.name);
+    if (kind) {
+      const durationMs = numberOrNull(event?.durationMs);
+      if (durationMs === null) continue;
+      stalls.push({ kind, tsMs, durationMs, phaseHint: lifecyclePhaseForRuntimeActivity(event) });
+      continue;
+    }
+    const phase = lifecyclePhaseForEvent(event);
+    if (phase) {
+      phaseEvents.push({ phase, tsMs });
+    }
+  }
+
+  const buckets = {};
+  for (const stall of stalls) {
+    let phase = stall.phaseHint ?? null;
+    if (!phase) {
+      let nearest = null;
+      for (const phaseEvent of phaseEvents) {
+        const distanceMs = Math.abs(stall.tsMs - phaseEvent.tsMs);
+        if (distanceMs > windowMs) continue;
+        if (!nearest || distanceMs < nearest.distanceMs) {
+          nearest = { phase: phaseEvent.phase, distanceMs };
+        }
+      }
+      phase = nearest?.phase ?? 'unclassified';
+    }
+    buckets[phase] ??= emptyPhaseBucket();
+    addStallToBucket(buckets[phase], stall.kind, stall.durationMs);
+  }
+
+  return Object.fromEntries(Object.entries(buckets).sort(([left], [right]) => left.localeCompare(right)));
+};
+
+export const summarizeRuntimeStallsByActivity = (events) => {
+  const buckets = {};
+  for (const event of Array.isArray(events) ? events : []) {
+    const kind = stallKind(event?.name);
+    if (!kind) continue;
+    const durationMs = numberOrNull(event?.durationMs);
+    if (durationMs === null) continue;
+    const category = typeof event?.details?.runtimeActivityCategory === 'string'
+      ? event.details.runtimeActivityCategory
+      : null;
+    const activityName = typeof event?.details?.runtimeActivityName === 'string'
+      ? event.details.runtimeActivityName
+      : null;
+    if (!category && !activityName) continue;
+    const key = `${category ?? 'activity'}:${activityName ?? 'unknown'}`;
+    buckets[key] ??= emptyPhaseBucket();
+    addStallToBucket(buckets[key], kind, durationMs);
+  }
+  return Object.fromEntries(Object.entries(buckets).sort(([left], [right]) => left.localeCompare(right)));
+};
 
 const summarizeFlow = (flow) => {
   const durations = flow?.durationsMs ?? {};
@@ -115,6 +242,12 @@ const summarizePerfCapture = (root, entry, data) => {
     flows,
   };
 };
+
+const summarizePhaseBuckets = (phaseBuckets) => (
+  Object.entries(phaseBuckets ?? {})
+    .map(([phase, bucket]) => `${phase}:raf=${bucket.rafCount}/${duration(bucket.rafMaxMs)},event=${bucket.eventLoopCount}/${duration(bucket.eventLoopMaxMs)}`)
+    .join(' | ') || '-'
+);
 
 const summarizePilotReport = (root, entry, data) => {
   if (!entry || !data) return null;
@@ -170,9 +303,16 @@ export const collectLatestPerfSummary = async (root = process.cwd()) => {
     perfEntry ? safeJson(perfEntry.filePath) : null,
     pilotEntry ? safeJson(pilotEntry.filePath) : null,
   ]);
+  const perfEventsPath = perfEntry ? perfEventsPathForSummaryPath(perfEntry.filePath) : null;
+  const perfEvents = perfEventsPath ? await safeJson(perfEventsPath) : null;
+  const perfCapture = summarizePerfCapture(root, perfEntry, perfData);
   return {
     root,
-    perfCapture: summarizePerfCapture(root, perfEntry, perfData),
+    perfCapture: perfCapture ? {
+      ...perfCapture,
+      runtimePhaseBuckets: summarizeRuntimeStallsByPhase(perfEvents),
+      runtimeActivityBuckets: summarizeRuntimeStallsByActivity(perfEvents),
+    } : null,
     pilotReport: summarizePilotReport(root, pilotEntry, pilotData),
   };
 };
@@ -190,6 +330,8 @@ export const formatPerfSummary = (summary) => {
       `path: ${perf.path}`,
       `session: ${valueOrDash(perf.sessionLabel)} (${valueOrDash(perf.sessionId)})`,
       `runtime: event-loop: stalls=${perf.runtime.eventLoopStallCount} freezes=${perf.runtime.eventLoopFreezeCount} max=${duration(perf.runtime.maxEventLoopStallMs)} | raf: stalls=${perf.runtime.rafStallCount} freezes=${perf.runtime.rafFreezeCount} max=${duration(perf.runtime.maxRafStallMs)} | longTasks=${perf.runtime.longTaskCount} max=${duration(perf.runtime.maxLongTaskMs)}`,
+      `runtime phases: ${summarizePhaseBuckets(perf.runtimePhaseBuckets)}`,
+      `runtime active: ${summarizePhaseBuckets(perf.runtimeActivityBuckets)}`,
       `flows: ${perf.flowCount} findings=${perf.findingsCount}`,
       ...perf.flows.slice(0, 5).map((flow) => (
         `flow ${flow.flowId}: status=${flow.status} prompt=${flow.promptLength} firstRuntime=${flow.firstRuntime} firstText=${flow.firstText} text->project=${flow.textToProject} project->visible=${flow.projectToVisible} text->visible=${flow.textToVisible} terminal=${flow.terminal} findings=${flow.findings}`

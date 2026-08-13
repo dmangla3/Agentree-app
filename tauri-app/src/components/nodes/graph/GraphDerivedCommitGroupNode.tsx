@@ -1,10 +1,11 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { GitCommitVertical, Layers3, Rows3 } from 'lucide-react';
 import type { ProjectedCommitEntity, ProjectedCommitGroup, WorkspaceProjection } from '../../../domain/workspaceProjection';
 import { cn } from '../../../lib/utils';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../../@/components/ui/hover-card';
 import { RichCommitRow } from './GraphCommitHoverCard';
+import type { GraphNodeDetailLevel } from '../../../lib/graphNodeDetailLevel';
 
 interface GraphDerivedCommitGroupNodeProps {
   group: ProjectedCommitGroup;
@@ -12,6 +13,7 @@ interface GraphDerivedCommitGroupNodeProps {
   isFocused?: boolean;
   isSelected?: boolean;
   isComposerBaseCommit?: boolean;
+  detailLevel?: GraphNodeDetailLevel;
   onCommitSelectBase?: (commit: ProjectedCommitEntity) => void;
 }
 
@@ -85,6 +87,7 @@ export const GraphDerivedCommitGroupNode = memo(({
   isFocused = false,
   isSelected = false,
   isComposerBaseCommit = false,
+  detailLevel = 'full',
   onCommitSelectBase,
 }: GraphDerivedCommitGroupNodeProps) => {
   const commits = group.commitShas
@@ -97,7 +100,10 @@ export const GraphDerivedCommitGroupNode = memo(({
   const hoverCardCommits = [...visibleCommits].sort((left, right) => (
     right.sortTs - left.sortTs || right.sha.localeCompare(left.sha)
   ));
-  const previewCommits = visibleCommits.slice(-2);
+  const isFullDetail = detailLevel === 'full';
+  const isMinimalDetail = detailLevel === 'minimal';
+  const [hoverOpen, setHoverOpen] = useState(false);
+  const previewCommits = isMinimalDetail ? [] : visibleCommits.slice(isFullDetail ? -2 : -1);
   const hiddenPreviewCount = Math.max(0, group.commitShas.length - previewCommits.length);
   const batchNode = (
     <div
@@ -127,7 +133,7 @@ export const GraphDerivedCommitGroupNode = memo(({
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col justify-center gap-1 overflow-hidden">
-          {hiddenPreviewCount > 0 ? (
+          {!isMinimalDetail && hiddenPreviewCount > 0 ? (
             <div className="flex items-center gap-1 rounded-[5px] border border-emerald-200/55 bg-emerald-100/70 px-1.5 py-1 text-[8px] font-semibold leading-none text-emerald-800 dark:border-emerald-800/60 dark:bg-emerald-950/55 dark:text-emerald-300">
               <Rows3 size={8} />
               {hiddenPreviewCount} earlier
@@ -138,10 +144,12 @@ export const GraphDerivedCommitGroupNode = memo(({
           ))}
         </div>
 
+        {isFullDetail && (
         <div className="flex items-center justify-between gap-1 border-t border-emerald-300/50 pt-1 text-[8px] font-semibold leading-none text-emerald-700 dark:border-emerald-800/80 dark:text-emerald-300">
           <span>{group.commitShas.length} commits</span>
           <span className="font-medium text-emerald-700/70 dark:text-emerald-300/70">hover</span>
         </div>
+        )}
       </div>
 
       <Handle
@@ -172,12 +180,14 @@ export const GraphDerivedCommitGroupNode = memo(({
   );
 
   return (
-    <HoverCard openDelay={160} closeDelay={140}>
+    <HoverCard open={hoverOpen} onOpenChange={setHoverOpen} openDelay={160} closeDelay={140}>
       <HoverCardTrigger asChild>
         {batchNode}
       </HoverCardTrigger>
       <HoverCardContent side="right" align="center" sideOffset={10} className="z-[210] w-auto border-none bg-transparent p-0 shadow-none">
-        <CommitBatchHoverCard group={group} label={label} commits={hoverCardCommits} onCommitSelectBase={onCommitSelectBase} />
+        {hoverOpen ? (
+          <CommitBatchHoverCard group={group} label={label} commits={hoverCardCommits} onCommitSelectBase={onCommitSelectBase} />
+        ) : null}
       </HoverCardContent>
     </HoverCard>
   );

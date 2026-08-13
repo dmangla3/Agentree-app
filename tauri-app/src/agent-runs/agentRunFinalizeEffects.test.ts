@@ -240,6 +240,7 @@ describe('agentRun finalize effects', () => {
 
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
       queryKey: ['local-nodes', 'workspace-1'],
+      refetchType: 'none',
     });
     expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({
       queryKey: ['local-commit-graph', 'workspace-1'],

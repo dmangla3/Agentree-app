@@ -48,6 +48,13 @@ import {
     type ComposerTargetMode,
 } from '../lib/composerSendParent';
 import {
+    createComposerSendStartGate,
+    finishComposerSendStart,
+    shouldShowComposerCancel,
+    tryBeginComposerSendStart,
+    type ActiveComposerSend,
+} from '../lib/composerCancelState';
+import {
     buildRepoMentionSearchIndex,
     extractRepoMentionPaths,
     getMentionedRepoPathSet,
@@ -59,6 +66,7 @@ import {
     scheduleMessagesRefreshWhenGraphIdle,
 } from '../lib/graphInteractionGate';
 import { createSendFlowId, recordSendFlowEvent, recordSendFlowMark } from '../perf/sendFlow';
+import { withRuntimeActivity } from '../perf/runtimeActivityContext';
 import {
     clearAgentRunVisibilityTrace,
     recordAssistantTextProjected,
@@ -718,7 +726,8 @@ export function ChatInput({
     // Removed isModelDialogOpen
     const [_isWebSearchEnabled] = useState(false); // Kept state but removed UI toggle
     const [currentAbortController, setCurrentAbortController] = useState<AbortController | null>(null);
-    const [, setActiveComposerSend] = useState<{ flowId: string; nodeIds: string[] } | null>(null);
+    const [activeComposerSend, setActiveComposerSend] = useState<ActiveComposerSend | null>(null);
+    const composerSendStartGateRef = useRef(createComposerSendStartGate());
     const streamHandlerMapRef = useRef<Map<string, (event: Record<string, any>) => void>>(new Map());
     const latencyTraceRef = useRef<Map<string, {
         traceId: string;
@@ -2297,7 +2306,11 @@ export function ChatInput({
             : parentStatus === AGENT_STATUS.running
                 ? 'Parent running'
                 : 'Parent still running';
-    const showCancel = isSelectedNodeRunning && !isNewThreadTarget;
+    const showCancel = shouldShowComposerCancel({
+        activeComposerSend,
+        isNewThreadTarget,
+        isSelectedNodeRunning,
+    });
     const effectiveScopeModeForReply = 'inherit' as const;
     const effectiveScopeIdForReply = useMemo<string | null>(() => {
         if (replyParentMessageId) return branchParentScopeId;
@@ -2951,6 +2964,39 @@ export function ChatInput({
             }, { source: 'ChatInput' });
             return;
         }
+        if (!tryBeginComposerSendStart(composerSendStartGateRef.current)) {
+            sendFlowDebug('Ignoring duplicate send while composer send is arming');
+            return;
+        }
+
+        const flowId = createSendFlowId();
+        const controller = new AbortController();
+        setCurrentAbortController(controller);
+        setActiveComposerSend({
+            flowId,
+            nodeIds: [],
+            preferredNodeId: null,
+            workspaceId: selectedWorkspaceId,
+        });
+        recordSendFlowEvent('cancel.affordance-armed', {
+            flowId,
+            workspaceId: selectedWorkspaceId,
+            phase: 'pre-optimistic',
+        }, { source: 'ChatInput' });
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        if (controller.signal.aborted) {
+            setCurrentAbortController(null);
+            setActiveComposerSend(null);
+            finishComposerSendStart(composerSendStartGateRef.current);
+            recordSendFlowEvent('lifecycle.cancelled', {
+                flowId,
+                workspaceId: selectedWorkspaceId,
+                errorType: 'CANCELLED',
+                errorMessage: 'Request was cancelled before optimistic nodes were created.',
+            }, { source: 'ChatInput' });
+            return;
+        }
+
         const agentTypesForReadiness = Array.from(new Set(
             agentRunItemsForSend
                 .map((run) => run.agent.type)
@@ -3140,9 +3186,9 @@ export function ChatInput({
         });
 
         const operationKey = optimisticPair.assistantMessageId || optimisticPair.userMessageId;
-        const flowId = createSendFlowId();
         sendAcceptanceInFlightRef.current = true;
         setIsSendAcceptanceInFlight(true);
+        finishComposerSendStart(composerSendStartGateRef.current);
         assignSendFlowKey(operationKey, flowId);
         optimisticUserMessageIds.forEach((userMessageId) => assignSendFlowKey(userMessageId, flowId));
         optimisticAssistantMessageIds.forEach((assistantMessageId) => assignSendFlowKey(assistantMessageId, flowId));
@@ -3159,7 +3205,6 @@ export function ChatInput({
             sendParentMessageId,
             ...optimisticNodeIds,
         ].filter((value): value is string => typeof value === 'string' && value.length > 0);
-        const controller = new AbortController();
         const releaseSendAcceptance = (reason: string) => {
             if (!sendAcceptanceInFlightRef.current) return;
             sendAcceptanceInFlightRef.current = false;
@@ -3225,7 +3270,12 @@ export function ChatInput({
             ownerFocusNonce: focusStateAtSendStart.focusNonce,
             phase: 'optimistic-user',
         });
-        setActiveComposerSend({ flowId, nodeIds: optimisticNodeIds });
+        setActiveComposerSend({
+            flowId,
+            nodeIds: optimisticNodeIds,
+            preferredNodeId: optimisticPair.assistantMessageId ?? optimisticPair.userMessageId,
+            workspaceId: selectedWorkspaceId,
+        });
         for (const userMessage of optimisticUserMessages) {
             seedAgentRunProjection(userMessage.id, userMessage);
         }
@@ -3827,6 +3877,7 @@ export function ChatInput({
             agentSetupControllersRef.current.delete(operationKey);
         }
         } catch (sendError) {
+            finishComposerSendStart(composerSendStartGateRef.current);
             console.error('[SEND_FLOW] Uncaught error in handleSend:', sendError);
             addToast({
                 title: 'Send Error',
@@ -4006,10 +4057,21 @@ export function ChatInput({
             // Set MCP tokens
             setSetupProgress(nodeId, 'Setting up MCP...');
             recordLatencyMark(nodeId, 'mcp_setup_started', { authToken, nodeId });
-            const { promise: mcpSetupPromise, reused: mcpSetupReused } = ensureMcpSetup(authToken, assistantMsg.workspaceId);
+            const mcpSetupFlowId = getSendFlowIdForKey(nodeId);
+            const { promise: rawMcpSetupPromise, reused: mcpSetupReused } = ensureMcpSetup(authToken, assistantMsg.workspaceId);
+            const mcpSetupPromise = withRuntimeActivity({
+                category: 'host',
+                name: 'agent-setup.mcp-setup',
+                details: {
+                    flowId: mcpSetupFlowId,
+                    workspaceId: assistantMsg.workspaceId,
+                    nodeId,
+                    reused: mcpSetupReused,
+                },
+            }, () => rawMcpSetupPromise);
             if (mcpSetupReused) {
                 recordSendFlowEvent('agent-setup.mcp-setup.reused', {
-                    flowId: getSendFlowIdForKey(nodeId),
+                    flowId: mcpSetupFlowId,
                     workspaceId: assistantMsg.workspaceId,
                     nodeId,
                     state: mcpSetupReused,
@@ -4029,7 +4091,15 @@ export function ChatInput({
                 nodeId,
             }, { source: 'ChatInput' });
 
-            const { repoPath } = await resolveWorkspaceWorkspace();
+            const { repoPath } = await withRuntimeActivity({
+                category: 'host',
+                name: 'agent-setup.workspace-resolve',
+                details: {
+                    flowId: getSendFlowIdForKey(nodeId),
+                    workspaceId: assistantMsg.workspaceId,
+                    nodeId,
+                },
+            }, () => resolveWorkspaceWorkspace());
             const baseMessage = getMessageById(messageLookupMessages, baseMessageId);
             const contextParentMessage = getMessageById(messageLookupMessages, contextParentMessageId) || baseMessage;
             const parentCommit = effectiveBaseCommitSha || resolveNodeCommit(baseMessage, messageLookupMessages, null);
@@ -4358,7 +4428,18 @@ export function ChatInput({
                 },
             };
             const spawnFlowId = getSendFlowIdForKey(nodeId);
-            void agentClient.startAgentRun(startAgentRunIntent).then((startRunResponse) => {
+            void withRuntimeActivity({
+                category: 'host',
+                name: 'agent-setup.worktree-spawn',
+                details: {
+                    flowId: spawnFlowId,
+                    workspaceId: assistantMsg.workspaceId,
+                    nodeId,
+                    runId,
+                    agentType: selectedAgent!.type,
+                    provider: selectedProvider,
+                },
+            }, () => agentClient.startAgentRun(startAgentRunIntent)).then((startRunResponse) => {
                 recordLatencyMark(nodeId, 'worktree_create_finished', {
                     authToken,
                     nodeId,

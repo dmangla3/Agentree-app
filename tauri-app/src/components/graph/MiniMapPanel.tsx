@@ -1,6 +1,7 @@
 import { type Node, type Viewport, useReactFlow, useStore } from '@xyflow/react';
 import { useCallback, useMemo, useRef } from 'react';
 import { Eye, EyeOff, LocateFixed, Maximize2, Minimize2 } from 'lucide-react';
+import { shallow } from 'zustand/shallow';
 import { cn } from '../../lib/utils';
 import { type MinimapPosition, useMinimapStore } from '../../stores/minimapStore';
 import { LlmNodeData, extractColorFromClasses } from '../../lib/graphUtils';
@@ -178,14 +179,27 @@ export function MiniMapPanel() {
     const pointerStateRef = useRef<{ pointerId: number; x: number; y: number; dragged: boolean } | null>(null);
     const { setCenter, getZoom } = useReactFlow();
     const minimapSize = isExpanded ? MINIMAP_EXPANDED_SIZE : MINIMAP_COLLAPSED_SIZE;
+    const { nodeLookup, nodes } = useStore((state) => ({
+        nodeLookup: state.nodeLookup,
+        nodes: state.nodes,
+    }), shallow);
+    const { viewport, flowWidth, flowHeight } = useStore((state) => ({
+        viewport: {
+            x: state.transform[0],
+            y: state.transform[1],
+            zoom: state.transform[2],
+        } as Viewport,
+        flowWidth: state.width,
+        flowHeight: state.height,
+    }), shallow);
 
-    const { shapes, dividerRects, viewport, flowWidth, flowHeight, selectedCount, focusedCount } = useStore((state) => {
+    const { shapes, dividerRects, selectedCount, focusedCount } = useMemo(() => {
         const nextShapes: MinimapNodeShape[] = [];
         const dividerNodes: Node<any>[] = [];
         let nextSelectedCount = 0;
         let nextFocusedCount = 0;
 
-        state.nodeLookup.forEach((internalNode: any) => {
+        nodeLookup.forEach((internalNode: any) => {
             const userNode = internalNode.internals?.userNode as Node<any> | undefined;
             if (!userNode || userNode.hidden) return;
             const data = userNode.data as (LlmNodeData & { isFocused?: boolean; isInContextPath?: boolean }) | undefined;
@@ -206,17 +220,10 @@ export function MiniMapPanel() {
         return {
             shapes: nextShapes,
             dividerRects: getThreadDividerRectsFromNodes(dividerNodes, new Map()),
-            viewport: {
-                x: state.transform[0],
-                y: state.transform[1],
-                zoom: state.transform[2],
-            } as Viewport,
-            flowWidth: state.width,
-            flowHeight: state.height,
             selectedCount: nextSelectedCount,
             focusedCount: nextFocusedCount,
         };
-    });
+    }, [nodeLookup, nodes]);
 
     const zoomLabel = `${Math.round((viewport.zoom || 1) * 100)}%`;
 

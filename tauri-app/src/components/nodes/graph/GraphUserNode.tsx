@@ -11,6 +11,7 @@ export const GraphUserNode = memo(({
   isSelected,
   disableHoverCard,
   scopeColor,
+  detailLevel = 'full',
   heightKey,
   onMeasureHeight,
   hoverCardContent,
@@ -18,6 +19,8 @@ export const GraphUserNode = memo(({
   onSelect,
   onContextMenu,
 }: SharedNodeProps) => {
+  const isMinimalDetail = detailLevel === 'minimal';
+
   return (
     <GraphNodeWrapper
       nodeId={nodeId}
@@ -54,9 +57,16 @@ export const GraphUserNode = memo(({
               User
             </span>
           </div>
-          <p className="line-clamp-2 text-[12px] font-medium leading-snug text-zinc-800 dark:text-zinc-100">
-            {entity.preview}
-          </p>
+          {isMinimalDetail ? (
+            <div className="mt-3 h-1.5 w-full rounded-full bg-zinc-200/75 dark:bg-zinc-800/75" />
+          ) : (
+            <p className={cn(
+              'text-[12px] font-medium leading-snug text-zinc-800 dark:text-zinc-100',
+              detailLevel === 'compact' ? 'line-clamp-1' : 'line-clamp-2',
+            )}>
+              {entity.preview}
+            </p>
+          )}
         </div>
       </div>
     </GraphNodeWrapper>
