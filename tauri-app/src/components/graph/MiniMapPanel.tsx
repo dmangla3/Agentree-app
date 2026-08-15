@@ -32,6 +32,7 @@ const MINIMAP_CONTENT_PADDING = 96;
 const MINIMAP_PAN_CLICK_DURATION = 180;
 const MINIMAP_PAN_DRAG_DURATION = 0;
 const MINIMAP_DRAG_THRESHOLD = 4;
+const minimapLayerClass = "z-[30]";
 const MINIMAP_POSITIONS: Array<{ value: MinimapPosition; label: string; className: string }> = [
     { value: 'top-left', label: 'Top left', className: 'left-0 top-0' },
     { value: 'top-right', label: 'Top right', className: 'right-0 top-0' },
@@ -247,7 +248,7 @@ export function MiniMapPanel() {
     }, [flowHeight, flowWidth, minimapSize.height, minimapSize.width, viewBox, viewport]);
 
     const threadBands = useMemo(() => {
-        return buildThreadBands(dividerRects, { padding: 180, horizontalPadding: 56 });
+        return buildThreadBands(dividerRects, { padding: 180, horizontalPadding: 56, equalVerticalExtent: true });
     }, [dividerRects]);
 
     const centerOnMinimapPoint = useCallback(
@@ -354,7 +355,7 @@ export function MiniMapPanel() {
 
     if (!isVisible) {
         return (
-            <div className={cn("absolute z-[200]", positionClass)}>
+            <div className={cn("absolute", minimapLayerClass, positionClass)}>
                 <button
                     type="button"
                     onClick={() => setVisible(true)}
@@ -375,7 +376,7 @@ export function MiniMapPanel() {
     }
 
     return (
-        <div className={cn("absolute z-[200]", positionClass)}>
+        <div className={cn("absolute", minimapLayerClass, positionClass)}>
             <div
                 className={cn(
                     "group isolate overflow-hidden rounded-xl border transition-all duration-300 ease-out",

@@ -1,7 +1,7 @@
 {
   "name": "tauri-app",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.1.9",
   "type": "module",
   "scripts": {
     "dev": "npm run dev:infisical",
@@ -12,6 +12,8 @@
     "build:infisical": "infisical run --env=prod --path=/tauri-app -- npm run build:raw",
     "preview": "vite preview",
     "perf:send-flow:tauri": "node ./tests/perf/tauri-pilot-send-flow-autonomous.mjs",
+    "perf:send-click-feedback:tauri": "node ./tests/perf/tauri-pilot-click-feedback-flow.mjs",
+    "perf:one-running-retarget:tauri": "node ./tests/perf/tauri-pilot-one-running-retarget-flow.mjs",
     "perf:send-flow:tauri:polling": "node ./tests/perf/tauri-pilot-send-flow-repro.mjs",
     "perf:composer-typing:tauri": "node ./tests/perf/tauri-pilot-composer-typing-latency.mjs",
     "perf:scroll-behavior:tauri": "node ./tests/perf/tauri-pilot-scroll-behavior-flow.mjs",
@@ -42,7 +44,7 @@
     "test:graph": "vitest run src/lib/graphLayoutGeometry.test.ts src/lib/graphThreadRoots.test.ts src/lib/graphSubgraphScope.test.ts src/hooks/graph src/components/GraphView.focusMove.test.ts src/components/graph src/components/nodes/graph src/mocks/frontendProjection.msw.test.ts",
     "test:send": "vitest run src/agent-runs src/components/ChatInput.popupLayering.test.ts src/lib/composerSendParent.test.ts src/lib/composerAgentRuns.test.ts src/perf/sendFlow.test.ts",
     "test:rust": "cd src-tauri && cargo test",
-    "test:perf:deterministic": "vitest run src/perf scripts/perf-latest-summary.test.mjs tests/perf/tauri-pilot-chat-hot-path-lib.test.mjs src/mocks/frontendProjection.msw.test.ts src/hooks/graph/useGraphLayout.visualReuse.test.tsx src/lib/graphLayoutGeometry.test.ts",
+    "test:perf:deterministic": "vitest run src/perf scripts/perf-latest-summary.test.mjs tests/perf/tauri-pilot-chat-hot-path-lib.test.mjs tests/perf/tauri-pilot-click-feedback-lib.test.mjs src/mocks/frontendProjection.msw.test.ts src/hooks/graph/useGraphLayout.visualReuse.test.tsx src/lib/graphLayoutGeometry.test.ts",
     "test:perf:pilot": "npm run smoke:send-flow:tauri && npm run perf:send-flow:tauri && npm run perf:cancel:tauri && npm run perf:composer-typing:tauri && npm run perf:scroll-behavior:tauri && npm run perf:graph-100:tauri && npm run perf:parallel:tauri",
     "test:agent-runs": "vitest run src/agent-runs/*.test.ts",
     "test:msw": "vitest run src/mocks",

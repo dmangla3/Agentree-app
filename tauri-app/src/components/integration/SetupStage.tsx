@@ -601,6 +601,7 @@ export function SetupStage() {
           context_parent_node_id: userNodeId,
           context_base_node_id: graphParentId,
           provider: selectedAgent.type,
+          llmModel: modelId,
           provider_model: modelId,
         },
       };

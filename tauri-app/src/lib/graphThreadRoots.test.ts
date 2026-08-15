@@ -3,6 +3,7 @@ import type { Message } from '../stores/workspaceStore';
 import {
   buildThreadRootIndex,
   getHiddenConversationMessageIds,
+  getLatestThreadMessageId,
   getThreadDescendantIds,
   getThreadRootId,
 } from './graphThreadRoots';
@@ -137,5 +138,32 @@ describe('graph thread roots', () => {
       'thread-a-child',
       'thread-b',
     ]);
+  });
+
+  it('returns the newest conversation message in a thread', () => {
+    const messages = [
+      {
+        ...makeMessage('thread-a', 'user', null),
+        createdAt: '2026-05-19T00:00:00.000Z',
+      },
+      {
+        ...makeMessage('assistant-a', 'assistant', 'thread-a'),
+        createdAt: '2026-05-19T00:01:00.000Z',
+      },
+      {
+        ...makeMessage('thread-a-followup', 'user', 'assistant-a'),
+        createdAt: '2026-05-19T00:02:00.000Z',
+      },
+      {
+        ...makeMessage('assistant-a-followup', 'assistant', 'thread-a-followup'),
+        createdAt: '2026-05-19T00:03:00.000Z',
+      },
+      {
+        ...makeMessage('thread-b', 'user', null),
+        createdAt: '2026-05-19T00:04:00.000Z',
+      },
+    ];
+
+    expect(getLatestThreadMessageId('thread-a', messages)).toBe('assistant-a-followup');
   });
 });

@@ -7,6 +7,7 @@ import { withHexAlpha } from '../../../lib/visualTokens';
 import type { AgentStatus } from '@shared/agentStatus';
 import { getAgentVisualState } from '../../../lib/agentStateUI';
 import { useRunStatusStore } from '../../../stores/runStatusStore';
+import { getAssistantIdentityLabel } from '../../../lib/assistantIdentity';
 
 // Compact status icon only - no text
 
@@ -45,6 +46,10 @@ export const GraphAssistantNode = memo(({
   const displayStatus = runStatus ?? entity.status;
   const isFullDetail = detailLevel === 'full';
   const isMinimalDetail = detailLevel === 'minimal';
+  const assistantIdentityLabel = getAssistantIdentityLabel({
+    llmModel: entity.message?.llmModel,
+    llmProvider: entity.message?.llmProvider,
+  });
 
   return (
     <GraphNodeWrapper
@@ -87,7 +92,7 @@ export const GraphAssistantNode = memo(({
           </div>
           <div className="min-w-0">
             <div className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-500 dark:text-zinc-400">
-              Assistant
+              {assistantIdentityLabel}
             </div>
             {entity.shortLabel && (
               <div className="truncate text-[10px] font-medium text-zinc-500 dark:text-zinc-500">

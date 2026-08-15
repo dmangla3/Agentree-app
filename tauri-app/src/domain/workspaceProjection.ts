@@ -3,7 +3,7 @@ import type { CommitEntity, CommitObservationEntity, CommitParentEntity, Message
 import { getGraphParentId } from '../lib/graph/lineage';
 import { isRedundantCommitNode } from '../lib/graph/turnUtils';
 import { getMessageBaseCommitSha } from '../lib/graph/commitAccessors';
-import { buildThreadRootIndex } from '../lib/graphThreadRoots';
+import { buildThreadRootIndex, type ThreadRootIndex } from '../lib/graphThreadRoots';
 import { resolveNodeState } from '../lib/runStateResolver';
 import { buildScopedFocusRoute, isImportedGitMessage, type ScopedFocusRoute } from './scopedFocusRoute';
 import {
@@ -81,6 +81,7 @@ export interface ProjectedCommitEntity {
   observations: CommitObservationEntity[];
   commit: CommitEntity;
   sortTs: number;
+  owningThreadRootIds: string[];
 }
 
 export interface ProjectedCommitLaneRow {
@@ -496,7 +497,17 @@ const buildCommitProjection = (
   commitObservations: CommitObservationEntity[] = [],
   messages: Message[] = [],
   messageMap: Map<string, Message> = new Map(),
+  threadRootIndex: ThreadRootIndex = buildThreadRootIndex(messages),
 ) => {
+  if (commits.length === 0) {
+    return {
+      commitBySha: new Map<string, ProjectedCommitEntity>(),
+      commitLaneRows: [],
+      layoutDerivedCommitGroups: [],
+      groupIdByCommitSha: new Map<string, string>(),
+    };
+  }
+
   const outputOwnerBySha = new Map<string, Message>();
   for (const message of messages) {
     if (message.role !== 'assistant' || isExternalSyncMessage(message)) continue;
@@ -563,6 +574,7 @@ const buildCommitProjection = (
       observations,
       commit,
       sortTs: getCommitSortTs(commit),
+      owningThreadRootIds: [],
     };
     commitBySha.set(commit.sha, projected);
   }
@@ -572,6 +584,15 @@ const buildCommitProjection = (
       .filter((commit) => commit.ownerKind === 'agentree')
       .map((commit) => commit.sha)
   );
+
+  const threadRootByOutputSha = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role !== 'assistant' || isExternalSyncMessage(message)) continue;
+    const outputSha = getCommitSha(message);
+    if (!outputSha) continue;
+    const threadRootId = threadRootIndex.threadRootIdByMessageId.get(message.id);
+    if (threadRootId) threadRootByOutputSha.set(outputSha, threadRootId);
+  }
 
   const resolveOwnerMessage = (commit: ProjectedCommitEntity): Message | null => {
     const ownerId = commit.visualOwnerNodeId;
@@ -601,6 +622,24 @@ const buildCommitProjection = (
     return commit.parentRows[0]?.parent_sha ?? commit.parentShas[0] ?? null;
   };
 
+  const getOwningThreadRootIds = (commit: ProjectedCommitEntity): string[] => {
+    const owners = new Set<string>();
+
+    if (commit.visualOwnerNodeId) {
+      const ownerThreadRootId = threadRootIndex.threadRootIdByMessageId.get(commit.visualOwnerNodeId);
+      if (ownerThreadRootId) owners.add(ownerThreadRootId);
+    }
+
+    if (commit.isMerge) {
+      commit.parentShas.forEach((parentSha) => {
+        const parentThreadRootId = threadRootByOutputSha.get(parentSha);
+        if (parentThreadRootId) owners.add(parentThreadRootId);
+      });
+    }
+
+    return Array.from(owners).sort();
+  };
+
   commitBySha.forEach((commit) => {
     const layoutParentSha = chooseLayoutParentSha(commit);
     const hasAgentreeParent = commit.parentShas.some((sha) => agentreeOwnedShas.has(sha));
@@ -611,6 +650,7 @@ const buildCommitProjection = (
       || commit.sourceKind === 'merge'
       || hasAgentreeParent
     );
+    commit.owningThreadRootIds = getOwningThreadRootIds(commit);
   });
 
   const sortedCommits = Array.from(commitBySha.values()).sort((left, right) => {
@@ -1052,7 +1092,7 @@ function getStableWorkspaceProjectionBase(
   const entitiesBySummaryId = new Map(summaryEntities.map((entity) => [entity.summary!.id, entity]));
   const childEntityIdsByParentEntityId = new Map<string, string[]>();
   const commitEntityIdsByAssistantEntityId = new Map<string, string[]>();
-  const commitProjection = buildCommitProjection(commits, commitParents, commitObservations, sortedMessages, messageMap);
+  const commitProjection = buildCommitProjection(commits, commitParents, commitObservations, sortedMessages, messageMap, threadRootIndex);
 
   for (const entity of messageEntities) {
     if (entity.parentEntityId) {

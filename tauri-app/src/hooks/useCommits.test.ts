@@ -57,6 +57,14 @@ describe('buildPreferredRefNameBySha', () => {
 
     expect(refNameBySha.get('commit-a')).toBe('main');
   });
+
+  it('does not expose internal Agentree branch names as preferred labels', () => {
+    const refNameBySha = buildPreferredRefNameBySha([
+      localRef('refs/heads/agentree/70f6b27c', 'agentree/70f6b27c'),
+    ]);
+
+    expect(refNameBySha.has('commit-a')).toBe(false);
+  });
 });
 
 describe('filterCommitsReachableFrom', () => {

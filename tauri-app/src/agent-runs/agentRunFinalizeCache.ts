@@ -18,6 +18,21 @@ const cleanString = (value: unknown): string | null => {
   return trimmed ? trimmed : null;
 };
 
+const RECOVERY_DIAGNOSTIC_KEYS = [
+  'failure_reason',
+  'needs_user_action_reason',
+  'provider_error_message',
+  'native_recovery_status',
+] as const;
+
+const scrubSuccessfulRecoveryDiagnostics = <T extends Record<string, any>>(value: T): T => {
+  const next = { ...value };
+  for (const key of RECOVERY_DIAGNOSTIC_KEYS) {
+    delete next[key];
+  }
+  return next;
+};
+
 const patchFinalizedMessage = <T extends Partial<Message> & { id: string }>(
   message: T,
   patch: FinalizeCachePatch,
@@ -25,11 +40,18 @@ const patchFinalizedMessage = <T extends Partial<Message> & { id: string }>(
   const outputCommitSha = cleanString(patch.outputCommitSha) ?? cleanString(message.output_commit_sha);
   const executionData = ((message.execution_data ?? {}) as Record<string, any>);
   const meta = ((executionData.meta ?? {}) as Record<string, any>);
+  const shouldScrubRecoveryDiagnostics = patch.status === 'completed';
+  const baseExecutionData = shouldScrubRecoveryDiagnostics
+    ? scrubSuccessfulRecoveryDiagnostics(executionData)
+    : executionData;
+  const baseMeta = shouldScrubRecoveryDiagnostics
+    ? scrubSuccessfulRecoveryDiagnostics(meta)
+    : meta;
   const nextExecutionData: Record<string, any> = {
-    ...executionData,
+    ...baseExecutionData,
     last_terminal_status: patch.status,
     meta: {
-      ...meta,
+      ...baseMeta,
       ...(outputCommitSha ? { output_commit_sha: outputCommitSha } : {}),
       ...(patch.commitCreated !== undefined && patch.commitCreated !== null
         ? { commit_created: patch.commitCreated }

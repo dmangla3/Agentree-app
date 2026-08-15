@@ -10,6 +10,7 @@ import { getGitParentShas } from './graph/turnUtils';
 import { hasFreshContextBoundary } from './messageContext';
 import { resolveNodeState } from './runStateResolver';
 import { getMessageBaseCommitSha, getMessageOutputCommitSha } from './graph/commitAccessors';
+import { getVisibleCommitProjection } from './graphCommitVisibility';
 
 // --- Interface ---
 export interface LlmNodeData {
@@ -1362,7 +1363,8 @@ export const mapMessagesToGraphElements = (
   onMeasureNodeHeight: (id: string, height: number) => void = () => { },
   visibleNodeSections: Set<'conversation' | 'commits'> = new Set(['conversation', 'commits']),
   scopedCommitFiltering: boolean = false,
-  pinnedCommitShas: Set<string> = new Set()
+  pinnedCommitShas: Set<string> = new Set(),
+  hiddenThreadRootIds: Set<string> = new Set()
 ): { nodes: Node<LlmNodeData | SummaryNodeData | Record<string, unknown> | any>[]; edges: Edge[] } => {
   if (!messages || messages.length === 0) {
     return { nodes: [], edges: [] };
@@ -1694,12 +1696,42 @@ export const mapMessagesToGraphElements = (
       });
     }
 
+    const hasHiddenThreadRoots = hiddenThreadRootIds.size > 0;
+    const directDependencyCommitShas = new Set<string>();
+    const addDirectDependencyCommitSha = (sha: string | null | undefined) => {
+      const normalized = typeof sha === 'string' ? sha.trim() : '';
+      if (normalized) directDependencyCommitShas.add(normalized);
+    };
+
+    if (hasHiddenThreadRoots) {
+      pinnedCommitShas.forEach(addDirectDependencyCommitSha);
+      messages.forEach((message) => {
+        addDirectDependencyCommitSha(getMessageBaseCommitSha(message));
+        if (message.role === 'assistant') {
+          addDirectDependencyCommitSha(inferAssistantBaseCommitSha(message));
+        }
+        getRawGitParentShas(message).forEach(addDirectDependencyCommitSha);
+      });
+    }
+
+    const commitVisibility = hasHiddenThreadRoots
+      ? getVisibleCommitProjection({
+        commitBySha: projection.commitBySha,
+        commitLaneRows: projection.commitLaneRows,
+        layoutDerivedCommitGroups: projection.layoutDerivedCommitGroups,
+        hiddenThreadRootIds,
+        directDependencyCommitShas,
+      })
+      : null;
+    const visibleCommitLaneRows = commitVisibility?.visibleCommitLaneRows ?? projection.commitLaneRows;
+    const visibleCommitGroups = commitVisibility?.visibleCommitGroups ?? projection.layoutDerivedCommitGroups;
+
     const shouldRenderCanonicalCommitSha = (sha: string): boolean => (
-      !scopedCommitFiltering || scopedCommitShas.has(sha)
+      (!commitVisibility || commitVisibility.visibleCommitShas.has(sha)) && (!scopedCommitFiltering || scopedCommitShas.has(sha))
     );
     const visibleLayoutDerivedCommitGroups = scopedCommitFiltering
-      ? projection.layoutDerivedCommitGroups.filter((group) => group.commitShas.some((sha) => scopedCommitShas.has(sha)))
-      : projection.layoutDerivedCommitGroups;
+      ? visibleCommitGroups.filter((group) => group.commitShas.some((sha) => scopedCommitShas.has(sha)))
+      : visibleCommitGroups;
 
     visibleLayoutDerivedCommitGroups.forEach((group) => {
       group.commitShas.forEach((sha) => renderedCommitNodeIdBySha.set(sha, group.groupId));
@@ -1707,11 +1739,12 @@ export const mapMessagesToGraphElements = (
     projection.commitBySha.forEach((commit) => {
       const ownerNodeId = commit.producedByNodeId ?? commit.visualOwnerNodeId;
       if (commit.placement !== 'conversation_sidecar' || !ownerNodeId) return;
+      if (!messageMap.has(ownerNodeId) || !shouldRenderMessageNode(ownerNodeId)) return;
       if (!shouldRenderCanonicalCommitSha(commit.sha) && !matchingMessageIds.has(ownerNodeId)) return;
       renderedCommitNodeIdBySha.set(commit.sha, getAssistantOutputCommitNodeId(ownerNodeId));
     });
     if (showCommitNodes) {
-      projection.commitLaneRows.forEach((row) => {
+      visibleCommitLaneRows.forEach((row) => {
         if (row.type !== 'commit' || !row.commitSha) return;
         if (!shouldRenderCanonicalCommitSha(row.commitSha)) return;
         if (renderedCommitNodeIdBySha.has(row.commitSha)) return;
@@ -1741,6 +1774,11 @@ export const mapMessagesToGraphElements = (
       const isFocused = msg.id === focusedMessageId;
       const isInContextPathNode = contextPathNodes.has(msg.id);
       const graphParentId = getGraphParentId(msg, messageMap);
+      const isNonOriginRootThreadAssistant = nodeKind === 'assistant_message'
+        && msg.role === 'assistant'
+        && !!graphParentId
+        && entity.threadRootId === graphParentId
+        && entity.threadRootId !== projection.originMessageId;
       const matchesTagFilter = !filterActive || matchingMessageIds.has(msg.id);
       const isContextActive = msg.context_active !== false;
       const scopeId = msg.scope_id ?? null;
@@ -2079,8 +2117,10 @@ export const mapMessagesToGraphElements = (
           if (!parentNodeId || parentNodeId === commitNodeId) return;
           const parentMessageId = messageIdByCommitSha.get(parentSha);
           if (parentMessageId && !shouldRenderMessageNode(parentMessageId)) return;
-          const isLayoutParent = !projectedProducedCommit?.layoutParentSha
-            || projectedProducedCommit.layoutParentSha === parentSha;
+          const isLayoutParent = !isNonOriginRootThreadAssistant && (
+            !projectedProducedCommit?.layoutParentSha ||
+            projectedProducedCommit.layoutParentSha === parentSha
+          );
           pushSemanticEdge({
             id: `${parentNodeId}->${commitNodeId}:git-parent:${parentIndex}`,
             source: parentNodeId,
@@ -2105,6 +2145,7 @@ export const mapMessagesToGraphElements = (
             target: msg.id,
             relationship: 'base-used',
             edgeRole: 'base',
+            layout: !isNonOriginRootThreadAssistant,
             strokeDasharray: '4 5',
             opacity: 0.72,
           });
@@ -2119,7 +2160,7 @@ export const mapMessagesToGraphElements = (
         .sort((left, right) => left.sortTs - right.sortTs || left.groupId.localeCompare(right.groupId))[0]?.groupId ?? null
       : null;
     const firstAnchoredImportedCommitSha = projection.originMessageId && !firstImportedGroupId
-      ? projection.commitLaneRows
+      ? visibleCommitLaneRows
         .filter((row) => row.type === 'commit' && row.commitSha && shouldRenderCanonicalCommitSha(row.commitSha))
         .map((row) => row.commitSha!)
         .map((sha) => projection.commitBySha.get(sha) ?? null)
@@ -2156,22 +2197,27 @@ export const mapMessagesToGraphElements = (
       } as Node<any>);
     });
 
-    if (showCommitNodes) projection.commitLaneRows.forEach((row) => {
+    if (showCommitNodes) visibleCommitLaneRows.forEach((row) => {
       if (row.type !== 'commit' || !row.commitSha) return;
       if (!shouldRenderCanonicalCommitSha(row.commitSha)) return;
       if (renderedCommitNodeIdBySha.get(row.commitSha) && renderedCommitNodeIdBySha.get(row.commitSha) !== row.commitSha) return;
       const commit = projection.commitBySha.get(row.commitSha);
       if (!commit) return;
+      const isReferenceOnly = commitVisibility?.referenceCommitShas.has(commit.sha) ?? false;
+      const renderedCommit = isReferenceOnly
+        ? { ...commit, isProminentMerge: false }
+        : commit;
       nodes.push({
         id: commit.sha,
         type: 'canonical_commit',
         position: { x: 0, y: 0 },
         data: {
-          commit,
+          commit: renderedCommit,
           projection,
           ...(commit.sha === firstAnchoredImportedCommitSha && projection.originMessageId
             ? { layoutAnchorNodeId: projection.originMessageId }
             : {}),
+          isReferenceOnly,
           sortTs: commit.sortTs,
           isSelected: false,
           isFocused: false,
@@ -2503,6 +2549,7 @@ export const mapMessagesToGraphElements = (
       const userMsg = messageMap.get(tg.userMessageId);
       const scopeId = userMsg?.scope_id ?? null;
       const scopeColor = scopeId ? (readLookupValue(scopeColorById, scopeId) || null) : null;
+      const threadRootId = projection.threadRootIdByMessageId.get(tg.userMessageId) ?? null;
 
       const memberIds = tg.memberEntityIds
         .flatMap((eid: string) => {
@@ -2524,6 +2571,8 @@ export const mapMessagesToGraphElements = (
           label: tg.userMessageId === originMessageId ? 'Origin' : undefined,
           scopeColor,
           slotKind: 'turn',
+          threadRootId,
+          isThreadRoot: threadRootId === tg.userMessageId,
           memberIds,
         },
         style: { zIndex: -1 },
@@ -2759,7 +2808,7 @@ export const getLaneLayoutedElements = (
   const layoutEdges = layoutModel.layoutEdges;
 
   const maxNodeWidth = Math.max(...layoutNodes.map(getNodeWidth), NODE_WIDTH);
-  const laneGap = 56;
+  const laneGap = 24;
   const laneWidth = maxNodeWidth + laneGap;
   const groupPadding = 20;
 
@@ -3329,13 +3378,13 @@ export const getTidyTreeLayoutedElements = (
   roots.forEach(rootId => {
     const width = computeWidth(rootId);
     assign(rootId, rootCursor, 0);
-    rootCursor += width + 1;
+    rootCursor += width;
   });
   Array.from(laneNodeIds).sort(sortByTime).forEach(nodeId => {
     if (positions.has(nodeId)) return;
     const width = computeWidth(nodeId);
     assign(nodeId, rootCursor, 0);
-    rootCursor += width + 1;
+    rootCursor += width;
   });
 
   const depthOffsets = buildCompactRankOffsets(

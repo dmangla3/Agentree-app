@@ -2,12 +2,15 @@
 import '../test/setup';
 import type { Node } from '@xyflow/react';
 import { renderHook, waitFor, act } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useGraphSnapshot } from '../hooks/useGraphSnapshot';
 import { useMessages, useSendMessage } from '../hooks/useMessages';
 import { useWorkspaces } from '../hooks/useWorkspaces';
+import { API_URL } from '../lib/api';
 import { agentClient } from '../lib/agentClient';
 import { withExplicitReactFlowNodesDimensions } from '../lib/reactFlowNodeDimensions';
+import { server } from './node';
 import { createQueryWrapper } from '../test/queryTestUtils';
 import { messages, sendResponse, workspaceId } from './scenarios/frontendContracts';
 
@@ -120,5 +123,28 @@ describe('MSW frontend API contracts', () => {
       sendResponse.userMessage.id,
       sendResponse.assistantMessages[0].id,
     ]);
+  });
+
+  it('sends selected model using llmModel instead of legacy agentModel', async () => {
+    let requestBody: any = null;
+    server.use(
+      http.post(`${API_URL}/workspaces/:workspaceId/messages`, async ({ request }) => {
+        requestBody = await request.json();
+        return HttpResponse.json(sendResponse, { status: 201 });
+      })
+    );
+    const { Wrapper } = createQueryWrapper();
+    const { result } = renderHook(() => useSendMessage(), { wrapper: Wrapper });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        workspaceId,
+        prompt: 'Use the selected model',
+        llmModel: 'openai/gpt-5.5-high',
+      });
+    });
+
+    expect(requestBody).toMatchObject({ llmModel: 'openai/gpt-5.5-high' });
+    expect(requestBody).not.toHaveProperty('agentModel');
   });
 });

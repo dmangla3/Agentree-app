@@ -29,6 +29,7 @@ const GraphView = lazy(() => import('../components/GraphView').then((module) => 
 const KnowledgeBase = lazy(() => import('../components/KnowledgeBase/KnowledgeBase').then((module) => ({ default: module.KnowledgeBase })));
 const MergePanel = lazy(() => import('../components/MergePanel').then((module) => ({ default: module.MergePanel })));
 const SkillsPanel = lazy(() => import('../components/SkillsPanel').then((module) => ({ default: module.SkillsPanel })));
+const TrackingDashboard = lazy(() => import('../components/TrackingDashboard').then((module) => ({ default: module.TrackingDashboard })));
 
 function PanelLoading() {
   return (
@@ -63,7 +64,7 @@ export function HomePage() {
   const mergeTabAttentionNonce = useIntegrationStore((state) => state.mergeTabAttentionNonce);
 
   const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
-  const [activeView, setActiveView] = useState<'chat' | 'knowledge' | 'skills'>('chat');
+  const [activeView, setActiveView] = useState<'chat' | 'tracking' | 'knowledge' | 'skills'>('chat');
   const [mergeTabAttentionActive, setMergeTabAttentionActive] = useState(false);
   const mergeSourceCount = mergeSession?.sources.length ?? 0;
   const mergeTabRunIndicator = getMergeTabRunIndicator(mergeSession);
@@ -274,7 +275,7 @@ export function HomePage() {
                     <button
                       type="button"
                       onClick={toggleChatPanelCollapsed}
-                      className={`app-split-handle group ${isChatCollapsed ? 'h-10 w-10 translate-x-2' : 'h-7 w-4 translate-x-2'}`}
+                      className={`app-split-handle group ${isChatCollapsed ? 'h-10 w-10 -translate-x-2' : 'h-7 w-4 -translate-x-2'}`}
                       aria-label={isChatCollapsed ? 'Restore chat panel' : 'Hide chat panel'}
                       title={isChatCollapsed ? 'Restore chat panel' : 'Hide chat panel'}
                     >
@@ -338,6 +339,12 @@ export function HomePage() {
                 </div>
               </div>
             )
+          ) : activeView === 'tracking' ? (
+            <div className="app-view-surface h-full w-full overflow-auto p-5">
+              <Suspense fallback={<PanelLoading />}>
+                <TrackingDashboard workspace={selectedWorkspace} />
+              </Suspense>
+            </div>
           ) : activeView === 'skills' ? (
             <div className="app-view-surface h-full w-full overflow-auto p-5">
               <div className="app-view-frame mx-auto flex h-full w-full max-w-5xl flex-col">

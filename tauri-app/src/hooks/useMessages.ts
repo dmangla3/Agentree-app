@@ -298,7 +298,8 @@ export const useSendMessage = () => {
             useAgent,
             agentId,
             agentProvider,
-            agentModel,
+            llmModel,
+            agentModel: legacyAgentModel,
             role,
             contextMode,
             contextPolicy,
@@ -321,6 +322,7 @@ export const useSendMessage = () => {
             useAgent?: boolean;
             agentId?: string | null;
             agentProvider?: string | null;
+            llmModel?: string | null;
             agentModel?: string | null;
             role?: 'user' | 'assistant' | 'system';
             contextMode?: 'active' | 'none';
@@ -347,7 +349,7 @@ export const useSendMessage = () => {
                 useAgent,  // Pass agent mode flag to server
                 agentId,
                 agentProvider,
-                agentModel,
+                llmModel: llmModel ?? legacyAgentModel ?? null,
                 role,
                 scopeId,
                 activeScopeId,

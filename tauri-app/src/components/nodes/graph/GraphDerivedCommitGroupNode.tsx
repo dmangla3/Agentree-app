@@ -184,7 +184,7 @@ export const GraphDerivedCommitGroupNode = memo(({
       <HoverCardTrigger asChild>
         {batchNode}
       </HoverCardTrigger>
-      <HoverCardContent side="right" align="center" sideOffset={10} className="z-[210] w-auto border-none bg-transparent p-0 shadow-none">
+      <HoverCardContent side="right" align="center" sideOffset={10} className="z-50 w-auto border-none bg-transparent p-0 shadow-none">
         {hoverOpen ? (
           <CommitBatchHoverCard group={group} label={label} commits={hoverCardCommits} onCommitSelectBase={onCommitSelectBase} />
         ) : null}

@@ -6,6 +6,7 @@ import {
 
 vi.mock('../lib/graphInteractionGate', () => ({
   scheduleMessagesRefreshWhenGraphIdle: vi.fn(() => Promise.resolve()),
+  scheduleLocalCommitGraphRefreshWhenGraphIdle: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../hooks/useHotSendMessageDeltas', () => ({
@@ -16,21 +17,28 @@ vi.mock('../lib/perfRecorder', () => ({
   recordPerfEvent: vi.fn(),
 }));
 
-import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
+import {
+  scheduleLocalCommitGraphRefreshWhenGraphIdle,
+  scheduleMessagesRefreshWhenGraphIdle,
+} from '../lib/graphInteractionGate';
 import { catchUpHotSendMessageDeltas } from '../hooks/useHotSendMessageDeltas';
 import { recordPerfEvent } from '../lib/perfRecorder';
+import { useRunStatusStore } from '../stores/runStatusStore';
 
 describe('agentRunWorkspaceRefresh', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.mocked(scheduleMessagesRefreshWhenGraphIdle).mockClear();
+    vi.mocked(scheduleLocalCommitGraphRefreshWhenGraphIdle).mockClear();
     vi.mocked(catchUpHotSendMessageDeltas).mockClear();
     vi.mocked(recordPerfEvent).mockClear();
+    useRunStatusStore.getState().clearAllRunStatus();
     flushAgentWorkspaceRefreshesForTest();
   });
 
   afterEach(() => {
     flushAgentWorkspaceRefreshesForTest();
+    useRunStatusStore.getState().clearAllRunStatus();
     vi.useRealTimers();
   });
 
@@ -60,7 +68,7 @@ describe('agentRunWorkspaceRefresh', () => {
     );
   });
 
-  it('coalesces commit graph refresh and hot delta catchup flags', () => {
+  it('coalesces commit graph invalidation and defers active refetch off the finalize path', () => {
     const queryClient = {
       invalidateQueries: vi.fn(() => Promise.resolve()),
       refetchQueries: vi.fn(() => Promise.resolve()),
@@ -83,19 +91,62 @@ describe('agentRunWorkspaceRefresh', () => {
       queryKey: ['local-commits', 'workspace-1'],
       refetchType: 'none',
     });
-    expect(queryClient.refetchQueries).toHaveBeenCalledWith({
+    expect(queryClient.refetchQueries).not.toHaveBeenCalledWith({
       queryKey: ['local-commit-graph', 'workspace-1'],
       type: 'active',
     });
-    expect(queryClient.refetchQueries).toHaveBeenCalledWith({
+    expect(queryClient.refetchQueries).not.toHaveBeenCalledWith({
       queryKey: ['local-commits', 'workspace-1'],
       type: 'active',
     });
     expect(recordPerfEvent).toHaveBeenCalledWith('query.local-commit-graph.refresh', {
       workspaceId: 'workspace-1',
       reason: 'agent-terminal+agent-finalize-ack',
-      refetchActive: true,
+      refetchActive: false,
+      refetchMode: 'deferred',
     }, { source: 'agentRunWorkspaceRefresh' });
     expect(catchUpHotSendMessageDeltas).toHaveBeenCalledWith(queryClient, 'workspace-1');
+
+    vi.advanceTimersByTime(900);
+
+    expect(queryClient.refetchQueries).not.toHaveBeenCalled();
+    expect(scheduleLocalCommitGraphRefreshWhenGraphIdle).toHaveBeenCalledWith(
+      queryClient,
+      'workspace-1',
+      { reason: 'agent-terminal+agent-finalize-ack' },
+    );
+  });
+
+  it('waits for active run state before scheduling commit graph reconciliation', () => {
+    const queryClient = {
+      invalidateQueries: vi.fn(() => Promise.resolve()),
+      refetchQueries: vi.fn(() => Promise.resolve()),
+    } as any;
+    useRunStatusStore.getState().setRunStatus('assistant-1', {
+      workspaceId: 'workspace-1',
+      role: 'assistant',
+      status: 'running',
+      progress: 'Running',
+    });
+
+    requestAgentWorkspaceRefresh(queryClient, 'workspace-1', {
+      reason: 'agent-finalize-ack',
+      includeCommitGraph: true,
+    });
+
+    vi.advanceTimersByTime(50);
+    vi.advanceTimersByTime(900);
+
+    expect(scheduleLocalCommitGraphRefreshWhenGraphIdle).not.toHaveBeenCalled();
+    expect(queryClient.refetchQueries).not.toHaveBeenCalled();
+
+    useRunStatusStore.getState().clearRunStatus('assistant-1');
+    vi.advanceTimersByTime(900);
+
+    expect(scheduleLocalCommitGraphRefreshWhenGraphIdle).toHaveBeenCalledWith(
+      queryClient,
+      'workspace-1',
+      { reason: 'agent-finalize-ack' },
+    );
   });
 });

@@ -513,9 +513,11 @@ const buildMappedGraph = (
     scopedCommitFiltering: boolean;
     pinnedCommitShas?: Set<string>;
   },
+  hiddenThreadRootIds: Set<string> = new Set(),
+  projectionMessages?: Message[],
 ) => {
   const projection = buildWorkspaceProjection({
-    messages,
+    messages: projectionMessages ?? messages,
     summaries: [],
     focusedMessageId,
     ...(commitGraph ?? {}),
@@ -551,6 +553,7 @@ const buildMappedGraph = (
     visibleNodeSections,
     filterState?.scopedCommitFiltering,
     filterState?.pinnedCommitShas,
+    hiddenThreadRootIds,
   );
 };
 
@@ -1292,6 +1295,149 @@ describe('graph layout geometry QA', () => {
     const layoutedParent = getNode(layouted.nodes, 'commit:assistant-agent');
     const layoutedMerge = getNode(layouted.nodes, mergeNode.id);
     expect(layoutedMerge.position.y).toBeGreaterThan(layoutedParent.position.y);
+  });
+
+  it('keeps a hidden-owned external merge as a muted reference only when directly used as a visible base', () => {
+    const messages = [
+      makeMessage({ id: 'thread-a-user', role: 'user', parentId: null }, 0),
+      makeMessage({
+        id: 'thread-a-assistant',
+        role: 'assistant',
+        parentId: 'thread-a-user',
+        status: 'completed',
+        output_commit_sha: 'agent-a',
+      }, 1),
+      makeMessage({ id: 'thread-b-user', role: 'user', parentId: null }, 2),
+      makeMessage({
+        id: 'thread-b-assistant',
+        role: 'assistant',
+        parentId: 'thread-b-user',
+        status: 'completed',
+        base_commit_sha: 'external-merge',
+      }, 3),
+    ];
+    const commitGraph = {
+      commits: [
+        { sha: 'main-before', workspace_id: workspaceId, subject: 'Main before', source_kind: 'external', produced_by_node_id: null, first_parent_sha: null, committed_at: isoAt(1), authored_at: isoAt(1) },
+        { sha: 'agent-a', workspace_id: workspaceId, subject: 'Thread A output', source_kind: 'agent', produced_by_node_id: 'thread-a-assistant', first_parent_sha: 'main-before', committed_at: isoAt(2), authored_at: isoAt(2) },
+        { sha: 'external-merge', workspace_id: workspaceId, subject: 'Merge Thread A', source_kind: 'external', produced_by_node_id: null, first_parent_sha: 'main-before', committed_at: isoAt(3), authored_at: isoAt(3) },
+      ],
+      commitParents: [
+        { child_sha: 'agent-a', parent_sha: 'main-before', parent_index: 0 },
+        { child_sha: 'external-merge', parent_sha: 'main-before', parent_index: 0 },
+        { child_sha: 'external-merge', parent_sha: 'agent-a', parent_index: 1 },
+      ],
+      commitObservations: [{ commit_sha: 'external-merge', source_kind: 'external', git_ref: 'refs/heads/main', first_seen_at: isoAt(3), last_seen_at: isoAt(4) }],
+    };
+
+    const mapped = buildMappedGraph(
+      messages.filter((message) => !['thread-a-user', 'thread-a-assistant'].includes(message.id)),
+      'thread-b-assistant',
+      commitGraph,
+      undefined,
+      new Set(['conversation', 'commits']),
+      undefined,
+      new Set(['thread-a-user']),
+      messages,
+    );
+
+    const mergeNode = getNode(mapped.nodes, 'external-merge');
+    expect((mergeNode.data as any).isReferenceOnly).toBe(true);
+    expect((mergeNode.data as any).commit.isProminentMerge).toBe(false);
+  });
+
+  it('keeps a hidden-owned external merge as a muted reference when a visible user thread root uses it as base', () => {
+    const messages = [
+      makeMessage({ id: 'thread-a-user', role: 'user', parentId: null }, 0),
+      makeMessage({
+        id: 'thread-a-assistant',
+        role: 'assistant',
+        parentId: 'thread-a-user',
+        status: 'completed',
+        output_commit_sha: 'agent-a',
+      }, 1),
+      makeMessage({
+        id: 'thread-b-user',
+        role: 'user',
+        parentId: null,
+        base_commit_sha: 'external-merge',
+      }, 2),
+      makeMessage({
+        id: 'thread-b-assistant',
+        role: 'assistant',
+        parentId: 'thread-b-user',
+        status: 'completed',
+      }, 3),
+    ];
+    const commitGraph = {
+      commits: [
+        { sha: 'main-before', workspace_id: workspaceId, subject: 'Main before', source_kind: 'external', produced_by_node_id: null, first_parent_sha: null, committed_at: isoAt(1), authored_at: isoAt(1) },
+        { sha: 'agent-a', workspace_id: workspaceId, subject: 'Thread A output', source_kind: 'agent', produced_by_node_id: 'thread-a-assistant', first_parent_sha: 'main-before', committed_at: isoAt(2), authored_at: isoAt(2) },
+        { sha: 'external-merge', workspace_id: workspaceId, subject: 'Merge Thread A', source_kind: 'external', produced_by_node_id: null, first_parent_sha: 'main-before', committed_at: isoAt(3), authored_at: isoAt(3) },
+      ],
+      commitParents: [
+        { child_sha: 'agent-a', parent_sha: 'main-before', parent_index: 0 },
+        { child_sha: 'external-merge', parent_sha: 'main-before', parent_index: 0 },
+        { child_sha: 'external-merge', parent_sha: 'agent-a', parent_index: 1 },
+      ],
+      commitObservations: [{ commit_sha: 'external-merge', source_kind: 'external', git_ref: 'refs/heads/main', first_seen_at: isoAt(3), last_seen_at: isoAt(4) }],
+    };
+
+    const mapped = buildMappedGraph(
+      messages.filter((message) => !['thread-a-user', 'thread-a-assistant'].includes(message.id)),
+      'thread-b-assistant',
+      commitGraph,
+      undefined,
+      new Set(['conversation', 'commits']),
+      undefined,
+      new Set(['thread-a-user']),
+      messages,
+    );
+
+    const mergeNode = getNode(mapped.nodes, 'external-merge');
+    expect((mergeNode.data as any).isReferenceOnly).toBe(true);
+    expect((mergeNode.data as any).commit.isProminentMerge).toBe(false);
+  });
+
+  it('hides a hidden-owned external merge when it is only an older ancestor of a visible base', () => {
+    const messages = [
+      makeMessage({ id: 'thread-a-user', role: 'user', parentId: null }, 0),
+      makeMessage({ id: 'thread-a-assistant', role: 'assistant', parentId: 'thread-a-user', status: 'completed', output_commit_sha: 'agent-a' }, 1),
+      makeMessage({ id: 'thread-b-user', role: 'user', parentId: null }, 2),
+      makeMessage({ id: 'thread-b-assistant', role: 'assistant', parentId: 'thread-b-user', status: 'completed', base_commit_sha: 'main-after' }, 3),
+    ];
+    const commitGraph = {
+      commits: [
+        { sha: 'main-before', workspace_id: workspaceId, subject: 'Main before', source_kind: 'external', produced_by_node_id: null, first_parent_sha: null, committed_at: isoAt(1), authored_at: isoAt(1) },
+        { sha: 'agent-a', workspace_id: workspaceId, subject: 'Thread A output', source_kind: 'agent', produced_by_node_id: 'thread-a-assistant', first_parent_sha: 'main-before', committed_at: isoAt(2), authored_at: isoAt(2) },
+        { sha: 'external-merge', workspace_id: workspaceId, subject: 'Merge Thread A', source_kind: 'external', produced_by_node_id: null, first_parent_sha: 'main-before', committed_at: isoAt(3), authored_at: isoAt(3) },
+        { sha: 'main-after', workspace_id: workspaceId, subject: 'Main after merge', source_kind: 'external', produced_by_node_id: null, first_parent_sha: 'external-merge', committed_at: isoAt(4), authored_at: isoAt(4) },
+      ],
+      commitParents: [
+        { child_sha: 'agent-a', parent_sha: 'main-before', parent_index: 0 },
+        { child_sha: 'external-merge', parent_sha: 'main-before', parent_index: 0 },
+        { child_sha: 'external-merge', parent_sha: 'agent-a', parent_index: 1 },
+        { child_sha: 'main-after', parent_sha: 'external-merge', parent_index: 0 },
+      ],
+      commitObservations: [
+        { commit_sha: 'external-merge', source_kind: 'external', git_ref: 'refs/heads/main', first_seen_at: isoAt(3), last_seen_at: isoAt(4) },
+        { commit_sha: 'main-after', source_kind: 'external', git_ref: 'refs/heads/main', first_seen_at: isoAt(4), last_seen_at: isoAt(5) },
+      ],
+    };
+
+    const mapped = buildMappedGraph(
+      messages.filter((message) => !['thread-a-user', 'thread-a-assistant'].includes(message.id)),
+      'thread-b-assistant',
+      commitGraph,
+      undefined,
+      new Set(['conversation', 'commits']),
+      undefined,
+      new Set(['thread-a-user']),
+      messages,
+    );
+
+    expect(mapped.nodes.some((node) => node.id === 'external-merge')).toBe(false);
+    expect(mapped.nodes.some((node) => node.id === 'main-after')).toBe(true);
   });
 
   it('keeps unrelated external merges groupable as imported first-parent history', () => {
@@ -2270,14 +2416,30 @@ describe('graph layout geometry QA', () => {
     const mapped = buildMappedGraph(messages, 'thread-b-assistant');
     const layouted = getLaneLayoutedElements(mapped.nodes, mapped.edges);
     const threadAUser = getNode(layouted.nodes, 'thread-a-user');
+    const threadAAssistant = getNode(layouted.nodes, 'thread-a-assistant');
+    const threadACommit = getNode(layouted.nodes, 'commit:thread-a-assistant');
     const threadBUser = getNode(layouted.nodes, 'thread-b-user');
+    const threadBAssistant = getNode(layouted.nodes, 'thread-b-assistant');
     const threadBCommit = getNode(layouted.nodes, 'commit:thread-b-assistant');
+    const baseUsedEdge = mapped.edges.find((edge) => (
+      edge.source === 'commit:thread-a-assistant' &&
+      edge.target === 'thread-b-assistant' &&
+      (edge.data as any)?.relationship === 'base-used'
+    ));
+    const gitParentEdge = mapped.edges.find((edge) => (
+      edge.source === 'commit:thread-a-assistant' &&
+      edge.target === 'commit:thread-b-assistant' &&
+      (edge.data as any)?.relationship === 'git-parent'
+    ));
 
     expect(threadBUser.position.x).toBeGreaterThan(threadAUser.position.x);
     expect(Math.abs(threadBUser.position.y - threadAUser.position.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(threadBAssistant.position.y - threadAAssistant.position.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(threadBCommit.position.y - threadACommit.position.y)).toBeLessThanOrEqual(1);
     expect(threadBCommit.position.x).toBeGreaterThan(threadBUser.position.x);
-    expect(mapped.edges.some((edge) => edge.source === 'commit:thread-a-assistant' && edge.target === 'thread-b-assistant' && (edge.data as any)?.relationship === 'base-used')).toBe(true);
-    expect(mapped.edges.some((edge) => edge.source === 'commit:thread-a-assistant' && edge.target === 'commit:thread-b-assistant' && (edge.data as any)?.relationship === 'git-parent')).toBe(true);
+    expect(threadBUser.position.x - (threadACommit.position.x + numberStyle(threadACommit.style?.width))).toBeLessThanOrEqual(32);
+    expect((baseUsedEdge?.data as any)?.layout).toBe(false);
+    expect((gitParentEdge?.data as any)?.layout).toBe(false);
   });
 
   it('keeps a single observed imported ref batch even when merge commits are included', () => {

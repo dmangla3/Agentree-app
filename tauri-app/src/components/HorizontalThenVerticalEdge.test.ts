@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Position } from '@xyflow/react';
 import { getContextResetCutPosition } from './ContextResetCut';
 import { getVerticalThenHorizontalEdgePath } from './HorizontalThenVerticalEdge';
+import { getEdgeEndpointDotVariant } from './graphEdgeEndpointDots';
 
 describe('getVerticalThenHorizontalEdgePath', () => {
   it('routes offset edges as vertical-horizontal side-entry segments', () => {
@@ -58,5 +59,11 @@ describe('getVerticalThenHorizontalEdgePath', () => {
       y: 420,
       orientation: 'horizontal',
     });
+  });
+
+  it('recognizes requested endpoint dots on rendered edges', () => {
+    expect(getEdgeEndpointDotVariant({ endpointDotVariant: 'commit-parent' })).toBe('commit-parent');
+    expect(getEdgeEndpointDotVariant({ endpointDotVariant: 'convergence' })).toBe('convergence');
+    expect(getEdgeEndpointDotVariant({ relationship: 'conversation' })).toBeNull();
   });
 });

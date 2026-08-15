@@ -243,7 +243,7 @@ export const GraphNodeWrapper = memo(({
       <HoverCardTrigger asChild>
         {nodeBody}
       </HoverCardTrigger>
-      <HoverCardContent side="right" align="center" sideOffset={8} className="z-[210] w-auto border-none bg-transparent p-0 shadow-none">
+      <HoverCardContent side="right" align="center" sideOffset={8} className="z-50 w-auto border-none bg-transparent p-0 shadow-none">
         {hoverOpen ? hoverCardContent : null}
       </HoverCardContent>
     </HoverCard>

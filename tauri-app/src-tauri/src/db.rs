@@ -989,7 +989,8 @@ impl TelemetryDb {
                 terminal_status = COALESCE(terminal_status, ?2),
                 server_final_persisted = CASE WHEN ?3 THEN 1 ELSE server_final_persisted END,
                 output_commit_sha = COALESCE(?4, output_commit_sha),
-                needs_user_action_reason = NULL,
+                needs_user_action_reason = CASE WHEN ?2 = 'completed' THEN NULL ELSE needs_user_action_reason END,
+                failure_reason = CASE WHEN ?2 = 'completed' THEN NULL ELSE failure_reason END,
                 updated_at = ?5
             WHERE assistant_node_id = ?1
             "#,
@@ -3656,6 +3657,60 @@ mod tests {
         assert_eq!(row.phase, "terminal");
         assert!(row.server_final_persisted);
         assert_eq!(row.needs_user_action_reason, None);
+    }
+
+    #[test]
+    fn successful_finalization_clears_stale_recovery_failure_reason() {
+        let (_dir, db) = open_test_db();
+        upsert_run(&db, "assistant-recovered", "running", "running");
+
+        db.reconcile_agent_runs_on_startup().expect("reconcile");
+        let recovered = db
+            .get_agent_run_ledger_by_assistant("assistant-recovered")
+            .expect("get recovered row")
+            .expect("recovered row");
+        assert!(recovered
+            .failure_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("App restarted before the native run reached a terminal state"));
+
+        db.mark_agent_run_finalized("assistant-recovered", "completed", true, Some("commit-sha"))
+            .expect("mark finalized");
+
+        let row = db
+            .get_agent_run_ledger_by_assistant("assistant-recovered")
+            .expect("get row")
+            .expect("row");
+        assert_eq!(row.status, "completed");
+        assert_eq!(row.failure_reason, None);
+        assert_eq!(row.needs_user_action_reason, None);
+    }
+
+    #[test]
+    fn failed_finalization_preserves_real_failure_reason() {
+        let (_dir, db) = open_test_db();
+        upsert_run(&db, "assistant-setup-failed", "running", "running");
+        db.update_agent_run_phase(
+            "assistant-setup-failed",
+            "failed",
+            "terminal",
+            Some("setup failed before process launch"),
+        )
+        .expect("record setup failure");
+
+        db.mark_agent_run_finalized("assistant-setup-failed", "failed", true, None)
+            .expect("mark finalized");
+
+        let row = db
+            .get_agent_run_ledger_by_assistant("assistant-setup-failed")
+            .expect("get row")
+            .expect("row");
+        assert_eq!(row.status, "failed");
+        assert_eq!(
+            row.failure_reason.as_deref(),
+            Some("setup failed before process launch")
+        );
     }
 
     #[test]

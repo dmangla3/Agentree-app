@@ -78,4 +78,63 @@ describe('agent run finalize cache patching', () => {
     expect(patched.message.output_commit_sha).toBe('commit-1');
     expect(patched.message.execution_data?.last_terminal_status).toBe('completed');
   });
+
+  it('scrubs stale recovery diagnostics from successful finalized message cache payloads', () => {
+    const recovered = message({
+      status: 'failed',
+      execution_data: {
+        failure_reason: 'App restarted before the native run reached a terminal state.',
+        needs_user_action_reason: 'The preserved worktree needs review.',
+        meta: {
+          existing: true,
+          failure_reason: 'App restarted before the native run reached a terminal state.',
+          needs_user_action_reason: 'The preserved worktree needs review.',
+          provider_error_message: 'App restarted before the native run reached a terminal state.',
+          native_recovery_status: 'needs_user_action',
+        },
+      },
+    });
+
+    const [patched] = patchFinalizedMessages([recovered], {
+      nodeId: 'assistant-1',
+      status: 'completed',
+      outputCommitSha: 'commit-1',
+      commitCreated: true,
+    })!;
+
+    expect(patched.status).toBe('completed');
+    expect(patched.execution_data.failure_reason).toBeUndefined();
+    expect(patched.execution_data.needs_user_action_reason).toBeUndefined();
+    expect(patched.execution_data.meta).toEqual({
+      existing: true,
+      output_commit_sha: 'commit-1',
+      commit_created: true,
+    });
+  });
+
+  it('scrubs stale recovery diagnostics from successful finalized local-node cache payloads', () => {
+    const [patched] = patchFinalizedLocalNodes([localNode({
+      message: message({
+        status: 'failed',
+        execution_data: {
+          meta: {
+            failure_reason: 'App restarted before the native run reached a terminal state.',
+            needs_user_action_reason: 'The preserved worktree needs review.',
+            provider_error_message: 'App restarted before the native run reached a terminal state.',
+            native_recovery_status: 'needs_user_action',
+          },
+        },
+      }),
+    })], {
+      nodeId: 'assistant-1',
+      status: 'completed',
+      outputCommitSha: 'commit-1',
+    })!;
+
+    expect(patched.message.status).toBe('completed');
+    expect(patched.message.execution_data?.meta?.failure_reason).toBeUndefined();
+    expect(patched.message.execution_data?.meta?.needs_user_action_reason).toBeUndefined();
+    expect(patched.message.execution_data?.meta?.provider_error_message).toBeUndefined();
+    expect(patched.message.execution_data?.meta?.native_recovery_status).toBeUndefined();
+  });
 });

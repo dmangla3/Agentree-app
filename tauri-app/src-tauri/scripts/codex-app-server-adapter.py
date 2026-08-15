@@ -349,6 +349,16 @@ def _read_account(codex: Codex) -> dict[str, Any]:
     return response
 
 
+def _read_account_rate_limits(codex: Codex) -> dict[str, Any] | None:
+    response = codex._client._request_raw("account/rateLimits/read", {})  # type: ignore[attr-defined]
+    if not isinstance(response, dict):
+        raise RuntimeError("Codex account/rateLimits/read response was not a JSON object.")
+    rate_limits = response.get("rateLimits") or response.get("rate_limits")
+    if rate_limits is None:
+        return None
+    return _map_rate_limits(rate_limits)
+
+
 def _codex_login_status_ok(codex_bin: str, codex_home: str) -> bool:
     probe = _run_codex_probe(codex_bin, ["login", "status"], codex_home)
     if not probe.get("ok") and "exit_code" not in probe:
@@ -557,6 +567,30 @@ def _emit_readiness_check() -> int:
     return 0
 
 
+def _emit_rate_limits_read() -> int:
+    try:
+        codex_bin = _resolve_codex_bin()
+        codex_home = _resolve_codex_home()
+        config = AppServerConfig(
+            codex_bin=codex_bin,
+            cwd=os.getcwd(),
+            env={"CODEX_HOME": codex_home},
+            config_overrides=tuple(_auth_config_overrides(codex_home)),
+            client_name="agentree_codex_limits",
+            client_title="Agentree Codex Limits",
+        )
+        with AgentreeCodex(config=config) as codex:
+            print(json.dumps(_read_account_rate_limits(codex)), flush=True)
+        return 0
+    except Exception as error:  # noqa: BLE001
+        print(
+            f"Codex rate limit refresh failed: {error.__class__.__name__}: {_text_excerpt(str(error))}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
+
+
 def _extract_item(item: Any) -> Any:
     return getattr(item, "root", item)
 
@@ -596,13 +630,19 @@ def _map_usage(token_usage: Any) -> dict[str, Any]:
     }
 
 
+def _field(value: Any, attr: str, key: str | None = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(key or attr)
+    return getattr(value, attr, None)
+
+
 def _map_rate_limit_window(window: Any) -> dict[str, Any] | None:
     if window is None:
         return None
     return {
-        "resetsAt": getattr(window, "resets_at", None),
-        "usedPercent": getattr(window, "used_percent", None),
-        "windowDurationMins": getattr(window, "window_duration_mins", None),
+        "resetsAt": _field(window, "resets_at", "resetsAt"),
+        "usedPercent": _field(window, "used_percent", "usedPercent"),
+        "windowDurationMins": _field(window, "window_duration_mins", "windowDurationMins"),
     }
 
 
@@ -610,21 +650,21 @@ def _map_rate_limits(rate_limits: Any) -> dict[str, Any] | None:
     if rate_limits is None:
         return None
 
-    credits = getattr(rate_limits, "credits", None)
+    credits = _field(rate_limits, "credits")
     return {
         "kind": "codex",
         "credits": {
-            "balance": getattr(credits, "balance", None),
-            "hasCredits": getattr(credits, "has_credits", None),
-            "unlimited": getattr(credits, "unlimited", None),
+            "balance": _field(credits, "balance"),
+            "hasCredits": _field(credits, "has_credits", "hasCredits"),
+            "unlimited": _field(credits, "unlimited"),
         }
         if credits is not None
         else None,
-        "limitId": getattr(rate_limits, "limit_id", None),
-        "limitName": getattr(rate_limits, "limit_name", None),
-        "planType": getattr(getattr(rate_limits, "plan_type", None), "value", getattr(rate_limits, "plan_type", None)),
-        "primary": _map_rate_limit_window(getattr(rate_limits, "primary", None)),
-        "secondary": _map_rate_limit_window(getattr(rate_limits, "secondary", None)),
+        "limitId": _field(rate_limits, "limit_id", "limitId"),
+        "limitName": _field(rate_limits, "limit_name", "limitName"),
+        "planType": getattr(_field(rate_limits, "plan_type", "planType"), "value", _field(rate_limits, "plan_type", "planType")),
+        "primary": _map_rate_limit_window(_field(rate_limits, "primary")),
+        "secondary": _map_rate_limit_window(_field(rate_limits, "secondary")),
     }
 
 
@@ -647,6 +687,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--node-id", default=None)
     parser.add_argument("--raw-events", action="store_true")
     parser.add_argument("--readiness-check", action="store_true")
+    parser.add_argument("--rate-limits-read", action="store_true")
     parser.add_argument("prompt", nargs="?")
     args, unknown = parser.parse_known_args(argv)
 
@@ -922,6 +963,8 @@ def main() -> int:
     args = _parse_args(sys.argv[1:])
     if args.readiness_check:
         return _emit_readiness_check()
+    if args.rate_limits_read:
+        return _emit_rate_limits_read()
 
     prompt = args.prompt or ""
     start_ts = time.time()
@@ -946,7 +989,10 @@ def main() -> int:
     rollback_turn_count: int | None = None
     branch_point_mapping_confidence = "unknown"
     cumulative_text = ""
-    structured_text_buffer = ""
+    active_message_item_id: str | None = None
+    structured_text_buffer_by_item_id: dict[str, str] = {}
+    visible_text_by_item_id: dict[str, str] = {}
+    last_structured_text_buffer = ""
     structured_final_output: dict[str, str | None] | None = None
     last_provider_error: dict[str, Any] | None = None
     output_deltas_by_item_id: dict[str, str] = {}
@@ -1242,22 +1288,34 @@ def main() -> int:
                 if method == "item/agentMessage/delta":
                     delta = getattr(payload, "delta", "")
                     if isinstance(delta, str) and delta:
-                        structured_text_buffer += delta
+                        item_id = getattr(payload, "item_id", None)
+                        item_key = item_id if isinstance(item_id, str) and item_id else "__unknown__"
+                        if item_key != active_message_item_id:
+                            active_message_item_id = item_key
+                        structured_text_buffer_by_item_id[item_key] = (
+                            structured_text_buffer_by_item_id.get(item_key, "") + delta
+                        )
+                        last_structured_text_buffer = structured_text_buffer_by_item_id[item_key]
                         delta_count += 1
                         if not first_delta_emitted:
                             first_delta_emitted = True
                             first_delta_ts_ms = now_ms
                             _emit_trace("first_assistant_delta", {"provider_turn_id": getattr(payload, "turn_id", None)})
-                        visible_prefix = _json_string_field_prefix(structured_text_buffer, "final_response")
+                        visible_prefix = _json_string_field_prefix(
+                            structured_text_buffer_by_item_id[item_key],
+                            "final_response",
+                        )
                         if visible_prefix:
-                            visible_delta = _suffix_after_prefix(cumulative_text, visible_prefix)
+                            previous_item_text = visible_text_by_item_id.get(item_key, "")
+                            visible_delta = _suffix_after_prefix(previous_item_text, visible_prefix)
                             if visible_delta:
+                                visible_text_by_item_id[item_key] = visible_prefix
                                 cumulative_text = visible_prefix
                                 _emit(
                                     {
                                         "type": "message_delta",
                                         "delta": visible_delta,
-                                        "provider_item_id": getattr(payload, "item_id", None),
+                                        "provider_item_id": item_id,
                                         "provider_thread_id": getattr(payload, "thread_id", None),
                                         "provider_turn_id": getattr(payload, "turn_id", None),
                                         "timestamp": now_ms,
@@ -1308,7 +1366,9 @@ def main() -> int:
                                 structured_final_output,
                                 _structured_final_output_from_text(text),
                             )
-                            structured_text_buffer = text if len(text) >= len(structured_text_buffer) else structured_text_buffer
+                            last_structured_text_buffer = text
+                            if isinstance(item_id, str) and item_id:
+                                structured_text_buffer_by_item_id[item_id] = text
                         visible_text = (
                             structured_final_output.get("final_response")
                             if structured_final_output
@@ -1418,7 +1478,7 @@ def main() -> int:
                         active_turn_id = turn_id
                     final_provider_user_turn_count = _thread_user_turn_count(thread)
                     if structured_final_output is None:
-                        structured_final_output = _structured_final_output_from_text(structured_text_buffer)
+                        structured_final_output = _structured_final_output_from_text(last_structured_text_buffer)
                     visible_final_content = (
                         structured_final_output.get("final_response")
                         if structured_final_output
@@ -1522,7 +1582,7 @@ def main() -> int:
             "provider_stop_reason": "end_turn",
             "provider_status": "completed",
             "final_content": (
-                (structured_final_output or _structured_final_output_from_text(structured_text_buffer) or {}).get("final_response")
+                (structured_final_output or _structured_final_output_from_text(last_structured_text_buffer) or {}).get("final_response")
                 or cumulative_text
             ),
             "provider_thread_id": active_thread_id,

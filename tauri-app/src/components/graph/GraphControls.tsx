@@ -1,4 +1,4 @@
-import { ReactNode, RefObject, TouchEvent, WheelEvent, useEffect, useMemo, useState } from 'react';
+import { memo, ReactNode, RefObject, TouchEvent, WheelEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '../../../@/components/ui/button';
 import {
     HoverCard,
@@ -46,6 +46,8 @@ import {
     RotateCcw,
     User,
     Leaf,
+    EyeOff,
+    Eye,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { Insight } from '../../stores/workspaceStore';
@@ -109,11 +111,15 @@ export interface ThreadNavigationItem {
     label: string;
     turnCount: number;
     commitCount: number;
+    baseCommitSha?: string | null;
     updatedLabel: string;
     runningCount: number;
     hidden: boolean;
     current: boolean;
+    lastUpdatedAt?: number;
 }
+
+type ThreadListFilter = 'all' | 'visible' | 'hidden';
 
 export interface GraphControlsProps {
     // Refs
@@ -205,6 +211,151 @@ const stopNestedScrollPropagation = (event: WheelEvent | TouchEvent) => {
     event.stopPropagation();
 };
 
+const formatThreadMetadata = (thread: ThreadNavigationItem) => (
+    `${thread.turnCount} ${thread.turnCount === 1 ? 'turn' : 'turns'} · ${thread.commitCount} ${thread.commitCount === 1 ? 'commit' : 'commits'} · ${thread.updatedLabel}`
+);
+
+interface GraphThreadTabsProps {
+    threadItems: ThreadNavigationItem[];
+    onThreadFocus: (threadRootId: string) => void;
+    onThreadHide: (threadRootId: string) => void;
+    onThreadRestore: (threadRootId: string) => void;
+}
+
+export const GraphThreadTabs = memo(function GraphThreadTabs({
+    threadItems,
+    onThreadFocus,
+    onThreadHide,
+    onThreadRestore,
+}: GraphThreadTabsProps) {
+    const tabListRef = useRef<HTMLDivElement | null>(null);
+    const threadTabItems = useMemo(() => {
+        const byUpdatedAsc = (left: ThreadNavigationItem, right: ThreadNavigationItem) => (
+            (left.lastUpdatedAt ?? 0) - (right.lastUpdatedAt ?? 0) || left.threadRootId.localeCompare(right.threadRootId)
+        );
+        const hidden = threadItems.filter((thread) => thread.hidden).sort(byUpdatedAsc);
+        const visible = threadItems.filter((thread) => !thread.hidden).sort(byUpdatedAsc);
+        return [...hidden, ...visible];
+    }, [threadItems]);
+    const threadOrderKey = useMemo(
+        () => threadTabItems.map((thread) => `${thread.threadRootId}:${thread.hidden ? 'h' : 'v'}`).join('|'),
+        [threadTabItems]
+    );
+    const totalRunningAgents = useMemo(
+        () => threadItems.reduce((total, thread) => total + thread.runningCount, 0),
+        [threadItems]
+    );
+
+    useEffect(() => {
+        const tabList = tabListRef.current;
+        if (!tabList) return;
+        tabList.scrollLeft = tabList.scrollWidth;
+    }, [threadOrderKey]);
+
+    if (threadTabItems.length === 0) return null;
+
+    return (
+        <div className="border-b border-[hsl(var(--app-border)/0.38)] bg-[hsl(var(--app-panel-strong)/0.36)] px-3 py-1.5 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.022)]">
+            <div className="flex min-w-0 items-center gap-1.5">
+                <div className="hidden shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.48)] px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.1em] text-muted-foreground md:flex">
+                    <ParallelThreadsIcon size={11} strokeWidth={2} />
+                    Threads
+                    <span className="rounded bg-[hsl(var(--app-bg-muted)/0.72)] px-1.5 py-0.5 font-mono text-[8px] tracking-normal text-foreground/70">
+                        {totalRunningAgents} running
+                    </span>
+                </div>
+                <div
+                    ref={tabListRef}
+                    className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overscroll-x-contain scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
+                    onWheelCapture={stopNestedScrollPropagation}
+                    onTouchMoveCapture={stopNestedScrollPropagation}
+                    role="tablist"
+                    aria-label="Graph threads"
+                >
+                    {threadTabItems.map((thread) => {
+                        const metadata = formatThreadMetadata(thread);
+                        const activityLabel = `${thread.runningCount} running`;
+                        const baseCommitLabel = thread.baseCommitSha ? thread.baseCommitSha.slice(0, 8) : 'unknown base';
+
+                        return (
+                            <div
+                                key={thread.threadRootId}
+                                className={cn(
+                                    "group/thread-tab flex min-w-[9.5rem] max-w-[14.5rem] shrink-0 items-stretch overflow-hidden rounded-lg border shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[border-color,background-color,box-shadow,opacity,transform] duration-150",
+                                    thread.current
+                                        ? "border-[hsl(var(--app-accent)/0.34)] bg-[hsl(var(--app-accent-soft)/0.46)] text-[hsl(var(--app-accent))] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.045),0_6px_16px_-16px_hsl(var(--app-accent)/0.7)]"
+                                        : "border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.54)] text-foreground hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-panel)/0.76)]",
+                                    thread.hidden && "opacity-55"
+                                )}
+                            >
+                                <button
+                                    type="button"
+                                    role="tab"
+                                    aria-selected={thread.current}
+                                    aria-label={`Open thread ${thread.label}`}
+                                    disabled={thread.hidden}
+                                    onClick={() => onThreadFocus(thread.threadRootId)}
+                                    className="min-w-0 flex-1 px-2 py-1.5 text-left outline-none transition-[opacity,transform] duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                                >
+                                    <span className="flex min-w-0 items-center gap-1.5">
+                                        <span
+                                            className={cn(
+                                                "h-1.5 w-1.5 shrink-0 rounded-full",
+                                                thread.current
+                                                    ? "bg-[hsl(var(--app-accent))]"
+                                                    : thread.runningCount > 0
+                                                        ? "bg-[hsl(var(--app-warning))]"
+                                                        : "bg-muted-foreground/45"
+                                            )}
+                                        />
+                                        <span className="min-w-0 truncate text-[11px] font-semibold leading-none">
+                                            {thread.label}
+                                        </span>
+                                        {thread.current ? (
+                                            <span className="shrink-0 rounded bg-[hsl(var(--app-accent)/0.13)] px-1 py-0.5 text-[8px] font-bold leading-none">
+                                                Current
+                                            </span>
+                                        ) : null}
+                                        {thread.runningCount > 0 ? (
+                                            <span className="shrink-0 rounded bg-[hsl(var(--app-warning)/0.12)] px-1 py-0.5 text-[8px] font-bold leading-none text-[hsl(var(--app-warning))]">
+                                                {activityLabel}
+                                            </span>
+                                        ) : null}
+                                    </span>
+                                    <span className="mt-1 block truncate text-[9px] leading-none text-muted-foreground">
+                                        <span className="font-mono text-foreground/70">{baseCommitLabel}</span>
+                                        <span className="px-1 text-muted-foreground/45">·</span>
+                                        {metadata}
+                                    </span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        if (thread.hidden) {
+                                            onThreadRestore(thread.threadRootId);
+                                        } else {
+                                            onThreadHide(thread.threadRootId);
+                                        }
+                                    }}
+                                    aria-label={`${thread.hidden ? 'Restore' : 'Hide'} thread ${thread.label}`}
+                                    className={cn(
+                                        "flex w-6 shrink-0 items-center justify-center border-l border-[hsl(var(--app-border)/0.4)] text-muted-foreground opacity-55 transition-[background-color,color,opacity] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.38)] hover:text-foreground group-hover/thread-tab:opacity-100",
+                                        thread.hidden && "text-[hsl(var(--app-accent))] opacity-100"
+                                    )}
+                                >
+                                    {thread.hidden ? <Eye size={11} strokeWidth={2} /> : <EyeOff size={11} strokeWidth={2} />}
+                                </button>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+        </div>
+    );
+});
+
+GraphThreadTabs.displayName = 'GraphThreadTabs';
+
 // ═══════════════════════════════════════════════════════════════════════════
 // COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════
@@ -271,6 +422,8 @@ export function GraphControls({
     const insightsCount = insights.length;
     const [agentSearch, setAgentSearch] = useState('');
     const [tagSearch, setTagSearch] = useState('');
+    const [threadListFilter, setThreadListFilter] = useState<ThreadListFilter>('all');
+    const [threadDropdownOpen, setThreadDropdownOpen] = useState(false);
     const filteredAgentIds = useMemo(() => {
         const q = agentSearch.trim().toLowerCase();
         if (!q) return uniqueAgentIds;
@@ -313,6 +466,15 @@ export function GraphControls({
     }, [autoRefreshEligible, clockNow, syncStatusItems]);
     const hiddenThreadCount = useMemo(() => threadItems.filter((thread) => thread.hidden).length, [threadItems]);
     const visibleThreadCount = threadItems.length - hiddenThreadCount;
+    const filteredThreadItems = useMemo(() => {
+        if (threadListFilter === 'visible') {
+            return threadItems.filter((thread) => !thread.hidden);
+        }
+        if (threadListFilter === 'hidden') {
+            return threadItems.filter((thread) => thread.hidden);
+        }
+        return threadItems;
+    }, [threadItems, threadListFilter]);
     const hasCurrentThread = threadItems.some((thread) => thread.current);
     const hasActiveThread = threadItems.some((thread) => thread.runningCount > 0);
     const timeLabel = timePreset === 'all'
@@ -379,7 +541,11 @@ export function GraphControls({
         danger: 'bg-red-500/12 text-red-700 dark:bg-red-400/12 dark:text-red-300',
         muted: 'bg-slate-500/12 text-slate-600 dark:bg-slate-400/12 dark:text-slate-300',
     };
-
+    const threadListFilterOptions: Array<{ id: ThreadListFilter; label: string; count: number }> = [
+        { id: 'all', label: 'All', count: threadItems.length },
+        { id: 'visible', label: 'Visible', count: visibleThreadCount },
+        { id: 'hidden', label: 'Hidden', count: hiddenThreadCount },
+    ];
     return (
         <div
             ref={controlsRef}
@@ -818,7 +984,7 @@ export function GraphControls({
                     <span className={toolbarDividerClass} aria-hidden="true" />
 
                     {threadItems.length > 0 ? (
-                        <DropdownMenu>
+                        <DropdownMenu modal={false} open={threadDropdownOpen} onOpenChange={setThreadDropdownOpen}>
                             <Tooltip>
                                 <TooltipTrigger asChild>
                                     <DropdownMenuTrigger asChild>
@@ -890,14 +1056,47 @@ export function GraphControls({
                                             ) : null}
                                         </div>
                                     </div>
+                                    <div className="mt-3 grid grid-cols-3 gap-1 rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.72)] p-1 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]">
+                                        {threadListFilterOptions.map((option) => {
+                                            const selected = threadListFilter === option.id;
+
+                                            return (
+                                                <button
+                                                    key={option.id}
+                                                    type="button"
+                                                    aria-label={`${option.label} ${option.count}`}
+                                                    aria-pressed={selected}
+                                                    onClick={(event) => {
+                                                        event.preventDefault();
+                                                        event.stopPropagation();
+                                                        setThreadListFilter(option.id);
+                                                    }}
+                                                    className={cn(
+                                                        "rounded-md px-2 py-1.5 text-[11px] font-semibold leading-none transition-[background-color,color,box-shadow] duration-150",
+                                                        selected
+                                                            ? "bg-[hsl(var(--app-panel))] text-[hsl(var(--app-accent))] shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.68),0_1px_2px_hsl(var(--foreground)/0.05)]"
+                                                            : "text-muted-foreground hover:bg-[hsl(var(--app-panel)/0.72)] hover:text-foreground"
+                                                    )}
+                                                >
+                                                    <span>{option.label}</span>
+                                                    <span className="ml-1 tabular-nums opacity-70">{option.count}</span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
                                 </div>
                                 <div
                                     className="max-h-[min(24rem,calc(100vh-9rem))] overflow-y-auto overscroll-contain p-1.5 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
                                     onWheelCapture={stopNestedScrollPropagation}
                                     onTouchMoveCapture={stopNestedScrollPropagation}
                                 >
-                                    {threadItems.map((thread) => {
-                                        const metadata = `${thread.turnCount} ${thread.turnCount === 1 ? 'turn' : 'turns'} · ${thread.commitCount} ${thread.commitCount === 1 ? 'commit' : 'commits'} · ${thread.updatedLabel}`;
+                                    {filteredThreadItems.length === 0 ? (
+                                        <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+                                            No {threadListFilter === 'hidden' ? 'hidden' : 'visible'} threads.
+                                        </div>
+                                    ) : null}
+                                    {filteredThreadItems.map((thread) => {
+                                        const metadata = formatThreadMetadata(thread);
                                         const activityLabel = thread.runningCount > 1 ? `${thread.runningCount} running` : 'Active';
 
                                         return (
@@ -913,7 +1112,10 @@ export function GraphControls({
                                             >
                                                 <button
                                                     type="button"
-                                                    onClick={() => onThreadFocus(thread.threadRootId)}
+                                                    onClick={() => {
+                                                        onThreadFocus(thread.threadRootId);
+                                                        setThreadDropdownOpen(false);
+                                                    }}
                                                     disabled={thread.hidden}
                                                     aria-label={`Open thread ${thread.label}`}
                                                     className="min-w-0 flex-1 rounded-md text-left outline-none transition-opacity disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"

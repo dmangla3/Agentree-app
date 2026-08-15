@@ -1408,7 +1408,8 @@ const summarizeGraphEventContract = (fundamentals, sendsStarted) => {
     .reduce((sum, [, count]) => sum + Number(count || 0), 0);
   const activeRefreshCount =
     Number(graphComputationBreakdown['mode:active-refresh'] || 0) +
-    Number(graphComputationBreakdown['mode:active-refresh-pinned'] || 0);
+    Number(graphComputationBreakdown['mode:active-refresh-pinned'] || 0) +
+    Number(graphComputationBreakdown['mode:active-refresh-structural'] || 0);
   const activeHeldCheckCount = Number(graphComputationBreakdown['mode:active-held'] || 0);
   const liveComputationCount = Number(graphComputationBreakdown['mode:live'] || 0);
   const graphComputationPerSend = sendsStarted > 0

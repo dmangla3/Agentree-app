@@ -137,4 +137,17 @@ describe('graph thread dividers', () => {
     expect(bands[1].left).toBe(190);
     expect(bands[0].right).toBeLessThanOrEqual(bands[1].left);
   });
+
+  it('can normalize thread territory bands to a shared lane height', () => {
+    const bands = buildThreadBands([
+      { id: 'a1', threadRootId: 'thread-a', x: 0, y: 20, width: 200, height: 80 },
+      { id: 'a2', threadRootId: 'thread-a', x: 20, y: 260, width: 200, height: 90 },
+      { id: 'b1', threadRootId: 'thread-b', x: 500, y: 80, width: 200, height: 80 },
+    ], { padding: 40, horizontalPadding: 24, equalVerticalExtent: true });
+
+    expect(bands.map((band) => [band.top, band.bottom])).toEqual([
+      [-20, 390],
+      [-20, 390],
+    ]);
+  });
 });

@@ -1,8 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
+
+const PROVIDER_LIMITS_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +71,49 @@ fn command_excerpt(output: &Output) -> String {
         format!("{} {}", stdout.trim(), stderr.trim())
     };
     combined.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn command_output_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+    label: &str,
+) -> Result<Output, String> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to run {}: {}", label, error))?;
+    let started_at = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|error| format!("Failed to collect {} output: {}", label, error));
+            }
+            Ok(None) => {
+                if started_at.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let output = child.wait_with_output().map_err(|error| {
+                        format!("Failed to collect timed out {} output: {}", label, error)
+                    })?;
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    return Err(format!(
+                        "{} timed out after {}ms. stderr={}",
+                        label,
+                        timeout.as_millis(),
+                        stderr
+                    ));
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                return Err(format!("Failed while waiting for {}: {}", label, error));
+            }
+        }
+    }
 }
 
 fn run_probe(command: &str, args: &[&str]) -> CommandProbe {
@@ -283,4 +330,57 @@ pub fn check_all_runtime_readiness(app: AppHandle) -> Result<Vec<RuntimeReadines
 #[specta::specta]
 pub fn check_codex_readiness(app: AppHandle) -> Result<RuntimeReadiness, String> {
     check_codex(&app)
+}
+
+fn read_codex_provider_limits(app: &AppHandle) -> Result<String, String> {
+    let script_path =
+        crate::runtime_scripts::runtime_script_path(app, "codex-app-server-adapter.py")?;
+    let mut command = Command::new(crate::runtime_scripts::runtime_python_command(app));
+    command
+        .arg(script_path)
+        .arg("--rate-limits-read")
+        .env("PATH", build_probe_path());
+    let output = command_output_with_timeout(
+        &mut command,
+        PROVIDER_LIMITS_REFRESH_TIMEOUT,
+        "Codex provider limit refresh",
+    )?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    if !output.status.success() {
+        return Err(format!(
+            "Codex provider limit refresh failed. exit={} stderr={}",
+            output
+                .status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            stderr
+        ));
+    }
+    if stdout.is_empty() {
+        return Err(format!(
+            "Codex provider limit refresh produced no output. stderr={}",
+            stderr
+        ));
+    }
+
+    serde_json::from_str::<JsonValue>(&stdout).map_err(|error| {
+        format!(
+            "Failed to parse Codex provider limit refresh output: {}. output={}",
+            error, stdout
+        )
+    })?;
+    Ok(stdout)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn refresh_provider_limits(app: AppHandle, provider: String) -> Result<String, String> {
+    match provider.trim().to_lowercase().as_str() {
+        "codex" => read_codex_provider_limits(&app),
+        other => Err(format!("Unsupported provider for usage refresh: {}", other)),
+    }
 }

@@ -1,5 +1,3 @@
-import type { ComposerContextManifest } from './composerContext';
-
 export type RuntimeProvider = 'claude' | 'codex';
 export type ProviderThreadStrategy = 'fresh_thread' | 'resume' | 'fork' | 'fork_then_rollback';
 export type ProviderThreadStrategyRequested = ProviderThreadStrategy | 'cross_provider_fresh_thread';
@@ -25,24 +23,6 @@ export interface ProviderContextRoutingDecision {
     shouldInjectAgentreeContext: boolean;
     shouldBuildCrossProviderPacket: boolean;
     reason: string;
-}
-
-export interface ContinuationPacketInput {
-    selectedProvider: RuntimeProvider;
-    parentProvider: RuntimeProvider | 'unknown' | null;
-    parentNodeId: string | null;
-    baseNodeId: string | null;
-    gitParentCommit: string | null;
-    gitBranchName: string | null;
-    gitWorktreePath: string | null;
-    manifest: ComposerContextManifest;
-    parentMeta: Record<string, unknown>;
-}
-
-export interface ContinuationPacket {
-    version: 'v1';
-    text: string;
-    hash: string;
 }
 
 const PROVIDERS: RuntimeProvider[] = ['claude', 'codex'];
@@ -235,54 +215,5 @@ export function resolveProviderContextRouting(params: {
         shouldInjectAgentreeContext: false,
         shouldBuildCrossProviderPacket: false,
         reason: 'no_selected_context',
-    };
-}
-
-const fnv1aHash = (input: string): string => {
-    let hash = 0x811c9dc5;
-    for (let index = 0; index < input.length; index += 1) {
-        hash ^= input.charCodeAt(index);
-        hash = Math.imul(hash, 0x01000193);
-    }
-    return (hash >>> 0).toString(16).padStart(8, '0');
-};
-
-const displayValue = (value: unknown): string => {
-    if (value == null || value === '') return '<null>';
-    return String(value);
-};
-
-export function buildCrossProviderContinuationPacket(input: ContinuationPacketInput): ContinuationPacket {
-    const contextText = input.manifest.contextText.trim();
-    const previousLineage = stringValue(input.parentMeta.provider_lineage_id);
-    const previousModel = stringValue(input.parentMeta.provider_model);
-    const previousRunMode = stringValue(input.parentMeta.provider_run_mode) || stringValue(input.parentMeta.provider_permission_mode);
-
-    const sections = [
-        '[Agentree Cross-Provider Continuation Packet v1]',
-        `Source provider: ${input.parentProvider || 'unknown'}`,
-        `Target provider: ${input.selectedProvider}`,
-        `Parent node: ${displayValue(input.parentNodeId)}`,
-        `Base node: ${displayValue(input.baseNodeId)}`,
-        `Git parent commit: ${displayValue(input.gitParentCommit)}`,
-        `Git branch: ${displayValue(input.gitBranchName)}`,
-        `Git worktree: ${displayValue(input.gitWorktreePath)}`,
-        'Thread strategy: cross_provider_fresh_thread',
-        '',
-        '[Selected Agentree Graph Context]',
-        contextText || '<empty>',
-        '',
-        '[Provider Metadata]',
-        'Previous provider thread/session IDs are not reusable in this runtime. Treat this packet as the durable context bridge.',
-        `Previous provider lineage: ${displayValue(previousLineage)}`,
-        `Previous provider model: ${displayValue(previousModel)}`,
-        `Previous provider run mode: ${displayValue(previousRunMode)}`,
-    ];
-    const text = sections.join('\n');
-
-    return {
-        version: 'v1',
-        text,
-        hash: fnv1aHash(text),
     };
 }

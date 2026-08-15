@@ -43,6 +43,7 @@ export interface UseGraphLayoutOptions {
     keepDescendants: boolean;
     scopedCommitFiltering?: boolean;
     pinnedCommitShas?: Set<string>;
+    hiddenThreadRootIds?: Set<string>;
     visibleNodeSections: Set<GraphNodeSectionId>;
     insights: Insight[];
     showInsightsInGraph: boolean;
@@ -204,6 +205,23 @@ const INACTIVE_EDGE_STROKE = '#64748b';
 const COMMIT_PARENT_EDGE_STROKE = '#059669';
 const BASE_USED_EDGE_STROKE = '#d97706';
 
+export const getGraphEdgeVisualZIndex = ({
+    isOnContextPath,
+    isSummaryEdge,
+    relationship,
+    isSecondaryGitParent,
+}: {
+    isOnContextPath: boolean;
+    isSummaryEdge: boolean;
+    relationship?: string;
+    isSecondaryGitParent: boolean;
+}): number => {
+    if (isOnContextPath) return 40;
+    if (isSummaryEdge) return -3;
+    if (relationship === 'git-parent' && isSecondaryGitParent) return -1;
+    return 0;
+};
+
 const createSummariesFingerprint = (summaries: Summary[]): string => {
     if (!summaries || summaries.length === 0) return '';
     return summaries.map((s) => [
@@ -238,6 +256,7 @@ interface LayoutCacheKey {
     keepDescendants: boolean;
     scopedCommitFiltering: boolean;
     pinnedCommitShasFingerprint: string;
+    hiddenThreadRootIdsFingerprint: string;
     visibleNodeSectionsFingerprint: string;
     layoutMode: string;
     laneStrategy: string;
@@ -285,6 +304,7 @@ const cacheKeysEqual = (a: LayoutCacheKey, b: LayoutCacheKey): boolean => {
         a.keepDescendants === b.keepDescendants &&
         a.scopedCommitFiltering === b.scopedCommitFiltering &&
         a.pinnedCommitShasFingerprint === b.pinnedCommitShasFingerprint &&
+        a.hiddenThreadRootIdsFingerprint === b.hiddenThreadRootIdsFingerprint &&
         a.visibleNodeSectionsFingerprint === b.visibleNodeSectionsFingerprint &&
         a.layoutMode === b.layoutMode &&
         a.laneStrategy === b.laneStrategy &&
@@ -354,6 +374,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         keepDescendants,
         scopedCommitFiltering = false,
         pinnedCommitShas = new Set<string>(),
+        hiddenThreadRootIds = new Set<string>(),
         visibleNodeSections,
         insights,
         showInsightsInGraph,
@@ -394,6 +415,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             keepDescendants,
             scopedCommitFiltering,
             pinnedCommitShasFingerprint: Array.from(pinnedCommitShas).sort().join(','),
+            hiddenThreadRootIdsFingerprint: Array.from(hiddenThreadRootIds).sort().join(','),
             visibleNodeSectionsFingerprint: Array.from(visibleNodeSections).sort().join(','),
             layoutMode,
             laneStrategy,
@@ -535,7 +557,8 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 onMeasureNodeHeight,
                 visibleNodeSections,
                 scopedCommitFiltering,
-                pinnedCommitShas
+                pinnedCommitShas,
+                hiddenThreadRootIds
         );
 
         if (mappedNodes.length === 0) {
@@ -638,7 +661,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         return visualResult;
     }, [
         messages, summaries, projection, measuredNodeHeights, layoutMode, laneStrategy, disabledSummaryIds,
-        focusedMessageId, contextPathMessageIds, composerBaseCommitSha, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, scopedCommitFiltering, pinnedCommitShas, insights, showInsightsInGraph,
+        focusedMessageId, contextPathMessageIds, composerBaseCommitSha, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, scopedCommitFiltering, pinnedCommitShas, hiddenThreadRootIds, insights, showInsightsInGraph,
         visibleNodeSections,
         workspaceRepoMap, branchPointersByNodeId, activeScopeId, scopeViewMode,
         scopeNameById, scopeColorById, onToggleSummary, onToggleCollapse,
@@ -842,9 +865,6 @@ function applyVisualProperties(
             : relationship === 'base-used'
                 ? 4.5
                 : DEFAULT_EDGE_STROKE_WIDTH;
-        const semanticEdgeZIndex = relationship === 'git-parent' || relationship === 'base-used'
-            ? (isSecondaryGitParent ? 10 : 30)
-            : 0;
         const defaultDash = relationship === 'base-used'
             ? '4 5'
             : isContextBreak
@@ -870,7 +890,12 @@ function applyVisualProperties(
             strokeDasharray: defaultDash,
             opacity: isOnContextPath ? 1 : defaultOpacity,
         };
-        const nextZIndex = isOnContextPath ? 40 : (isSummaryEdge ? -3 : semanticEdgeZIndex);
+        const nextZIndex = getGraphEdgeVisualZIndex({
+            isOnContextPath,
+            isSummaryEdge,
+            relationship,
+            isSecondaryGitParent,
+        });
         const previousEdge = previousEdgeById?.get(edge.id);
         if (
             previousEdge &&

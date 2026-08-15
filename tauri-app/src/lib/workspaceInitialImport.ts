@@ -23,7 +23,7 @@ const toCommitSyncPayload = (commit: Awaited<ReturnType<typeof agentClient.listM
 
 const displayNameForRef = (gitRef: string): string => {
   if (gitRef.startsWith('refs/heads/')) return gitRef.replace('refs/heads/', '');
-  if (gitRef === 'HEAD') return 'Checked out commit';
+  if (gitRef === 'HEAD') return 'HEAD';
   return gitRef;
 };
 

@@ -75,6 +75,45 @@ export const mergeStreamingOutput = (currentOutput: string, nextText: string) =>
   return `${currentOutput}${incoming}`;
 };
 
+type ProviderAssistantOutputKind = 'delta' | 'snapshot' | 'final';
+
+const cleanProviderItemId = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+};
+
+export const resolveProviderAssistantOutput = (
+  currentOutput: string,
+  nextText: string,
+  options: {
+    kind: ProviderAssistantOutputKind;
+    currentProviderItemId?: string | null;
+    nextProviderItemId?: string | null;
+  },
+) => {
+  const incoming = typeof nextText === 'string' ? nextText : '';
+  const currentProviderItemId = cleanProviderItemId(options.currentProviderItemId);
+  const nextProviderItemId = cleanProviderItemId(options.nextProviderItemId);
+  const providerItemChanged = Boolean(
+    currentProviderItemId &&
+    nextProviderItemId &&
+    currentProviderItemId !== nextProviderItemId
+  );
+  const providerItemId = nextProviderItemId ?? currentProviderItemId;
+
+  if (!incoming) {
+    return { output: currentOutput, providerItemId };
+  }
+  if (options.kind === 'final' || providerItemChanged) {
+    return { output: incoming, providerItemId };
+  }
+  if (options.kind === 'delta') {
+    return { output: `${currentOutput}${incoming}`, providerItemId };
+  }
+  return { output: mergeStreamingOutput(currentOutput, incoming), providerItemId };
+};
+
 const mergeExecutionData = (
   currentExecution: Record<string, any>,
   patch: Record<string, any>,

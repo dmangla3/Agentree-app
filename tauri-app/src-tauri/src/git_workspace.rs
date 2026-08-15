@@ -274,6 +274,11 @@ fn run_git(repo_path: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+fn run_git_owned(repo_path: &str, args: Vec<String>) -> Result<String, String> {
+    let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_git(repo_path, &arg_refs)
+}
+
 fn run_git_success(repo_path: &str, args: &[&str]) -> bool {
     match run_git_with_status(repo_path, args) {
         Ok(output) => output.status.success(),
@@ -328,6 +333,17 @@ fn ensure_directory(path: &Path) -> Result<(), String> {
 
 fn resolve_git_dir(repo_path: &str) -> Result<PathBuf, String> {
     let git_dir = run_git(repo_path, &["rev-parse", "--git-dir"])?;
+    let git_dir = git_dir.trim();
+    let path = PathBuf::from(git_dir);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(Path::new(repo_path).join(path))
+    }
+}
+
+fn resolve_git_common_dir(repo_path: &str) -> Result<PathBuf, String> {
+    let git_dir = run_git(repo_path, &["rev-parse", "--git-common-dir"])?;
     let git_dir = git_dir.trim();
     let path = PathBuf::from(git_dir);
     if path.is_absolute() {
@@ -459,6 +475,9 @@ const DEPENDENCY_DIR_NAMES: &[&str] = &[
     "target",
 ];
 
+const SCAFFOLDING_EXCLUDE_START: &str = "# agentree-managed-scaffolding:start";
+const SCAFFOLDING_EXCLUDE_END: &str = "# agentree-managed-scaffolding:end";
+
 #[cfg(unix)]
 fn symlink_dependency_dir(source: &Path, target: &Path) -> Result<(), String> {
     unix_fs::symlink(source, target)
@@ -521,9 +540,124 @@ fn collect_dependency_dirs(repo_path: &str) -> Result<Vec<PathBuf>, String> {
     Ok(dependency_dirs)
 }
 
-fn link_dependencies(repo_path: &str, worktree_path: &str) -> Result<(), String> {
+fn relative_path_to_git_path(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn gitignore_anchor_pattern(path: &str) -> String {
+    let mut pattern = String::from("/");
+    for ch in path.chars() {
+        match ch {
+            '\\' | ' ' | '*' | '?' | '[' | ']' => {
+                pattern.push('\\');
+                pattern.push(ch);
+            }
+            _ => pattern.push(ch),
+        }
+    }
+    pattern
+}
+
+fn replace_managed_block(content: &str, block_lines: &[String]) -> String {
+    let mut kept = Vec::new();
+    let mut skipping = false;
+    for line in content.lines() {
+        if line.trim() == SCAFFOLDING_EXCLUDE_START {
+            skipping = true;
+            continue;
+        }
+        if skipping {
+            if line.trim() == SCAFFOLDING_EXCLUDE_END {
+                skipping = false;
+            }
+            continue;
+        }
+        kept.push(line.to_string());
+    }
+
+    while kept.last().map(|line| line.is_empty()).unwrap_or(false) {
+        kept.pop();
+    }
+    if !kept.is_empty() {
+        kept.push(String::new());
+    }
+    kept.push(SCAFFOLDING_EXCLUDE_START.to_string());
+    kept.extend(block_lines.iter().cloned());
+    kept.push(SCAFFOLDING_EXCLUDE_END.to_string());
+    format!("{}\n", kept.join("\n"))
+}
+
+fn install_scaffolding_excludes(repo_path: &str, paths: &HashSet<String>) -> Result<(), String> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let common_git_dir = resolve_git_common_dir(repo_path)?;
+    let info_dir = common_git_dir.join("info");
+    ensure_directory(&info_dir)?;
+    let exclude_path = info_dir.join("exclude");
+    let existing = fs::read_to_string(&exclude_path).unwrap_or_default();
+    let mut existing_paths = HashSet::new();
+    let mut in_block = false;
+    for line in existing.lines() {
+        if line.trim() == SCAFFOLDING_EXCLUDE_START {
+            in_block = true;
+            continue;
+        }
+        if line.trim() == SCAFFOLDING_EXCLUDE_END {
+            in_block = false;
+            continue;
+        }
+        if in_block {
+            existing_paths.insert(line.trim().to_string());
+        }
+    }
+
+    for path in paths {
+        existing_paths.insert(gitignore_anchor_pattern(path));
+    }
+    let mut block_lines = existing_paths.into_iter().collect::<Vec<_>>();
+    block_lines.sort();
+    let updated = replace_managed_block(&existing, &block_lines);
+    fs::write(&exclude_path, updated)
+        .map_err(|e| format!("Failed to write git exclude {:?}: {}", exclude_path, e))
+}
+
+fn collect_worktree_scaffolding_paths(
+    repo_path: &str,
+    worktree_path: &str,
+) -> Result<HashSet<String>, String> {
     let repo_root = Path::new(repo_path);
     let worktree_root = Path::new(worktree_path);
+    let mut paths = HashSet::new();
+
+    for relative_dir in collect_dependency_dirs(repo_path)? {
+        let worktree_link = worktree_root.join(&relative_dir);
+        let Ok(metadata) = fs::symlink_metadata(&worktree_link) else {
+            continue;
+        };
+        if !metadata.file_type().is_symlink() {
+            continue;
+        }
+        let Ok(link_target) = fs::read_link(&worktree_link) else {
+            continue;
+        };
+        let expected_target = repo_root.join(&relative_dir);
+        if link_target == expected_target {
+            paths.insert(relative_path_to_git_path(&relative_dir));
+        }
+    }
+
+    Ok(paths)
+}
+
+fn link_dependencies(repo_path: &str, worktree_path: &str) -> Result<Vec<PathBuf>, String> {
+    let repo_root = Path::new(repo_path);
+    let worktree_root = Path::new(worktree_path);
+    let mut linked_paths = Vec::new();
+    let mut scaffolding_paths = HashSet::new();
 
     for relative_dir in collect_dependency_dirs(repo_path)? {
         let source = repo_root.join(&relative_dir);
@@ -535,9 +669,66 @@ fn link_dependencies(repo_path: &str, worktree_path: &str) -> Result<(), String>
             ensure_directory(parent)?;
         }
         symlink_dependency_dir(&source, &target)?;
+        scaffolding_paths.insert(relative_path_to_git_path(&relative_dir));
+        linked_paths.push(relative_dir);
     }
 
-    Ok(())
+    if !linked_paths.is_empty() {
+        install_scaffolding_excludes(repo_path, &scaffolding_paths)?;
+    }
+
+    Ok(linked_paths)
+}
+
+fn split_nul_paths(output: &str) -> impl Iterator<Item = String> + '_ {
+    output
+        .split('\0')
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(ToString::to_string)
+}
+
+fn collect_git_changed_paths(worktree_path: &str) -> Result<HashSet<String>, String> {
+    let mut paths = HashSet::new();
+
+    let tracked_changes = run_git(worktree_path, &["diff", "--name-only", "-z", "HEAD"])?;
+    paths.extend(split_nul_paths(&tracked_changes));
+
+    let staged_changes = run_git(
+        worktree_path,
+        &["diff", "--cached", "--name-only", "-z", "HEAD"],
+    )?;
+    paths.extend(split_nul_paths(&staged_changes));
+
+    let untracked = run_git(
+        worktree_path,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+    )?;
+    paths.extend(split_nul_paths(&untracked));
+
+    Ok(paths)
+}
+
+fn committable_changed_paths(repo_path: &str, worktree_path: &str) -> Result<Vec<String>, String> {
+    let scaffolding_paths = collect_worktree_scaffolding_paths(repo_path, worktree_path)?;
+    let mut paths = collect_git_changed_paths(worktree_path)?
+        .into_iter()
+        .filter(|path| !scaffolding_paths.contains(path))
+        .collect::<Vec<_>>();
+    paths.sort();
+    Ok(paths)
+}
+
+fn stage_committable_paths(repo_path: &str, worktree_path: &str) -> Result<Vec<String>, String> {
+    let paths = committable_changed_paths(repo_path, worktree_path)?;
+    if paths.is_empty() {
+        return Ok(paths);
+    }
+
+    let mut args = vec!["add".to_string(), "-A".to_string(), "--".to_string()];
+    args.extend(paths.iter().cloned());
+    run_git_owned(worktree_path, args)?;
+    Ok(paths)
 }
 
 fn is_env_file(path: &Path) -> bool {
@@ -1272,8 +1463,8 @@ pub async fn agent_worktree_has_changes(
         &worktree_path,
         "",
     );
-    let status = match run_git(&worktree_path_string, &["status", "--porcelain"]) {
-        Ok(status) => status,
+    let changed_paths = match committable_changed_paths(&repo_path, &worktree_path_string) {
+        Ok(paths) => paths,
         Err(err) => {
             log_agent_worktree_lifecycle(
                 "has_changes.error",
@@ -1290,13 +1481,13 @@ pub async fn agent_worktree_has_changes(
         &repo_path,
         &node_id,
         &worktree_path,
-        if status.trim().is_empty() {
+        if changed_paths.is_empty() {
             "changed=false"
         } else {
             "changed=true"
         },
     );
-    Ok(!status.trim().is_empty())
+    Ok(!changed_paths.is_empty())
 }
 
 pub fn agent_worktree_head_commit_if_advanced(
@@ -1360,21 +1551,11 @@ pub async fn finalize_agent_worktree(
         &format!("author_present={}", author_name.is_some()),
     );
     with_repo_git_lock(&repo_path, "worktree_finalize", || {
-        if let Err(err) = run_git(&worktree_path_string, &["add", "-A"]) {
-            log_agent_worktree_lifecycle(
-                "finalize.add.error",
-                &repo_path,
-                &node_id,
-                &worktree_path,
-                &err,
-            );
-            return Err(err);
-        }
-        let status = match run_git(&worktree_path_string, &["status", "--porcelain"]) {
-            Ok(status) => status,
+        let staged_paths = match stage_committable_paths(&repo_path, &worktree_path_string) {
+            Ok(paths) => paths,
             Err(err) => {
                 log_agent_worktree_lifecycle(
-                    "finalize.status.error",
+                    "finalize.add.error",
                     &repo_path,
                     &node_id,
                     &worktree_path,
@@ -1383,13 +1564,29 @@ pub async fn finalize_agent_worktree(
                 return Err(err);
             }
         };
-        if status.trim().is_empty() {
+        if staged_paths.is_empty() {
             log_agent_worktree_lifecycle(
                 "finalize.no_changes",
                 &repo_path,
                 &node_id,
                 &worktree_path,
-                "",
+                "committable_paths=0",
+            );
+            return Ok(FinalizeAgentWorktreeResult {
+                commit_sha: None,
+                commit_created: false,
+            });
+        }
+        if run_git_success(
+            &worktree_path_string,
+            &["diff", "--cached", "--quiet", "HEAD"],
+        ) {
+            log_agent_worktree_lifecycle(
+                "finalize.no_changes",
+                &repo_path,
+                &node_id,
+                &worktree_path,
+                "staged_diff=empty",
             );
             return Ok(FinalizeAgentWorktreeResult {
                 commit_sha: None,
@@ -1529,7 +1726,7 @@ pub fn finalize_agent_merge_worktree(
     );
 
     with_repo_git_lock(repo_path, "worktree_finalize_merge", || {
-        run_git(&worktree_path_string, &["add", "-A"])?;
+        stage_committable_paths(repo_path, &worktree_path_string)?;
         let tree_sha = run_git(&worktree_path_string, &["write-tree"])?
             .trim()
             .to_string();
@@ -1644,8 +1841,8 @@ pub async fn cleanup_worktree_owned(
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_worktree_head_commit_if_advanced, finalize_agent_merge_worktree, is_env_file,
-        worktree_root,
+        agent_worktree_head_commit_if_advanced, finalize_agent_merge_worktree,
+        finalize_agent_worktree, is_env_file, link_dependencies, worktree_root,
     };
     use std::fs;
     use std::path::Path;
@@ -1680,6 +1877,53 @@ mod tests {
         dir
     }
 
+    fn add_source_dependency_dirs(repo_path: &Path) {
+        fs::create_dir_all(repo_path.join("client/node_modules")).expect("create client deps");
+        fs::create_dir_all(repo_path.join("server/venv")).expect("create server venv");
+        fs::write(
+            repo_path.join("client/node_modules/package.txt"),
+            "dependency\n",
+        )
+        .expect("write client dependency marker");
+        fs::write(repo_path.join("server/venv/pyvenv.cfg"), "venv\n").expect("write venv marker");
+    }
+
+    fn create_test_agent_worktree(
+        repo_path: &Path,
+        repo_path_string: &str,
+        node_id: &str,
+        parent_commit: &str,
+    ) -> std::path::PathBuf {
+        let worktree_path = worktree_root(repo_path_string)
+            .expect("worktree root")
+            .join(node_id);
+        let worktree_path_string = worktree_path.to_string_lossy().to_string();
+        run_test_git(
+            repo_path,
+            &[
+                "worktree",
+                "add",
+                &worktree_path_string,
+                "-B",
+                &format!("agentree/{node_id}"),
+                parent_commit,
+            ],
+        );
+        worktree_path
+    }
+
+    fn clear_repo_excludes(repo_path: &Path) {
+        let git_common_dir = run_test_git(repo_path, &["rev-parse", "--git-common-dir"]);
+        let git_common_dir = Path::new(&git_common_dir);
+        let git_common_dir = if git_common_dir.is_absolute() {
+            git_common_dir.to_path_buf()
+        } else {
+            repo_path.join(git_common_dir)
+        };
+        fs::create_dir_all(git_common_dir.join("info")).expect("create git info dir");
+        fs::write(git_common_dir.join("info/exclude"), "").expect("clear git exclude");
+    }
+
     #[test]
     fn env_file_detection_matches_dotenv_variants() {
         assert!(is_env_file(Path::new(".env")));
@@ -1687,6 +1931,172 @@ mod tests {
         assert!(is_env_file(Path::new("nested/.env.production")));
         assert!(!is_env_file(Path::new("README.md")));
         assert!(!is_env_file(Path::new(".gitignore")));
+    }
+
+    #[test]
+    fn linked_dependency_symlinks_are_ignored_in_agent_worktree_status() {
+        let dir = init_test_repo();
+        add_source_dependency_dirs(dir.path());
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-linked-dependencies";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        let worktree_path_string = worktree_path.to_string_lossy().to_string();
+
+        link_dependencies(&repo_path, &worktree_path_string).expect("link dependencies");
+
+        assert!(
+            worktree_path.join("client/node_modules").is_symlink(),
+            "client dependency should be linked as worktree scaffolding"
+        );
+        assert!(
+            worktree_path.join("server/venv").is_symlink(),
+            "server venv should be linked as worktree scaffolding"
+        );
+        assert!(
+            run_test_git(
+                &worktree_path,
+                &[
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all",
+                    "--",
+                    "client/node_modules",
+                    "server/venv",
+                ],
+            )
+            .is_empty(),
+            "Agentree-created dependency symlinks must not appear as user changes"
+        );
+    }
+
+    #[test]
+    fn finalize_agent_worktree_skips_symlink_only_scaffolding_changes() {
+        let dir = init_test_repo();
+        add_source_dependency_dirs(dir.path());
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-noop-with-linked-dependencies";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        let worktree_path_string = worktree_path.to_string_lossy().to_string();
+        link_dependencies(&repo_path, &worktree_path_string).expect("link dependencies");
+
+        let result = tauri::async_runtime::block_on(finalize_agent_worktree(
+            repo_path.clone(),
+            node_id.to_string(),
+            "No-op agent turn".to_string(),
+            Some("Agentree Test".to_string()),
+        ))
+        .expect("finalize agent worktree");
+
+        assert!(!result.commit_created);
+        assert_eq!(result.commit_sha, None);
+        assert_eq!(
+            run_test_git(&worktree_path, &["rev-parse", "HEAD"]),
+            parent_commit
+        );
+        assert!(
+            run_test_git(
+                &worktree_path,
+                &[
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all",
+                    "--",
+                    "client/node_modules",
+                    "server/venv",
+                ],
+            )
+            .is_empty(),
+            "scaffolding symlinks should remain ignored after no-op finalization"
+        );
+    }
+
+    #[test]
+    fn finalize_agent_worktree_filters_scaffolding_even_without_git_excludes() {
+        let dir = init_test_repo();
+        add_source_dependency_dirs(dir.path());
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-noop-without-excludes";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        let worktree_path_string = worktree_path.to_string_lossy().to_string();
+        link_dependencies(&repo_path, &worktree_path_string).expect("link dependencies");
+        clear_repo_excludes(dir.path());
+
+        assert!(
+            !run_test_git(
+                &worktree_path,
+                &[
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all",
+                    "--",
+                    "client/node_modules",
+                    "server/venv",
+                ],
+            )
+            .is_empty(),
+            "raw git status should see symlinks when the exclude convenience layer is absent"
+        );
+
+        let result = tauri::async_runtime::block_on(finalize_agent_worktree(
+            repo_path,
+            node_id.to_string(),
+            "No-op agent turn".to_string(),
+            Some("Agentree Test".to_string()),
+        ))
+        .expect("finalize agent worktree");
+
+        assert!(!result.commit_created);
+        assert_eq!(result.commit_sha, None);
+        assert_eq!(
+            run_test_git(&worktree_path, &["rev-parse", "HEAD"]),
+            parent_commit
+        );
+    }
+
+    #[test]
+    fn finalize_agent_worktree_commits_real_changes_without_scaffolding_symlinks() {
+        let dir = init_test_repo();
+        add_source_dependency_dirs(dir.path());
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-real-change-with-linked-dependencies";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        let worktree_path_string = worktree_path.to_string_lossy().to_string();
+        link_dependencies(&repo_path, &worktree_path_string).expect("link dependencies");
+        fs::write(worktree_path.join("assistant.txt"), "assistant output\n")
+            .expect("write assistant output");
+
+        let result = tauri::async_runtime::block_on(finalize_agent_worktree(
+            repo_path,
+            node_id.to_string(),
+            "Assistant output".to_string(),
+            Some("Agentree Test".to_string()),
+        ))
+        .expect("finalize agent worktree");
+        let commit_sha = result.commit_sha.expect("commit sha");
+
+        assert!(result.commit_created);
+        assert_eq!(
+            run_test_git(
+                &worktree_path,
+                &["show", &format!("{commit_sha}:assistant.txt")]
+            ),
+            "assistant output"
+        );
+        let tree_files = run_test_git(
+            &worktree_path,
+            &["ls-tree", "-r", "--name-only", &commit_sha],
+        );
+        assert!(tree_files.lines().any(|path| path == "assistant.txt"));
+        assert!(!tree_files.lines().any(|path| path == "client/node_modules"));
+        assert!(!tree_files.lines().any(|path| path == "server/venv"));
     }
 
     #[test]

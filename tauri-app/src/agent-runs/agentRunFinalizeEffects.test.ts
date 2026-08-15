@@ -10,6 +10,7 @@ import { localNodeKeys } from '../hooks/useLocalNodes';
 
 vi.mock('../lib/graphInteractionGate', () => ({
   scheduleMessagesRefreshWhenGraphIdle: vi.fn(() => Promise.resolve()),
+  scheduleLocalCommitGraphRefreshWhenGraphIdle: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../hooks/useHotSendMessageDeltas', () => ({
@@ -110,11 +111,11 @@ describe('agentRun finalize effects', () => {
 
     vi.advanceTimersByTime(50);
 
-    expect(queryClient.refetchQueries).toHaveBeenCalledWith({
+    expect(queryClient.refetchQueries).not.toHaveBeenCalledWith({
       queryKey: ['local-commit-graph', 'workspace-1'],
       type: 'active',
     });
-    expect(queryClient.refetchQueries).toHaveBeenCalledWith({
+    expect(queryClient.refetchQueries).not.toHaveBeenCalledWith({
       queryKey: ['local-commits', 'workspace-1'],
       type: 'active',
     });

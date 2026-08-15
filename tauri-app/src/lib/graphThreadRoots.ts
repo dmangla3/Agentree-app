@@ -70,6 +70,44 @@ export const getThreadDescendantIds = (
   return buildThreadRootIndex(messages).messageIdsByThreadRootId.get(threadRootId) ?? new Set();
 };
 
+export const getLatestThreadMessageId = (
+  threadRootId: string | null | undefined,
+  messages: Message[],
+): string | null => {
+  if (!threadRootId) return null;
+
+  const messageById = new Map(messages.map((message) => [message.id, message]));
+  const threadMessageIds = buildThreadRootIndex(messages).messageIdsByThreadRootId.get(threadRootId);
+  if (!threadMessageIds || threadMessageIds.size === 0) return null;
+
+  let latestMessage: Message | null = null;
+  let latestTimestamp = Number.NEGATIVE_INFINITY;
+
+  for (const messageId of threadMessageIds) {
+    const message = messageById.get(messageId);
+    if (!message) continue;
+
+    const createdAt = new Date(message.createdAt).getTime();
+    const updatedAt = new Date(message.updatedAt).getTime();
+    const timestamp = Number.isFinite(createdAt)
+      ? createdAt
+      : Number.isFinite(updatedAt)
+        ? updatedAt
+        : Number.NEGATIVE_INFINITY;
+
+    if (
+      !latestMessage ||
+      timestamp > latestTimestamp ||
+      (timestamp === latestTimestamp && message.id.localeCompare(latestMessage.id) > 0)
+    ) {
+      latestMessage = message;
+      latestTimestamp = timestamp;
+    }
+  }
+
+  return latestMessage?.id ?? null;
+};
+
 export const getHiddenConversationMessageIds = ({
   messages,
   hiddenThreadRootIds,

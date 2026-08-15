@@ -888,7 +888,7 @@ export function ChatInterface() {
         </Profiler>
       </ScrollArea>
 
-      <div className="relative z-[60] overflow-visible p-4 border-t bg-background">
+      <div className="relative z-[40] overflow-visible p-4 border-t bg-background">
         <ChatInput />
       </div>
 

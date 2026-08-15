@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import type { CSSProperties } from 'react';
+import { GitBranch } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { withHexAlpha } from '../../../lib/visualTokens';
 
@@ -9,9 +10,22 @@ interface GraphTurnGroupHullProps {
     label?: string;
     scopeColor?: string | null;
     slotKind?: 'turn' | 'commit-only';
+    threadRootId?: string | null;
+    isThreadRoot?: boolean;
   };
   style?: CSSProperties;
 }
+
+const THREAD_ACCENT_COLORS = ['#4f8dd8', '#4f9f75', '#8b6fd6', '#c47a32', '#ba6d92', '#3d9f97'];
+
+const getThreadAccentColor = (threadRootId: string | null | undefined): string => {
+  if (!threadRootId) return '#64748b';
+  let hash = 0;
+  for (let index = 0; index < threadRootId.length; index += 1) {
+    hash = (hash * 31 + threadRootId.charCodeAt(index)) >>> 0;
+  }
+  return THREAD_ACCENT_COLORS[hash % THREAD_ACCENT_COLORS.length];
+};
 
 export const GraphTurnGroupHull = memo(({
   data,
@@ -19,6 +33,8 @@ export const GraphTurnGroupHull = memo(({
 }: GraphTurnGroupHullProps) => {
   const hullColor = '#64748b';
   const isCommitOnly = data.slotKind === 'commit-only';
+  const isThreadRoot = Boolean(data.isThreadRoot && !isCommitOnly);
+  const threadAccentColor = getThreadAccentColor(data.threadRootId);
   
   return (
     <div
@@ -34,9 +50,32 @@ export const GraphTurnGroupHull = memo(({
         'dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]',
       )}
     >
+      {isThreadRoot && (
+        <>
+          <div
+            className="absolute left-0 top-4 h-[calc(100%-2rem)] w-[3px] rounded-full shadow-[0_0_0_1px_rgba(255,255,255,0.34)]"
+            style={{
+              background: `linear-gradient(180deg, transparent, ${threadAccentColor}D8 18%, ${threadAccentColor}D8 82%, transparent)`,
+            }}
+          />
+          <div
+            className="absolute left-3 top-2 flex items-center gap-1 rounded-full border bg-[hsl(var(--app-panel)/0.92)] px-2 py-1 text-[8px] font-bold uppercase leading-none tracking-[0.12em] shadow-sm backdrop-blur-sm"
+            style={{
+              borderColor: `${threadAccentColor}55`,
+              color: threadAccentColor,
+            }}
+          >
+            <GitBranch className="h-2.5 w-2.5" strokeWidth={2.4} />
+            Thread
+          </div>
+        </>
+      )}
       {data.label && (
         <div 
-          className="absolute left-2 top-2 rounded-md px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.1em] text-white/95 shadow-sm"
+          className={cn(
+            "absolute top-2 rounded-md px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.1em] text-white/95 shadow-sm",
+            isThreadRoot ? "left-[5.75rem]" : "left-2"
+          )}
           style={{ backgroundColor: withHexAlpha(hullColor, '8C') }}
         >
           {data.label}

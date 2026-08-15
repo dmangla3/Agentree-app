@@ -43,15 +43,18 @@ import { clearCachedGraphSnapshot, graphSnapshotToSummaries, useGraphSnapshot } 
 import { LlmNodeData, getLlmLegend } from '../lib/graphUtils';
 import { mapLocalCommitToCommitEntity } from '../lib/localCommitGraphProjection';
 import { createSubgraphFilterState, getSubgraphMessageIds, shouldClearSubgraphForFocus } from '../lib/graphSubgraphScope';
-import { buildThreadRootIndex, getHiddenConversationMessageIds } from '../lib/graphThreadRoots';
+import { buildThreadRootIndex, getHiddenConversationMessageIds, getLatestThreadMessageId } from '../lib/graphThreadRoots';
+import { pruneHiddenThreadRootIds, readHiddenThreadRootIds, rememberHiddenThreadRootIds } from '../lib/graphThreadVisibilityStorage';
 import { buildThreadBands, getThreadDividerRectsFromNodes, type ThreadBand } from '../lib/graphThreadDividers';
 import { buildComposerContextPathIds } from '../lib/composerContext';
 import { collectDeleteBranchMessageIds, getDeleteBranchPreview, getTopLevelDeleteBranchIds } from '../domain/deleteBranchPreview';
-import { getBranchPointerCommitSha, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
+import { getBranchPointerCommitSha, getMessageBaseCommitSha, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
+import { shouldRefreshHeldGraphMessagesForStructuralChange } from '../lib/graph/graphComputationHold';
 import { addDeletedGraphCommitShas, readDeletedGraphCommitShas } from '../lib/graph/commitGraphTombstones';
 import { getLeafMessagesByRecency, getLeafNavigationLabel } from '../lib/graph/leafNodes';
 import { collapseRenderedFocusRoute } from '../domain/scopedFocusRoute';
 import { cn } from '../lib/utils';
+import { writeClipboardText } from '../lib/clipboard';
 import { useDiff } from '../contexts/DiffContext';
 import { useToastHelpers } from './Toast';
 import { useRunStatusStore } from '../stores/runStatusStore';
@@ -63,7 +66,7 @@ import { HorizontalThenVerticalEdge } from './HorizontalThenVerticalEdge';
 import { ContextSmoothStepEdge } from './ContextSmoothStepEdge';
 
 // Components - Graph (extracted)
-import { GraphControls, type LeafNodeNavigationItem, type ThreadNavigationItem, ViewMode } from './graph/GraphControls';
+import { GraphControls, GraphThreadTabs, type LeafNodeNavigationItem, type ThreadNavigationItem, ViewMode } from './graph/GraphControls';
 import { GraphLegend } from './graph/GraphLegend';
 import { MiniMapPanel } from './graph/MiniMapPanel';
 import { GraphCanvasIndexPanel, type GraphEdgeLegendId, type GraphNodeSectionId } from './graph/GraphCanvasIndexPanel';
@@ -81,7 +84,7 @@ import { AddCommitDialog } from './AddCommitDialog';
 import { DeleteBranchDialog, type DeleteBranchDialogPhase } from './DeleteBranchDialog';
 import { classifyMessageNodeKind } from '../domain/nodes';
 
-import { Activity, GitBranch, X } from 'lucide-react';
+import { GitBranch, X } from 'lucide-react';
 import { agentClient } from '../lib/agentClient';
 import { createProfilerOnRender, startFocusInteraction } from '../lib/interactionProfiler';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
@@ -101,6 +104,7 @@ import type { FocusTriggerMetrics } from '../types/nodes';
 
 import { GraphNodeDispatcher } from './nodes/graph/GraphNodeDispatcher';
 import { GraphTurnGroupHull } from './nodes/graph/GraphTurnGroupHull';
+import { getGraphEdgeEndpointDotVariant, isInterTurnEndpointEdge } from './graphEdgeEndpointDots';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // NODE & EDGE TYPES
@@ -187,6 +191,58 @@ export const shouldSkipActiveGraphClickCentering = ({
     activeSendFlowWorkspaceId,
     selectedWorkspaceId,
 });
+
+export const resolveThreadDropdownSelection = ({
+    threadRootId,
+    messages,
+}: {
+    threadRootId: string;
+    messages: Message[];
+}) => getLatestThreadMessageId(threadRootId, messages) ?? threadRootId;
+
+export const buildFocusedThreadRootLookup = ({
+    messages,
+    threadRootIndex,
+}: {
+    messages: Message[];
+    threadRootIndex?: ReturnType<typeof buildThreadRootIndex>;
+}): Map<string, string> => {
+    const index = threadRootIndex ?? buildThreadRootIndex(messages);
+    const lookup = new Map<string, string>();
+
+    index.threadRootIdByMessageId.forEach((threadRootId, messageId) => {
+        lookup.set(messageId, threadRootId);
+    });
+
+    for (const message of messages) {
+        const threadRootId = index.threadRootIdByMessageId.get(message.id);
+        if (!threadRootId) continue;
+
+        const outputCommitSha = getMessageOutputCommitSha(message);
+        if (outputCommitSha) {
+            lookup.set(outputCommitSha, threadRootId);
+            lookup.set(`${message.id}:commit`, threadRootId);
+        }
+    }
+
+    return lookup;
+};
+
+export const resolveFocusedThreadRootId = ({
+    focusedMessageId,
+    messages,
+    threadRootIndex,
+    focusedThreadRootLookup,
+}: {
+    focusedMessageId: string | null;
+    messages: Message[];
+    threadRootIndex?: ReturnType<typeof buildThreadRootIndex>;
+    focusedThreadRootLookup?: Map<string, string>;
+}): string | null => {
+    if (!focusedMessageId) return null;
+    const lookup = focusedThreadRootLookup ?? buildFocusedThreadRootLookup({ messages, threadRootIndex });
+    return lookup.get(focusedMessageId) ?? null;
+};
 
 const useStableGraphCallback = <Args extends unknown[], ReturnValue>(
     callback: (...args: Args) => ReturnValue
@@ -363,7 +419,51 @@ type ActiveGraphWindowEntry = {
     index: number;
 };
 
-function ThreadBandOverlay({ bands, currentThreadRootId }: { bands: ThreadBand[]; currentThreadRootId: string | null }) {
+const THREAD_ACCENT_COLORS = ['#4f8dd8', '#4f9f75', '#8b6fd6', '#c47a32', '#ba6d92', '#3d9f97'];
+
+function GraphThreadIcon({ className, strokeWidth = 2 }: { className?: string; strokeWidth?: number }) {
+    return (
+        <svg
+            className={className}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={strokeWidth}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+            focusable="false"
+        >
+            <path d="M7 4c-2 3-2 5 0 8s2 5 0 8" />
+            <path d="M12 4c-2 3-2 5 0 8s2 5 0 8" />
+            <path d="M17 4c-2 3-2 5 0 8s2 5 0 8" />
+            <circle cx="7" cy="4" r="1" fill="currentColor" stroke="none" />
+            <circle cx="12" cy="4" r="1" fill="currentColor" stroke="none" />
+            <circle cx="17" cy="4" r="1" fill="currentColor" stroke="none" />
+            <circle cx="7" cy="20" r="1" fill="currentColor" stroke="none" />
+            <circle cx="12" cy="20" r="1" fill="currentColor" stroke="none" />
+            <circle cx="17" cy="20" r="1" fill="currentColor" stroke="none" />
+        </svg>
+    );
+}
+
+const getThreadAccentColor = (threadRootId: string): string => {
+    let hash = 0;
+    for (let index = 0; index < threadRootId.length; index += 1) {
+        hash = (hash * 31 + threadRootId.charCodeAt(index)) >>> 0;
+    }
+    return THREAD_ACCENT_COLORS[hash % THREAD_ACCENT_COLORS.length];
+};
+
+function ThreadBandOverlay({
+    bands,
+    currentThreadRootId,
+    threadItems,
+}: {
+    bands: ThreadBand[];
+    currentThreadRootId: string | null;
+    threadItems: ThreadNavigationItem[];
+}) {
     const { transform, flowWidth, flowHeight } = useStore((state) => ({
         transform: state.transform,
         flowWidth: state.width,
@@ -373,9 +473,10 @@ function ThreadBandOverlay({ bands, currentThreadRootId }: { bands: ThreadBand[]
     if (bands.length === 0 || flowWidth <= 0 || flowHeight <= 0) return null;
 
     const [translateX, translateY, zoom] = transform;
+    const threadLabelById = new Map(threadItems.map((thread) => [thread.threadRootId, thread.label]));
     return (
-        <div className="pointer-events-none absolute inset-0 z-[1] overflow-hidden" aria-hidden="true">
-            {bands.map((band) => {
+        <div className="pointer-events-none absolute inset-0 z-[1] overflow-hidden antialiased" aria-hidden="true">
+            {bands.map((band, index) => {
                 const screenLeft = band.left * zoom + translateX;
                 const screenRight = band.right * zoom + translateX;
                 const screenTop = band.top * zoom + translateY;
@@ -383,33 +484,73 @@ function ThreadBandOverlay({ bands, currentThreadRootId }: { bands: ThreadBand[]
                 const width = Math.max(1, screenRight - screenLeft);
                 const height = Math.max(1, screenBottom - screenTop);
                 const isCurrent = currentThreadRootId === band.threadRootId;
+                const hasCurrentThread = Boolean(currentThreadRootId);
+                const accentColor = getThreadAccentColor(band.threadRootId);
+                const label = threadLabelById.get(band.threadRootId) ?? `Thread ${index + 1}`;
                 const edgeInset = Math.min(32, Math.max(4, height * 0.08));
                 const radius = Math.min(18, Math.max(4, 18 * zoom));
+                const labelTop = Math.max(10, Math.min(flowHeight - 34, screenTop + 10));
+                const labelLeft = Math.max(12, Math.min(flowWidth - 172, screenLeft + 12));
 
                 if (screenRight < -96 || screenLeft > flowWidth + 96 || screenBottom < -96 || screenTop > flowHeight + 96) {
                     return null;
                 }
 
                 return (
-                    <div
-                        key={band.id}
-                        className={cn(
-                            "absolute top-0 overflow-hidden rounded-[18px] border transition-opacity duration-300",
-                            isCurrent
-                                ? "border-slate-700/[0.13] bg-slate-700/[0.055] opacity-100 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.36)] dark:border-slate-100/[0.13] dark:bg-slate-100/[0.06] dark:shadow-[inset_0_0_0_1px_rgba(15,23,42,0.42)]"
-                                : "border-slate-700/[0.07] bg-slate-700/[0.028] opacity-90 dark:border-slate-100/[0.08] dark:bg-slate-100/[0.032]"
-                        )}
-                        style={{
-                            width,
-                            height,
-                            borderRadius: radius,
-                            transform: `translate3d(${screenLeft}px, ${screenTop}px, 0)`,
-                        }}
-                    >
-                        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_18%,rgba(148,163,184,0.12),transparent_36%),linear-gradient(90deg,transparent,rgba(100,116,139,0.05)_18%,rgba(100,116,139,0.05)_82%,transparent)] dark:bg-[radial-gradient(circle_at_50%_18%,rgba(226,232,240,0.10),transparent_36%),linear-gradient(90deg,transparent,rgba(226,232,240,0.045)_18%,rgba(226,232,240,0.045)_82%,transparent)]" />
-                        <div className="absolute left-0 w-px bg-slate-700/[0.11] dark:bg-slate-100/[0.12]" style={{ top: edgeInset, bottom: edgeInset }} />
-                        <div className="absolute right-0 w-px bg-slate-700/[0.08] dark:bg-slate-100/[0.10]" style={{ top: edgeInset, bottom: edgeInset }} />
-                    </div>
+                    <React.Fragment key={band.id}>
+                        <div
+                            className={cn(
+                                "absolute top-0 overflow-hidden rounded-[18px] border transition-[opacity,background-color,border-color,box-shadow] duration-300",
+                                isCurrent
+                                    ? "opacity-100 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.42),0_18px_40px_-34px_rgba(15,23,42,0.45)] dark:shadow-[inset_0_0_0_1px_rgba(15,23,42,0.5)]"
+                                    : "opacity-90"
+                            )}
+                            style={{
+                                width,
+                                height,
+                                borderRadius: radius,
+                                borderColor: `${accentColor}${isCurrent ? '30' : '18'}`,
+                                background: `linear-gradient(90deg, ${accentColor}${isCurrent ? '14' : '0A'}, transparent 20%, transparent 80%, ${accentColor}08)`,
+                                transform: `translate3d(${screenLeft}px, ${screenTop}px, 0)`,
+                            }}
+                        >
+                            <div
+                                className="absolute left-0 w-[3px] rounded-full"
+                                style={{
+                                    top: edgeInset,
+                                    bottom: edgeInset,
+                                    background: `linear-gradient(180deg, transparent, ${accentColor}A8 18%, ${accentColor}A8 82%, transparent)`,
+                                }}
+                            />
+                            <div
+                                className="absolute right-0 w-px border-r border-dashed"
+                                style={{
+                                    top: edgeInset,
+                                    bottom: edgeInset,
+                                    borderColor: `${accentColor}45`,
+                                }}
+                            />
+                            {hasCurrentThread && !isCurrent ? (
+                                <div className="absolute inset-0 bg-[hsl(var(--background)/0.18)] backdrop-saturate-[0.72] dark:bg-slate-950/10" />
+                            ) : null}
+                        </div>
+                        <div
+                            className={cn(
+                                "absolute flex max-w-[160px] items-center gap-1.5 rounded-full border px-2 py-1 text-[10px] font-semibold leading-none shadow-sm backdrop-blur-md transition-opacity duration-300",
+                                isCurrent
+                                    ? "bg-[hsl(var(--app-panel)/0.88)] text-foreground opacity-100"
+                                    : "bg-[hsl(var(--app-panel)/0.68)] text-muted-foreground opacity-75"
+                            )}
+                            style={{
+                                borderColor: `${accentColor}${isCurrent ? '55' : '2C'}`,
+                                color: isCurrent ? accentColor : undefined,
+                                transform: `translate3d(${labelLeft}px, ${labelTop}px, 0)`,
+                            }}
+                        >
+                            <GraphThreadIcon className="h-3 w-3 shrink-0" strokeWidth={2.2} />
+                            <span className="truncate">{isCurrent ? 'Current thread' : label}</span>
+                        </div>
+                    </React.Fragment>
                 );
             })}
         </div>
@@ -603,6 +744,7 @@ function GraphViewInternal({
         Object.values(state.byNodeId)
             .filter((entry) => {
                 if (selectedWorkspaceId && entry.workspaceId !== selectedWorkspaceId) return false;
+                if (entry.role !== 'assistant') return false;
                 if (!entry.status) return false;
                 return ACTIVE_GRAPH_RUN_STATUSES.has(entry.status);
             })
@@ -628,13 +770,21 @@ function GraphViewInternal({
     ), [activeRunStatusNodeIds, activeSendFlowMessageIdKey]);
     const [graphResetNonce, setGraphResetNonce] = useState(0);
     const [subgraphRootNodeId, setSubgraphRootNodeId] = useState<string | null>(null);
-    const [hiddenThreadRootIds, setHiddenThreadRootIds] = useState<Set<string>>(() => new Set());
+    const [hiddenThreadRootIds, setHiddenThreadRootIds] = useState<Set<string>>(() => readHiddenThreadRootIds(selectedWorkspaceId));
     const [hiddenSubgraphRootIds, setHiddenSubgraphRootIds] = useState<Set<string>>(() => new Set());
 
     useEffect(() => {
-        setHiddenThreadRootIds(new Set());
+        setHiddenThreadRootIds(readHiddenThreadRootIds(selectedWorkspaceId));
         setHiddenSubgraphRootIds(new Set());
         setSubgraphRootNodeId(null);
+    }, [selectedWorkspaceId]);
+
+    const updateHiddenThreadRootIds = useCallback((updater: Set<string> | ((current: Set<string>) => Set<string>)) => {
+        setHiddenThreadRootIds((current) => {
+            const next = typeof updater === 'function' ? updater(current) : updater;
+            rememberHiddenThreadRootIds(selectedWorkspaceId, next);
+            return next;
+        });
     }, [selectedWorkspaceId]);
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -647,6 +797,10 @@ function GraphViewInternal({
     const summariesQuery = useSummaries(selectedWorkspaceId || '', { enabled: shouldHydrateFullMessages && !agentClient.hasRuntime() });
     const { data: workspacesData } = useWorkspaces();
     const workspaces = useMemo(() => workspacesData ?? [], [workspacesData]);
+    const selectedWorkspace = useMemo(
+        () => workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
+        [workspaces, selectedWorkspaceId]
+    );
     const { data: allModelsData } = useModels();
     const allModels = useMemo(() => allModelsData ?? [], [allModelsData]);
     const { data: agentsData } = useAgents();
@@ -793,9 +947,28 @@ function GraphViewInternal({
     }), [graphMessages, hiddenSubgraphRootIds, hiddenThreadRootIds]);
     const hiddenGraphFilterCount = hiddenSubgraphRootIds.size;
     const threadRootIndex = useMemo(() => buildThreadRootIndex(graphMessages as Message[]), [graphMessages]);
+    useEffect(() => {
+        if (!selectedWorkspaceId || threadRootIndex.threadRootIds.length === 0) return;
+
+        setHiddenThreadRootIds((current) => {
+            const next = pruneHiddenThreadRootIds(current, threadRootIndex.threadRootIds);
+            if (next.size === current.size) return current;
+            rememberHiddenThreadRootIds(selectedWorkspaceId, next);
+            return next;
+        });
+    }, [selectedWorkspaceId, threadRootIndex.threadRootIds]);
     const currentThreadRootId = useMemo(() => (
         subgraphRootNodeId ? threadRootIndex.threadRootIdByMessageId.get(subgraphRootNodeId) ?? null : null
     ), [subgraphRootNodeId, threadRootIndex]);
+    const focusedThreadRootLookup = useMemo(() => (
+        buildFocusedThreadRootLookup({
+            messages: graphMessages as Message[],
+            threadRootIndex,
+        })
+    ), [graphMessages, threadRootIndex]);
+    const focusedThreadRootId = useMemo(() => (
+        focusedMessageId ? focusedThreadRootLookup.get(focusedMessageId) ?? null : null
+    ), [focusedMessageId, focusedThreadRootLookup]);
     const threadIndexItems = useMemo<ThreadNavigationItem[]>(() => {
         const messageById = new Map((graphMessages as Message[]).map((message) => [message.id, message]));
         const now = Date.now();
@@ -805,31 +978,52 @@ function GraphViewInternal({
             const threadMessages = threadMessageIds
                 .map((messageId) => messageById.get(messageId) ?? null)
                 .filter((message): message is Message => Boolean(message));
-            const lastUpdatedAt = threadMessages.reduce((latest, message) => {
+            let lastUpdatedAt = 0;
+            let turnCount = 0;
+            let firstAssistantMessage: Message | null = null;
+            const commitShas = new Set<string>();
+            for (const message of threadMessages) {
                 const ts = new Date(message.updatedAt || message.createdAt).getTime();
-                return Number.isFinite(ts) ? Math.max(latest, ts) : latest;
-            }, 0);
-            const runningThreadCount = threadMessageIds.filter((messageId) => activeRunStatusNodeIds.has(messageId)).length;
-            const turnCount = threadMessages.filter((message) => message.role === 'user').length;
-            const commitCount = new Set(
-                threadMessages
-                    .map((message) => getMessageOutputCommitSha(message))
-                    .filter((sha): sha is string => Boolean(sha))
-            ).size;
+                if (Number.isFinite(ts) && ts > lastUpdatedAt) lastUpdatedAt = ts;
+                if (message.role === 'user') turnCount += 1;
+                if (message.role === 'assistant') {
+                    if (!firstAssistantMessage) {
+                        firstAssistantMessage = message;
+                    } else {
+                        const candidateTs = new Date(message.createdAt).getTime();
+                        const currentTs = new Date(firstAssistantMessage.createdAt).getTime();
+                        if (Number.isFinite(candidateTs) && (!Number.isFinite(currentTs) || candidateTs < currentTs)) {
+                            firstAssistantMessage = message;
+                        }
+                    }
+                }
+                const outputCommitSha = getMessageOutputCommitSha(message);
+                if (outputCommitSha) commitShas.add(outputCommitSha);
+            }
+            let runningThreadCount = 0;
+            for (const messageId of threadMessageIds) {
+                if (activeRunStatusNodeIds.has(messageId)) runningThreadCount += 1;
+            }
+            const baseCommitSha = getMessageBaseCommitSha(rootMessage)
+                ?? getMessageBaseCommitSha(firstAssistantMessage)
+                ?? selectedWorkspace?.base_commit_sha
+                ?? null;
+            const commitCount = commitShas.size;
             const label = cleanNodePreview(rootMessage?.content || '') || rootMessage?.aiLabel || 'Untitled thread';
             return {
                 threadRootId,
                 label: label.length > 56 ? `${label.slice(0, 56)}...` : label,
                 turnCount,
                 commitCount,
+                baseCommitSha,
                 updatedLabel: formatThreadUpdatedLabel(lastUpdatedAt, now),
                 runningCount: runningThreadCount,
                 hidden: hiddenThreadRootIds.has(threadRootId),
-                current: currentThreadRootId === threadRootId,
+                current: focusedThreadRootId === threadRootId,
                 lastUpdatedAt,
             };
         }).sort((left, right) => right.lastUpdatedAt - left.lastUpdatedAt || left.threadRootId.localeCompare(right.threadRootId));
-    }, [activeRunStatusNodeIds, currentThreadRootId, graphMessages, hiddenThreadRootIds, threadRootIndex]);
+    }, [activeRunStatusNodeIds, focusedThreadRootId, graphMessages, hiddenThreadRootIds, selectedWorkspace?.base_commit_sha, threadRootIndex]);
     const visibleGraphMessages = useMemo(() => (
         (graphMessages as Message[]).filter((message) => !hiddenConversationMessageIds.has(message.id))
     ), [graphMessages, hiddenConversationMessageIds]);
@@ -858,6 +1052,18 @@ function GraphViewInternal({
                 mode: 'active-refresh',
                 messageCount: visibleGraphMessages.length,
                 previousMessageCount: current?.length ?? 0,
+                runningCount,
+                activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
+            });
+            return visibleGraphMessages as Message[];
+        }
+
+        if (shouldRefreshHeldGraphMessagesForStructuralChange(current, visibleGraphMessages as Message[])) {
+            graphComputationMessagesRef.current = visibleGraphMessages as Message[];
+            recordFundamentalCounter('graph.computation-messages', {
+                mode: 'active-refresh-structural',
+                messageCount: visibleGraphMessages.length,
+                previousMessageCount: current.length,
                 runningCount,
                 activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
             });
@@ -894,6 +1100,74 @@ function GraphViewInternal({
         });
         return current;
     }, [activeGraphComputationHold, activePinnedMessageIdKey, activeSendFlowFocus?.workspaceId, visibleGraphMessages, runningCount, selectedWorkspaceId]);
+    const graphProjectionMessagesRef = useRef<Message[]>(graphMessages as Message[]);
+    const graphProjectionMessages = useMemo(() => {
+        const current = graphProjectionMessagesRef.current;
+        if (!activeGraphComputationHold) {
+            graphProjectionMessagesRef.current = graphMessages as Message[];
+            recordFundamentalCounter('graph.projection-messages', {
+                mode: 'live',
+                messageCount: graphMessages.length,
+                runningCount,
+                activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
+            });
+            return graphMessages as Message[];
+        }
+
+        if (!current || current.length === 0 || graphMessages.length !== current.length) {
+            graphProjectionMessagesRef.current = graphMessages as Message[];
+            recordFundamentalCounter('graph.projection-messages', {
+                mode: 'active-refresh',
+                messageCount: graphMessages.length,
+                previousMessageCount: current?.length ?? 0,
+                runningCount,
+                activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
+            });
+            return graphMessages as Message[];
+        }
+
+        if (shouldRefreshHeldGraphMessagesForStructuralChange(current, graphMessages as Message[])) {
+            graphProjectionMessagesRef.current = graphMessages as Message[];
+            recordFundamentalCounter('graph.projection-messages', {
+                mode: 'active-refresh-structural',
+                messageCount: graphMessages.length,
+                previousMessageCount: current.length,
+                runningCount,
+                activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
+            });
+            return graphMessages as Message[];
+        }
+
+        const activePinnedMessageIds = activePinnedMessageIdKey
+            ? activePinnedMessageIdKey.split('|').filter(Boolean)
+            : [];
+        if (activePinnedMessageIds.length > 0) {
+            const currentIds = new Set(current.map((message) => message.id));
+            const incomingIds = new Set((graphMessages as Message[]).map((message) => message.id));
+            const hasNewPinnedMessage = activePinnedMessageIds.some((id) => incomingIds.has(id) && !currentIds.has(id));
+            if (hasNewPinnedMessage) {
+                graphProjectionMessagesRef.current = graphMessages as Message[];
+                recordFundamentalCounter('graph.projection-messages', {
+                    mode: 'active-refresh-pinned',
+                    messageCount: graphMessages.length,
+                    previousMessageCount: current.length,
+                    pinnedMessageCount: activePinnedMessageIds.length,
+                    runningCount,
+                    activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
+                });
+                return graphMessages as Message[];
+            }
+        }
+
+        recordFundamentalCounter('graph.projection-messages', {
+            mode: 'active-held',
+            messageCount: current.length,
+            incomingMessageCount: graphMessages.length,
+            runningCount,
+            activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
+        });
+        return current;
+    }, [activeGraphComputationHold, activePinnedMessageIdKey, activeSendFlowFocus?.workspaceId, graphMessages, runningCount, selectedWorkspaceId]);
     const contextPathMessageIdSet = useMemo(() => {
         if (!composerContextPreview || composerContextPreview.workspaceId !== selectedWorkspaceId) {
             return new Set<string>();
@@ -1015,10 +1289,6 @@ function GraphViewInternal({
     const [addCommitTargetId, setAddCommitTargetId] = useState<string | null>(null);
     const [graphRenderHoldUntil, setGraphRenderHoldUntil] = useState(0);
 
-    const selectedWorkspace = useMemo(
-        () => workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
-        [workspaces, selectedWorkspaceId]
-    );
     useEffect(() => {
         setDeletedGraphCommitShas(readDeletedGraphCommitShas(selectedWorkspaceId));
     }, [selectedWorkspaceId]);
@@ -1770,7 +2040,7 @@ function GraphViewInternal({
     const { openMergeSession } = useIntegrationStore();
     const disabledSummaryIdsSet = useMemo(() => new Set(disabledSummaryIds), [disabledSummaryIds]);
     const workspaceProjection = useWorkspaceProjection(
-        graphComputationMessages,
+        graphProjectionMessages,
         scopes,
         summaries as Summary[],
         focusedMessageId,
@@ -2143,7 +2413,7 @@ function GraphViewInternal({
                 nodeId: messageId,
             });
             const url = getPublicShareUrl(result.share.publicId);
-            await navigator.clipboard.writeText(url).catch(() => undefined);
+            await writeClipboardText(url);
             toast.success('Public link created', 'The node subgraph link was copied.');
         } catch (error) {
             console.error('[GraphView] Failed to create public node share:', error);
@@ -2744,18 +3014,21 @@ function GraphViewInternal({
     }, [dispatchFocus, nodeSelection.clearSelection]);
 
     const handleFocusThread = useCallback((threadRootId: string) => {
-        setSubgraphRootNodeId(threadRootId);
+        const focusMessageId = resolveThreadDropdownSelection({
+            threadRootId,
+            messages: graphComputationMessagesRef.current as Message[],
+        });
         setViewMode('branch');
         nodeSelection.clearSelection();
         dispatchFocus({
-            messageId: threadRootId,
+            messageId: focusMessageId,
             source: 'graph',
             metadata: { reason: 'focus-thread' },
         });
     }, [dispatchFocus, nodeSelection.clearSelection]);
 
     const handleHideThread = useCallback((threadRootId: string) => {
-        setHiddenThreadRootIds((current) => {
+        updateHiddenThreadRootIds((current) => {
             const next = new Set(current);
             next.add(threadRootId);
             return next;
@@ -2765,26 +3038,26 @@ function GraphViewInternal({
         }
         nodeSelection.clearSelection();
         toast.success('Thread hidden', 'Use the Threads menu to restore it.');
-    }, [nodeSelection.clearSelection, subgraphRootNodeId, toast]);
+    }, [nodeSelection.clearSelection, subgraphRootNodeId, toast, updateHiddenThreadRootIds]);
 
     const handleRestoreThread = useCallback((threadRootId: string) => {
-        setHiddenThreadRootIds((current) => {
+        updateHiddenThreadRootIds((current) => {
             const next = new Set(current);
             next.delete(threadRootId);
             return next;
         });
-    }, []);
+    }, [updateHiddenThreadRootIds]);
 
     const handleHideAllThreads = useCallback(() => {
-        setHiddenThreadRootIds(new Set(threadRootIndex.threadRootIds));
+        updateHiddenThreadRootIds(new Set(threadRootIndex.threadRootIds));
         setSubgraphRootNodeId(null);
         nodeSelection.clearSelection();
         toast.success('All threads hidden', 'Use the Threads menu to restore them.');
-    }, [nodeSelection.clearSelection, threadRootIndex.threadRootIds, toast]);
+    }, [nodeSelection.clearSelection, threadRootIndex.threadRootIds, toast, updateHiddenThreadRootIds]);
 
     const handleRestoreAllHiddenThreads = useCallback(() => {
-        setHiddenThreadRootIds(new Set());
-    }, []);
+        updateHiddenThreadRootIds(new Set());
+    }, [updateHiddenThreadRootIds]);
 
     const handleHideSubgraph = useCallback((messageId: string) => {
         setHiddenSubgraphRootIds((current) => {
@@ -2817,6 +3090,7 @@ function GraphViewInternal({
         keepDescendants: graphFilterState.keepDescendants,
         scopedCommitFiltering: Boolean(subgraphRootNodeId),
         pinnedCommitShas,
+        hiddenThreadRootIds,
         visibleNodeSections,
         insights,
         showInsightsInGraph,
@@ -2985,10 +3259,28 @@ function GraphViewInternal({
     ]);
 
     const previewEdges = useMemo(() => {
+        const nodeById = new Map(layoutNodes.map((node) => [node.id, node]));
+        const withEndpointDots = (edge: Edge, endpointDotVariant: 'commit-parent' | 'convergence' | null) => {
+            if (!endpointDotVariant) return edge;
+            return {
+                ...edge,
+                data: {
+                    ...(edge.data ?? {}),
+                    endpointDotVariant,
+                },
+            };
+        };
+        const getEndpointDotVariant = (edge: Edge, matchedPreview: boolean): 'commit-parent' | 'convergence' | null => (
+            getGraphEdgeEndpointDotVariant({
+                edgeLegendType: (edge.data as any)?.edgeLegendType as GraphEdgeLegendId | undefined,
+                matchedContextPathPreview: previewEdgeType === 'context-path' && matchedPreview,
+                isInterTurnEdge: isInterTurnEndpointEdge(nodeById.get(edge.source), nodeById.get(edge.target)),
+            })
+        );
         const visibleEdges = layoutEdges.filter((edge) => {
             const edgeLegendType = (edge.data as any)?.edgeLegendType as GraphEdgeLegendId | undefined;
             return edgeLegendType ? visibleEdgeTypes.has(edgeLegendType) : false;
-        });
+        }).map((edge) => withEndpointDots(edge, getEndpointDotVariant(edge, false)));
 
         if (!previewEdgeType) return visibleEdges;
 
@@ -3005,8 +3297,13 @@ function GraphViewInternal({
             })
             .map((edge) => {
                 const matched = matchesPreview(edge);
+                const endpointDotVariant = getEndpointDotVariant(edge, matched);
                 return {
                     ...edge,
+                    data: {
+                        ...(edge.data ?? {}),
+                        ...(endpointDotVariant ? { endpointDotVariant } : {}),
+                    },
                     animated: matched,
                     style: {
                         ...edge.style,
@@ -3017,7 +3314,7 @@ function GraphViewInternal({
                     zIndex: matched ? 30 : -5,
                 };
             });
-    }, [layoutEdges, previewEdgeType, visibleEdgeTypes]);
+    }, [layoutEdges, layoutNodes, previewEdgeType, visibleEdgeTypes]);
 
     // ─────────────────────────────────────────────────────────────────────────
     // EFFECTS
@@ -4092,7 +4389,7 @@ function GraphViewInternal({
     const threadBands = useMemo(() => {
         if (activeGraphRenderHold) return [];
         const rects = getThreadDividerRectsFromNodes(branchNodesForRender, threadRootIndex.threadRootIdByMessageId);
-        return buildThreadBands(rects, { padding: 260, horizontalPadding: 88 });
+        return buildThreadBands(rects, { padding: 260, horizontalPadding: 88, equalVerticalExtent: true });
     }, [activeGraphRenderHold, branchNodesForRender, threadRootIndex.threadRootIdByMessageId]);
     useEffect(() => {
         if (activeGraphRenderHold) {
@@ -5030,6 +5327,12 @@ function GraphViewInternal({
                         workspaceId={selectedWorkspaceId}
                         repoPath={selectedWorkspace?.git_repo_path ?? selectedWorkspace?.folderPath ?? null}
                     />
+                    <GraphThreadTabs
+                        threadItems={threadIndexItems}
+                        onThreadFocus={handleFocusThread}
+                        onThreadHide={handleHideThread}
+                        onThreadRestore={handleRestoreThread}
+                    />
                 </>
             )}
 
@@ -5206,7 +5509,11 @@ function GraphViewInternal({
                                             className="agentree-react-flow-root"
                                             style={{ width: '100%', height: '100%' }}
                                         >
-                                            <ThreadBandOverlay bands={threadBands} currentThreadRootId={currentThreadRootId} />
+                                            <ThreadBandOverlay
+                                                bands={threadBands}
+                                                currentThreadRootId={currentThreadRootId}
+                                                threadItems={threadIndexItems}
+                                            />
                                             <Controls showInteractive={false} />
                                         </ReactFlow>
                                     </Profiler>
@@ -5277,20 +5584,6 @@ function GraphViewInternal({
                     </div>
                 )}
             </div>
-
-            {viewMode !== 'timeline' && runningCount > 0 && (
-                <button
-                    type="button"
-                    onClick={() => setViewMode('timeline')}
-                    className="absolute bottom-6 left-6 z-40 animate-in slide-in-from-bottom-4 fade-in duration-200"
-                >
-                    <div className="flex items-center gap-2 rounded-full border border-emerald-500/20 bg-background/85 px-4 py-2 text-sm font-medium text-foreground shadow-lg backdrop-blur-md ring-1 ring-emerald-500/10 transition-colors hover:bg-background">
-                        <span className="inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                        <span>{runningCount} Running</span>
-                        <Activity size={14} className="text-emerald-600 dark:text-emerald-400" />
-                    </div>
-                </button>
-            )}
 
             <ScopedNodeContextMenu
                 contextMenu={scopedContextMenu}

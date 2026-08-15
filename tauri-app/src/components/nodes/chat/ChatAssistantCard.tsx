@@ -18,14 +18,25 @@ import { useAgentRunProjectionStore } from '../../../stores/agentRunProjectionSt
 import { resolveNodeState } from '../../../lib/runStateResolver';
 import { agentRunManager } from '../../../agent-runs/agentRunManager';
 import { recordAssistantTextVisible } from '../../../perf/agentRunVisibilityPerf';
+import { getAssistantIdentityLabel } from '../../../lib/assistantIdentity';
 
-const AgentChip = ({ agentId, aiLabel }: { agentId?: string | null, aiLabel?: string | null }) => {
+const AgentChip = ({
+  agentId,
+  llmModel,
+  llmProvider,
+}: {
+  agentId?: string | null;
+  llmModel?: string | null;
+  llmProvider?: string | null;
+}) => {
   const { data: agents = [] } = useAgents();
   const agent = agents.find(a => a.id === agentId);
 
-  if (!agent && !aiLabel) return null;
-
-  const name = agent?.name || aiLabel || 'Agent';
+  const name = getAssistantIdentityLabel({
+    agentName: agent?.name,
+    llmModel,
+    llmProvider,
+  });
   const colorName = agent?.color;
   const colorClass = getAgentColorClass(colorName) || 'bg-slate-500';
 
@@ -36,6 +47,21 @@ const AgentChip = ({ agentId, aiLabel }: { agentId?: string | null, aiLabel?: st
     )}>
       <span className="truncate">{name}</span>
     </div>
+  );
+};
+
+const AiLabelChip = ({ aiLabel }: { aiLabel?: string | null }) => {
+  const label = aiLabel?.trim();
+  if (!label) return null;
+
+  return (
+    <span
+      className="inline-flex max-w-[16rem] items-center gap-1 rounded-full border border-border/60 bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+      title={`AI label: ${label}`}
+    >
+      <Tag size={9} strokeWidth={2.5} />
+      <span className="truncate">{label}</span>
+    </span>
   );
 };
 
@@ -512,7 +538,11 @@ export const ChatAssistantCard = memo(({
           <div className="flex min-w-0 max-w-full flex-1 items-start gap-3">
             <div className="min-w-0 flex-1">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <AgentChip agentId={message?.agent_id} aiLabel={message?.aiLabel} />
+                <AgentChip
+                  agentId={message?.agent_id}
+                  llmModel={message?.llmModel}
+                  llmProvider={message?.llmProvider}
+                />
                 <StatusBadge status={displayStatus as any} />
                 {entity.toolCallCount ? (
                   <span className="inline-flex items-center gap-1 rounded-full border border-amber-200/70 bg-amber-50/80 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
@@ -551,6 +581,7 @@ export const ChatAssistantCard = memo(({
                     </button>
                   </>
                 ) : null}
+                <AiLabelChip aiLabel={message?.aiLabel} />
                 {/* Unified Token Display */}
                 {(formatTokenValue(promptTokens) || formatTokenValue(completionTokens) || formatTokenValue(cachedInputTokens) || formatTokenValue(totalTokens)) ? (
                   <div className="inline-flex min-w-0 max-w-full flex-wrap items-center overflow-hidden rounded-lg border border-border/50 bg-muted/30 dark:bg-slate-800/50">

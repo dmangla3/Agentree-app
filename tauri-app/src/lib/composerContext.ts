@@ -367,13 +367,6 @@ export function buildComposerContextSelection(
     };
 }
 
-export function buildComposerContextPrompt(
-    turns: ComposerContextTurn[],
-    selectedIds: Set<string>
-): string {
-    return buildComposerContextManifest(turns, selectedIds).contextText;
-}
-
 export function buildComposerContextManifest(
     turns: ComposerContextTurn[],
     selectedIds: Set<string>

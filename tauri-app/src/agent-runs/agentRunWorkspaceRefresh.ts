@@ -1,9 +1,14 @@
 import type { QueryClient } from '@tanstack/react-query';
-import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
+import {
+  scheduleLocalCommitGraphRefreshWhenGraphIdle,
+  scheduleMessagesRefreshWhenGraphIdle,
+} from '../lib/graphInteractionGate';
 import { recordPerfEvent } from '../lib/perfRecorder';
 import { runCacheRefreshOperation } from '../lib/cacheRefreshPerf';
 import { catchUpHotSendMessageDeltas } from '../hooks/useHotSendMessageDeltas';
 import { localNodeKeys } from '../hooks/useLocalNodes';
+import { useRunStatusStore } from '../stores/runStatusStore';
+import { useWorkspaceStore } from '../stores/workspaceStore';
 
 type PendingWorkspaceRefresh = {
   queryClient: QueryClient;
@@ -14,6 +19,13 @@ type PendingWorkspaceRefresh = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+type PendingCommitGraphRefetch = {
+  queryClient: QueryClient;
+  workspaceId: string;
+  reason: string;
+  timer: ReturnType<typeof setTimeout>;
+};
+
 export type AgentWorkspaceRefreshOptions = {
   reason: string;
   includeCommitGraph?: boolean;
@@ -21,7 +33,64 @@ export type AgentWorkspaceRefreshOptions = {
   debounceMs?: number;
 };
 
+const COMMIT_GRAPH_REFETCH_RECHECK_MS = 900;
 const pendingByWorkspace = new Map<string, PendingWorkspaceRefresh>();
+const pendingCommitGraphRefetchByWorkspace = new Map<string, PendingCommitGraphRefetch>();
+
+const hasActiveWorkspaceRunState = (workspaceId: string) => {
+  const runStatusStore = useRunStatusStore.getState();
+  if (runStatusStore.getRunningCount(workspaceId) > 0) return true;
+  if (runStatusStore.hasHotSendActivity(workspaceId, 5_000)) return true;
+  return useWorkspaceStore.getState().activeSendFlowFocus?.workspaceId === workspaceId;
+};
+
+const flushCommitGraphRefetch = (
+  workspaceId: string,
+  options: { force?: boolean } = {},
+) => {
+  const pending = pendingCommitGraphRefetchByWorkspace.get(workspaceId);
+  if (!pending) return;
+
+  if (!options.force && hasActiveWorkspaceRunState(workspaceId)) {
+    recordPerfEvent('query.local-commit-graph.refetch.wait-active', {
+      workspaceId,
+      reason: pending.reason,
+      refetchActive: false,
+    }, { source: 'agentRunWorkspaceRefresh' });
+    pending.timer = setTimeout(() => flushCommitGraphRefetch(workspaceId), COMMIT_GRAPH_REFETCH_RECHECK_MS);
+    return;
+  }
+
+  pendingCommitGraphRefetchByWorkspace.delete(workspaceId);
+
+  recordPerfEvent('query.local-commit-graph.refetch.deferred', {
+    workspaceId,
+    reason: pending.reason,
+    refetchActive: true,
+  }, { source: 'agentRunWorkspaceRefresh' });
+
+  void scheduleLocalCommitGraphRefreshWhenGraphIdle(pending.queryClient, workspaceId, {
+    reason: pending.reason,
+  });
+};
+
+const scheduleCommitGraphRefetch = (
+  queryClient: QueryClient,
+  workspaceId: string,
+  reason: string,
+) => {
+  const existing = pendingCommitGraphRefetchByWorkspace.get(workspaceId);
+  if (existing) {
+    clearTimeout(existing.timer);
+  }
+  const timer = setTimeout(() => flushCommitGraphRefetch(workspaceId), COMMIT_GRAPH_REFETCH_RECHECK_MS);
+  pendingCommitGraphRefetchByWorkspace.set(workspaceId, {
+    queryClient,
+    workspaceId,
+    reason: existing?.reason && existing.reason !== reason ? `${existing.reason}+${reason}` : reason,
+    timer,
+  });
+};
 
 const flushWorkspaceRefresh = (workspaceId: string) => {
   const pending = pendingByWorkspace.get(workspaceId);
@@ -46,7 +115,8 @@ const flushWorkspaceRefresh = (workspaceId: string) => {
     recordPerfEvent('query.local-commit-graph.refresh', {
       workspaceId,
       reason,
-      refetchActive: true,
+      refetchActive: false,
+      refetchMode: 'deferred',
     }, { source: 'agentRunWorkspaceRefresh' });
 
     void runCacheRefreshOperation({
@@ -71,28 +141,7 @@ const flushWorkspaceRefresh = (workspaceId: string) => {
       queryKey: ['local-commits', workspaceId],
       refetchType: 'none',
     }));
-    void runCacheRefreshOperation({
-      phase: 'local-commit-graph.refetch',
-      workspaceId,
-      reason,
-      queryKey: ['local-commit-graph', workspaceId],
-      refetchType: 'active',
-      source: 'agentRunWorkspaceRefresh',
-    }, () => pending.queryClient.refetchQueries({
-      queryKey: ['local-commit-graph', workspaceId],
-      type: 'active',
-    }));
-    void runCacheRefreshOperation({
-      phase: 'local-commits.refetch',
-      workspaceId,
-      reason,
-      queryKey: ['local-commits', workspaceId],
-      refetchType: 'active',
-      source: 'agentRunWorkspaceRefresh',
-    }, () => pending.queryClient.refetchQueries({
-      queryKey: ['local-commits', workspaceId],
-      type: 'active',
-    }));
+    scheduleCommitGraphRefetch(pending.queryClient, workspaceId, reason);
   }
 
   if (pending.catchUpHotDeltas) {
@@ -138,5 +187,10 @@ export const flushAgentWorkspaceRefreshesForTest = () => {
     const pending = pendingByWorkspace.get(workspaceId);
     if (pending) clearTimeout(pending.timer);
     flushWorkspaceRefresh(workspaceId);
+  }
+  for (const workspaceId of Array.from(pendingCommitGraphRefetchByWorkspace.keys())) {
+    const pending = pendingCommitGraphRefetchByWorkspace.get(workspaceId);
+    if (pending) clearTimeout(pending.timer);
+    flushCommitGraphRefetch(workspaceId, { force: true });
   }
 };

@@ -240,6 +240,18 @@ fn parent_id_from_execution_data(execution_data: &JsonValue) -> Option<String> {
         .map(|value| value.to_string())
 }
 
+fn llm_model_from_execution_data(execution_data: &JsonValue) -> Option<String> {
+    string_from_execution_meta(execution_data, "llmModel")
+        .or_else(|| string_from_execution_meta(execution_data, "provider_model"))
+        .or_else(|| string_from_execution_meta(execution_data, "model"))
+}
+
+fn llm_provider_from_execution_data(execution_data: &JsonValue) -> Option<String> {
+    string_from_execution_meta(execution_data, "provider_selected_provider")
+        .or_else(|| string_from_execution_meta(execution_data, "provider"))
+        .or_else(|| string_from_execution_meta(execution_data, "llmProvider"))
+}
+
 fn run_ledger_user_node_id_from_context(context: &AgentRunContext) -> Option<String> {
     parent_id_from_execution_data(&context.execution_data)
 }
@@ -1211,13 +1223,23 @@ fn persist_local_node_snapshot(
         workspace_id_from_execution_data(&snapshot.execution_data).ok_or_else(|| {
             "Cannot persist local authoritative node without workspace id.".to_string()
         })?;
-    let payload = serde_json::json!({
+    let payload = local_node_payload_for_snapshot(snapshot, &workspace_id);
+    let serialized = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    app_handle
+        .state::<crate::db::TelemetryDb>()
+        .upsert_local_node(&snapshot.node_id, &workspace_id, &serialized)
+}
+
+fn local_node_payload_for_snapshot(snapshot: &AgentRunSnapshot, workspace_id: &str) -> JsonValue {
+    serde_json::json!({
         "id": snapshot.node_id,
         "role": "assistant",
         "workspaceId": workspace_id,
         "parentId": parent_id_from_execution_data(&snapshot.execution_data),
         "content": snapshot.final_content,
         "aiLabel": ai_label_from_execution_data(&snapshot.execution_data),
+        "llmModel": llm_model_from_execution_data(&snapshot.execution_data),
+        "llmProvider": llm_provider_from_execution_data(&snapshot.execution_data),
         "status": snapshot.status,
         "execution_data": snapshot.execution_data,
         "promptTokens": snapshot.prompt_tokens,
@@ -1228,11 +1250,7 @@ fn persist_local_node_snapshot(
         "base_selected_from_node_id": base_selected_from_node_id_from_execution_data(&snapshot.execution_data),
         "git_branch_name": snapshot.git_branch_name,
         "updatedAt": chrono_like_now(),
-    });
-    let serialized = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-    app_handle
-        .state::<crate::db::TelemetryDb>()
-        .upsert_local_node(&snapshot.node_id, &workspace_id, &serialized)
+    })
 }
 
 fn store_finalize_ack(
@@ -2260,17 +2278,18 @@ fn spawn_agent_internal(
 
 #[tauri::command]
 #[specta::specta]
-pub fn start_agent_run(
+pub async fn start_agent_run(
     app: AppHandle,
-    _state: State<AgentState>,
+    _state: State<'_, AgentState>,
     intent: StartAgentRunIntent,
 ) -> Result<StartAgentRunResponse, String> {
     let telemetry = app.state::<crate::db::TelemetryDb>();
-    let preview = tauri::async_runtime::block_on(crate::git_workspace::preview_agent_worktree(
+    let preview = crate::git_workspace::preview_agent_worktree(
         intent.repo_path.clone(),
         intent.assistant_node_id.clone(),
         intent.parent_commit.clone(),
-    ))?;
+    )
+    .await?;
     let initial_run = crate::db::AgentRunLedgerUpsert {
         run_id: intent.run_id.clone(),
         user_node_id: run_ledger_user_node_id_from_context(&intent.run_context),
@@ -2559,8 +2578,9 @@ mod tests {
     use super::{
         ai_label_from_execution_data, cleanup_requires_server_final_persisted,
         cleanup_terminal_status_allows_cleanup, commit_message_for_snapshot,
-        commit_subject_from_execution_data, run_ledger_user_node_id_from_context,
-        update_run_state_from_event, AgentRunContext, AgentRunSnapshot, AgentRunState,
+        commit_subject_from_execution_data, local_node_payload_for_snapshot,
+        run_ledger_user_node_id_from_context, update_run_state_from_event, AgentRunContext,
+        AgentRunSnapshot, AgentRunState,
     };
     use serde_json::json;
 
@@ -2610,6 +2630,31 @@ mod tests {
         assert!(!cleanup_requires_server_final_persisted("failed"));
         assert!(!cleanup_requires_server_final_persisted("cancelled"));
         assert!(!cleanup_requires_server_final_persisted("failed_spawn"));
+    }
+
+    #[test]
+    fn local_node_snapshot_payload_persists_selected_model_metadata() {
+        let snapshot = test_snapshot(
+            json!({
+                "workspace_id": "workspace-1",
+                "parentId": "user-1",
+                "meta": {
+                    "llmModel": "openai/gpt-5.5-high",
+                    "provider_model": "openai/gpt-5.5-high",
+                    "provider_selected_provider": "codex"
+                }
+            }),
+            "final answer",
+        );
+
+        let payload = local_node_payload_for_snapshot(&snapshot, "workspace-1");
+
+        assert_eq!(payload["llmModel"], "openai/gpt-5.5-high");
+        assert_eq!(payload["llmProvider"], "codex");
+        assert_eq!(
+            payload["execution_data"]["meta"]["provider_model"],
+            "openai/gpt-5.5-high"
+        );
     }
 
     #[test]

@@ -82,6 +82,7 @@ vi.mock('./GraphDerivedCommitGroupNode', () => ({
         secondaryParentShas: [],
         observations: [],
         sortTs: 0,
+        owningThreadRootIds: [],
         commit: {
           sha: 'abc123456789',
           workspace_id: 'workspace-1',
@@ -150,6 +151,7 @@ const makeCommit = (): ProjectedCommitEntity => ({
   secondaryParentShas: [],
   observations: [],
   sortTs: 0,
+  owningThreadRootIds: [],
   commit: {
     sha: 'abc123456789',
     workspace_id: 'workspace-1',

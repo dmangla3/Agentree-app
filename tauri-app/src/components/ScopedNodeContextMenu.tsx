@@ -1,6 +1,7 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
@@ -46,17 +47,51 @@ export function ScopedNodeContextMenu({
   onShareNode,
 }: ScopedNodeContextMenuProps) {
   const scopedIds = contextMenu?.scopedIds ?? [];
+  const scopedKey = scopedIds.join('\u0000');
+  const [hideThreadAfterMerge, setHideThreadAfterMerge] = useState(true);
 
-  const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, mergeableCommitShas, actionNodeId, actionThreadRootId } = useMemo(() => {
+  useEffect(() => {
+    if (contextMenu) setHideThreadAfterMerge(true);
+  }, [contextMenu, scopedKey]);
+
+  const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, mergeableCommitShas, actionNodeId, actionThreadRootId, mergeThreadRootId } = useMemo(() => {
     const deletableIds = new Set<string>();
     const deletableShas = new Set<string>();
     const mergeableIds = new Set<string>();
     const mergeableShas = new Set<string>();
     let singleActionId: string | null = null;
     let singleThreadRootId: string | null = null;
+    let singleMergeThreadRootId: string | null = null;
+    let hasMultipleMergeThreadRoots = false;
 
     const addMessageId = (messageId: string | null | undefined) => {
       if (messageId) deletableIds.add(messageId);
+    };
+
+    const recordMergeThreadRootId = (threadRootId: string | null | undefined) => {
+      if (!threadRootId || hasMultipleMergeThreadRoots) return;
+      if (!singleMergeThreadRootId) {
+        singleMergeThreadRootId = threadRootId;
+        return;
+      }
+      if (singleMergeThreadRootId !== threadRootId) {
+        singleMergeThreadRootId = null;
+        hasMultipleMergeThreadRoots = true;
+      }
+    };
+
+    const getThreadRootIdForMessageId = (messageId: string | null | undefined) => {
+      if (!messageId) return null;
+      return projection.entitiesByMessageId.get(messageId)?.threadRootId
+        ?? projection.threadRootIdByMessageId.get(messageId)
+        ?? null;
+    };
+
+    const getThreadRootIdForCommitSha = (commitSha: string | null | undefined) => {
+      if (!commitSha) return null;
+      const commit = projection.commitBySha.get(commitSha);
+      const ownerNodeId = commit?.producedByNodeId ?? commit?.visualOwnerNodeId ?? null;
+      return getThreadRootIdForMessageId(ownerNodeId);
     };
 
     const addMergeableCommitId = (messageId: string | null | undefined) => {
@@ -64,6 +99,7 @@ export function ScopedNodeContextMenu({
       const entity = projection.entitiesByMessageId.get(messageId);
       if (entity?.kind === 'commit_message' && getMessageOutputCommitSha(entity.message)) {
         mergeableIds.add(messageId);
+        recordMergeThreadRootId(entity.threadRootId ?? getThreadRootIdForMessageId(messageId));
       }
     };
 
@@ -71,6 +107,7 @@ export function ScopedNodeContextMenu({
       if (!commitSha) return;
       if (explicitCommitToken || projection.commitBySha.has(commitSha)) {
         mergeableShas.add(commitSha);
+        recordMergeThreadRootId(getThreadRootIdForCommitSha(commitSha));
       }
     };
 
@@ -107,8 +144,9 @@ export function ScopedNodeContextMenu({
       mergeableCommitShas: Array.from(mergeableShas),
       actionNodeId: singleActionId,
       actionThreadRootId: singleThreadRootId,
+      mergeThreadRootId: hasMultipleMergeThreadRoots ? null : singleMergeThreadRootId,
     };
-  }, [projection.commitBySha, projection.entitiesById, projection.entitiesByMessageId, scopedIds]);
+  }, [projection.commitBySha, projection.entitiesById, projection.entitiesByMessageId, projection.threadRootIdByMessageId, scopedIds]);
 
   if (!contextMenu) return null;
 
@@ -132,6 +170,7 @@ export function ScopedNodeContextMenu({
   const mergeLabel = mergeCount === 1
     ? 'Add to merge panel'
     : `Add ${mergeCount} commits to merge panel`;
+  const canHideThreadAfterMerge = canAddToMergePanel && !!mergeThreadRootId && !!onHideThread;
 
   return (
     <DropdownMenu
@@ -215,19 +254,39 @@ export function ScopedNodeContextMenu({
         ) : null}
 
         {canAddToMergePanel ? (
-          <DropdownMenuItem
-            onClick={() => {
-              if (mergeableCommitIds.length > 0) {
-                onAddCommitsToMergePanel?.(mergeableCommitIds);
-              }
-              if (mergeableCommitShas.length > 0) {
-                onAddCommitShasToMergePanel?.(mergeableCommitShas);
-              }
-              onClose();
-            }}
+          <div
+            role="group"
+            aria-label="Merge panel action"
+            className="my-0.5 rounded-md bg-muted/55 p-1 shadow-[inset_0_0_0_1px_hsl(var(--border)/0.55),inset_0_1px_0_hsl(var(--foreground)/0.04)]"
           >
-            {mergeLabel}
-          </DropdownMenuItem>
+            <DropdownMenuItem
+              className="rounded-[5px] px-2 py-1.5 font-medium"
+              onClick={() => {
+                if (mergeableCommitIds.length > 0) {
+                  onAddCommitsToMergePanel?.(mergeableCommitIds);
+                }
+                if (mergeableCommitShas.length > 0) {
+                  onAddCommitShasToMergePanel?.(mergeableCommitShas);
+                }
+                if (canHideThreadAfterMerge && hideThreadAfterMerge) {
+                  onHideThread?.(mergeThreadRootId!);
+                }
+                onClose();
+              }}
+            >
+              {mergeLabel}
+            </DropdownMenuItem>
+            {canHideThreadAfterMerge ? (
+              <DropdownMenuCheckboxItem
+                checked={hideThreadAfterMerge}
+                className="mt-0.5 min-h-7 rounded-[5px] py-1 pl-7 pr-2 text-xs text-muted-foreground focus:bg-background/80 focus:text-foreground"
+                onSelect={(event) => event.preventDefault()}
+                onCheckedChange={(checked) => setHideThreadAfterMerge(checked === true)}
+              >
+                Hide thread
+              </DropdownMenuCheckboxItem>
+            ) : null}
+          </div>
         ) : null}
 
         {canDelete ? (

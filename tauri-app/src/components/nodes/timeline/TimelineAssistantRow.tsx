@@ -18,6 +18,7 @@ import { api } from '../../../lib/api';
 import { agentClient } from '../../../lib/agentClient';
 import type { Message } from '../../../stores/workspaceStore';
 import type { GraphSnapshot } from '../../../hooks/useGraphSnapshot';
+import { getAssistantIdentityLabel } from '../../../lib/assistantIdentity';
 
 const ACTIVE_STATUSES = new Set(['pending', 'creating', 'initializing', 'running', 'streaming']);
 const CACHE_REPAIR_TIMELINE_ACTIVE_STATUS_REFRESH_COOLDOWN_MS = 15_000;
@@ -50,13 +51,23 @@ const StatusIcon = ({ status }: { status: AgentStatus | null | undefined }) => {
 };
 
 // Beautiful small chip for agent name
-const AgentChip = ({ agentId, aiLabel }: { agentId?: string | null, aiLabel?: string | null }) => {
+const AgentChip = ({
+  agentId,
+  llmModel,
+  llmProvider,
+}: {
+  agentId?: string | null;
+  llmModel?: string | null;
+  llmProvider?: string | null;
+}) => {
   const { data: agents = [] } = useAgents();
   const agent = agents.find(a => a.id === agentId);
 
-  if (!agent && !aiLabel) return null;
-
-  const name = agent?.name || aiLabel || 'Agent';
+  const name = getAssistantIdentityLabel({
+    agentName: agent?.name,
+    llmModel,
+    llmProvider,
+  });
   const colorName = agent?.color;
   const colorClass = getAgentColorClass(colorName) || 'bg-slate-500';
 
@@ -66,6 +77,20 @@ const AgentChip = ({ agentId, aiLabel }: { agentId?: string | null, aiLabel?: st
       colorClass
     )}>
       {name}
+    </div>
+  );
+};
+
+const AiLabelChip = ({ aiLabel }: { aiLabel?: string | null }) => {
+  const label = aiLabel?.trim();
+  if (!label) return null;
+
+  return (
+    <div
+      className="max-w-[10rem] truncate rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[8px] font-medium leading-none text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
+      title={`AI label: ${label}`}
+    >
+      {label}
     </div>
   );
 };
@@ -182,7 +207,12 @@ export const TimelineAssistantRow = memo(({
       {/* Compact metrics & icons at bottom */}
       <div className="flex flex-wrap items-center gap-2 mt-1 gap-y-1 text-[10px] text-slate-500 w-full">
         <StatusIcon status={displayStatus as any} />
-        <AgentChip agentId={entity.message?.agent_id} aiLabel={entity.message?.aiLabel} />
+        <AgentChip
+          agentId={entity.message?.agent_id}
+          llmModel={entity.message?.llmModel}
+          llmProvider={entity.message?.llmProvider}
+        />
+        <AiLabelChip aiLabel={entity.message?.aiLabel} />
 
         {entity.toolCallCount !== undefined && entity.toolCallCount > 0 && (
           <div className="flex items-center gap-0.5" title={`${entity.toolCallCount} tool calls`}>

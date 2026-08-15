@@ -49,4 +49,71 @@ describe('workspace projection thread roots', () => {
     expect(projection.entitiesByMessageId.get('thread-b')?.isThreadRoot).toBe(true);
     expect(projection.entitiesByMessageId.get('assistant-b')?.threadRootId).toBe('thread-b');
   });
+
+  it('assigns external merges that integrate Agentree commits to the Agentree parent thread', () => {
+    const messages = [
+      makeMessage('thread-a', 'user', null, '2026-05-19T00:00:00.000Z'),
+      makeMessage('assistant-a', 'assistant', 'thread-a', '2026-05-19T00:01:00.000Z', {
+        output_commit_sha: 'agent-a',
+      }),
+      makeMessage('thread-b', 'user', null, '2026-05-19T00:02:00.000Z'),
+      makeMessage('assistant-b', 'assistant', 'thread-b', '2026-05-19T00:03:00.000Z', {
+        output_commit_sha: 'agent-b',
+      }),
+    ];
+
+    const projection = buildWorkspaceProjection({
+      messages,
+      summaries: [],
+      focusedMessageId: null,
+      commits: [
+        {
+          workspace_id: 'workspace-1',
+          sha: 'main-before',
+          subject: 'Main before merge',
+          source_kind: 'external',
+          produced_by_node_id: null,
+          first_parent_sha: null,
+        },
+        {
+          workspace_id: 'workspace-1',
+          sha: 'agent-a',
+          subject: 'Thread A output',
+          source_kind: 'agent',
+          produced_by_node_id: 'assistant-a',
+          first_parent_sha: 'main-before',
+        },
+        {
+          workspace_id: 'workspace-1',
+          sha: 'agent-b',
+          subject: 'Thread B output',
+          source_kind: 'agent',
+          produced_by_node_id: 'assistant-b',
+          first_parent_sha: 'main-before',
+        },
+        {
+          workspace_id: 'workspace-1',
+          sha: 'external-merge',
+          subject: 'Merge Agentree work into main',
+          source_kind: 'external',
+          produced_by_node_id: null,
+          first_parent_sha: 'main-before',
+        },
+      ],
+      commitParents: [
+        { child_sha: 'agent-a', parent_sha: 'main-before', parent_index: 0 },
+        { child_sha: 'agent-b', parent_sha: 'main-before', parent_index: 0 },
+        { child_sha: 'external-merge', parent_sha: 'main-before', parent_index: 0 },
+        { child_sha: 'external-merge', parent_sha: 'agent-a', parent_index: 1 },
+        { child_sha: 'external-merge', parent_sha: 'agent-b', parent_index: 2 },
+      ],
+      commitObservations: [
+        { commit_sha: 'external-merge', source_kind: 'external', git_ref: 'refs/heads/main' },
+      ],
+    });
+
+    expect(projection.commitBySha.get('external-merge')?.isProminentMerge).toBe(true);
+    expect(projection.commitBySha.get('external-merge')?.layoutParentSha).toBe('agent-a');
+    expect(projection.commitBySha.get('external-merge')?.owningThreadRootIds).toEqual(['thread-a', 'thread-b']);
+  });
 });

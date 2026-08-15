@@ -24,6 +24,7 @@ const makeGeneratedCommit = (): ProjectedCommitEntity => ({
   secondaryParentShas: [],
   observations: [],
   sortTs: 0,
+  owningThreadRootIds: [],
   commit: {
     sha: 'abc123456789',
     workspace_id: 'workspace-1',
@@ -74,6 +75,90 @@ describe('ScopedNodeContextMenu', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Add to merge panel' }));
 
     expect(onAddCommitShasToMergePanel).toHaveBeenCalledWith([commit.sha]);
+  });
+
+  it('hides the owning thread by default when adding a graph commit to the merge panel', () => {
+    const onAddCommitShasToMergePanel = vi.fn();
+    const onHideThread = vi.fn();
+    const commit = makeGeneratedCommit();
+    const assistantEntity: ProjectedNodeEntity = {
+      entityId: 'assistant_message:assistant-1',
+      kind: 'assistant_message',
+      messageId: 'assistant-1',
+      focusMessageId: 'assistant-1',
+      sortTs: 0,
+      message: {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'Conversation reply',
+        parentId: 'user-root',
+        createdAt: '2026-05-19T00:00:00.000Z',
+        updatedAt: '2026-05-19T00:00:00.000Z',
+      } as ProjectedNodeEntity['message'],
+      preview: 'Conversation reply',
+      shortLabel: 'Assistant',
+      threadRootId: 'user-root',
+      isThreadRoot: false,
+    };
+
+    render(
+      <ScopedNodeContextMenu
+        contextMenu={{ x: 20, y: 30, scopedIds: [`commit:${commit.sha}`] }}
+        projection={makeProjection(commit, [assistantEntity])}
+        onClose={() => {}}
+        onAddCommitShasToMergePanel={onAddCommitShasToMergePanel}
+        onHideThread={onHideThread}
+      />
+    );
+
+    const hideThreadCheckbox = screen.getByRole('menuitemcheckbox', { name: 'Hide thread' });
+    expect(hideThreadCheckbox.getAttribute('aria-checked')).toBe('true');
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add to merge panel' }));
+
+    expect(onAddCommitShasToMergePanel).toHaveBeenCalledWith([commit.sha]);
+    expect(onHideThread).toHaveBeenCalledWith('user-root');
+  });
+
+  it('keeps the owning thread visible when the merge-panel hide-thread option is unchecked', () => {
+    const onAddCommitShasToMergePanel = vi.fn();
+    const onHideThread = vi.fn();
+    const commit = makeGeneratedCommit();
+    const assistantEntity: ProjectedNodeEntity = {
+      entityId: 'assistant_message:assistant-1',
+      kind: 'assistant_message',
+      messageId: 'assistant-1',
+      focusMessageId: 'assistant-1',
+      sortTs: 0,
+      message: {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'Conversation reply',
+        parentId: 'user-root',
+        createdAt: '2026-05-19T00:00:00.000Z',
+        updatedAt: '2026-05-19T00:00:00.000Z',
+      } as ProjectedNodeEntity['message'],
+      preview: 'Conversation reply',
+      shortLabel: 'Assistant',
+      threadRootId: 'user-root',
+      isThreadRoot: false,
+    };
+
+    render(
+      <ScopedNodeContextMenu
+        contextMenu={{ x: 20, y: 30, scopedIds: [`commit:${commit.sha}`] }}
+        projection={makeProjection(commit, [assistantEntity])}
+        onClose={() => {}}
+        onAddCommitShasToMergePanel={onAddCommitShasToMergePanel}
+        onHideThread={onHideThread}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Hide thread' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add to merge panel' }));
+
+    expect(onAddCommitShasToMergePanel).toHaveBeenCalledWith([commit.sha]);
+    expect(onHideThread).not.toHaveBeenCalled();
   });
 
   it('does not show add-to-merge for conversation nodes', () => {

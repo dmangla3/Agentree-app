@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { invoke } from '@tauri-apps/api/core';
 import type { RuntimeProvider } from '../lib/runtimeModels';
 
 export type ProviderLimitSeverity = 'normal' | 'warning' | 'critical';
@@ -60,8 +61,17 @@ export interface ProviderLimitDisplayWindow {
 interface ProviderLimitsState {
   byProvider: Partial<Record<RuntimeProvider, ProviderLimitsSnapshot>>;
   clearAll: () => void;
+  refreshIfStale: (provider: RuntimeProvider, now?: number) => boolean;
   upsertFromMeta: (provider: RuntimeProvider, meta: Record<string, any>) => void;
 }
+
+const PROVIDER_LIMITS_REFRESH_STALE_MS = 2 * 60 * 1000;
+const PROVIDER_LIMITS_REFRESH_TIMEOUT_MS = 10 * 1000;
+const refreshInFlight: Partial<Record<RuntimeProvider, Promise<void>>> = {};
+const refreshAttemptedAt: Partial<Record<RuntimeProvider, number>> = {};
+const isProviderLimitsRefreshTimeout = (error: unknown) => (
+  error instanceof Error && error.message.includes('Provider limits refresh timed out')
+);
 
 const CLAUDE_BUCKET_ORDER: ClaudeRateLimitType[] = [
   'five_hour',
@@ -184,6 +194,23 @@ const mapProviderLimits = (
   };
 };
 
+const canRefreshProviderLimits = (provider: RuntimeProvider) => provider === 'codex';
+
+const refreshProviderLimits = async (provider: RuntimeProvider) => {
+  if (!canRefreshProviderLimits(provider)) return;
+  const rawLimits = await Promise.race([
+    invoke<string | Record<string, any> | null>('refresh_provider_limits', { provider }),
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`Provider limits refresh timed out after ${PROVIDER_LIMITS_REFRESH_TIMEOUT_MS}ms`)), PROVIDER_LIMITS_REFRESH_TIMEOUT_MS);
+    }),
+  ]);
+  const limits = typeof rawLimits === 'string' ? JSON.parse(rawLimits) : rawLimits;
+  if (!limits || typeof limits !== 'object') return;
+  useProviderLimitsStore.getState().upsertFromMeta(provider, {
+    provider_limits: limits,
+  });
+};
+
 export const getProviderLimitWindows = (snapshot: ProviderLimitsSnapshot | null | undefined): ProviderLimitDisplayWindow[] => {
   if (!snapshot) return [];
 
@@ -296,6 +323,26 @@ export const useProviderLimitsStore = create<ProviderLimitsState>()(
     (set) => ({
       byProvider: {},
       clearAll: () => set({ byProvider: {} }),
+      refreshIfStale: (provider, now = Date.now()) => {
+        if (!canRefreshProviderLimits(provider)) return false;
+        const snapshot = useProviderLimitsStore.getState().byProvider[provider];
+        const isStale = !snapshot || now - snapshot.receivedAt >= PROVIDER_LIMITS_REFRESH_STALE_MS;
+        const lastAttemptedAt = refreshAttemptedAt[provider] ?? 0;
+        const canAttempt = lastAttemptedAt === 0 || now - lastAttemptedAt >= PROVIDER_LIMITS_REFRESH_STALE_MS;
+        if (!isStale || !canAttempt || refreshInFlight[provider]) return false;
+        refreshAttemptedAt[provider] = now;
+        refreshInFlight[provider] = refreshProviderLimits(provider)
+          .catch((error) => {
+            if (isProviderLimitsRefreshTimeout(error)) {
+              delete refreshAttemptedAt[provider];
+            }
+            console.debug('[providerLimitsStore] Provider limits refresh failed', { provider, error });
+          })
+          .finally(() => {
+            delete refreshInFlight[provider];
+          });
+        return true;
+      },
       upsertFromMeta: (provider, meta) => set((state) => {
         const limits = meta?.provider_limits;
         if (!limits || typeof limits !== 'object') return state;

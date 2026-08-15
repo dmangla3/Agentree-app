@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const readChatInputSource = () => readFileSync(join(process.cwd(), 'src/components/ChatInput.tsx'), 'utf8');
+const readAgentsSource = () => readFileSync(join(process.cwd(), 'src-tauri/src/agents.rs'), 'utf8');
 
 describe('agent lifecycle ownership boundaries', () => {
   it('does not persist terminal agent payloads directly from ChatInput', () => {
@@ -61,5 +62,56 @@ describe('agent lifecycle ownership boundaries', () => {
     const source = readChatInputSource();
     expect(source).toContain("const selectedNodeRole = selectedProjection?.role ?? selectedNodeMessage?.role ?? null;");
     expect(source).toContain("if (selectedNodeRole !== 'assistant') return false;");
+  });
+
+  it('keeps start_agent_run off a synchronous async-runtime block for worktree preview', () => {
+    const source = readAgentsSource();
+    const commandStart = source.indexOf('pub async fn start_agent_run');
+    const commandEnd = source.indexOf('fn run_agent_lifecycle_background', commandStart);
+    expect(commandStart).toBeGreaterThan(-1);
+    expect(commandEnd).toBeGreaterThan(commandStart);
+
+    const commandRegion = source.slice(commandStart, commandEnd);
+    expect(commandRegion).not.toContain(
+      'tauri::async_runtime::block_on(crate::git_workspace::preview_agent_worktree'
+    );
+    expect(commandRegion).toContain('crate::git_workspace::preview_agent_worktree(');
+    expect(commandRegion).toContain('.await?');
+  });
+
+  it('paints optimistic send feedback before graph focus and agent status work', () => {
+    const source = readChatInputSource();
+    const paintWaitIndex = source.indexOf('await waitForOptimisticSendPaint();');
+    const optimisticFocusIndex = source.indexOf('dispatchSendFlowFocus({', paintWaitIndex);
+    const initialStatusIndex = source.indexOf("setNodeStatus(run.assistantMessageId, 'initializing');");
+
+    expect(paintWaitIndex).toBeGreaterThan(-1);
+    expect(optimisticFocusIndex).toBeGreaterThan(paintWaitIndex);
+    expect(initialStatusIndex).toBeGreaterThan(paintWaitIndex);
+  });
+
+  it('flushes cancel affordance and composer clearing before the pre-optimistic yield', () => {
+    const source = readChatInputSource();
+    const armStart = source.indexOf('const flowId = createSendFlowId();');
+    const preOptimisticYield = source.indexOf('await new Promise<void>((resolve) => window.setTimeout(resolve, 0));', armStart);
+    expect(armStart).toBeGreaterThan(-1);
+    expect(preOptimisticYield).toBeGreaterThan(armStart);
+
+    const armRegion = source.slice(armStart, preOptimisticYield);
+    expect(armRegion).toContain('flushSync(() => {');
+    expect(armRegion).toContain('setCurrentAbortController(controller);');
+    expect(armRegion).toContain("setComposerPrompt('');");
+  });
+
+  it('releases the composer cancel affordance once the send is accepted', () => {
+    const source = readChatInputSource();
+    const releaseStart = source.indexOf('const releaseSendAcceptance = (reason: string) => {');
+    const releaseEnd = source.indexOf("recordSendFlowEvent('queue.acceptance-released'", releaseStart);
+    expect(releaseStart).toBeGreaterThan(-1);
+    expect(releaseEnd).toBeGreaterThan(releaseStart);
+
+    const releaseRegion = source.slice(releaseStart, releaseEnd);
+    expect(releaseRegion).toContain('setActiveComposerSend((current) => current?.flowId === flowId ? null : current);');
+    expect(releaseRegion).toContain('setCurrentAbortController((current) => current === controller ? null : current);');
   });
 });

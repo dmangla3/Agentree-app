@@ -1,11 +1,36 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { Message } from '../stores/workspaceStore';
 import {
   clampGraphZoom,
   GRAPH_MIN_ZOOM,
+  resolveFocusedThreadRootId,
+  resolveThreadDropdownSelection,
   shouldDispatchGraphFocusSynchronously,
   shouldSkipActiveGraphClickCentering,
   shouldTreatGraphMoveAsViewportInteraction,
 } from './GraphView';
+
+const makeMessage = (
+  id: string,
+  role: Message['role'],
+  parentId: string | null,
+  createdAt: string,
+  outputCommitSha: string | null = null,
+): Message => ({
+  id,
+  parentId,
+  role,
+  content: id,
+  workspaceId: 'workspace-1',
+  status: null,
+  agent_id: null,
+  output_commit_sha: outputCommitSha,
+  execution_data: null,
+  createdAt,
+  updatedAt: createdAt,
+});
 
 describe('shouldTreatGraphMoveAsViewportInteraction', () => {
   it('ignores graph node pointer moves', () => {
@@ -105,5 +130,60 @@ describe('clampGraphZoom', () => {
   it('allows minimal overview without extreme zoom-out hitches in the main viewport', () => {
     expect(GRAPH_MIN_ZOOM).toBe(0.2);
     expect(clampGraphZoom(0.01)).toBe(0.2);
+  });
+});
+
+describe('GraphView canvas running status', () => {
+  it('does not render a graph-canvas running count shortcut to timeline view', () => {
+    const source = readFileSync(join(process.cwd(), 'src/components/GraphView.tsx'), 'utf8');
+
+    expect(source).not.toContain('<span>{runningCount} Running</span>');
+  });
+});
+
+describe('resolveThreadDropdownSelection', () => {
+  it('resolves only the latest thread message focus target', () => {
+    const messages = [
+      makeMessage('thread-a', 'user', null, '2026-05-19T00:00:00.000Z'),
+      makeMessage('assistant-a', 'assistant', 'thread-a', '2026-05-19T00:01:00.000Z'),
+      makeMessage('thread-a-followup', 'user', 'assistant-a', '2026-05-19T00:02:00.000Z'),
+    ];
+
+    expect(resolveThreadDropdownSelection({
+      threadRootId: 'thread-a',
+      messages,
+    })).toBe('thread-a-followup');
+  });
+});
+
+describe('resolveFocusedThreadRootId', () => {
+  it('resolves the thread that contains the focused message', () => {
+    const messages = [
+      makeMessage('thread-a', 'user', null, '2026-05-19T00:00:00.000Z'),
+      makeMessage('assistant-a', 'assistant', 'thread-a', '2026-05-19T00:01:00.000Z'),
+      makeMessage('thread-b', 'user', null, '2026-05-19T00:02:00.000Z'),
+    ];
+
+    expect(resolveFocusedThreadRootId({
+      focusedMessageId: 'assistant-a',
+      messages,
+    })).toBe('thread-a');
+  });
+
+  it('resolves synthetic commit focus ids and output commit shas to the owning thread', () => {
+    const messages = [
+      makeMessage('thread-a', 'user', null, '2026-05-19T00:00:00.000Z'),
+      makeMessage('assistant-a', 'assistant', 'thread-a', '2026-05-19T00:01:00.000Z', 'abc123456789'),
+      makeMessage('thread-b', 'user', null, '2026-05-19T00:02:00.000Z'),
+    ];
+
+    expect(resolveFocusedThreadRootId({
+      focusedMessageId: 'assistant-a:commit',
+      messages,
+    })).toBe('thread-a');
+    expect(resolveFocusedThreadRootId({
+      focusedMessageId: 'abc123456789',
+      messages,
+    })).toBe('thread-a');
   });
 });

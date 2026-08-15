@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { agentClient, GitCommitMetadata, GitLocalRefInfo } from '../lib/agentClient';
+import { getVisibleRefName } from '../lib/composerBaseCommit';
 import type { TrackedGitRef } from '../stores/workspaceStore';
 import { useTrackedRefs } from './useTrackedRefs';
 
@@ -74,10 +75,13 @@ export const buildPreferredRefNameBySha = (
 
   refs.forEach((ref, index) => {
     const priority = refPriority(ref, trackedKeys);
+    const visibleRefName = getVisibleRefName(ref);
+    if (!visibleRefName) return;
+
     const candidate = {
-      refName: ref.short_name,
+      refName: visibleRefName,
       priority,
-      nameLength: ref.short_name.length,
+      nameLength: visibleRefName.length,
       index,
     };
     const existing = preferredBySha.get(ref.commit_sha);

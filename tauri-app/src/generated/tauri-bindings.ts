@@ -69,6 +69,7 @@ export const commands = {
 	checkRuntimeReadiness: (provider: string) => __TAURI_INVOKE<RuntimeReadiness>("check_runtime_readiness", { provider }),
 	checkAllRuntimeReadiness: () => __TAURI_INVOKE<RuntimeReadiness[]>("check_all_runtime_readiness"),
 	checkCodexReadiness: () => __TAURI_INVOKE<RuntimeReadiness>("check_codex_readiness"),
+	refreshProviderLimits: (provider: string) => __TAURI_INVOKE<string>("refresh_provider_limits", { provider }),
 	checkLocalEnvironment: () => __TAURI_INVOKE<LocalEnvironmentStatus>("check_local_environment"),
 	attachWorkspace: (path: string) => __TAURI_INVOKE<WorkspaceInfo>("attach_workspace", { path }),
 	initGitRepo: (repoPath: string) => __TAURI_INVOKE<string>("init_git_repo", { repoPath }),

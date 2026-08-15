@@ -138,7 +138,7 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
     setIsImportingCurrentCheckout(true);
     const progressToastId = addToast({
       title: 'Importing Checkout',
-      description: 'Importing the checked-out commit and its ancestors into the graph.',
+      description: 'Importing HEAD and its ancestors into the graph.',
       variant: 'info',
       persistent: true,
       action: {

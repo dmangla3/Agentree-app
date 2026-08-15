@@ -1,7 +1,63 @@
 import { BaseEdge, type EdgeProps } from '@xyflow/react';
 import { ContextResetCut, getContextResetCutPosition } from './ContextResetCut';
+import { getEdgeEndpointDotVariant, getEdgeEndpointDotVisuals, type EdgeEndpointDotVariant } from './graphEdgeEndpointDots';
 
 const NEAR_VERTICAL_THRESHOLD = 1;
+
+export const EdgeEndpointDots = ({
+  edgeId,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  variant,
+}: {
+  edgeId: string;
+  sourceX: number;
+  sourceY: number;
+  targetX: number;
+  targetY: number;
+  variant: EdgeEndpointDotVariant | null;
+}) => {
+  if (!variant) return null;
+
+  const visuals = getEdgeEndpointDotVisuals(variant);
+
+  return (
+    <g pointerEvents="none" aria-hidden="true">
+      <circle
+        cx={sourceX}
+        cy={sourceY}
+        r={visuals.haloRadius}
+        fill={visuals.haloColor}
+      />
+      <circle
+        data-testid={`${edgeId}-source-endpoint-dot`}
+        cx={sourceX}
+        cy={sourceY}
+        r={visuals.sourceRadius}
+        fill="hsl(var(--background))"
+        stroke={visuals.color}
+        strokeWidth={3}
+      />
+      <circle
+        cx={targetX}
+        cy={targetY}
+        r={visuals.haloRadius}
+        fill={visuals.haloColor}
+      />
+      <circle
+        data-testid={`${edgeId}-target-endpoint-dot`}
+        cx={targetX}
+        cy={targetY}
+        r={visuals.targetRadius}
+        fill={visuals.color}
+        stroke="hsl(var(--background))"
+        strokeWidth={2}
+      />
+    </g>
+  );
+};
 
 export const getVerticalThenHorizontalEdgePath = ({
   sourceX,
@@ -43,6 +99,7 @@ export const HorizontalThenVerticalEdge = ({
     targetY,
   });
   const contextBoundary = (data as any)?.contextBoundary;
+  const endpointDotVariant = getEdgeEndpointDotVariant(data);
   const contextResetCutPosition = getContextResetCutPosition({
     targetX,
     targetY,
@@ -56,6 +113,14 @@ export const HorizontalThenVerticalEdge = ({
         path={path}
         style={style}
         markerEnd={markerEnd}
+      />
+      <EdgeEndpointDots
+        edgeId={id}
+        sourceX={sourceX}
+        sourceY={sourceY}
+        targetX={targetX}
+        targetY={targetY}
+        variant={endpointDotVariant}
       />
       {contextBoundary?.type === 'fresh' && (
         <ContextResetCut

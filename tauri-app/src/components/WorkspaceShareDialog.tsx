@@ -14,6 +14,7 @@ import {
   useWorkspacePublicShares,
   type WorkspacePublicShare,
 } from '../hooks/useWorkspacePublicShare';
+import { writeClipboardText } from '../lib/clipboard';
 import { useToastHelpers } from './Toast';
 
 interface WorkspaceShareDialogProps {
@@ -36,7 +37,7 @@ export function WorkspaceShareDialog({ workspaceId, workspaceName }: WorkspaceSh
 
   const handleCopy = async (share: WorkspacePublicShare) => {
     try {
-      await navigator.clipboard.writeText(getPublicShareUrl(share.publicId));
+      await writeClipboardText(getPublicShareUrl(share.publicId));
       setCopiedPublicId(share.publicId);
       window.setTimeout(() => setCopiedPublicId(null), 1600);
       toast.success('Copied link');
@@ -72,7 +73,7 @@ export function WorkspaceShareDialog({ workspaceId, workspaceName }: WorkspaceSh
       </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="max-w-[calc(100vw-2rem)] overflow-hidden sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Globe2 className="h-4 w-4" />
@@ -83,8 +84,8 @@ export function WorkspaceShareDialog({ workspaceId, workspaceName }: WorkspaceSh
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4">
-            <div className="rounded-md border border-border/70 bg-muted/30 p-3 text-sm text-muted-foreground">
+          <div className="space-y-4 overflow-hidden">
+            <div className="rounded-md border border-border/70 bg-muted/30 p-3 text-sm leading-5 text-muted-foreground">
               A node share exposes the selected root node and every descendant below it. Full node content, attachments, and raw execution data are not included in the public payload.
             </div>
 
@@ -95,27 +96,31 @@ export function WorkspaceShareDialog({ workspaceId, workspaceName }: WorkspaceSh
                 </label>
                 <span className="text-xs text-muted-foreground">{shares.length}</span>
               </div>
-              <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+              <div className="max-h-72 space-y-2 overflow-y-auto overflow-x-hidden pr-1">
                 {sharesQuery.isLoading ? (
                   <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">Loading shared nodes...</div>
                 ) : shares.length === 0 ? (
                   <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">No active public node links.</div>
                 ) : (
                   shares.map((share) => (
-                    <div key={share.id} className="flex items-center gap-2 rounded-md border border-border/70 p-2">
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-medium">{getShareTitle(share)}</div>
-                        <div className="truncate font-mono text-[11px] text-muted-foreground">{getPublicShareUrl(share.publicId)}</div>
+                    <div key={share.id} className="flex max-w-full flex-col gap-2 rounded-lg border border-border/70 bg-background/80 p-3 shadow-sm sm:flex-row sm:items-center">
+                      <div className="min-w-0 flex-1 overflow-hidden">
+                        <div className="truncate text-sm font-medium leading-5" title={getShareTitle(share)}>{getShareTitle(share)}</div>
+                        <div className="mt-1 max-w-full truncate rounded-md bg-muted/45 px-2 py-1 font-mono text-[11px] leading-4 text-muted-foreground" title={getPublicShareUrl(share.publicId)}>
+                          {getPublicShareUrl(share.publicId)}
+                        </div>
                       </div>
-                      <Button type="button" variant="outline" size="sm" onClick={() => handleCopy(share)} className="h-8 w-8 p-0" title="Copy link">
-                        {copiedPublicId === share.publicId ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                      </Button>
-                      <Button type="button" variant="outline" size="sm" onClick={() => window.open(getPublicShareUrl(share.publicId), '_blank', 'noopener,noreferrer')} className="h-8 w-8 p-0" title="Open link">
-                        <ExternalLink className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button type="button" variant="outline" size="sm" onClick={() => handleRevoke(share)} disabled={revokeShare.isPending} className="h-8 w-8 p-0 text-destructive hover:text-destructive" title="Revoke link">
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
+                      <div className="flex shrink-0 items-center gap-1.5 self-end sm:self-auto">
+                        <Button type="button" variant="outline" size="sm" onClick={() => handleCopy(share)} className="h-8 w-8 p-0" title="Copy link">
+                          {copiedPublicId === share.publicId ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                        </Button>
+                        <Button type="button" variant="outline" size="sm" onClick={() => window.open(getPublicShareUrl(share.publicId), '_blank', 'noopener,noreferrer')} className="h-8 w-8 p-0" title="Open link">
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button type="button" variant="outline" size="sm" onClick={() => handleRevoke(share)} disabled={revokeShare.isPending} className="h-8 w-8 p-0 text-destructive hover:text-destructive" title="Revoke link">
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
                     </div>
                   ))
                 )}

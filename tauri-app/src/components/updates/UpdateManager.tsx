@@ -198,7 +198,7 @@ export function UpdateToolbarButton() {
   return (
     <Button
       variant={availableVersion ? 'default' : 'outline'}
-      size="sm"
+      size="icon"
       onClick={() => {
         if (availableVersion) {
           void installUpdate();
@@ -208,9 +208,10 @@ export function UpdateToolbarButton() {
       }}
       disabled={checking || installing}
       className={cn(
-        'flex items-center gap-2 h-8 rounded-lg',
+        'h-8 w-8 rounded-lg p-0',
         availableVersion && 'shadow-[0_12px_30px_-18px_rgba(37,99,235,0.55)]'
       )}
+      aria-label={availableVersion ? `Install version ${availableVersion}` : 'Check for updates'}
       title={availableVersion ? `Install version ${availableVersion}` : 'Check for updates'}
     >
       {checking || installing ? (
@@ -220,7 +221,7 @@ export function UpdateToolbarButton() {
       ) : (
         <RefreshCw className="h-3.5 w-3.5" />
       )}
-      <span className="hidden sm:inline text-xs">{label}</span>
+      <span className="sr-only">{label}</span>
     </Button>
   );
 }

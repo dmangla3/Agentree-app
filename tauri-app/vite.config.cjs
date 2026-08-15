@@ -43,6 +43,9 @@ module.exports = defineConfig(async () => ({
   test: {
     exclude: [...configDefaults.exclude, "src-tauri/**"],
   },
+  optimizeDeps: {
+    entries: ["index.html"],
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,

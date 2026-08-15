@@ -137,6 +137,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             runtime_readiness::check_runtime_readiness,
             runtime_readiness::check_all_runtime_readiness,
             runtime_readiness::check_codex_readiness,
+            runtime_readiness::refresh_provider_limits,
             git_workspace::check_local_environment,
             git_workspace::attach_workspace,
             git_workspace::init_git_repo,

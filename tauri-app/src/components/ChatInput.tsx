@@ -1,9 +1,11 @@
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
+import { flushSync } from 'react-dom';
 import TextareaAutosize from 'react-textarea-autosize';
 import { Button } from '../../@/components/ui/button';
-import { Send, X, Reply, FileText, FileTextIcon, GitBranchIcon, Loader2, ChevronDown, ChevronRight, Bot, Clipboard, Check, Pencil, AtSign, RotateCcw, Plus, Minus } from 'lucide-react';
-import { useWorkspaceStore, AttachmentMetadata, Message, Workspace, CommitEntity, BranchPointer } from '../stores/workspaceStore';
+import { Send, X, Reply, FileText, FileTextIcon, GitBranchIcon, Loader2, ChevronDown, Bot, Clipboard, Check, Pencil, AtSign, RotateCcw, Plus, Minus, Search, GitCommitHorizontal } from 'lucide-react';
+import { useWorkspaceStore, AttachmentMetadata, Message, Workspace, CommitEntity } from '../stores/workspaceStore';
 import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
+import { useProviderLimitsStore } from '../stores/providerLimitsStore';
 import { useQueryClient } from '@tanstack/react-query';
 import { UnifiedAgentModelSelector } from './UnifiedAgentModelSelector';
 import { AttachmentPreview } from './AttachmentPreview';
@@ -26,7 +28,6 @@ import { getAccessToken } from '../lib/authSession';
 import { getMessageById, resolveNodeCommit } from '../lib/gitNodeUtils';
 import { track, trackAgentRunCompleted, trackAgentRunFailed, trackAgentRunStarted } from '../lib/analytics';
 import {
-    buildCrossProviderContinuationPacket,
     resolveProviderContextRouting,
     resolveProviderContinuation,
     type RuntimeProvider,
@@ -36,10 +37,10 @@ import { Popover, PopoverContent, PopoverAnchor, PopoverTrigger } from '../../@/
 import { Checkbox } from '../../@/components/ui/checkbox';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../@/components/ui/hover-card';
 import { useShallow } from 'zustand/react/shallow';
-import { branchKeys, useBranches } from '../hooks/useBranches';
+import { branchKeys } from '../hooks/useBranches';
 import { primeHotSendMessageDeltaCursor, useHotSendMessageDeltas } from '../hooks/useHotSendMessageDeltas';
 import { isFirstClassCommitMessage } from '../lib/graph/turnUtils';
-import { getBranchPointerNamesForCommit, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
+import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { getMergeVisualParentEntries, isMergeResultNode } from '../lib/graph/lineage';
 import { reconstructContext } from '../lib/contextUtils';
 import {
@@ -48,12 +49,21 @@ import {
     type ComposerTargetMode,
 } from '../lib/composerSendParent';
 import {
+    buildComposerCommitPickerItems,
+    buildComposerCommitPickerChipItems,
+    resolveComposerDefaultBaseCommit,
+    shortCommitSha,
+    type ComposerBaseMessage,
+    type ComposerCommitPickerCommit,
+} from '../lib/composerBaseCommit';
+import {
     createComposerSendStartGate,
     finishComposerSendStart,
     shouldShowComposerCancel,
     tryBeginComposerSendStart,
     type ActiveComposerSend,
 } from '../lib/composerCancelState';
+import { waitForOptimisticSendPaint } from '../lib/composerSendPaint';
 import {
     buildRepoMentionSearchIndex,
     extractRepoMentionPaths,
@@ -75,6 +85,7 @@ import {
 } from '../perf/agentRunVisibilityPerf';
 import { agentRunManager } from '../agent-runs/agentRunManager';
 import { registerAgentRunEffectsQueryClient } from '../agent-runs/agentRunEffects';
+import { getEnabledTrackedGitRefs, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
 import {
     materializePersistedOptimisticUserMessage,
     shouldClearPersistedOptimisticUserProjection,
@@ -86,6 +97,7 @@ import {
     dispatchStreamingAssistantText,
     extractMessageText,
     mergeStreamingOutput,
+    resolveProviderAssistantOutput,
 } from '../agent-runs/agentRunStreamDispatch';
 import {
     parseStdoutAgentEvent,
@@ -227,12 +239,13 @@ const getMessagePreviewText = (message: Message | null | undefined): string | nu
 const formatContextParentLabel = (message: Message | null | undefined, fallback: string = 'Parent'): string => (
     truncateText(getMessagePreviewText(message) || fallback, 42)
 );
-const formatCommitLabel = (commitSha: string | null | undefined): string => (
-    commitSha ? commitSha.slice(0, 8) : 'No commit'
-);
-const formatCommitSubject = (commit: CommitEntity | null | undefined): string => (
-    truncateText(normalizePreviewText(commit?.subject) || 'Untitled commit', 58)
-);
+const formatCommitRelationLabel = (relation: string, isDefault: boolean): string => {
+    if (isDefault) return 'Default';
+    if (relation === 'earlier') return 'Earlier';
+    if (relation === 'later') return 'Later';
+    if (relation === 'ref') return 'Ref';
+    return 'Commit';
+};
 
 const resolveConversationContextMessage = (
     startId: string | null | undefined,
@@ -282,8 +295,6 @@ const resolveContextStartMessage = (
 };
 
 const DEFAULT_CODEX_AUTH_COMMAND = `CODEX_HOME=/Users/example/.codex codex -c 'cli_auth_credentials_store="file"' login --device-auth`;
-const DEPENDENCY_GUARD_INSTRUCTION = 'Dependency rule: some dependency and build directories in this worktree are symlinked and must be treated as read-only. Do not install, remove, upgrade, rebuild, or delete project dependencies or write build output into those symlinked directories. It is okay to run read-only checks, tests, and builds when their caches and build output are redirected outside those symlinked directories. If you need to build, test, or install dependencies in a way that would write there, avoid doing it yourself and explicitly tell the user what needs to be run so they can do it outside the agent worktree.';
-const EMPTY_COMPOSER_CONTEXT_MANIFEST = buildComposerContextManifest([], new Set<string>());
 
 const extractRecommendedCommand = (message: string) => {
     const commandMatch = message.match(/Run `([^`]+)`/i);
@@ -384,9 +395,12 @@ import { localNodeKeys, upsertMessagesIntoLocalNodeCache, useLocalNodes, type Lo
 import { useKnowledgeTree } from '../hooks/useKnowledge';
 import { useAgents, findDefaultCodexAgentId } from '../hooks/useAgents';
 import { useWorkspaces } from '../hooks/useWorkspaces';
+import { useCommits } from '../hooks/useCommits';
+import { useTrackedRefs } from '../hooks/useTrackedRefs';
 import { agentClient } from '../lib/agentClient';
 import { resolveComposerDefaultAgentId } from '../lib/composerModelDefaults';
 import { buildComposerContextManifest, buildComposerContextSelection, type ComposerContextManifest } from '../lib/composerContext';
+import { EMPTY_COMPOSER_CONTEXT_MANIFEST, buildAgentRunPrompt } from '../lib/prompts';
 import { AGENT_STATUS, TERMINAL_STATUSES } from '@shared/agentStatus';
 import type { TerminalStatus } from '@shared/agentStatus';
 import { createOptimisticAssistantMessage, createOptimisticNodePair, categorizeError, formatErrorMessage, isOptimisticId } from '../lib/optimisticMessages';
@@ -466,7 +480,7 @@ export function ChatInput({
     const [repoMentionFiles, setRepoMentionFiles] = useState<RepoMentionFile[]>([]);
     const [repoMentionCommit, setRepoMentionCommit] = useState<string | null>(null);
     const [selectedBaseCommit, setSelectedBaseCommit] = useState<CommitEntity | null>(null);
-    const [isEarlierCommitsOpen, setIsEarlierCommitsOpen] = useState(false);
+    const [baseCommitSearch, setBaseCommitSearch] = useState('');
     const [activeFileMention, setActiveFileMention] = useState<ActiveFileMention | null>(null);
     const [activeFileMentionIndex, setActiveFileMentionIndex] = useState(0);
     const [contextFetchError, _setContextFetchError] = useState<string | null>(null);
@@ -564,6 +578,17 @@ export function ChatInput({
         () => selectedWorkspace?.git_repo_path?.trim() || selectedWorkspace?.folderPath?.trim() || null,
         [selectedWorkspace?.folderPath, selectedWorkspace?.git_repo_path]
     );
+    const localCommitChoicesQuery = useCommits({
+        repoPath: selectedWorkspaceRepoPath,
+        workspaceId: selectedWorkspaceId,
+        limit: 160,
+    });
+    const trackedRefsQuery = useTrackedRefs(selectedWorkspaceId);
+    const enabledTrackedGitRefs = useMemo(
+        () => getEnabledTrackedGitRefs(trackedRefsQuery.data ?? []),
+        [trackedRefsQuery.data]
+    );
+    const gitRefSnapshotQuery = useGitRefSnapshot(selectedWorkspaceRepoPath, enabledTrackedGitRefs);
     const [contextPolicy, setContextPolicy] = useState<ContextPolicy>('continue');
     const [composerTargetMode, setComposerTargetMode] = useState<ComposerTargetMode>('reply');
     const [sendPressFeedback, setSendPressFeedback] = useState(false);
@@ -581,15 +606,10 @@ export function ChatInput({
     }, []);
 
     const { data: messagesData } = useMessages(selectedWorkspaceId);
-    const { data: branchPointersData } = useBranches(selectedWorkspaceId);
     const localNodesQuery = useLocalNodes(selectedWorkspaceId);
     const persistedMessages = useMemo(
         () => (messagesData ?? []) as Message[],
         [messagesData]
-    );
-    const workspaceBranchPointers = useMemo(
-        () => (branchPointersData ?? []) as BranchPointer[],
-        [branchPointersData]
     );
     const messages = useWorkspaceMessages(selectedWorkspaceId, persistedMessages, localNodesQuery.data);
     const messageLookupMessages = messages;
@@ -1359,6 +1379,7 @@ export function ChatInput({
         let pendingContentFlushAgentId: string | null | undefined = node.agent_id;
         let pendingContentFlushTimestamp: number | undefined = undefined;
         let latestStreamSeq: number | null = null;
+        let activeProviderAssistantItemId: string | null = null;
         const nodeExecution = (node.execution_data || {}) as Record<string, any>;
         let latestAgentEventSeq: number | null = (() => {
             const actorSeq = agentRunManager.snapshot(nodeId)?.lastSeq;
@@ -1709,7 +1730,13 @@ export function ChatInput({
                     data.type !== 'provider_stop'
                 ) {
                     if (data.type === 'message_delta' && typeof data.delta === 'string') {
-                        output = `${output}${data.delta}`;
+                        const merged = resolveProviderAssistantOutput(output, data.delta, {
+                            kind: 'delta',
+                            currentProviderItemId: activeProviderAssistantItemId,
+                            nextProviderItemId: data.provider_item_id,
+                        });
+                        output = merged.output;
+                        activeProviderAssistantItemId = merged.providerItemId;
                         recordLatencyMark(nodeId, 'first_assistant_delta', {
                             authToken,
                             nodeId,
@@ -1721,8 +1748,13 @@ export function ChatInput({
                             timestamp: data.timestamp,
                         });
                     } else if (data.type === 'message_completed' && typeof data.content === 'string') {
-                        const nextOutput = mergeStreamingOutput(output, data.content);
-                        output = nextOutput;
+                        const merged = resolveProviderAssistantOutput(output, data.content, {
+                            kind: 'snapshot',
+                            currentProviderItemId: activeProviderAssistantItemId,
+                            nextProviderItemId: data.provider_item_id,
+                        });
+                        output = merged.output;
+                        activeProviderAssistantItemId = merged.providerItemId;
                         recordFirstAssistantTextReceived('tauri_message_completed', data.timestamp, data.stream_seq);
                         scheduleBufferedAssistantTextFlush({
                             force: true,
@@ -1759,7 +1791,13 @@ export function ChatInput({
                             maybeShowCodexAuthToast(extractMessageText(innerData));
                         }
                         if (innerData.type === 'message_delta' && typeof innerData.delta === 'string') {
-                            output = `${output}${innerData.delta}`;
+                            const merged = resolveProviderAssistantOutput(output, innerData.delta, {
+                                kind: 'delta',
+                                currentProviderItemId: activeProviderAssistantItemId,
+                                nextProviderItemId: innerData.provider_item_id,
+                            });
+                            output = merged.output;
+                            activeProviderAssistantItemId = merged.providerItemId;
                             recordLatencyMark(nodeId, 'first_assistant_delta', {
                                 authToken,
                                 nodeId,
@@ -1773,8 +1811,13 @@ export function ChatInput({
                             return;
                         }
                         if (innerData.type === 'message_completed' && typeof innerData.content === 'string') {
-                            const nextOutput = mergeStreamingOutput(output, innerData.content);
-                            output = nextOutput;
+                            const merged = resolveProviderAssistantOutput(output, innerData.content, {
+                                kind: 'snapshot',
+                                currentProviderItemId: activeProviderAssistantItemId,
+                                nextProviderItemId: innerData.provider_item_id,
+                            });
+                            output = merged.output;
+                            activeProviderAssistantItemId = merged.providerItemId;
                             recordFirstAssistantTextReceived('tauri_stdout_message_completed', innerData.timestamp ?? data.timestamp, data.stream_seq);
                             scheduleBufferedAssistantTextFlush({
                                 force: true,
@@ -1944,8 +1987,13 @@ export function ChatInput({
                         elapsedMs: Math.round(performance.now() - streamStartedAt),
                     });
                     if (typeof data.final_content === 'string' && data.final_content.length > 0) {
-                        const nextOutput = mergeStreamingOutput(output, data.final_content);
-                        output = nextOutput;
+                        const merged = resolveProviderAssistantOutput(output, data.final_content, {
+                            kind: 'final',
+                            currentProviderItemId: activeProviderAssistantItemId,
+                            nextProviderItemId: data.provider_item_id,
+                        });
+                        output = merged.output;
+                        activeProviderAssistantItemId = merged.providerItemId;
                         recordFirstAssistantTextReceived('tauri_stop_final_content', data.timestamp, data.stream_seq);
                         scheduleBufferedAssistantTextFlush({
                             force: true,
@@ -2096,6 +2144,12 @@ export function ChatInput({
     }, []);
 
     const [isAgentPickerOpen, setIsAgentPickerOpen] = useState(false);
+    const refreshProviderLimitsIfStale = useProviderLimitsStore((state) => state.refreshIfStale);
+    const handleAgentPickerOpenChange = useCallback((open: boolean) => {
+        setIsAgentPickerOpen(open);
+        if (!open) return;
+        refreshProviderLimitsIfStale('codex');
+    }, [refreshProviderLimitsIfStale]);
 
     useEffect(() => {
         if (!autoFocus) return;
@@ -2116,11 +2170,55 @@ export function ChatInput({
         () => messageLookupMessages.find((m: Message) => m.id === replyParentMessageId) ?? null,
         [messageLookupMessages, replyParentMessageId]
     );
-    const defaultBaseCommitSha = useMemo(() => (
+    const baseSelectionContextKey = [
+        selectedWorkspaceId ?? '',
+        composerTargetMode,
+        replyParentMessageId ?? '',
+        focusedCommitSha ?? '',
+    ].join(':');
+    const baseSelectionContextKeyRef = useRef<string | null>(null);
+    const composerBaseMessages = useMemo<ComposerBaseMessage[]>(() => (
+        messageLookupMessages.map((message) => ({
+            id: message.id,
+            parentId: message.parentId ?? null,
+            output_commit_sha: getMessageOutputCommitSha(message),
+            base_commit_sha: message.base_commit_sha ?? null,
+        }))
+    ), [messageLookupMessages]);
+    const commitPickerRefs = localCommitChoicesQuery.refs;
+    const currentHeadSha = gitRefSnapshotQuery.data?.head_sha?.trim() || null;
+    const commitPickerRefsWithHead = useMemo(() => {
+        if (!currentHeadSha) return commitPickerRefs;
+        return [
+            { git_ref: 'HEAD', short_name: 'HEAD', commit_sha: currentHeadSha },
+            ...commitPickerRefs.filter((ref) => ref.git_ref !== 'HEAD'),
+        ];
+    }, [commitPickerRefs, currentHeadSha]);
+    const defaultBaseResolution = useMemo(() => (
         focusedCommitSha
-            ? focusedCommitSha
-            : resolveNodeCommit(branchParentMessage ?? selectedNodeMessage, messageLookupMessages, selectedWorkspace?.base_commit_sha ?? null)
-    ), [branchParentMessage, focusedCommitSha, messageLookupMessages, selectedNodeMessage, selectedWorkspace?.base_commit_sha]);
+            ? {
+                sha: focusedCommitSha,
+                source: 'reply-parent-output' as const,
+                selectedFromNodeId: null,
+            }
+            : resolveComposerDefaultBaseCommit({
+                targetMode: isNewThreadTarget ? 'new-thread' : 'reply',
+                replyParentMessageId,
+                selectedNodeId,
+                messages: composerBaseMessages,
+                refs: commitPickerRefs,
+                workspaceBaseCommitSha: selectedWorkspace?.base_commit_sha ?? null,
+            })
+    ), [
+        composerBaseMessages,
+        commitPickerRefs,
+        focusedCommitSha,
+        isNewThreadTarget,
+        replyParentMessageId,
+        selectedNodeId,
+        selectedWorkspace?.base_commit_sha,
+    ]);
+    const defaultBaseCommitSha = defaultBaseResolution.sha;
     const baseCommitCandidatesQuery = useCommitDescendants(selectedWorkspaceId, defaultBaseCommitSha, {
         enabled: Boolean(selectedWorkspaceId && defaultBaseCommitSha),
         limit: 120,
@@ -2131,15 +2229,21 @@ export function ChatInput({
     });
     useEffect(() => {
         setSelectedBaseCommit(null);
-        setIsEarlierCommitsOpen(false);
+        setBaseCommitSearch('');
     }, [defaultBaseCommitSha, replyParentMessageId, selectedWorkspaceId]);
+    useEffect(() => {
+        const previousBaseSelectionContextKey = baseSelectionContextKeyRef.current;
+        baseSelectionContextKeyRef.current = baseSelectionContextKey;
+        if (previousBaseSelectionContextKey === null || previousBaseSelectionContextKey === baseSelectionContextKey) return;
+
+        setSelectedBaseCommit(null);
+        setBaseCommitSearch('');
+        setComposerBaseCommitOverride(null);
+    }, [baseSelectionContextKey, setComposerBaseCommitOverride]);
     const composerOverrideCommitSha = composerBaseCommitOverride?.workspaceId === selectedWorkspaceId
         ? composerBaseCommitOverride.commitSha
         : null;
     const effectiveBaseCommitSha = composerOverrideCommitSha || selectedBaseCommit?.sha || defaultBaseCommitSha;
-    const effectiveBaseCommitLabel = composerOverrideCommitSha
-        ? (composerBaseCommitOverride?.label || composerOverrideCommitSha)
-        : selectedBaseCommit?.subject || selectedBaseCommit?.sha || defaultBaseCommitSha || 'No commit';
     const baseCommitCandidates = useMemo(() => {
         const seen = new Set<string>();
         return (baseCommitCandidatesQuery.data?.commits ?? []).filter((commit) => {
@@ -2156,6 +2260,170 @@ export function ChatInput({
             return commit.sha !== defaultBaseCommitSha;
         });
     }, [baseCommitAncestorsQuery.data?.commits, defaultBaseCommitSha]);
+    const baseCommitPickerCommits = useMemo<ComposerCommitPickerCommit[]>(() => {
+        const commitsBySha = new Map<string, ComposerCommitPickerCommit>();
+        const upsertCommit = (commit: Partial<ComposerCommitPickerCommit> & { sha?: string | null }) => {
+            const sha = commit.sha?.trim();
+            if (!sha) return;
+            const existing = commitsBySha.get(sha);
+            commitsBySha.set(sha, {
+                sha,
+                subject: commit.subject ?? existing?.subject ?? null,
+                parents: Array.isArray(commit.parents) ? commit.parents : existing?.parents ?? [],
+                produced_by_node_id: commit.produced_by_node_id ?? existing?.produced_by_node_id ?? null,
+                authored_at: commit.authored_at ?? existing?.authored_at ?? null,
+                committed_at: commit.committed_at ?? existing?.committed_at ?? null,
+            });
+        };
+
+        for (const commit of localCommitChoicesQuery.commits) {
+            upsertCommit({
+                sha: commit.sha,
+                subject: commit.subject,
+                parents: commit.parents,
+                authored_at: commit.authored_at,
+            });
+        }
+        for (const commit of baseCommitAncestorCandidates) {
+            upsertCommit({
+                sha: commit.sha,
+                subject: commit.subject,
+                produced_by_node_id: commit.produced_by_node_id ?? null,
+                authored_at: commit.authored_at,
+                committed_at: commit.committed_at,
+            });
+        }
+        for (const commit of baseCommitCandidates) {
+            upsertCommit({
+                sha: commit.sha,
+                subject: commit.subject,
+                produced_by_node_id: commit.produced_by_node_id ?? null,
+                authored_at: commit.authored_at,
+                committed_at: commit.committed_at,
+            });
+        }
+        if (currentHeadSha) {
+            upsertCommit({
+                sha: currentHeadSha,
+                subject: 'HEAD',
+            });
+        }
+        if (defaultBaseCommitSha) {
+            upsertCommit({
+                sha: defaultBaseCommitSha,
+                subject: defaultBaseResolution.source === 'main-ref'
+                    ? 'main'
+                    : branchParentMessage?.commit?.subject || branchParentMessage?.content || null,
+                produced_by_node_id: defaultBaseResolution.selectedFromNodeId,
+            });
+        }
+        if (selectedBaseCommit) {
+            upsertCommit({
+                sha: selectedBaseCommit.sha,
+                subject: selectedBaseCommit.subject,
+                produced_by_node_id: selectedBaseCommit.produced_by_node_id ?? null,
+            });
+        }
+        if (composerOverrideCommitSha) {
+            upsertCommit({
+                sha: composerOverrideCommitSha,
+                subject: composerBaseCommitOverride?.label ?? null,
+            });
+        }
+
+        return Array.from(commitsBySha.values());
+    }, [
+        baseCommitAncestorCandidates,
+        baseCommitCandidates,
+        branchParentMessage?.commit?.subject,
+        branchParentMessage?.content,
+        composerBaseCommitOverride?.label,
+        composerOverrideCommitSha,
+        currentHeadSha,
+        defaultBaseCommitSha,
+        defaultBaseResolution.selectedFromNodeId,
+        defaultBaseResolution.source,
+        localCommitChoicesQuery.commits,
+        selectedBaseCommit,
+    ]);
+    const laterCommitShas = useMemo(
+        () => new Set(baseCommitCandidates.map((commit) => commit.sha)),
+        [baseCommitCandidates]
+    );
+    const earlierCommitShas = useMemo(
+        () => new Set(baseCommitAncestorCandidates.map((commit) => commit.sha)),
+        [baseCommitAncestorCandidates]
+    );
+    const baseCommitAllPickerItems = useMemo(() => buildComposerCommitPickerItems({
+        defaultSha: defaultBaseCommitSha,
+        effectiveSha: effectiveBaseCommitSha,
+        commits: baseCommitPickerCommits,
+        refs: commitPickerRefsWithHead,
+        trackedRefs: trackedRefsQuery.data ?? [],
+        laterCommitShas,
+        earlierCommitShas,
+    }), [
+        baseCommitPickerCommits,
+        commitPickerRefsWithHead,
+        defaultBaseCommitSha,
+        earlierCommitShas,
+        effectiveBaseCommitSha,
+        laterCommitShas,
+        trackedRefsQuery.data,
+    ]);
+    const baseCommitPickerItems = useMemo(() => {
+        const query = baseCommitSearch.trim().toLowerCase();
+        if (!query) return baseCommitAllPickerItems;
+        return baseCommitAllPickerItems.filter((item) => item.searchText.includes(query));
+    }, [baseCommitAllPickerItems, baseCommitSearch]);
+    const selectedBasePickerItem = useMemo(
+        () => baseCommitAllPickerItems.find((item) => item.sha === effectiveBaseCommitSha) ?? null,
+        [baseCommitAllPickerItems, effectiveBaseCommitSha]
+    );
+    const commitRecencyBySha = useMemo(() => {
+        const recencyBySha = new Map<string, number>();
+        for (const commit of baseCommitPickerCommits) {
+            const sha = commit.sha.trim();
+            if (!sha) continue;
+            const timestamp = Date.parse(commit.committed_at || commit.authored_at || '');
+            recencyBySha.set(sha, Number.isFinite(timestamp) ? timestamp : 0);
+        }
+        return recencyBySha;
+    }, [baseCommitPickerCommits]);
+    const baseCommitChipItems = useMemo(() => buildComposerCommitPickerChipItems({
+        items: baseCommitAllPickerItems,
+        refs: commitPickerRefsWithHead,
+        trackedRefs: trackedRefsQuery.data ?? [],
+        headSha: currentHeadSha,
+        commitRecencyBySha,
+        limit: 6,
+    }), [
+        baseCommitAllPickerItems,
+        commitPickerRefsWithHead,
+        commitRecencyBySha,
+        currentHeadSha,
+        trackedRefsQuery.data,
+    ]);
+    const isBaseCommitChoicesLoading = localCommitChoicesQuery.isLoading || baseCommitCandidatesQuery.isLoading || baseCommitAncestorsQuery.isLoading;
+    const handleBaseCommitSelect = useCallback((item: typeof baseCommitPickerItems[number]) => {
+        setComposerBaseCommitOverride(null);
+        if (item.isDefault) {
+            setSelectedBaseCommit(null);
+            return;
+        }
+
+        setSelectedBaseCommit({
+            sha: item.sha,
+            subject: item.subject,
+            produced_by_node_id: item.producedByNodeId,
+        });
+    }, [setComposerBaseCommitOverride]);
+    const effectiveBaseCommitLabel = composerOverrideCommitSha
+        ? (composerBaseCommitOverride?.label || composerOverrideCommitSha)
+        : selectedBasePickerItem?.primaryLabel || selectedBaseCommit?.subject || selectedBaseCommit?.sha || defaultBaseCommitSha || 'No commit';
+    const effectiveBaseSelectedFromNodeId = composerOverrideCommitSha
+        ? null
+        : selectedBaseCommit?.produced_by_node_id || selectedBasePickerItem?.producedByNodeId || defaultBaseResolution.selectedFromNodeId || null;
     const replyParentLabel = branchParentMessage?.content || '';
     const messageById = useMemo(
         () => new Map(messageLookupMessages.map((m: Message) => [m.id, m])),
@@ -2317,45 +2585,13 @@ export function ChatInput({
         return activeScopeId || null;
     }, [activeScopeId, branchParentScopeId, replyParentMessageId]);
     const codeParentCommit = effectiveBaseCommitSha;
-    const composerBranchPointers = useMemo<BranchPointer[]>(() => {
-        const pointers = [...workspaceBranchPointers];
-
-        for (const message of messageLookupMessages) {
-            if (Array.isArray(message.branchPointers)) {
-                pointers.push(...message.branchPointers);
-            }
-
-            const commitSha = getMessageOutputCommitSha(message);
-            const branchName = normalizePreviewText(message.git_branch_name);
-            if (!commitSha || !branchName) continue;
-
-            pointers.push({
-                id: `message-${message.id}-${branchName}`,
-                workspace_id: message.workspaceId,
-                name: branchName,
-                node_id: message.id,
-                commit_sha: commitSha,
-                git_ref: branchName,
-                is_ship_path: false,
-                createdAt: message.createdAt,
-                updatedAt: message.updatedAt,
-                commit: message.commit ?? null,
-                node: null,
-            });
-        }
-
-        return pointers;
-    }, [messageLookupMessages, workspaceBranchPointers]);
-    const codeParentBranchNames = useMemo(
-        () => getBranchPointerNamesForCommit(codeParentCommit, composerBranchPointers),
-        [codeParentCommit, composerBranchPointers]
-    );
+    const codeParentBranchNames = selectedBasePickerItem?.refNames ?? [];
     const codeParentUsesBranchName = codeParentBranchNames.length > 0;
     const codeParentDisplayLabel = codeParentUsesBranchName
-        ? codeParentBranchNames.join(', ')
-        : formatCommitLabel(codeParentCommit);
+        ? selectedBasePickerItem?.primaryLabel ?? codeParentBranchNames.join(', ')
+        : shortCommitSha(codeParentCommit);
     const codeParentTooltipLabel = codeParentUsesBranchName && codeParentCommit
-        ? `${codeParentDisplayLabel} (${formatCommitLabel(codeParentCommit)})`
+        ? `${codeParentDisplayLabel} (${shortCommitSha(codeParentCommit)})`
         : codeParentDisplayLabel;
     const codeParentTooltipNoun = codeParentBranchNames.length > 1
         ? 'branches'
@@ -2971,12 +3207,18 @@ export function ChatInput({
 
         const flowId = createSendFlowId();
         const controller = new AbortController();
-        setCurrentAbortController(controller);
-        setActiveComposerSend({
-            flowId,
-            nodeIds: [],
-            preferredNodeId: null,
-            workspaceId: selectedWorkspaceId,
+        flushSync(() => {
+            setCurrentAbortController(controller);
+            setActiveComposerSend({
+                flowId,
+                nodeIds: [],
+                preferredNodeId: null,
+                workspaceId: selectedWorkspaceId,
+            });
+            setComposerPrompt('');
+            setAttachments([]);
+            setContextIds([]);
+            setEditDraftSource(null);
         });
         recordSendFlowEvent('cancel.affordance-armed', {
             flowId,
@@ -3043,11 +3285,11 @@ export function ChatInput({
             selectedAgentType: primarySelectedAgent?.type ?? null,
             selectedRunCount: agentRunItemsForSend.length,
         });
-        const getSelectedAgentModelId = (agent: typeof primarySelectedAgent) =>
+        const getSelectedLlmModel = (agent: typeof primarySelectedAgent) =>
             (agent as any)?.model_config?.model ||
             parseCliArgs(agent?.cliArgs).model ||
             null;
-        const selectedAgentModelId = getSelectedAgentModelId(primarySelectedAgent);
+        const selectedLlmModel = getSelectedLlmModel(primarySelectedAgent);
 
         const focusStateAtSendStart = useWorkspaceStore.getState();
         const savedEditDraftSource = editDraftSource;
@@ -3111,7 +3353,7 @@ export function ChatInput({
                 },
                 {
                     id: hasLocalAgentRuntime ? crypto.randomUUID() : undefined,
-                    llmModel: getSelectedAgentModelId(run.agent),
+                    llmModel: getSelectedLlmModel(run.agent),
                     llmProvider: run.agent.type || null,
                     agentId: run.agentId,
                     status: 'pending',
@@ -3156,7 +3398,7 @@ export function ChatInput({
                         pathIds: optimisticPair.userMessage.path_ids ?? [optimisticPair.userMessageId],
                         depth: optimisticPair.userMessage.depth ?? parentDepth + 1,
                         role: 'assistant',
-                        llmModel: getSelectedAgentModelId(run.agent),
+                        llmModel: getSelectedLlmModel(run.agent),
                         llmProvider: run.agent.type || null,
                         agentId: run.agentId,
                         status: 'pending',
@@ -3209,6 +3451,8 @@ export function ChatInput({
             if (!sendAcceptanceInFlightRef.current) return;
             sendAcceptanceInFlightRef.current = false;
             setIsSendAcceptanceInFlight(false);
+            setActiveComposerSend((current) => current?.flowId === flowId ? null : current);
+            setCurrentAbortController((current) => current === controller ? null : current);
             recordSendFlowEvent('queue.acceptance-released', {
                 flowId,
                 workspaceId: selectedWorkspaceId,
@@ -3256,7 +3500,7 @@ export function ChatInput({
         for (const run of assistantRunMessages) {
             if (!run.assistantMessage) continue;
             run.assistantMessage.base_commit_sha = effectiveBaseCommitSha || null;
-            run.assistantMessage.base_selected_from_node_id = selectedBaseCommit?.produced_by_node_id || null;
+            run.assistantMessage.base_selected_from_node_id = effectiveBaseSelectedFromNodeId;
         }
 
         // Enter the bounded graph send mode before optimistic nodes are added.
@@ -3283,29 +3527,16 @@ export function ChatInput({
             if (!run.assistantMessage || !run.assistantMessageId) continue;
             seedAgentRunProjection(run.assistantMessageId, run.assistantMessage);
         }
-        if (shouldUseAgent) {
-            for (const run of assistantRunMessages) {
-                if (!run.assistantMessageId) continue;
-                setNodeStatus(run.assistantMessageId, 'initializing');
-                setSetupProgress(run.assistantMessageId, 'Initializing agent...');
-            }
-        }
         setComposerPrompt('');
         setAttachments([]);
         setContextIds([]);
         setEditDraftSource(null);
-        dispatchSendFlowFocus({
-            flowId,
-            messageId: optimisticPair.userMessageId,
-            phase: 'optimistic-user',
-            allowedCurrentFocusIds: [focusStateAtSendStart.focusedMessageId, sendParentMessageId],
-        });
         setCurrentAbortController(controller);
         track('Agent Message Submitted', {
             workspace_id: selectedWorkspaceId,
             agent_id: primarySelectedAgent.id,
             agent_provider: primarySelectedAgent?.type ?? null,
-            agent_model: selectedAgentModelId,
+            llm_model: selectedLlmModel,
             agent_run_count: agentRunItemsForSend.length,
             prompt_chars: savedPrompt.trim().length,
             attachment_count: savedAttachments.length,
@@ -3375,12 +3606,25 @@ export function ChatInput({
         });
 
         try {
-            // Let the browser paint the optimistic message and cancel affordance
-            // before starting readiness/API work on the same click.
-            await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+            // Let React and the WebView paint the optimistic message and cleared
+            // composer before native persistence/worktree setup can occupy a frame.
+            await waitForOptimisticSendPaint();
             if (controller.signal.aborted) {
                 throw Object.assign(new Error('Request was cancelled'), { name: 'CanceledError' });
             }
+            if (shouldUseAgent) {
+                for (const run of assistantRunMessages) {
+                    if (!run.assistantMessageId) continue;
+                    setNodeStatus(run.assistantMessageId, 'initializing');
+                    setSetupProgress(run.assistantMessageId, 'Initializing agent...');
+                }
+            }
+            dispatchSendFlowFocus({
+                flowId,
+                messageId: optimisticPair.userMessageId,
+                phase: 'optimistic-user',
+                allowedCurrentFocusIds: [focusStateAtSendStart.focusedMessageId, sendParentMessageId],
+            });
 
             if (runtimeReadinessPromise) {
                 try {
@@ -3597,7 +3841,7 @@ export function ChatInput({
                 useAgent: true,
                 agentId: primarySelectedAgent.id,
                 agentProvider: primarySelectedAgent?.type || null,
-                agentModel: selectedAgentModelId,
+                llmModel: selectedLlmModel,
                 activeScopeId: activeScopeId || null,
                 scopeId: null,
                 scopeMode: effectiveScopeMode,
@@ -3904,7 +4148,7 @@ export function ChatInput({
         contextPolicy,
         branchParentMessage,
         effectiveBaseCommitSha,
-        selectedBaseCommit,
+        effectiveBaseSelectedFromNodeId,
         selectedAgentId,
         selectedAgent,
         selectedAgentRunItems,
@@ -4237,29 +4481,18 @@ export function ChatInput({
                 selectedComposerContextManifest = getSelectedComposerContextManifest();
             }
             const explicitAgentreeContext = selectedComposerContextManifest.contextText.trim();
-            const shouldInjectAgentreeContext = providerRouting.shouldInjectAgentreeContext && explicitAgentreeContext.length > 0;
-            const continuationPacket = providerRouting.shouldBuildCrossProviderPacket && providerContinuation && selectedProvider
-                ? buildCrossProviderContinuationPacket({
-                    selectedProvider,
-                    parentProvider: providerContinuation.parentProvider,
-                    parentNodeId: providerParentMessage?.id ?? null,
-                    baseNodeId: baseMessageId,
-                    gitParentCommit: parentCommit,
-                    gitBranchName: plannedBranchName,
-                    gitWorktreePath: null,
-                    manifest: selectedComposerContextManifest,
-                    parentMeta: parentExecutionMeta,
-                })
-                : null;
-
-            // Prepare prompt with context
-            let effectivePrompt = prompt;
-            if (providerRouting.promptContextMode === 'cross_provider_packet' && continuationPacket) {
-                effectivePrompt = `${continuationPacket.text}\n\n[User Request]\n${prompt}`;
-            } else if (providerRouting.promptContextMode === 'agentree_context' && shouldInjectAgentreeContext) {
-                effectivePrompt = `Context (selected workspace history):\n${explicitAgentreeContext}\n\nUser:\n${prompt}`;
-            }
-            effectivePrompt = `${DEPENDENCY_GUARD_INSTRUCTION}\n\n${effectivePrompt}`;
+            const promptMode = providerRouting.promptContextMode === 'cross_provider_packet' && providerContinuation && selectedProvider
+                ? 'cross_provider'
+                : providerRouting.promptContextMode === 'agentree_context'
+                    ? 'agentree_context'
+                    : 'plain';
+            const agentRunPrompt = buildAgentRunPrompt({
+                mode: promptMode,
+                userPrompt: prompt,
+                contextManifest: selectedComposerContextManifest,
+            });
+            const shouldInjectAgentreeContext = agentRunPrompt.agentreeContextInjected;
+            const effectivePrompt = agentRunPrompt.prompt;
 
             const providerInternalArgs = (selectedProvider
                 ? [
@@ -4287,7 +4520,6 @@ export function ChatInput({
             const agentreeContextInjectedChars = shouldInjectAgentreeContext
                 ? agentreeContextAvailableChars
                 : 0;
-            const continuationPacketChars = continuationPacket?.text.length ?? 0;
             const sourceProviderLineageIdForSpawn = providerThreadStrategy === 'fresh_thread'
                 ? null
                 : parentProviderLineageId;
@@ -4301,7 +4533,7 @@ export function ChatInput({
                 node_id: nodeId,
                 agent_id: selectedAgentId,
                 agent_provider: selectedAgent?.type ?? null,
-                agent_model: resolvedModel,
+                llm_model: resolvedModel,
                 provider_thread_strategy: providerThreadStrategyRequested,
                 branch_from_interior: isBranchFromInterior,
                 auto_checkout_requested: autoCheckout,
@@ -4375,9 +4607,6 @@ export function ChatInput({
                 provider_cross_provider_fresh_thread: providerRouting.promptContextMode === 'cross_provider_packet',
                 provider_context_routing_mode: providerRouting.promptContextMode,
                 provider_context_routing_reason: providerRouting.reason,
-                provider_continuation_packet_chars: continuationPacketChars,
-                provider_continuation_packet_version: continuationPacket?.version ?? null,
-                provider_continuation_packet_hash: continuationPacket?.hash ?? null,
                 provider_thread_strategy_requested: providerThreadStrategyRequested,
                 provider_thread_id: sourceProviderThreadIdForSpawn,
                 provider_source_thread_id: sourceProviderThreadIdForSpawn,
@@ -4392,6 +4621,7 @@ export function ChatInput({
                 ...(selectedProvider
                     ? {
                         provider: selectedProvider,
+                        llmModel: resolvedModel,
                         provider_run_mode: resolvedRunMode,
                         provider_model: resolvedModel,
                     }
@@ -4485,7 +4715,7 @@ export function ChatInput({
                     node_id: nodeId,
                     agent_id: selectedAgentId,
                     agent_provider: selectedAgent?.type ?? null,
-                    agent_model: resolvedModel,
+                    llm_model: resolvedModel,
                 });
                 sendFlowDebug('Agent spawned successfully', { nodeId });
             }).catch((error) => {
@@ -4520,7 +4750,7 @@ export function ChatInput({
                 node_id: nodeId,
                 agent_id: selectedAgentId,
                 agent_provider: selectedAgent?.type ?? null,
-                agent_model: resolvedModel,
+                llm_model: resolvedModel,
             });
             sendFlowDebug('Agent spawn dispatched', { nodeId });
 
@@ -4931,111 +5161,74 @@ export function ChatInput({
                                 side="top"
                                 sideOffset={6}
                                 collisionPadding={12}
-                                className={cn(composerPopupLayerClass, "max-h-[min(22rem,var(--radix-dropdown-menu-content-available-height))] w-[min(20rem,calc(100vw-1.5rem))] overflow-y-auto rounded-lg border border-border/70 bg-popover/95 p-1 shadow-[0_16px_42px_-20px_rgba(15,23,42,0.50),0_6px_18px_-14px_rgba(15,23,42,0.38)] backdrop-blur-xl dark:shadow-[0_16px_42px_-20px_rgba(0,0,0,0.78),0_6px_18px_-14px_rgba(0,0,0,0.62)]")}
+                                className={cn(composerPopupLayerClass, "w-[min(24rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-border/70 bg-popover/95 p-0 shadow-[0_18px_48px_-24px_rgba(15,23,42,0.55),0_8px_20px_-16px_rgba(15,23,42,0.40)] backdrop-blur-xl dark:shadow-[0_18px_48px_-24px_rgba(0,0,0,0.82),0_8px_20px_-16px_rgba(0,0,0,0.66)]")}
                             >
-                                <DropdownMenuLabel className="px-1.5 py-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Run from commit</DropdownMenuLabel>
-                                <DropdownMenuItem
-                                    onSelect={(event) => {
-                                        event.preventDefault();
-                                        setIsEarlierCommitsOpen((value) => !value);
-                                    }}
-                                    className="min-h-7 gap-1.5 rounded-md px-1.5 py-1 text-muted-foreground"
-                                >
-                                    {isEarlierCommitsOpen ? (
-                                        <ChevronDown className="h-3 w-3" />
-                                    ) : (
-                                        <ChevronRight className="h-3 w-3" />
-                                    )}
-                                    <span className="text-[10px] font-semibold uppercase tracking-[0.12em]">
-                                        Earlier commits{baseCommitAncestorCandidates.length > 0 ? ` (${baseCommitAncestorCandidates.length})` : ''}
-                                    </span>
-                                </DropdownMenuItem>
-                                {isEarlierCommitsOpen ? (
-                                    baseCommitAncestorsQuery.isLoading ? (
-                                        <DropdownMenuItem disabled className="min-h-7 gap-1.5 rounded-md px-1.5 py-1 text-xs">
-                                            <Loader2 className="h-3 w-3 animate-spin" />
-                                            Loading earlier commits...
-                                        </DropdownMenuItem>
-                                    ) : baseCommitAncestorCandidates.length > 0 ? (
-                                        baseCommitAncestorCandidates.map((commit) => {
-                                            const selected = effectiveBaseCommitSha === commit.sha;
-                                            return (
-                                                <DropdownMenuItem
-                                                    key={`ancestor-${commit.sha}`}
-                                                    onClick={() => {
-                                                        setComposerBaseCommitOverride(null);
-                                                        setSelectedBaseCommit(commit);
-                                                    }}
-                                                    className="min-h-8 gap-1.5 rounded-md px-1.5 py-1"
-                                                    title={`${commit.sha} ${commit.subject ?? ''}`.trim()}
+                                <div className="border-b border-border/60 p-2.5">
+                                    <DropdownMenuLabel className="px-0 pb-2 pt-0 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Run from code base</DropdownMenuLabel>
+                                    <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/80 px-2.5 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+                                        <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                        <input
+                                            value={baseCommitSearch}
+                                            onChange={(event) => setBaseCommitSearch(event.target.value)}
+                                            onKeyDown={(event) => event.stopPropagation()}
+                                            placeholder="Search branches, commits, SHA"
+                                            className="h-6 min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/70"
+                                        />
+                                        {isBaseCommitChoicesLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" /> : null}
+                                    </div>
+                                    {baseCommitChipItems.length > 0 ? (
+                                        <div className="mt-2 flex max-h-14 flex-wrap gap-1.5 overflow-hidden">
+                                            {baseCommitChipItems.map((chip) => (
+                                                <button
+                                                    key={`chip-${chip.key}`}
+                                                    type="button"
+                                                    onClick={() => handleBaseCommitSelect(chip.item)}
+                                                    className={cn(
+                                                        "max-w-[10rem] truncate rounded-full border px-2 py-1 text-[10px] font-medium transition-colors active:scale-[0.98]",
+                                                        chip.item.selected
+                                                            ? "border-[hsl(var(--app-accent)/0.42)] bg-[hsl(var(--app-accent)/0.10)] text-foreground"
+                                                            : "border-border/70 bg-background/60 text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+                                                    )}
+                                                    title={`${chip.label} ${chip.item.sha}`.trim()}
                                                 >
-                                                    <div className="flex h-4 w-4 shrink-0 items-center justify-center">
-                                                        {selected ? <Check className="h-3 w-3" /> : null}
-                                                    </div>
-                                                    <div className="min-w-0 flex-1">
-                                                        <div className="truncate text-[11px] font-medium leading-tight">{formatCommitSubject(commit)}</div>
-                                                        <div className="truncate font-mono text-[10px] leading-tight text-muted-foreground">{formatCommitLabel(commit.sha)}</div>
-                                                    </div>
-                                                </DropdownMenuItem>
-                                            );
-                                        })
-                                    ) : (
-                                        <DropdownMenuItem disabled className="min-h-7 rounded-md px-1.5 py-1 text-xs text-muted-foreground">
-                                            No ancestor commits available
-                                        </DropdownMenuItem>
-                                    )
-                                ) : null}
-                                <DropdownMenuSeparator className="my-0.5" />
-                                <DropdownMenuItem
-                                    onClick={() => {
-                                        setComposerBaseCommitOverride(null);
-                                        setSelectedBaseCommit(null);
-                                    }}
-                                    className="min-h-8 gap-1.5 rounded-md px-1.5 py-1"
-                                >
-                                    <div className="flex h-4 w-4 shrink-0 items-center justify-center">
-                                        {!selectedBaseCommit && !composerOverrideCommitSha ? <Check className="h-3 w-3" /> : null}
-                                    </div>
-                                    <div className="min-w-0 flex-1">
-                                        <div className="truncate text-[11px] font-medium leading-tight">Focused node base</div>
-                                        <div className="truncate font-mono text-[10px] leading-tight text-muted-foreground">{formatCommitLabel(defaultBaseCommitSha)}</div>
-                                    </div>
-                                </DropdownMenuItem>
-                                <DropdownMenuSeparator className="my-0.5" />
-                                <DropdownMenuLabel className="px-1.5 py-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Later commits</DropdownMenuLabel>
-                                {baseCommitCandidatesQuery.isLoading ? (
-                                    <DropdownMenuItem disabled className="min-h-7 gap-1.5 rounded-md px-1.5 py-1 text-xs">
-                                        <Loader2 className="h-3 w-3 animate-spin" />
-                                        Loading commits...
-                                    </DropdownMenuItem>
-                                ) : baseCommitCandidates.length > 0 ? (
-                                    baseCommitCandidates.map((commit) => {
-                                        const selected = effectiveBaseCommitSha === commit.sha;
-                                        return (
+                                                    {chip.label}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    ) : null}
+                                </div>
+                                <div className="max-h-[min(19rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto p-1.5">
+                                    {baseCommitPickerItems.length > 0 ? (
+                                        baseCommitPickerItems.map((item) => (
                                             <DropdownMenuItem
-                                                key={commit.sha}
-                                                onClick={() => {
-                                                    setComposerBaseCommitOverride(null);
-                                                    setSelectedBaseCommit(commit);
-                                                }}
-                                                className="min-h-8 gap-1.5 rounded-md px-1.5 py-1"
-                                                title={`${commit.sha} ${commit.subject ?? ''}`.trim()}
+                                                key={item.sha}
+                                                onClick={() => handleBaseCommitSelect(item)}
+                                                className="min-h-11 gap-2 rounded-lg px-2 py-1.5"
+                                                title={`${item.sha} ${item.subject}`.trim()}
                                             >
-                                                <div className="flex h-4 w-4 shrink-0 items-center justify-center">
-                                                    {selected ? <Check className="h-3 w-3" /> : null}
+                                                <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-muted/70 text-muted-foreground">
+                                                    {item.selected ? <Check className="h-3.5 w-3.5 text-foreground" /> : <GitCommitHorizontal className="h-3.5 w-3.5" />}
                                                 </div>
                                                 <div className="min-w-0 flex-1">
-                                                    <div className="truncate text-[11px] font-medium leading-tight">{formatCommitSubject(commit)}</div>
-                                                    <div className="truncate font-mono text-[10px] leading-tight text-muted-foreground">{formatCommitLabel(commit.sha)}</div>
+                                                    <div className="flex min-w-0 items-center gap-1.5">
+                                                        <span className="truncate text-[12px] font-semibold leading-tight text-foreground">{item.primaryLabel}</span>
+                                                        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                                                            {formatCommitRelationLabel(item.relation, item.isDefault)}
+                                                        </span>
+                                                    </div>
+                                                    <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+                                                        <span className="truncate text-[10px] leading-tight text-muted-foreground">{item.secondaryLabel}</span>
+                                                        <span className="shrink-0 font-mono text-[10px] leading-tight text-muted-foreground/80">{shortCommitSha(item.sha)}</span>
+                                                    </div>
                                                 </div>
                                             </DropdownMenuItem>
-                                        );
-                                    })
-                                ) : (
-                                    <DropdownMenuItem disabled className="min-h-7 rounded-md px-1.5 py-1 text-xs text-muted-foreground">
-                                        No descendant commits available
-                                    </DropdownMenuItem>
-                                )}
+                                        ))
+                                    ) : (
+                                        <DropdownMenuItem disabled className="min-h-10 rounded-lg px-2 py-1.5 text-xs text-muted-foreground">
+                                            {isBaseCommitChoicesLoading ? 'Loading code bases...' : 'No matching code base'}
+                                        </DropdownMenuItem>
+                                    )}
+                                </div>
                             </DropdownMenuContent>
                         </DropdownMenu>
 
@@ -5345,7 +5538,7 @@ export function ChatInput({
                     {/* Left Actions */}
                     <div className="flex min-w-0 items-center gap-1.5">
                         {/* Model Selector - Modern chip style */}
-                        <Popover open={isAgentPickerOpen} onOpenChange={setIsAgentPickerOpen}>
+                        <Popover open={isAgentPickerOpen} onOpenChange={handleAgentPickerOpenChange}>
                             <PopoverTrigger asChild>
                                 <button
                                     type="button"

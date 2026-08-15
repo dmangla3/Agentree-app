@@ -78,6 +78,10 @@ const EDGE_LEGEND = [
 export type GraphEdgeLegendId = typeof EDGE_LEGEND[number]['id'];
 export type GraphNodeSectionId = 'conversation' | 'commits';
 
+export const getPreviewEdgeTypeForLegendHover = (edgeTypeId: GraphEdgeLegendId): GraphEdgeLegendId | null => (
+  edgeTypeId === 'context-path' || edgeTypeId === 'git-parent' ? edgeTypeId : null
+);
+
 const NODE_SECTION_LEGEND: Array<{
   id: GraphNodeSectionId;
   label: string;
@@ -214,6 +218,10 @@ export function GraphCanvasIndexPanel({
                           className="rounded px-0.5 py-0.5 hover:bg-muted/50 dark:hover:bg-slate-800/50 transition-colors outline-none focus-visible:bg-muted/60 dark:focus-visible:bg-slate-800/60"
                           onClick={() => {
                             if (!item.toggleable) onPreviewEdgeType(item.id);
+                          }}
+                          onMouseEnter={() => {
+                            const previewEdgeType = getPreviewEdgeTypeForLegendHover(item.id);
+                            if (previewEdgeType) onPreviewEdgeType(previewEdgeType);
                           }}
                           onKeyDown={(event) => {
                             if (event.key === 'Enter' || event.key === ' ') {

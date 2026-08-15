@@ -79,13 +79,23 @@ pub fn start_mcp_server(_app_handle: AppHandle) {
 
     tauri::async_runtime::spawn(async move {
         crate::app_log!("[MCP] Starting MCP server on http://{}:{}", bind_addr, port);
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .expect("Failed to bind MCP server");
+        let listener = match bind_mcp_listener(addr).await {
+            Ok(listener) => listener,
+            Err(err) => {
+                MCP_STARTED.store(false, Ordering::SeqCst);
+                crate::app_log!("[MCP] Failed to bind MCP server on {}: {}", addr, err);
+                return;
+            }
+        };
         if let Err(err) = axum::serve(listener, app).await {
             crate::app_log!("[MCP] Server error: {}", err);
         }
+        MCP_STARTED.store(false, Ordering::SeqCst);
     });
+}
+
+async fn bind_mcp_listener(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
+    tokio::net::TcpListener::bind(addr).await
 }
 
 #[tauri::command]
@@ -536,6 +546,28 @@ impl PendingError {
                 message: self.message,
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn bind_mcp_listener_returns_error_when_address_is_in_use() {
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener should bind");
+        let addr = occupied
+            .local_addr()
+            .expect("test listener should have a local address");
+
+        let result = bind_mcp_listener(addr).await;
+
+        assert!(
+            result.is_err(),
+            "binding an already occupied MCP address should return an error"
+        );
     }
 }
 

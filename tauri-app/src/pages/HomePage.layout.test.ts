@@ -24,12 +24,12 @@ describe('HomePage graph/chat split layout', () => {
     expect(source).toContain('PanelRightOpen');
   });
 
-  it('keeps the visible divider thin so graph header controls remain unobstructed', () => {
+  it('keeps the visible divider thin and positions the chat toggle on the left of the divider', () => {
     const source = readHomePageSource();
 
-    expect(source).toContain("isChatCollapsed ? 'h-10 w-10 translate-x-2'");
+    expect(source).toContain("isChatCollapsed ? 'h-10 w-10 -translate-x-2'");
     expect(source).toContain("isChatCollapsed ? 'h-4 w-4'");
-    expect(source).toContain("className={`app-split-handle group ${isChatCollapsed ? 'h-10 w-10 translate-x-2' : 'h-7 w-4 translate-x-2'}`}");
+    expect(source).toContain("className={`app-split-handle group ${isChatCollapsed ? 'h-10 w-10 -translate-x-2' : 'h-7 w-4 -translate-x-2'}`}");
   });
 
   it('wires panel refs and layout persistence for remembered restore widths', () => {
@@ -42,10 +42,10 @@ describe('HomePage graph/chat split layout', () => {
     expect(source).toContain('readRememberedGraphChatSplit');
   });
 
-  it('uses a compact chat restore target that sits on the chat side of the divider', () => {
+  it('uses a compact chat restore target that remains reachable on the graph side of the divider', () => {
     const source = readHomePageSource();
 
-    expect(source).toContain("isChatCollapsed ? 'h-10 w-10 translate-x-2'");
+    expect(source).toContain("isChatCollapsed ? 'h-10 w-10 -translate-x-2'");
     expect(source).toContain("isChatCollapsed ? 'h-4 w-4'");
   });
 
@@ -71,6 +71,17 @@ describe('HomePage graph/chat split layout', () => {
     expect(source).toContain('app-view-surface');
     expect(source).toContain('app-view-header');
     expect(source).toContain('Manage installed skills and workspace knowledge from the same shell.');
+  });
+
+  it('wires tracking as a primary shell view without replacing the workspace split', () => {
+    const homePageSource = readHomePageSource();
+    const sidebarSource = readSidebarSource();
+
+    expect(homePageSource).toContain("const TrackingDashboard = lazy");
+    expect(homePageSource).toContain("activeView === 'tracking'");
+    expect(homePageSource).toContain('<TrackingDashboard workspace={selectedWorkspace} />');
+    expect(sidebarSource).toContain("label: 'Tracking'");
+    expect(sidebarSource).toContain("id: 'tracking'");
   });
 
   it('keeps the navigation rail thin and icon-only', () => {

@@ -2,7 +2,7 @@
 import '../../test/setup';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { TooltipProvider } from '../../../@/components/ui/tooltip';
 import { GraphControls, type GraphControlsProps } from './GraphControls';
@@ -148,7 +148,23 @@ describe('GraphControls', () => {
     expect(screen.getByText('Current')).toBeTruthy();
     expect(screen.getByText('Active')).toBeTruthy();
     expect(screen.getByText('Old prompt experiment')).toBeTruthy();
-    expect(screen.getByText('Hidden')).toBeTruthy();
+    expect(screen.getAllByText('Hidden').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'All 2' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Visible 1' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Hidden 1' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hidden 1' }));
+    expect(screen.queryByText('Fix checkout race condition')).toBeNull();
+    expect(screen.getByText('Old prompt experiment')).toBeTruthy();
+    expect(onThreadFocus).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Visible 1' }));
+    expect(screen.getByText('Fix checkout race condition')).toBeTruthy();
+    expect(screen.queryByText('Old prompt experiment')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'All 2' }));
+    expect(screen.getByText('Fix checkout race condition')).toBeTruthy();
+    expect(screen.getByText('Old prompt experiment')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Hide all' }));
     expect(onHideAllThreads).toHaveBeenCalledTimes(1);
@@ -156,13 +172,48 @@ describe('GraphControls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Restore hidden' }));
     expect(onRestoreAllHiddenThreads).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open thread Fix checkout race condition' }));
-    expect(onThreadFocus).toHaveBeenCalledWith('thread-active');
-
     fireEvent.click(screen.getByRole('button', { name: 'Hide thread Fix checkout race condition' }));
     expect(onThreadHide).toHaveBeenCalledWith('thread-active');
 
     fireEvent.click(screen.getByRole('button', { name: 'Restore thread Old prompt experiment' }));
     expect(onThreadRestore).toHaveBeenCalledWith('thread-hidden');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open thread Fix checkout race condition' }));
+    expect(onThreadFocus).toHaveBeenCalledWith('thread-active');
+    await waitFor(() => {
+      expect(screen.queryByText('Fix checkout race condition')).toBeNull();
+    });
+  });
+
+  it('does not lock background scroll while thread dropdown is open', async () => {
+    render(
+      <TooltipProvider>
+        <GraphControls
+          {...makeProps({
+            threadItems: [
+              {
+                threadRootId: 'thread-active',
+                label: 'Fix checkout race condition',
+                turnCount: 8,
+                commitCount: 3,
+                updatedLabel: '12m ago',
+                runningCount: 0,
+                hidden: false,
+                current: true,
+              },
+            ],
+          })}
+        />
+      </TooltipProvider>
+    );
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Threads (1)' }), {
+      button: 0,
+      ctrlKey: false,
+    });
+
+    expect(await screen.findByText('Fix checkout race condition')).toBeTruthy();
+    expect(document.body.hasAttribute('data-scroll-locked')).toBe(false);
+    expect(document.body.style.pointerEvents).not.toBe('none');
   });
 });

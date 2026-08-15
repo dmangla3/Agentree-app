@@ -39,6 +39,7 @@ type BuildThreadBandOptions = {
   padding?: number;
   horizontalPadding?: number;
   trimOverlaps?: boolean;
+  equalVerticalExtent?: boolean;
 };
 
 const DEFAULT_LINE_PADDING = 220;
@@ -243,6 +244,7 @@ export const buildThreadBands = (
   const padding = options.padding ?? DEFAULT_BAND_PADDING;
   const horizontalPadding = options.horizontalPadding ?? DEFAULT_BAND_HORIZONTAL_PADDING;
   const trimOverlaps = options.trimOverlaps ?? true;
+  const equalVerticalExtent = options.equalVerticalExtent ?? false;
   const bandByThreadRootId = new Map<string, {
     threadRootId: string;
     left: number;
@@ -291,6 +293,15 @@ export const buildThreadBands = (
       const boundary = previous.right + (current.left - previous.right) / 2;
       previous.right = boundary;
       current.left = boundary;
+    }
+  }
+
+  if (equalVerticalExtent && bands.length > 1) {
+    const top = Math.min(...bands.map((band) => band.top));
+    const bottom = Math.max(...bands.map((band) => band.bottom));
+    for (const band of bands) {
+      band.top = top;
+      band.bottom = bottom;
     }
   }
 
