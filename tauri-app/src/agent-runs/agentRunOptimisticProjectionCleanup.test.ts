@@ -77,7 +77,7 @@ describe('optimistic projection cleanup', () => {
     )).toBe(false);
   });
 
-  it('keeps projections scoped to the selected workspace and same persisted node id', () => {
+  it('keeps projections tied to the selected workspace and same persisted node id', () => {
     expect(shouldClearPersistedOptimisticUserProjection(
       projection(),
       persisted({ id: 'other-user' }),

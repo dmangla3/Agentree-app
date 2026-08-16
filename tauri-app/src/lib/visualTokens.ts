@@ -16,6 +16,13 @@ export const CARD_TOKENS = {
 } as const;
 
 export const ROLE_COLORS: Record<CanonicalNodeKind, { bg: string, text: string, border: string, accent?: string, chip?: string }> = {
+  thread_origin: {
+    bg: 'bg-[hsl(var(--app-bg-muted)/0.86)]',
+    text: 'text-foreground',
+    border: 'border-[hsl(var(--app-border)/0.75)]',
+    accent: 'bg-[hsl(var(--app-muted-foreground))]',
+    chip: 'bg-[hsl(var(--app-bg-muted))] text-muted-foreground',
+  },
   user_message: {
     bg: 'bg-[hsl(var(--app-bg-muted)/0.9)]',
     text: 'text-foreground',

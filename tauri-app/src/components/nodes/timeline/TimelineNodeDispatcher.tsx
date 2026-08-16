@@ -56,7 +56,6 @@ export const TimelineNodeDispatcher = memo(({
   const sharedProps = {
     isFocused: entity?.focusMessageId === focusedMessageId,
     isSelected,
-    scopeColor: null,
     layout: 'timeline' as const,
     hoverCardContent: <NodeHoverCardContent entity={hoverEntity} projection={projection} />,
     onFocus: handleFocus,

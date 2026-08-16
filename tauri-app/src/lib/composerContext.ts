@@ -55,7 +55,6 @@ export interface ComposerContextManifest {
 export interface ComposerContextPathParams {
     parentId: string | null;
     messages: Message[];
-    scopeId?: string | null;
     contextParentId?: string | null;
     contextPolicy?: 'continue' | 'fresh';
     contextStartId?: string | null;
@@ -257,7 +256,6 @@ const formatCombinedToolContext = (events: any[]): { summary: string; content: s
 export function buildComposerContextSelection(
     parentId: string | null,
     messages: Message[],
-    _scopeId: string | null = null,
     contextParentId: string | null = null,
     contextPolicy: 'continue' | 'fresh' = 'continue',
     contextStartId: string | null = null

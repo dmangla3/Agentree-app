@@ -10,7 +10,6 @@ export const GraphUserNode = memo(({
   isFocused,
   isSelected,
   disableHoverCard,
-  scopeColor,
   detailLevel = 'full',
   heightKey,
   onMeasureHeight,
@@ -27,7 +26,6 @@ export const GraphUserNode = memo(({
       isFocused={isFocused}
       isSelected={isSelected}
       disableHoverCard={disableHoverCard}
-      scopeColor={scopeColor}
       heightKey={heightKey}
       className={cn(
         'bg-zinc-50/95 border-zinc-200/90 dark:bg-zinc-950/80 dark:border-zinc-800/90',

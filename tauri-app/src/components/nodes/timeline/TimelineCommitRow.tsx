@@ -17,7 +17,6 @@ export const TimelineCommitRow = memo(({
   entity,
   isFocused,
   isSelected,
-  scopeColor,
   showSelectionControl,
   disableHoverCard,
   hoverCardContent,
@@ -63,7 +62,6 @@ export const TimelineCommitRow = memo(({
       rowId={nodeId}
       isFocused={isFocused}
       isSelected={isSelected}
-      scopeColor={scopeColor}
       onFocus={onFocus}
       onSelect={onSelect}
       onContextMenu={onContextMenu}

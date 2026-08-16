@@ -20,11 +20,13 @@ import { trackScreenViewed } from '../lib/analytics';
 import { devLogLazy } from '../lib/appLogger';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 import { DEFAULT_GRAPH_CHAT_SPLIT, getGraphChatRestoreSplit, readRememberedGraphChatSplit, rememberGraphChatSplit } from '../lib/graphChatSplitLayout';
+import { resolveWorkspaceRouteState } from '../lib/workspaceRouteState';
 import { PanelRightClose, PanelRightOpen, X } from 'lucide-react';
 
 const AdvancedSearchPanel = lazy(() => import('../components/AdvancedSearchPanel').then((module) => ({ default: module.AdvancedSearchPanel })));
 const ChatInterface = lazy(() => import('../components/ChatInterface').then((module) => ({ default: module.ChatInterface })));
 const FirstRunExperience = lazy(() => import('../components/onboarding/FirstRunExperience').then((module) => ({ default: module.FirstRunExperience })));
+const FlowsPanel = lazy(() => import('../components/flows/FlowsPanel').then((module) => ({ default: module.FlowsPanel })));
 const GraphView = lazy(() => import('../components/GraphView').then((module) => ({ default: module.GraphView })));
 const KnowledgeBase = lazy(() => import('../components/KnowledgeBase/KnowledgeBase').then((module) => ({ default: module.KnowledgeBase })));
 const MergePanel = lazy(() => import('../components/MergePanel').then((module) => ({ default: module.MergePanel })));
@@ -64,7 +66,7 @@ export function HomePage() {
   const mergeTabAttentionNonce = useIntegrationStore((state) => state.mergeTabAttentionNonce);
 
   const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
-  const [activeView, setActiveView] = useState<'chat' | 'tracking' | 'knowledge' | 'skills'>('chat');
+  const [activeView, setActiveView] = useState<'chat' | 'flows' | 'tracking' | 'knowledge' | 'skills'>('chat');
   const [mergeTabAttentionActive, setMergeTabAttentionActive] = useState(false);
   const mergeSourceCount = mergeSession?.sources.length ?? 0;
   const mergeTabRunIndicator = getMergeTabRunIndicator(mergeSession);
@@ -92,6 +94,17 @@ export function HomePage() {
     if (!workspaces.length || !selectedWorkspaceId) return null;
     return workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null;
   }, [workspaces, selectedWorkspaceId]);
+  const routeState = useMemo(() => resolveWorkspaceRouteState({
+    workspaceIdParam: workspaceId,
+    selectedWorkspaceId,
+    workspaces,
+    isLoadingWorkspaces,
+  }), [isLoadingWorkspaces, selectedWorkspaceId, workspaceId, workspaces]);
+  const canOpenSelectedWorkspace = Boolean(
+    selectedWorkspaceId &&
+    selectedWorkspace &&
+    (!workspaceId || workspaceId === selectedWorkspaceId)
+  );
 
   useEffect(() => {
     if (mergeTabAttentionNonce <= 0) return;
@@ -111,35 +124,35 @@ export function HomePage() {
 
   // Handle deep linking from URL
   useEffect(() => {
-    if (workspaceId) {
-      devLogLazy(() => [`[HomePage] URL has workspaceId: ${workspaceId}, messageId: ${messageId}`]);
-      selectWorkspace(workspaceId, messageId);
-      setActiveView('chat');
+    if (routeState.type === 'wait' || routeState.type === 'none') {
+      return;
     }
-  }, [workspaceId, messageId, selectWorkspace]);
+
+    if (routeState.type === 'select') {
+      devLogLazy(() => [`[HomePage] URL has workspaceId: ${routeState.workspaceId}, messageId: ${messageId}`]);
+      selectWorkspace(routeState.workspaceId, messageId);
+      setActiveView('chat');
+      return;
+    }
+
+    if (routeState.type === 'redirect') {
+      selectAndNavigateWorkspace(routeState.workspaceId, null, { replace: true });
+      setActiveView('chat');
+      return;
+    }
+
+    if (routeState.type === 'clear') {
+      clearSelectedWorkspace();
+      if (workspaceId) {
+        navigate('/', { replace: true });
+      }
+    }
+  }, [clearSelectedWorkspace, messageId, navigate, routeState, selectAndNavigateWorkspace, selectWorkspace, workspaceId]);
 
   useEffect(() => {
     if (!user || hasCompletedOnboarding || workspaces.length === 0) return;
     markCompletedOnboarding(user.id, selectedWorkspaceId ?? workspaces[0]?.id ?? null);
   }, [hasCompletedOnboarding, markCompletedOnboarding, selectedWorkspaceId, user, workspaces]);
-
-  useEffect(() => {
-    if (workspaceId || selectedWorkspaceId || workspaces.length === 0) return;
-    selectAndNavigateWorkspace(workspaces[0].id, null, { replace: true });
-  }, [selectedWorkspaceId, selectAndNavigateWorkspace, workspaceId, workspaces]);
-
-  useEffect(() => {
-    if (workspaceId || isLoadingWorkspaces || !selectedWorkspaceId) return;
-    const selectedWorkspaceExists = workspaces.some((workspace) => workspace.id === selectedWorkspaceId);
-    if (selectedWorkspaceExists) return;
-
-    if (workspaces.length > 0) {
-      selectAndNavigateWorkspace(workspaces[0].id, null, { replace: true });
-      return;
-    }
-
-    clearSelectedWorkspace();
-  }, [clearSelectedWorkspace, isLoadingWorkspaces, selectedWorkspaceId, selectAndNavigateWorkspace, workspaceId, workspaces]);
 
   // Keyboard shortcuts for search
   useEffect(() => {
@@ -249,7 +262,7 @@ export function HomePage() {
 
         <main className="app-shell-stage flex h-full min-w-0 flex-1 flex-col overflow-hidden" aria-label="Agentree workspace shell">
           {activeView === 'chat' ? (
-            selectedWorkspaceId ? (
+            canOpenSelectedWorkspace ? (
               <>
                 <ResizablePanelGroup
                   direction="horizontal"
@@ -339,6 +352,25 @@ export function HomePage() {
                 </div>
               </div>
             )
+          ) : activeView === 'flows' ? (
+            <div className="app-view-surface h-full w-full p-5">
+              <div className="app-view-frame mx-auto flex h-full w-full max-w-6xl flex-col">
+                <header className="app-view-header">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[hsl(var(--app-accent))]">Workspace automation</p>
+                    <h1 className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-foreground">Flows</h1>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+                      Inspect predefined agent flows, their node templates, inputs, and execution shape.
+                    </p>
+                  </div>
+                </header>
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <Suspense fallback={<PanelLoading />}>
+                    <FlowsPanel />
+                  </Suspense>
+                </div>
+              </div>
+            </div>
           ) : activeView === 'tracking' ? (
             <div className="app-view-surface h-full w-full overflow-auto p-5">
               <Suspense fallback={<PanelLoading />}>

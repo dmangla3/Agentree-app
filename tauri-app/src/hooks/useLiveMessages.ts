@@ -299,7 +299,6 @@ export function useGraphMessages(
           message.parentId ?? '',
           message.role,
           message.agent_id ?? '',
-          message.scope_id ?? '',
           message.createdAt ?? '',
           message.status ?? '',
           message._optimisticStatus ?? '',

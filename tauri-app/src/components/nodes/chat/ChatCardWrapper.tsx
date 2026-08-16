@@ -1,13 +1,12 @@
 import React, { memo } from 'react';
 import { cn } from '../../../lib/utils';
-import { withHexAlpha, CARD_TOKENS } from '../../../lib/visualTokens';
+import { CARD_TOKENS } from '../../../lib/visualTokens';
 
 interface ChatCardWrapperProps {
   children: React.ReactNode;
   focusTargetId?: string | null;
   isFocused: boolean;
   isSelected: boolean;
-  scopeColor?: string | null;
   accentColor?: string;
   className?: string;
   style?: React.CSSProperties;
@@ -21,7 +20,6 @@ export const ChatCardWrapper = memo(({
   focusTargetId,
   isFocused,
   isSelected,
-  scopeColor,
   accentColor,
   className,
   style,
@@ -46,7 +44,6 @@ export const ChatCardWrapper = memo(({
         onContextMenu(e);
       }}
       style={{
-        borderColor: isFocused || isSelected ? undefined : scopeColor ? withHexAlpha(scopeColor, '40') : undefined,
         ...style
       }}
       className={cn(
@@ -74,11 +71,6 @@ export const ChatCardWrapper = memo(({
           "shadow-md"
         ],
 
-        // Default border
-        !isFocused && !isSelected && [
-          scopeColor && "border-opacity-40"
-        ],
-
         // Hover effect
         "hover:border-border hover:-translate-y-[1px] hover:shadow-md",
 
@@ -92,16 +84,6 @@ export const ChatCardWrapper = memo(({
 
       {/* Content wrapper */}
       <div className="relative flex min-w-0 w-full max-w-full flex-1 flex-col">
-        {/* Subtle inner glow for scoped cards */}
-        {scopeColor && (
-          <div
-            className="absolute inset-0 pointer-events-none opacity-40"
-            style={{
-              background: `radial-gradient(ellipse at top, ${withHexAlpha(scopeColor, '12')} 0%, transparent 60%)`
-            }}
-          />
-        )}
-
         {/* Content */}
         <div className="relative flex min-w-0 w-full max-w-full flex-1 flex-col px-4 py-3">
           {children}

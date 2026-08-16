@@ -121,7 +121,7 @@ const commitHasKnownLoc = (commit: CommitEntity): boolean =>
   toFiniteNumber(commit.total_additions) !== null || toFiniteNumber(commit.total_deletions) !== null;
 
 const isProductivityCommit = (commit: CommitEntity): boolean =>
-  commit.source_kind !== 'external';
+  commit.source_kind === 'agent' || commit.source_kind === 'merge' || commit.source_kind === 'manual';
 
 const extractUsageObject = (message: Message): Record<string, unknown> => {
   const executionData = message.execution_data;

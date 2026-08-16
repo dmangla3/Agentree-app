@@ -4,7 +4,7 @@ import { Wrench, Layers, Zap } from 'lucide-react';
 import { TimelineRowWrapper } from './TimelineRowWrapper';
 import { SharedNodeProps } from '../../../types/nodes';
 import { cn } from '../../../lib/utils';
-import { ROLE_COLORS, withHexAlpha } from '../../../lib/visualTokens';
+import { ROLE_COLORS } from '../../../lib/visualTokens';
 import { getAgentColorClass } from '../../../lib/graphUtils';
 import { useAgents } from '../../../hooks/useAgents';
 import type { AgentStatus } from '@shared/agentStatus';
@@ -100,7 +100,6 @@ export const TimelineAssistantRow = memo(({
   entity,
   isFocused,
   isSelected,
-  scopeColor,
   showSelectionControl,
   disableHoverCard,
   hoverCardContent,
@@ -181,16 +180,12 @@ export const TimelineAssistantRow = memo(({
       messageId={messageId}
       isFocused={isFocused}
       isSelected={isSelected}
-      scopeColor={scopeColor}
       onFocus={onFocus}
       onSelect={onSelect}
       onContextMenu={onContextMenu}
       showSelectionControl={showSelectionControl}
       disableHoverCard={disableHoverCard}
       hoverCardContent={hoverCardContent}
-      style={{
-        backgroundColor: scopeColor ? withHexAlpha(scopeColor, '15') : undefined,
-      }}
       className={cn(
         ROLE_COLORS.assistant_message.bg,
         ROLE_COLORS.assistant_message.border,

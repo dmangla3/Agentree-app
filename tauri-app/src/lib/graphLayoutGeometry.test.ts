@@ -510,7 +510,7 @@ const buildMappedGraph = (
     hasNodeTypeFilter: boolean;
     keepAncestors: boolean;
     keepDescendants: boolean;
-    scopedCommitFiltering: boolean;
+    constrainedCommitFiltering: boolean;
     pinnedCommitShas?: Set<string>;
   },
   hiddenThreadRootIds: Set<string> = new Set(),
@@ -546,12 +546,8 @@ const buildMappedGraph = (
     undefined,
     undefined,
     undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
     visibleNodeSections,
-    filterState?.scopedCommitFiltering,
+    filterState?.constrainedCommitFiltering,
     filterState?.pinnedCommitShas,
     hiddenThreadRootIds,
   );
@@ -681,6 +677,101 @@ const semanticEdgeKeys = (edges: ReturnType<typeof getLayoutedElements>['edges']
 );
 
 describe('graph layout geometry QA', () => {
+  it('renders one virtual thread origin for sibling root prompts with the same origin id', () => {
+    const messages = [
+      makeMessage({
+        id: 'legacy-workspace-origin',
+        role: 'assistant',
+        parentId: null,
+        content: 'Welcome! How can I help you explore your ideas today?',
+        status: 'completed',
+      }, 0),
+      makeMessage({
+        id: 'user-codex',
+        role: 'user',
+        parentId: null,
+        content: 'Compare two implementations.',
+        execution_data: { meta: { thread_origin_id: 'thread-origin-1' } },
+      }, 1),
+      makeMessage({
+        id: 'assistant-codex',
+        role: 'assistant',
+        parentId: 'user-codex',
+        content: 'Codex implementation.',
+        status: 'completed',
+      }, 2),
+      makeMessage({
+        id: 'user-claude',
+        role: 'user',
+        parentId: null,
+        content: 'Compare two implementations.',
+        execution_data: { meta: { thread_origin_id: 'thread-origin-1' } },
+      }, 3),
+      makeMessage({
+        id: 'assistant-claude',
+        role: 'assistant',
+        parentId: 'user-claude',
+        content: 'Claude implementation.',
+        status: 'completed',
+      }, 4),
+    ];
+
+    const mapped = buildMappedGraph(messages, 'assistant-codex');
+
+    expect(mapped.nodes.some((node) => node.id === 'legacy-workspace-origin')).toBe(false);
+    expect(mapped.nodes.filter((node) => node.type === 'thread_origin').map((node) => node.id)).toEqual([
+      'thread-origin:thread-origin-1',
+    ]);
+    expect(mapped.edges.some((edge) => edge.source === 'thread-origin:thread-origin-1' && edge.target === 'user-codex')).toBe(true);
+    expect(mapped.edges.some((edge) => edge.source === 'thread-origin:thread-origin-1' && edge.target === 'user-claude')).toBe(true);
+
+    const layouted = getLayoutedElements(mapped.nodes, mapped.edges);
+    const threadOrigin = getNode(layouted.nodes, 'thread-origin:thread-origin-1');
+    const codexUser = getNode(layouted.nodes, 'user-codex');
+    const claudeUser = getNode(layouted.nodes, 'user-claude');
+
+    expect(codexUser.position.y).toBeGreaterThan(threadOrigin.position.y);
+    expect(claudeUser.position.y).toBeGreaterThan(threadOrigin.position.y);
+  });
+
+  it('places the first imported batch beside a virtual thread origin', () => {
+    const messages = [
+      makeMessage({
+        id: 'user-root',
+        role: 'user',
+        parentId: null,
+        content: 'Start a metadata-backed thread.',
+        execution_data: { meta: { thread_origin_id: 'thread-origin-1' } },
+      }, 1),
+      makeMessage({
+        id: 'assistant-root',
+        role: 'assistant',
+        parentId: 'user-root',
+        content: 'Thread reply.',
+        status: 'completed',
+      }, 2),
+    ];
+    const mapped = buildMappedGraph(messages, 'assistant-root', buildCanonicalImportedCommitChain());
+    const group = mapped.nodes.find((node) => node.type === 'layout_derived_commit_group');
+    expect(group).toBeTruthy();
+
+    [
+      { name: 'dagre', layoutFn: getLayoutedElements },
+      { name: 'lane', layoutFn: getLaneLayoutedElements },
+      { name: 'tidy', layoutFn: getTidyTreeLayoutedElements },
+      { name: 'sugiyama', layoutFn: getSugiyamaLayoutedElements },
+    ].forEach(({ name, layoutFn }) => {
+      const layouted = layoutFn(mapped.nodes as any, mapped.edges as any);
+      const threadOrigin = getNode(layouted.nodes, 'thread-origin:thread-origin-1');
+      const importedBatch = getNode(layouted.nodes, group!.id);
+      const threadOriginRight = threadOrigin.position.x + numberStyle(threadOrigin.style?.width);
+
+      expect(importedBatch.position.x, String(name)).toBeGreaterThan(threadOrigin.position.x);
+      expect(importedBatch.position.x - threadOriginRight, String(name)).toBeLessThanOrEqual(8);
+      expect(Math.abs(importedBatch.position.y - threadOrigin.position.y), String(name)).toBeLessThanOrEqual(8);
+    });
+  });
+
   it('keeps a generated commit as a compact sidecar in the default tidy layout', () => {
     const mapped = buildMappedGraph(buildTurnWithGeneratedCommit());
     const layouted = getTidyTreeLayoutedElements(mapped.nodes, mapped.edges);
@@ -981,7 +1072,7 @@ describe('graph layout geometry QA', () => {
         hasNodeTypeFilter: true,
         keepAncestors: false,
         keepDescendants: false,
-        scopedCommitFiltering: true,
+        constrainedCommitFiltering: true,
       },
     );
 
@@ -1014,7 +1105,7 @@ describe('graph layout geometry QA', () => {
         hasNodeTypeFilter: true,
         keepAncestors: false,
         keepDescendants: false,
-        scopedCommitFiltering: true,
+        constrainedCommitFiltering: true,
         pinnedCommitShas: new Set(['imported0002']),
       },
     );

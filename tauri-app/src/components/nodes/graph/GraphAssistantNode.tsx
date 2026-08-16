@@ -3,7 +3,6 @@ import { Bot, GitCommitHorizontal, Wrench, Zap } from 'lucide-react';
 import { GraphNodeWrapper } from './GraphNodeWrapper';
 import { SharedNodeProps } from '../../../types/nodes';
 import { cn } from '../../../lib/utils';
-import { withHexAlpha } from '../../../lib/visualTokens';
 import type { AgentStatus } from '@shared/agentStatus';
 import { getAgentVisualState } from '../../../lib/agentStateUI';
 import { useRunStatusStore } from '../../../stores/runStatusStore';
@@ -33,7 +32,6 @@ export const GraphAssistantNode = memo(({
   isFocused,
   isSelected,
   disableHoverCard,
-  scopeColor,
   detailLevel = 'full',
   heightKey,
   onMeasureHeight,
@@ -57,7 +55,6 @@ export const GraphAssistantNode = memo(({
       isFocused={isFocused}
       isSelected={isSelected}
       disableHoverCard={disableHoverCard}
-      scopeColor={null} // We handle scope color internally for Assistant nodes
       heightKey={heightKey}
       className={cn(
         'bg-white/95 border-zinc-200/95 dark:bg-zinc-950/90 dark:border-zinc-800/95',
@@ -66,7 +63,6 @@ export const GraphAssistantNode = memo(({
       style={{
         width: 200,
         height: 112,
-        backgroundColor: scopeColor ? withHexAlpha(scopeColor, '10') : undefined,
       }}
       onMeasureHeight={onMeasureHeight}
       hoverCardContent={hoverCardContent}
@@ -74,13 +70,6 @@ export const GraphAssistantNode = memo(({
       onSelect={onSelect}
       onContextMenu={onContextMenu}
     >
-      {scopeColor && (
-        <div
-          className="absolute left-0 top-0 bottom-0 w-1 z-10"
-          style={{ backgroundColor: scopeColor }}
-        />
-      )}
-
       {entity.commitCount !== undefined && entity.commitCount > 0 && (
         <div className="absolute right-[-3px] top-1/2 z-10 h-2 w-2 -translate-y-1/2 rounded-full border border-white bg-emerald-500 dark:border-zinc-950" />
       )}

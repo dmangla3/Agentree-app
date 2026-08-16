@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { Message, Summary, AttachmentMetadata, Scope, CommitEntity, useWorkspaceStore } from '../stores/workspaceStore';
+import { Message, Summary, AttachmentMetadata, CommitEntity, useWorkspaceStore } from '../stores/workspaceStore';
 import axios from 'axios';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
@@ -10,11 +10,6 @@ import { localNodeKeys, parseLocalNode } from './useLocalNodes';
 import { applyLocalNodeMessages } from './useLiveMessages';
 import { getAccessToken } from '../lib/authSession';
 import { useRunStatusStore } from '../stores/runStatusStore';
-
-interface ScopesResponse {
-    scopes: Scope[];
-    activeScopeId: string | null;
-}
 
 const patchMessageInCache = (
     queryClient: ReturnType<typeof useQueryClient>,
@@ -303,15 +298,10 @@ export const useSendMessage = () => {
             role,
             contextMode,
             contextPolicy,
-            scopeId,
-            activeScopeId,
-            scopeMode,
             contextParentId,
-            scopeParentId,
-            newScopeName,
-            newScopeDescription,
             baseCommitSha,
             baseSelectedFromNodeId,
+            threadOriginId,
             signal,
         }: {
             workspaceId: string;
@@ -327,15 +317,10 @@ export const useSendMessage = () => {
             role?: 'user' | 'assistant' | 'system';
             contextMode?: 'active' | 'none';
             contextPolicy?: 'continue' | 'fresh' | null;
-            scopeId?: string | null;
-            activeScopeId?: string | null;
-            scopeMode?: 'inherit' | 'active' | 'existing' | 'new' | null;
             contextParentId?: string | null;
-            scopeParentId?: string | null;
-            newScopeName?: string | null;
-            newScopeDescription?: string | null;
             baseCommitSha?: string | null;
             baseSelectedFromNodeId?: string | null;
+            threadOriginId?: string | null;
             perfFlowId?: string | null;
             signal?: AbortSignal;
         }) => {
@@ -351,15 +336,10 @@ export const useSendMessage = () => {
                 agentProvider,
                 llmModel: llmModel ?? legacyAgentModel ?? null,
                 role,
-                scopeId,
-                activeScopeId,
-                scopeMode,
                 contextParentId,
-                scopeParentId,
-                newScopeName,
-                newScopeDescription,
                 baseCommitSha,
                 baseSelectedFromNodeId,
+                threadOriginId,
             }, { signal });
             return response.data;
         },
@@ -392,59 +372,6 @@ export const useSendMessage = () => {
                         (current) => mergeServerMessages(current, createdMessages)
                     );
                 }
-            }
-
-            if (
-                variables.scopeMode === 'new' &&
-                variables.newScopeName?.trim() &&
-                data?.userMessage?.scope_id
-            ) {
-                const now = data.userMessage.createdAt || new Date().toISOString();
-                queryClient.setQueryData<ScopesResponse>(
-                    ['scopes', variables.workspaceId],
-                    (current) => {
-                        const existing = current?.scopes ?? [];
-                        const scopeId = data.userMessage.scope_id as string;
-
-                        if (existing.some((scope) => scope.id === scopeId)) {
-                            return {
-                                scopes: existing,
-                                activeScopeId: scopeId,
-                            };
-                        }
-
-                        return {
-                            scopes: [
-                                {
-                                    id: scopeId,
-                                    workspace_id: variables.workspaceId,
-                                    name: variables.newScopeName!.trim(),
-                                    description: variables.newScopeDescription?.trim() || null,
-                                    color: null,
-                                    status: 'active',
-                                    base_node_id: variables.parentId ?? null,
-                                    created_by_user_id: null,
-                                    archivedAt: null,
-                                    createdAt: now,
-                                    updatedAt: now,
-                                },
-                                ...existing,
-                            ],
-                            activeScopeId: scopeId,
-                        };
-                    }
-                );
-            }
-
-            if (
-                variables.scopeMode === 'new' &&
-                variables.newScopeName?.trim() &&
-                data?.userMessage?.scope_id
-            ) {
-                queryClient.setQueryData<ScopesResponse>(
-                    ['scopes', variables.workspaceId],
-                    (current) => current ?? { scopes: [], activeScopeId: data.userMessage.scope_id as string }
-                );
             }
 
             if (typeof data?.updatedWorkspaceName === 'string' && data.updatedWorkspaceName.trim()) {

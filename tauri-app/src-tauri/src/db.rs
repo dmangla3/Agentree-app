@@ -521,7 +521,6 @@ impl TelemetryDb {
                 output_commit_sha TEXT,
                 base_selected_from_node_id TEXT,
                 git_branch_name TEXT,
-                scope_id TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 deleted_at TEXT,
@@ -653,7 +652,7 @@ impl TelemetryDb {
             INSERT OR IGNORE INTO local_nodes (
                 id, workspace_id, parent_id, role, content, status,
                 execution_data_json, payload_json, prompt_tokens, completion_tokens, total_tokens,
-                base_commit_sha, output_commit_sha, base_selected_from_node_id, git_branch_name, scope_id, created_at, updated_at,
+                base_commit_sha, output_commit_sha, base_selected_from_node_id, git_branch_name, created_at, updated_at,
                 deleted_at, local_updated_at, server_ack_at
             )
             SELECT
@@ -672,7 +671,6 @@ impl TelemetryDb {
                 json_extract(payload, '$.output_commit_sha'),
                 json_extract(payload, '$.base_selected_from_node_id'),
                 json_extract(payload, '$.git_branch_name'),
-                json_extract(payload, '$.scope_id'),
                 COALESCE(json_extract(payload, '$.createdAt'), datetime(finalized_at, 'unixepoch')),
                 COALESCE(json_extract(payload, '$.updatedAt'), datetime(finalized_at, 'unixepoch')),
                 NULL,
@@ -1550,9 +1548,6 @@ impl TelemetryDb {
         let git_branch_name = payload_value
             .get("git_branch_name")
             .and_then(|value| value.as_str());
-        let scope_id = payload_value
-            .get("scope_id")
-            .and_then(|value| value.as_str());
         let created_at = payload_value
             .get("createdAt")
             .and_then(|value| value.as_str())
@@ -1568,10 +1563,10 @@ impl TelemetryDb {
             INSERT INTO local_nodes (
                 id, workspace_id, parent_id, role, content, status,
                 execution_data_json, payload_json, prompt_tokens, completion_tokens, total_tokens,
-                base_commit_sha, output_commit_sha, base_selected_from_node_id, git_branch_name, scope_id, created_at, updated_at,
+                base_commit_sha, output_commit_sha, base_selected_from_node_id, git_branch_name, created_at, updated_at,
                 deleted_at, local_updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, ?19)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, NULL, ?18)
             ON CONFLICT(id) DO UPDATE SET
                 workspace_id = excluded.workspace_id,
                 parent_id = excluded.parent_id,
@@ -1587,7 +1582,6 @@ impl TelemetryDb {
                 output_commit_sha = COALESCE(excluded.output_commit_sha, local_nodes.output_commit_sha),
                 base_selected_from_node_id = excluded.base_selected_from_node_id,
                 git_branch_name = excluded.git_branch_name,
-                scope_id = excluded.scope_id,
                 updated_at = excluded.updated_at,
                 deleted_at = local_nodes.deleted_at,
                 local_updated_at = excluded.local_updated_at
@@ -1608,7 +1602,6 @@ impl TelemetryDb {
                 output_commit_sha,
                 base_selected_from_node_id,
                 git_branch_name,
-                scope_id,
                 created_at,
                 updated_at,
                 now
@@ -1716,9 +1709,6 @@ impl TelemetryDb {
             let git_branch_name = payload_value
                 .get("git_branch_name")
                 .and_then(|value| value.as_str());
-            let scope_id = payload_value
-                .get("scope_id")
-                .and_then(|value| value.as_str());
             let created_at = payload_value
                 .get("createdAt")
                 .and_then(|value| value.as_str())
@@ -1734,10 +1724,10 @@ impl TelemetryDb {
                 INSERT INTO local_nodes (
                     id, workspace_id, parent_id, role, content, status,
                     execution_data_json, payload_json, prompt_tokens, completion_tokens, total_tokens,
-                    base_commit_sha, output_commit_sha, base_selected_from_node_id, git_branch_name, scope_id, created_at, updated_at,
+                    base_commit_sha, output_commit_sha, base_selected_from_node_id, git_branch_name, created_at, updated_at,
                     deleted_at, local_updated_at, server_ack_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, ?19, ?20)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, NULL, ?18, ?19)
                 ON CONFLICT(id) DO NOTHING
                 "#,
                 params![
@@ -1756,7 +1746,6 @@ impl TelemetryDb {
                     output_commit_sha,
                     base_selected_from_node_id,
                     git_branch_name,
-                    scope_id,
                     created_at,
                     updated_at,
                     now,
@@ -1815,7 +1804,6 @@ impl TelemetryDb {
                                 'base_commit_sha', n.base_commit_sha,
                                 'base_selected_from_node_id', n.base_selected_from_node_id,
                                 'git_branch_name', n.git_branch_name,
-                                'scope_id', n.scope_id,
                                 'createdAt', n.created_at,
                                 'updatedAt', n.updated_at
                             )),
@@ -1840,7 +1828,6 @@ impl TelemetryDb {
                         'output_commit_sha', n.output_commit_sha,
                         'base_selected_from_node_id', n.base_selected_from_node_id,
                         'git_branch_name', n.git_branch_name,
-                        'scope_id', n.scope_id,
                         'createdAt', n.created_at,
                         'updatedAt', n.updated_at
                         ))
@@ -3208,6 +3195,10 @@ fn sync_event(
     }
 }
 
+fn is_permanent_local_sync_error(error: &str) -> bool {
+    error.starts_with("node.update_terminal failed with status 404 Not Found")
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn process_local_sync_events(
@@ -3269,16 +3260,17 @@ pub fn process_local_sync_events(
                 );
             }
             Err(err) => {
-                if err.starts_with("No sync handler") {
+                if err.starts_with("No sync handler") || is_permanent_local_sync_error(&err) {
                     let _ = telemetry.mark_local_sync_event_dead(&event.id, &err);
                 } else {
                     let _ = telemetry.mark_local_sync_event_retry(&event.id, &err);
                 }
                 crate::app_log!(
-                    "[LOCAL_SYNC] event={} entity_type={} entity_id={} status=retry err={}",
+                    "[LOCAL_SYNC] event={} entity_type={} entity_id={} status={} err={}",
                     event.event_type,
                     event.entity_type,
                     event.entity_id,
+                    if is_permanent_local_sync_error(&err) { "dead" } else { "retry" },
                     err
                 );
             }
@@ -4343,5 +4335,19 @@ mod tests {
             .list_local_deleted_workspace_ids()
             .expect("deleted workspaces");
         assert_eq!(deleted, vec!["workspace-1".to_string()]);
+    }
+
+    #[test]
+    fn terminal_sync_workspace_not_found_is_permanent() {
+        assert!(is_permanent_local_sync_error(
+            "node.update_terminal failed with status 404 Not Found"
+        ));
+    }
+
+    #[test]
+    fn transient_terminal_sync_error_is_retryable() {
+        assert!(!is_permanent_local_sync_error(
+            "node.update_terminal failed with status 500 Internal Server Error"
+        ));
     }
 }

@@ -12,7 +12,6 @@ interface TimelineRowWrapperProps {
   isSelected: boolean;
   disableHoverCard?: boolean;
   hoverCardContent?: React.ReactNode;
-  scopeColor?: string | null;
   onFocus: () => void;
   onSelect: (multi: boolean) => void;
   onContextMenu: (e: React.MouseEvent) => void;
@@ -29,7 +28,6 @@ export const TimelineRowWrapper = memo(({
   isSelected,
   disableHoverCard,
   hoverCardContent,
-  scopeColor,
   onFocus,
   onSelect,
   onContextMenu,
@@ -55,7 +53,6 @@ export const TimelineRowWrapper = memo(({
         onContextMenu(e);
       }}
       style={{
-        borderLeftColor: isFocused ? undefined : scopeColor || undefined,
         ...style
       }}
       className={cn(

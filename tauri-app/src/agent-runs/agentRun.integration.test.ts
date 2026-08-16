@@ -111,7 +111,6 @@ describe('agentRun projection integration', () => {
       role: 'user',
       content: 'hello',
       status: 'pending',
-      scope_id: 'scope-1',
       path_ids: ['root-1', 'parent-1', 'optimistic-user'],
       depth: 2,
       _optimistic: true,
@@ -127,7 +126,6 @@ describe('agentRun projection integration', () => {
       parentId: 'parent-1',
       role: 'user',
       content: 'hello',
-      scope_id: 'scope-1',
       path_ids: ['root-1', 'parent-1', 'optimistic-user'],
       depth: 2,
       _optimistic: true,
@@ -217,6 +215,49 @@ describe('agentRun projection integration', () => {
 
     expect(useAgentRunProjectionStore.getState().projectionsById['assistant-1']?.content).toBe('latest');
     agentRunManager.unwatch('assistant-1', 'hover');
+  });
+
+  it('notifies when projection watchers transition between zero and nonzero', () => {
+    const events: Array<{ nodeId: string; hasWatchers: boolean; reasons: string[] }> = [];
+    const unsubscribe = agentRunManager.subscribeProjectionWatchers((event) => {
+      events.push({
+        nodeId: event.nodeId,
+        hasWatchers: event.hasWatchers,
+        reasons: event.reasons,
+      });
+    });
+
+    agentRunManager.watch('assistant-1', 'hover');
+    agentRunManager.watch('assistant-1', 'chat-focus');
+    agentRunManager.unwatch('assistant-1', 'hover');
+    agentRunManager.unwatch('assistant-1', 'chat-focus');
+    unsubscribe();
+    agentRunManager.watch('assistant-1', 'hover');
+
+    expect(events).toEqual([
+      { nodeId: 'assistant-1', hasWatchers: true, reasons: ['hover'] },
+      { nodeId: 'assistant-1', hasWatchers: false, reasons: [] },
+    ]);
+  });
+
+  it('exposes the current projection watcher snapshot', () => {
+    agentRunManager.watch('assistant-1', 'hover');
+    agentRunManager.watch('assistant-1', 'chat-focus');
+
+    expect(agentRunManager.projectionWatcherSnapshot('assistant-1')).toEqual({
+      nodeId: 'assistant-1',
+      hasWatchers: true,
+      reasons: ['chat-focus', 'hover'],
+    });
+
+    agentRunManager.unwatch('assistant-1', 'hover');
+    agentRunManager.unwatch('assistant-1', 'chat-focus');
+
+    expect(agentRunManager.projectionWatcherSnapshot('assistant-1')).toEqual({
+      nodeId: 'assistant-1',
+      hasWatchers: false,
+      reasons: [],
+    });
   });
 
   it('keeps unwatched background runs status-only until promoted', () => {

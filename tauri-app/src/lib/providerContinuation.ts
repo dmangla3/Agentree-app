@@ -144,7 +144,6 @@ export function resolveProviderContinuation(params: {
 
 export function resolveProviderContextRouting(params: {
     continuation: ProviderContinuationDecision | null;
-    scopeMode: string | null | undefined;
     contextMode: 'active' | 'none' | null | undefined;
     contextPolicy?: 'continue' | 'fresh' | null | undefined;
     hasSelectedAgentreeContext: boolean;

@@ -19,8 +19,6 @@ export interface SharedNodeProps {
   detailLevel?: GraphNodeDetailLevel;
   disableHoverCard?: boolean;
   showSelectionControl?: boolean;
-  scopeColor?: string | null;
-  scopeName?: string | null;
   layout: ViewLayout;
   heightKey?: string;
   onMeasureHeight?: (id: string, height: number) => void;

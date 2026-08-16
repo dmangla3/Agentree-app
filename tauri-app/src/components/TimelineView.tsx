@@ -5,7 +5,7 @@ import type { WorkspaceProjection, ProjectedTimelineItem } from '../domain/works
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { Clock } from 'lucide-react';
 import { format, isToday, isYesterday, parseISO } from 'date-fns';
-import { ScopedNodeContextMenu, type ScopedContextMenuState } from './ScopedNodeContextMenu';
+import { NodeContextMenu, type NodeContextMenuState } from './NodeContextMenu';
 
 interface TimelineViewProps {
   projection: WorkspaceProjection;
@@ -99,7 +99,7 @@ export const TimelineView = memo(({
   onRequestDeleteMessages,
   onAddCommitsToMergePanel,
 }: TimelineViewProps) => {
-  const [contextMenu, setContextMenu] = useState<ScopedContextMenuState | null>(null);
+  const [contextMenu, setContextMenu] = useState<NodeContextMenuState | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
   const userScrollIntentUntilRef = useRef(0);
@@ -149,11 +149,11 @@ export const TimelineView = memo(({
   }, [clearSelectedMessageIds]);
 
   const handleContextMenu = useCallback((id: string, e: React.MouseEvent) => {
-    const scopedIds = selectedNodeIds.has(id) ? Array.from(selectedNodeIds) : [id];
+    const targetIds = selectedNodeIds.has(id) ? Array.from(selectedNodeIds) : [id];
     setContextMenu({
       x: e.clientX,
       y: e.clientY,
-      scopedIds,
+      targetIds,
     });
   }, [selectedNodeIds]);
 
@@ -312,7 +312,7 @@ export const TimelineView = memo(({
           ))}
         </div>
       </ScrollArea>
-      <ScopedNodeContextMenu
+      <NodeContextMenu
         contextMenu={contextMenu}
         projection={projection}
         onClose={() => setContextMenu(null)}

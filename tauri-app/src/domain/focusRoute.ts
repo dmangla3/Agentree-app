@@ -1,8 +1,7 @@
-import type { Message, Scope } from '../stores/workspaceStore';
+import type { Message } from '../stores/workspaceStore';
 import { getGraphParentId } from '../lib/graph/lineage';
 
-export interface ScopedFocusRoute {
-  scopeId: string | null;
+export interface FocusRoute {
   baseNodeId: string | null;
   messageIds: string[];
   edges: string[];
@@ -13,8 +12,7 @@ export interface RenderedFocusRoute {
   edges: string[];
 }
 
-const EMPTY_ROUTE: ScopedFocusRoute = {
-  scopeId: null,
+const EMPTY_ROUTE: FocusRoute = {
   baseNodeId: null,
   messageIds: [],
   edges: [],
@@ -34,88 +32,34 @@ const edgeIdsForRoute = (messageIds: string[]): string[] => {
   return edges;
 };
 
-const buildLegacyUnscopedFocusRoute = (
-  focusedMessage: Message,
-  messageMap: Map<string, Message>
-): ScopedFocusRoute => {
+export const buildFocusRoute = (
+  messages: Message[] | Map<string, Message>,
+  focusedMessageId: string | null
+): FocusRoute => {
+  if (!focusedMessageId) return EMPTY_ROUTE;
+
+  const messageMap = messages instanceof Map
+    ? messages
+    : new Map(messages.map((message) => [message.id, message]));
+
+  const focusedMessage = messageMap.get(focusedMessageId);
+  if (!focusedMessage || isImportedGitMessage(focusedMessage)) return EMPTY_ROUTE;
+
   const reversedRoute: string[] = [];
   const visited = new Set<string>();
-
   let currentId: string | null = focusedMessage.id;
+
   while (currentId && !visited.has(currentId)) {
     visited.add(currentId);
     const message = messageMap.get(currentId);
     if (!message) break;
-
-    const messageScopeId = message.scope_id ?? null;
-    if (messageScopeId) {
-      break;
-    }
-
     reversedRoute.push(message.id);
     currentId = getGraphParentId(message, messageMap);
   }
 
   const messageIds = reversedRoute.reverse();
   return {
-    scopeId: null,
     baseNodeId: messageIds[0] ?? null,
-    messageIds,
-    edges: edgeIdsForRoute(messageIds),
-  };
-};
-
-export const buildScopedFocusRoute = (
-  messages: Message[] | Map<string, Message>,
-  scopes: Scope[] | Map<string, Scope>,
-  focusedMessageId: string | null
-): ScopedFocusRoute => {
-  if (!focusedMessageId) return EMPTY_ROUTE;
-
-  const messageMap = messages instanceof Map
-    ? messages
-    : new Map(messages.map((message) => [message.id, message]));
-  const scopeMap = scopes instanceof Map
-    ? scopes
-    : new Map(scopes.map((scope) => [scope.id, scope]));
-
-  const focusedMessage = messageMap.get(focusedMessageId);
-  if (!focusedMessage) return EMPTY_ROUTE;
-  if (isImportedGitMessage(focusedMessage)) return EMPTY_ROUTE;
-
-  const focusedScopeId = focusedMessage.scope_id ?? null;
-  if (!focusedScopeId) {
-    return buildLegacyUnscopedFocusRoute(focusedMessage, messageMap);
-  }
-
-  const focusedScope = scopeMap.get(focusedScopeId) ?? null;
-  const baseNodeId = focusedScope?.base_node_id ?? null;
-  const reversedRoute: string[] = [];
-  const visited = new Set<string>();
-
-  let currentId: string | null = focusedMessage.id;
-  while (currentId && !visited.has(currentId)) {
-    visited.add(currentId);
-    const message = messageMap.get(currentId);
-    if (!message) break;
-
-    const isBaseBoundary = !!baseNodeId && message.id === baseNodeId;
-    const isSameScope = (message.scope_id ?? null) === focusedScopeId;
-    const isImportedConnector = isImportedGitMessage(message);
-
-    if (isBaseBoundary || isSameScope || isImportedConnector) {
-      reversedRoute.push(message.id);
-    }
-
-    if (isBaseBoundary) break;
-
-    currentId = getGraphParentId(message, messageMap);
-  }
-
-  const messageIds = reversedRoute.reverse();
-  return {
-    scopeId: focusedScopeId,
-    baseNodeId,
     messageIds,
     edges: edgeIdsForRoute(messageIds),
   };

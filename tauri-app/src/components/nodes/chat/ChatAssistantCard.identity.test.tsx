@@ -61,7 +61,6 @@ describe('ChatAssistantCard identity', () => {
         entity={makeAssistantEntity()}
         isFocused={false}
         isSelected={false}
-        scopeColor={null}
         layout="chat"
         onFocus={() => {}}
         onSelect={() => {}}

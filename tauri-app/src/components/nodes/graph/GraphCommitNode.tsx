@@ -14,7 +14,6 @@ export const GraphCommitNode = memo(({
   isSelected,
   isComposerBaseCommit,
   disableHoverCard,
-  scopeColor,
   detailLevel = 'full',
   heightKey,
   hoverCardContent,
@@ -47,7 +46,6 @@ export const GraphCommitNode = memo(({
       isSelected={isSelected}
       isComposerBaseCommit={isComposerBaseCommit}
       disableHoverCard={disableHoverCard}
-      scopeColor={scopeColor}
       heightKey={heightKey}
       className={cn(
         'bg-emerald-50/90 border-emerald-300/65 dark:bg-emerald-950/25 dark:border-emerald-800/70',

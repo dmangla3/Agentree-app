@@ -25,7 +25,7 @@ const message = (input: Partial<Message> & Pick<Message, 'id' | 'createdAt'>): M
 const commit = (input: Partial<CommitEntity> & Pick<CommitEntity, 'sha'>): CommitEntity => ({
   sha: input.sha,
   workspace_id: workspaceId,
-  source_kind: input.source_kind ?? 'agent',
+  source_kind: Object.prototype.hasOwnProperty.call(input, 'source_kind') ? input.source_kind : 'agent',
   produced_by_node_id: input.produced_by_node_id ?? null,
   committed_at: input.committed_at ?? null,
   authored_at: input.authored_at ?? null,
@@ -136,6 +136,58 @@ describe('buildTrackingDashboardMetrics', () => {
     expect(today.locAdded).toBe(30);
     expect(today.locDeleted).toBe(5);
     expect(externalRun).toMatchObject({
+      commitCount: 0,
+      locAdded: 0,
+      locDeleted: 0,
+      netLoc: 0,
+    });
+  });
+
+  it('excludes commits without a productivity source kind from calculations', () => {
+    const metrics = buildTrackingDashboardMetrics({
+      now,
+      range: '7d',
+      messages: [
+        message({
+          id: 'assistant-1',
+          createdAt: '2026-05-23T08:00:00.000Z',
+          output_commit_sha: 'unknown-commit',
+        }),
+      ],
+      commits: [
+        commit({
+          sha: 'unknown-commit',
+          source_kind: 'unknown',
+          produced_by_node_id: 'assistant-1',
+          committed_at: '2026-05-23T08:10:00.000Z',
+          files_changed_count: 4,
+          total_additions: 400,
+          total_deletions: 100,
+        }),
+        commit({
+          sha: 'missing-source-commit',
+          source_kind: null,
+          committed_at: '2026-05-23T09:10:00.000Z',
+          files_changed_count: 2,
+          total_additions: 200,
+          total_deletions: 50,
+        }),
+      ],
+    });
+
+    const today = metrics.buckets[metrics.buckets.length - 1];
+    const run = metrics.recentRuns.find((row) => row.nodeId === 'assistant-1');
+
+    expect(metrics.totals.commits).toBe(0);
+    expect(metrics.totals.externalCommits).toBe(0);
+    expect(metrics.totals.locAdded).toBe(0);
+    expect(metrics.totals.locDeleted).toBe(0);
+    expect(metrics.totals.netLoc).toBe(0);
+    expect(metrics.totals.locKnownCommits).toBe(0);
+    expect(today.commitCount).toBe(0);
+    expect(today.locAdded).toBe(0);
+    expect(today.locDeleted).toBe(0);
+    expect(run).toMatchObject({
       commitCount: 0,
       locAdded: 0,
       locDeleted: 0,

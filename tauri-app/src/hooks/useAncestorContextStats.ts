@@ -45,13 +45,11 @@ interface ContextNodeEntry {
     active: boolean;
     tokens: number;
     createdAt: string;
-    scopeId: string | null;
 }
 
 export function useAncestorContextStats(
     parentId: string | null,
-    messages: Message[],
-    _scopeId: string | null = null
+    messages: Message[]
 ) {
     return useMemo(() => {
         if (!parentId) return { active: 0, total: 0, tokens: 0, nodes: [] as ContextNodeEntry[] };
@@ -86,7 +84,6 @@ export function useAncestorContextStats(
                 active: activityById.get(message.id) === true,
                 tokens,
                 createdAt: message.createdAt,
-                scopeId: message.scope_id ?? null,
             };
         });
 
@@ -96,5 +93,5 @@ export function useAncestorContextStats(
             tokens,
             nodes,
         };
-    }, [parentId, messages, _scopeId]);
+    }, [parentId, messages]);
 }

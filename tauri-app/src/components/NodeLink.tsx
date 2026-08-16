@@ -7,7 +7,6 @@ import {
     HoverCardTrigger,
 } from '../../@/components/ui/hover-card';
 import { useMessages, useSummaries } from '../hooks/useMessages';
-import { useScopes } from '../hooks/useScopes';
 import { useWorkspaceProjection } from '../hooks/useWorkspaceProjection';
 import { NodeHoverCardContent } from './NodeHoverCardContent';
 
@@ -34,10 +33,8 @@ export const NodeLink: FC<NodeLinkProps> = ({
     // Get messages from cache (already loaded by workspace view)
     const { data: messages = [] } = useMessages(workspaceId);
     const { data: summaries = [] } = useSummaries(workspaceId);
-    const { data: scopesData } = useScopes(workspaceId);
-    const scopes = useMemo(() => scopesData?.scopes ?? [], [scopesData?.scopes]);
     const disabledSummaryIds = useMemo(() => new Set<string>(), []);
-    const projection = useWorkspaceProjection(messages, scopes, summaries, actualId ?? null, disabledSummaryIds, 'node-link-hover');
+    const projection = useWorkspaceProjection(messages, summaries, actualId ?? null, disabledSummaryIds, 'node-link-hover');
 
     const hoverEntity = useMemo(
         () => actualId ? projection.entitiesByMessageId.get(actualId) ?? null : null,

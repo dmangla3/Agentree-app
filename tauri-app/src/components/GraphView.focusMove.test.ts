@@ -154,6 +154,23 @@ describe('resolveThreadDropdownSelection', () => {
       messages,
     })).toBe('thread-a-followup');
   });
+
+  it('prefers the most recently updated thread node over the newest created user node', () => {
+    const messages = [
+      makeMessage('thread-a', 'user', null, '2026-05-19T00:00:00.000Z'),
+      {
+        ...makeMessage('assistant-running', 'assistant', 'thread-a', '2026-05-19T00:01:00.000Z'),
+        status: 'running' as const,
+        updatedAt: '2026-05-19T00:04:00.000Z',
+      },
+      makeMessage('thread-a-followup', 'user', 'assistant-running', '2026-05-19T00:03:00.000Z'),
+    ];
+
+    expect(resolveThreadDropdownSelection({
+      threadRootId: 'thread-a',
+      messages,
+    })).toBe('assistant-running');
+  });
 });
 
 describe('resolveFocusedThreadRootId', () => {

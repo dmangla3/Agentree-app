@@ -23,8 +23,6 @@ vi.mock('./ChatSummaryCard', () => ({
 
 const makeProjection = () => ({
   entitiesById: new Map<string, ProjectedNodeEntity>(),
-  scopeColorById: new Map<string, string | null>(),
-  scopeNameById: new Map<string, string>(),
 });
 
 describe('ChatNodeDispatcher', () => {

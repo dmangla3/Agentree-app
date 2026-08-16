@@ -13,25 +13,10 @@ export interface Workspace {
   repo_path?: string | null;
   git_repo_path?: string | null;
   base_commit_sha?: string | null;
-  last_active_scope_id?: string | null;
   agentArgs?: string | null;
   createdAt: string;
   updatedAt: string;
   messages?: Message[];
-}
-
-export interface Scope {
-  id: string;
-  workspace_id: string;
-  name: string;
-  description?: string | null;
-  color?: string | null;
-  status: 'active' | 'done' | 'archived';
-  base_node_id?: string | null;
-  created_by_user_id?: string | null;
-  archivedAt?: string | null;
-  createdAt: string;
-  updatedAt: string;
 }
 
 export interface CommitEntity {
@@ -188,7 +173,6 @@ export interface Message {
   base_selected_from_node_id?: string | null;
   commit?: CommitEntity | null;
   git_branch_name?: string | null;
-  scope_id?: string | null;
   branchPointers?: BranchPointer[] | null;
 }
 
@@ -244,7 +228,6 @@ interface WorkspaceState {
   composerBaseCommitOverride: ComposerBaseCommitOverrideState | null;
   lastFocusedMessageByWorkspace: Record<string, string>;
   recentFocusedMessageIdsByWorkspace: Record<string, string[]>;
-  activeScopeId: string | null;
   autoCheckoutOnAgentCommit: boolean;
   hoveredWorkspaceId: string | null;
   pendingInitialFocusId: string | null;
@@ -281,7 +264,6 @@ interface WorkspaceState {
   clearSelectedMessageIds: () => void;
   setComposerContextPreview: (preview: ComposerContextPreviewState | null) => void;
   setComposerBaseCommitOverride: (override: ComposerBaseCommitOverrideState | null) => void;
-  setActiveScopeId: (scopeId: string | null) => void;
   setAutoCheckoutOnAgentCommit: (enabled: boolean) => void;
   clearPendingInitialFocusId: () => void;
   toggleSummaryDisabled: (summaryId: string) => void;
@@ -316,7 +298,6 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       composerBaseCommitOverride: null,
       lastFocusedMessageByWorkspace: {},
       recentFocusedMessageIdsByWorkspace: {},
-      activeScopeId: null,
       autoCheckoutOnAgentCommit: false,
       hoveredWorkspaceId: null,
       pendingInitialFocusId: null,
@@ -345,7 +326,6 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           focusNonce: 0,
           composerContextPreview: null,
           composerBaseCommitOverride: null,
-          activeScopeId: null,
           activeSendFlowFocus: null,
           insights: [],
         }),
@@ -363,7 +343,6 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             focusNonce: Date.now(),
             composerContextPreview: null,
             composerBaseCommitOverride: null,
-            activeScopeId: null,
             insights: [],
           };
         }),
@@ -476,7 +455,6 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           return { composerContextPreview: preview };
         }),
       setComposerBaseCommitOverride: (override) => set({ composerBaseCommitOverride: override }),
-      setActiveScopeId: (scopeId) => set({ activeScopeId: scopeId }),
       setAutoCheckoutOnAgentCommit: (enabled) => set({ autoCheckoutOnAgentCommit: enabled }),
       clearPendingInitialFocusId: () => set({ pendingInitialFocusId: null }),
       toggleSummaryDisabled: (summaryId) =>
@@ -526,7 +504,6 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         lastFocusedMessageByWorkspace: state.lastFocusedMessageByWorkspace,
         recentFocusedMessageIdsByWorkspace: state.recentFocusedMessageIdsByWorkspace,
         focusNonce: state.focusNonce,
-        activeScopeId: state.activeScopeId,
         autoCheckoutOnAgentCommit: state.autoCheckoutOnAgentCommit,
         disabledSummaryIds: state.disabledSummaryIds,
         rightPanelTab: state.rightPanelTab,

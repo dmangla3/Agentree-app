@@ -39,4 +39,15 @@ describe('agent run prompts', () => {
     expect(result.prompt).not.toContain('Git parent commit');
     expect(result.agentreeContextInjected).toBe(true);
   });
+
+  it('keeps the dependency guard on flow prompts', () => {
+    const result = buildAgentRunPrompt({
+      mode: 'flow',
+      userPrompt: 'Review this generated implementation.',
+    });
+
+    expect(result.prompt).toContain('Dependency rule: some dependency and build directories');
+    expect(result.prompt).toContain('Review this generated implementation.');
+    expect(result.agentreeContextInjected).toBe(false);
+  });
 });

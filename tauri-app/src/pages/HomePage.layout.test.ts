@@ -84,6 +84,19 @@ describe('HomePage graph/chat split layout', () => {
     expect(sidebarSource).toContain("id: 'tracking'");
   });
 
+  it('wires flows as a primary shell view for inspecting predefined flows', () => {
+    const homePageSource = readHomePageSource();
+    const sidebarSource = readSidebarSource();
+
+    expect(homePageSource).toContain("const FlowsPanel = lazy");
+    expect(homePageSource).toContain("activeView === 'flows'");
+    expect(homePageSource).toContain('<FlowsPanel />');
+    expect(sidebarSource).toContain("label: 'Flows'");
+    expect(sidebarSource).toContain("id: 'flows'");
+    expect(sidebarSource).toContain('Workflow');
+    expect(sidebarSource).not.toContain('GitBranch');
+  });
+
   it('keeps the navigation rail thin and icon-only', () => {
     const source = readSidebarSource();
 

@@ -4,7 +4,7 @@ import { ChatCardWrapper } from './ChatCardWrapper';
 import { ChatMarkdown } from './ChatMarkdown';
 import { SharedNodeProps } from '../../../types/nodes';
 import { cn } from '../../../lib/utils';
-import { ROLE_COLORS, withHexAlpha } from '../../../lib/visualTokens';
+import { ROLE_COLORS } from '../../../lib/visualTokens';
 import { getAgentColorClass } from '../../../lib/graphUtils';
 import { useAgents } from '../../../hooks/useAgents';
 import type { AgentStatus } from '@shared/agentStatus';
@@ -392,7 +392,6 @@ export const ChatAssistantCard = memo(({
   entity,
   isFocused,
   isSelected,
-  scopeColor,
   onFocus,
   onSelect,
   onContextMenu,
@@ -511,27 +510,15 @@ export const ChatAssistantCard = memo(({
       focusTargetId={entity.focusMessageId}
       isFocused={isFocused}
       isSelected={isSelected}
-      scopeColor={null} // Handled internally for Assistant nodes
       accentColor={ROLE_COLORS.assistant_message.accent}
       onFocus={onFocus}
       onSelect={onSelect}
       onContextMenu={onContextMenu}
-      style={{
-        backgroundColor: scopeColor ? withHexAlpha(scopeColor, '15') : undefined,
-      }}
       className={cn(
         ROLE_COLORS.assistant_message.bg,
         ROLE_COLORS.assistant_message.border
       )}
     >
-      {/* Vertical line for scope */}
-      {scopeColor && (
-        <div
-          className="absolute left-0 top-0 bottom-0 w-1.5 z-10"
-          style={{ backgroundColor: scopeColor }}
-        />
-      )}
-
       {/* Header */}
       <div className="relative z-10 mb-4 min-w-0 max-w-full">
         <div className="flex min-w-0 w-full max-w-full flex-wrap items-start gap-3">

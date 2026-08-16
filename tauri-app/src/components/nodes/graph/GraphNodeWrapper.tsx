@@ -2,7 +2,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { cn } from '../../../lib/utils';
-import { withHexAlpha, CARD_TOKENS } from '../../../lib/visualTokens';
+import { CARD_TOKENS } from '../../../lib/visualTokens';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../../@/components/ui/hover-card';
 import type { FocusTriggerMetrics } from '../../../types/nodes';
 import { agentRunManager } from '../../../agent-runs/agentRunManager';
@@ -14,7 +14,6 @@ interface GraphNodeWrapperProps {
   isSelected: boolean;
   isComposerBaseCommit?: boolean;
   disableHoverCard?: boolean;
-  scopeColor?: string | null;
   className?: string;
   bodyClassName?: string;
   hoverOpenDelay?: number;
@@ -34,7 +33,6 @@ export const GraphNodeWrapper = memo(({
   isSelected,
   isComposerBaseCommit = false,
   disableHoverCard,
-  scopeColor,
   className,
   bodyClassName,
   hoverOpenDelay = 500,
@@ -52,7 +50,6 @@ export const GraphNodeWrapper = memo(({
   const [isFocusFeedbackActive, setIsFocusFeedbackActive] = useState(false);
   const [hoverOpen, setHoverOpen] = useState(false);
   const [suppressFocusedHoverUntilLeave, setSuppressFocusedHoverUntilLeave] = useState(false);
-  const restingBorderColor = scopeColor ? withHexAlpha(scopeColor, '88') : undefined;
   const isBaseCommitHighlighted = isComposerBaseCommit && !isFocused && !isFocusFeedbackActive;
 
   const clearFocusFeedback = () => {
@@ -147,12 +144,10 @@ export const GraphNodeWrapper = memo(({
             ? '#059669'
             : isSelected
               ? '#3b82f6'
-              : restingBorderColor,
+              : undefined,
         boxShadow: isBaseCommitHighlighted
           ? '0 0 0 1.5px rgba(5,150,105,0.72), 0 14px 28px -22px rgba(4,120,87,0.86)'
-          : !isFocused && !isSelected && scopeColor
-            ? `0 4px 12px ${withHexAlpha(scopeColor, '16')}`
-            : style?.boxShadow,
+          : style?.boxShadow,
       }}
       className={cn(
         'agentree-graph-node-card relative flex flex-col overflow-hidden bg-background cursor-default pointer-events-auto',

@@ -2,7 +2,7 @@
 import '../test/setup';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { ScopedNodeContextMenu } from './ScopedNodeContextMenu';
+import { NodeContextMenu } from './NodeContextMenu';
 import type { ProjectedCommitEntity, ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspaceProjection';
 
 const makeGeneratedCommit = (): ProjectedCommitEntity => ({
@@ -34,11 +34,8 @@ const makeGeneratedCommit = (): ProjectedCommitEntity => ({
 
 const makeProjection = (commit: ProjectedCommitEntity, entities: ProjectedNodeEntity[] = []): WorkspaceProjection => ({
   messages: [],
-  scopes: [],
   summaries: [],
   messageMap: new Map(),
-  scopeColorById: new Map(),
-  scopeNameById: new Map(),
   summaryMap: new Map(),
   entities,
   entitiesById: new Map(entities.map((entity) => [entity.entityId, entity])),
@@ -52,20 +49,21 @@ const makeProjection = (commit: ProjectedCommitEntity, entities: ProjectedNodeEn
   groupIdByCommitSha: new Map(),
   threadRootIds: [],
   threadRootIdByMessageId: new Map(),
+  rootMessageIdByThreadRootId: new Map(),
   turnGroups: [],
   turnGroupById: new Map(),
   originMessage: null,
   originMessageId: null,
 } as unknown as WorkspaceProjection);
 
-describe('ScopedNodeContextMenu', () => {
+describe('NodeContextMenu', () => {
   it('adds a generated canonical commit sha to the merge panel', () => {
     const onAddCommitShasToMergePanel = vi.fn();
     const commit = makeGeneratedCommit();
 
     render(
-      <ScopedNodeContextMenu
-        contextMenu={{ x: 20, y: 30, scopedIds: [`commit:${commit.sha}`] }}
+      <NodeContextMenu
+        contextMenu={{ x: 20, y: 30, targetIds: [`commit:${commit.sha}`] }}
         projection={makeProjection(commit)}
         onClose={() => {}}
         onAddCommitShasToMergePanel={onAddCommitShasToMergePanel}
@@ -102,8 +100,8 @@ describe('ScopedNodeContextMenu', () => {
     };
 
     render(
-      <ScopedNodeContextMenu
-        contextMenu={{ x: 20, y: 30, scopedIds: [`commit:${commit.sha}`] }}
+      <NodeContextMenu
+        contextMenu={{ x: 20, y: 30, targetIds: [`commit:${commit.sha}`] }}
         projection={makeProjection(commit, [assistantEntity])}
         onClose={() => {}}
         onAddCommitShasToMergePanel={onAddCommitShasToMergePanel}
@@ -145,8 +143,8 @@ describe('ScopedNodeContextMenu', () => {
     };
 
     render(
-      <ScopedNodeContextMenu
-        contextMenu={{ x: 20, y: 30, scopedIds: [`commit:${commit.sha}`] }}
+      <NodeContextMenu
+        contextMenu={{ x: 20, y: 30, targetIds: [`commit:${commit.sha}`] }}
         projection={makeProjection(commit, [assistantEntity])}
         onClose={() => {}}
         onAddCommitShasToMergePanel={onAddCommitShasToMergePanel}
@@ -181,8 +179,8 @@ describe('ScopedNodeContextMenu', () => {
     };
 
     render(
-      <ScopedNodeContextMenu
-        contextMenu={{ x: 20, y: 30, scopedIds: ['assistant-1'] }}
+      <NodeContextMenu
+        contextMenu={{ x: 20, y: 30, targetIds: ['assistant-1'] }}
         projection={makeProjection(makeGeneratedCommit(), [assistantEntity])}
         onClose={() => {}}
         onAddCommitShasToMergePanel={() => {}}
@@ -219,8 +217,8 @@ describe('ScopedNodeContextMenu', () => {
     };
 
     render(
-      <ScopedNodeContextMenu
-        contextMenu={{ x: 20, y: 30, scopedIds: ['assistant-1'] }}
+      <NodeContextMenu
+        contextMenu={{ x: 20, y: 30, targetIds: ['assistant-1'] }}
         projection={makeProjection(makeGeneratedCommit(), [assistantEntity])}
         onClose={() => {}}
         onFocusThread={onFocusThread}

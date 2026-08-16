@@ -77,6 +77,42 @@ describe('graph thread roots', () => {
     expect(index.threadRootIdByMessageId.has('commit-row')).toBe(false);
   });
 
+  it('groups multiple root user messages that share a thread origin id', () => {
+    const messages = [
+      {
+        ...makeMessage('user-codex', 'user', null),
+        createdAt: '2026-05-26T10:00:00.000Z',
+        execution_data: { meta: { thread_origin_id: 'thread-origin-1' } },
+      },
+      {
+        ...makeMessage('assistant-codex', 'assistant', 'user-codex'),
+        createdAt: '2026-05-26T10:00:01.000Z',
+      },
+      {
+        ...makeMessage('user-claude', 'user', null),
+        createdAt: '2026-05-26T10:00:02.000Z',
+        execution_data: { meta: { thread_origin_id: 'thread-origin-1' } },
+      },
+      {
+        ...makeMessage('assistant-claude', 'assistant', 'user-claude'),
+        createdAt: '2026-05-26T10:00:03.000Z',
+      },
+    ];
+
+    const index = buildThreadRootIndex(messages);
+
+    expect(index.threadRootIds).toEqual(['thread-origin-1']);
+    expect(index.rootMessageIdByThreadRootId.get('thread-origin-1')).toBe('user-codex');
+    expect(index.threadRootIdByMessageId.get('assistant-codex')).toBe('thread-origin-1');
+    expect(index.threadRootIdByMessageId.get('assistant-claude')).toBe('thread-origin-1');
+    expect(Array.from(getThreadDescendantIds('thread-origin-1', messages)).sort()).toEqual([
+      'assistant-claude',
+      'assistant-codex',
+      'user-claude',
+      'user-codex',
+    ]);
+  });
+
   it('collects descendants for one thread root without crossing into another root', () => {
     const messages = [
       makeMessage('thread-a', 'user', null),

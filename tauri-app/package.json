@@ -1,7 +1,7 @@
 {
   "name": "tauri-app",
   "private": true,
-  "version": "0.1.9",
+  "version": "0.1.10",
   "type": "module",
   "scripts": {
     "dev": "npm run dev:infisical",
@@ -41,7 +41,7 @@
     "test:ci": "npm run test:unit && npm run test:contracts && npm run test:perf:deterministic",
     "test:unit": "vitest run src/agent-runs src/components src/domain src/hooks src/lib src/pages src/stores",
     "test:contracts": "vitest run src/mocks",
-    "test:graph": "vitest run src/lib/graphLayoutGeometry.test.ts src/lib/graphThreadRoots.test.ts src/lib/graphSubgraphScope.test.ts src/hooks/graph src/components/GraphView.focusMove.test.ts src/components/graph src/components/nodes/graph src/mocks/frontendProjection.msw.test.ts",
+    "test:graph": "vitest run src/lib/graphLayoutGeometry.test.ts src/lib/graphThreadRoots.test.ts src/lib/graphSubgraphFilter.test.ts src/hooks/graph src/components/GraphView.focusMove.test.ts src/components/graph src/components/nodes/graph src/mocks/frontendProjection.msw.test.ts",
     "test:send": "vitest run src/agent-runs src/components/ChatInput.popupLayering.test.ts src/lib/composerSendParent.test.ts src/lib/composerAgentRuns.test.ts src/perf/sendFlow.test.ts",
     "test:rust": "cd src-tauri && cargo test",
     "test:perf:deterministic": "vitest run src/perf scripts/perf-latest-summary.test.mjs tests/perf/tauri-pilot-chat-hot-path-lib.test.mjs tests/perf/tauri-pilot-click-feedback-lib.test.mjs src/mocks/frontendProjection.msw.test.ts src/hooks/graph/useGraphLayout.visualReuse.test.tsx src/lib/graphLayoutGeometry.test.ts",

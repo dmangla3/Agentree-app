@@ -245,7 +245,6 @@ export const useDeleteWorkspace = () => {
       }
       queryClient.removeQueries({ queryKey: ['messages', deletedWorkspaceId] });
       queryClient.removeQueries({ queryKey: ['summaries', deletedWorkspaceId] });
-      queryClient.removeQueries({ queryKey: ['scopes', deletedWorkspaceId] });
       queryClient.removeQueries({ queryKey: trackedRefKeys.workspace(deletedWorkspaceId) });
       queryClient.removeQueries({ queryKey: localNodeKeys.workspace(deletedWorkspaceId) });
       queryClient.removeQueries({ queryKey: ['branches', deletedWorkspaceId] });
@@ -268,7 +267,6 @@ export const useDeleteMultipleWorkspaces = () => {
       for (const deletedWorkspaceId of deletedWorkspaceIds) {
         queryClient.removeQueries({ queryKey: ['messages', deletedWorkspaceId] });
         queryClient.removeQueries({ queryKey: ['summaries', deletedWorkspaceId] });
-        queryClient.removeQueries({ queryKey: ['scopes', deletedWorkspaceId] });
         queryClient.removeQueries({ queryKey: trackedRefKeys.workspace(deletedWorkspaceId) });
         queryClient.removeQueries({ queryKey: localNodeKeys.workspace(deletedWorkspaceId) });
         queryClient.removeQueries({ queryKey: ['branches', deletedWorkspaceId] });

@@ -52,8 +52,6 @@ export const ChatNodeDispatcher = memo(({
   const sharedProps = {
     isFocused: entity?.focusMessageId === focusedMessageId,
     isSelected,
-    scopeColor: null,
-    scopeName: null,
     layout: 'chat' as const,
     onFocus: handleFocus,
     onSelect: handleSelect,

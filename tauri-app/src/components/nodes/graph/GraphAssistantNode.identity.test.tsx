@@ -43,7 +43,6 @@ describe('GraphAssistantNode identity', () => {
         entity={makeAssistantEntity()}
         isFocused={false}
         isSelected={false}
-        scopeColor={null}
         layout="graph"
         onFocus={() => {}}
         onSelect={() => {}}

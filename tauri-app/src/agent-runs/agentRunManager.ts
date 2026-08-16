@@ -15,6 +15,14 @@ import type { Message } from '../stores/workspaceStore';
 type AgentRunActor = ActorRefFrom<typeof agentRunMachine>;
 type ProjectionWatchReason = 'chat-focus' | 'hover' | 'recent-send' | 'terminal-hold' | string;
 
+interface ProjectionWatcherEvent {
+  nodeId: string;
+  hasWatchers: boolean;
+  reasons: string[];
+}
+
+type ProjectionWatcherListener = (event: ProjectionWatcherEvent) => void;
+
 interface ManagedRun {
   actor: AgentRunActor;
   previous: AgentRunSnapshot;
@@ -23,6 +31,7 @@ interface ManagedRun {
 
 const actors = new Map<string, ManagedRun>();
 const projectionWatchers = new Map<string, Set<ProjectionWatchReason>>();
+const projectionWatcherListeners = new Set<ProjectionWatcherListener>();
 const CONTENT_PROJECTION_THROTTLE_MS = 140;
 const RECENT_SEND_PROJECTION_MS = 10_000;
 const dirtyProjectionNodeIds = new Set<string>();
@@ -77,6 +86,26 @@ const hasProjectionWatchers = (nodeId: string) => (
   (projectionWatchers.get(nodeId)?.size ?? 0) > 0
 );
 
+const projectionWatcherSnapshot = (nodeId: string): ProjectionWatcherEvent => {
+  const reasons = Array.from(projectionWatchers.get(nodeId) ?? []).sort();
+  return {
+    nodeId,
+    hasWatchers: reasons.length > 0,
+    reasons,
+  };
+};
+
+const notifyProjectionWatchersIfChanged = (
+  nodeId: string,
+  previousHasWatchers: boolean,
+) => {
+  const snapshot = projectionWatcherSnapshot(nodeId);
+  if (snapshot.hasWatchers === previousHasWatchers) return;
+  for (const listener of projectionWatcherListeners) {
+    listener(snapshot);
+  }
+};
+
 const clearProjectionTimer = (nodeId: string) => {
   dirtyProjectionNodeIds.delete(nodeId);
   if (dirtyProjectionNodeIds.size > 0 || projectionFlushTimer === null) return;
@@ -93,19 +122,23 @@ const projectManagedSnapshot = (nodeId: string) => {
 };
 
 const watchProjection = (nodeId: string, reason: ProjectionWatchReason) => {
+  const previousHasWatchers = hasProjectionWatchers(nodeId);
   const watchers = projectionWatchers.get(nodeId) ?? new Set<ProjectionWatchReason>();
   watchers.add(reason);
   projectionWatchers.set(nodeId, watchers);
   projectManagedSnapshot(nodeId);
+  notifyProjectionWatchersIfChanged(nodeId, previousHasWatchers);
 };
 
 const unwatchProjection = (nodeId: string, reason: ProjectionWatchReason) => {
+  const previousHasWatchers = hasProjectionWatchers(nodeId);
   const watchers = projectionWatchers.get(nodeId);
   if (!watchers) return;
   watchers.delete(reason);
   if (watchers.size === 0) {
     projectionWatchers.delete(nodeId);
   }
+  notifyProjectionWatchersIfChanged(nodeId, previousHasWatchers);
 };
 
 const clearRecentSendProjectionTimer = (nodeId: string) => {
@@ -325,6 +358,15 @@ export const agentRunManager = {
   unwatch(nodeId: string, reason: ProjectionWatchReason) {
     unwatchProjection(nodeId, reason);
   },
+
+  subscribeProjectionWatchers(listener: ProjectionWatcherListener) {
+    projectionWatcherListeners.add(listener);
+    return () => {
+      projectionWatcherListeners.delete(listener);
+    };
+  },
+
+  projectionWatcherSnapshot,
 
   promoteProjection(nodeId: string) {
     projectManagedSnapshot(nodeId);

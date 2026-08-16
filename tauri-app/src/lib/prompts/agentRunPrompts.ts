@@ -15,7 +15,7 @@ export const EMPTY_COMPOSER_CONTEXT_MANIFEST: ComposerContextManifest = {
   volatileTailHash: '811c9dc5',
 };
 
-export type AgentRunPromptMode = 'plain' | 'agentree_context' | 'cross_provider';
+export type AgentRunPromptMode = 'plain' | 'agentree_context' | 'cross_provider' | 'flow';
 
 export interface BuildAgentRunPromptInput {
   mode: AgentRunPromptMode;

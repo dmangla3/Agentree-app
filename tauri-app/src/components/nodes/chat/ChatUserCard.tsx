@@ -10,7 +10,6 @@ export const ChatUserCard = memo(({
   entity,
   isFocused,
   isSelected,
-  scopeColor,
   onFocus,
   onSelect,
   onContextMenu,
@@ -32,7 +31,6 @@ export const ChatUserCard = memo(({
       focusTargetId={entity.focusMessageId}
       isFocused={isFocused}
       isSelected={isSelected}
-      scopeColor={scopeColor}
       accentColor={ROLE_COLORS.user_message.accent}
       onFocus={onFocus}
       onSelect={onSelect}

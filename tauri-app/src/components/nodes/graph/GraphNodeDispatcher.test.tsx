@@ -112,7 +112,6 @@ vi.mock('../../graph/GraphInteractionContext', () => ({
 vi.mock('../../graph/GraphHoverProjectionContext', () => ({
   useGraphHoverProjectionInput: () => ({
     messages: [],
-    scopes: [],
     summaries: [],
     disabledSummaryIds: new Set<string>(),
   }),
@@ -237,7 +236,7 @@ describe('GraphNodeDispatcher', () => {
     });
   });
 
-  it('opens the scoped context menu for canonical commits by commit token', () => {
+  it('opens the context menu for canonical commits by commit token', () => {
     const onContextMenu = vi.fn();
     const props = {
       id: 'abc123456789',
@@ -267,7 +266,7 @@ describe('GraphNodeDispatcher', () => {
     expect(onContextMenu.mock.calls[0][0]).toBe('commit:abc123456789');
   });
 
-  it('opens the scoped context menu for commit-message cards by commit token, not parent conversation node', () => {
+  it('opens the context menu for commit-message cards by commit token, not parent conversation node', () => {
     const onContextMenu = vi.fn();
     const props = {
       id: 'assistant-1:output-commit',

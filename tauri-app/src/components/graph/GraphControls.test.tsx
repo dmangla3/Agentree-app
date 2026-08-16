@@ -78,23 +78,6 @@ describe('GraphControls', () => {
     expect(source).not.toContain('bg-gradient-');
   });
 
-  it('does not expose scope filtering in the graph controls', () => {
-    render(
-      <TooltipProvider>
-        <GraphControls {...makeProps()} />
-      </TooltipProvider>
-    );
-
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Filters0' }), {
-      button: 0,
-      ctrlKey: false,
-    });
-
-    expect(screen.queryByText('Scopes')).toBeNull();
-    expect(screen.queryByPlaceholderText('Search scopes...')).toBeNull();
-    expect(screen.queryByText('Frontend')).toBeNull();
-  });
-
   it('shows compact thread navigation in the toolbar dropdown', async () => {
     const onThreadFocus = vi.fn();
     const onThreadHide = vi.fn();

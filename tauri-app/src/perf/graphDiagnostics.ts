@@ -77,7 +77,6 @@ const compactPayloadForStorage = (payload: Record<string, unknown>) => {
     nodeCount: nodes.length,
     edgeCount: edges.length,
     workspaceId: payload.workspaceId ?? null,
-    activeScopeId: payload.activeScopeId ?? null,
     focusedMessageId: payload.focusedMessageId ?? null,
     viewMode: payload.viewMode ?? null,
     layoutMode: payload.layoutMode ?? null,

@@ -11,7 +11,6 @@ export const GraphSummaryNode = memo(({
   isFocused,
   isSelected,
   disableHoverCard,
-  scopeColor,
   detailLevel = 'full',
   heightKey,
   onMeasureHeight,
@@ -28,7 +27,6 @@ export const GraphSummaryNode = memo(({
       isFocused={isFocused}
       isSelected={isSelected}
       disableHoverCard={disableHoverCard}
-      scopeColor={scopeColor}
       heightKey={heightKey}
       className={cn(
         ROLE_COLORS.summary_block.bg, 

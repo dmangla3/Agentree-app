@@ -9,14 +9,14 @@ import {
 import type { WorkspaceProjection } from '../domain/workspaceProjection';
 import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 
-export interface ScopedContextMenuState {
+export interface NodeContextMenuState {
   x: number;
   y: number;
-  scopedIds: string[];
+  targetIds: string[];
 }
 
-interface ScopedNodeContextMenuProps {
-  contextMenu: ScopedContextMenuState | null;
+interface NodeContextMenuProps {
+  contextMenu: NodeContextMenuState | null;
   projection: WorkspaceProjection;
   onClose: () => void;
   onDeleteMessages?: (messageIds: string[]) => void;
@@ -31,7 +31,7 @@ interface ScopedNodeContextMenuProps {
   onShareNode?: (messageId: string) => void;
 }
 
-export function ScopedNodeContextMenu({
+export function NodeContextMenu({
   contextMenu,
   projection,
   onClose,
@@ -45,14 +45,14 @@ export function ScopedNodeContextMenu({
   onHideSubgraph,
   onViewSubgraph,
   onShareNode,
-}: ScopedNodeContextMenuProps) {
-  const scopedIds = contextMenu?.scopedIds ?? [];
-  const scopedKey = scopedIds.join('\u0000');
+}: NodeContextMenuProps) {
+  const targetIds = contextMenu?.targetIds ?? [];
+  const targetKey = targetIds.join('\u0000');
   const [hideThreadAfterMerge, setHideThreadAfterMerge] = useState(true);
 
   useEffect(() => {
     if (contextMenu) setHideThreadAfterMerge(true);
-  }, [contextMenu, scopedKey]);
+  }, [contextMenu, targetKey]);
 
   const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, mergeableCommitShas, actionNodeId, actionThreadRootId, mergeThreadRootId } = useMemo(() => {
     const deletableIds = new Set<string>();
@@ -111,7 +111,7 @@ export function ScopedNodeContextMenu({
       }
     };
 
-    for (const id of scopedIds) {
+    for (const id of targetIds) {
       const entity = projection.entitiesByMessageId.get(id) ?? projection.entitiesById.get(id);
 
       if (id.startsWith('commit:')) {
@@ -123,7 +123,7 @@ export function ScopedNodeContextMenu({
       }
 
       if (!entity) continue;
-      if (scopedIds.length === 1 && entity.messageId) {
+      if (targetIds.length === 1 && entity.messageId) {
         singleActionId = entity.messageId;
         singleThreadRootId = entity.threadRootId ?? null;
       }
@@ -146,7 +146,7 @@ export function ScopedNodeContextMenu({
       actionThreadRootId: singleThreadRootId,
       mergeThreadRootId: hasMultipleMergeThreadRoots ? null : singleMergeThreadRootId,
     };
-  }, [projection.commitBySha, projection.entitiesById, projection.entitiesByMessageId, projection.threadRootIdByMessageId, scopedIds]);
+  }, [projection.commitBySha, projection.entitiesById, projection.entitiesByMessageId, projection.threadRootIdByMessageId, targetIds]);
 
   if (!contextMenu) return null;
 
@@ -309,4 +309,4 @@ export function ScopedNodeContextMenu({
   );
 }
 
-export default ScopedNodeContextMenu;
+export default NodeContextMenu;

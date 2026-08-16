@@ -29,7 +29,7 @@ const updatedCargoToml = cargoToml.replace(
   `version = "${version}"`
 );
 
-if (cargoToml === updatedCargoToml) {
+if (cargoToml === updatedCargoToml && !new RegExp(`^version = "${version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"$`, 'm').test(cargoToml)) {
   throw new Error('Failed to update version in src-tauri/Cargo.toml');
 }
 

@@ -2,7 +2,7 @@ import { useMemo, useRef } from 'react';
 import { Node, Edge, Position } from '@xyflow/react';
 import { BranchPointer, Message, Summary, Insight } from '../../stores/workspaceStore';
 import type { WorkspaceProjection } from '../../domain/workspaceProjection';
-import { collapseRenderedFocusRoute } from '../../domain/scopedFocusRoute';
+import { collapseRenderedFocusRoute } from '../../domain/focusRoute';
 import { recordPerfEvent } from '../../lib/perfRecorder';
 import { recordFundamentalCounter } from '../../perf/fundamentalCounters';
 import {
@@ -41,7 +41,7 @@ export interface UseGraphLayoutOptions {
     hasNodeTypeFilter: boolean;
     keepAncestors: boolean;
     keepDescendants: boolean;
-    scopedCommitFiltering?: boolean;
+    constrainedCommitFiltering?: boolean;
     pinnedCommitShas?: Set<string>;
     hiddenThreadRootIds?: Set<string>;
     visibleNodeSections: Set<GraphNodeSectionId>;
@@ -49,10 +49,6 @@ export interface UseGraphLayoutOptions {
     showInsightsInGraph: boolean;
     workspaceRepoMap: Map<string, string | null>;
     branchPointersByNodeId: Map<string, BranchPointer[]>;
-    activeScopeId: string | null;
-    scopeViewMode: 'project' | 'scope';
-    scopeNameById: Map<string, string>;
-    scopeColorById: Map<string, string | null>;
     resetNonce?: number;
     onToggleSummary: (id: string) => void;
     onToggleCollapse: (id: string, collapsed: boolean) => void;
@@ -72,21 +68,6 @@ export interface UseGraphLayoutResult {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const HEIGHT_FINGERPRINT_TEXT_BUCKET_SIZE = 36;
-
-const readLookupValue = <T,>(
-    lookup: Map<string, T> | Record<string, T> | null | undefined,
-    key: string
-): T | undefined => {
-    if (!lookup) return undefined;
-    if (lookup instanceof Map) return lookup.get(key);
-    return lookup[key];
-};
-
-const lookupEntries = <T,>(lookup: Map<string, T> | Record<string, T> | null | undefined): [string, T][] => {
-    if (!lookup) return [];
-    if (lookup instanceof Map) return Array.from(lookup.entries());
-    return Object.entries(lookup) as [string, T][];
-};
 
 const getRenderedNodeWidth = (node: Node<any>): number => {
     if (typeof node.style?.width === 'number') return node.style.width;
@@ -254,7 +235,7 @@ interface LayoutCacheKey {
     hasNodeTypeFilter: boolean;
     keepAncestors: boolean;
     keepDescendants: boolean;
-    scopedCommitFiltering: boolean;
+    constrainedCommitFiltering: boolean;
     pinnedCommitShasFingerprint: string;
     hiddenThreadRootIdsFingerprint: string;
     visibleNodeSectionsFingerprint: string;
@@ -262,8 +243,6 @@ interface LayoutCacheKey {
     laneStrategy: string;
     insightsFingerprint: string;
     showInsightsInGraph: boolean;
-    activeScopeId: string | null;
-    scopeViewMode: 'project' | 'scope';
     resetNonce: number;
     commitProjectionFingerprint: string;
 }
@@ -302,7 +281,7 @@ const cacheKeysEqual = (a: LayoutCacheKey, b: LayoutCacheKey): boolean => {
         a.hasNodeTypeFilter === b.hasNodeTypeFilter &&
         a.keepAncestors === b.keepAncestors &&
         a.keepDescendants === b.keepDescendants &&
-        a.scopedCommitFiltering === b.scopedCommitFiltering &&
+        a.constrainedCommitFiltering === b.constrainedCommitFiltering &&
         a.pinnedCommitShasFingerprint === b.pinnedCommitShasFingerprint &&
         a.hiddenThreadRootIdsFingerprint === b.hiddenThreadRootIdsFingerprint &&
         a.visibleNodeSectionsFingerprint === b.visibleNodeSectionsFingerprint &&
@@ -310,8 +289,6 @@ const cacheKeysEqual = (a: LayoutCacheKey, b: LayoutCacheKey): boolean => {
         a.laneStrategy === b.laneStrategy &&
         a.insightsFingerprint === b.insightsFingerprint &&
         a.showInsightsInGraph === b.showInsightsInGraph &&
-        a.activeScopeId === b.activeScopeId &&
-        a.scopeViewMode === b.scopeViewMode &&
         a.resetNonce === b.resetNonce &&
         a.commitProjectionFingerprint === b.commitProjectionFingerprint
     );
@@ -372,7 +349,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         hasNodeTypeFilter,
         keepAncestors,
         keepDescendants,
-        scopedCommitFiltering = false,
+        constrainedCommitFiltering = false,
         pinnedCommitShas = new Set<string>(),
         hiddenThreadRootIds = new Set<string>(),
         visibleNodeSections,
@@ -380,10 +357,6 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         showInsightsInGraph,
         workspaceRepoMap,
         branchPointersByNodeId,
-        activeScopeId,
-        scopeViewMode,
-        scopeNameById,
-        scopeColorById,
         resetNonce = 0,
         onToggleSummary,
         onToggleCollapse,
@@ -398,10 +371,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
 
     const { nodes, edges } = useMemo(() => {
         const startedAt = performance.now();
-        const visualFingerprint = lookupEntries(scopeNameById)
-            .map(([id, name]) => `${id}:${name}:${readLookupValue(scopeColorById, id) || ''}`)
-            .sort()
-            .join(';');
+        const visualFingerprint = '';
         const contextPathFingerprint = Array.from(contextPathMessageIds).sort().join(',');
         const messagesVisualFingerprint = createMessagesVisualFingerprint(messages);
         const currentCacheKey: LayoutCacheKey = {
@@ -413,7 +383,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             hasNodeTypeFilter,
             keepAncestors,
             keepDescendants,
-            scopedCommitFiltering,
+            constrainedCommitFiltering,
             pinnedCommitShasFingerprint: Array.from(pinnedCommitShas).sort().join(','),
             hiddenThreadRootIdsFingerprint: Array.from(hiddenThreadRootIds).sort().join(','),
             visibleNodeSectionsFingerprint: Array.from(visibleNodeSections).sort().join(','),
@@ -421,8 +391,6 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             laneStrategy,
             insightsFingerprint: insights.map((insight) => insight.id).sort().join(','),
             showInsightsInGraph,
-            activeScopeId,
-            scopeViewMode,
             resetNonce,
             commitProjectionFingerprint: createCommitProjectionFingerprint(projection),
         };
@@ -492,8 +460,6 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 hasNodeTypeFilter,
                 keepAncestors,
                 keepDescendants,
-                scopeNameById,
-                scopeColorById,
                 onFocus,
                 onSelect,
                 onContextMenu,
@@ -546,17 +512,13 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 showInsightsInGraph,
                 workspaceRepoMap,
                 branchPointersByNodeId,
-                activeScopeId,
-                scopeViewMode,
-                scopeNameById,
-                scopeColorById,
                 onToggleCollapse,
                 onFocus,
                 onSelect,
                 onContextMenu,
                 onMeasureNodeHeight,
                 visibleNodeSections,
-                scopedCommitFiltering,
+                constrainedCommitFiltering,
                 pinnedCommitShas,
                 hiddenThreadRootIds
         );
@@ -628,8 +590,6 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             hasNodeTypeFilter,
             keepAncestors,
             keepDescendants,
-            scopeNameById,
-            scopeColorById,
             onFocus,
             onSelect,
             onContextMenu
@@ -661,10 +621,9 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         return visualResult;
     }, [
         messages, summaries, projection, measuredNodeHeights, layoutMode, laneStrategy, disabledSummaryIds,
-        focusedMessageId, contextPathMessageIds, composerBaseCommitSha, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, scopedCommitFiltering, pinnedCommitShas, hiddenThreadRootIds, insights, showInsightsInGraph,
+        focusedMessageId, contextPathMessageIds, composerBaseCommitSha, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, constrainedCommitFiltering, pinnedCommitShas, hiddenThreadRootIds, insights, showInsightsInGraph,
         visibleNodeSections,
-        workspaceRepoMap, branchPointersByNodeId, activeScopeId, scopeViewMode,
-        scopeNameById, scopeColorById, onToggleSummary, onToggleCollapse,
+        workspaceRepoMap, branchPointersByNodeId, onToggleSummary, onToggleCollapse,
         onFocus, onSelect, onContextMenu, onMeasureNodeHeight, resetNonce
     ]);
 
@@ -684,8 +643,6 @@ function applyVisualProperties(
     _hasNodeTypeFilter: boolean,
     _keepAncestors: boolean,
     _keepDescendants: boolean,
-    scopeNameById: Map<string, string>,
-    scopeColorById: Map<string, string | null>,
     onFocus: (id: string) => void,
     onSelect: (id: string, multi: boolean) => void,
     onContextMenu: (id: string, e: React.MouseEvent) => void,
@@ -819,9 +776,6 @@ function applyVisualProperties(
             isInContextPath,
             matchesTagFilter,
             filterActive,
-            // Update specific entity data if needed
-            scopeName: data.entity?.scopeId ? (readLookupValue(scopeNameById, data.entity.scopeId) || null) : data.scopeName,
-            scopeColor: data.entity?.scopeId ? (readLookupValue(scopeColorById, data.entity.scopeId) || null) : data.scopeColor,
         };
 
         const previousNode = previousNodeById?.get(node.id);
@@ -987,7 +941,6 @@ const entityVisualKey = (entity: any): string | null => {
         entity.totalTokens ?? '',
         entity.commitCount ?? '',
         entity.importedFromRef ?? '',
-        entity.scopeId ?? '',
         Array.isArray(entity.parentShas) ? entity.parentShas.join(',') : '',
         messageVisualKey(entity.message),
     ].join('|');
@@ -1033,8 +986,6 @@ const canReuseVisualNode = (
         'isInContextPath',
         'matchesTagFilter',
         'filterActive',
-        'scopeName',
-        'scopeColor',
     ];
 
     for (const key of keysToCompare) {

@@ -3,7 +3,7 @@ import {
   createSubgraphFilterState,
   getSubgraphMessageIds,
   shouldClearSubgraphForFocus,
-} from './graphSubgraphScope';
+} from './graphSubgraphFilter';
 import type { Message } from '../stores/workspaceStore';
 
 const makeMessage = (id: string, parentId: string | null): Message => ({
@@ -19,7 +19,7 @@ const makeMessage = (id: string, parentId: string | null): Message => ({
   updatedAt: '2026-05-16T00:00:00.000Z',
 });
 
-describe('graph subgraph scope', () => {
+describe('graph subgraph filter', () => {
   it('collects only the root node and descendants', () => {
     const messages = [
       makeMessage('user-root', null),
@@ -49,13 +49,13 @@ describe('graph subgraph scope', () => {
       keepDescendants: false,
     };
 
-    const scoped = createSubgraphFilterState('user-target', new Set(['user-target', 'assistant-child']), fallback);
+    const filtered = createSubgraphFilterState('user-target', new Set(['user-target', 'assistant-child']), fallback);
 
-    expect(scoped.filterActive).toBe(true);
-    expect(scoped.hasNodeTypeFilter).toBe(true);
-    expect(scoped.keepAncestors).toBe(false);
-    expect(scoped.keepDescendants).toBe(false);
-    expect(Array.from(scoped.matchingMessageIds).sort()).toEqual(['assistant-child', 'user-target']);
+    expect(filtered.filterActive).toBe(true);
+    expect(filtered.hasNodeTypeFilter).toBe(true);
+    expect(filtered.keepAncestors).toBe(false);
+    expect(filtered.keepDescendants).toBe(false);
+    expect(Array.from(filtered.matchingMessageIds).sort()).toEqual(['assistant-child', 'user-target']);
   });
 
   it('clears an active subgraph when focus moves outside it', () => {

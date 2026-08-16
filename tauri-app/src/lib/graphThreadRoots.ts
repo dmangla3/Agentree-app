@@ -5,7 +5,15 @@ export interface ThreadRootIndex {
   threadRootIds: string[];
   threadRootIdByMessageId: Map<string, string>;
   messageIdsByThreadRootId: Map<string, Set<string>>;
+  rootMessageIdByThreadRootId: Map<string, string>;
 }
+
+export const getThreadOriginNodeId = (threadRootId: string): string => `thread-origin:${threadRootId}`;
+
+const getMessageThreadOriginId = (message: Message | null | undefined): string | null => {
+  const value = (message?.execution_data as any)?.meta?.thread_origin_id;
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+};
 
 export const getThreadRootId = (
   messageId: string | null | undefined,
@@ -21,7 +29,8 @@ export const getThreadRootId = (
       earliestUserId = cursor.id;
     }
     if (!cursor.parentId) {
-      return earliestUserId;
+      const earliestUser = earliestUserId ? messageMap.get(earliestUserId) ?? null : null;
+      return getMessageThreadOriginId(earliestUser) ?? earliestUserId;
     }
     cursor = messageMap.get(cursor.parentId) ?? null;
   }
@@ -31,18 +40,9 @@ export const getThreadRootId = (
 
 export const buildThreadRootIndex = (messages: Message[]): ThreadRootIndex => {
   const messageMap = new Map(messages.map((message) => [message.id, message]));
-  const threadRootIds = messages
-    .filter((message) => message.role === 'user' && getThreadRootId(message.id, messageMap) === message.id)
-    .sort((left, right) => {
-      const leftTs = new Date(left.createdAt).getTime();
-      const rightTs = new Date(right.createdAt).getTime();
-      if (leftTs !== rightTs) return leftTs - rightTs;
-      return left.id.localeCompare(right.id);
-    })
-    .map((message) => message.id);
-
   const threadRootIdByMessageId = new Map<string, string>();
   const messageIdsByThreadRootId = new Map<string, Set<string>>();
+  const rootMessageIdByThreadRootId = new Map<string, string>();
 
   for (const message of messages) {
     if (isFirstClassCommitMessage(message, { messageMap })) continue;
@@ -53,12 +53,43 @@ export const buildThreadRootIndex = (messages: Message[]): ThreadRootIndex => {
     const threadMessageIds = messageIdsByThreadRootId.get(threadRootId) ?? new Set<string>();
     threadMessageIds.add(message.id);
     messageIdsByThreadRootId.set(threadRootId, threadMessageIds);
+
+    if (message.role === 'user') {
+      const currentRootMessageId = rootMessageIdByThreadRootId.get(threadRootId);
+      const currentRootMessage = currentRootMessageId ? messageMap.get(currentRootMessageId) ?? null : null;
+      const currentTs = currentRootMessage ? new Date(currentRootMessage.createdAt).getTime() : Number.POSITIVE_INFINITY;
+      const messageTs = new Date(message.createdAt).getTime();
+      if (
+        !currentRootMessage ||
+        message.parentId === null && currentRootMessage.parentId !== null ||
+        (message.parentId === currentRootMessage.parentId && (
+          messageTs < currentTs ||
+          (messageTs === currentTs && message.id.localeCompare(currentRootMessage.id) < 0)
+        ))
+      ) {
+        rootMessageIdByThreadRootId.set(threadRootId, message.id);
+      }
+    }
   }
+
+  const threadRootIds = Array.from(messageIdsByThreadRootId.keys()).sort((left, right) => {
+    const leftMessage = rootMessageIdByThreadRootId.get(left)
+      ? messageMap.get(rootMessageIdByThreadRootId.get(left)!) ?? null
+      : null;
+    const rightMessage = rootMessageIdByThreadRootId.get(right)
+      ? messageMap.get(rootMessageIdByThreadRootId.get(right)!) ?? null
+      : null;
+    const leftTs = leftMessage ? new Date(leftMessage.createdAt).getTime() : Number.POSITIVE_INFINITY;
+    const rightTs = rightMessage ? new Date(rightMessage.createdAt).getTime() : Number.POSITIVE_INFINITY;
+    if (leftTs !== rightTs) return leftTs - rightTs;
+    return left.localeCompare(right);
+  });
 
   return {
     threadRootIds,
     threadRootIdByMessageId,
     messageIdsByThreadRootId,
+    rootMessageIdByThreadRootId,
   };
 };
 
@@ -87,13 +118,12 @@ export const getLatestThreadMessageId = (
     const message = messageById.get(messageId);
     if (!message) continue;
 
-    const createdAt = new Date(message.createdAt).getTime();
     const updatedAt = new Date(message.updatedAt).getTime();
-    const timestamp = Number.isFinite(createdAt)
-      ? createdAt
-      : Number.isFinite(updatedAt)
-        ? updatedAt
-        : Number.NEGATIVE_INFINITY;
+    const createdAt = new Date(message.createdAt).getTime();
+    const timestamp = Math.max(
+      Number.isFinite(updatedAt) ? updatedAt : Number.NEGATIVE_INFINITY,
+      Number.isFinite(createdAt) ? createdAt : Number.NEGATIVE_INFINITY,
+    );
 
     if (
       !latestMessage ||

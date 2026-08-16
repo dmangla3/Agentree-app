@@ -2,12 +2,13 @@ import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import { flushSync } from 'react-dom';
 import TextareaAutosize from 'react-textarea-autosize';
 import { Button } from '../../@/components/ui/button';
-import { Send, X, Reply, FileText, FileTextIcon, GitBranchIcon, Loader2, ChevronDown, Bot, Clipboard, Check, Pencil, AtSign, RotateCcw, Plus, Minus, Search, GitCommitHorizontal } from 'lucide-react';
+import { Send, X, Reply, FileText, FileTextIcon, GitBranchIcon, Loader2, ChevronDown, Bot, Clipboard, Check, Pencil, AtSign, RotateCcw, Plus, Minus, Search, GitCommitHorizontal, Workflow } from 'lucide-react';
 import { useWorkspaceStore, AttachmentMetadata, Message, Workspace, CommitEntity } from '../stores/workspaceStore';
 import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 import { useProviderLimitsStore } from '../stores/providerLimitsStore';
 import { useQueryClient } from '@tanstack/react-query';
 import { UnifiedAgentModelSelector } from './UnifiedAgentModelSelector';
+import { ComposerFlowTab } from './flows/ComposerFlowTab';
 import { AttachmentPreview } from './AttachmentPreview';
 import { Badge } from "../../@/components/ui/badge";
 import { Alert, AlertDescription } from "../../@/components/ui/alert";
@@ -86,6 +87,7 @@ import {
 import { agentRunManager } from '../agent-runs/agentRunManager';
 import { registerAgentRunEffectsQueryClient } from '../agent-runs/agentRunEffects';
 import { getEnabledTrackedGitRefs, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
+import { useAgentFlowRunner } from '../hooks/useAgentFlowRunner';
 import {
     materializePersistedOptimisticUserMessage,
     shouldClearPersistedOptimisticUserProjection,
@@ -106,6 +108,8 @@ import {
     summarizeProviderStop,
 } from '../agent-runs/agentRunEventIngestor';
 import { requestAgentWorkspaceRefresh } from '../agent-runs/agentRunWorkspaceRefresh';
+import { projectBackgroundAgentEvent } from '../agent-runs/agentRunBackgroundStream';
+import { createAgentRunStreamRegistry, type FullStreamHandler } from '../agent-runs/agentRunStreamRegistry';
 
 
 // --- Types ---
@@ -169,6 +173,7 @@ interface ActiveFileMention {
 
 // --- Constants ---
 const STREAM_LOG_PREFIX = '[RCSTRM]';
+const FULL_STREAM_UNWATCHED_GRACE_MS = 5_000;
 const STREAM_DEBUG_ENABLED = ['1', 'true', 'yes'].includes(String(import.meta.env.VITE_STREAM_DEBUG || '').toLowerCase());
 const SEND_FLOW_DEBUG_ENABLED = ['1', 'true', 'yes'].includes(String(import.meta.env.VITE_SEND_FLOW_DEBUG || '').toLowerCase()) || STREAM_DEBUG_ENABLED;
 const streamDebug = (message: string, details?: Record<string, unknown>) => {
@@ -471,6 +476,7 @@ export function ChatInput({
     const [prompt, setPrompt] = useState('');
     const promptRef = useRef('');
     const [promptHasContent, setPromptHasContent] = useState(false);
+    const [composerMode, setComposerMode] = useState<'chat' | 'flow'>('chat');
     const [editDraftSource, setEditDraftSource] = useState<Message | null>(null);
     // --- NEW: Knowledge Base Context State ---
     const { data: filesData } = useKnowledgeTree();
@@ -492,7 +498,6 @@ export function ChatInput({
         lastFocusSource,
         lastFocusMetadata,
         composerBaseCommitOverride,
-        activeScopeId,
         autoCheckoutOnAgentCommit,
         beginSendFlowFocus,
         advanceSendFlowFocus,
@@ -510,7 +515,6 @@ export function ChatInput({
             lastFocusSource: state.lastFocusSource,
             lastFocusMetadata: state.lastFocusMetadata,
             composerBaseCommitOverride: state.composerBaseCommitOverride,
-            activeScopeId: state.activeScopeId,
             autoCheckoutOnAgentCommit: state.autoCheckoutOnAgentCommit,
             beginSendFlowFocus: state.beginSendFlowFocus,
             advanceSendFlowFocus: state.advanceSendFlowFocus,
@@ -623,6 +627,14 @@ export function ChatInput({
         [agents, selectedAgentId, selectedAgentRunCounts]
     );
     const selectedAgent = agents.find(a => a.id === selectedAgentId);
+    const selectedFlowLlmModel = useMemo(
+        () => (selectedAgent as any)?.model_config?.model || parseCliArgs(selectedAgent?.cliArgs).model || null,
+        [selectedAgent]
+    );
+    const selectedFlowReasoningEffort = useMemo(
+        () => (selectedAgent as any)?.model_config?.reasoningEffort || null,
+        [selectedAgent]
+    );
     const selectedAgentRuns = useMemo(
         () => buildComposerAgentRuns(agents, normalizedSelectedAgentRunCounts),
         [agents, normalizedSelectedAgentRunCounts]
@@ -748,7 +760,17 @@ export function ChatInput({
     const [currentAbortController, setCurrentAbortController] = useState<AbortController | null>(null);
     const [activeComposerSend, setActiveComposerSend] = useState<ActiveComposerSend | null>(null);
     const composerSendStartGateRef = useRef(createComposerSendStartGate());
-    const streamHandlerMapRef = useRef<Map<string, (event: Record<string, any>) => void>>(new Map());
+    const activeAgentMessageByIdRef = useRef<Map<string, Message>>(new Map());
+    const promoteStreamForNodeRef = useRef<(node: Message, options: { reason: string }) => Promise<void>>(async () => undefined);
+    const streamRegistryRef = useRef(createAgentRunStreamRegistry({
+        background: projectBackgroundAgentEvent,
+        onTerminalHydration: (context) => {
+            const message = activeAgentMessageByIdRef.current.get(context.nodeId);
+            if (!message) return;
+            void promoteStreamForNodeRef.current(message, { reason: 'terminal-hydration' });
+        },
+    }));
+    const fullStreamDowngradeTimersRef = useRef<Map<string, number>>(new Map());
     const latencyTraceRef = useRef<Map<string, {
         traceId: string;
         nodeId: string | null;
@@ -759,10 +781,16 @@ export function ChatInput({
     const sendFlowByKeyRef = useRef<Map<string, string>>(new Map());
     const pendingGeneratedCommitFocusByTargetRef = useRef<Map<string, PendingGeneratedCommitFocus>>(new Map());
     const unregisterStreamHandler = useCallback((nodeId: string) => {
-        streamHandlerMapRef.current.delete(nodeId);
+        streamRegistryRef.current.unregister(nodeId);
+        activeAgentMessageByIdRef.current.delete(nodeId);
     }, []);
     const clearAllStreamHandlers = useCallback(() => {
-        streamHandlerMapRef.current.clear();
+        streamRegistryRef.current.clear();
+        activeAgentMessageByIdRef.current.clear();
+        for (const timer of fullStreamDowngradeTimersRef.current.values()) {
+            window.clearTimeout(timer);
+        }
+        fullStreamDowngradeTimersRef.current.clear();
     }, []);
     const assignSendFlowKey = useCallback((key: string | null | undefined, flowId: string | null | undefined) => {
         if (!key || !flowId) return;
@@ -1053,10 +1081,7 @@ export function ChatInput({
 
         void agentClient.onEvent(({ nodeId, event }) => {
             if (!nodeId || !event) return;
-            const handler = streamHandlerMapRef.current.get(nodeId);
-            if (handler) {
-                handler(event);
-            }
+            streamRegistryRef.current.receive(nodeId, event);
         }).then((nextUnlisten) => {
             if (cancelled) {
                 nextUnlisten();
@@ -1352,7 +1377,7 @@ export function ChatInput({
 
     const startStreamForNode = useCallback(async (
         node: Message,
-        options?: { waitForReady?: boolean; authToken?: string; parentId?: string | null }
+        options?: { waitForReady?: boolean; authToken?: string; parentId?: string | null; reason?: string }
     ) => {
         const nodeId = node.id;
         const workspaceId = node.workspaceId;
@@ -1373,7 +1398,9 @@ export function ChatInput({
         streamDebug(`tauri_stream_register node=${nodeId}`);
         const streamStartedAt = performance.now();
         unregisterStreamHandler(nodeId);
-        let output = node.content || '';
+        activeAgentMessageByIdRef.current.set(nodeId, node);
+        const projectedOutput = getAgentRunProjection(nodeId)?.content;
+        let output = typeof projectedOutput === 'string' ? projectedOutput : node.content || '';
         let terminalFinalized = false;
         let pendingContentFlushTimer: number | null = null;
         let pendingContentFlushAgentId: string | null | undefined = node.agent_id;
@@ -1381,13 +1408,18 @@ export function ChatInput({
         let latestStreamSeq: number | null = null;
         let activeProviderAssistantItemId: string | null = null;
         const nodeExecution = (node.execution_data || {}) as Record<string, any>;
-        let latestAgentEventSeq: number | null = (() => {
-            const actorSeq = agentRunManager.snapshot(nodeId)?.lastSeq;
-            if (typeof actorSeq === 'number') return actorSeq;
-            return typeof nodeExecution.last_agent_event_seq === 'number'
-                ? nodeExecution.last_agent_event_seq
-                : null;
-        })();
+        const resolveFullReplayAfterSeq = () => {
+            const currentProjection = getAgentRunProjection(nodeId);
+            const projectionExecution = (currentProjection?.execution_data || {}) as Record<string, any>;
+            if (typeof projectionExecution.last_agent_event_seq === 'number') {
+                return projectionExecution.last_agent_event_seq;
+            }
+            if (typeof nodeExecution.last_agent_event_seq === 'number') {
+                return nodeExecution.last_agent_event_seq;
+            }
+            return null;
+        };
+        let latestAgentEventSeq: number | null = resolveFullReplayAfterSeq();
         let lastPersistedAgentEventSeq: number | null = latestAgentEventSeq;
         let lastAgentEventSeqPersistedAt = 0;
         let markedRunning = false;
@@ -1687,8 +1719,7 @@ export function ChatInput({
             });
         };
 
-        // Future: add observer-driven backend fanout as a secondary stream path.
-        streamHandlerMapRef.current.set(nodeId, (data: any) => {
+        const fullHandler: FullStreamHandler = (data: any) => {
             try {
                 agentRunManager.ingest(nodeId, data, {
                     workspaceId,
@@ -2063,6 +2094,15 @@ export function ChatInput({
             } catch (err) {
                 console.error('Tauri Agent Stream Parse Error:', err);
             }
+        };
+
+        // Future: add observer-driven backend fanout as a secondary stream path.
+        streamRegistryRef.current.beginPromotion({
+            nodeId,
+            workspaceId,
+            parentId,
+            role: 'assistant',
+            fullHandler,
         });
 
         const resolveRunIdForReplay = async () => {
@@ -2076,16 +2116,20 @@ export function ChatInput({
 
         void (async () => {
             const runId = await resolveRunIdForReplay();
-            if (!runId) return;
+            if (!runId) {
+                streamRegistryRef.current.finishPromotion(nodeId);
+                return;
+            }
             const afterSeq = latestAgentEventSeq ?? 0;
             const replayedEvents = await agentClient.replayAgentRunEvents(runId, afterSeq).catch((error) => {
                 console.warn('[ChatInput] Failed to replay native agent events:', { nodeId, runId, error });
                 return [];
             });
-            if (replayedEvents.length === 0) return;
+            if (replayedEvents.length === 0) {
+                streamRegistryRef.current.finishPromotion(nodeId);
+                return;
+            }
             for (const row of replayedEvents) {
-                const handler = streamHandlerMapRef.current.get(nodeId);
-                if (!handler) return;
                 let event: Record<string, any> | null = null;
                 try {
                     event = JSON.parse(row.payload);
@@ -2095,7 +2139,7 @@ export function ChatInput({
                         data: row.payload,
                     };
                 }
-                handler({
+                streamRegistryRef.current.deliverReplayEvent(nodeId, {
                     ...event,
                     run_id: (event as any)?.run_id ?? row.runId,
                     nodeId: (event as any)?.nodeId ?? row.assistantNodeId,
@@ -2105,6 +2149,7 @@ export function ChatInput({
                     phase: (event as any)?.phase ?? row.phase,
                 });
             }
+            streamRegistryRef.current.finishPromotion(nodeId);
         })();
     }, [
         cleanupAgentRunProjection,
@@ -2129,6 +2174,72 @@ export function ChatInput({
         setSetupProgress,
         agents,
     ]);
+
+    const registerBackgroundStreamForNode = useCallback((message: Message) => {
+        activeAgentMessageByIdRef.current.set(message.id, message);
+        streamRegistryRef.current.registerBackground({
+            nodeId: message.id,
+            workspaceId: message.workspaceId ?? selectedWorkspaceId,
+            parentId: message.parentId ?? null,
+            role: message.role ?? 'assistant',
+        });
+        if (agentRunManager.projectionWatcherSnapshot(message.id).hasWatchers) {
+            void promoteStreamForNodeRef.current(message, { reason: 'existing-watcher' });
+        }
+    }, [selectedWorkspaceId]);
+
+    const clearFullStreamDowngrade = useCallback((nodeId: string) => {
+        const timer = fullStreamDowngradeTimersRef.current.get(nodeId);
+        if (timer !== undefined) {
+            window.clearTimeout(timer);
+            fullStreamDowngradeTimersRef.current.delete(nodeId);
+        }
+    }, []);
+
+    const scheduleFullStreamDowngrade = useCallback((nodeId: string) => {
+        clearFullStreamDowngrade(nodeId);
+        const timer = window.setTimeout(() => {
+            fullStreamDowngradeTimersRef.current.delete(nodeId);
+            const message = activeAgentMessageByIdRef.current.get(nodeId);
+            if (!message) return;
+            if (!isInProgressStatus(message.status)) return;
+            if (agentRunManager.projectionWatcherSnapshot(nodeId).hasWatchers) return;
+            registerBackgroundStreamForNode(message);
+        }, FULL_STREAM_UNWATCHED_GRACE_MS);
+        fullStreamDowngradeTimersRef.current.set(nodeId, timer);
+    }, [clearFullStreamDowngrade, isInProgressStatus, registerBackgroundStreamForNode]);
+
+    const promoteStreamForNode = useCallback(async (
+        nodeId: string,
+        node: Message,
+        options: { reason: string },
+    ) => {
+        clearFullStreamDowngrade(nodeId);
+        const mode = streamRegistryRef.current.mode(nodeId);
+        if (mode === 'full' || mode === 'promoting') return;
+        await startStreamForNode(node, {
+            waitForReady: false,
+            parentId: node.parentId ?? null,
+            reason: options.reason,
+        });
+    }, [clearFullStreamDowngrade, startStreamForNode]);
+
+    useEffect(() => {
+        promoteStreamForNodeRef.current = (node, options) => promoteStreamForNode(node.id, node, options);
+    }, [promoteStreamForNode]);
+
+    useEffect(() => {
+        return agentRunManager.subscribeProjectionWatchers((event) => {
+            if (event.hasWatchers) {
+                clearFullStreamDowngrade(event.nodeId);
+                const message = activeAgentMessageByIdRef.current.get(event.nodeId);
+                if (!message) return;
+                void promoteStreamForNode(event.nodeId, message, { reason: 'watcher' });
+                return;
+            }
+            scheduleFullStreamDowngrade(event.nodeId);
+        });
+    }, [clearFullStreamDowngrade, promoteStreamForNode, scheduleFullStreamDowngrade]);
 
     // --- NEW: State for Slash Command Popover ---
     const [isCommandPopoverOpen, setIsCommandPopoverOpen] = useState(false);
@@ -2559,7 +2670,6 @@ export function ChatInput({
     const contextControlLabel = contextPolicy === 'fresh'
         ? 'Fresh context'
         : contextParentLabel;
-    const branchParentScopeId = branchParentMessage?.scope_id || null;
     const isParentContextInactive = branchParentMessage?.context_active === false;
     const parentStatus = resolveNodeState(branchParentMessage, null).status;
     const isParentIncomplete = !!replyParentMessageId &&
@@ -2579,11 +2689,40 @@ export function ChatInput({
         isNewThreadTarget,
         isSelectedNodeRunning,
     });
-    const effectiveScopeModeForReply = 'inherit' as const;
-    const effectiveScopeIdForReply = useMemo<string | null>(() => {
-        if (replyParentMessageId) return branchParentScopeId;
-        return activeScopeId || null;
-    }, [activeScopeId, branchParentScopeId, replyParentMessageId]);
+    const startFlowStreamForNode = useCallback(
+        (node: Message, options: { authToken: string; parentId: string | null }) => (
+            startStreamForNode(node, {
+                waitForReady: false,
+                authToken: options.authToken,
+                parentId: options.parentId,
+            })
+        ),
+        [startStreamForNode]
+    );
+    const flowRunner = useAgentFlowRunner({
+        workspaceId: selectedWorkspaceId,
+        selectedAgentId,
+        selectedAgentType: selectedAgent?.type ?? null,
+        baseNodeId: defaultBaseResolution.selectedFromNodeId ?? replyParentMessageId,
+        baseCommitSha: effectiveBaseCommitSha,
+        agentCliArgs: selectedAgent?.cliArgs ?? null,
+        agentPromptFlag: selectedAgent?.promptFlag ?? null,
+        agentName: selectedAgent?.name ?? null,
+        llmModel: selectedFlowLlmModel,
+        reasoningEffort: selectedFlowReasoningEffort,
+        startStreamForNode: startFlowStreamForNode,
+    });
+    const handleRunFlow = useCallback(async (input: { input: string; count: number }) => {
+        try {
+            await flowRunner.runFlow(input);
+        } catch (error) {
+            addToast({
+                title: 'Flow failed',
+                description: error instanceof Error ? error.message : 'Agentree could not run this flow.',
+                variant: 'error',
+            });
+        }
+    }, [addToast, flowRunner]);
     const codeParentCommit = effectiveBaseCommitSha;
     const codeParentBranchNames = selectedBasePickerItem?.refNames ?? [];
     const codeParentUsesBranchName = codeParentBranchNames.length > 0;
@@ -2690,18 +2829,10 @@ export function ChatInput({
             if (message.workspaceId !== selectedWorkspaceId) continue;
             if (message.role !== 'assistant') continue;
             if (!isInProgressStatus(message.status)) continue;
-            if (streamHandlerMapRef.current.has(message.id)) continue;
-            void startStreamForNode(message, {
-                waitForReady: false,
-                parentId: message.parentId ?? null,
-            }).catch((error) => {
-                console.warn('[ChatInput] Failed to hydrate active native run stream:', {
-                    nodeId: message.id,
-                    error,
-                });
-            });
+            if (streamRegistryRef.current.has(message.id)) continue;
+            registerBackgroundStreamForNode(message);
         }
-    }, [isInProgressStatus, persistedMessages, selectedWorkspaceId, startStreamForNode]);
+    }, [isInProgressStatus, persistedMessages, registerBackgroundStreamForNode, selectedWorkspaceId]);
 
     const uploadFile = useCallback(async (attachmentId: string, file: File) => {
         sendFlowDebug('Upload starting', { filename: file.name, attachmentId });
@@ -2971,6 +3102,55 @@ export function ChatInput({
         setSelectedAgentId(nextSelectedAgentId);
     }, [agents, normalizedSelectedAgentRunCounts, setSelectedAgentId]);
 
+    const renderAgentModelSelector = ({ mode }: { mode: 'chat' | 'flow' }) => {
+        const supportsMultiRun = mode === 'chat';
+        const selectorLabel = supportsMultiRun && selectedRunTotal > 1
+            ? `${selectedRunTotal} runs`
+            : selectedAgent?.name || 'Choose model';
+
+        return (
+            <Popover open={isAgentPickerOpen} onOpenChange={handleAgentPickerOpenChange}>
+                <PopoverTrigger asChild>
+                    <button
+                        type="button"
+                        disabled={isSendingMessage || !selectedWorkspaceId}
+                        className={cn(
+                            "flex h-7 max-w-[200px] flex-shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong))] pl-1.5 pr-2 text-left shadow-[0_1px_2px_rgba(22,26,32,0.05)] transition-all",
+                            "hover:border-[hsl(var(--app-border-strong))] hover:bg-background",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1",
+                            "disabled:cursor-not-allowed disabled:opacity-50"
+                        )}
+                        aria-label={mode === 'flow' ? 'Select flow model' : 'Select model'}
+                    >
+                        <div className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded bg-[hsl(var(--app-warning)/0.14)] text-[hsl(var(--app-warning))] shadow-[inset_0_0_0_1px_rgba(182,120,41,0.16)]">
+                            <Bot className="h-3 w-3" />
+                        </div>
+                        <span className="max-w-[140px] truncate text-[11.5px] font-semibold text-foreground">
+                            {selectorLabel}
+                        </span>
+                        <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+                    </button>
+                </PopoverTrigger>
+                <PopoverContent
+                    disableAnimation
+                    className={cn(composerPopupLayerClass, "w-[620px] p-0")}
+                    side="top"
+                    align="start"
+                    sideOffset={8}
+                >
+                    <div className="h-[390px]">
+                        <UnifiedAgentModelSelector
+                            onSelectAgent={handleAgentSelect}
+                            selectedAgentId={selectedAgentId}
+                            agentRunCounts={supportsMultiRun ? normalizedSelectedAgentRunCounts : undefined}
+                            onAgentRunCountChange={supportsMultiRun ? handleAgentRunCountChange : undefined}
+                        />
+                    </div>
+                </PopoverContent>
+            </Popover>
+        );
+    };
+
     const handleFileMentionSelect = useCallback((file: RepoMentionFile) => {
         if (!activeFileMention) {
             return;
@@ -2997,6 +3177,7 @@ export function ChatInput({
     const handlePromptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
         const newPrompt = e.target.value;
         promptRef.current = newPrompt;
+        setPrompt(newPrompt);
 
         const nextHasContent = newPrompt.trim().length > 0;
         if (nextHasContent !== promptHasContent) {
@@ -3017,13 +3198,10 @@ export function ChatInput({
         }
 
         if (nextMention) {
-            setPrompt(newPrompt);
             setIsCommandPopoverOpen(false);
         } else if (newPrompt.endsWith('/')) {
-            setPrompt(newPrompt);
             setIsCommandPopoverOpen(true);
         } else if (isCommandPopoverOpen && !newPrompt.includes('/')) {
-            setPrompt(newPrompt);
             setIsCommandPopoverOpen(false);
         }
     };
@@ -3307,8 +3485,6 @@ export function ChatInput({
         });
         const resolvedParentMessage = sendParentMessageId ? messageById.get(sendParentMessageId) ?? null : null;
 
-        const effectiveScopeMode = effectiveScopeModeForReply;
-        const effectiveNewScopeName = null;
         const sendContextPolicy: ContextPolicy = isNewThreadTarget ? 'fresh' : contextPolicy;
         const effectiveContextMode: ContextMode = sendContextPolicy === 'fresh' ? 'none' : contextMode;
         const defaultSendContextParentMessage = resolveConversationContextMessage(sendParentMessageId, messageById);
@@ -3325,16 +3501,10 @@ export function ChatInput({
                     ? effectiveContextStartId || null
                     : resolveContextStartMessage(sendContextParentId, messageLookupMessages, messageById)?.id ?? null
         );
-        const sendScopeParentId = effectiveScopeMode === 'inherit'
-            ? sendParentMessageId
-            : null;
-
+        const sendThreadOriginId = sendParentMessageId ? null : crypto.randomUUID();
         // --- 3. CREATE OPTIMISTIC MESSAGES (IMMEDIATE UI UPDATE) ---
         const parentPathIds = resolvedParentMessage?.path_ids || [];
         const parentDepth = resolvedParentMessage?.depth ?? -1;
-        const parentScopeId = resolvedParentMessage?.scope_id || branchParentScopeId;
-
-        const replyScopeId = effectiveScopeIdForReply || parentScopeId || null;
 
         const composerTurnTopology = buildComposerAgentTurnTopology(agentRunItemsForSend, sendParentMessageId);
         const shouldCreateSiblingTurns = hasLocalAgentRuntime && composerTurnTopology.length > 1;
@@ -3346,7 +3516,6 @@ export function ChatInput({
                     parentId: run.userParentId,
                     content: currentPrompt.trim(),
                     attachments: structuredAttachments,
-                    scopeId: replyScopeId,
                     pathIds: parentPathIds,
                     depth: parentDepth + 1,
                     role: 'user',
@@ -3394,7 +3563,6 @@ export function ChatInput({
                         parentId: optimisticPair.userMessageId,
                         content: '',
                         attachments: [],
-                        scopeId: replyScopeId,
                         pathIds: optimisticPair.userMessage.path_ids ?? [optimisticPair.userMessageId],
                         depth: optimisticPair.userMessage.depth ?? parentDepth + 1,
                         role: 'assistant',
@@ -3462,10 +3630,23 @@ export function ChatInput({
             }, { source: 'ChatInput' });
         };
 
+        if (sendThreadOriginId) {
+            for (const userMessage of optimisticUserMessages) {
+                userMessage.execution_data = {
+                    ...(userMessage.execution_data || {}),
+                    meta: {
+                        ...(((userMessage.execution_data as any)?.meta) || {}),
+                        thread_origin_id: sendThreadOriginId,
+                    },
+                };
+            }
+        }
+
         if (sendContextPolicy === 'fresh' || sendContextParentId) {
             for (const userMessage of optimisticUserMessages) {
                 userMessage.execution_data = {
                     meta: {
+                        ...(((userMessage.execution_data as any)?.meta) || {}),
                         context_policy: sendContextPolicy,
                         context_boundary_from_node_id: sendContextPolicy === 'fresh' ? sendParentMessageId : null,
                         context_parent_node_id: sendContextPolicy === 'fresh' ? null : sendContextParentId,
@@ -3795,7 +3976,6 @@ export function ChatInput({
                         prompt: expandedPromptForAgent,
                         authToken: token,
                         autoCheckout: shouldAutoCheckout,
-                        scopeMode: effectiveScopeMode,
                         contextPolicy: sendContextPolicy,
                         parentMessageId: run.userMessageId,
                         baseMessageId: sendParentMessageId,
@@ -3827,7 +4007,6 @@ export function ChatInput({
                 operationKey,
                 parentId: sendParentMessageId,
                 contextParentId: sendContextParentId,
-                scopeParentId: sendScopeParentId,
             }, { source: 'ChatInput' });
 
             const response = await sendMessageMutation.mutateAsync({
@@ -3842,12 +4021,8 @@ export function ChatInput({
                 agentId: primarySelectedAgent.id,
                 agentProvider: primarySelectedAgent?.type || null,
                 llmModel: selectedLlmModel,
-                activeScopeId: activeScopeId || null,
-                scopeId: null,
-                scopeMode: effectiveScopeMode,
                 contextParentId: sendContextParentId,
-                scopeParentId: sendScopeParentId,
-                newScopeName: effectiveNewScopeName,
+                threadOriginId: sendThreadOriginId,
                 perfFlowId: flowId,
                 signal: controller.signal,
             });
@@ -4012,7 +4187,6 @@ export function ChatInput({
                         prompt: expandedPromptForAgent,
                         authToken: token,
                         autoCheckout: shouldAutoCheckout,
-                        scopeMode: effectiveScopeMode,
                         contextPolicy: sendContextPolicy,
                         parentMessageId: response.userMessage!.id,
                         baseMessageId: sendParentMessageId,
@@ -4139,12 +4313,8 @@ export function ChatInput({
         autoCheckoutOnAgentCommit,
         selectedWorkspaceId,
         selectedWorkspace,
-        activeScopeId,
-        branchParentScopeId,
         effectiveContextParentId,
         effectiveContextStartId,
-        effectiveScopeIdForReply,
-        effectiveScopeModeForReply,
         contextPolicy,
         branchParentMessage,
         effectiveBaseCommitSha,
@@ -4277,7 +4447,6 @@ export function ChatInput({
         prompt: string;
         authToken: string;
         autoCheckout: boolean;
-        scopeMode: string;
         contextPolicy: ContextPolicy;
         parentMessageId: string;
         baseMessageId: string | null;
@@ -4286,7 +4455,7 @@ export function ChatInput({
     }
 
     const runAgentSetupInBackground = async (params: AgentSetupParams): Promise<void> => {
-        const { nodeId, assistantMsg, prompt, authToken, autoCheckout, scopeMode, contextPolicy, baseMessageId, contextParentMessageId, contextStartMessageId } = params;
+        const { nodeId, assistantMsg, prompt, authToken, autoCheckout, contextPolicy, baseMessageId, contextParentMessageId, contextStartMessageId } = params;
         const isCodexAgent = selectedAgent?.type === 'codex';
         const runId = crypto.randomUUID();
 
@@ -4441,7 +4610,6 @@ export function ChatInput({
             const hasPotentialAgentreeContext = contextPolicy !== 'fresh' && Boolean(providerParentMessage?.id);
             const providerRouting = resolveProviderContextRouting({
                 continuation: providerContinuation,
-                scopeMode,
                 contextMode: contextPolicy === 'fresh' ? 'none' : contextMode,
                 contextPolicy,
                 hasSelectedAgentreeContext: hasPotentialAgentreeContext,
@@ -4466,7 +4634,6 @@ export function ChatInput({
                 const selection = buildComposerContextSelection(
                     providerParentMessage.id,
                     messageLookupMessages,
-                    null,
                     null,
                     'continue',
                     contextStartMessageId
@@ -5362,6 +5529,37 @@ export function ChatInput({
                     </div>
                 </div>
 
+                <div className="flex items-center gap-1 border-b border-[hsl(var(--app-border)/0.48)] bg-[hsl(var(--app-bg-elevated)/0.46)] px-2.5 py-1">
+                    <button
+                        type="button"
+                        onClick={() => setComposerMode('chat')}
+                        className={cn(
+                            "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-semibold transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.96]",
+                            composerMode === 'chat'
+                                ? "bg-background text-foreground shadow-[0_1px_2px_rgba(22,26,32,0.06),inset_0_0_0_1px_hsl(var(--app-border)/0.75)]"
+                                : "text-muted-foreground hover:bg-background/70 hover:text-foreground"
+                        )}
+                        aria-pressed={composerMode === 'chat'}
+                    >
+                        <Send className="h-3.5 w-3.5" />
+                        Chat
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setComposerMode('flow')}
+                        className={cn(
+                            "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-semibold transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.96]",
+                            composerMode === 'flow'
+                                ? "bg-background text-foreground shadow-[0_1px_2px_rgba(22,26,32,0.06),inset_0_0_0_1px_hsl(var(--app-border)/0.75)]"
+                                : "text-muted-foreground hover:bg-background/70 hover:text-foreground"
+                        )}
+                        aria-pressed={composerMode === 'flow'}
+                    >
+                        <Workflow className="h-3.5 w-3.5" />
+                        Flow
+                    </button>
+                </div>
+
                 {/* Context Chips Area */}
                 {contextIds.length > 0 && (
                     <div className="px-2.5 pt-1.5 pb-0">
@@ -5533,50 +5731,12 @@ export function ChatInput({
                     </PopoverContent>
                 </Popover>
 
-                {/* Bottom Action Bar */}
+                {composerMode === 'chat' ? (
                 <div className="flex items-center justify-between gap-2.5 border-t border-[hsl(var(--app-border)/0.55)] bg-[hsl(var(--app-bg-elevated)/0.58)] px-2.5 py-1">
                     {/* Left Actions */}
                     <div className="flex min-w-0 items-center gap-1.5">
                         {/* Model Selector - Modern chip style */}
-                        <Popover open={isAgentPickerOpen} onOpenChange={handleAgentPickerOpenChange}>
-                            <PopoverTrigger asChild>
-                                <button
-                                    type="button"
-                                    disabled={isSendingMessage || !selectedWorkspaceId}
-                                    className={cn(
-                                        "flex h-7 max-w-[200px] flex-shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong))] pl-1.5 pr-2 text-left shadow-[0_1px_2px_rgba(22,26,32,0.05)] transition-all",
-                                        "hover:border-[hsl(var(--app-border-strong))] hover:bg-background",
-                                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1",
-                                        "disabled:cursor-not-allowed disabled:opacity-50"
-                                    )}
-                                    aria-label="Select model"
-                                >
-                                    <div className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded bg-[hsl(var(--app-warning)/0.14)] text-[hsl(var(--app-warning))] shadow-[inset_0_0_0_1px_rgba(182,120,41,0.16)]">
-                                        <Bot className="h-3 w-3" />
-                                    </div>
-                                    <span className="max-w-[140px] truncate text-[11.5px] font-semibold text-foreground">
-                                        {selectedRunTotal > 1 ? `${selectedRunTotal} runs` : selectedAgent?.name || 'Choose model'}
-                                    </span>
-                                    <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/70" />
-                                </button>
-                            </PopoverTrigger>
-                            <PopoverContent
-                                disableAnimation
-                                className={cn(composerPopupLayerClass, "w-[620px] p-0")}
-                                side="top"
-                                align="start"
-                                sideOffset={8}
-                            >
-                                <div className="h-[390px]">
-                                    <UnifiedAgentModelSelector
-                                        onSelectAgent={handleAgentSelect}
-                                        selectedAgentId={selectedAgentId}
-                                        agentRunCounts={normalizedSelectedAgentRunCounts}
-                                        onAgentRunCountChange={handleAgentRunCountChange}
-                                    />
-                                </div>
-                            </PopoverContent>
-                        </Popover>
+                        {renderAgentModelSelector({ mode: 'chat' })}
 
                         {selectedAgentRunChips.length > 0 ? (
                             <div className="hidden min-w-0 items-center gap-1 sm:flex">
@@ -5704,6 +5864,20 @@ export function ChatInput({
                         </button>
                     </div>
                 </div>
+                ) : (
+                    <ComposerFlowTab
+                        flows={flowRunner.flows}
+                        selectedFlowId={flowRunner.selectedFlowId}
+                        onSelectFlow={flowRunner.setSelectedFlowId}
+                        prompt={prompt}
+                        workspaceId={selectedWorkspaceId}
+                        selectedAgentId={selectedAgentId}
+                        isRunning={flowRunner.isRunning}
+                        events={flowRunner.events}
+                        onRunFlow={handleRunFlow}
+                        modelSelector={renderAgentModelSelector({ mode: 'flow' })}
+                    />
+                )}
             </div>
         </div>
     );

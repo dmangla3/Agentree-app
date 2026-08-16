@@ -10,7 +10,6 @@ export const TimelineSummaryRow = memo(({
   entity,
   isFocused,
   isSelected,
-  scopeColor,
   showSelectionControl,
   disableHoverCard,
   hoverCardContent,
@@ -27,7 +26,6 @@ export const TimelineSummaryRow = memo(({
       rowId={nodeId}
       isFocused={isFocused}
       isSelected={isSelected}
-      scopeColor={scopeColor}
       onFocus={onFocus}
       onSelect={onSelect}
       onContextMenu={onContextMenu}

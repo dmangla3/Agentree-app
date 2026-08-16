@@ -11,13 +11,14 @@ import { hasFreshContextBoundary } from './messageContext';
 import { resolveNodeState } from './runStateResolver';
 import { getMessageBaseCommitSha, getMessageOutputCommitSha } from './graph/commitAccessors';
 import { getVisibleCommitProjection } from './graphCommitVisibility';
+import { getThreadOriginNodeId } from './graphThreadRoots';
 
 // --- Interface ---
 export interface LlmNodeData {
   [key: string]: unknown;
   entity?: ProjectedNodeEntity;
   message: Message;
-  nodeKind?: 'user_message' | 'assistant_message' | 'commit_message';
+  nodeKind?: 'thread_origin' | 'user_message' | 'assistant_message' | 'commit_message';
   repoPath?: string | null;
   branchPointers?: BranchPointer[];
   isFocused: boolean;
@@ -46,12 +47,6 @@ export interface LlmNodeData {
   onToggleCollapse?: (id: string, collapsed: boolean) => void; // Callback to toggle collapse
   hiddenDescendantCount?: number; // Number of hidden descendants
   isContextActive?: boolean; // Whether this node is active for context
-  scopeId?: string | null;
-  scopeName?: string | null;
-  scopeColor?: string | null;
-  isInActiveScope?: boolean;
-  isScopeBoundary?: boolean;
-  scopeDimmed?: boolean;
 }
 
 export interface SummaryNodeData {
@@ -167,7 +162,7 @@ const FOCUSED_SUMMARY_EDGE_STROKE_WIDTH = 6.5;
 const ACTIVE_EDGE_STROKE = '#4f46e5';
 const INACTIVE_EDGE_STROKE = '#64748b';
 
-const CANONICAL_MESSAGE_NODE_TYPES = new Set(['user_message', 'assistant_message', 'commit_message']);
+const CANONICAL_MESSAGE_NODE_TYPES = new Set(['thread_origin', 'user_message', 'assistant_message', 'commit_message']);
 const CANONICAL_SUMMARY_NODE_TYPES = new Set(['summary_block']);
 const TURN_LAYOUT_NODE_TYPE = '__turn_layout_unit__';
 const TURN_NODE_GAP = 0;
@@ -185,6 +180,7 @@ const isPrimaryLayoutNodeType = (type?: string | null) => !isHullNodeType(type) 
 const getNodeWidth = (node: Node<any>): number => {
   const explicitWidth = typeof node.style?.width === 'number' ? node.style.width : null;
   if (explicitWidth) return explicitWidth;
+  if (node.type === 'thread_origin') return TURN_CONVERSATION_NODE_WIDTH;
   if (node.type === 'assistant_message') return TURN_CONVERSATION_NODE_WIDTH;
   if (node.type === 'user_message') return TURN_CONVERSATION_NODE_WIDTH;
   if (node.type === 'commit_message') return TURN_COMMIT_NODE_WIDTH;
@@ -200,6 +196,7 @@ const getNodeHeight = (node: Node<any>): number => {
   if (node.type === 'commit_message') return TURN_COMMIT_NODE_HEIGHT;
   if (node.type === 'canonical_commit') return TURN_COMMIT_NODE_HEIGHT;
   if (node.type === 'layout_derived_commit_group') return 118;
+  if (node.type === 'thread_origin') return 64;
   if (node.type === 'assistant_message') return 112;
   if (node.type === 'user_message') return 82;
   return NODE_HEIGHT;
@@ -402,6 +399,7 @@ const getNodeSortTs = (node: Node<any>): number => {
 
 const getTurnMemberPriority = (node: Node<any>): number => {
   const kind = (node.data as any)?.entity?.kind;
+  if (kind === 'thread_origin') return -1;
   if (kind === 'user_message') return 0;
   if (kind === 'assistant_message') return 1;
   if (kind === 'commit_message' || isCommitLaneLayoutMember(node)) return 2;
@@ -458,7 +456,7 @@ const getTurnCommitMembers = (members: Node<any>[]): Node<any>[] => (
 const hasTurnConversationMembers = (members: Node<any>[]): boolean => (
   members.some((member) => {
     const kind = getNodeEntityKind(member);
-    return kind === 'user_message' || kind === 'assistant_message';
+    return kind === 'thread_origin' || kind === 'user_message' || kind === 'assistant_message';
   })
 );
 
@@ -547,7 +545,7 @@ const buildLayoutModel = (
   const layoutUnits = new Map<string, LayoutUnit>();
   const hasVisibleConversationLayer = nodes.some((node) => {
     const kind = getNodeEntityKind(node);
-    return kind === 'user_message' || kind === 'assistant_message';
+    return kind === 'thread_origin' || kind === 'user_message' || kind === 'assistant_message';
   });
   const hasVisibleCommitLayer = nodes.some(isCommitLaneLayoutMember);
   const reserveEmptyLanes = hasVisibleConversationLayer && hasVisibleCommitLayer;
@@ -1000,7 +998,7 @@ const applyTurnGroupHullBounds = <T extends Node<any>>(nodes: T[]): T[] => {
   const nodesById = new Map(result.map(node => [node.id, node]));
   const hasVisibleConversationLayer = result.some((node) => {
     const kind = getNodeEntityKind(node);
-    return kind === 'user_message' || kind === 'assistant_message';
+    return kind === 'thread_origin' || kind === 'user_message' || kind === 'assistant_message';
   });
   const hasVisibleCommitLayer = result.some((node) => !isHullNodeType(node.type) && isCommitLaneLayoutMember(node));
   const shouldCoverFullTurnSlot = hasVisibleConversationLayer && hasVisibleCommitLayer;
@@ -1024,7 +1022,7 @@ const applyTurnGroupHullBounds = <T extends Node<any>>(nodes: T[]): T[] => {
       const width = getNodeWidth(memberNode);
       const height = getNodeHeight(memberNode);
       const kind = getNodeEntityKind(memberNode);
-      hasConversationMember = hasConversationMember || kind === 'user_message' || kind === 'assistant_message';
+      hasConversationMember = hasConversationMember || kind === 'thread_origin' || kind === 'user_message' || kind === 'assistant_message';
       hasCommitMember = hasCommitMember || isCommitLaneLayoutMember(memberNode);
       minX = Math.min(minX, memberNode.position.x);
       minY = Math.min(minY, memberNode.position.y);
@@ -1325,15 +1323,6 @@ export const calculateCumulativeTokens = (
 
 
 // --- Graph Element Mapping Function ---
-const readLookupValue = <T,>(
-  lookup: Map<string, T> | Record<string, T> | null | undefined,
-  key: string
-): T | undefined => {
-  if (!lookup) return undefined;
-  if (lookup instanceof Map) return lookup.get(key);
-  return lookup[key];
-};
-
 export const mapMessagesToGraphElements = (
   projection: WorkspaceProjection,
   messages: Message[],
@@ -1352,17 +1341,13 @@ export const mapMessagesToGraphElements = (
   showInsightsInGraph: boolean = false, // Whether to show insights as ghost nodes
   workspaceRepoMap: Map<string, string | null> = new Map(),
   branchPointersByNodeId: Map<string, BranchPointer[]> = new Map(),
-  activeScopeId: string | null = null,
-  scopeViewMode: 'project' | 'scope' = 'project',
-  scopeNameById: Map<string, string> = new Map(),
-  scopeColorById: Map<string, string | null> = new Map(),
   onToggleCollapse: (id: string, collapsed: boolean) => void = () => { }, // New callback
   onFocus: (id: string) => void = () => { },
   onSelect: (id: string, multi: boolean) => void = () => { },
   onContextMenu: (id: string, e: React.MouseEvent) => void = () => { },
   onMeasureNodeHeight: (id: string, height: number) => void = () => { },
   visibleNodeSections: Set<'conversation' | 'commits'> = new Set(['conversation', 'commits']),
-  scopedCommitFiltering: boolean = false,
+  constrainedCommitFiltering: boolean = false,
   pinnedCommitShas: Set<string> = new Set(),
   hiddenThreadRootIds: Set<string> = new Set()
 ): { nodes: Node<LlmNodeData | SummaryNodeData | Record<string, unknown> | any>[]; edges: Edge[] } => {
@@ -1671,27 +1656,27 @@ export const mapMessagesToGraphElements = (
       return getMessageOutputCommitSha(parentAssistantMessage);
     };
 
-    const scopedCommitShas = new Set<string>();
-    const addScopedCommitSha = (sha: string | null | undefined) => {
+    const constrainedCommitShas = new Set<string>();
+    const addConstrainedCommitSha = (sha: string | null | undefined) => {
       const normalized = typeof sha === 'string' ? sha.trim() : '';
-      if (normalized) scopedCommitShas.add(normalized);
+      if (normalized) constrainedCommitShas.add(normalized);
     };
 
-    if (scopedCommitFiltering) {
-      pinnedCommitShas.forEach(addScopedCommitSha);
+    if (constrainedCommitFiltering) {
+      pinnedCommitShas.forEach(addConstrainedCommitSha);
       messages.forEach((message) => {
         if (!matchingMessageIds.has(message.id)) return;
-        addScopedCommitSha(getMessageOutputCommitSha(message));
-        addScopedCommitSha(getMessageBaseCommitSha(message));
-        getRawGitParentShas(message).forEach(addScopedCommitSha);
+        addConstrainedCommitSha(getMessageOutputCommitSha(message));
+        addConstrainedCommitSha(getMessageBaseCommitSha(message));
+        getRawGitParentShas(message).forEach(addConstrainedCommitSha);
         if (message.role === 'assistant') {
-          addScopedCommitSha(inferAssistantBaseCommitSha(message));
+          addConstrainedCommitSha(inferAssistantBaseCommitSha(message));
         }
       });
       projection.commitBySha.forEach((commit) => {
         if (commit.producedByNodeId && matchingMessageIds.has(commit.producedByNodeId)) {
-          addScopedCommitSha(commit.sha);
-          commit.parentShas.forEach(addScopedCommitSha);
+          addConstrainedCommitSha(commit.sha);
+          commit.parentShas.forEach(addConstrainedCommitSha);
         }
       });
     }
@@ -1727,10 +1712,10 @@ export const mapMessagesToGraphElements = (
     const visibleCommitGroups = commitVisibility?.visibleCommitGroups ?? projection.layoutDerivedCommitGroups;
 
     const shouldRenderCanonicalCommitSha = (sha: string): boolean => (
-      (!commitVisibility || commitVisibility.visibleCommitShas.has(sha)) && (!scopedCommitFiltering || scopedCommitShas.has(sha))
+      (!commitVisibility || commitVisibility.visibleCommitShas.has(sha)) && (!constrainedCommitFiltering || constrainedCommitShas.has(sha))
     );
-    const visibleLayoutDerivedCommitGroups = scopedCommitFiltering
-      ? visibleCommitGroups.filter((group) => group.commitShas.some((sha) => scopedCommitShas.has(sha)))
+    const visibleLayoutDerivedCommitGroups = constrainedCommitFiltering
+      ? visibleCommitGroups.filter((group) => group.commitShas.some((sha) => constrainedCommitShas.has(sha)))
       : visibleCommitGroups;
 
     visibleLayoutDerivedCommitGroups.forEach((group) => {
@@ -1754,9 +1739,62 @@ export const mapMessagesToGraphElements = (
 
     const externalClusterByAssistantId = new Map<string, string>();
     const externalClusterByAssistantCommitKey = new Map<string, string>();
+    const renderedThreadOriginIds = new Set<string>();
+
+    if (showConversationNodes) {
+      projection.threadRootIds.forEach((threadRootId) => {
+        if (hiddenThreadRootIds.has(threadRootId)) return;
+        const rootMessageId = projection.rootMessageIdByThreadRootId.get(threadRootId);
+        const rootMessage = rootMessageId ? messageMap.get(rootMessageId) ?? null : null;
+        const entity = projection.entitiesById.get(`thread_origin:${threadRootId}`);
+        if (!rootMessage || !entity) return;
+        const graphParentId = getGraphParentId(rootMessage, messageMap);
+        const graphParent = graphParentId ? messageMap.get(graphParentId) ?? null : null;
+        const replacesLegacyWelcomeOrigin = isOriginWelcomeMessage(graphParent);
+        const isMetadataBackedOrigin = threadRootId !== rootMessage.id;
+        if (!isMetadataBackedOrigin && !replacesLegacyWelcomeOrigin) return;
+        const hasVisibleThreadMessage = messages.some((message) => (
+          projection.threadRootIdByMessageId.get(message.id) === threadRootId &&
+          !hiddenNodes.has(message.id) &&
+          isMessageInVisibleBranch(message.id)
+        ));
+        if (!hasVisibleThreadMessage) return;
+
+        const nodeId = getThreadOriginNodeId(threadRootId);
+        renderedThreadOriginIds.add(threadRootId);
+        nodes.push({
+          id: nodeId,
+          type: 'thread_origin',
+          position: { x: 0, y: 0 },
+          data: {
+            entity,
+            projection,
+            isSelected: false,
+            heightKey: `thread-origin:${threadRootId}`,
+            onFocus,
+            onSelect,
+            onContextMenu,
+            message: entity.message!,
+            nodeKind: 'thread_origin',
+            repoPath: workspaceRepoMap.get(rootMessage.workspaceId) ?? null,
+            branchPointers: [],
+            isFocused: focusedMessageId === rootMessage.id,
+            isInContextPath: false,
+            llmColor: 'bg-gradient-to-br from-zinc-100 to-zinc-200',
+            matchesTagFilter: true,
+            filterActive,
+            isDense: false,
+            collapsed: false,
+            isContextActive: true,
+          },
+          style: { width: TURN_CONVERSATION_NODE_WIDTH, height: 64, zIndex: 1 },
+        } as Node<any>);
+      });
+    }
 
     // Create Nodes and Edges
     messages.forEach((msg) => {
+      if (isOriginWelcomeMessage(msg)) return;
       if (hiddenNodes.has(msg.id)) return;
       if (msg.role === 'assistant' && externalClusterByAssistantId.has(msg.id)) return;
       if (msg.role === 'assistant' && !isAssistantVisible(msg.id)) return;
@@ -1781,11 +1819,6 @@ export const mapMessagesToGraphElements = (
         && entity.threadRootId !== projection.originMessageId;
       const matchesTagFilter = !filterActive || matchingMessageIds.has(msg.id);
       const isContextActive = msg.context_active !== false;
-      const scopeId = msg.scope_id ?? null;
-      const isInActiveScope = !!activeScopeId && scopeId === activeScopeId;
-      const isOutsideActiveScope = !!activeScopeId && scopeId !== activeScopeId;
-      const isScopeBoundary = isOutsideActiveScope && scopeViewMode === 'scope';
-      const scopeDimmed = isOutsideActiveScope && scopeViewMode === 'project' && !isFocused && !isInContextPathNode;
       const llmColor = msg.role === 'user'
         ? 'bg-gradient-to-br from-slate-500 to-slate-700'
         : nodeKind === 'commit_message'
@@ -1857,12 +1890,6 @@ export const mapMessagesToGraphElements = (
             isAgentRunning: ['pending', 'running', 'streaming'].includes(String(resolveNodeState(msg, null).status ?? '')),
             agentId: msg.agent_id ?? null,
             isContextActive,
-            scopeId,
-            scopeName: scopeId ? (readLookupValue(scopeNameById, scopeId) || null) : null,
-            scopeColor: scopeId ? (readLookupValue(scopeColorById, scopeId) || null) : null,
-            isInActiveScope,
-            isScopeBoundary,
-            scopeDimmed,
           },
           style: { width, height, zIndex: 1 },
         } as Node<any>);
@@ -1926,7 +1953,6 @@ export const mapMessagesToGraphElements = (
           authoredAt: typeof ((msg.execution_data as any)?.meta || {}).git_authored_at === 'string'
             ? ((msg.execution_data as any).meta.git_authored_at as string)
             : msg.updatedAt ?? msg.createdAt ?? null,
-          scopeId,
           threadRootId: entity.threadRootId ?? null,
         };
         const commitFilesChanged = getFilesChanged(syntheticCommitMessage);
@@ -1974,12 +2000,6 @@ export const mapMessagesToGraphElements = (
             isAgentRunning: false,
             agentId: msg.agent_id ?? null,
             isContextActive,
-            scopeId,
-            scopeName: scopeId ? (readLookupValue(scopeNameById, scopeId) || null) : null,
-            scopeColor: scopeId ? (readLookupValue(scopeColorById, scopeId) || null) : null,
-            isInActiveScope,
-            isScopeBoundary,
-            scopeDimmed,
           },
           style: { width: TURN_COMMIT_NODE_WIDTH, height: TURN_COMMIT_NODE_HEIGHT, zIndex: 1 },
         } as Node<any>);
@@ -2042,7 +2062,7 @@ export const mapMessagesToGraphElements = (
 
       if (showConversationNodes && renderMessageNode && msg.role === 'user' && graphParentId) {
         const parentMsg = messageMap.get(graphParentId);
-        if (parentMsg?.role === 'assistant') {
+        if (parentMsg?.role === 'assistant' && !isOriginWelcomeMessage(parentMsg)) {
           if (parentMsg.role === 'assistant' && !externalClusterByAssistantId.has(parentMsg.id) && !isAssistantVisible(parentMsg.id)) return;
           const sourceNodeId = externalClusterByAssistantId.get(parentMsg.id) ?? parentMsg.id;
           const edgeId = `${sourceNodeId}->${msg.id}:conversation`;
@@ -2154,12 +2174,51 @@ export const mapMessagesToGraphElements = (
 
     });
 
-    const firstImportedGroupId = projection.originMessageId
+    if (showConversationNodes && renderedThreadOriginIds.size > 0) {
+      messages.forEach((message) => {
+        if (message.role !== 'user') return;
+        if (hiddenNodes.has(message.id)) return;
+        if (!shouldRenderMessageNode(message.id) || !isMessageInVisibleBranch(message.id)) return;
+        const threadRootId = projection.threadRootIdByMessageId.get(message.id);
+        if (!threadRootId || !renderedThreadOriginIds.has(threadRootId)) return;
+        const graphParentId = getGraphParentId(message, messageMap);
+        const parent = graphParentId ? messageMap.get(graphParentId) ?? null : null;
+        if (graphParentId && !isOriginWelcomeMessage(parent)) return;
+
+        const source = getThreadOriginNodeId(threadRootId);
+        edges.push({
+          id: `${source}->${message.id}:thread-origin`,
+          source,
+          target: message.id,
+          sourceHandle: 'bottom-source',
+          targetHandle: 'top-target',
+          type: 'compactLineage',
+          animated: false,
+          data: {
+            edgeLegendType: 'conversation',
+            relationship: 'conversation',
+            edgeRole: 'conversation',
+          },
+          style: {
+            stroke: INACTIVE_EDGE_STROKE,
+            strokeWidth: DEFAULT_EDGE_STROKE_WIDTH,
+          },
+          className: 'dark:[stroke:#94a3b8]',
+          zIndex: 0,
+        });
+      });
+    }
+
+    const firstRenderedThreadRootId = Array.from(renderedThreadOriginIds)[0] ?? null;
+    const primaryThreadOriginNodeId = firstRenderedThreadRootId
+      ? getThreadOriginNodeId(firstRenderedThreadRootId)
+      : projection.originMessageId;
+    const firstImportedGroupId = primaryThreadOriginNodeId
       ? visibleLayoutDerivedCommitGroups
         .filter((group) => group.sourceKind === 'external')
         .sort((left, right) => left.sortTs - right.sortTs || left.groupId.localeCompare(right.groupId))[0]?.groupId ?? null
       : null;
-    const firstAnchoredImportedCommitSha = projection.originMessageId && !firstImportedGroupId
+    const firstAnchoredImportedCommitSha = primaryThreadOriginNodeId && !firstImportedGroupId
       ? visibleCommitLaneRows
         .filter((row) => row.type === 'commit' && row.commitSha && shouldRenderCanonicalCommitSha(row.commitSha))
         .map((row) => row.commitSha!)
@@ -2180,8 +2239,8 @@ export const mapMessagesToGraphElements = (
         data: {
           group,
           projection,
-          ...(group.groupId === firstImportedGroupId && projection.originMessageId
-            ? { layoutAnchorNodeId: projection.originMessageId }
+          ...(group.groupId === firstImportedGroupId && primaryThreadOriginNodeId
+            ? { layoutAnchorNodeId: primaryThreadOriginNodeId }
             : {}),
           sortTs: group.sortTs,
           isSelected: false,
@@ -2214,8 +2273,8 @@ export const mapMessagesToGraphElements = (
         data: {
           commit: renderedCommit,
           projection,
-          ...(commit.sha === firstAnchoredImportedCommitSha && projection.originMessageId
-            ? { layoutAnchorNodeId: projection.originMessageId }
+          ...(commit.sha === firstAnchoredImportedCommitSha && primaryThreadOriginNodeId
+            ? { layoutAnchorNodeId: primaryThreadOriginNodeId }
             : {}),
           isReferenceOnly,
           sortTs: commit.sortTs,
@@ -2467,7 +2526,6 @@ export const mapMessagesToGraphElements = (
           toolCallCount: undefined,
           totalTokens: null,
           commitCount: undefined,
-          scopeId: parentMsg.scope_id ?? null,
         };
 
         nodes.push({
@@ -2546,9 +2604,6 @@ export const mapMessagesToGraphElements = (
 
       if (!isVisible) return;
 
-      const userMsg = messageMap.get(tg.userMessageId);
-      const scopeId = userMsg?.scope_id ?? null;
-      const scopeColor = scopeId ? (readLookupValue(scopeColorById, scopeId) || null) : null;
       const threadRootId = projection.threadRootIdByMessageId.get(tg.userMessageId) ?? null;
 
       const memberIds = tg.memberEntityIds
@@ -2569,7 +2624,6 @@ export const mapMessagesToGraphElements = (
         position: { x: 0, y: 0 }, // Position will be set by layout
         data: {
           label: tg.userMessageId === originMessageId ? 'Origin' : undefined,
-          scopeColor,
           slotKind: 'turn',
           threadRootId,
           isThreadRoot: threadRootId === tg.userMessageId,

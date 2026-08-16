@@ -135,7 +135,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
 }) => {
   const [query, setQuery] = useState('');
   const [searchType, setSearchType] = useState<'semantic' | 'text' | 'hybrid'>('hybrid');
-  const [scope, setScope] = useState<'all' | 'current_workspace' | 'current_branch'>('all');
+  const [searchArea, setSearchArea] = useState<'all' | 'current_workspace' | 'current_branch'>('all');
   const [filters, setFilters] = useState<SearchFilters>({
     contentTypes: [],
     models: [],
@@ -269,14 +269,14 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
     try {
       const searchFilters = { ...filters };
 
-      if (scope === 'current_workspace' && currentWorkspace?.id) {
+      if (searchArea === 'current_workspace' && currentWorkspace?.id) {
         searchFilters.workspaceId = currentWorkspace.id;
       }
 
       const response = await api.post('/search', {
         query,
         searchType,
-        scope,
+        searchArea,
         filters: searchFilters,
         advancedOptions,
         limit: 50
@@ -288,7 +288,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
     } finally {
       setIsSearching(false);
     }
-  }, [query, searchType, scope, filters, currentWorkspace?.id, advancedOptions]);
+  }, [query, searchType, searchArea, filters, currentWorkspace?.id, advancedOptions]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -296,17 +296,17 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
   };
 
   const handleSaveSearch = () => {
-    const searchToSave = JSON.stringify({ query, filters, scope, advancedOptions });
+    const searchToSave = JSON.stringify({ query, filters, searchArea, advancedOptions });
     if (!savedSearches.includes(searchToSave)) {
       setSavedSearches(prev => [...prev, searchToSave]);
     }
   };
 
   const handleLoadSearch = (searchToLoad: string) => {
-    const { query, filters, scope, advancedOptions } = JSON.parse(searchToLoad);
+    const { query, filters, searchArea, advancedOptions } = JSON.parse(searchToLoad);
     setQuery(query);
     setFilters(filters);
-    setScope(scope);
+    setSearchArea(searchArea ?? 'all');
     setAdvancedOptions(advancedOptions);
   };
 
@@ -473,8 +473,8 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
           <div className="flex items-center gap-3">
             <span className="text-sm font-medium text-muted-foreground">Search in</span>
             <SegmentedControl
-              value={scope}
-              onChange={(v) => setScope(v)}
+              value={searchArea}
+              onChange={(v) => setSearchArea(v)}
               options={[
                 { value: 'all', label: 'All', icon: <Search className="h-3.5 w-3.5" /> },
                 { value: 'current_workspace', label: 'Current', icon: <FileText className="h-3.5 w-3.5" />, disabled: !currentWorkspace },

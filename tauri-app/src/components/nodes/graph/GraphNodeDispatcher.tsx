@@ -2,6 +2,7 @@ import { memo, useCallback } from 'react';
 import type { Node, NodeProps } from '@xyflow/react';
 import { GraphUserNode } from './GraphUserNode';
 import { GraphAssistantNode } from './GraphAssistantNode';
+import { GraphThreadOriginNode } from './GraphThreadOriginNode';
 import { GraphCommitNode } from './GraphCommitNode';
 import { GraphCanonicalCommitNode } from './GraphCanonicalCommitNode';
 import { GraphDerivedCommitGroupNode } from './GraphDerivedCommitGroupNode';
@@ -48,7 +49,6 @@ function GraphNodeHoverCardContent({
   const hoverInput = useGraphHoverProjectionInput();
   const hoverProjection = useWorkspaceProjection(
     hoverInput.messages.length > 0 ? hoverInput.messages : fallbackProjection?.messages ?? [],
-    hoverInput.scopes.length > 0 ? hoverInput.scopes : fallbackProjection?.scopes ?? [],
     hoverInput.summaries.length > 0 ? hoverInput.summaries : fallbackProjection?.summaries ?? [],
     null,
     hoverInput.disabledSummaryIds,
@@ -143,7 +143,6 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
     isSelected,
     isComposerBaseCommit,
     detailLevel,
-    scopeColor: null,
     layout: 'graph' as const,
     heightKey: data.heightKey,
     onMeasureHeight: data.onMeasureHeight,
@@ -198,6 +197,8 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
   if (!data.entity) return null;
 
   switch (data.entity.kind) {
+    case 'thread_origin':
+      return <GraphThreadOriginNode {...sharedProps} entity={data.entity} />;
     case 'user_message':
       return <GraphUserNode {...sharedProps} entity={data.entity} />;
     case 'assistant_message':

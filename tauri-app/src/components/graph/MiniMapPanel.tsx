@@ -51,7 +51,7 @@ const shouldRenderNodeInMinimap = (node: Node<any>): boolean => {
 };
 
 const getNodeColor = (node: Node<any>): string => {
-    const data = node.data as (LlmNodeData & { scopeColor?: string | null; entity?: { scopeColor?: string | null; kind?: string | null } }) | undefined;
+    const data = node.data as (LlmNodeData & { entity?: { kind?: string | null } }) | undefined;
     const entityKind = data?.entity?.kind || node.type;
 
     if (data?.isGhostBranch) return '#8b7cc7';
@@ -73,7 +73,7 @@ const getNodeColor = (node: Node<any>): string => {
 const getNodeStrokeColor = (node: Node<any>): string => {
     if (node.selected) return '#f8fafc';
 
-    const data = node.data as (LlmNodeData & { scopeColor?: string | null; entity?: { scopeColor?: string | null } }) | undefined;
+    const data = node.data as LlmNodeData | undefined;
     if (data?.isFocused) return '#f59e0b';
     if (data?.isInContextPath) return '#8fbf62';
 

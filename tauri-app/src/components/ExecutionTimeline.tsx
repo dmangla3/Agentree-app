@@ -1008,16 +1008,16 @@ function parseCommandSummaryFromShell(command: string): CommandSummaryItem[] {
 
     const rgFiles = trimmed.match(/\brg\s+--files(?:\s+([^\|\&;]+))?/);
     if (rgFiles) {
-        const scope = rgFiles[1]?.trim();
-        return [{ label: 'List', text: scope && scope.length > 0 ? scope : 'files' }];
+        const pathHint = rgFiles[1]?.trim();
+        return [{ label: 'List', text: pathHint && pathHint.length > 0 ? pathHint : 'files' }];
     }
 
     const rgSearch = trimmed.match(/\brg\b(?:[^'"]|\s|'[^']*'|"[^"]*")*?\s(?:-n\s+)?(?:"([^"]+)"|'([^']+)'|([^\s\|]+))(?:\s+([^\|\&;]+))?/);
     if (rgSearch) {
         const query = rgSearch[1] || rgSearch[2] || rgSearch[3];
-        const scope = rgSearch[4]?.trim();
+        const pathHint = rgSearch[4]?.trim();
         if (query) {
-            return [{ label: 'Search', text: scope ? `${query} in ${scope}` : query }];
+            return [{ label: 'Search', text: pathHint ? `${query} in ${pathHint}` : query }];
         }
     }
 

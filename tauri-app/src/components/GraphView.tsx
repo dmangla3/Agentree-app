@@ -14,7 +14,7 @@ import {
 import '@xyflow/react/dist/style.css';
 
 // Stores
-import { useWorkspaceStore, Message, Summary, Scope } from '../stores/workspaceStore';
+import { useWorkspaceStore, Message, Summary } from '../stores/workspaceStore';
 import { getMergeSourcePrunePlan, useIntegrationStore } from '../stores/integrationStore';
 
 // Hooks - Data
@@ -28,7 +28,6 @@ import { branchKeys } from '../hooks/useBranches';
 import { trackedRefKeys, useTrackedRefs } from '../hooks/useTrackedRefs';
 import { useGitSync } from '../hooks/useGitSync';
 import { getEnabledTrackedGitRefs, getTrackedRefsNeedingSync, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
-import { useScopes } from '../hooks/useScopes';
 import { useLocalNodes } from '../hooks/useLocalNodes';
 import { useGraphMessages } from '../hooks/useLiveMessages';
 import { getPublicShareUrl, useCreateNodePublicShare } from '../hooks/useWorkspacePublicShare';
@@ -42,7 +41,7 @@ import { clearCachedGraphSnapshot, graphSnapshotToSummaries, useGraphSnapshot } 
 // Utils
 import { LlmNodeData, getLlmLegend } from '../lib/graphUtils';
 import { mapLocalCommitToCommitEntity } from '../lib/localCommitGraphProjection';
-import { createSubgraphFilterState, getSubgraphMessageIds, shouldClearSubgraphForFocus } from '../lib/graphSubgraphScope';
+import { createSubgraphFilterState, getSubgraphMessageIds, shouldClearSubgraphForFocus } from '../lib/graphSubgraphFilter';
 import { buildThreadRootIndex, getHiddenConversationMessageIds, getLatestThreadMessageId } from '../lib/graphThreadRoots';
 import { pruneHiddenThreadRootIds, readHiddenThreadRootIds, rememberHiddenThreadRootIds } from '../lib/graphThreadVisibilityStorage';
 import { buildThreadBands, getThreadDividerRectsFromNodes, type ThreadBand } from '../lib/graphThreadDividers';
@@ -52,7 +51,7 @@ import { getBranchPointerCommitSha, getMessageBaseCommitSha, getMessageOutputCom
 import { shouldRefreshHeldGraphMessagesForStructuralChange } from '../lib/graph/graphComputationHold';
 import { addDeletedGraphCommitShas, readDeletedGraphCommitShas } from '../lib/graph/commitGraphTombstones';
 import { getLeafMessagesByRecency, getLeafNavigationLabel } from '../lib/graph/leafNodes';
-import { collapseRenderedFocusRoute } from '../domain/scopedFocusRoute';
+import { collapseRenderedFocusRoute } from '../domain/focusRoute';
 import { cn } from '../lib/utils';
 import { writeClipboardText } from '../lib/clipboard';
 import { useDiff } from '../contexts/DiffContext';
@@ -79,7 +78,7 @@ import { FloatingSelectionMenu } from './graph/FloatingSelectionMenu';
 import { SummaryCreationDialog } from './SummaryCreationDialog';
 import { TimelineView } from './TimelineView';
 import AdvancedSearchPanel from './AdvancedSearchPanel';
-import { ScopedNodeContextMenu, type ScopedContextMenuState } from './ScopedNodeContextMenu';
+import { NodeContextMenu, type NodeContextMenuState } from './NodeContextMenu';
 import { AddCommitDialog } from './AddCommitDialog';
 import { DeleteBranchDialog, type DeleteBranchDialogPhase } from './DeleteBranchDialog';
 import { classifyMessageNodeKind } from '../domain/nodes';
@@ -102,23 +101,13 @@ import {
 import { withExplicitReactFlowNodeDimensions } from '../lib/reactFlowNodeDimensions';
 import type { FocusTriggerMetrics } from '../types/nodes';
 
-import { GraphNodeDispatcher } from './nodes/graph/GraphNodeDispatcher';
-import { GraphTurnGroupHull } from './nodes/graph/GraphTurnGroupHull';
+import { graphNodeTypes } from './graph/graphNodeTypes';
+import { hasLayoutAnchoredGraphNodes, resolveAnchoredGraphWindowNodeIds } from './graph/graphRenderWindow';
 import { getGraphEdgeEndpointDotVariant, isInterTurnEndpointEdge } from './graphEdgeEndpointDots';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // NODE & EDGE TYPES
 // ═══════════════════════════════════════════════════════════════════════════
-
-const nodeTypes = {
-    user_message: GraphNodeDispatcher,
-    assistant_message: GraphNodeDispatcher,
-    commit_message: GraphNodeDispatcher,
-    canonical_commit: GraphNodeDispatcher,
-    layout_derived_commit_group: GraphNodeDispatcher,
-    summary_block: GraphNodeDispatcher,
-    turn_group_hull: GraphTurnGroupHull,
-};
 
 const edgeTypes = {
     summaryEdge: SummaryEdge,
@@ -398,7 +387,6 @@ type GraphCommitSnapshot = {
     focusNonce: number;
     graphResetNonce: number;
     tagFilterKey: string;
-    activeScopeId: string | null;
     viewMode: ViewMode;
     runningCount: number;
     graphSnapshotStatus: string;
@@ -727,7 +715,6 @@ function GraphViewInternal({
     const activeSendFlowFocus = useWorkspaceStore(state => state.activeSendFlowFocus);
     const lastFocusSource = useWorkspaceStore(state => state.lastFocusSource);
     const lastFocusMetadata = useWorkspaceStore(state => state.lastFocusMetadata);
-    const activeScopeId = useWorkspaceStore(state => state.activeScopeId);
     const disabledSummaryIds = useWorkspaceStore(state => state.disabledSummaryIds);
     const toggleSummaryDisabled = useWorkspaceStore(state => state.toggleSummaryDisabled);
     const composerContextPreview = useWorkspaceStore(state => state.composerContextPreview);
@@ -807,9 +794,6 @@ function GraphViewInternal({
     const agents = useMemo(() => agentsData ?? [], [agentsData]);
     const { data: branchPointersData } = useBranches(selectedWorkspaceId || null);
     const branchPointers = useMemo(() => branchPointersData ?? [], [branchPointersData]);
-    const scopesQuery = useScopes(selectedWorkspaceId || null);
-    const scopes = useMemo(() => (scopesQuery.data?.scopes ?? []) as Scope[], [scopesQuery.data?.scopes]);
-
     const workspaceRepoMap = useMemo(() => {
         return new Map(workspaces.map(c => [c.id, c.git_repo_path ?? c.folderPath ?? null]));
     }, [workspaces]);
@@ -864,7 +848,6 @@ function GraphViewInternal({
     const graphUsingSnapshot = false;
     const [viewMode, setViewMode] = useState<ViewMode>('branch');
     const [branchViewActivationNonce, setBranchViewActivationNonce] = useState(0);
-    const scopeViewMode = 'project' as const;
 
     const graphFocusedMessageIdRef = useRef<string | null>(storeFocusedMessageId);
     const isUserFocusSource = lastFocusSource === 'graph' || lastFocusSource === 'chat' || lastFocusSource === 'timeline';
@@ -896,12 +879,6 @@ function GraphViewInternal({
         }
         return labels;
     }, [agents, messages]);
-    const scopeNameById = useMemo(() => {
-        return new Map<string, string>();
-    }, []);
-    const scopeColorById = useMemo(() => {
-        return new Map<string, string | null>();
-    }, []);
     const branchPointersByNodeId = useMemo(() => {
         const map = new Map<string, typeof branchPointers>();
         const pointersByCommit = new Map<string, typeof branchPointers>();
@@ -973,7 +950,8 @@ function GraphViewInternal({
         const messageById = new Map((graphMessages as Message[]).map((message) => [message.id, message]));
         const now = Date.now();
         return threadRootIndex.threadRootIds.map((threadRootId) => {
-            const rootMessage = messageById.get(threadRootId) ?? null;
+            const rootMessageId = threadRootIndex.rootMessageIdByThreadRootId.get(threadRootId) ?? threadRootId;
+            const rootMessage = messageById.get(rootMessageId) ?? null;
             const threadMessageIds = Array.from(threadRootIndex.messageIdsByThreadRootId.get(threadRootId) ?? new Set<string>());
             const threadMessages = threadMessageIds
                 .map((messageId) => messageById.get(messageId) ?? null)
@@ -1285,7 +1263,7 @@ function GraphViewInternal({
     const [removeCommitsFromGraph, setRemoveCommitsFromGraph] = useState(false);
     const [deletedGraphCommitShas, setDeletedGraphCommitShas] = useState<Set<string>>(() => new Set());
     const [bulkDeletePhase, setBulkDeletePhase] = useState<DeleteBranchDialogPhase>('idle');
-    const [scopedContextMenu, setScopedContextMenu] = useState<ScopedContextMenuState | null>(null);
+    const [nodeContextMenu, setNodeContextMenu] = useState<NodeContextMenuState | null>(null);
     const [addCommitTargetId, setAddCommitTargetId] = useState<string | null>(null);
     const [graphRenderHoldUntil, setGraphRenderHoldUntil] = useState(0);
 
@@ -1488,7 +1466,6 @@ function GraphViewInternal({
             focusNonceChanged: previous ? previous.focusNonce !== current.focusNonce : null,
             graphResetNonceChanged: previous ? previous.graphResetNonce !== current.graphResetNonce : null,
             tagFilterChanged: previous ? previous.tagFilterKey !== current.tagFilterKey : null,
-            activeScopeChanged: previous ? previous.activeScopeId !== current.activeScopeId : null,
             viewModeChanged: previous ? previous.viewMode !== current.viewMode : null,
             runningCountChanged: previous ? previous.runningCount !== current.runningCount : null,
             graphSnapshotStatusChanged: previous ? previous.graphSnapshotStatus !== current.graphSnapshotStatus : null,
@@ -1516,7 +1493,6 @@ function GraphViewInternal({
             attribution.focusedMessageChanged === true ||
             attribution.focusNonceChanged === true ||
             attribution.tagFilterChanged === true ||
-            attribution.activeScopeChanged === true ||
             attribution.viewModeChanged === true ||
             attribution.runningCountChanged === true ||
             attribution.graphSnapshotStatusChanged === true ||
@@ -2041,7 +2017,6 @@ function GraphViewInternal({
     const disabledSummaryIdsSet = useMemo(() => new Set(disabledSummaryIds), [disabledSummaryIds]);
     const workspaceProjection = useWorkspaceProjection(
         graphProjectionMessages,
-        scopes,
         summaries as Summary[],
         focusedMessageId,
         disabledSummaryIdsSet,
@@ -2391,13 +2366,13 @@ function GraphViewInternal({
         );
     }, [flushMeasuredNodeHeights, runningCount]);
 
-    const handleScopedNodeContextMenu = useCallback((id: string, event: React.MouseEvent) => {
+    const handleNodeContextMenu = useCallback((id: string, event: React.MouseEvent) => {
         const selectedNodeIds = selectedNodeIdsRef.current;
-        const scopedIds = selectedNodeIds.has(id) ? Array.from(selectedNodeIds) : [id];
-        setScopedContextMenu({
+        const targetIds = selectedNodeIds.has(id) ? Array.from(selectedNodeIds) : [id];
+        setNodeContextMenu({
             x: event.clientX,
             y: event.clientY,
-            scopedIds,
+            targetIds,
         });
     }, []);
 
@@ -3016,7 +2991,7 @@ function GraphViewInternal({
     const handleFocusThread = useCallback((threadRootId: string) => {
         const focusMessageId = resolveThreadDropdownSelection({
             threadRootId,
-            messages: graphComputationMessagesRef.current as Message[],
+            messages: visibleGraphMessages as Message[],
         });
         setViewMode('branch');
         nodeSelection.clearSelection();
@@ -3025,7 +3000,7 @@ function GraphViewInternal({
             source: 'graph',
             metadata: { reason: 'focus-thread' },
         });
-    }, [dispatchFocus, nodeSelection.clearSelection]);
+    }, [dispatchFocus, nodeSelection.clearSelection, visibleGraphMessages]);
 
     const handleHideThread = useCallback((threadRootId: string) => {
         updateHiddenThreadRootIds((current) => {
@@ -3088,7 +3063,7 @@ function GraphViewInternal({
         hasNodeTypeFilter: graphFilterState.hasNodeTypeFilter,
         keepAncestors: graphFilterState.keepAncestors,
         keepDescendants: graphFilterState.keepDescendants,
-        scopedCommitFiltering: Boolean(subgraphRootNodeId),
+        constrainedCommitFiltering: Boolean(subgraphRootNodeId),
         pinnedCommitShas,
         hiddenThreadRootIds,
         visibleNodeSections,
@@ -3096,17 +3071,13 @@ function GraphViewInternal({
         showInsightsInGraph,
         workspaceRepoMap,
         branchPointersByNodeId,
-        activeScopeId,
-        scopeViewMode,
-        scopeNameById,
-        scopeColorById,
         resetNonce: graphResetNonce,
         onToggleSummary: toggleSummaryDisabled,
         onToggleCollapse: handleToggleCollapse,
         onFocus: handleFocus,
         onSelect: handleSelect,
         onMeasureNodeHeight: handleMeasureNodeHeight,
-        onContextMenu: handleScopedNodeContextMenu
+        onContextMenu: handleNodeContextMenu
     } as any);
 
     const subgraphStats = useMemo(() => {
@@ -3209,7 +3180,6 @@ function GraphViewInternal({
             messageCount: graphMessages.length,
             summaryCount: summaries.length,
             branchPointerCount: branchPointers.length,
-            scopeCount: scopes.length,
             queryStatus: messagesQuery.status,
             usingSnapshot: graphUsingSnapshot,
         }, { source: 'GraphView' });
@@ -3218,7 +3188,6 @@ function GraphViewInternal({
         graphUsingSnapshot,
         graphMessages.length,
         messagesQuery.status,
-        scopes.length,
         selectedWorkspaceId,
         summaries.length,
     ]);
@@ -3435,7 +3404,7 @@ function GraphViewInternal({
 
     // Reset on workspace/view change
     useEffect(() => {
-        setScopedContextMenu(null);
+        setNodeContextMenu(null);
     }, [selectedWorkspaceId, messagesOverride, viewMode, layoutMode, laneStrategy]);
 
     useEffect(() => {
@@ -3462,8 +3431,6 @@ function GraphViewInternal({
             focusNonce,
             focusedMessageId,
             viewMode,
-            scopeViewMode,
-            activeScopeId ?? 'none',
             layoutMode,
             laneStrategy,
             layoutNodes.length,
@@ -3489,7 +3456,6 @@ function GraphViewInternal({
         }, { source: 'GraphView' });
         queueFocusedNodeCenter(focusedMessageId, focusEventKey, { respectImperativeCenter: true });
     }, [
-        activeScopeId,
         branchViewActivationNonce,
         focusNonce,
         focusedMessageId,
@@ -3502,7 +3468,6 @@ function GraphViewInternal({
         layoutMode,
         layoutNodes.length,
         queueFocusedNodeCenter,
-        scopeViewMode,
         selectedWorkspaceId,
         showInsightsInGraph,
         graphFilterState.filterActive,
@@ -3588,7 +3553,7 @@ function GraphViewInternal({
             if (e.key === 'Escape') {
                 if (nodeSelection.selectedNodeIds.size > 0) {
                     e.preventDefault();
-                    setScopedContextMenu(null);
+                    setNodeContextMenu(null);
                     nodeSelection.clearSelection();
                     selectionAnchorIdRef.current = null;
                 }
@@ -3670,7 +3635,7 @@ function GraphViewInternal({
     ]);
 
     const handlePaneClick = useCallback(() => {
-        setScopedContextMenu(null);
+        setNodeContextMenu(null);
         nodeSelection.clearSelection();
         selectionAnchorIdRef.current = null;
     }, [nodeSelection]);
@@ -3938,7 +3903,7 @@ function GraphViewInternal({
         }
         heightMeasureEventsRef.current = [];
         setControlsHeight(0);
-        setScopedContextMenu(null);
+        setNodeContextMenu(null);
         nodeSelection.clearSelection();
         selectionAnchorIdRef.current = null;
         centeredFocusIdRef.current = null;
@@ -4535,7 +4500,7 @@ function GraphViewInternal({
     }, [branchNodesForRender]);
     const graphRenderElements = useMemo(() => {
         const buildHeldElements = (nodeIds: Set<string>, reason = 'active-window') => {
-            const resolvedIds = new Set(nodeIds);
+            let resolvedIds = resolveAnchoredGraphWindowNodeIds(nodeIds, branchNodesForRender);
             for (const edge of previewEdges) {
                 const relationship = (edge.data as any)?.relationship;
                 const edgeRole = (edge.data as any)?.edgeRole;
@@ -4550,6 +4515,7 @@ function GraphViewInternal({
                     resolvedIds.add(edge.target);
                 }
             }
+            resolvedIds = resolveAnchoredGraphWindowNodeIds(resolvedIds, branchNodesForRender);
 
             const nodes = Array.from(resolvedIds)
                 .map((id) => activeGraphWindowSpatialIndex.nodeById.get(id))
@@ -4744,6 +4710,9 @@ function GraphViewInternal({
         }, performance.now() - startedAt);
         return nodes;
     }, [activeGraphWindowSpatialIndex, graphDetailViewportVersion, graphDetailZoomBucket, graphRenderElements.mode, graphRenderElements.nodes, reactFlowInstance]);
+    const shouldLetReactFlowCullVisibleElements = useMemo(() => (
+        !hasLayoutAnchoredGraphNodes(graphNodesForReactFlow)
+    ), [graphNodesForReactFlow]);
 
     useEffect(() => {
         scheduleGraphDetailZoomBucketUpdate(180);
@@ -4805,7 +4774,6 @@ function GraphViewInternal({
             graphFilterState.keepDescendants ? 1 : 0,
             subgraphRootNodeId ?? 'full',
         ].join(':'),
-        activeScopeId,
         viewMode,
         runningCount,
         graphSnapshotStatus: graphSnapshotQuery.status,
@@ -4865,7 +4833,6 @@ function GraphViewInternal({
                 centerY: Number((position.y + size.height / 2).toFixed(2)),
                 messageId: data?.entity?.messageId ?? data?.entity?.focusMessageId ?? data?.batch?.representativeMessageId ?? null,
                 turnGroupId: data?.entity?.turnGroupId ?? data?.batch?.batch?.turnGroupId ?? null,
-                scopeId: data?.entity?.scopeId ?? data?.scopeId ?? null,
             };
         };
         const getCenter = (node: Node<any>) => {
@@ -5097,7 +5064,6 @@ function GraphViewInternal({
                     updatedAt: message?.updatedAt ?? null,
                     contentLength: typeof message?.content === 'string' ? message.content.length : null,
                     collapsed: message?.collapsed ?? null,
-                    scopeId: message?.scope_id ?? null,
                     agentId: message?.agent_id ?? null,
                     hasExecutionData: Boolean(message?.execution_data),
                     outputCommitSha: getMessageOutputCommitSha(message),
@@ -5130,7 +5096,6 @@ function GraphViewInternal({
             staleMeasuredHeightCount,
         }, {
             workspaceId: selectedWorkspaceId,
-            activeScopeId,
             focusedMessageId,
             viewMode,
             layoutMode,
@@ -5146,7 +5111,6 @@ function GraphViewInternal({
                 messages: (graphMessages as Message[]).length,
                 summaries: summaries.length,
                 branchPointers: branchPointers.length,
-                scopes: scopes.length,
                 measuredHeights: measuredHeights.size,
                 running: runningCount,
             },
@@ -5157,7 +5121,6 @@ function GraphViewInternal({
                 keepAncestors: graphFilterState.keepAncestors,
                 keepDescendants: graphFilterState.keepDescendants,
                 subgraphRootNodeId,
-                scopeViewMode,
             },
             viewport: {
                 x: roundMetric(viewport.x),
@@ -5221,7 +5184,6 @@ function GraphViewInternal({
             })),
         });
     }, [
-        activeScopeId,
         branchNodesForRender,
         branchPointers.length,
         controlsHeight,
@@ -5237,8 +5199,6 @@ function GraphViewInternal({
         nodeSelection.selectedNodeIds,
         reactFlowInstance,
         runningCount,
-        scopeViewMode,
-        scopes.length,
         selectedWorkspaceId,
         summaries,
         summariesQuery.status,
@@ -5392,7 +5352,6 @@ function GraphViewInternal({
                             <GraphHoverProjectionContext.Provider
                                 value={{
                                     messages: messages as Message[],
-                                    scopes,
                                     summaries: summaries as Summary[],
                                     disabledSummaryIds: disabledSummaryIdsSet,
                                 }}
@@ -5411,7 +5370,7 @@ function GraphViewInternal({
                                             key={`graph-flow-${selectedWorkspaceId ?? 'none'}-${graphResetNonce}`}
                                             nodes={graphNodesForReactFlow}
                                             edges={graphRenderElements.edges}
-                                            nodeTypes={nodeTypes}
+                                            nodeTypes={graphNodeTypes}
                                             edgeTypes={edgeTypes}
                                             onNodeClick={handleNodeClick}
                                             onSelectionChange={nodeSelection.onSelectionChange}
@@ -5492,7 +5451,7 @@ function GraphViewInternal({
                                             }}
                                             fitView={!sendFlowGraphDiagFlags.disableGraphAutoCenter && !focusedMessageId}
                                             fitViewOptions={{ padding: 0.28, duration: 400 }}
-                                            onlyRenderVisibleElements={graphRenderElements.mode !== 'hold-visible' && !sendFlowGraphDiagFlags.disableOnlyRenderVisibleElements}
+                                            onlyRenderVisibleElements={graphRenderElements.mode !== 'hold-visible' && !sendFlowGraphDiagFlags.disableOnlyRenderVisibleElements && shouldLetReactFlowCullVisibleElements}
                                             nodesDraggable={false}
                                             nodesConnectable={false}
                                             elementsSelectable={false}
@@ -5585,10 +5544,10 @@ function GraphViewInternal({
                 )}
             </div>
 
-            <ScopedNodeContextMenu
-                contextMenu={scopedContextMenu}
+            <NodeContextMenu
+                contextMenu={nodeContextMenu}
                 projection={workspaceProjection}
-                onClose={() => setScopedContextMenu(null)}
+                onClose={() => setNodeContextMenu(null)}
                 onDeleteMessages={(messageIds) => {
                     openBulkDeleteDialog(messageIds);
                 }}

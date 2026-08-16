@@ -5,6 +5,7 @@ import { getCommitSha, getGitParentShas, isFirstClassCommitMessage, isRedundantC
 export { getCommitSha };
 
 export type CanonicalNodeKind =
+  | 'thread_origin'
   | 'user_message'
   | 'assistant_message'
   | 'commit_message'
@@ -30,7 +31,7 @@ export const getMessageEntityId = (
 export function classifyMessageNodeKind(
   message: Message,
   messageMap?: Map<string, Message>
-): Exclude<CanonicalNodeKind, 'summary_block'> {
+): Exclude<CanonicalNodeKind, 'summary_block' | 'thread_origin'> {
   if (message.role === 'user') return 'user_message';
   return isFirstClassCommitMessage(message, { messageMap }) ? 'commit_message' : 'assistant_message';
 }

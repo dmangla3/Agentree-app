@@ -23,7 +23,6 @@ export const ChatCommitCard = memo(({
   entity,
   isFocused,
   isSelected,
-  scopeColor,
   onFocus,
   onSelect,
   onContextMenu,
@@ -115,7 +114,6 @@ export const ChatCommitCard = memo(({
       focusTargetId={entity.focusMessageId}
       isFocused={isFocused}
       isSelected={isSelected}
-      scopeColor={scopeColor}
       accentColor={ROLE_COLORS.commit_message.accent}
       onFocus={onFocus}
       onSelect={onSelect}

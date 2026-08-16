@@ -114,4 +114,47 @@ describe('agent lifecycle ownership boundaries', () => {
     expect(releaseRegion).toContain('setActiveComposerSend((current) => current?.flowId === flowId ? null : current);');
     expect(releaseRegion).toContain('setCurrentAbortController((current) => current === controller ? null : current);');
   });
+
+  it('does not eagerly start full streams for restored active agents', () => {
+    const source = readChatInputSource();
+    expect(source).toContain('registerBackgroundStreamForNode(message)');
+    expect(source).not.toContain('void startStreamForNode(message, {\n                waitForReady: false');
+  });
+
+  it('promotes background streams from projection watcher transitions', () => {
+    const source = readChatInputSource();
+    expect(source).toContain('agentRunManager.subscribeProjectionWatchers');
+    expect(source).toContain('promoteStreamForNode(event.nodeId');
+  });
+
+  it('uses projection or persisted cursor for full replay instead of actor status cursor', () => {
+    const source = readChatInputSource();
+    expect(source).toContain('resolveFullReplayAfterSeq');
+    expect(source).not.toContain('const actorSeq = agentRunManager.snapshot(nodeId)?.lastSeq');
+  });
+
+  it('downgrades full stream handlers after watcher grace when runs remain active', () => {
+    const source = readChatInputSource();
+    expect(source).toContain('FULL_STREAM_UNWATCHED_GRACE_MS');
+    expect(source).toContain('scheduleFullStreamDowngrade');
+    expect(source).toContain('registerBackgroundStreamForNode(message)');
+  });
+
+  it('seeds promoted full streams from the current projection content before persisted message content', () => {
+    const source = readChatInputSource();
+    expect(source).toContain("const projectedOutput = getAgentRunProjection(nodeId)?.content;");
+    expect(source).toContain("let output = typeof projectedOutput === 'string' ? projectedOutput : node.content || '';");
+  });
+
+  it('immediately promotes background streams that already have projection watchers', () => {
+    const source = readChatInputSource();
+    const registerStart = source.indexOf('const registerBackgroundStreamForNode = useCallback((message: Message) => {');
+    const registerEnd = source.indexOf('const clearFullStreamDowngrade', registerStart);
+    expect(registerStart).toBeGreaterThan(-1);
+    expect(registerEnd).toBeGreaterThan(registerStart);
+
+    const registerRegion = source.slice(registerStart, registerEnd);
+    expect(registerRegion).toContain('agentRunManager.projectionWatcherSnapshot(message.id).hasWatchers');
+    expect(registerRegion).toContain("void promoteStreamForNodeRef.current(message, { reason: 'existing-watcher' });");
+  });
 });

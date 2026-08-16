@@ -1,11 +1,11 @@
 import type { AgentStatus } from '@shared/agentStatus';
-import type { CommitEntity, CommitObservationEntity, CommitParentEntity, Message, Scope, Summary } from '../stores/workspaceStore';
+import type { CommitEntity, CommitObservationEntity, CommitParentEntity, Message, Summary } from '../stores/workspaceStore';
 import { getGraphParentId } from '../lib/graph/lineage';
 import { isRedundantCommitNode } from '../lib/graph/turnUtils';
 import { getMessageBaseCommitSha } from '../lib/graph/commitAccessors';
-import { buildThreadRootIndex, type ThreadRootIndex } from '../lib/graphThreadRoots';
+import { buildThreadRootIndex, getThreadOriginNodeId, type ThreadRootIndex } from '../lib/graphThreadRoots';
 import { resolveNodeState } from '../lib/runStateResolver';
-import { buildScopedFocusRoute, isImportedGitMessage, type ScopedFocusRoute } from './scopedFocusRoute';
+import { buildFocusRoute, isImportedGitMessage, type FocusRoute } from './focusRoute';
 import {
   CanonicalNodeEntity,
   classifyMessageNodeKind,
@@ -34,8 +34,8 @@ export interface ProjectedNodeEntity extends CanonicalNodeEntity {
   authoredAt?: string | null;
   importedFromRef?: string | null;
   parentShas?: string[];
-  scopeId?: string | null;
   threadRootId?: string | null;
+  rootMessageId?: string | null;
   isThreadRoot?: boolean;
 }
 
@@ -122,11 +122,8 @@ export type ProjectedChatItem =
 
 export interface WorkspaceProjection {
   messages: Message[];
-  scopes: Scope[];
   summaries: Summary[];
   messageMap: Map<string, Message>;
-  scopeColorById: Map<string, string | null>;
-  scopeNameById: Map<string, string>;
   summaryMap: Map<string, Summary>;
   entities: ProjectedNodeEntity[];
   entitiesById: Map<string, ProjectedNodeEntity>;
@@ -140,19 +137,19 @@ export interface WorkspaceProjection {
   groupIdByCommitSha: Map<string, string>;
   threadRootIds: string[];
   threadRootIdByMessageId: Map<string, string>;
+  rootMessageIdByThreadRootId: Map<string, string>;
   turnGroups: ProjectedTurnGroup[];
   turnGroupById: Map<string, ProjectedTurnGroup>;
   originMessage: Message | null;
   originMessageId: string | null;
   branchPathMessageIds: Set<string>;
-  scopedFocusRoute: ScopedFocusRoute;
+  focusRoute: FocusRoute;
   timelineItems: ProjectedTimelineItem[];
   chatItems: ProjectedChatItem[];
 }
 
 interface BuildWorkspaceProjectionInput {
   messages: Message[];
-  scopes?: Scope[];
   summaries: Summary[];
   commits?: CommitEntity[];
   commitParents?: CommitParentEntity[];
@@ -178,6 +175,7 @@ interface StableWorkspaceProjectionBase {
   groupIdByCommitSha: Map<string, string>;
   threadRootIds: string[];
   threadRootIdByMessageId: Map<string, string>;
+  rootMessageIdByThreadRootId: Map<string, string>;
   turnGroups: ProjectedTurnGroup[];
   turnGroupById: Map<string, ProjectedTurnGroup>;
   originMessage: Message | null;
@@ -216,7 +214,6 @@ const getMessageFingerprint = (message: Message): string => {
     message.aiLabel ?? '',
     message.llmModel ?? '',
     message.agent_id ?? '',
-    message.scope_id ?? '',
     content.length,
     content.slice(0, 24),
     content.slice(-24),
@@ -315,6 +312,42 @@ const getOriginMessage = (messages: Message[]): Message | null => {
   return [...messages].sort(byCreatedAt)[0] ?? null;
 };
 
+const isWorkspaceWelcomeOriginMessage = (message: Message): boolean => (
+  message.role === 'assistant' &&
+  message.parentId === null &&
+  (message.content || '').trim().startsWith('Welcome! How can I help you explore your ideas today?')
+);
+
+const getThreadOriginEntity = (
+  threadRootId: string,
+  rootMessage: Message,
+): ProjectedNodeEntity => ({
+  entityId: `thread_origin:${threadRootId}`,
+  kind: 'thread_origin',
+  messageId: null,
+  focusMessageId: rootMessage.id,
+  parentEntityId: undefined,
+  turnGroupId: `thread_origin:${threadRootId}`,
+  sortTs: new Date(rootMessage.createdAt).getTime() - 0.25,
+  preview: rootMessage.aiLabel?.trim() || rootMessage.content?.trim() || 'Thread origin',
+  shortLabel: 'Thread origin',
+  threadRootId,
+  rootMessageId: rootMessage.id,
+  isThreadRoot: true,
+  message: {
+    id: getThreadOriginNodeId(threadRootId),
+    role: 'assistant',
+    content: 'Thread origin',
+    parentId: null,
+    workspaceId: rootMessage.workspaceId,
+    createdAt: rootMessage.createdAt,
+    updatedAt: rootMessage.createdAt,
+    status: null,
+    agent_id: null,
+    execution_data: { meta: { node_kind: 'thread_origin', thread_origin_id: threadRootId } },
+  } as Message,
+});
+
 const getSummaryBypassedCount = (
   summary: Summary,
   messageMap: Map<string, Message>
@@ -383,7 +416,6 @@ const getProjectedMessageEntity = (
     authoredAt: typeof meta.git_authored_at === 'string' ? meta.git_authored_at : (typeof lastMetaCommit?.authored_at === 'string' ? lastMetaCommit.authored_at : null),
     importedFromRef: typeof meta.imported_from_ref === 'string' ? meta.imported_from_ref : null,
     parentShas: kind === 'commit_message' ? getCommitParentShas(message) : undefined,
-    scopeId: message.scope_id ?? null,
     threadRootId,
     isThreadRoot: Boolean(threadRootId && threadRootId === message.id),
   };
@@ -792,7 +824,6 @@ const buildCommitProjection = (
 
 export function buildWorkspaceProjection({
   messages,
-  scopes = [],
   summaries,
   commits = [],
   commitParents = [],
@@ -818,6 +849,7 @@ export function buildWorkspaceProjection({
     groupIdByCommitSha,
     threadRootIds,
     threadRootIdByMessageId,
+    rootMessageIdByThreadRootId,
     turnGroups,
     turnGroupById,
     originMessage,
@@ -826,12 +858,10 @@ export function buildWorkspaceProjection({
     agentCommitShas,
   } = base;
 
-  const scopedFocusRoute = buildScopedFocusRoute(messageMap, scopes, focusedMessageId);
-  const scopeColorById = new Map(scopes.map((scope) => [scope.id, scope.color || null]));
-  const scopeNameById = new Map(scopes.map((scope) => [scope.id, scope.name]));
-  const branchPathMessageIds = new Set(scopedFocusRoute.messageIds);
+  const focusRoute = buildFocusRoute(messageMap, focusedMessageId);
+  const branchPathMessageIds = new Set(focusRoute.messageIds);
   const branchTurnGroups = turnGroups.filter((group) => branchPathMessageIds.has(group.userMessageId));
-  const pathMessages = scopedFocusRoute.messageIds
+  const pathMessages = focusRoute.messageIds
     .map((messageId) => messageMap.get(messageId))
     .filter((message): message is Message => Boolean(message));
 
@@ -987,11 +1017,8 @@ export function buildWorkspaceProjection({
 
   return {
     messages: sortedMessages,
-    scopes,
     summaries: sortedSummaries,
     messageMap,
-    scopeColorById,
-    scopeNameById,
     summaryMap,
     entities,
     entitiesById,
@@ -1005,12 +1032,13 @@ export function buildWorkspaceProjection({
     groupIdByCommitSha,
     threadRootIds,
     threadRootIdByMessageId,
+    rootMessageIdByThreadRootId,
     turnGroups,
     turnGroupById,
     originMessage,
     originMessageId,
     branchPathMessageIds,
-    scopedFocusRoute,
+    focusRoute,
     timelineItems,
     chatItems,
   };
@@ -1062,6 +1090,7 @@ function getStableWorkspaceProjectionBase(
 
   const messageEntities = sortedMessages
     .filter((message) => (
+      !isWorkspaceWelcomeOriginMessage(message) &&
       !isRedundantCommitNode(message, { messageMap }) &&
       !duplicateAgentCommitMessageIds.has(message.id) &&
       !isAgentMaterializedDuplicateExternalCommit(message, agentCommitShas)
@@ -1072,6 +1101,13 @@ function getStableWorkspaceProjectionBase(
       messageMap,
       threadRootIndex.threadRootIdByMessageId
     ));
+  const threadOriginEntities = threadRootIndex.threadRootIds
+    .map((threadRootId) => {
+      const rootMessageId = threadRootIndex.rootMessageIdByThreadRootId.get(threadRootId);
+      const rootMessage = rootMessageId ? messageMap.get(rootMessageId) ?? null : null;
+      return rootMessage ? getThreadOriginEntity(threadRootId, rootMessage) : null;
+    })
+    .filter((entity): entity is ProjectedNodeEntity => Boolean(entity));
   const summaryEntities: ProjectedNodeEntity[] = sortedSummaries.map((summary) => ({
     entityId: getSummaryEntityId(summary),
     kind: 'summary_block',
@@ -1083,10 +1119,9 @@ function getStableWorkspaceProjectionBase(
     summary,
     preview: summary.content.replace(/\s+/g, ' ').trim(),
     shortLabel: 'Summary',
-    scopeId: null,
   }));
 
-  const entities = [...messageEntities, ...summaryEntities].sort((left, right) => left.sortTs - right.sortTs);
+  const entities = [...threadOriginEntities, ...messageEntities, ...summaryEntities].sort((left, right) => left.sortTs - right.sortTs);
   const entitiesById = new Map(entities.map((entity) => [entity.entityId, entity]));
   const entitiesByMessageId = new Map(messageEntities.map((entity) => [entity.messageId!, entity]));
   const entitiesBySummaryId = new Map(summaryEntities.map((entity) => [entity.summary!.id, entity]));
@@ -1165,6 +1200,7 @@ function getStableWorkspaceProjectionBase(
     groupIdByCommitSha: commitProjection.groupIdByCommitSha,
     threadRootIds: threadRootIndex.threadRootIds,
     threadRootIdByMessageId: threadRootIndex.threadRootIdByMessageId,
+    rootMessageIdByThreadRootId: threadRootIndex.rootMessageIdByThreadRootId,
     turnGroups,
     turnGroupById,
     originMessage,

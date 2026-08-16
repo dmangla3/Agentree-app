@@ -44,6 +44,5 @@ export function createCommitHoverEntity(commit: ProjectedCommitEntity): Projecte
     authorName: commit.commit.author_name ?? commit.commit.committer_name ?? null,
     authoredAt,
     importedFromRef: commit.ownerKind === 'external' ? commit.observations[0]?.git_ref ?? commit.sourceKind : null,
-    scopeId: null,
   };
 }

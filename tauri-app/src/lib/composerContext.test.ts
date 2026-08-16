@@ -15,7 +15,6 @@ const message = (
   content: input.content ?? input.id,
   processedContent: input.processedContent,
   workspaceId,
-  scope_id: input.scope_id,
   context_active: input.context_active,
   execution_data: input.execution_data ?? null,
   status: input.status ?? null,
@@ -24,19 +23,18 @@ const message = (
   updatedAt: input.updatedAt ?? isoAt(index),
 });
 
-const scopedConversation = (): Message[] => [
-  message({ id: 'user-1', role: 'user', parentId: null, scope_id: 'scope-a' }, 1),
-  message({ id: 'assistant-1', role: 'assistant', parentId: 'user-1', scope_id: 'scope-a' }, 2),
-  message({ id: 'user-2', role: 'user', parentId: 'assistant-1', scope_id: 'scope-b' }, 3),
-  message({ id: 'assistant-2', role: 'assistant', parentId: 'user-2', scope_id: 'scope-b' }, 4),
+const conversation = (): Message[] => [
+  message({ id: 'user-1', role: 'user', parentId: null }, 1),
+  message({ id: 'assistant-1', role: 'assistant', parentId: 'user-1' }, 2),
+  message({ id: 'user-2', role: 'user', parentId: 'assistant-1' }, 3),
+  message({ id: 'assistant-2', role: 'assistant', parentId: 'user-2' }, 4),
 ];
 
 describe('composer context', () => {
-  it('does not filter inherited context by scope', () => {
+  it('keeps inherited context across the full ancestor path', () => {
     const selection = buildComposerContextSelection(
       'assistant-2',
-      scopedConversation(),
-      'scope-b',
+      conversation(),
     );
 
     expect(selection.defaultSelectedIds).toEqual([
@@ -49,7 +47,7 @@ describe('composer context', () => {
 
   it('builds context path ids from the same active messages that default context will pass', () => {
     const messages = [
-      ...scopedConversation(),
+      ...conversation(),
       message({
         id: 'user-3',
         role: 'user',
@@ -67,7 +65,6 @@ describe('composer context', () => {
     expect(buildComposerContextPathIds({
       parentId: 'assistant-3',
       messages,
-      scopeId: 'scope-b',
       contextPolicy: 'continue',
     })).toEqual(new Set(['user-1', 'assistant-1', 'user-2', 'assistant-2']));
   });
@@ -75,7 +72,7 @@ describe('composer context', () => {
   it('returns an empty context path for fresh context', () => {
     expect(buildComposerContextPathIds({
       parentId: 'assistant-2',
-      messages: scopedConversation(),
+      messages: conversation(),
       contextPolicy: 'fresh',
     })).toEqual(new Set());
   });
@@ -83,7 +80,7 @@ describe('composer context', () => {
   it('starts context at the selected context start node', () => {
     expect(buildComposerContextPathIds({
       parentId: 'assistant-2',
-      messages: scopedConversation(),
+      messages: conversation(),
       contextPolicy: 'continue',
       contextStartId: 'user-2',
     })).toEqual(new Set(['user-2', 'assistant-2']));
@@ -91,7 +88,7 @@ describe('composer context', () => {
 
   it('merges an alternate context parent with the placement parent path', () => {
     const messages = [
-      ...scopedConversation(),
+      ...conversation(),
       message({ id: 'user-branch', role: 'user', parentId: 'assistant-1' }, 5),
       message({ id: 'assistant-branch', role: 'assistant', parentId: 'user-branch' }, 6),
     ];

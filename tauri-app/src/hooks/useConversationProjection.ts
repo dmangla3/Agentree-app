@@ -1,11 +1,10 @@
 import { useMemo, useRef } from 'react';
-import type { CommitEntity, CommitObservationEntity, CommitParentEntity, Message, Scope, Summary } from '../stores/workspaceStore';
+import type { CommitEntity, CommitObservationEntity, CommitParentEntity, Message, Summary } from '../stores/workspaceStore';
 import { buildWorkspaceProjection } from '../domain/workspaceProjection';
 import { recordFundamentalCounter } from '../perf/fundamentalCounters';
 
 export function useWorkspaceProjection(
   messages: Message[],
-  scopes: Scope[],
   summaries: Summary[],
   focusedMessageId: string | null,
   disabledSummaryIds: Set<string> = new Set(),
@@ -16,7 +15,6 @@ export function useWorkspaceProjection(
 ) {
   const previousRef = useRef<{
     messages: Message[];
-    scopes: Scope[];
     summaries: Summary[];
     commits: CommitEntity[];
     commitParents: CommitParentEntity[];
@@ -31,7 +29,6 @@ export function useWorkspaceProjection(
       const startedAt = performance.now();
       const projection = buildWorkspaceProjection({
         messages,
-        scopes,
         summaries,
         commits,
         commitParents,
@@ -43,7 +40,6 @@ export function useWorkspaceProjection(
         surface,
         messageCount: messages.length,
         commitCount: commits.length,
-        scopeCount: scopes.length,
         summaryCount: summaries.length,
         chatItemCount: projection.chatItems.length,
         entityCount: projection.entities.length,
@@ -52,7 +48,6 @@ export function useWorkspaceProjection(
         reasons: previous
           ? [
               previous.messages !== messages ? 'messages-ref' : null,
-              previous.scopes !== scopes ? 'scopes-ref' : null,
               previous.summaries !== summaries ? 'summaries-ref' : null,
               previous.commits !== commits ? 'commits-ref' : null,
               previous.commitParents !== commitParents ? 'commit-parents-ref' : null,
@@ -66,7 +61,6 @@ export function useWorkspaceProjection(
       }, performance.now() - startedAt);
       previousRef.current = {
         messages,
-        scopes,
         summaries,
         commits,
         commitParents,
@@ -76,5 +70,5 @@ export function useWorkspaceProjection(
       };
       return projection;
     })()
-  ), [commitObservations, commitParents, commits, disabledSummaryIds, focusedMessageId, messages, scopes, summaries, surface]);
+  ), [commitObservations, commitParents, commits, disabledSummaryIds, focusedMessageId, messages, summaries, surface]);
 }

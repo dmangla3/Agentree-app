@@ -55,7 +55,7 @@ type GraphBootstrapResponse = {
 const POLL_MS = 2_500;
 const TERMINAL_GRACE_MS = 3_000;
 
-// This hook is deliberately scoped to hot-send repair/catch-up. It is not yet a
+// This hook is deliberately limited to hot-send repair/catch-up. It is not yet a
 // complete collaboration sync layer; expanding it requires complete mutation
 // coverage and a stricter payload policy for full message content.
 const seededCursorByWorkspace = new Map<string, number>();

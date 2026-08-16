@@ -8,7 +8,6 @@ export const ChatSummaryCard = memo(({
   entity,
   isFocused,
   isSelected,
-  scopeColor,
   onFocus,
   onSelect,
   onContextMenu,
@@ -18,7 +17,6 @@ export const ChatSummaryCard = memo(({
       focusTargetId={entity.focusMessageId}
       isFocused={isFocused}
       isSelected={isSelected}
-      scopeColor={scopeColor}
       onFocus={onFocus}
       onSelect={onSelect}
       onContextMenu={onContextMenu}

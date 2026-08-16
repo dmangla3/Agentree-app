@@ -7,7 +7,6 @@ export interface OptimisticMessageConfig {
   parentId: string | null;
   content: string;
   attachments: AttachmentMetadata[];
-  scopeId: string | null;
   pathIds: string[];
   depth: number;
   role: 'user' | 'assistant';
@@ -50,7 +49,6 @@ export function createOptimisticUserMessage(
     parentId: config.parentId,
     workspaceId: config.workspaceId,
     attachments: config.attachments.length > 0 ? config.attachments : null,
-    scope_id: config.scopeId,
     path_ids: config.pathIds,
     depth: config.depth,
     createdAt: now,
@@ -106,7 +104,6 @@ export function createOptimisticAssistantMessage(
     parentId: parentUserMessageId,
     workspaceId: config.workspaceId,
     attachments: null,
-    scope_id: config.scopeId,
     path_ids: [...config.pathIds, id],
     depth: config.depth + 1,
     llmModel: config.llmModel || null,

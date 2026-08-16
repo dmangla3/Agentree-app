@@ -5,7 +5,6 @@ import { ScrollArea } from '../../@/components/ui/scroll-area';
 
 import { useMessages, useSummaries, useDeleteMessageBranch } from '../hooks/useMessages';
 import { useGraphSnapshot, graphSnapshotToSummaries } from '../hooks/useGraphSnapshot';
-import { useScopes } from '../hooks/useScopes';
 import { useWorkspaces } from '../hooks/useWorkspaces';
 import { useWorkspaceProjection } from '../hooks/useWorkspaceProjection';
 import { useWorkspaceMessages } from '../hooks/useLiveMessages';
@@ -20,7 +19,7 @@ import { agentClient } from '../lib/agentClient';
 import { ChatNodeDispatcher } from './nodes/chat/ChatNodeDispatcher';
 import { ChatTurnGroupLayout } from './nodes/chat/ChatTurnGroupLayout';
 import { ChatBreadcrumbRail } from './chat/ChatBreadcrumbRail';
-import { ScopedNodeContextMenu, type ScopedContextMenuState } from './ScopedNodeContextMenu';
+import { NodeContextMenu, type NodeContextMenuState } from './NodeContextMenu';
 import { AddCommitDialog } from './AddCommitDialog';
 import { DeleteBranchDialog, type DeleteBranchDialogPhase } from './DeleteBranchDialog';
 import React from 'react';
@@ -114,7 +113,6 @@ export function ChatInterface() {
   const messagesQuery = useMessages(selectedWorkspaceId);
   const localNodesQuery = useLocalNodes(selectedWorkspaceId);
   const summariesQuery = useSummaries(selectedWorkspaceId, { enabled: shouldHydrateFullMessages && !agentClient.hasRuntime() });
-  const scopesQuery = useScopes(selectedWorkspaceId);
   const { data: branchPointersData } = useBranches(selectedWorkspaceId || null);
   const { data: workspacesData } = useWorkspaces();
   const runningCount = useRunStatusStore((state) => state.getRunningCount(selectedWorkspaceId));
@@ -236,9 +234,8 @@ export function ChatInterface() {
     return current;
   }, [activeChatProjectionHold, activeSendFlowInWorkspace, enrichedMessages, projectionFocusMessageId, runningCount]);
 
-  const scopes = useMemo(() => (scopesQuery.data?.scopes ?? []), [scopesQuery.data?.scopes]);
   const disabledSummaryIdsSet = useMemo(() => new Set(disabledSummaryIds), [disabledSummaryIds]);
-  const projection = useWorkspaceProjection(chatProjectionMessages, scopes, summaries, projectionFocusMessageId, disabledSummaryIdsSet, 'chat');
+  const projection = useWorkspaceProjection(chatProjectionMessages, summaries, projectionFocusMessageId, disabledSummaryIdsSet, 'chat');
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -251,7 +248,7 @@ export function ChatInterface() {
   const chatDataReadyLoggedRef = useRef<string | null>(null);
   const chatContentRenderedLoggedRef = useRef<string | null>(null);
 
-  const [contextMenu, setContextMenu] = useState<ScopedContextMenuState | null>(null);
+  const [contextMenu, setContextMenu] = useState<NodeContextMenuState | null>(null);
   const [pendingDeleteIds, setPendingDeleteIds] = useState<string[]>([]);
   const [deletePhase, setDeletePhase] = useState<DeleteBranchDialogPhase>('idle');
   const pendingDeletePreview = useMemo(
@@ -318,7 +315,6 @@ export function ChatInterface() {
       persistedMessageCount: persistedMessages.length,
       liveMessageCount: messages.length,
       summaryCount: summaries.length,
-      scopeCount: scopes.length,
       queryStatus: messagesQuery.status,
       usingSnapshot: false,
     }, { source: 'ChatInterface' });
@@ -327,7 +323,6 @@ export function ChatInterface() {
     messagesQuery.data,
     messagesQuery.status,
     persistedMessages.length,
-    scopes.length,
     selectedWorkspaceId,
     summaries.length,
   ]);
@@ -696,11 +691,11 @@ export function ChatInterface() {
   }, [replaceSelectedMessageIds, toggleSelectedMessageId]);
 
   const handleContextMenu = useCallback((id: string, event: React.MouseEvent) => {
-    const scopedIds = selectedMessageIdsSet.has(id) ? Array.from(selectedMessageIdsSet) : [id];
+    const targetIds = selectedMessageIdsSet.has(id) ? Array.from(selectedMessageIdsSet) : [id];
     setContextMenu({
       x: event.clientX,
       y: event.clientY,
-      scopedIds,
+      targetIds,
     });
   }, [selectedMessageIdsSet]);
 
@@ -893,7 +888,7 @@ export function ChatInterface() {
       </div>
 
 
-      <ScopedNodeContextMenu
+      <NodeContextMenu
         contextMenu={contextMenu}
         projection={projection}
         onClose={() => setContextMenu(null)}

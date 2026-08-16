@@ -8,7 +8,6 @@ interface GraphTurnGroupHullProps {
   id: string;
   data: {
     label?: string;
-    scopeColor?: string | null;
     slotKind?: 'turn' | 'commit-only';
     threadRootId?: string | null;
     isThreadRoot?: boolean;

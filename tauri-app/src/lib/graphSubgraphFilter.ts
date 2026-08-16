@@ -24,16 +24,16 @@ export const getSubgraphMessageIds = (
     childrenByParentId.set(message.parentId, children);
   }
 
-  const scopedIds = new Set<string>();
+  const filteredIds = new Set<string>();
   const stack = [rootMessageId];
   while (stack.length > 0) {
     const id = stack.pop()!;
-    if (scopedIds.has(id)) continue;
-    scopedIds.add(id);
+    if (filteredIds.has(id)) continue;
+    filteredIds.add(id);
     stack.push(...(childrenByParentId.get(id) ?? []));
   }
 
-  return scopedIds;
+  return filteredIds;
 };
 
 export const createSubgraphFilterState = (
