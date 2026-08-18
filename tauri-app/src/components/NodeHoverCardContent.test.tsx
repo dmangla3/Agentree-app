@@ -12,6 +12,7 @@ import { join } from 'node:path';
 
 const quickReplyMocks = vi.hoisted(() => ({
   sendQuickReply: vi.fn(),
+  sendSteeringReply: vi.fn(),
 }));
 
 vi.mock('./NodePreviewRenderer', () => ({
@@ -23,6 +24,7 @@ vi.mock('./NodePreviewRenderer', () => ({
 vi.mock('../hooks/useHeadlessQuickReply', () => ({
   useHeadlessQuickReply: () => ({
     sendQuickReply: quickReplyMocks.sendQuickReply,
+    sendSteeringReply: quickReplyMocks.sendSteeringReply,
     isSending: false,
     error: null,
   }),
@@ -69,23 +71,29 @@ const makeProjection = (messages: Message[] = []): WorkspaceProjection => ({
   chatItems: [],
 });
 
-const makeEntity = (kind: ProjectedNodeEntity['kind']): ProjectedNodeEntity => ({
+const makeEntity = (
+  kind: ProjectedNodeEntity['kind'],
+  overrides: Partial<ProjectedNodeEntity> = {}
+): ProjectedNodeEntity => ({
   entityId: `${kind}:entity-1`,
   kind,
-  messageId: 'message-1',
-  focusMessageId: 'message-1',
+  messageId: overrides.messageId ?? 'message-1',
+  focusMessageId: overrides.focusMessageId ?? 'message-1',
   turnGroupId: 'turn-1',
   sortTs: 1,
   preview: `${kind} preview`,
   shortLabel: 'label',
-  status: null,
-  message: makeMessage({ id: 'message-1', content: `${kind} preview` }),
+  status: overrides.status ?? null,
+  message: overrides.message ?? makeMessage({ id: 'message-1', content: `${kind} preview` }),
+  ...overrides,
 });
 
 describe('NodeHoverCardContent', () => {
   beforeEach(() => {
     quickReplyMocks.sendQuickReply.mockReset();
+    quickReplyMocks.sendSteeringReply.mockReset();
     quickReplyMocks.sendQuickReply.mockResolvedValue({});
+    quickReplyMocks.sendSteeringReply.mockResolvedValue(undefined);
   });
 
   it('does not show Reply for commit hover cards', () => {
@@ -100,6 +108,23 @@ describe('NodeHoverCardContent', () => {
 
     expect(screen.getByText('hover body: assistant_message preview')).toBeTruthy();
     expect(screen.getByText('Quick Reply')).toBeTruthy();
+  });
+
+  it('shows persisted failure reason in the hover card', () => {
+    const entity = makeEntity('assistant_message');
+    entity.status = 'failed' as any;
+    entity.message = {
+      ...entity.message!,
+      status: 'failed' as any,
+      execution_data: {
+        failure_reason: "ImportError: cannot import name 'ParamSpec' from 'typing'",
+      },
+    };
+
+    render(<NodeHoverCardContent entity={entity} projection={makeProjection([entity.message])} />);
+
+    expect(screen.getByText('Failure reason')).toBeTruthy();
+    expect(screen.getByText("ImportError: cannot import name 'ParamSpec' from 'typing'")).toBeTruthy();
   });
 
   it('uses app theme surfaces for the hovercard shell', () => {
@@ -161,16 +186,58 @@ describe('NodeHoverCardContent', () => {
     expect(onFocus).not.toHaveBeenCalled();
   });
 
-  it('hides quick reply for running hover cards', () => {
+  it('shows steering for running assistant hover cards', async () => {
+    const user = userEvent.setup();
+    const runningAssistant = makeMessage({
+      id: 'assistant-running',
+      role: 'assistant',
+      status: 'running' as any,
+    });
     render(
       <NodeHoverCardContent
-        entity={{ ...makeEntity('assistant_message'), status: 'running' as any }}
-        projection={makeProjection()}
+        entity={makeEntity('assistant_message', {
+          status: 'running' as any,
+          message: runningAssistant,
+          messageId: runningAssistant.id,
+          focusMessageId: runningAssistant.id,
+        })}
+        projection={makeProjection([runningAssistant])}
       />
     );
 
     expect(screen.getByText('hover body: assistant_message preview')).toBeTruthy();
+    const input = screen.getByLabelText('Steering prompt');
+    await user.type(input, 'Focus on tests');
+    await user.click(screen.getByRole('button', { name: 'Steer' }));
+
+    expect(quickReplyMocks.sendSteeringReply).toHaveBeenCalledWith({
+      assistantNodeId: 'assistant-running',
+      prompt: 'Focus on tests',
+    });
+    expect(quickReplyMocks.sendQuickReply).not.toHaveBeenCalled();
+  });
+
+  it('hides quick reply for running non-assistant hover cards', () => {
+    const runningUser = makeMessage({
+      id: 'user-running',
+      role: 'user',
+      status: 'running' as any,
+    });
+    render(
+      <NodeHoverCardContent
+        entity={makeEntity('user_message', {
+          status: 'running' as any,
+          message: runningUser,
+          messageId: runningUser.id,
+          focusMessageId: runningUser.id,
+        })}
+        projection={makeProjection([runningUser])}
+      />
+    );
+
+    expect(screen.getByText('hover body: user_message preview')).toBeTruthy();
     expect(screen.queryByText('Quick Reply')).toBeNull();
+    expect(screen.queryByText('Steer')).toBeNull();
     expect(screen.queryByLabelText('Quick reply prompt')).toBeNull();
   });
 

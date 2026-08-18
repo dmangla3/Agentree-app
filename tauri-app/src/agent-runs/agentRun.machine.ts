@@ -11,6 +11,7 @@ import type {
 type MachineContext = { snapshot: AgentRunSnapshot };
 
 const TERMINAL_STATUSES = new Set<string>(['completed', 'failed', 'cancelled', 'error']);
+const FAILURE_STATUSES = new Set<string>(['failed', 'error', 'failed_setup', 'failed_spawn']);
 const RUNNING_OR_LATER_STATUSES = new Set<string>(['running', 'streaming', 'completed', 'failed', 'cancelled', 'error']);
 const PRE_RUNNING_STATUSES = new Set<string>(['pending', 'creating', 'initializing']);
 
@@ -25,6 +26,24 @@ const cleanString = (value: unknown): string | null => {
 
 const optionalBoolean = (value: unknown): boolean | null => (
   typeof value === 'boolean' ? value : null
+);
+
+const cleanFailureReason = (value: unknown): string | null => {
+  const reason = cleanString(value);
+  return reason ? Array.from(reason).slice(0, 500).join('') : null;
+};
+
+const failureReasonFromNativeEvent = (nativeEvent: Record<string, any>): string | null => {
+  const eventType = typeof nativeEvent.type === 'string' ? nativeEvent.type : null;
+  if (eventType !== 'stderr' && eventType !== 'error') return null;
+  return cleanFailureReason(nativeEvent.data)
+    ?? cleanFailureReason(nativeEvent.content)
+    ?? cleanFailureReason(nativeEvent.message)
+    ?? cleanFailureReason(nativeEvent.reason);
+};
+
+const isFailureAgentRunStatus = (status: unknown) => (
+  typeof status === 'string' && FAILURE_STATUSES.has(status)
 );
 
 export const isTerminalAgentRunStatus = (status: unknown) => (
@@ -158,6 +177,17 @@ const mergeExecutionData = (current: Record<string, any>, patch: Record<string, 
     },
   } : {}),
 });
+
+const scrubFailureExecutionData = (executionData: Record<string, any>): Record<string, any> => {
+  if (!Object.prototype.hasOwnProperty.call(executionData, 'failure_reason')) return executionData;
+  const { failure_reason: _failureReason, ...rest } = executionData;
+  return rest;
+};
+
+const failureReasonPatch = (value: unknown): Record<string, string> => {
+  const reason = cleanFailureReason(value);
+  return reason ? { failure_reason: reason } : {};
+};
 
 const appendTimelineEvent = (timeline: any[], nextEvent: any) => {
   const nextTimeline = [...timeline];
@@ -325,6 +355,7 @@ export const reduceAgentRunSnapshot = (
       const status = runStatusFromNativeEvent(nativeEvent) ?? snapshot.status;
       const runId = typeof nativeEvent.run_id === 'string' ? nativeEvent.run_id : snapshot.runId;
       const lastStreamSeq = typeof nativeEvent.stream_seq === 'number' ? nativeEvent.stream_seq : snapshot.lastStreamSeq;
+      const failureReason = failureReasonFromNativeEvent(nativeEvent);
       return updateStatus({
         ...snapshot,
         runId,
@@ -333,6 +364,7 @@ export const reduceAgentRunSnapshot = (
         executionData: mergeExecutionData(snapshot.executionData, {
           ...(seq !== null ? { last_agent_event_seq: seq } : {}),
           ...(typeof lastStreamSeq === 'number' ? { last_stream_seq: lastStreamSeq } : {}),
+          ...failureReasonPatch(failureReason),
         }),
       }, status, snapshot.progress);
     }
@@ -396,7 +428,10 @@ export const reduceAgentRunSnapshot = (
         ...updateStatus(snapshot, ack.status, ack.commitCreated ? 'Commit generated' : snapshot.progress),
         phase: 'terminal',
         finalizeAck: ack,
-        executionData: mergeExecutionData(snapshot.executionData, { meta: finalizeAckMeta(event, ack) }),
+        executionData: mergeExecutionData(
+          ack.status === 'completed' ? scrubFailureExecutionData(snapshot.executionData) : snapshot.executionData,
+          { meta: finalizeAckMeta(event, ack) },
+        ),
       };
       }
     case 'terminal': {
@@ -412,10 +447,18 @@ export const reduceAgentRunSnapshot = (
         content,
         terminalReason: acceptedTerminalStatus ? event.reason ?? snapshot.terminalReason : snapshot.terminalReason,
         terminalHoldUntil: Date.now() + (event.holdMs ?? 3000),
-        executionData: mergeExecutionData(snapshot.executionData, {
-          last_terminal_status: acceptedTerminalStatus ? event.status : snapshot.terminalStatus ?? snapshot.status,
-          ...(acceptedTerminalStatus && event.reason ? { stop_reason: event.reason } : {}),
-        }),
+        executionData: mergeExecutionData(
+          acceptedTerminalStatus && event.status === 'completed'
+            ? scrubFailureExecutionData(snapshot.executionData)
+            : snapshot.executionData,
+          {
+            last_terminal_status: acceptedTerminalStatus ? event.status : snapshot.terminalStatus ?? snapshot.status,
+            ...(acceptedTerminalStatus && event.reason ? { stop_reason: event.reason } : {}),
+            ...(acceptedTerminalStatus && isFailureAgentRunStatus(event.status)
+              ? failureReasonPatch(event.reason)
+              : {}),
+          },
+        ),
       };
     }
     case 'cancel':

@@ -1,7 +1,7 @@
 {
   "name": "tauri-app",
   "private": true,
-  "version": "0.1.13",
+  "version": "0.1.16",
   "type": "module",
   "scripts": {
     "dev": "npm run dev:infisical",
@@ -29,7 +29,8 @@
     "version:sync": "node ./scripts/sync-version.mjs",
     "release:prepare-config": "node ./scripts/prepare-release-config.mjs",
     "release:clean-python-sdk": "node ./scripts/clean-python-sdk-resources.mjs",
-    "release:prepare-resources": "npm run release:clean-python-sdk && npm run release:sign-macos-resources",
+    "release:assert-python-sdk": "node ./scripts/assert-python-sdk-resources.mjs",
+    "release:prepare-resources": "npm run release:clean-python-sdk && npm run release:assert-python-sdk && npm run release:sign-macos-resources",
     "release:sign-macos-resources": "node ./scripts/sign-macos-native-resources.mjs",
     "appimage:repair-icon": "node ./scripts/repair-linux-appimage-icon.mjs",
     "tauri:build:prod": "npm run tauri:build:prod:infisical",
@@ -45,7 +46,7 @@
     "test:graph": "vitest run src/lib/graphLayoutGeometry.test.ts src/lib/graphThreadRoots.test.ts src/lib/graphSubgraphFilter.test.ts src/hooks/graph src/components/GraphView.focusMove.test.ts src/components/graph src/components/nodes/graph src/mocks/frontendProjection.msw.test.ts",
     "test:send": "vitest run src/agent-runs src/components/ChatInput.popupLayering.test.ts src/lib/composerSendParent.test.ts src/lib/composerAgentRuns.test.ts src/perf/sendFlow.test.ts",
     "test:rust": "cd src-tauri && cargo test",
-    "test:perf:deterministic": "vitest run src/perf scripts/perf-latest-summary.test.mjs scripts/perf-trace.test.mjs tests/perf/tauri-pilot-chat-hot-path-lib.test.mjs tests/perf/tauri-pilot-click-feedback-lib.test.mjs src/mocks/frontendProjection.msw.test.ts src/hooks/graph/useGraphLayout.visualReuse.test.tsx src/lib/graphLayoutGeometry.test.ts",
+    "test:perf:deterministic": "vitest run src/perf scripts/perf-latest-summary.test.mjs scripts/perf-trace.test.mjs tests/perf/tauri-pilot-chat-hot-path-lib.test.mjs tests/perf/tauri-pilot-click-feedback-lib.test.mjs tests/perf/tauri-pilot-desktop-preflight-lib.test.mjs src/mocks/frontendProjection.msw.test.ts src/hooks/graph/useGraphLayout.visualReuse.test.tsx src/lib/graphLayoutGeometry.test.ts",
     "test:perf:pilot": "npm run smoke:send-flow:tauri && npm run perf:send-flow:tauri && npm run perf:cancel:tauri && npm run perf:composer-typing:tauri && npm run perf:scroll-behavior:tauri && npm run perf:graph-100:tauri && npm run perf:parallel:tauri",
     "test:agent-runs": "vitest run src/agent-runs/*.test.ts",
     "test:msw": "vitest run src/mocks",
@@ -57,7 +58,8 @@
     "perf:parallel:tauri:basic": "node ./tests/perf/tauri-pilot-parallel-agent-flow.mjs",
     "bindings:tauri": "cd src-tauri && cargo test export_tauri_specta_bindings -- --nocapture",
     "perf:graph-composer-open:tauri": "node ./tests/perf/tauri-pilot-graph-composer-open-flow.mjs",
-    "smoke:graph-composer-send:tauri": "node ./tests/perf/tauri-pilot-graph-composer-send-flow.mjs"
+    "smoke:graph-composer-send:tauri": "node ./tests/perf/tauri-pilot-graph-composer-send-flow.mjs",
+    "smoke:steering-surfaces:tauri": "node ./tests/perf/tauri-pilot-steering-surfaces-smoke.mjs"
   },
   "dependencies": {
     "@amplitude/analytics-browser": "^2.39.0",

@@ -530,6 +530,9 @@ export const agentClient = {
     stopAgent: async (sessionId: string): Promise<void> => {
         await tauriCommands.stopAgent(sessionId);
     },
+    steerAgentRun: async (assistantNodeId: string, content: string, idempotencyKey: string): Promise<void> => {
+        await tauriCommands.steerAgentRun(assistantNodeId, content, idempotencyKey);
+    },
     getAgentRunState: async (assistantNodeId: string): Promise<AgentRunStateResponse> => {
         return await tauriCommands.getAgentRunState(assistantNodeId);
     },

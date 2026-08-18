@@ -32,16 +32,15 @@ export const FLOW_NODE_REGISTRY: Record<string, FlowNodeDefinition> = {
     prompt: `Please implement:
 {{ request }}`,
   },
-  'core.selector@1': {
-    id: 'core.selector@1',
-    label: 'Selector',
+  'core.synthesizer@1': {
+    id: 'core.synthesizer@1',
+    label: 'Synthesizer',
     params: ['request', 'candidates'],
     parent: 'root',
-    returns: {
-      selected: 'node',
-      verdict: ['pass', 'fail'],
-    },
-    prompt: `Compare these candidate nodes and choose the best one for the request.
+    requiresFinalizedCommit: true,
+    prompt: `Compare these candidate implementation nodes for the request.
+Produce one finalized implementation commit. You may use one candidate unchanged when it is already the best answer, or create a synthesized implementation that keeps the strongest candidate's strengths and applies useful ideas, fixes, or tradeoffs from the other candidates when they improve the result.
+Do not copy weaker or conflicting changes just because they are present.
 
 Request:
 {{ request }}
@@ -49,10 +48,7 @@ Request:
 Candidates:
 {{ candidates }}
 
-End with:
-
-selected: <one candidate node>
-verdict: pass | fail`,
+Finish by producing a commit. Do not end with structured flow returns.`,
   },
   'core.reviewer@1': {
     id: 'core.reviewer@1',

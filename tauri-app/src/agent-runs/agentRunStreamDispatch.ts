@@ -274,6 +274,13 @@ export const dispatchProviderStreamEvent = (
       toolUseId: data.toolUseId || data.tool_use_id || data.id,
       delta: data.delta,
     }, context);
+  } else if (data.type === 'user_steer_requested') {
+    dispatchTimelineEvent({
+      type: 'user_steer_requested',
+      timestamp: data.timestamp ?? Date.now(),
+      content: data.content,
+      idempotencyKey: data.idempotency_key,
+    }, context);
   } else if (data.type === 'stop' || data.type === 'provider_stop' || data.type === 'result') {
     // Inner stop/result events are emitted on stdout by wrappers. Do not
     // teardown here; wait for top-level exit/stop so git finalization runs.

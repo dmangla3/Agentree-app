@@ -3,8 +3,9 @@ import { Bot, Check, ChevronDown, CornerDownRight, GitBranchIcon, GitCommitHoriz
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useShallow } from 'zustand/react/shallow';
 import { useWorkspaceStore, type Message, type Workspace } from '../stores/workspaceStore';
+import { useRunStatusStore } from '../stores/runStatusStore';
 import { applyLocalNodeMessages } from '../hooks/useLiveMessages';
-import { localNodeKeys, type LocalNodeMessage } from '../hooks/useLocalNodes';
+import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from '../hooks/useLocalNodes';
 import { useAgents, type Agent } from '../hooks/useAgents';
 import { useWorkspaces } from '../hooks/useWorkspaces';
 import { useCommitAncestors, useCommitDescendants, useSendMessage } from '../hooks/useMessages';
@@ -14,6 +15,7 @@ import { useTrackedRefs } from '../hooks/useTrackedRefs';
 import { agentRunManager } from '../agent-runs/agentRunManager';
 import { agentClient, type GitCommitMetadata } from '../lib/agentClient';
 import { getAccessToken } from '../lib/authSession';
+import { createSendFlowId, recordSendFlowEvent } from '../perf/sendFlow';
 import {
   buildComposerCommitPickerChipItems,
   buildComposerCommitPickerItems,
@@ -26,6 +28,7 @@ import { reconstructContext } from '../lib/contextUtils';
 import { getMergeVisualParentEntries, isMergeResultNode } from '../lib/graph/lineage';
 import { isFirstClassCommitMessage } from '../lib/graph/turnUtils';
 import { hasFreshContextBoundary } from '../lib/messageContext';
+import { isSteerableAssistantNode } from '../lib/agentRunSteering';
 import { cn } from '../lib/utils';
 import {
   buildComposerAgentRuns,
@@ -48,6 +51,8 @@ import { sendHeadlessComposerMessage } from './headlessComposerSend';
 import {
   resolveGraphDockComposerAgent,
   resolveGraphDockComposerBase,
+  resolveGraphDockComposerEffectiveAgentId,
+  resolveGraphDockComposerRunCountsForEffectiveAgent,
   resolveGraphDockComposerTarget,
 } from './graphDockComposerLogic';
 
@@ -185,6 +190,7 @@ export function GraphDockComposer() {
   const [flowParallelCount, setFlowParallelCount] = useState(3);
   const [prompt, setPrompt] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [isSteering, setIsSteering] = useState(false);
   const {
     selectedWorkspaceId,
     focusedMessageId,
@@ -286,6 +292,15 @@ export function GraphDockComposer() {
       : null,
     [messages, target.parentMessageId]
   );
+  const targetRunStatus = useRunStatusStore((state) => (
+    target.parentMessageId ? state.byNodeId[target.parentMessageId]?.status ?? null : null
+  ));
+  const isSteeringRunningAssistant = isSteerableAssistantNode({
+    nodeId: target.parentMessageId,
+    role: parentMessage?.role ?? null,
+    status: parentMessage?.status ?? null,
+    runStatus: targetRunStatus,
+  });
   const defaultContextParentMessage = useMemo(
     () => resolveConversationContextMessage(target.parentMessageId, messageById),
     [messageById, target.parentMessageId]
@@ -313,9 +328,21 @@ export function GraphDockComposer() {
     selectedAgentId,
     parentMessage,
   });
+  const effectiveSelectedAgentId = resolveGraphDockComposerEffectiveAgentId({
+    selectedAgentId,
+    resolvedAgent: agent,
+  });
   const normalizedSelectedAgentRunCounts = useMemo(
-    () => normalizeComposerAgentRunCounts(agents, selectedAgentId, selectedAgentRunCounts),
-    [agents, selectedAgentId, selectedAgentRunCounts]
+    () => normalizeComposerAgentRunCounts(
+      agents,
+      effectiveSelectedAgentId,
+      resolveGraphDockComposerRunCountsForEffectiveAgent({
+        selectedAgentId,
+        effectiveSelectedAgentId,
+        currentCounts: selectedAgentRunCounts,
+      })
+    ),
+    [agents, effectiveSelectedAgentId, selectedAgentId, selectedAgentRunCounts]
   );
   const selectedAgentRuns = useMemo(
     () => buildComposerAgentRuns(agents, normalizedSelectedAgentRunCounts),
@@ -460,8 +487,12 @@ export function GraphDockComposer() {
   );
   const isFlowSelected = Boolean(selectedFlow);
   const isSending = sendMessageMutation.isPending;
-  const canSend = Boolean(selectedWorkspaceId && prompt.trim() && effectiveBase && !isSending && (
-    isFlowSelected ? agent : selectedAgentRunItems.length > 0
+  const isPrimaryActionBusy = isSending || isSteering;
+  const isComposerConfigurationDisabled = isPrimaryActionBusy || isSteeringRunningAssistant;
+  const canSend = Boolean(selectedWorkspaceId && prompt.trim() && !isPrimaryActionBusy && (
+    isSteeringRunningAssistant
+      ? target.parentMessageId
+      : effectiveBase && (isFlowSelected ? agent : selectedAgentRunItems.length > 0)
   ));
   const targetLabel = previewText(parentMessage, target.parentMessageId ? 'Selected node' : 'Workspace root');
   const baseCommitPickerCommits = useMemo<ComposerCommitPickerCommit[]>(() => {
@@ -588,7 +619,7 @@ export function GraphDockComposer() {
   const modelSelectorLabel = !isFlowSelected && selectedRunTotal > 1
     ? `${selectedRunTotal} runs`
     : agent?.name ?? 'Choose model';
-  const footerStatusText = error ?? (selectedFlow ? `${selectedFlow.label} · ${flowParallelCount} parallel runs` : '');
+  const footerStatusText = error ?? (isSteeringRunningAssistant ? 'Steer the running agent' : selectedFlow ? `${selectedFlow.label} · ${flowParallelCount} parallel runs` : '');
   const dockControlButtonClass = cn(
     'group/control flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-[hsl(var(--app-border)/0.78)]',
     'bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-panel)/0.82))]',
@@ -605,19 +636,27 @@ export function GraphDockComposer() {
   }, [getComposerDraft, selectedWorkspaceId]);
 
   useEffect(() => {
-    const normalized = normalizeComposerAgentRunCounts(agents, selectedAgentId, selectedAgentRunCounts);
+    const normalized = normalizeComposerAgentRunCounts(
+      agents,
+      effectiveSelectedAgentId,
+      resolveGraphDockComposerRunCountsForEffectiveAgent({
+        selectedAgentId,
+        effectiveSelectedAgentId,
+        currentCounts: selectedAgentRunCounts,
+      })
+    );
     if (!areAgentRunCountsEqual(normalized, selectedAgentRunCounts)) {
       setSelectedAgentRunCounts(normalized);
     }
-  }, [agents, selectedAgentId, selectedAgentRunCounts]);
+  }, [agents, effectiveSelectedAgentId, selectedAgentId, selectedAgentRunCounts]);
 
   useEffect(() => {
-    if (!isFlowSelected || !selectedAgentId) return;
-    const nextCounts = { [selectedAgentId]: 1 };
+    if (!isFlowSelected || !effectiveSelectedAgentId) return;
+    const nextCounts = { [effectiveSelectedAgentId]: 1 };
     if (!areAgentRunCountsEqual(normalizedSelectedAgentRunCounts, nextCounts)) {
       setSelectedAgentRunCounts(nextCounts);
     }
-  }, [isFlowSelected, normalizedSelectedAgentRunCounts, selectedAgentId]);
+  }, [effectiveSelectedAgentId, isFlowSelected, normalizedSelectedAgentRunCounts]);
 
   useEffect(() => {
     setSelectedBaseCommit(null);
@@ -705,7 +744,31 @@ export function GraphDockComposer() {
 
   const handleSend = useCallback(async () => {
     const trimmedPrompt = prompt.trim();
-    if (!selectedWorkspaceId || !trimmedPrompt || isSending) return;
+    if (!selectedWorkspaceId || !trimmedPrompt || isPrimaryActionBusy) {
+      recordSendFlowEvent('graph-dock.blocked', {
+        workspaceId: selectedWorkspaceId,
+        promptLength: trimmedPrompt.length,
+        hasWorkspace: Boolean(selectedWorkspaceId),
+        isPrimaryActionBusy,
+      }, { source: 'GraphDockComposer' });
+      return;
+    }
+    if (isSteeringRunningAssistant && target.parentMessageId) {
+      setError(null);
+      setIsSteering(true);
+      try {
+        await agentClient.steerAgentRun(target.parentMessageId, trimmedPrompt, crypto.randomUUID());
+        clearComposerDraft(selectedWorkspaceId);
+        setPrompt('');
+        window.setTimeout(() => textareaRef.current?.focus(), 0);
+      } catch (caught) {
+        const message = caught instanceof Error ? caught.message : 'Failed to steer running agent.';
+        setError(message);
+      } finally {
+        setIsSteering(false);
+      }
+      return;
+    }
     const runsToSend = selectedAgentRunItems.length > 0
       ? selectedAgentRunItems
       : agent
@@ -718,16 +781,37 @@ export function GraphDockComposer() {
         }]
         : [];
     if (!agent || (!selectedFlow && runsToSend.length === 0)) {
+      recordSendFlowEvent('graph-dock.blocked', {
+        workspaceId: selectedWorkspaceId,
+        reason: 'missing-agent',
+        selectedFlowId: selectedFlow?.id ?? null,
+        runCount: runsToSend.length,
+      }, { source: 'GraphDockComposer' });
       setError('Select an agent before sending.');
       return;
     }
     if (!effectiveBase) {
+      recordSendFlowEvent('graph-dock.blocked', {
+        workspaceId: selectedWorkspaceId,
+        reason: 'missing-base',
+        selectedFlowId: selectedFlow?.id ?? null,
+        runCount: runsToSend.length,
+      }, { source: 'GraphDockComposer' });
       setError('No base commit is available for this workspace.');
       return;
     }
 
     setError(null);
     assistantNodeIdRef.current = null;
+    recordSendFlowEvent('graph-dock.submit', {
+      workspaceId: selectedWorkspaceId,
+      promptLength: trimmedPrompt.length,
+      parentMessageId: target.parentMessageId,
+      selectedFlowId: selectedFlow?.id ?? null,
+      runCount: selectedFlow ? flowParallelCount : runsToSend.length,
+      agentId: agent?.id ?? null,
+      baseCommitSha: effectiveBase.commitSha,
+    }, { source: 'GraphDockComposer' });
     try {
       if (selectedFlow) {
         await flowRunner.runFlow({ input: trimmedPrompt, count: flowParallelCount });
@@ -738,6 +822,7 @@ export function GraphDockComposer() {
 
       const threadOriginId = target.parentMessageId ? null : crypto.randomUUID();
       for (const run of runsToSend) {
+        const flowId = createSendFlowId();
         await sendHeadlessComposerMessage({
           workspaceId: selectedWorkspaceId,
           parentMessageId: target.parentMessageId,
@@ -758,9 +843,28 @@ export function GraphDockComposer() {
           getAccessToken,
           seedAgentRun: (message) => agentRunManager.seed(message),
           dispatchAgentRun: (nodeId, event) => agentRunManager.dispatch(nodeId, event as any),
+          persistLocalNode: (workspaceId, nodeId, message) => agentClient.upsertLocalNode(workspaceId, nodeId, message),
+          onMessagesCreated: (createdMessages) => {
+            queryClient.setQueryData<Message[]>(['messages', selectedWorkspaceId], (current) => {
+              const existing = current ?? [];
+              const ids = new Set(createdMessages.map((message) => message.id));
+              return [...existing.filter((message) => !ids.has(message.id)), ...createdMessages]
+                .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+            });
+            queryClient.setQueryData<LocalNodeMessage[]>(
+              localNodeKeys.workspace(selectedWorkspaceId),
+              (current) => upsertMessagesIntoLocalNodeCache(current, selectedWorkspaceId, createdMessages, {
+                syncStatus: 'local_only',
+                finalizedAt: Math.floor(Date.now() / 1000),
+              })
+            );
+            void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(selectedWorkspaceId) });
+          },
           onAssistantMessageCreated: (message) => {
             assistantNodeIdRef.current = message.id;
           },
+          perfFlowId: flowId,
+          perfSource: 'GraphDockComposer',
           setupProgress: 'Starting graph composer run...',
           threadOriginId,
           meta: {
@@ -775,6 +879,12 @@ export function GraphDockComposer() {
       setPrompt('');
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : 'Failed to send message.';
+      recordSendFlowEvent('graph-dock.error', {
+        workspaceId: selectedWorkspaceId,
+        parentMessageId: target.parentMessageId,
+        selectedFlowId: selectedFlow?.id ?? null,
+        message,
+      }, { source: 'GraphDockComposer' });
       if (assistantNodeIdRef.current) {
         agentRunManager.dispatch(assistantNodeIdRef.current, {
           type: 'terminal',
@@ -793,9 +903,11 @@ export function GraphDockComposer() {
     effectiveContextStartId,
     flowParallelCount,
     flowRunner,
-    isSending,
+    isPrimaryActionBusy,
+    isSteeringRunningAssistant,
     messages,
     prompt,
+    queryClient,
     selectedWorkspaceId,
     selectedAgentRunItems,
     selectedFlow,
@@ -803,6 +915,9 @@ export function GraphDockComposer() {
     target.parentMessageId,
     workspaces,
   ]);
+
+  const sendButtonLabel = isSteeringRunningAssistant ? 'Steer' : selectedFlow ? 'Run Flow' : 'Send';
+  const sendButtonBusyLabel = isSteeringRunningAssistant ? 'Steering' : 'Sending';
 
   return (
     <div
@@ -842,7 +957,7 @@ export function GraphDockComposer() {
           }}
           placeholder="Ask anything..."
           className="max-h-[128px] min-h-[58px] w-full resize-none rounded-lg bg-[hsl(var(--background)/0.44)] px-2.5 py-2 text-[13px] leading-5 text-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.54)] outline-none transition-[background-color,box-shadow] duration-150 placeholder:text-muted-foreground/68 focus:bg-[hsl(var(--background)/0.64)] focus:shadow-[inset_0_0_0_1px_hsl(var(--app-focus)/0.48),0_0_0_3px_hsl(var(--app-focus)/0.08)]"
-          disabled={isSending}
+          disabled={isPrimaryActionBusy}
         />
         <div data-testid="graph-dock-control-row" className="mt-1.5 grid min-w-0 grid-cols-2 gap-1.5 border-t border-[hsl(var(--app-border)/0.52)] px-0.5 pt-1.5 md:grid-cols-4">
           <DropdownMenu>
@@ -852,7 +967,7 @@ export function GraphDockComposer() {
                   <button
                     type="button"
                     aria-label="Select flow"
-                    disabled={isSending || !selectedWorkspaceId}
+                    disabled={isComposerConfigurationDisabled || !selectedWorkspaceId}
                     className={cn(
                       dockControlButtonClass,
                       'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
@@ -915,7 +1030,7 @@ export function GraphDockComposer() {
                   <button
                     type="button"
                     aria-label="Select model"
-                    disabled={isSending || !selectedWorkspaceId}
+                    disabled={isComposerConfigurationDisabled || !selectedWorkspaceId}
                     className={cn(
                       dockControlButtonClass,
                       'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
@@ -950,7 +1065,7 @@ export function GraphDockComposer() {
                   <button
                     type="button"
                     aria-label="Select code base commit"
-                    disabled={isSending || !effectiveBase}
+                    disabled={isComposerConfigurationDisabled || !effectiveBase}
                     className={cn(
                       dockControlButtonClass,
                       'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
@@ -1030,7 +1145,7 @@ export function GraphDockComposer() {
                   <button
                     type="button"
                     aria-label="Select context"
-                    disabled={isSending}
+                    disabled={isComposerConfigurationDisabled}
                     className={cn(
                       dockControlButtonClass,
                       'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
@@ -1158,7 +1273,7 @@ export function GraphDockComposer() {
                         <button
                           type="button"
                           onClick={() => handleAgentRunCountChange(chipAgent.id, 0)}
-                          disabled={!canRemove}
+                          disabled={!canRemove || isComposerConfigurationDisabled}
                           className="flex h-4 w-4 items-center justify-center rounded bg-background text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.75)] transition-[background-color,color,transform] hover:bg-red-50 hover:text-red-600 active:scale-[0.94] disabled:pointer-events-none disabled:opacity-35 dark:hover:bg-red-950/40 dark:hover:text-red-300"
                           aria-label={`Remove ${chipAgent.name}`}
                         >
@@ -1167,7 +1282,7 @@ export function GraphDockComposer() {
                         <button
                           type="button"
                           onClick={() => handleAgentRunCountChange(chipAgent.id, count - 1)}
-                          disabled={!canDecrement}
+                          disabled={!canDecrement || isComposerConfigurationDisabled}
                           className="flex h-4 w-4 items-center justify-center rounded bg-background text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.75)] transition-[background-color,color,transform] hover:bg-muted hover:text-foreground active:scale-[0.94] disabled:pointer-events-none disabled:opacity-35"
                           aria-label={`Decrease ${chipAgent.name}`}
                         >
@@ -1176,6 +1291,7 @@ export function GraphDockComposer() {
                         <button
                           type="button"
                           onClick={() => handleAgentRunCountChange(chipAgent.id, count + 1)}
+                          disabled={isComposerConfigurationDisabled}
                           className="flex h-4 w-4 items-center justify-center rounded bg-[hsl(var(--app-success))] text-white transition-[background-color,transform] hover:brightness-105 active:scale-[0.94]"
                           aria-label={`Increase ${chipAgent.name}`}
                         >
@@ -1205,10 +1321,10 @@ export function GraphDockComposer() {
                 ? 'bg-[hsl(var(--app-accent))] text-white shadow-[0_16px_36px_-20px_hsl(var(--app-accent)/0.68),inset_0_1px_0_hsl(44_80%_99%/0.24)] hover:-translate-y-0.5 hover:brightness-105 active:translate-y-0'
                 : 'cursor-not-allowed bg-muted text-muted-foreground opacity-60'
             )}
-            aria-label="Send graph composer message"
+            aria-label={isSteeringRunningAssistant ? "Steer running agent" : "Send graph composer message"}
           >
-            {isSending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
-            <span>{isSending ? 'Sending' : selectedFlow ? 'Run Flow' : 'Send'}</span>
+            {isPrimaryActionBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+            <span>{isPrimaryActionBusy ? sendButtonBusyLabel : sendButtonLabel}</span>
           </button>
         </div>
       </div>

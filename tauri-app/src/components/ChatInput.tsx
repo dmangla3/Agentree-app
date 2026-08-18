@@ -80,6 +80,7 @@ import { hasFreshContextBoundary } from '../lib/messageContext';
 import {
     scheduleMessagesRefreshWhenGraphIdle,
 } from '../lib/graphInteractionGate';
+import { isSteerableAssistantNode } from '../lib/agentRunSteering';
 import { createSendFlowId, recordSendFlowEvent, recordSendFlowMark } from '../perf/sendFlow';
 import { withRuntimeActivity } from '../perf/runtimeActivityContext';
 import {
@@ -114,6 +115,7 @@ import {
 import { requestAgentWorkspaceRefresh } from '../agent-runs/agentRunWorkspaceRefresh';
 import { projectBackgroundAgentEvent } from '../agent-runs/agentRunBackgroundStream';
 import { createAgentRunStreamRegistry, type FullStreamHandler } from '../agent-runs/agentRunStreamRegistry';
+import { commands } from '../generated/tauri-bindings';
 
 
 // --- Types ---
@@ -2729,6 +2731,11 @@ export function ChatInput({
         isNewThreadTarget,
         isSelectedNodeRunning,
     });
+    const isSteeringRunningAssistant = isSteerableAssistantNode({
+        nodeId: selectedNodeId,
+        role: selectedNodeRole,
+        status: selectedResolvedState.status,
+    });
     const startFlowStreamForNode = useCallback(
         (node: Message, options: { authToken: string; parentId: string | null }) => (
             startStreamForNode(node, {
@@ -3287,7 +3294,7 @@ export function ChatInput({
                                 </div>
                                 <div className="min-w-0">
                                     <div className="truncate text-[12px] font-semibold text-foreground">{flow.label}</div>
-                                    <div className="truncate text-[10.5px] text-muted-foreground">Runs variants, judges, then reviews</div>
+                                    <div className="truncate text-[10.5px] text-muted-foreground">Runs variants, synthesizes, then reviews</div>
                                 </div>
                             </DropdownMenuItem>
                         );
@@ -3527,6 +3534,22 @@ export function ChatInput({
             isParentIncomplete,
             hasLocalAgentRuntime,
         });
+        if (isSteeringRunningAssistant && selectedNodeId) {
+            if (attachments.length > 0 || contextIds.length > 0) {
+                addToast({
+                    title: 'Steering supports text only',
+                    description: 'Send a short text intervention to the running agent.',
+                    variant: 'error',
+                });
+                return;
+            }
+            const steerContent = currentPrompt.trim();
+            if (!steerContent) return;
+            await commands.steerAgentRun(selectedNodeId, steerContent, crypto.randomUUID());
+            setComposerPrompt('');
+            setTimeout(() => textareaRef.current?.focus(), 0);
+            return;
+        }
         // --- 1. VALIDATION ---
         const filesInProgress = attachments.some((att: Attachment) =>
             'status' in att && (att.status === 'pending' || att.status === 'uploading')
@@ -4560,6 +4583,8 @@ export function ChatInput({
         selectedAgent,
         selectedAgentRunItems,
         isNewThreadTarget,
+        isSteeringRunningAssistant,
+        selectedNodeId,
         isParentIncomplete,
         contextMode,
         messageLookupMessages,
@@ -5404,7 +5429,6 @@ export function ChatInput({
 
     // --- Existing Render Logic ---
     const totalAttachments = attachments.length;
-    const sendButtonLabel = editDraftSource ? 'Edit and run' : 'Send';
     const triggerSendPressFeedback = () => {
         setSendPressFeedback(true);
         if (sendPressFeedbackTimerRef.current !== null) {
@@ -5429,13 +5453,19 @@ export function ChatInput({
         || !selectedWorkspaceId
         || !selectedAgentId
         || isParentIncomplete;
+    const showPrimaryCancel = showCancel && !isSteeringRunningAssistant;
     const isPrimaryActionDisabled = isFlowSelected
         ? isFlowRunDisabled
-        : isParentIncomplete || (!promptHasContent && totalAttachments === 0 && contextIds.length === 0) || !selectedWorkspaceId;
+        : isSteeringRunningAssistant
+            ? !trimmedPrompt || !selectedWorkspaceId
+            : isParentIncomplete || (!promptHasContent && totalAttachments === 0 && contextIds.length === 0) || !selectedWorkspaceId;
+    const sendButtonLabel = isSteeringRunningAssistant ? 'Steer' : editDraftSource ? 'Edit and run' : 'Send';
     const primaryActionLabel = isFlowSelected
         ? 'Run Flow'
+        : isSteeringRunningAssistant
+            ? sendButtonLabel
         : (isSendAcceptanceInFlight ? (queuedComposerSendCount > 0 ? `Queue ${queuedComposerSendCount + 1}` : 'Queue') : sendButtonLabel);
-    const handlePrimaryAction = showCancel
+    const handlePrimaryAction = showPrimaryCancel
         ? handleCancel
         : isFlowSelected
             ? () => {
@@ -6044,26 +6074,26 @@ export function ChatInput({
                             type="button"
                             data-testid="chat-send-button"
                             onMouseDown={() => {
-                                if (!showCancel && !isFlowSelected) triggerSendPressFeedback();
+                                if (!showPrimaryCancel && !isFlowSelected) triggerSendPressFeedback();
                             }}
                             onClick={handlePrimaryAction}
-                            disabled={showCancel ? false : isPrimaryActionDisabled}
+                            disabled={showPrimaryCancel ? false : isPrimaryActionDisabled}
                             className={cn(
                                 "flex-shrink-0 flex items-center justify-center gap-1.5",
                                 "h-7 px-3 rounded-md",
                                 "text-xs font-semibold",
                                 "relative overflow-hidden transition-all duration-200 active:scale-95",
                                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1",
-                                showCancel
+                                showPrimaryCancel
                                     ? "bg-destructive text-destructive-foreground shadow-[0_10px_26px_-18px_hsl(var(--destructive))] hover:bg-destructive/90"
                                     : "bg-[hsl(var(--app-accent))] text-white shadow-[0_14px_34px_-20px_hsl(var(--app-accent)/0.65)] hover:brightness-105 dark:text-white",
-                                sendPressFeedback && !showCancel && !isFlowSelected && "scale-95 ring-2 ring-primary/40 ring-offset-2",
+                                sendPressFeedback && !showPrimaryCancel && !isFlowSelected && "scale-95 ring-2 ring-primary/40 ring-offset-2",
                                 "disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:opacity-40 disabled:hover:shadow-none"
                             )}
-                            aria-label={showCancel ? "Cancel sending message" : primaryActionLabel}
+                            aria-label={showPrimaryCancel ? "Cancel sending message" : primaryActionLabel}
                             title={isParentIncomplete ? parentStatusLabel : undefined}
                         >
-                            {showCancel ? (
+                            {showPrimaryCancel ? (
                                 <>
                                     <Loader2 className="h-3 w-3 animate-spin" />
                                     <span>Cancel</span>
@@ -6084,6 +6114,21 @@ export function ChatInput({
                                 </>
                             )}
                         </button>
+                        {isSteeringRunningAssistant && showCancel ? (
+                            <button
+                                type="button"
+                                onClick={handleCancel}
+                                className={cn(
+                                    "flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
+                                    "border border-[hsl(var(--app-border))] bg-background text-muted-foreground",
+                                    "transition-[background-color,color,transform] duration-150 hover:bg-destructive hover:text-destructive-foreground active:scale-95",
+                                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1"
+                                )}
+                                aria-label="Cancel running agent"
+                            >
+                                <X className="h-3.5 w-3.5" />
+                            </button>
+                        ) : null}
                     </div>
                 </div>
             </div>

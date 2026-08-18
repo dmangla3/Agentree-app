@@ -4,6 +4,7 @@ import { runCacheRefreshOperation } from './cacheRefreshPerf';
 
 const GRAPH_INTERACTION_IDLE_MS = 900;
 const GRAPH_INTERACTION_STALE_MS = 12_000;
+const GRAPH_REFRESH_BUSY_MAX_WAIT_MS = 3_000;
 
 let activeInteractionCount = 0;
 let lastInteractionAt = 0;
@@ -23,6 +24,7 @@ type PendingMessageRefresh = {
   workspaceId: string;
   refetchActive: boolean;
   reason?: string;
+  requestedAt: number;
 };
 
 const pendingMessageRefreshes = new Map<string, PendingMessageRefresh>();
@@ -34,6 +36,7 @@ type PendingStructuralRefresh = {
   reason?: string;
   includeBranches: boolean;
   includeWorkspaces: boolean;
+  requestedAt: number;
 };
 
 const pendingStructuralRefreshes = new Map<string, PendingStructuralRefresh>();
@@ -42,6 +45,7 @@ type PendingLocalCommitGraphRefresh = {
   queryClient: QueryClient;
   workspaceId: string;
   reason?: string;
+  requestedAt: number;
 };
 
 const pendingLocalCommitGraphRefreshes = new Map<string, PendingLocalCommitGraphRefresh>();
@@ -53,8 +57,44 @@ const isGraphInteractionIdle = () => {
   return now() - lastInteractionAt >= GRAPH_INTERACTION_IDLE_MS;
 };
 
+export const isGraphInteractionGateIdle = () => isGraphInteractionIdle();
+
+const getOldestPendingRefreshAgeMs = () => {
+  let oldestRequestedAt: number | null = null;
+  const pending = [
+    ...pendingMessageRefreshes.values(),
+    ...pendingStructuralRefreshes.values(),
+    ...pendingLocalCommitGraphRefreshes.values(),
+  ];
+  for (const entry of pending) {
+    oldestRequestedAt = oldestRequestedAt === null
+      ? entry.requestedAt
+      : Math.min(oldestRequestedAt, entry.requestedAt);
+  }
+  return oldestRequestedAt === null ? null : Math.max(0, now() - oldestRequestedAt);
+};
+
+const hasPendingRefreshes = () => (
+  pendingMessageRefreshes.size > 0 ||
+  pendingStructuralRefreshes.size > 0 ||
+  pendingLocalCommitGraphRefreshes.size > 0
+);
+
 const flushPendingMessageRefreshes = async () => {
-  if (!isGraphInteractionIdle()) return;
+  const forcedByMaxWait = (getOldestPendingRefreshAgeMs() ?? 0) >= GRAPH_REFRESH_BUSY_MAX_WAIT_MS;
+  if (!isGraphInteractionIdle() && !forcedByMaxWait) {
+    scheduleIdleFlush();
+    return;
+  }
+
+  if (forcedByMaxWait) {
+    recordPerfEvent('query.graph-interaction-gate.force-flush', {
+      pendingMessageRefreshCount: pendingMessageRefreshes.size,
+      pendingStructuralRefreshCount: pendingStructuralRefreshes.size,
+      pendingLocalCommitGraphRefreshCount: pendingLocalCommitGraphRefreshes.size,
+      oldestPendingAgeMs: Number((getOldestPendingRefreshAgeMs() ?? 0).toFixed(2)),
+    }, { source: 'graphInteractionGate' });
+  }
 
   const pendingMessages = Array.from(pendingMessageRefreshes.values());
   pendingMessageRefreshes.clear();
@@ -179,10 +219,18 @@ const flushPendingMessageRefreshes = async () => {
 
 const scheduleIdleFlush = () => {
   if (typeof window === 'undefined') return;
+  if (!hasPendingRefreshes()) return;
   if (idleTimer !== null) {
     window.clearTimeout(idleTimer);
   }
-  const delayMs = Math.max(0, GRAPH_INTERACTION_IDLE_MS - (now() - lastInteractionAt));
+  const oldestPendingAgeMs = getOldestPendingRefreshAgeMs();
+  const maxWaitDelayMs = oldestPendingAgeMs === null
+    ? GRAPH_REFRESH_BUSY_MAX_WAIT_MS
+    : Math.max(0, GRAPH_REFRESH_BUSY_MAX_WAIT_MS - oldestPendingAgeMs);
+  const idleDelayMs = activeInteractionCount > 0
+    ? maxWaitDelayMs
+    : Math.max(0, GRAPH_INTERACTION_IDLE_MS - (now() - lastInteractionAt));
+  const delayMs = Math.min(idleDelayMs, maxWaitDelayMs);
   idleTimer = window.setTimeout(() => {
     idleTimer = null;
     void flushPendingMessageRefreshes();
@@ -291,11 +339,13 @@ export const scheduleMessagesRefreshWhenGraphIdle = async (
     return;
   }
 
+  const merged = pendingMessageRefreshes.get(workspaceId);
   pendingMessageRefreshes.set(workspaceId, {
     queryClient,
     workspaceId,
-    refetchActive: Boolean(options.refetchActive),
-    reason: options.reason,
+    refetchActive: Boolean(options.refetchActive) || merged?.refetchActive || false,
+    reason: options.reason ?? merged?.reason,
+    requestedAt: merged?.requestedAt ?? now(),
   });
   recordPerfEvent('query.messages.refresh.deferred', {
     workspaceId,
@@ -327,6 +377,7 @@ export const scheduleWorkspaceStructuralRefreshWhenGraphIdle = async (
     reason: options.reason ?? merged?.reason,
     includeBranches: Boolean(options.includeBranches) || merged?.includeBranches || false,
     includeWorkspaces: Boolean(options.includeWorkspaces) || merged?.includeWorkspaces || false,
+    requestedAt: merged?.requestedAt ?? now(),
   };
 
   if (isGraphInteractionIdle()) {
@@ -355,10 +406,12 @@ export const scheduleLocalCommitGraphRefreshWhenGraphIdle = async (
 ) => {
   if (!workspaceId) return;
 
+  const merged = pendingLocalCommitGraphRefreshes.get(workspaceId);
   pendingLocalCommitGraphRefreshes.set(workspaceId, {
     queryClient,
     workspaceId,
-    reason: options.reason,
+    reason: options.reason ?? merged?.reason,
+    requestedAt: merged?.requestedAt ?? now(),
   });
 
   if (isGraphInteractionIdle()) {
@@ -374,4 +427,21 @@ export const scheduleLocalCommitGraphRefreshWhenGraphIdle = async (
     msSinceLastInteraction: Number((now() - lastInteractionAt).toFixed(2)),
   }, { source: 'graphInteractionGate' });
   scheduleIdleFlush();
+};
+
+export const resetGraphInteractionGateForTest = () => {
+  activeInteractionCount = 0;
+  lastInteractionAt = 0;
+  nextInteractionToken = 1;
+  if (typeof window !== 'undefined' && idleTimer !== null) {
+    window.clearTimeout(idleTimer);
+  }
+  idleTimer = null;
+  for (const interaction of activeInteractions.values()) {
+    clearInteractionTimer(interaction);
+  }
+  activeInteractions.clear();
+  pendingMessageRefreshes.clear();
+  pendingStructuralRefreshes.clear();
+  pendingLocalCommitGraphRefreshes.clear();
 };

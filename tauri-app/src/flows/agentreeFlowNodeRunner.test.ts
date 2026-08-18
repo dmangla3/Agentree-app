@@ -172,8 +172,8 @@ describe('createAgentreeFlowNodeRunner', () => {
     };
     const parent: FlowNodeValue = {
       kind: 'node',
-      id: 'judge-node',
-      label: 'Judge',
+      id: 'synthesizer-node',
+      label: 'Synthesizer',
       status: 'complete',
     };
     const runner = createAgentreeFlowNodeRunner({
@@ -198,8 +198,8 @@ describe('createAgentreeFlowNodeRunner', () => {
     });
 
     expect(launchCalls[0]).toEqual(expect.objectContaining({
-      parentNodeId: 'judge-node',
-      contextParentNodeId: 'judge-node',
+      parentNodeId: 'synthesizer-node',
+      contextParentNodeId: 'synthesizer-node',
     }));
     expect(waitedFor).toBe('assistant-reviewer');
     expect(result).toEqual(expect.objectContaining({

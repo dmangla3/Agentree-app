@@ -1,4 +1,4 @@
-export type EdgeEndpointDotVariant = 'commit-parent' | 'convergence';
+export type EdgeEndpointDotVariant = 'commit-parent' | 'convergence' | 'conversation';
 
 type EdgeLegendLike = 'context-path' | 'conversation' | 'context-break' | 'git-parent' | 'base-used' | string;
 
@@ -14,16 +14,38 @@ type GraphNodeLike = {
 
 export const getEdgeEndpointDotVariant = (data: unknown): EdgeEndpointDotVariant | null => {
   const variant = (data as any)?.endpointDotVariant;
-  return variant === 'commit-parent' || variant === 'convergence' ? variant : null;
+  return variant === 'commit-parent' || variant === 'convergence' || variant === 'conversation' ? variant : null;
 };
 
-export const getEdgeEndpointDotVisuals = (variant: EdgeEndpointDotVariant) => ({
-  color: variant === 'commit-parent' ? '#10b981' : '#6366f1',
-  haloColor: variant === 'commit-parent' ? 'rgba(16,185,129,0.22)' : 'rgba(99,102,241,0.24)',
-  sourceRadius: 6,
-  targetRadius: 7,
-  haloRadius: 11,
-});
+export const getEdgeEndpointDotVisuals = (variant: EdgeEndpointDotVariant) => {
+  if (variant === 'commit-parent') {
+    return {
+      color: '#10b981',
+      haloColor: 'rgba(16,185,129,0.22)',
+      sourceRadius: 6,
+      targetRadius: 7,
+      haloRadius: 11,
+    };
+  }
+
+  if (variant === 'conversation') {
+    return {
+      color: '#64748b',
+      haloColor: 'rgba(100,116,139,0.18)',
+      sourceRadius: 5,
+      targetRadius: 6,
+      haloRadius: 10,
+    };
+  }
+
+  return {
+    color: '#6366f1',
+    haloColor: 'rgba(99,102,241,0.24)',
+    sourceRadius: 6,
+    targetRadius: 7,
+    haloRadius: 11,
+  };
+};
 
 const getTurnGroupId = (node: GraphNodeLike): string | null => (
   node?.data?.entity?.turnGroupId ?? node?.data?.turnGroupId ?? null
@@ -56,5 +78,6 @@ export const getGraphEdgeEndpointDotVariant = ({
   if (!isInterTurnEdge) return null;
   if (edgeLegendType === 'git-parent') return 'commit-parent';
   if (matchedContextPathPreview) return 'convergence';
+  if (edgeLegendType === 'conversation' || edgeLegendType === 'context-break') return 'conversation';
   return null;
 };

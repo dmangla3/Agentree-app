@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '../../../test/setup';
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GraphNodeWrapper } from './GraphNodeWrapper';
 
@@ -16,7 +16,18 @@ vi.mock('@xyflow/react', () => ({
 }));
 
 vi.mock('../../../../@/components/ui/hover-card', () => ({
-  HoverCard: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  HoverCard: ({
+    children,
+    onOpenChange,
+  }: {
+    children: React.ReactNode;
+    onOpenChange?: (open: boolean) => void;
+  }) => (
+    <div>
+      <button type="button" onClick={() => onOpenChange?.(true)}>open hover</button>
+      {children}
+    </div>
+  ),
   HoverCardContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   HoverCardTrigger: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
@@ -26,6 +37,10 @@ vi.mock('../../../agent-runs/agentRunManager', () => ({
     watch: vi.fn(),
     unwatch: vi.fn(),
   },
+}));
+
+vi.mock('../../../agent-runs/agentRunHydration', () => ({
+  ensureAgentRunHydrated: vi.fn(() => Promise.resolve({ status: 'hydrated' })),
 }));
 
 const baseProps = {
@@ -66,5 +81,20 @@ describe('GraphNodeWrapper', () => {
 
     expect(screen.getByText('node body')).toBeTruthy();
     expect(screen.queryByText('expensive hover content')).toBeNull();
+  });
+
+  it('requests shared run hydration when a hover card opens', async () => {
+    const { ensureAgentRunHydrated } = await import('../../../agent-runs/agentRunHydration');
+
+    render(
+      <GraphNodeWrapper {...baseProps} hoverCardContent={<div>expensive hover content</div>}>
+        <div>node body</div>
+      </GraphNodeWrapper>
+    );
+
+    fireEvent.click(screen.getByText('open hover'));
+
+    expect(screen.getByText('expensive hover content')).toBeTruthy();
+    expect(ensureAgentRunHydrated).toHaveBeenCalledWith('node-1', 'hover');
   });
 });

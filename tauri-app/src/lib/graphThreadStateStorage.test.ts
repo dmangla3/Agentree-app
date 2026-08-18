@@ -38,6 +38,7 @@ describe('graph thread state storage', () => {
       activeThreadRootId: 'thread-b',
       doneThreadRootIds: new Set(['thread-a']),
       doneThreadsCollapsed: true,
+      threadBarCollapsed: true,
       lastVisitedAtByThreadRootId: new Map([['thread-b', 1770000000000]]),
     });
 
@@ -45,6 +46,7 @@ describe('graph thread state storage', () => {
       activeThreadRootId: 'thread-b',
       doneThreadRootIds: new Set(['thread-a']),
       doneThreadsCollapsed: true,
+      threadBarCollapsed: true,
       lastVisitedAtByThreadRootId: new Map([['thread-b', 1770000000000]]),
     });
   });
@@ -54,6 +56,7 @@ describe('graph thread state storage', () => {
       activeThreadRootId: 'thread-x',
       doneThreadRootIds: new Set(['thread-a', 'thread-x']),
       doneThreadsCollapsed: true,
+      threadBarCollapsed: true,
       lastVisitedAtByThreadRootId: new Map([
         ['thread-a', 1770000000000],
         ['thread-x', 1770000001000],
@@ -62,6 +65,7 @@ describe('graph thread state storage', () => {
       activeThreadRootId: null,
       doneThreadRootIds: new Set(['thread-a']),
       doneThreadsCollapsed: true,
+      threadBarCollapsed: true,
       lastVisitedAtByThreadRootId: new Map([['thread-a', 1770000000000]]),
     });
   });
@@ -76,6 +80,7 @@ describe('graph thread state storage', () => {
       activeThreadRootId: null,
       doneThreadRootIds: new Set(['thread-a']),
       doneThreadsCollapsed: true,
+      threadBarCollapsed: false,
       lastVisitedAtByThreadRootId: new Map(),
     });
   });
@@ -85,6 +90,7 @@ describe('graph thread state storage', () => {
       activeThreadRootId: null,
       doneThreadRootIds: new Set(),
       doneThreadsCollapsed: true,
+      threadBarCollapsed: false,
       lastVisitedAtByThreadRootId: new Map(),
     });
 

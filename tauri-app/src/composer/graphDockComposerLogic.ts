@@ -1,4 +1,5 @@
 import type { Agent } from '../hooks/useAgents';
+import type { ComposerAgentRunCounts } from '../lib/composerAgentRuns';
 import { resolveComposerDefaultBaseCommit, type ComposerBaseMessage, type ComposerCommitPickerRef, type ComposerDefaultBaseSource } from '../lib/composerBaseCommit';
 import { resolveComposerDefaultAgentId } from '../lib/composerModelDefaults';
 import { resolveFocusedCommitSha } from '../lib/composerSendParent';
@@ -106,4 +107,27 @@ export const resolveGraphDockComposerAgent = (input: {
     parentMessage: input.parentMessage,
   });
   return input.agents.find((agent) => agent.id === defaultAgentId) ?? input.agents[0] ?? null;
+};
+
+export const resolveGraphDockComposerEffectiveAgentId = (input: {
+  selectedAgentId: string | null;
+  resolvedAgent: Pick<Agent, 'id'> | null;
+}): string | null => (
+  input.selectedAgentId ?? input.resolvedAgent?.id ?? null
+);
+
+export const resolveGraphDockComposerRunCountsForEffectiveAgent = (input: {
+  selectedAgentId: string | null;
+  effectiveSelectedAgentId: string | null;
+  currentCounts: ComposerAgentRunCounts;
+}): ComposerAgentRunCounts => {
+  if (input.selectedAgentId || !input.effectiveSelectedAgentId) return input.currentCounts;
+
+  const selectedEntries = Object.entries(input.currentCounts)
+    .filter(([, count]) => Number.isFinite(count) && count > 0);
+  if (selectedEntries.length === 1 && selectedEntries[0][0] !== input.effectiveSelectedAgentId) {
+    return { [input.effectiveSelectedAgentId]: 1 };
+  }
+
+  return input.currentCounts;
 };

@@ -150,6 +150,68 @@ describe('sendHeadlessComposerReply', () => {
     expect(executionDataEvent?.[1].patch.meta.base_commit_sha).toBe('workspace-base');
   });
 
+  it('creates local runtime nodes when the message API returns no agent messages', async () => {
+    const startAgentRun = vi.fn().mockResolvedValue(undefined);
+    const persistLocalNode = vi.fn().mockResolvedValue(undefined);
+    const onMessagesCreated = vi.fn();
+    const seedAgentRun = vi.fn();
+    const dispatchAgentRun = vi.fn();
+
+    await sendHeadlessComposerMessage({
+      workspaceId: 'workspace-1',
+      parentMessageId: 'parent-1',
+      contextParentId: 'parent-1',
+      contextPolicy: 'continue',
+      prompt: 'Use local first',
+      messages: [message({ id: 'parent-1', output_commit_sha: 'base-sha' })],
+      agent: {
+        id: 'codex-agent',
+        type: 'codex',
+        name: 'Codex',
+        cliArgs: '',
+        promptFlag: null,
+        model_config: { model: 'gpt-5.5' },
+      },
+      base: {
+        commitSha: 'base-sha',
+        selectedFromNodeId: 'parent-1',
+      },
+      workspaces: [{ id: 'workspace-1', git_repo_path: '/repo' } as Workspace],
+      sendMessage: vi.fn().mockResolvedValue({ userMessage: null, assistantMessages: [] }),
+      hasRuntime: () => true,
+      startAgentRun,
+      getAccessToken: vi.fn().mockResolvedValue('token-1'),
+      seedAgentRun,
+      dispatchAgentRun,
+      persistLocalNode,
+      onMessagesCreated,
+      createRunId: () => 'run-local',
+      nowIso: () => '2026-05-27T01:02:03.000Z',
+    });
+
+    expect(persistLocalNode).toHaveBeenCalledTimes(2);
+    const userMessage = persistLocalNode.mock.calls[0][2] as Message;
+    const assistantMessage = persistLocalNode.mock.calls[1][2] as Message;
+    expect(userMessage.role).toBe('user');
+    expect(userMessage.content).toBe('Use local first');
+    expect(userMessage.parentId).toBe('parent-1');
+    expect(assistantMessage.role).toBe('assistant');
+    expect(assistantMessage.parentId).toBe(userMessage.id);
+    expect(assistantMessage.base_commit_sha).toBe('base-sha');
+    expect(onMessagesCreated).toHaveBeenCalledWith([userMessage, assistantMessage]);
+    expect(seedAgentRun).toHaveBeenCalledWith(userMessage);
+    expect(seedAgentRun).toHaveBeenCalledWith(assistantMessage);
+    expect(startAgentRun).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run-local',
+      assistantNodeId: assistantMessage.id,
+      parentCommit: 'base-sha',
+    }));
+    expect(dispatchAgentRun).toHaveBeenCalledWith(assistantMessage.id, {
+      type: 'status',
+      status: 'running',
+    });
+  });
+
   it('uses the selected context start when building the runtime prompt', async () => {
     const assistantMessage = message({ id: 'assistant-new', role: 'assistant', parentId: 'user-new' });
     const startAgentRun = vi.fn().mockResolvedValue(undefined);

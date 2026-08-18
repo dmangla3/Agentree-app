@@ -5,6 +5,7 @@ import {
 } from './agentRunWorkspaceRefresh';
 
 vi.mock('../lib/graphInteractionGate', () => ({
+  isGraphInteractionGateIdle: vi.fn(() => true),
   scheduleMessagesRefreshWhenGraphIdle: vi.fn(() => Promise.resolve()),
   scheduleLocalCommitGraphRefreshWhenGraphIdle: vi.fn(() => Promise.resolve()),
 }));
@@ -18,6 +19,7 @@ vi.mock('../lib/perfRecorder', () => ({
 }));
 
 import {
+  isGraphInteractionGateIdle,
   scheduleLocalCommitGraphRefreshWhenGraphIdle,
   scheduleMessagesRefreshWhenGraphIdle,
 } from '../lib/graphInteractionGate';
@@ -28,6 +30,9 @@ import { useRunStatusStore } from '../stores/runStatusStore';
 describe('agentRunWorkspaceRefresh', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-28T00:00:00.000Z'));
+    vi.mocked(isGraphInteractionGateIdle).mockReset();
+    vi.mocked(isGraphInteractionGateIdle).mockReturnValue(true);
     vi.mocked(scheduleMessagesRefreshWhenGraphIdle).mockClear();
     vi.mocked(scheduleLocalCommitGraphRefreshWhenGraphIdle).mockClear();
     vi.mocked(catchUpHotSendMessageDeltas).mockClear();
@@ -141,9 +146,117 @@ describe('agentRunWorkspaceRefresh', () => {
     expect(queryClient.refetchQueries).not.toHaveBeenCalled();
 
     useRunStatusStore.getState().clearRunStatus('assistant-1');
+    vi.advanceTimersByTime(250);
     vi.advanceTimersByTime(900);
 
     expect(scheduleLocalCommitGraphRefreshWhenGraphIdle).toHaveBeenCalledWith(
+      queryClient,
+      'workspace-1',
+      { reason: 'agent-finalize-ack' },
+    );
+  });
+
+  it('waits for graph interaction idle before invalidating workspace caches', () => {
+    const queryClient = {
+      invalidateQueries: vi.fn(() => Promise.resolve()),
+      refetchQueries: vi.fn(() => Promise.resolve()),
+    } as any;
+    vi.mocked(isGraphInteractionGateIdle).mockReturnValue(false);
+
+    requestAgentWorkspaceRefresh(queryClient, 'workspace-1', {
+      reason: 'agent-finalize-ack',
+      includeCommitGraph: true,
+      catchUpHotDeltas: true,
+    });
+
+    vi.advanceTimersByTime(50);
+
+    expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+    expect(scheduleMessagesRefreshWhenGraphIdle).not.toHaveBeenCalled();
+    expect(catchUpHotSendMessageDeltas).not.toHaveBeenCalled();
+    expect(recordPerfEvent).toHaveBeenCalledWith('query.agent-workspace-refresh.wait-responsive-idle', {
+      workspaceId: 'workspace-1',
+      reason: 'agent-finalize-ack',
+      includeCommitGraph: true,
+      catchUpHotDeltas: true,
+      pendingAgeMs: 50,
+      activeRunCount: 0,
+      waitForActiveRun: false,
+      waitForGraphIdle: true,
+    }, { source: 'agentRunWorkspaceRefresh' });
+
+    vi.advanceTimersByTime(250);
+
+    expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+
+    vi.mocked(isGraphInteractionGateIdle).mockReturnValue(true);
+    vi.advanceTimersByTime(250);
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['local-nodes', 'workspace-1'],
+      refetchType: 'none',
+    });
+    expect(scheduleMessagesRefreshWhenGraphIdle).toHaveBeenCalledWith(
+      queryClient,
+      'workspace-1',
+      { reason: 'agent-finalize-ack' },
+    );
+    expect(catchUpHotSendMessageDeltas).toHaveBeenCalledWith(queryClient, 'workspace-1');
+  });
+
+  it('forces workspace cache refresh after a bounded graph-busy wait', () => {
+    const queryClient = {
+      invalidateQueries: vi.fn(() => Promise.resolve()),
+      refetchQueries: vi.fn(() => Promise.resolve()),
+    } as any;
+    vi.mocked(isGraphInteractionGateIdle).mockReturnValue(false);
+
+    requestAgentWorkspaceRefresh(queryClient, 'workspace-1', {
+      reason: 'agent-finalize-ack',
+    });
+
+    vi.advanceTimersByTime(50);
+    vi.advanceTimersByTime(3_000);
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['local-nodes', 'workspace-1'],
+      refetchType: 'none',
+    });
+    expect(scheduleMessagesRefreshWhenGraphIdle).toHaveBeenCalledWith(
+      queryClient,
+      'workspace-1',
+      { reason: 'agent-finalize-ack' },
+    );
+  });
+
+  it('forces workspace cache refresh after a bounded active-run wait', () => {
+    const queryClient = {
+      invalidateQueries: vi.fn(() => Promise.resolve()),
+      refetchQueries: vi.fn(() => Promise.resolve()),
+    } as any;
+    useRunStatusStore.getState().setRunStatus('assistant-1', {
+      workspaceId: 'workspace-1',
+      role: 'assistant',
+      status: 'running',
+      progress: 'Running',
+    });
+
+    requestAgentWorkspaceRefresh(queryClient, 'workspace-1', {
+      reason: 'agent-finalize-ack',
+    });
+
+    vi.advanceTimersByTime(50);
+    vi.advanceTimersByTime(2_750);
+
+    expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(250);
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['local-nodes', 'workspace-1'],
+      refetchType: 'none',
+    });
+    expect(scheduleMessagesRefreshWhenGraphIdle).toHaveBeenCalledWith(
       queryClient,
       'workspace-1',
       { reason: 'agent-finalize-ack' },

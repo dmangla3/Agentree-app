@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   collectLatestPerfSummary,
   formatPerfSummary,
+  summarizeRuntimeStallFrequencyBuckets,
   summarizeRuntimeStallsByActivity,
   summarizeRuntimeStallsByPhase,
 } from './perf-latest-summary-lib.mjs';
@@ -50,6 +51,38 @@ describe('perf latest summary', () => {
       }],
       findings: [],
     });
+    await writeJson(path.join(captureDir, 'perf-events.json'), [
+      {
+        name: 'runtime.event-loop-stall',
+        ts: '2026-05-19T00:00:01.000Z',
+        durationMs: 260,
+        details: { severity: 'stall' },
+      },
+      {
+        name: 'runtime.event-loop-stall',
+        ts: '2026-05-19T00:00:02.000Z',
+        durationMs: 1234,
+        details: { severity: 'freeze' },
+      },
+      {
+        name: 'runtime.raf-stall',
+        ts: '2026-05-19T00:00:03.000Z',
+        durationMs: 499,
+        details: { severity: 'stall' },
+      },
+      {
+        name: 'runtime.raf-stall',
+        ts: '2026-05-19T00:00:04.000Z',
+        durationMs: 500,
+        details: { severity: 'stall' },
+      },
+      {
+        name: 'runtime.raf-stall',
+        ts: '2026-05-19T00:00:05.000Z',
+        durationMs: 1500,
+        details: { severity: 'freeze' },
+      },
+    ]);
 
     await writeJson(path.join(root, 'runtime-logs/tauri-pilot-diagnostics/latest.json'), {
       label: 'pilot-fixture',
@@ -82,6 +115,8 @@ describe('perf latest summary', () => {
 
     expect(output).toContain('Perf Capture');
     expect(output).toContain('event-loop: stalls=2 freezes=1 max=1234ms');
+    expect(output).toContain('event-loop: stalls=2 freezes=1 max=1234ms >=250/500/1000=2/1/1');
+    expect(output).toContain('raf: stalls=3 freezes=1 max=1500ms >=250/500/1000=3/2/1');
     expect(output).toContain('loaf=2 max=456ms');
     expect(output).toContain('firstText=250ms');
     expect(output).toContain('text->project=32ms');
@@ -89,6 +124,31 @@ describe('perf latest summary', () => {
     expect(output).toContain('commitVisible=true');
     expect(output).toContain('graphChanging/send=2');
     expect(output.split('\n').length).toBeLessThan(70);
+  });
+
+  it('counts runtime stall frequency buckets by threshold', () => {
+    expect(summarizeRuntimeStallFrequencyBuckets([
+      { name: 'runtime.event-loop-stall', durationMs: 249 },
+      { name: 'runtime.event-loop-stall', durationMs: 250 },
+      { name: 'runtime.event-loop-stall', durationMs: 500 },
+      { name: 'runtime.event-loop-stall', durationMs: 1000 },
+      { name: 'runtime.raf-stall', durationMs: 250 },
+      { name: 'runtime.raf-stall', durationMs: 999 },
+      { name: 'runtime.raf-stall', durationMs: 1000 },
+      { name: 'runtime.raf-stall', durationMs: null },
+      { name: 'runtime.long-task', durationMs: 2000 },
+    ])).toEqual({
+      eventLoop: {
+        gte250Ms: 3,
+        gte500Ms: 2,
+        gte1000Ms: 1,
+      },
+      raf: {
+        gte250Ms: 3,
+        gte500Ms: 2,
+        gte1000Ms: 1,
+      },
+    });
   });
 
   it('buckets runtime stalls by nearest lifecycle/worktree/finalization phase', () => {
@@ -138,29 +198,69 @@ describe('perf latest summary', () => {
       'cache-refresh': {
         eventLoopCount: 0,
         eventLoopMaxMs: null,
+        eventLoopBuckets: {
+          gte250Ms: 0,
+          gte500Ms: 0,
+          gte1000Ms: 0,
+        },
         rafCount: 1,
         rafMaxMs: 900,
+        rafBuckets: {
+          gte250Ms: 1,
+          gte500Ms: 1,
+          gte1000Ms: 0,
+        },
         totalCount: 1,
       },
       spawn: {
         eventLoopCount: 1,
         eventLoopMaxMs: 650,
+        eventLoopBuckets: {
+          gte250Ms: 1,
+          gte500Ms: 1,
+          gte1000Ms: 0,
+        },
         rafCount: 0,
         rafMaxMs: null,
+        rafBuckets: {
+          gte250Ms: 0,
+          gte500Ms: 0,
+          gte1000Ms: 0,
+        },
         totalCount: 1,
       },
       unclassified: {
         eventLoopCount: 0,
         eventLoopMaxMs: null,
+        eventLoopBuckets: {
+          gte250Ms: 0,
+          gte500Ms: 0,
+          gte1000Ms: 0,
+        },
         rafCount: 1,
         rafMaxMs: 400,
+        rafBuckets: {
+          gte250Ms: 1,
+          gte500Ms: 0,
+          gte1000Ms: 0,
+        },
         totalCount: 1,
       },
       worktree: {
         eventLoopCount: 0,
         eventLoopMaxMs: null,
+        eventLoopBuckets: {
+          gte250Ms: 0,
+          gte500Ms: 0,
+          gte1000Ms: 0,
+        },
         rafCount: 1,
         rafMaxMs: 1200,
+        rafBuckets: {
+          gte250Ms: 1,
+          gte500Ms: 1,
+          gte1000Ms: 1,
+        },
         totalCount: 1,
       },
     });
@@ -184,8 +284,18 @@ describe('perf latest summary', () => {
       'cache-refresh': {
         eventLoopCount: 1,
         eventLoopMaxMs: 1178,
+        eventLoopBuckets: {
+          gte250Ms: 1,
+          gte500Ms: 1,
+          gte1000Ms: 1,
+        },
         rafCount: 0,
         rafMaxMs: null,
+        rafBuckets: {
+          gte250Ms: 0,
+          gte500Ms: 0,
+          gte1000Ms: 0,
+        },
         totalCount: 1,
       },
     });
@@ -223,8 +333,18 @@ describe('perf latest summary', () => {
       'cache-refresh:local-nodes.invalidate': {
         eventLoopCount: 1,
         eventLoopMaxMs: 488,
+        eventLoopBuckets: {
+          gte250Ms: 1,
+          gte500Ms: 0,
+          gte1000Ms: 0,
+        },
         rafCount: 1,
         rafMaxMs: 1729,
+        rafBuckets: {
+          gte250Ms: 1,
+          gte500Ms: 1,
+          gte1000Ms: 1,
+        },
         totalCount: 2,
       },
     });

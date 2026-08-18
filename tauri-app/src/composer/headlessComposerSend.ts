@@ -3,6 +3,7 @@ import { buildComposerContextManifest, buildComposerContextSelection } from '../
 import { buildAgentRunPrompt } from '../lib/prompts';
 import type { Message, Workspace } from '../stores/workspaceStore';
 import type { Agent } from '../hooks/useAgents';
+import { createSendFlowId, recordSendFlowEvent } from '../perf/sendFlow';
 
 export interface HeadlessComposerBase {
   commitSha: string;
@@ -29,7 +30,9 @@ export interface HeadlessComposerReplyInput {
   getAccessToken: () => Promise<string | null>;
   seedAgentRun: (message: Message) => void;
   dispatchAgentRun: (nodeId: string, event: Record<string, unknown>) => void;
+  persistLocalNode?: (workspaceId: string, nodeId: string, message: Message) => Promise<unknown>;
   onAssistantMessageCreated?: (message: Message) => void;
+  onMessagesCreated?: (messages: Message[]) => void;
   createRunId?: () => string;
   nowIso?: () => string;
 }
@@ -39,6 +42,8 @@ export interface HeadlessComposerMessageInput extends Omit<HeadlessComposerReply
   contextParentId?: string | null;
   contextPolicy?: 'continue' | 'fresh';
   contextStartId?: string | null;
+  perfFlowId?: string;
+  perfSource?: string;
   setupProgress?: string;
   meta?: Record<string, unknown>;
   threadOriginId?: string | null;
@@ -47,6 +52,87 @@ export interface HeadlessComposerMessageInput extends Omit<HeadlessComposerReply
 const splitCliArgs = (value: string | null | undefined): string[] => (
   String(value || '').split(/\s+/).filter(Boolean)
 );
+
+const createLocalHeadlessMessages = (input: {
+  workspaceId: string;
+  parentMessageId: string | null;
+  contextParentId: string | null | undefined;
+  contextPolicy: 'continue' | 'fresh' | undefined;
+  contextStartId: string | null | undefined;
+  prompt: string;
+  agent: Agent;
+  base: HeadlessComposerBase;
+  meta?: Record<string, unknown>;
+  threadOriginId?: string | null;
+  nowIso: string;
+}): { userMessage: Message; assistantMessage: Message } => {
+  const userMessageId = crypto.randomUUID();
+  const assistantMessageId = crypto.randomUUID();
+  const contextPolicy = input.contextPolicy ?? 'continue';
+  const contextParentId = contextPolicy === 'fresh'
+    ? null
+    : input.contextParentId ?? input.parentMessageId;
+  const sharedMeta = {
+    ...(input.meta ?? {}),
+    context_policy: contextPolicy,
+    context_parent_node_id: contextParentId,
+    context_base_node_id: input.parentMessageId,
+    context_start_node_id: input.contextStartId ?? null,
+    base_commit_sha: input.base.commitSha,
+    ...(input.threadOriginId ? { thread_origin_id: input.threadOriginId } : {}),
+    provider: input.agent.type,
+    provider_model: input.agent.model_config?.model ?? null,
+  };
+  const userPathIds = input.parentMessageId
+    ? [input.parentMessageId, userMessageId]
+    : [userMessageId];
+  const userMessage: Message = {
+    id: userMessageId,
+    role: 'user',
+    content: input.prompt,
+    parentId: input.parentMessageId,
+    workspaceId: input.workspaceId,
+    attachments: [],
+    createdAt: input.nowIso,
+    updatedAt: input.nowIso,
+    path_ids: userPathIds,
+    execution_data: {
+      meta: sharedMeta,
+      context_profile: {
+        context_parent_node_id: contextParentId,
+        base_node_id: input.parentMessageId,
+        inherited_from_node_id: input.parentMessageId,
+      },
+    },
+  };
+  const assistantMessage: Message = {
+    id: assistantMessageId,
+    role: 'assistant',
+    content: '',
+    parentId: userMessageId,
+    workspaceId: input.workspaceId,
+    attachments: [],
+    createdAt: input.nowIso,
+    updatedAt: input.nowIso,
+    llmProvider: input.agent.type,
+    llmModel: input.agent.model_config?.model ?? null,
+    agent_id: input.agent.id,
+    status: AGENT_STATUS.pending,
+    path_ids: [...userPathIds, assistantMessageId],
+    base_commit_sha: input.base.commitSha,
+    base_selected_from_node_id: input.base.selectedFromNodeId,
+    execution_data: {
+      meta: sharedMeta,
+      context_profile: {
+        context_parent_node_id: contextParentId,
+        base_node_id: input.parentMessageId,
+        inherited_from_node_id: userMessageId,
+      },
+    },
+  };
+
+  return { userMessage, assistantMessage };
+};
 
 export const buildHeadlessComposerAgentArgs = (agent: Agent, prompt: string): string[] => {
   const args = splitCliArgs(agent.cliArgs);
@@ -73,27 +159,117 @@ export async function sendHeadlessComposerReply(input: HeadlessComposerReplyInpu
 
 export async function sendHeadlessComposerMessage(input: HeadlessComposerMessageInput): Promise<HeadlessComposerReplyResponse> {
   const prompt = input.prompt.trim();
-  const response = await input.sendMessage({
-    workspaceId: input.workspaceId,
-    prompt,
-    parentId: input.parentMessageId,
-    attachments: [],
-    contextIds: [],
-    contextMode: 'active',
-    contextPolicy: input.contextPolicy ?? 'continue',
-    contextParentId: input.contextParentId ?? input.parentMessageId,
-    useAgent: true,
-    agentId: input.agent.id,
-    agentProvider: input.agent.type,
-    llmModel: input.agent.model_config?.model ?? null,
-    baseCommitSha: input.base.commitSha,
-    baseSelectedFromNodeId: input.base.selectedFromNodeId,
-    threadOriginId: input.threadOriginId ?? undefined,
-  });
+  const flowId = input.perfFlowId ?? createSendFlowId();
+  const perfSource = input.perfSource ?? 'HeadlessComposer';
+  const startedAt = performance.now();
 
-  const userMessage = response?.userMessage;
-  const assistantMessage = response?.assistantMessages?.[0];
-  if (userMessage) input.seedAgentRun(userMessage);
+  recordSendFlowEvent('flow.started', {
+    flowId,
+    workspaceId: input.workspaceId,
+    useAgent: true,
+    composerSurface: input.meta?.composer_surface ?? 'headless',
+    promptLength: prompt.length,
+    parentMessageId: input.parentMessageId,
+    contextPolicy: input.contextPolicy ?? 'continue',
+    optimisticUserMessageId: null,
+    optimisticAssistantMessageId: null,
+  }, { source: perfSource });
+
+  let response: HeadlessComposerReplyResponse;
+  try {
+    recordSendFlowEvent('api.request-start', {
+      flowId,
+      workspaceId: input.workspaceId,
+      useAgent: true,
+    }, { source: perfSource });
+    response = await input.sendMessage({
+      workspaceId: input.workspaceId,
+      prompt,
+      parentId: input.parentMessageId,
+      attachments: [],
+      contextIds: [],
+      contextMode: 'active',
+      contextPolicy: input.contextPolicy ?? 'continue',
+      contextParentId: input.contextParentId ?? input.parentMessageId,
+      useAgent: true,
+      agentId: input.agent.id,
+      agentProvider: input.agent.type,
+      llmModel: input.agent.model_config?.model ?? null,
+      baseCommitSha: input.base.commitSha,
+      baseSelectedFromNodeId: input.base.selectedFromNodeId,
+      threadOriginId: input.threadOriginId ?? undefined,
+    });
+    recordSendFlowEvent('api.response-received', {
+      flowId,
+      workspaceId: input.workspaceId,
+      userMessageId: response?.userMessage?.id ?? null,
+      assistantMessageId: response?.assistantMessages?.[0]?.id ?? null,
+    }, {
+      source: perfSource,
+      durationMs: Number((performance.now() - startedAt).toFixed(2)),
+    });
+  } catch (error) {
+    recordSendFlowEvent('lifecycle.failed', {
+      flowId,
+      workspaceId: input.workspaceId,
+      errorType: 'HEADLESS_MESSAGE_CREATE_FAILED',
+      errorMessage: error instanceof Error ? error.message : String(error),
+    }, { source: perfSource });
+    throw error;
+  }
+
+  let userMessage = response?.userMessage;
+  let assistantMessage = response?.assistantMessages?.[0];
+  if ((!userMessage || !assistantMessage) && input.hasRuntime()) {
+    const nowIso = input.nowIso?.() ?? new Date().toISOString();
+    const localPair = createLocalHeadlessMessages({
+      workspaceId: input.workspaceId,
+      parentMessageId: input.parentMessageId,
+      contextParentId: input.contextParentId,
+      contextPolicy: input.contextPolicy,
+      contextStartId: input.contextStartId,
+      prompt,
+      agent: input.agent,
+      base: input.base,
+      meta: input.meta,
+      threadOriginId: input.threadOriginId,
+      nowIso,
+    });
+    userMessage = localPair.userMessage;
+    assistantMessage = localPair.assistantMessage;
+    response = {
+      ...response,
+      userMessage,
+      assistantMessages: [assistantMessage],
+    };
+    recordSendFlowEvent('local-fallback.created', {
+      flowId,
+      workspaceId: input.workspaceId,
+      userMessageId: userMessage.id,
+      assistantMessageId: assistantMessage.id,
+      reason: 'api-response-missing-agent-messages',
+    }, { source: perfSource });
+  }
+
+  const createdMessages = [userMessage, assistantMessage].filter((message): message is Message => Boolean(message));
+  if (createdMessages.length > 0) {
+    if (input.persistLocalNode) {
+      await Promise.all(createdMessages.map((message) => (
+        input.persistLocalNode?.(input.workspaceId, message.id, message)
+      )));
+    }
+    input.onMessagesCreated?.(createdMessages);
+  }
+
+  if (userMessage) {
+    input.seedAgentRun(userMessage);
+    recordSendFlowEvent('optimistic.user-created', {
+      flowId,
+      workspaceId: input.workspaceId,
+      messageId: userMessage.id,
+      parentId: input.parentMessageId,
+    }, { source: perfSource });
+  }
   if (assistantMessage) {
     input.seedAgentRun(assistantMessage);
     input.onAssistantMessageCreated?.(assistantMessage);
@@ -102,6 +278,18 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
       type: 'setup_progress',
       progress: input.setupProgress ?? 'Starting composer run...',
     });
+    recordSendFlowEvent('optimistic.assistant-created', {
+      flowId,
+      workspaceId: input.workspaceId,
+      messageId: assistantMessage.id,
+      parentId: assistantMessage.parentId,
+    }, { source: perfSource });
+    recordSendFlowEvent('assistant.persisted', {
+      flowId,
+      workspaceId: input.workspaceId,
+      messageId: assistantMessage.id,
+      optimisticMessageId: assistantMessage.id,
+    }, { source: perfSource });
   }
 
   if (input.hasRuntime() && assistantMessage) {
@@ -151,27 +339,73 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
       type: 'execution_data',
       patch: executionData,
     });
-    await input.startAgentRun({
-      runId,
-      assistantNodeId: assistantMessage.id,
+    const spawnStartedAt = performance.now();
+    recordSendFlowEvent('agent-setup.spawn.requested', {
+      flowId,
       workspaceId: input.workspaceId,
-      repoPath,
-      parentCommit: input.base.commitSha,
+      nodeId: assistantMessage.id,
+      runId,
       agentType: input.agent.type,
-      args: buildHeadlessComposerAgentArgs(input.agent, effectivePrompt),
-      authToken,
-      traceId: null,
-      runContext: {
+    }, { source: perfSource });
+    try {
+      await input.startAgentRun({
         runId,
-        executionData,
-        gitBranchName: `agentree/${assistantMessage.id}`,
+        assistantNodeId: assistantMessage.id,
+        workspaceId: input.workspaceId,
         repoPath,
         parentCommit: input.base.commitSha,
-        authorName: input.agent.name ?? null,
-        promptFallback: prompt,
-      },
-    });
+        agentType: input.agent.type,
+        args: buildHeadlessComposerAgentArgs(input.agent, effectivePrompt),
+        authToken,
+        traceId: null,
+        runContext: {
+          runId,
+          executionData,
+          gitBranchName: `agentree/${assistantMessage.id}`,
+          repoPath,
+          parentCommit: input.base.commitSha,
+          authorName: input.agent.name ?? null,
+          promptFallback: prompt,
+        },
+      });
+      recordSendFlowEvent('agent-setup.spawn.returned', {
+        flowId,
+        workspaceId: input.workspaceId,
+        nodeId: assistantMessage.id,
+        runId,
+        agentType: input.agent.type,
+      }, {
+        source: perfSource,
+        durationMs: Number((performance.now() - spawnStartedAt).toFixed(2)),
+      });
+    } catch (error) {
+      recordSendFlowEvent('agent-setup.spawn.failed', {
+        flowId,
+        workspaceId: input.workspaceId,
+        nodeId: assistantMessage.id,
+        runId,
+        agentType: input.agent.type,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }, {
+        source: perfSource,
+        durationMs: Number((performance.now() - spawnStartedAt).toFixed(2)),
+      });
+      recordSendFlowEvent('lifecycle.failed', {
+        flowId,
+        workspaceId: input.workspaceId,
+        nodeId: assistantMessage.id,
+        errorType: 'HEADLESS_AGENT_START_FAILED',
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }, { source: perfSource });
+      throw error;
+    }
     input.dispatchAgentRun(assistantMessage.id, { type: 'status', status: AGENT_STATUS.running });
+    recordSendFlowEvent('mark', {
+      flowId,
+      workspaceId: input.workspaceId,
+      markName: 'agent_running_dispatched',
+      nodeId: assistantMessage.id,
+    }, { source: perfSource });
   }
 
   return response;

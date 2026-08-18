@@ -3,6 +3,7 @@ import type { ProjectedNodeEntity } from '../domain/workspaceProjection';
 import type { Message } from '../stores/workspaceStore';
 import {
   canShowHoverQuickReply,
+  getHoverReplyMode,
   resolveQuickReplyAgent,
   resolveQuickReplyBase,
   stopQuickReplyControlEvent,
@@ -57,14 +58,40 @@ describe('quick reply helpers', () => {
     expect(event.stopPropagation).toHaveBeenCalledOnce();
   });
 
-  it('hides quick reply for commit and active running hover nodes', () => {
+  it('hides quick reply for non-message and active non-assistant hover nodes', () => {
     expect(canShowHoverQuickReply(entity({ kind: 'commit_message' }))).toBe(false);
+    expect(getHoverReplyMode(entity({ kind: 'commit_message' }))).toBeNull();
     expect(canShowHoverQuickReply(entity({ kind: 'thread_link' }))).toBe(false);
-    expect(canShowHoverQuickReply(entity({ status: 'pending' as any }))).toBe(false);
-    expect(canShowHoverQuickReply(entity({ status: 'initializing' as any }))).toBe(false);
-    expect(canShowHoverQuickReply(entity({ status: 'running' as any }))).toBe(false);
-    expect(canShowHoverQuickReply(entity({ status: 'streaming' as any }))).toBe(false);
+    expect(getHoverReplyMode(entity({ kind: 'thread_link' }))).toBeNull();
+    expect(canShowHoverQuickReply(entity({
+      status: 'running' as any,
+      message: message({ id: 'user-running', role: 'user', status: 'running' as any }),
+    }))).toBe(false);
     expect(canShowHoverQuickReply(entity({ status: 'completed' as any }))).toBe(true);
+    expect(getHoverReplyMode(entity({ status: 'completed' as any }))).toBe('reply');
+  });
+
+  it('shows steering for active assistant hover nodes', () => {
+    for (const status of ['pending', 'initializing', 'running', 'streaming']) {
+      const hoverEntity = entity({
+        status: status as any,
+        message: message({ id: `assistant-${status}`, role: 'assistant', status: status as any }),
+      });
+
+      expect(canShowHoverQuickReply(hoverEntity)).toBe(true);
+      expect(getHoverReplyMode(hoverEntity)).toBe('steer');
+    }
+  });
+
+  it('lets live run status override stale projected hover status', () => {
+    const hoverEntity = entity({
+      status: 'completed' as any,
+      message: message({ id: 'assistant-live', role: 'assistant', status: 'completed' as any }),
+    });
+
+    expect(getHoverReplyMode(hoverEntity)).toBe('reply');
+    expect(getHoverReplyMode(hoverEntity, 'running')).toBe('steer');
+    expect(canShowHoverQuickReply(hoverEntity, 'running')).toBe(true);
   });
 
   it('uses the hovered assistant model before falling back to an assistant ancestor', () => {

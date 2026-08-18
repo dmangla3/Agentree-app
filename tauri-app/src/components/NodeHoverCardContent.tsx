@@ -4,10 +4,12 @@ import type { ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspa
 import { NodePreviewRenderer } from './NodePreviewRenderer';
 import { Button } from '../../@/components/ui/button';
 import { Input } from '../../@/components/ui/input';
-import { Loader2, Reply } from 'lucide-react';
+import { AlertTriangle, Loader2, Reply } from 'lucide-react';
 import { useHeadlessQuickReply } from '../hooks/useHeadlessQuickReply';
-import { canShowHoverQuickReply, QUICK_REPLY_KEEP_HOVER_OPEN_EVENT, stopQuickReplyControlEvent } from '../lib/quickReply';
+import { useRunStatusStore } from '../stores/runStatusStore';
+import { getHoverReplyMode, QUICK_REPLY_KEEP_HOVER_OPEN_EVENT, stopQuickReplyControlEvent } from '../lib/quickReply';
 import { cn } from '../lib/utils';
+import { getNodeFailureReason, isNodeFailureStatus } from '../lib/nodeFailureReason';
 
 interface NodeHoverCardContentProps {
   entity?: ProjectedNodeEntity;
@@ -18,11 +20,23 @@ interface NodeHoverCardContentProps {
 export function NodeHoverCardContent({ entity, projection, headerAccessory }: NodeHoverCardContentProps) {
   const [quickReplyPrompt, setQuickReplyPrompt] = useState('');
   const quickReplyInputRef = useRef<HTMLInputElement | null>(null);
-  const { sendQuickReply, isSending, error } = useHeadlessQuickReply();
+  const { sendQuickReply, sendSteeringReply, isSending, error } = useHeadlessQuickReply();
+  const replyParentId = entity?.focusMessageId || entity?.messageId || null;
+  const replyRunStatus = useRunStatusStore((state) => (
+    replyParentId ? state.byNodeId[replyParentId]?.status ?? null : null
+  ));
   if (!entity || !projection) return null;
-  const replyParentId = entity.focusMessageId || entity.messageId || null;
-  const showReplyAction = canShowHoverQuickReply(entity) && Boolean(replyParentId);
+  const replyMode = getHoverReplyMode(entity, replyRunStatus);
+  const showReplyAction = Boolean(replyMode && replyParentId);
   const canSendQuickReply = quickReplyPrompt.trim().length > 0 && !isSending;
+  const executionData = entity.message?.execution_data as any;
+  const failureReason = isNodeFailureStatus(entity.status ?? entity.message?.status)
+    ? getNodeFailureReason(executionData)
+    : null;
+  const isSteeringReply = replyMode === 'steer';
+  const inputLabel = isSteeringReply ? 'Steering prompt' : 'Quick reply prompt';
+  const actionLabel = isSteeringReply ? 'Steer' : 'Quick Reply';
+  const sendingLabel = isSteeringReply ? 'Steering' : 'Sending';
   const requestKeepHoverOpen = () => {
     window.dispatchEvent(new CustomEvent(QUICK_REPLY_KEEP_HOVER_OPEN_EVENT, {
       detail: { messageId: replyParentId },
@@ -37,15 +51,23 @@ export function NodeHoverCardContent({ entity, projection, headerAccessory }: No
   const handleQuickReply = async () => {
     const prompt = quickReplyPrompt.trim();
     const workspaceId = entity.message?.workspaceId ?? projection.messageMap.get(replyParentId ?? '')?.workspaceId ?? null;
-    if (!replyParentId || !workspaceId || !prompt || isSending) return;
+    if (!replyParentId || !prompt || isSending || !replyMode) return;
     requestKeepHoverOpen();
     try {
-      await sendQuickReply({
-        workspaceId,
-        replyParentId,
-        prompt,
-        messages: projection.messages,
-      });
+      if (replyMode === 'steer') {
+        await sendSteeringReply({
+          assistantNodeId: replyParentId,
+          prompt,
+        });
+      } else {
+        if (!workspaceId) return;
+        await sendQuickReply({
+          workspaceId,
+          replyParentId,
+          prompt,
+          messages: projection.messages,
+        });
+      }
       setQuickReplyPrompt('');
       window.requestAnimationFrame(() => {
         requestKeepHoverOpen();
@@ -63,6 +85,17 @@ export function NodeHoverCardContent({ entity, projection, headerAccessory }: No
       className="flex w-[min(920px,var(--radix-hover-card-content-available-width),calc(100vw-2rem))] max-w-[min(920px,var(--radix-hover-card-content-available-width),calc(100vw-2rem))] flex-col overflow-hidden rounded-[24px] border border-[hsl(var(--app-border)/0.76)] bg-[hsl(var(--app-panel)/0.96)] p-3 text-foreground shadow-[0_24px_64px_-40px_hsl(var(--foreground)/0.58),0_10px_24px_-20px_hsl(var(--foreground)/0.32),inset_0_1px_0_hsl(var(--background)/0.22)]"
     >
       {headerAccessory}
+      {failureReason && (
+        <div className="mb-3 flex min-w-0 items-start gap-2 rounded-[12px] border border-red-200/75 bg-red-50/80 px-3 py-2 text-sm text-red-950 dark:border-red-900/75 dark:bg-red-950/25 dark:text-red-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
+          <div className="min-w-0">
+            <div className="font-medium">Failure reason</div>
+            <div className="mt-0.5 break-words text-red-900/90 dark:text-red-100/85">
+              {failureReason}
+            </div>
+          </div>
+        </div>
+      )}
       <div
         className="max-h-[calc(min(70vh,720px)-1.5rem)] w-full overflow-y-auto overscroll-contain"
         onWheelCapture={(event) => {
@@ -88,7 +121,7 @@ export function NodeHoverCardContent({ entity, projection, headerAccessory }: No
         >
           <Input
             ref={quickReplyInputRef}
-            aria-label="Quick reply prompt"
+            aria-label={inputLabel}
             value={quickReplyPrompt}
             onChange={(event) => setQuickReplyPrompt(event.target.value)}
             onPointerDown={stopQuickReplyControlEvent}
@@ -104,7 +137,7 @@ export function NodeHoverCardContent({ entity, projection, headerAccessory }: No
                 void handleQuickReply();
               }
             }}
-            placeholder="Reply..."
+            placeholder={isSteeringReply ? 'Steer...' : 'Reply...'}
             className="h-8 min-w-0 flex-1 rounded-lg border-[hsl(var(--app-border)/0.72)] bg-[hsl(var(--app-bg-muted)/0.54)] text-xs shadow-[inset_0_1px_0_hsl(var(--background)/0.12)] focus-visible:border-[hsl(var(--app-border-strong)/0.9)] focus-visible:ring-[hsl(var(--app-focus)/0.22)]"
             disabled={isSending}
           />
@@ -128,7 +161,7 @@ export function NodeHoverCardContent({ entity, projection, headerAccessory }: No
             }}
           >
             {isSending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Reply className="h-3.5 w-3.5" />}
-            {isSending ? 'Sending' : 'Quick Reply'}
+            {isSending ? sendingLabel : actionLabel}
           </Button>
           {error && <div className="sr-only" role="alert">{error}</div>}
         </div>

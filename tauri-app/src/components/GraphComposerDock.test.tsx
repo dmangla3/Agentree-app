@@ -115,7 +115,7 @@ describe('GraphComposerDock', () => {
     const { join } = await import('node:path');
     const composerSource = readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
 
-    expect(composerSource).toContain('const footerStatusText = error ?? (selectedFlow ?');
+    expect(composerSource).toContain('const footerStatusText = error ?? (isSteeringRunningAssistant ?');
     expect(composerSource).not.toContain("selectedFlow ? `${selectedFlow.label} · ${flowParallelCount} parallel runs` : modelSelectorLabel");
   });
 

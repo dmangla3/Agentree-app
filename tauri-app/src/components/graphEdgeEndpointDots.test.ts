@@ -23,6 +23,14 @@ describe('graph edge endpoint dots', () => {
     });
   });
 
+  it('uses muted colored visuals for conversation endpoint dots', () => {
+    expect(getEdgeEndpointDotVisuals('conversation')).toMatchObject({
+      color: '#64748b',
+      sourceRadius: 5,
+      targetRadius: 6,
+    });
+  });
+
   it('shows commit-parent dots only for inter-turn commit-parent edges', () => {
     expect(getGraphEdgeEndpointDotVariant({
       edgeLegendType: 'git-parent',
@@ -51,6 +59,34 @@ describe('graph edge endpoint dots', () => {
     })).toBeNull();
   });
 
+  it('shows conversation dots for visible inter-turn conversation edges by default', () => {
+    expect(getGraphEdgeEndpointDotVariant({
+      edgeLegendType: 'conversation',
+      matchedContextPathPreview: false,
+      isInterTurnEdge: true,
+    })).toBe('conversation');
+
+    expect(getGraphEdgeEndpointDotVariant({
+      edgeLegendType: 'context-break',
+      matchedContextPathPreview: false,
+      isInterTurnEdge: true,
+    })).toBe('conversation');
+
+    expect(getGraphEdgeEndpointDotVariant({
+      edgeLegendType: 'conversation',
+      matchedContextPathPreview: false,
+      isInterTurnEdge: false,
+    })).toBeNull();
+  });
+
+  it('keeps context path preview convergence dots above default conversation dots', () => {
+    expect(getGraphEdgeEndpointDotVariant({
+      edgeLegendType: 'conversation',
+      matchedContextPathPreview: true,
+      isInterTurnEdge: true,
+    })).toBe('convergence');
+  });
+
   it('suppresses obvious intra-turn user-to-assistant connections', () => {
     expect(isInterTurnEndpointEdge(
       {
@@ -67,6 +103,7 @@ describe('graph edge endpoint dots', () => {
   it('recognizes requested endpoint dot variants on rendered edges', () => {
     expect(getEdgeEndpointDotVariant({ endpointDotVariant: 'commit-parent' })).toBe('commit-parent');
     expect(getEdgeEndpointDotVariant({ endpointDotVariant: 'convergence' })).toBe('convergence');
+    expect(getEdgeEndpointDotVariant({ endpointDotVariant: 'conversation' })).toBe('conversation');
     expect(getEdgeEndpointDotVariant({ endpointDotVariant: 'base-used' })).toBeNull();
   });
 });

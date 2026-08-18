@@ -6,6 +6,7 @@ export interface GraphThreadState {
   activeThreadRootId: string | null;
   doneThreadRootIds: Set<string>;
   doneThreadsCollapsed: boolean;
+  threadBarCollapsed: boolean;
   lastVisitedAtByThreadRootId: Map<string, number>;
 }
 
@@ -13,6 +14,7 @@ export const EMPTY_GRAPH_THREAD_STATE: GraphThreadState = {
   activeThreadRootId: null,
   doneThreadRootIds: new Set(),
   doneThreadsCollapsed: true,
+  threadBarCollapsed: false,
   lastVisitedAtByThreadRootId: new Map(),
 };
 
@@ -20,6 +22,7 @@ const createEmptyGraphThreadState = (): GraphThreadState => ({
   activeThreadRootId: null,
   doneThreadRootIds: new Set(),
   doneThreadsCollapsed: true,
+  threadBarCollapsed: false,
   lastVisitedAtByThreadRootId: new Map(),
 });
 
@@ -60,6 +63,7 @@ export const pruneGraphThreadState = (
     activeThreadRootId,
     doneThreadRootIds: new Set(Array.from(state.doneThreadRootIds).filter((threadRootId) => available.has(threadRootId))),
     doneThreadsCollapsed: state.doneThreadsCollapsed,
+    threadBarCollapsed: state.threadBarCollapsed,
     lastVisitedAtByThreadRootId: new Map(
       Array.from(state.lastVisitedAtByThreadRootId.entries())
         .filter(([threadRootId]) => available.has(threadRootId)),
@@ -80,12 +84,14 @@ export const readGraphThreadState = (
         activeThreadRootId?: unknown;
         doneThreadRootIds?: unknown;
         doneThreadsCollapsed?: unknown;
+        threadBarCollapsed?: unknown;
         lastVisitedAtByThreadRootId?: unknown;
       };
       const state = {
         activeThreadRootId: normalizeString(parsed.activeThreadRootId),
         doneThreadRootIds: normalizeStringSet(parsed.doneThreadRootIds),
         doneThreadsCollapsed: parsed.doneThreadsCollapsed !== false,
+        threadBarCollapsed: parsed.threadBarCollapsed === true,
         lastVisitedAtByThreadRootId: normalizeNumberMap(parsed.lastVisitedAtByThreadRootId),
       };
       return availableThreadRootIds ? pruneGraphThreadState(state, availableThreadRootIds) : state;
@@ -97,6 +103,7 @@ export const readGraphThreadState = (
       activeThreadRootId: null,
       doneThreadRootIds: migratedDoneThreadRootIds,
       doneThreadsCollapsed: true,
+      threadBarCollapsed: false,
       lastVisitedAtByThreadRootId: new Map(),
     };
   } catch {
@@ -115,6 +122,7 @@ export const rememberGraphThreadState = (
     const hasState = Boolean(state.activeThreadRootId) ||
       state.doneThreadRootIds.size > 0 ||
       state.doneThreadsCollapsed === false ||
+      state.threadBarCollapsed === true ||
       state.lastVisitedAtByThreadRootId.size > 0;
     if (!hasState) {
       window.localStorage.removeItem(key);
@@ -126,6 +134,7 @@ export const rememberGraphThreadState = (
       activeThreadRootId: state.activeThreadRootId,
       doneThreadRootIds: Array.from(state.doneThreadRootIds).sort(),
       doneThreadsCollapsed: state.doneThreadsCollapsed,
+      threadBarCollapsed: state.threadBarCollapsed,
       lastVisitedAtByThreadRootId: Object.fromEntries(
         Array.from(state.lastVisitedAtByThreadRootId.entries())
           .sort(([left], [right]) => left.localeCompare(right)),

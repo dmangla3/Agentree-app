@@ -134,6 +134,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             db::process_local_sync_events,
             agents::start_agent_run,
             agents::stop_agent,
+            agents::steer_agent_run,
             agents::get_agent_run_state,
             runtime_readiness::check_runtime_readiness,
             runtime_readiness::check_all_runtime_readiness,
@@ -245,6 +246,7 @@ pub fn run() {
         .manage(AgentState {
             children: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
+            stdins: Mutex::new(HashMap::new()),
             session_tokens: Mutex::new(HashMap::new()),
             run_states: Mutex::new(HashMap::new()),
         })

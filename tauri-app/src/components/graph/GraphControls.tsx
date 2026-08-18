@@ -175,6 +175,9 @@ export interface GraphControlsProps {
     // View mode
     viewMode: ViewMode;
     onViewModeChange: (mode: ViewMode) => void;
+    executionTimelineOpen?: boolean;
+    onExecutionTimelineOpenChange?: (open: boolean) => void;
+    renderExecutionTimelinePanel?: (onClose: () => void) => ReactNode;
 
     // Layout settings
     layoutMode: LayoutMode;
@@ -536,6 +539,8 @@ interface GraphThreadTabsProps {
     onThreadDoneChange: (threadRootId: string, done: boolean) => void;
     doneThreadsCollapsed: boolean;
     onDoneThreadsCollapsedChange: (collapsed: boolean) => void;
+    threadBarCollapsed?: boolean;
+    onThreadBarCollapsedChange?: (collapsed: boolean) => void;
     onCreateThread: () => void;
     orientation?: 'horizontal' | 'vertical';
 }
@@ -547,6 +552,8 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
     onThreadDoneChange,
     doneThreadsCollapsed,
     onDoneThreadsCollapsedChange,
+    threadBarCollapsed = false,
+    onThreadBarCollapsedChange,
     onCreateThread,
     orientation = 'horizontal',
 }: GraphThreadTabsProps) {
@@ -574,6 +581,7 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
         () => threadItems.reduce((total, thread) => total + thread.runningCount, 0),
         [threadItems]
     );
+    const doneThreadCount = doneThreadItems.length;
 
     useEffect(() => {
         const tabList = tabListRef.current;
@@ -586,6 +594,58 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
     }, [isVertical, threadOrderKey]);
 
     if (threadTabItems.length === 0 && doneThreadItems.length === 0) return null;
+
+    if (isVertical && threadBarCollapsed) {
+        return (
+            <div className="flex h-full w-14 shrink-0 flex-col items-center gap-2 border-r border-[hsl(var(--app-border)/0.48)] bg-[hsl(var(--app-panel-strong)/0.36)] px-1.5 py-2 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.022)]">
+                <button
+                    type="button"
+                    aria-label="Expand threads bar"
+                    onClick={() => onThreadBarCollapsedChange?.(false)}
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.56)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.58)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                >
+                    <ChevronRight size={15} strokeWidth={2.3} />
+                </button>
+                <div
+                    aria-label={`Graph threads (${threadItems.length})`}
+                    className="flex w-10 flex-col items-center gap-1 rounded-lg border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.48)] px-1 py-2 text-muted-foreground"
+                >
+                    <ParallelThreadsIcon size={15} strokeWidth={2} />
+                    <span className="font-mono text-[11px] font-semibold leading-none tabular-nums text-foreground">
+                        {threadItems.length}
+                    </span>
+                </div>
+                <div
+                    aria-label={`Running threads (${totalRunningAgents})`}
+                    className="flex w-10 flex-col items-center gap-1 rounded-lg border border-[hsl(var(--app-border)/0.42)] bg-[hsl(var(--app-bg-muted)/0.54)] px-1 py-2 text-[9px] font-semibold uppercase text-muted-foreground"
+                >
+                    <span className="font-mono text-[11px] leading-none tabular-nums text-[hsl(var(--app-warning))]">
+                        {totalRunningAgents}
+                    </span>
+                    <span className="[writing-mode:vertical-rl]">Run</span>
+                </div>
+                {doneThreadCount > 0 ? (
+                    <div
+                        aria-label={`Done threads (${doneThreadCount})`}
+                        className="flex w-10 flex-col items-center gap-1 rounded-lg border border-[hsl(var(--app-border)/0.42)] bg-[hsl(var(--app-bg-muted)/0.54)] px-1 py-2 text-[9px] font-semibold uppercase text-muted-foreground"
+                    >
+                        <span className="font-mono text-[11px] leading-none tabular-nums text-foreground/72">
+                            {doneThreadCount}
+                        </span>
+                        <span className="[writing-mode:vertical-rl]">Done</span>
+                    </div>
+                ) : null}
+                <button
+                    type="button"
+                    aria-label="Start new thread"
+                    onClick={onCreateThread}
+                    className="mt-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.56)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.58)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                >
+                    <Plus size={14} strokeWidth={2.3} />
+                </button>
+            </div>
+        );
+    }
 
     const renderThreadTab = (thread: ThreadNavigationItem) => {
         const metadata = formatThreadMetadata(thread);
@@ -672,6 +732,8 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
             </div>
         );
 
+        if (thread.current) return tab;
+
         return (
             <ThreadNodeHoverCard
                 key={thread.threadRootId}
@@ -705,6 +767,16 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
                     <span className="rounded bg-[hsl(var(--app-bg-muted)/0.72)] px-1.5 py-0.5 font-mono text-[8px] tracking-normal text-foreground/70">
                         {totalRunningAgents} running
                     </span>
+                    {isVertical ? (
+                        <button
+                            type="button"
+                            aria-label="Collapse threads bar"
+                            onClick={() => onThreadBarCollapsedChange?.(true)}
+                            className="relative -mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,transform] duration-150 after:absolute after:-inset-2 after:content-[''] hover:bg-[hsl(var(--app-accent-soft)/0.46)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                        >
+                            <ChevronLeft size={13} strokeWidth={2.3} />
+                        </button>
+                    ) : null}
                 </div>
                 {isVertical ? (
                     <button
@@ -774,6 +846,9 @@ export function GraphControls({
     controlsRef,
     viewMode,
     onViewModeChange,
+    executionTimelineOpen = false,
+    onExecutionTimelineOpenChange,
+    renderExecutionTimelinePanel,
     layoutMode,
     onLayoutModeChange,
     laneStrategy,
@@ -1443,6 +1518,35 @@ export function GraphControls({
                             <span className="hidden sm:inline">Timeline</span>
                         </button>
                     </div>
+
+                    {onExecutionTimelineOpenChange && renderExecutionTimelinePanel ? (
+                        <Popover open={executionTimelineOpen} onOpenChange={onExecutionTimelineOpenChange}>
+                            <PopoverTrigger asChild>
+                                <button
+                                    type="button"
+                                    aria-label={executionTimelineOpen ? 'Close execution timeline' : 'Open execution timeline'}
+                                    className={cn(
+                                        iconButtonBase,
+                                        toolbarButtonClass,
+                                        "h-8 w-8 px-0",
+                                        executionTimelineOpen && activeToolbarButtonClass,
+                                    )}
+                                    title="Execution timeline"
+                                >
+                                    <Clock3 className="h-3.5 w-3.5" />
+                                </button>
+                            </PopoverTrigger>
+                            <PopoverContent
+                                align="end"
+                                side="bottom"
+                                sideOffset={10}
+                                className="z-50 w-[min(980px,calc(100vw-1.5rem))] border-none bg-transparent p-0 shadow-none"
+                                onOpenAutoFocus={(event) => event.preventDefault()}
+                            >
+                                {renderExecutionTimelinePanel(() => onExecutionTimelineOpenChange(false))}
+                            </PopoverContent>
+                        </Popover>
+                    ) : null}
 
                     <span className={toolbarDividerClass} aria-hidden="true" />
 

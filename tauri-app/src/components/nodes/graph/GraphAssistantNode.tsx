@@ -7,19 +7,27 @@ import type { AgentStatus } from '@shared/agentStatus';
 import { getAgentVisualState } from '../../../lib/agentStateUI';
 import { useRunStatusStore } from '../../../stores/runStatusStore';
 import { getAssistantIdentityLabel } from '../../../lib/assistantIdentity';
+import { getNodeFailureReason, isNodeFailureStatus } from '../../../lib/nodeFailureReason';
 
 // Compact status icon only - no text
 
-const StatusIcon = ({ status }: { status: AgentStatus | null | undefined }) => {
+const StatusIcon = ({
+  status,
+  failureReason,
+}: {
+  status: AgentStatus | null | undefined;
+  failureReason: string | null;
+}) => {
   if (!status) return null;
 
   const config = getAgentVisualState(status);
   const Icon = config.icon;
+  const title = failureReason ? `Agent ${config.label}: ${failureReason}` : `Agent ${config.label}`;
 
   return (
     <div
       className={cn(config.colorClass)}
-      title={`Agent ${config.label}`}
+      title={title}
     >
       <Icon size={12} className={cn(config.animate && "animate-spin")} />
     </div>
@@ -48,6 +56,9 @@ export const GraphAssistantNode = memo(({
     llmModel: entity.message?.llmModel,
     llmProvider: entity.message?.llmProvider,
   });
+  const failureReason = isNodeFailureStatus(displayStatus)
+    ? getNodeFailureReason(entity.message?.execution_data)
+    : null;
 
   return (
     <GraphNodeWrapper
@@ -90,7 +101,7 @@ export const GraphAssistantNode = memo(({
             )}
           </div>
         </div>
-        <StatusIcon status={displayStatus as any} />
+        <StatusIcon status={displayStatus as any} failureReason={failureReason} />
       </div>
 
       {isMinimalDetail ? (

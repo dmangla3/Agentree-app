@@ -1,4 +1,4 @@
-import { FileCode2, ListChecks, Network, Workflow } from 'lucide-react';
+import { ChevronDown, FileCode2, ListChecks, Network, Workflow } from 'lucide-react';
 import { useMemo, type ReactNode } from 'react';
 import MermaidDiagram from '../MermaidDiagram';
 import { compileFlowDefinition } from '../../flows/flowNodeRegistry';
@@ -183,31 +183,54 @@ function NodeTemplateRow({ node, index }: { node: FlowNodeTemplate; index: numbe
   const returns = Object.entries(node.returns ?? {}).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`);
 
   return (
-    <div className="grid gap-3 border-b border-[hsl(var(--app-border)/0.52)] px-3 py-3 last:border-b-0 sm:grid-cols-[2.5rem_minmax(0,1fr)]">
-      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[hsl(var(--app-accent-soft))] font-mono text-xs font-semibold tabular-nums text-[hsl(var(--app-accent))]">
-        {String(index + 1).padStart(2, '0')}
-      </div>
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-sm font-semibold text-foreground">{node.id}</span>
-          <span className="text-xs text-muted-foreground">parent: {node.parent}</span>
+    <details
+      data-flow-node-prompt="true"
+      className="group border-b border-[hsl(var(--app-border)/0.52)] last:border-b-0"
+    >
+      <summary className="grid cursor-pointer list-none gap-3 px-3 py-3 transition-colors hover:bg-background/35 sm:grid-cols-[2.5rem_minmax(0,1fr)] [&::-webkit-details-marker]:hidden">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[hsl(var(--app-accent-soft))] font-mono text-xs font-semibold tabular-nums text-[hsl(var(--app-accent))]">
+          {String(index + 1).padStart(2, '0')}
         </div>
-        <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
-          <span>{node.params?.length ? `params: ${node.params.join(', ')}` : 'no params'}</span>
-          {node.registryId ? <span>uses {node.registryId}</span> : null}
-          {node.requiresFinalizedCommit ? <span>requires commit</span> : null}
-        </div>
-        {returns.length > 0 ? (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {returns.map((item) => (
-              <span key={item} className="rounded-md border border-[hsl(var(--app-accent)/0.18)] bg-[hsl(var(--app-accent-soft))] px-1.5 py-0.5 text-[11px] font-medium text-[hsl(var(--app-accent))]">
-                {item}
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-sm font-semibold text-foreground">{node.id}</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-muted-foreground">parent: {node.parent}</span>
+              <span className="inline-flex h-6 items-center gap-1 rounded-md border border-[hsl(var(--app-border)/0.62)] bg-background/70 px-1.5 text-[10.5px] font-semibold text-muted-foreground transition-colors group-hover:text-foreground">
+                <FileCode2 className="h-3 w-3" />
+                Prompt
+                <ChevronDown className="h-3 w-3 transition-transform duration-150 group-open:rotate-180" />
               </span>
-            ))}
+            </div>
           </div>
-        ) : null}
+          <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+            <span>{node.params?.length ? `params: ${node.params.join(', ')}` : 'no params'}</span>
+            {node.registryId ? <span>uses {node.registryId}</span> : null}
+            {node.requiresFinalizedCommit ? <span>requires commit</span> : null}
+          </div>
+          {returns.length > 0 ? (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {returns.map((item) => (
+                <span key={item} className="rounded-md border border-[hsl(var(--app-accent)/0.18)] bg-[hsl(var(--app-accent-soft))] px-1.5 py-0.5 text-[11px] font-medium text-[hsl(var(--app-accent))]">
+                  {item}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </summary>
+      <div className="border-t border-[hsl(var(--app-border)/0.48)] bg-background/30 px-3 pb-3 pt-2 sm:pl-[4.5rem]">
+        <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Compiled prompt</span>
+          <span className="rounded-md bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {node.registryId ? `from ${node.registryId}` : 'inline'}
+          </span>
+        </div>
+        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel-strong)/0.78)] px-3 py-2.5 font-mono text-[11px] leading-5 text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.42)]">
+          {node.prompt.trim()}
+        </pre>
       </div>
-    </div>
+    </details>
   );
 }
 
@@ -241,14 +264,14 @@ export function buildFlowRunMermaid(definition: FlowDefinition): string {
 
   const implementerCount = resolveParallelBranchCount(definition, parallel.parallel.count);
   const implementerIds = Array.from({ length: implementerCount }, (_, index) => `implementer${index + 1}`);
-  const judgeLabel = topLevelCall.call;
+  const synthesizerLabel = topLevelCall.call;
   const reviewerLabel = reviewer && 'call' in reviewer ? reviewer.call : 'Reviewer';
   const fixerLabel = fixer && 'call' in fixer ? fixer.call : 'Fixer';
   const implementerNodeLines = implementerIds.map(
     (id, index) => `    ${id}["${escapeMermaidLabel(`${parallel.parallel.call} ${index + 1}`)}"]`
   );
   const startEdges = implementerIds.map((id) => `  start --> ${id}`);
-  const judgeEdges = implementerIds.map((id) => `  ${id} --> judge`);
+  const synthesizerEdges = implementerIds.map((id) => `  ${id} --> synthesizer`);
 
   return [
     'flowchart LR',
@@ -257,13 +280,13 @@ export function buildFlowRunMermaid(definition: FlowDefinition): string {
     '    direction TB',
     ...implementerNodeLines,
     '  end',
-    `  judge["${escapeMermaidLabel(judgeLabel)}"]`,
+    `  synthesizer["${escapeMermaidLabel(synthesizerLabel)}"]`,
     `  reviewer{"${escapeMermaidLabel(reviewerLabel)}"}`,
     `  fixer["${escapeMermaidLabel(fixerLabel)}"]`,
     '  done(("Done"))',
     ...startEdges,
-    ...judgeEdges,
-    '  judge --> reviewer',
+    ...synthesizerEdges,
+    '  synthesizer --> reviewer',
     '  reviewer -->|pass| done',
     '  reviewer -->|feedback| fixer',
     '  fixer --> reviewer',
@@ -271,7 +294,7 @@ export function buildFlowRunMermaid(definition: FlowDefinition): string {
     '  classDef agentStep fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1px;',
     '  classDef reviewStep fill:#fff7ed,stroke:#f97316,color:#7c2d12,stroke-width:1px;',
     '  class start,done terminalStep;',
-    `  class ${implementerIds.join(',')},judge,fixer agentStep;`,
+    `  class ${implementerIds.join(',')},synthesizer,fixer agentStep;`,
     '  class reviewer reviewStep;',
   ].join('\n');
 }

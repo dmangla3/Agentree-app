@@ -16,7 +16,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Badge } from "@/components/ui/badge";
 
 export interface TimelineEvent {
-    type: 'thinking' | 'tool_use' | 'tool_result' | 'message' | 'error';
+    type: 'thinking' | 'tool_use' | 'tool_result' | 'message' | 'error' | 'user_steer_requested';
     timestamp: number;
     content?: string; // For thinking or message
     toolName?: string;
@@ -515,6 +515,15 @@ export function buildTimelineRows(events: TimelineEvent[]): TimelineRow[] {
                 key: buildRowKey('thinking', event),
                 content: event.content,
                 durationMs: event.durationMs,
+            });
+            continue;
+        }
+
+        if (event.type === 'user_steer_requested') {
+            rows.push({
+                kind: 'thinking',
+                key: buildRowKey('user_steer_requested', event),
+                content: `User steered: ${event.content ?? ''}`,
             });
             continue;
         }

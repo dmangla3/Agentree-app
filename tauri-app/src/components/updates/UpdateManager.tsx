@@ -25,6 +25,7 @@ interface UpdateContextValue {
 }
 
 const UpdateContext = createContext<UpdateContextValue | null>(null);
+const BACKGROUND_UPDATE_CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000;
 
 export function UpdateManager({ children }: { children: ReactNode }) {
   const { addToast, removeToast } = useToast();
@@ -163,6 +164,16 @@ export function UpdateManager({ children }: { children: ReactNode }) {
     if (autoCheckStartedRef.current) return;
     autoCheckStartedRef.current = true;
     void checkForUpdates({ silent: true });
+  }, [checkForUpdates]);
+
+  useEffect(() => {
+    if (import.meta.env.DEV) return;
+
+    const intervalId = window.setInterval(() => {
+      void checkForUpdates({ silent: true });
+    }, BACKGROUND_UPDATE_CHECK_INTERVAL_MS);
+
+    return () => window.clearInterval(intervalId);
   }, [checkForUpdates]);
 
   const value = useMemo<UpdateContextValue>(

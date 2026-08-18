@@ -7,11 +7,15 @@ describe('flow node registry', () => {
   it('ships reusable node definitions for the parallel review flow', () => {
     expect(Object.keys(FLOW_NODE_REGISTRY)).toEqual(expect.arrayContaining([
       'core.implementer@1',
-      'core.selector@1',
+      'core.synthesizer@1',
       'core.reviewer@1',
       'core.fixer@1',
     ]));
     expect(FLOW_NODE_REGISTRY['core.implementer@1'].requiresFinalizedCommit).toBe(true);
+    expect(FLOW_NODE_REGISTRY['core.synthesizer@1'].requiresFinalizedCommit).toBe(true);
+    expect(FLOW_NODE_REGISTRY['core.synthesizer@1'].prompt).toContain('Produce one finalized implementation commit');
+    expect(FLOW_NODE_REGISTRY['core.synthesizer@1'].prompt).toContain('use one candidate unchanged');
+    expect(FLOW_NODE_REGISTRY['core.synthesizer@1'].returns).toBeUndefined();
     expect(FLOW_NODE_REGISTRY['core.fixer@1'].requiresFinalizedCommit).toBe(true);
     expect(FLOW_NODE_REGISTRY['core.reviewer@1'].returns).toEqual({
       verdict: ['pass', 'fail'],
@@ -35,10 +39,10 @@ describe('flow node registry', () => {
         requiresFinalizedCommit: true,
       },
       {
-        id: 'Judge',
-        registryId: 'core.selector@1',
+        id: 'Synthesizer',
+        registryId: 'core.synthesizer@1',
         params: ['request', 'candidates'],
-        requiresFinalizedCommit: false,
+        requiresFinalizedCommit: true,
       },
       {
         id: 'Reviewer',

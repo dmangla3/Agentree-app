@@ -4,9 +4,9 @@ import { evaluateFlowCondition, evaluateFlowExpression } from './flowExpressions
 
 const scope: Record<string, FlowRuntimeValue> = {
   input: { count: 3 },
-  judge: {
+  chooser: {
     kind: 'node',
-    id: 'judge-node',
+    id: 'chooser-node',
     status: 'complete',
     returns: {
       verdict: 'fail',
@@ -56,7 +56,7 @@ describe('flow expressions', () => {
   });
 
   it('evaluates equality checks against bare enum literals', () => {
-    expect(evaluateFlowCondition('judge.verdict == fail', scope)).toEqual({ value: true, issues: [] });
+    expect(evaluateFlowCondition('chooser.verdict == fail', scope)).toEqual({ value: true, issues: [] });
     expect(evaluateFlowCondition('reviewer.verdict == pass', scope)).toEqual({ value: true, issues: [] });
   });
 
@@ -67,7 +67,7 @@ describe('flow expressions', () => {
 
   it('evaluates node property access', () => {
     expect(evaluateFlowExpression('implementation.commit', scope)).toEqual({ value: 'abc123', issues: [] });
-    expect(evaluateFlowExpression('judge.selected', scope)).toEqual({
+    expect(evaluateFlowExpression('chooser.selected', scope)).toEqual({
       value: {
         kind: 'node',
         id: 'implementation-2',
@@ -87,9 +87,9 @@ describe('flow expressions', () => {
   });
 
   it('rejects unsupported operators', () => {
-    expect(evaluateFlowCondition('judge.verdict != fail', scope)).toEqual({
+    expect(evaluateFlowCondition('chooser.verdict != fail', scope)).toEqual({
       value: false,
-      issues: [{ path: 'judge.verdict != fail', message: 'Only equality conditions are supported.' }],
+      issues: [{ path: 'chooser.verdict != fail', message: 'Only equality conditions are supported.' }],
     });
   });
 });

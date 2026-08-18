@@ -8,6 +8,7 @@ import {
   resolveFocusedThreadRootId,
   resolveThreadDropdownSelection,
   shouldDispatchGraphFocusSynchronously,
+  shouldClampViewportDuringMove,
   shouldSkipActiveGraphClickCentering,
   shouldTreatGraphMoveAsViewportInteraction,
 } from './GraphView';
@@ -67,6 +68,32 @@ describe('shouldTreatGraphMoveAsViewportInteraction', () => {
       eventType: 'touchstart',
       eventTargetIsNode: false,
       programmaticFocusCenterActive: true,
+    })).toBe(true);
+  });
+});
+
+describe('shouldClampViewportDuringMove', () => {
+  it('does not clamp while a pointer drag is actively moving the viewport', () => {
+    expect(shouldClampViewportDuringMove({
+      eventType: 'mousemove',
+      isViewportInteracting: true,
+    })).toBe(false);
+
+    expect(shouldClampViewportDuringMove({
+      eventType: 'touchmove',
+      isViewportInteracting: true,
+    })).toBe(false);
+  });
+
+  it('still allows non-drag viewport changes to be clamped during move', () => {
+    expect(shouldClampViewportDuringMove({
+      eventType: 'wheel',
+      isViewportInteracting: true,
+    })).toBe(true);
+
+    expect(shouldClampViewportDuringMove({
+      eventType: undefined,
+      isViewportInteracting: false,
     })).toBe(true);
   });
 });
@@ -220,6 +247,29 @@ describe('GraphView canvas running status', () => {
     expect(source).toContain('threadGraphScope.activeThreadRootId');
   });
 
+  it('does not set a clamped viewport from React Flow onMove while active drag is in progress', () => {
+    const source = readFileSync(join(process.cwd(), 'src/components/GraphView.tsx'), 'utf8');
+
+    expect(source).toContain('shouldClampViewportDuringMove({');
+    expect(source).toContain('isViewportInteracting: isViewportInteractingRef.current');
+    expect(source).toContain('onMoveEnd={(_event, viewport) => {');
+    expect(source).toContain('const clampedViewport = clampViewportToGraphBounds(viewport);');
+  });
+
+  it('uses explicit full graph viewport bounds instead of active render elements for panning limits', () => {
+    const source = readFileSync(join(process.cwd(), 'src/components/GraphView.tsx'), 'utf8');
+
+    expect(source).toContain('fullGraphViewportBoundsRef');
+    expect(source).toContain('buildFullGraphViewportBoundsModel(branchNodesForRender)');
+    expect(source).toContain('fullGraphViewportBoundsRef.current = fullGraphViewportBounds;');
+    expect(source).toContain('graphTranslateExtent = fullGraphViewportBounds?.translateExtent');
+    expect(source).toContain('clampGraphViewportToFullGraphBoundsModel(viewport, fullGraphViewportBoundsRef.current');
+    expect(source).not.toContain('buildGraphTranslateExtent(branchNodesForRender)');
+    expect(source).not.toContain(`useLayoutEffect(() => {
+        fullGraphViewportBoundsRef.current = fullGraphViewportBounds;
+    }, [fullGraphViewportBounds]);`);
+  });
+
   it('records thread switch performance boundaries', () => {
     const source = readFileSync(join(process.cwd(), 'src/components/GraphView.tsx'), 'utf8');
 
@@ -233,6 +283,17 @@ describe('GraphView canvas running status', () => {
     const source = readFileSync(join(process.cwd(), 'src/components/GraphView.tsx'), 'utf8');
 
     expect(source).toContain('translateExtent={graphTranslateExtent}');
+  });
+
+  it('mounts the execution timeline as a workspace header popover instead of a graph dock', () => {
+    const source = readFileSync(join(process.cwd(), 'src/components/GraphView.tsx'), 'utf8');
+
+    expect(source).toContain('executionTimelineOpen');
+    expect(source).toContain('handleExecutionTimelineOpenChange');
+    expect(source).toContain('onExecutionTimelineOpenChange={handleExecutionTimelineOpenChange}');
+    expect(source).toContain('renderExecutionTimelinePanel=');
+    expect(source).not.toContain('timelinePreviewAtMs');
+    expect(source).not.toContain('applyTimelineReplayToGraph');
   });
 });
 

@@ -69,7 +69,10 @@ import { reconcileTerminalAgentRunsFromMessages } from '../lib/agentRunTerminalR
 import { addDeletedGraphCommitShas, readDeletedGraphCommitShas } from '../lib/graph/commitGraphTombstones';
 import { getLeafMessagesByRecency, getLeafNavigationLabel } from '../lib/graph/leafNodes';
 import { getThreadAwarenessSummary } from '../lib/graph/threadAwareness';
-import { buildGraphTranslateExtent, clampGraphViewportToNodeBounds } from '../lib/graphViewportBounds';
+import {
+    buildFullGraphViewportBoundsModel,
+    clampGraphViewportToFullGraphBoundsModel,
+} from '../lib/graphViewportBounds';
 import { collapseRenderedFocusRoute } from '../domain/focusRoute';
 import { cn } from '../lib/utils';
 import { writeClipboardText } from '../lib/clipboard';
@@ -96,6 +99,7 @@ import { FloatingSelectionMenu } from './graph/FloatingSelectionMenu';
 // Components - Dialogs/Panels
 import { SummaryCreationDialog } from './SummaryCreationDialog';
 import { TimelineView } from './TimelineView';
+import { ExecutionTimelineDock } from './timeline/ExecutionTimelineDock';
 import AdvancedSearchPanel from './AdvancedSearchPanel';
 import { NodeContextMenu, type NodeContextMenuState } from './NodeContextMenu';
 import { AddCommitDialog } from './AddCommitDialog';
@@ -119,11 +123,12 @@ import {
     type GraphNodeDetailZoomBucket,
 } from '../lib/graphNodeDetailLevel';
 import { withExplicitReactFlowNodeDimensions } from '../lib/reactFlowNodeDimensions';
+import { buildExecutionTimelineItems, packExecutionTimelineItems } from '../lib/executionTimelineModel';
 import type { FocusTriggerMetrics } from '../types/nodes';
 
 import { graphNodeTypes } from './graph/graphNodeTypes';
 import { hasLayoutAnchoredGraphNodes, resolveAnchoredGraphWindowNodeIds } from './graph/graphRenderWindow';
-import { getGraphEdgeEndpointDotVariant, isInterTurnEndpointEdge } from './graphEdgeEndpointDots';
+import { getGraphEdgeEndpointDotVariant, isInterTurnEndpointEdge, type EdgeEndpointDotVariant } from './graphEdgeEndpointDots';
 
 const GraphMergePanel = React.lazy(() => import('./MergePanel').then((module) => ({ default: module.MergePanel })));
 
@@ -183,6 +188,14 @@ export const shouldTreatGraphMoveAsViewportInteraction = ({
     if (eventType !== 'wheel' && eventTargetIsNode) return false;
     if (programmaticFocusCenterActive && eventType !== 'wheel' && eventType !== 'touchstart') return false;
     return true;
+};
+
+export const shouldClampViewportDuringMove = (input: {
+    eventType: string | undefined;
+    isViewportInteracting: boolean;
+}): boolean => {
+    if (!input.isViewportInteracting) return true;
+    return input.eventType === 'wheel';
 };
 
 export const shouldDispatchGraphFocusSynchronously = ({
@@ -801,6 +814,7 @@ function GraphViewInternal({
     const [activeThreadRootId, setActiveThreadRootId] = useState<string | null>(initialThreadState.activeThreadRootId);
     const [doneThreadRootIds, setDoneThreadRootIds] = useState<Set<string>>(initialThreadState.doneThreadRootIds);
     const [doneThreadsCollapsed, setDoneThreadsCollapsed] = useState(initialThreadState.doneThreadsCollapsed);
+    const [threadBarCollapsed, setThreadBarCollapsed] = useState(initialThreadState.threadBarCollapsed);
     const [lastVisitedAtByThreadRootId, setLastVisitedAtByThreadRootId] = useState<Map<string, number>>(
         initialThreadState.lastVisitedAtByThreadRootId
     );
@@ -814,6 +828,7 @@ function GraphViewInternal({
         setActiveThreadRootId(state.activeThreadRootId);
         setDoneThreadRootIds(state.doneThreadRootIds);
         setDoneThreadsCollapsed(state.doneThreadsCollapsed);
+        setThreadBarCollapsed(state.threadBarCollapsed);
         setLastVisitedAtByThreadRootId(state.lastVisitedAtByThreadRootId);
         setHiddenSubgraphRootIds(new Set());
         setConvertedSubgraphThreadRootIds(readConvertedSubgraphThreadRootIds(selectedWorkspaceId));
@@ -894,6 +909,10 @@ function GraphViewInternal({
     const graphUsingSnapshot = false;
     const [viewMode, setViewMode] = useState<ViewMode>('branch');
     const [branchViewActivationNonce, setBranchViewActivationNonce] = useState(0);
+    const [executionTimelineOpen, setExecutionTimelineOpen] = useState(false);
+    const handleExecutionTimelineOpenChange = useCallback((open: boolean) => {
+        setExecutionTimelineOpen(open);
+    }, []);
 
     const graphFocusedMessageIdRef = useRef<string | null>(storeFocusedMessageId);
     const isUserFocusSource = lastFocusSource === 'graph' || lastFocusSource === 'chat' || lastFocusSource === 'timeline';
@@ -1068,11 +1087,12 @@ function GraphViewInternal({
                 activeThreadRootId: threadRootId,
                 doneThreadRootIds,
                 doneThreadsCollapsed,
+                threadBarCollapsed,
                 lastVisitedAtByThreadRootId: next,
             });
             return next;
         });
-    }, [doneThreadRootIds, doneThreadsCollapsed, selectedWorkspaceId]);
+    }, [doneThreadRootIds, doneThreadsCollapsed, selectedWorkspaceId, threadBarCollapsed]);
     useEffect(() => {
         if (!selectedWorkspaceId || threadRootIndex.threadRootIds.length === 0) return;
         const nextActiveThreadRootId = resolveInitialActiveThreadRootId({
@@ -1086,6 +1106,7 @@ function GraphViewInternal({
             activeThreadRootId: nextActiveThreadRootId,
             doneThreadRootIds,
             doneThreadsCollapsed,
+            threadBarCollapsed,
             lastVisitedAtByThreadRootId,
         });
     }, [
@@ -1094,6 +1115,7 @@ function GraphViewInternal({
         doneThreadsCollapsed,
         lastVisitedAtByThreadRootId,
         selectedWorkspaceId,
+        threadBarCollapsed,
         threadIndexItems,
         threadRootIndex.threadRootIds,
     ]);
@@ -1487,6 +1509,7 @@ function GraphViewInternal({
     const centeredFocusIdRef = useRef<string | null>(null);
     const previousViewModeRef = useRef<ViewMode>(viewMode);
     const layoutNodesRef = useRef<Node<any>[]>([]);
+    const fullGraphViewportBoundsRef = useRef<ReturnType<typeof buildFullGraphViewportBoundsModel>>(null);
     const layoutEdgesRef = useRef<any[]>([]);
     const measuredNodeHeightsRef = useRef<Map<string, number>>(EMPTY_MEASURED_NODE_HEIGHTS);
     const pendingNodeHeightMeasuresRef = useRef<Map<string, number>>(new Map());
@@ -1555,16 +1578,16 @@ function GraphViewInternal({
     const clampViewportToGraphBounds = useCallback((viewport: { x: number; y: number; zoom: number }) => {
         const canvas = branchCanvasRef.current;
         if (!canvas) return viewport;
-        return clampGraphViewportToNodeBounds(viewport, layoutNodesRef.current, {
+        return clampGraphViewportToFullGraphBoundsModel(viewport, fullGraphViewportBoundsRef.current, {
             width: canvas.clientWidth,
             height: canvas.clientHeight,
         });
     }, []);
 
-    const saveViewportForActiveThread = useCallback(() => {
+    const saveViewportForActiveThread = useCallback((viewportOverride?: { x: number; y: number; zoom: number }) => {
         const threadRootId = threadGraphScope.activeThreadRootId;
         if (!threadRootId) return;
-        viewportByThreadRootIdRef.current.set(threadRootId, reactFlowInstance.getViewport());
+        viewportByThreadRootIdRef.current.set(threadRootId, viewportOverride ?? reactFlowInstance.getViewport());
     }, [reactFlowInstance, threadGraphScope.activeThreadRootId]);
 
     const restoreViewportForActiveThread = useCallback(() => {
@@ -2192,6 +2215,20 @@ function GraphViewInternal({
         scopedVisibleSnapshotCommitParents,
         scopedVisibleSnapshotCommitObservations,
     );
+    const executionTimelineProjection = useWorkspaceProjection(
+        graphMessages as Message[],
+        summaries as Summary[],
+        focusedMessageId,
+        disabledSummaryIdsSet,
+        'execution-timeline',
+        visibleSnapshotCommits,
+        visibleSnapshotCommitParents,
+        visibleSnapshotCommitObservations,
+    );
+    const executionTimelineModel = useMemo(() => {
+        const items = buildExecutionTimelineItems(executionTimelineProjection);
+        return packExecutionTimelineItems(items);
+    }, [executionTimelineProjection]);
     const handleMergeSelection = useCallback((selectionIds?: Iterable<string>) => {
         const selectedIds = selectionIds ? Array.from(selectionIds) : Array.from(nodeSelection.selectedNodeIds);
         if (selectedIds.length < 2) {
@@ -3210,11 +3247,12 @@ function GraphViewInternal({
                 activeThreadRootId,
                 doneThreadRootIds: next,
                 doneThreadsCollapsed,
+                threadBarCollapsed,
                 lastVisitedAtByThreadRootId,
             });
             return next;
         });
-    }, [activeThreadRootId, doneThreadsCollapsed, lastVisitedAtByThreadRootId, selectedWorkspaceId]);
+    }, [activeThreadRootId, doneThreadsCollapsed, lastVisitedAtByThreadRootId, selectedWorkspaceId, threadBarCollapsed]);
 
     const handleDoneThreadsCollapsedChange = useCallback((collapsed: boolean) => {
         setDoneThreadsCollapsed(collapsed);
@@ -3222,9 +3260,21 @@ function GraphViewInternal({
             activeThreadRootId,
             doneThreadRootIds,
             doneThreadsCollapsed: collapsed,
+            threadBarCollapsed,
             lastVisitedAtByThreadRootId,
         });
-    }, [activeThreadRootId, doneThreadRootIds, lastVisitedAtByThreadRootId, selectedWorkspaceId]);
+    }, [activeThreadRootId, doneThreadRootIds, lastVisitedAtByThreadRootId, selectedWorkspaceId, threadBarCollapsed]);
+
+    const handleThreadBarCollapsedChange = useCallback((collapsed: boolean) => {
+        setThreadBarCollapsed(collapsed);
+        rememberGraphThreadState(selectedWorkspaceId, {
+            activeThreadRootId,
+            doneThreadRootIds,
+            doneThreadsCollapsed,
+            threadBarCollapsed: collapsed,
+            lastVisitedAtByThreadRootId,
+        });
+    }, [activeThreadRootId, doneThreadRootIds, doneThreadsCollapsed, lastVisitedAtByThreadRootId, selectedWorkspaceId]);
 
     const handleCreateThread = useCallback(() => {
         dispatchGraphComposerDockExpand();
@@ -3459,7 +3509,7 @@ function GraphViewInternal({
 
     const previewEdges = useMemo(() => {
         const nodeById = new Map(layoutNodes.map((node) => [node.id, node]));
-        const withEndpointDots = (edge: Edge, endpointDotVariant: 'commit-parent' | 'convergence' | null) => {
+        const withEndpointDots = (edge: Edge, endpointDotVariant: EdgeEndpointDotVariant | null) => {
             if (!endpointDotVariant) return edge;
             return {
                 ...edge,
@@ -3469,7 +3519,7 @@ function GraphViewInternal({
                 },
             };
         };
-        const getEndpointDotVariant = (edge: Edge, matchedPreview: boolean): 'commit-parent' | 'convergence' | null => (
+        const getEndpointDotVariant = (edge: Edge, matchedPreview: boolean): EdgeEndpointDotVariant | null => (
             getGraphEdgeEndpointDotVariant({
                 edgeLegendType: (edge.data as any)?.edgeLegendType as GraphEdgeLegendId | undefined,
                 matchedContextPathPreview: previewEdgeType === 'context-path' && matchedPreview,
@@ -4552,7 +4602,7 @@ function GraphViewInternal({
         detailLevel: GraphNodeDetailLevel;
         prepared: Node<any>;
     }>());
-    const branchNodesForRender = useMemo(() => {
+    const baseBranchNodesForRender = useMemo(() => {
         const startedAt = performance.now();
         const nextCache = new Map<string, {
             source: Node<any>;
@@ -4585,11 +4635,15 @@ function GraphViewInternal({
         }, performance.now() - startedAt);
         return result;
     }, [activeSendFlowFocus?.workspaceId, layoutNodes, nodeSelection.selectedNodeIds, selectedWorkspaceId]);
+    const branchNodesForRender = baseBranchNodesForRender;
+    const graphEdgesForRender = previewEdges;
     const activeGraphRenderHold = runningCount > 0 || activeSendFlowFocus?.workspaceId === selectedWorkspaceId;
-    const graphTranslateExtent = useMemo(
-        () => buildGraphTranslateExtent(branchNodesForRender),
+    const fullGraphViewportBounds = useMemo(
+        () => buildFullGraphViewportBoundsModel(branchNodesForRender),
         [branchNodesForRender]
     );
+    fullGraphViewportBoundsRef.current = fullGraphViewportBounds;
+    const graphTranslateExtent = fullGraphViewportBounds?.translateExtent;
     const shouldShowThreadBands = !threadGraphScope.isThreadScoped && !activeGraphRenderHold;
     const threadBands = useMemo(() => {
         if (!shouldShowThreadBands) return [];
@@ -4741,7 +4795,7 @@ function GraphViewInternal({
     const graphRenderElements = useMemo(() => {
         const buildHeldElements = (nodeIds: Set<string>, reason = 'active-window') => {
             let resolvedIds = resolveAnchoredGraphWindowNodeIds(nodeIds, branchNodesForRender);
-            for (const edge of previewEdges) {
+            for (const edge of graphEdgesForRender) {
                 const relationship = (edge.data as any)?.relationship;
                 const edgeRole = (edge.data as any)?.edgeRole;
                 if (
@@ -4761,7 +4815,7 @@ function GraphViewInternal({
                 .map((id) => activeGraphWindowSpatialIndex.nodeById.get(id))
                 .filter((node): node is Node<any> => Boolean(node));
             const resolvedNodeIds = new Set(nodes.map((node) => node.id));
-            const edges = previewEdges.filter((edge) => resolvedNodeIds.has(edge.source) && resolvedNodeIds.has(edge.target));
+            const edges = graphEdgesForRender.filter((edge) => resolvedNodeIds.has(edge.source) && resolvedNodeIds.has(edge.target));
             const nodeLayoutKey = nodes.map((node) => [
                 node.id,
                 Math.round(node.position?.x ?? 0),
@@ -4854,12 +4908,12 @@ function GraphViewInternal({
         }
         const next = {
             nodes: branchNodesForRender,
-            edges: previewEdges,
+            edges: graphEdgesForRender,
             mode: 'full' as const,
         };
         activeRunGraphRenderRef.current = next;
         return next;
-    }, [activeGraphWindowSpatialIndex, activeGraphWindowViewportVersion, activePinnedGraphNodeIds, branchNodesForRender, previewEdges, reactFlowInstance, shouldHoldGraphRenderForSendFlow]);
+    }, [activeGraphWindowSpatialIndex, activeGraphWindowViewportVersion, activePinnedGraphNodeIds, branchNodesForRender, graphEdgesForRender, reactFlowInstance, shouldHoldGraphRenderForSendFlow]);
 
     const graphNodesForReactFlow = useMemo(() => {
         const startedAt = performance.now();
@@ -5107,7 +5161,7 @@ function GraphViewInternal({
         };
 
         const selectedNode = nodeById.get(nodeId);
-        const connectedEdges = previewEdges
+        const connectedEdges = graphEdgesForRender
             .filter((edge) => edge.source === nodeId || edge.target === nodeId)
             .map((edge) => {
                 const source = nodeById.get(edge.source);
@@ -5153,7 +5207,7 @@ function GraphViewInternal({
             longestConnectedEdges: connectedEdges.slice(0, 12),
             viewport: reactFlowInstance.getViewport(),
         }, { source: 'GraphView' });
-    }, [branchNodesForRender, previewEdges, reactFlowInstance]);
+    }, [branchNodesForRender, graphEdgesForRender, reactFlowInstance]);
 
     useEffect(() => {
         nodeLayoutDiagnosticRef.current = recordGraphNodeLayoutDiagnostic;
@@ -5490,6 +5544,28 @@ function GraphViewInternal({
                         controlsRef={controlsRef as React.RefObject<HTMLDivElement>}
                         viewMode={viewMode}
                         onViewModeChange={setViewMode}
+                        executionTimelineOpen={executionTimelineOpen}
+                        onExecutionTimelineOpenChange={handleExecutionTimelineOpenChange}
+                        renderExecutionTimelinePanel={(onClose) => (
+                            <ExecutionTimelineDock
+                                projection={executionTimelineProjection}
+                                model={executionTimelineModel}
+                                focusedMessageId={focusedMessageId}
+                                selectedNodeIds={nodeSelection.selectedNodeIds}
+                                threadItems={threadIndexItems}
+                                threadRootIdByMessageId={threadRootIndex.threadRootIdByMessageId}
+                                onFocusMessage={(messageId) => {
+                                    handleFocus(messageId, {
+                                        pointerDownAt: null,
+                                        clickAt: performance.now(),
+                                        metadata: { via: 'execution-timeline' },
+                                    });
+                                }}
+                                onSelectMessage={handleSelect}
+                                onContextMenuMessage={handleNodeContextMenu}
+                                onClose={onClose}
+                            />
+                        )}
                         layoutMode={layoutMode}
                         onLayoutModeChange={setLayoutMode}
                         laneStrategy={laneStrategy}
@@ -5564,6 +5640,8 @@ function GraphViewInternal({
                             onThreadDoneChange={handleThreadDoneChange}
                             doneThreadsCollapsed={doneThreadsCollapsed}
                             onDoneThreadsCollapsedChange={handleDoneThreadsCollapsedChange}
+                            threadBarCollapsed={threadBarCollapsed}
+                            onThreadBarCollapsedChange={handleThreadBarCollapsedChange}
                             onCreateThread={handleCreateThread}
                         />
                     ) : null}
@@ -5584,6 +5662,8 @@ function GraphViewInternal({
                         onThreadDoneChange={handleThreadDoneChange}
                         doneThreadsCollapsed={doneThreadsCollapsed}
                         onDoneThreadsCollapsedChange={handleDoneThreadsCollapsedChange}
+                        threadBarCollapsed={threadBarCollapsed}
+                        onThreadBarCollapsedChange={handleThreadBarCollapsedChange}
                         onCreateThread={handleCreateThread}
                     />
                 ) : null}
@@ -5702,13 +5782,18 @@ function GraphViewInternal({
                                                 }
                                             }}
                                             onMove={(event, viewport) => {
-                                                const clampedViewport = clampViewportToGraphBounds(viewport);
-                                                if (
-                                                    clampedViewport.x !== viewport.x ||
-                                                    clampedViewport.y !== viewport.y ||
-                                                    clampedViewport.zoom !== viewport.zoom
-                                                ) {
-                                                    reactFlowInstance.setViewport(clampedViewport, { duration: 0 });
+                                                if (shouldClampViewportDuringMove({
+                                                    eventType: event?.type,
+                                                    isViewportInteracting: isViewportInteractingRef.current,
+                                                })) {
+                                                    const clampedViewport = clampViewportToGraphBounds(viewport);
+                                                    if (
+                                                        clampedViewport.x !== viewport.x ||
+                                                        clampedViewport.y !== viewport.y ||
+                                                        clampedViewport.zoom !== viewport.zoom
+                                                    ) {
+                                                        reactFlowInstance.setViewport(clampedViewport, { duration: 0 });
+                                                    }
                                                 }
                                                 if (graphRenderElements.mode === 'hold-visible') {
                                                     scheduleActiveGraphWindowUpdate('move', true);
@@ -5745,8 +5830,16 @@ function GraphViewInternal({
                                                 }, { source: 'GraphView' });
                                             }}
                                             onMoveEnd={(_event, viewport) => {
-                                                stopViewportInteraction(viewport);
-                                                saveViewportForActiveThread();
+                                                const clampedViewport = clampViewportToGraphBounds(viewport);
+                                                if (
+                                                    clampedViewport.x !== viewport.x ||
+                                                    clampedViewport.y !== viewport.y ||
+                                                    clampedViewport.zoom !== viewport.zoom
+                                                ) {
+                                                    reactFlowInstance.setViewport(clampedViewport, { duration: 0 });
+                                                }
+                                                stopViewportInteraction(clampedViewport);
+                                                saveViewportForActiveThread(clampedViewport);
                                                 scheduleGraphDetailZoomBucketUpdate(120);
                                                 if (graphRenderElements.mode === 'hold-visible') {
                                                     scheduleActiveGraphWindowUpdate('move-end', false);
@@ -5788,6 +5881,7 @@ function GraphViewInternal({
                             <>
                                 <MiniMapPanel
                                     graphNodes={branchNodesForRender}
+                                    graphEdges={graphEdgesForRender}
                                     threadRootIdByMessageId={threadGraphScope.isThreadScoped ? new Map() : threadRootIndex.threadRootIdByMessageId}
                                 />
                                 <GraphCanvasIndexPanel

@@ -41,30 +41,32 @@ describe('executeFlow', () => {
             message: `implementation ${nextCount}`,
           });
         }
-        if (input.templateId === 'Judge') {
+        if (input.templateId === 'Synthesizer') {
           expect(input.args.candidates).toEqual([
             expect.objectContaining({ id: 'impl-1' }),
             expect.objectContaining({ id: 'impl-2' }),
           ]);
           expect(input.args.request).toBe('Build the feature');
+          expect(input.requiresFinalizedCommit).toBe(true);
           return node({
-            id: 'judge-1',
-            label: 'Judge',
-            message: 'selected: impl-2\nverdict: fail',
+            id: 'synthesizer-1',
+            label: 'Synthesizer',
+            commit: 'commit-synth-1',
+            message: 'Synthesized implementation 2 with useful error handling from implementation 1.',
           });
         }
         if (input.templateId === 'Reviewer') {
           if (nextCount === 1) {
             expect(input.args.request).toBe('Build the feature');
-            expect(input.args.target_node).toEqual(expect.objectContaining({ id: 'impl-2' }));
-            expect(input.args.commit).toBe('commit-2');
+            expect(input.args.target_node).toEqual(expect.objectContaining({ id: 'synthesizer-1' }));
+            expect(input.args.commit).toBe('commit-synth-1');
             expect(input.args.latest_fix).toBeNull();
             expect(input.args.criteria).toBe('Review correctness against the original request.');
             expect(input.prompt).toContain('Original request:');
             expect(input.prompt).toContain('Build the feature');
             expect(input.prompt).toContain('Latest fix attempt, if any:');
             expect(input.prompt).not.toContain('counterpoint: reviewer missed context');
-            expect(input.prompt).toContain('implementation 2');
+            expect(input.prompt).toContain('Synthesized implementation 2');
             expect(input.prompt).not.toContain('null');
             return node({ id: 'reviewer-1', label: 'Reviewer 1', message: 'verdict: fail' });
           }
@@ -77,7 +79,7 @@ describe('executeFlow', () => {
           expect(input.prompt).toContain('Original request:');
           expect(input.prompt).toContain('Build the feature');
           expect(input.prompt).toContain('counterpoint: reviewer missed context');
-          expect(input.prompt).toContain('implementation 2');
+          expect(input.prompt).toContain('Synthesized implementation 2');
           return node({ id: 'reviewer-2', label: 'Reviewer 2', message: 'verdict: pass' });
         }
         if (input.templateId === 'Fixer') {
@@ -107,14 +109,14 @@ describe('executeFlow', () => {
     expect(calls[0].args).toEqual({ request: 'Build the feature' });
     expect(calls[1].args).toEqual({ request: 'Build the feature' });
     expect(calls[0].prompt).toBe(calls[1].prompt);
-    expect(calls[2].templateId).toBe('Judge');
+    expect(calls[2].templateId).toBe('Synthesizer');
     expect(calls[3]).toEqual(expect.objectContaining({
       templateId: 'Reviewer',
-      parent: expect.objectContaining({ id: 'judge-1' }),
+      parent: expect.objectContaining({ id: 'synthesizer-1' }),
     }));
     expect(calls[4]).toEqual(expect.objectContaining({
       templateId: 'Fixer',
-      parent: expect.objectContaining({ id: 'impl-2' }),
+      parent: expect.objectContaining({ id: 'synthesizer-1' }),
     }));
     expect(calls[5]).toEqual(expect.objectContaining({
       templateId: 'Reviewer',
@@ -139,8 +141,8 @@ describe('executeFlow', () => {
           await allImplementersStarted;
           return node({ id: `impl-${implementationIndex}`, commit: `commit-${implementationIndex}` });
         }
-        if (input.templateId === 'Judge') {
-          return node({ id: 'judge', message: 'selected: impl-1\nverdict: pass' });
+        if (input.templateId === 'Synthesizer') {
+          return node({ id: 'synthesizer', commit: 'commit-synth', message: 'Using implementation 1 unchanged.' });
         }
         if (input.templateId === 'Reviewer') {
           return node({ id: 'reviewer', message: 'verdict: pass' });
@@ -168,8 +170,8 @@ describe('executeFlow', () => {
         if (input.templateId === 'Implementer') {
           return node({ id: 'impl-1', commit: 'commit-1' });
         }
-        if (input.templateId === 'Judge') {
-          return node({ id: 'judge', message: 'selected: impl-1\nverdict: fail' });
+        if (input.templateId === 'Synthesizer') {
+          return node({ id: 'synthesizer', commit: 'commit-synth', message: 'Synthesized the candidate commits.' });
         }
         if (input.templateId === 'Reviewer') {
           return node({ id: `reviewer-${fixerCount + 1}`, message: 'verdict: fail' });
@@ -195,14 +197,26 @@ describe('executeFlow', () => {
     expect(fixerCount).toBe(3);
   });
 
-  it('stops when declared returns are invalid or missing', async () => {
+  it('does not parse structured-looking synthesizer text as flow returns', async () => {
     const runner: FlowNodeRunner = {
       async runNode(input) {
         if (input.templateId === 'Implementer') {
           return node({ id: 'impl-1', commit: 'commit-1' });
         }
-        if (input.templateId === 'Judge') {
-          return node({ id: 'judge', message: 'verdict: maybe' });
+        if (input.templateId === 'Synthesizer') {
+          return node({
+            id: 'synthesizer',
+            commit: 'commit-synth',
+            message: 'selected: missing-node\nverdict: maybe\nUsing the first candidate unchanged.',
+          });
+        }
+        if (input.templateId === 'Reviewer') {
+          expect(input.args.target_node).toEqual(expect.objectContaining({
+            id: 'synthesizer',
+            commit: 'commit-synth',
+          }));
+          expect(input.args.commit).toBe('commit-synth');
+          return node({ id: 'reviewer', message: 'verdict: pass' });
         }
         throw new Error(`Unexpected template ${input.templateId}`);
       },
@@ -214,35 +228,10 @@ describe('executeFlow', () => {
       runner,
     });
 
-    expect(result.status).toBe('stopped');
-    expect(result.reason).toContain('Return "verdict" must be one of');
-    expect(result.reason).toContain('Missing declared return "selected"');
+    expect(result.status).toBe('completed');
   });
 
-  it('stops when selected node does not resolve to an implementation', async () => {
-    const runner: FlowNodeRunner = {
-      async runNode(input) {
-        if (input.templateId === 'Implementer') {
-          return node({ id: 'impl-1', commit: 'commit-1' });
-        }
-        if (input.templateId === 'Judge') {
-          return node({ id: 'judge', message: 'selected: missing-node\nverdict: pass' });
-        }
-        throw new Error(`Unexpected template ${input.templateId}`);
-      },
-    };
-
-    const result = await executeFlow({
-      definition: predefinedDefinition(),
-      inputs: { input: 'Missing selected', count: 1 },
-      runner,
-    });
-
-    expect(result.status).toBe('stopped');
-    expect(result.reason).toBe('Node return "missing-node" does not match a selectable node.');
-  });
-
-  it('stops before review when the selected implementation has no commit', async () => {
+  it('stops before review when the synthesized implementation has no commit', async () => {
     const calls: FlowNodeRunInput[] = [];
     const runner: FlowNodeRunner = {
       async runNode(input) {
@@ -250,8 +239,8 @@ describe('executeFlow', () => {
         if (input.templateId === 'Implementer') {
           return node({ id: 'impl-1', commit: null, message: 'I need clarification before changing code.' });
         }
-        if (input.templateId === 'Judge') {
-          return node({ id: 'judge', message: 'selected: impl-1\nverdict: pass' });
+        if (input.templateId === 'Synthesizer') {
+          return node({ id: 'synthesizer', commit: null, message: 'No commit was produced.' });
         }
         throw new Error(`Unexpected template ${input.templateId}`);
       },
@@ -264,7 +253,7 @@ describe('executeFlow', () => {
     });
 
     expect(result.status).toBe('stopped');
-    expect(result.reason).toBe('selected_implementation_has_no_commit');
-    expect(calls.map((call) => call.templateId)).toEqual(['Implementer', 'Judge']);
+    expect(result.reason).toBe('synthesized_implementation_has_no_commit');
+    expect(calls.map((call) => call.templateId)).toEqual(['Implementer', 'Synthesizer']);
   });
 });

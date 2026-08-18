@@ -1,4 +1,4 @@
-import { type Node, type Viewport, useReactFlow, useStore } from '@xyflow/react';
+import { type Edge, type Node, type Viewport, useReactFlow, useStore } from '@xyflow/react';
 import { useCallback, useMemo, useRef } from 'react';
 import { Eye, EyeOff, LocateFixed, Maximize2, Minimize2 } from 'lucide-react';
 import { shallow } from 'zustand/shallow';
@@ -20,6 +20,18 @@ type MinimapNodeShape = {
     strokeWidth: number;
 };
 
+type MinimapEdgeShape = {
+    id: string;
+    sourceX: number;
+    sourceY: number;
+    targetX: number;
+    targetY: number;
+    strokeColor: string;
+    strokeWidth: number;
+    opacity: number;
+    strokeDasharray?: string;
+};
+
 type MinimapBounds = {
     x: number;
     y: number;
@@ -29,6 +41,7 @@ type MinimapBounds = {
 
 type MinimapModel = {
     shapes: MinimapNodeShape[];
+    edges: MinimapEdgeShape[];
     dividerRects: ReturnType<typeof getThreadDividerRectsFromNodes>;
     selectedCount: number;
     focusedCount: number;
@@ -36,11 +49,13 @@ type MinimapModel = {
 
 type MiniMapPanelProps = {
     graphNodes?: Node<any>[];
+    graphEdges?: Edge<any>[];
     threadRootIdByMessageId?: Map<string, string>;
 };
 
 type BuildMinimapModelOptions = {
     graphNodes?: Node<any>[];
+    graphEdges?: Edge<any>[];
     mountedNodes?: Node<any>[];
     threadRootIdByMessageId?: Map<string, string>;
 };
@@ -51,7 +66,9 @@ const MINIMAP_CONTENT_PADDING = 96;
 const MINIMAP_PAN_CLICK_DURATION = 180;
 const MINIMAP_PAN_DRAG_DURATION = 0;
 const MINIMAP_DRAG_THRESHOLD = 4;
+export const MINIMAP_EDGE_RENDER_LIMIT = 1500;
 const minimapLayerClass = "z-[30]";
+const MINIMAP_STRUCTURAL_EDGE_TYPES = new Set(['conversation', 'context-break', 'git-parent', 'base-used']);
 const MINIMAP_POSITIONS: Array<{ value: MinimapPosition; label: string; className: string }> = [
     { value: 'top-left', label: 'Top left', className: 'left-0 top-0' },
     { value: 'top-right', label: 'Top right', className: 'right-0 top-0' },
@@ -162,8 +179,117 @@ const toMinimapNodeShape = (node: Node<any>, absolutePosition: { x: number; y: n
     };
 };
 
+const getEdgeRelationship = (edge: Edge<any>): string | null => {
+    const data = edge.data as any;
+    const relationship = data?.relationship;
+    return typeof relationship === 'string' ? relationship : null;
+};
+
+const getEdgeLegendType = (edge: Edge<any>): string | null => {
+    const edgeLegendType = (edge.data as any)?.edgeLegendType;
+    return typeof edgeLegendType === 'string' ? edgeLegendType : null;
+};
+
+const shouldRenderEdgeInMinimap = (edge: Edge<any>): boolean => {
+    if (edge.hidden || edge.type === 'summaryEdge') return false;
+    const relationship = getEdgeRelationship(edge);
+    const edgeLegendType = getEdgeLegendType(edge);
+    return Boolean(
+        (relationship && MINIMAP_STRUCTURAL_EDGE_TYPES.has(relationship)) ||
+        (edgeLegendType && MINIMAP_STRUCTURAL_EDGE_TYPES.has(edgeLegendType))
+    );
+};
+
+const isPriorityMinimapEdge = (edge: Edge<any>): boolean => {
+    const data = edge.data as any;
+    return edge.animated === true || data?.isOnContextPath === true;
+};
+
+const getMinimapEdgeStyle = (edge: Edge<any>) => {
+    const relationship = getEdgeRelationship(edge);
+    const edgeLegendType = getEdgeLegendType(edge);
+    const isPriority = isPriorityMinimapEdge(edge);
+    const isContextBreak = edgeLegendType === 'context-break';
+
+    if (isPriority) {
+        return {
+            strokeColor: '#4f46e5',
+            strokeWidth: 1.35,
+            opacity: 0.72,
+            strokeDasharray: undefined,
+        };
+    }
+
+    if (relationship === 'git-parent') {
+        return {
+            strokeColor: '#059669',
+            strokeWidth: 1.05,
+            opacity: 0.38,
+            strokeDasharray: undefined,
+        };
+    }
+
+    if (relationship === 'base-used') {
+        return {
+            strokeColor: '#d97706',
+            strokeWidth: 1,
+            opacity: 0.34,
+            strokeDasharray: '3 3',
+        };
+    }
+
+    return {
+        strokeColor: '#64748b',
+        strokeWidth: 0.85,
+        opacity: isContextBreak ? 0.28 : 0.32,
+        strokeDasharray: isContextBreak ? '3 3' : undefined,
+    };
+};
+
+const toMinimapEdgeShape = (edge: Edge<any>, shapeById: Map<string, MinimapNodeShape>): MinimapEdgeShape | null => {
+    if (!shouldRenderEdgeInMinimap(edge)) return null;
+    const source = shapeById.get(edge.source);
+    const target = shapeById.get(edge.target);
+    if (!source || !target) return null;
+
+    return {
+        id: edge.id,
+        sourceX: source.x + source.width / 2,
+        sourceY: source.y + source.height / 2,
+        targetX: target.x + target.width / 2,
+        targetY: target.y + target.height / 2,
+        ...getMinimapEdgeStyle(edge),
+    };
+};
+
+const buildMinimapEdges = (graphEdges: Edge<any>[] | undefined, shapes: MinimapNodeShape[]): MinimapEdgeShape[] => {
+    if (!graphEdges?.length || shapes.length === 0) return [];
+
+    const shapeById = new Map(shapes.map((shape) => [shape.id, shape]));
+    const nextEdges: MinimapEdgeShape[] = [];
+
+    for (const edge of graphEdges) {
+        if (!isPriorityMinimapEdge(edge)) continue;
+        const shape = toMinimapEdgeShape(edge, shapeById);
+        if (!shape) continue;
+        nextEdges.push(shape);
+        if (nextEdges.length >= MINIMAP_EDGE_RENDER_LIMIT) return nextEdges;
+    }
+
+    for (const edge of graphEdges) {
+        if (isPriorityMinimapEdge(edge)) continue;
+        const shape = toMinimapEdgeShape(edge, shapeById);
+        if (!shape) continue;
+        nextEdges.push(shape);
+        if (nextEdges.length >= MINIMAP_EDGE_RENDER_LIMIT) return nextEdges;
+    }
+
+    return nextEdges;
+};
+
 export const buildMinimapModelFromGraphNodes = ({
     graphNodes,
+    graphEdges,
     mountedNodes = [],
     threadRootIdByMessageId = new Map(),
 }: BuildMinimapModelOptions): MinimapModel => {
@@ -188,6 +314,7 @@ export const buildMinimapModelFromGraphNodes = ({
 
     return {
         shapes: nextShapes,
+        edges: buildMinimapEdges(graphEdges, nextShapes),
         dividerRects: getThreadDividerRectsFromNodes(dividerNodes, threadRootIdByMessageId),
         selectedCount: nextSelectedCount,
         focusedCount: nextFocusedCount,
@@ -267,7 +394,7 @@ const mapFromMinimap = (
     y: viewBox.y + (y / minimapHeight) * viewBox.height,
 });
 
-export function MiniMapPanel({ graphNodes, threadRootIdByMessageId = new Map() }: MiniMapPanelProps) {
+export function MiniMapPanel({ graphNodes, graphEdges, threadRootIdByMessageId = new Map() }: MiniMapPanelProps) {
     const { isVisible, isExpanded, position, setExpanded, setPosition, setVisible } = useMinimapStore();
     const pointerStateRef = useRef<{ pointerId: number; x: number; y: number; dragged: boolean } | null>(null);
     const { setCenter, getZoom } = useReactFlow();
@@ -302,13 +429,14 @@ export function MiniMapPanel({ graphNodes, threadRootIdByMessageId = new Map() }
         return nextNodes;
     }, [nodeLookup, nodes]);
 
-    const { shapes, dividerRects, selectedCount, focusedCount } = useMemo(() => (
+    const { shapes, edges, dividerRects, selectedCount, focusedCount } = useMemo(() => (
         buildMinimapModelFromGraphNodes({
             graphNodes,
+            graphEdges,
             mountedNodes,
             threadRootIdByMessageId,
         })
-    ), [graphNodes, mountedNodes, threadRootIdByMessageId]);
+    ), [graphEdges, graphNodes, mountedNodes, threadRootIdByMessageId]);
     const graphNodeBounds = useMemo(() => buildGraphNodeBounds(graphNodes ?? mountedNodes), [graphNodes, mountedNodes]);
 
     const zoomLabel = `${Math.round((viewport.zoom || 1) * 100)}%`;
@@ -585,6 +713,25 @@ export function MiniMapPanel({ graphNodes, threadRootIdByMessageId = new Map() }
                                 strokeWidth={0.75}
                                 rx={7}
                                 ry={7}
+                                pointerEvents="none"
+                            />
+                        );
+                    })}
+                    {edges.map((edge) => {
+                        const source = mapToMinimap(edge.sourceX, edge.sourceY, viewBox, minimapSize.width, minimapSize.height);
+                        const target = mapToMinimap(edge.targetX, edge.targetY, viewBox, minimapSize.width, minimapSize.height);
+                        return (
+                            <line
+                                key={edge.id}
+                                x1={source.x}
+                                y1={source.y}
+                                x2={target.x}
+                                y2={target.y}
+                                stroke={edge.strokeColor}
+                                strokeWidth={edge.strokeWidth}
+                                strokeDasharray={edge.strokeDasharray}
+                                opacity={edge.opacity}
+                                strokeLinecap="round"
                                 pointerEvents="none"
                             />
                         );

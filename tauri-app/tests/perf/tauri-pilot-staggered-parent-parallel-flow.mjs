@@ -2,6 +2,10 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, openSync, readFileSync, readSync, closeSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CHAT_HOT_PATH_HELPERS_SOURCE } from './tauri-pilot-chat-hot-path-lib.mjs';
+import {
+  assertSingleDevAgentreeRuntime,
+  assertVisibleFocusedWebviewSource,
+} from './tauri-pilot-desktop-preflight-lib.mjs';
 
 const OUT_DIR = process.env.AGENTREE_TAURI_PILOT_OUT_DIR ?? 'runtime-logs/tauri-pilot-diagnostics';
 const FRONTEND_LOG_PATH = process.env.AGENTREE_TAURI_PILOT_FRONTEND_LOG ?? 'runtime-logs/frontend.log';
@@ -10,11 +14,13 @@ const TEST_AGENT_MODEL = process.env.AGENTREE_TAURI_PILOT_AGENT_MODEL ?? 'gpt-5.
 const RUN_TIMEOUT_MS = Number(process.env.AGENTREE_TAURI_PILOT_RUN_TIMEOUT_MS ?? 360000);
 const NO_PROGRESS_TIMEOUT_MS = Number(process.env.AGENTREE_TAURI_PILOT_NO_PROGRESS_TIMEOUT_MS ?? 120000);
 const SEND_SPACING_MS = Number(process.env.AGENTREE_TAURI_PILOT_SEND_SPACING_MS ?? 2500);
+const COMPOSER_SURFACE = process.env.AGENTREE_TAURI_PILOT_COMPOSER_SURFACE ?? 'graph-dock';
 const DISABLE_GRAPH_INTERACTIONS = process.env.AGENTREE_TAURI_PILOT_DISABLE_GRAPH_INTERACTIONS === 'true';
 const DISABLE_GRAPH_CLICKS = process.env.AGENTREE_TAURI_PILOT_DISABLE_GRAPH_CLICKS === 'true';
 const GRAPH_INTERACTIONS_DURING_LAUNCH = process.env.AGENTREE_TAURI_PILOT_GRAPH_INTERACTIONS_DURING_LAUNCH !== 'false';
 const DISABLE_PERF_CAPTURE = process.env.AGENTREE_TAURI_PILOT_DISABLE_PERF_CAPTURE === 'true';
 const SKIP_CONVERGENCE_COLLECTION = process.env.AGENTREE_TAURI_PILOT_SKIP_CONVERGENCE_COLLECTION === 'true';
+const ALLOW_VISIBLE_UNFOCUSED_WEBVIEW = process.env.AGENTREE_TAURI_PILOT_ALLOW_VISIBLE_UNFOCUSED_WEBVIEW === 'true';
 const PROMPTS = (process.env.AGENTREE_TAURI_PILOT_PROMPTS
   ? JSON.parse(process.env.AGENTREE_TAURI_PILOT_PROMPTS)
   : [
@@ -67,16 +73,20 @@ const install = async () => pilotEval(`
   const prompts = ${JSON.stringify(PROMPTS)};
   const testAgentModel = ${JSON.stringify(TEST_AGENT_MODEL)};
   const sendSpacingMs = ${JSON.stringify(SEND_SPACING_MS)};
+  const composerSurface = ${JSON.stringify(COMPOSER_SURFACE)};
   const runTimeoutMs = ${JSON.stringify(RUN_TIMEOUT_MS)};
   const disableGraphInteractions = ${JSON.stringify(DISABLE_GRAPH_INTERACTIONS)};
   const disableGraphClicks = ${JSON.stringify(DISABLE_GRAPH_CLICKS)};
   const graphInteractionsDuringLaunch = ${JSON.stringify(GRAPH_INTERACTIONS_DURING_LAUNCH)};
   const disablePerfCapture = ${JSON.stringify(DISABLE_PERF_CAPTURE)};
+  globalThis.__AGENTREE_TAURI_PILOT_ALLOW_VISIBLE_UNFOCUSED_WEBVIEW = ${JSON.stringify(ALLOW_VISIBLE_UNFOCUSED_WEBVIEW)};
+  ${assertVisibleFocusedWebviewSource};
 
   const probe = {
     label,
     testAgentModel,
     prompts,
+      composerSurface,
       disableGraphInteractions,
       graphInteractionsDuringLaunch,
       disablePerfCapture,
@@ -127,9 +137,56 @@ const install = async () => pilotEval(`
     }
   };
   const chatHotPath = window.__AGENTREE_TAURI_PILOT_CHAT_HOT_PATH__;
-  const findComposer = () => chatHotPath.findComposer();
-  const statusButton = () => chatHotPath.findSendButton({ includeCancel: true });
-  const sendButton = () => chatHotPath.findSendButton();
+  const findGraphDockRoot = () => document.querySelector('[data-testid="graph-dock-composer"]');
+  const findGraphDockComposer = () => (
+    findGraphDockRoot()?.querySelector('textarea[aria-label="Graph composer prompt"]') ||
+    findGraphDockRoot()?.querySelector('[data-testid="chat-composer-textarea"]') ||
+    null
+  );
+  const findGraphDockSendButton = () => findGraphDockRoot()?.querySelector('[data-testid="graph-dock-send-button"]') || null;
+  const findComposer = () => composerSurface === 'graph-dock' ? findGraphDockComposer() : chatHotPath.findComposer();
+  const statusButton = () => composerSurface === 'graph-dock' ? findGraphDockSendButton() : chatHotPath.findSendButton({ includeCancel: true });
+  const sendButton = () => composerSurface === 'graph-dock' ? findGraphDockSendButton() : chatHotPath.findSendButton();
+  const isChatPanelHidden = () => Boolean([...document.querySelectorAll('button')]
+    .find((button) => (button.getAttribute('aria-label') || button.getAttribute('title') || '') === 'Restore chat panel'));
+  const hideChatPanel = async (label) => {
+    const hideButton = [...document.querySelectorAll('button')]
+      .find((button) => (button.getAttribute('aria-label') || button.getAttribute('title') || '') === 'Hide chat panel');
+    if (!hideButton) {
+      logAction('chat-panel-hidden-check', { actionLabel: label, hidden: isChatPanelHidden() });
+      return isChatPanelHidden();
+    }
+    hideButton.click();
+    await sleep(250);
+    const hidden = isChatPanelHidden();
+    logAction('chat-panel-hidden', { actionLabel: label, hidden });
+    return hidden;
+  };
+  const ensureGraphDockComposerReady = async ({ waitMs = 5000 } = {}) => {
+    await hideChatPanel('composer-ready');
+    const startedAt = performance.now();
+    while (performance.now() - startedAt < waitMs) {
+      const expandButton = document.querySelector('[data-testid="graph-composer-dock-pill"]') ||
+        [...document.querySelectorAll('button')]
+          .find((button) => (button.getAttribute('aria-label') || button.getAttribute('title') || '') === 'Expand graph composer');
+      if (expandButton) {
+        expandButton.click();
+        await sleep(120);
+      }
+      const composer = findGraphDockComposer();
+      const button = findGraphDockSendButton();
+      if (composer && composer.disabled === false && button) {
+        return { composer, sendButton: button };
+      }
+      await sleep(100);
+    }
+    throw new Error('graph dock composer controls not ready');
+  };
+  const ensureComposerSurfaceReady = async (options = {}) => (
+    composerSurface === 'graph-dock'
+      ? ensureGraphDockComposerReady(options)
+      : chatHotPath.ensureChatHotPathReady(options)
+  );
   const installHarnessStyle = () => {
     const existing = document.getElementById('agentree-parallel-agent-flow-style');
     existing?.remove?.();
@@ -185,6 +242,8 @@ const install = async () => pilotEval(`
       hoverCardCount: hoverCardCount(),
       focus: focusState(),
       selectedNodeIds: [...document.querySelectorAll('.react-flow__node.selected')].map((node) => node.getAttribute('data-id')).filter(Boolean),
+      composerSurface,
+      chatPanelHidden: isChatPanelHidden(),
       chatTextContentLength: chatViewport?.textContent?.length ?? null,
     };
     probe.samples.push(item);
@@ -328,7 +387,10 @@ const install = async () => pilotEval(`
         return { element, id, rect, text };
       })
       .filter((entry) => entry.id && entry.rect.width > 20 && entry.rect.height > 20 && entry.rect.right > 0 && entry.rect.bottom > 0 && entry.rect.left < window.innerWidth && entry.rect.top < window.innerHeight)
-      .filter((entry) => !/\\b(pending|creating|initializing|running|streaming)\\b/i.test(entry.text))
+      .filter((entry) => {
+        const status = String(runStatusStore?.getState?.().byNodeId?.[entry.id]?.status || '').toLowerCase();
+        return !['pending', 'creating', 'initializing', 'running', 'streaming'].includes(status);
+      })
       .sort((left, right) => {
         const roleScore = (entry) => entry.element.classList.contains('react-flow__node-assistant_message') ? 0 : 1;
         return roleScore(left) - roleScore(right) || right.rect.top - left.rect.top;
@@ -387,6 +449,16 @@ const install = async () => pilotEval(`
         return Number.isFinite(eventAt) && eventAt >= sentAt - 100;
       }) || null;
   };
+  const latestFlowAssistantCreatedEvent = (flowId) => perfEvents()
+    .filter((event) => event?.name === 'send-flow.optimistic.assistant-created')
+    .slice()
+    .reverse()
+    .find((event) => event?.details?.flowId === flowId) || null;
+  const latestFlowUserCreatedEvent = (flowId) => perfEvents()
+    .filter((event) => event?.name === 'send-flow.optimistic.user-created')
+    .slice()
+    .reverse()
+    .find((event) => event?.details?.flowId === flowId) || null;
   const flowTerminalEvent = (flowId) => perfEvents()
     .filter((event) => ['send-flow.lifecycle.completed', 'send-flow.lifecycle.failed', 'send-flow.lifecycle.cancelled'].includes(event?.name))
     .slice()
@@ -443,7 +515,7 @@ const install = async () => pilotEval(`
     }
   };
   const setPromptAndSend = async (prompt, index) => {
-    await chatHotPath.ensureChatHotPathReady({ waitMs: 5000, requireSendButton: false });
+    await ensureComposerSurfaceReady({ waitMs: 5000, requireSendButton: false });
     const textarea = findComposer();
     if (!textarea) throw new Error('composer textarea missing');
     const before = sample('before-send-' + index);
@@ -490,16 +562,28 @@ const install = async () => pilotEval(`
     if (!button) throw new Error('send button missing after prompt for run ' + index);
     button.click();
     const send = { index, at: new Date().toISOString(), elapsedMs: nowElapsed(), promptLength: prompt.length, blocked: false };
-    for (let attempt = 0; attempt < 12; attempt += 1) {
+    for (let attempt = 0; attempt < 60; attempt += 1) {
       const startedEvent = latestFlowStartedAfter(send.at);
       const flowId = startedEvent?.details?.flowId;
       if (flowId) {
         send.flowId = flowId;
-        send.optimisticAssistantMessageId = startedEvent?.details?.optimisticAssistantMessageId ?? null;
-        send.optimisticUserMessageId = startedEvent?.details?.optimisticUserMessageId ?? null;
+        const assistantCreated = latestFlowAssistantCreatedEvent(flowId);
+        const userCreated = latestFlowUserCreatedEvent(flowId);
+        send.optimisticAssistantMessageId = startedEvent?.details?.optimisticAssistantMessageId ?? assistantCreated?.details?.messageId ?? null;
+        send.optimisticUserMessageId = startedEvent?.details?.optimisticUserMessageId ?? userCreated?.details?.messageId ?? null;
         break;
       }
       await sleep(50);
+    }
+    if (send.flowId && (!send.optimisticAssistantMessageId || !send.optimisticUserMessageId)) {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const assistantCreated = latestFlowAssistantCreatedEvent(send.flowId);
+        const userCreated = latestFlowUserCreatedEvent(send.flowId);
+        send.optimisticAssistantMessageId = send.optimisticAssistantMessageId ?? assistantCreated?.details?.messageId ?? null;
+        send.optimisticUserMessageId = send.optimisticUserMessageId ?? userCreated?.details?.messageId ?? null;
+        if (send.optimisticAssistantMessageId && send.optimisticUserMessageId) break;
+        await sleep(50);
+      }
     }
     probe.sends.push(send);
     logAction('send-clicked', send);
@@ -515,18 +599,63 @@ const install = async () => pilotEval(`
     }
     const before = graphCounts();
     const rect = root.getBoundingClientRect();
-    const x = rect.left + Math.max(80, rect.width * 0.45);
-    const y = rect.top + Math.max(80, rect.height * 0.45);
-    pane.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 11, pointerType: 'mouse', button: 0, buttons: 1, clientX: x, clientY: y }));
-    for (let i = 1; i <= 8; i += 1) {
-      pane.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 11, pointerType: 'mouse', button: 0, buttons: 1, clientX: x + i * 16, clientY: y + i * 7 }));
-      await sleep(25);
+    const baseX = rect.left + Math.max(80, rect.width * 0.25);
+    const baseY = rect.top + Math.max(80, rect.height * 0.75);
+    const flip = /(?:2|4|6|8|10)$/.test(String(label)) ? -1 : 1;
+    const dragSegments = [
+      { name: 'small-forward', dx: 36 * flip, dy: 18, steps: 4, delayMs: 18 },
+      { name: 'large-sweep', dx: 220 * flip, dy: 132, steps: 12, delayMs: 18 },
+      { name: 'small-correct', dx: -64 * flip, dy: -42, steps: 5, delayMs: 18 },
+    ];
+    const segmentResults = [];
+    for (let segmentIndex = 0; segmentIndex < dragSegments.length; segmentIndex += 1) {
+      const segment = dragSegments[segmentIndex];
+      const pointerId = 110 + segmentIndex;
+      const startX = baseX + segmentIndex * 18;
+      const startY = baseY + segmentIndex * 14;
+      const dispatchDragEvent = (target, event) => target?.dispatchEvent?.(event);
+      const mouseEvent = (type, x, y, buttons) => new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        buttons,
+        clientX: x,
+        clientY: y,
+        view: window,
+      });
+      const pointerEvent = (type, x, y, buttons) => new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId,
+        pointerType: 'mouse',
+        isPrimary: true,
+        button: 0,
+        buttons,
+        clientX: x,
+        clientY: y,
+      });
+      pane.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId, pointerType: 'mouse', button: 0, buttons: 1, clientX: startX, clientY: startY }));
+      pane.dispatchEvent(mouseEvent('mousedown', startX, startY, 1));
+      for (let i = 1; i <= segment.steps; i += 1) {
+        const nextX = startX + (segment.dx * i) / segment.steps;
+        const nextY = startY + (segment.dy * i) / segment.steps;
+        for (const target of [document, window]) {
+          dispatchDragEvent(target, pointerEvent('pointermove', nextX, nextY, 1));
+          dispatchDragEvent(target, mouseEvent('mousemove', nextX, nextY, 1));
+        }
+        await sleep(segment.delayMs);
+      }
+      for (const target of [document, window]) {
+        dispatchDragEvent(target, pointerEvent('pointerup', startX + segment.dx, startY + segment.dy, 0));
+        dispatchDragEvent(target, mouseEvent('mouseup', startX + segment.dx, startY + segment.dy, 0));
+      }
+      await sleep(70);
+      segmentResults.push({ name: segment.name, dx: segment.dx, dy: segment.dy, transform: graphCounts().transform });
     }
-    pane.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 11, pointerType: 'mouse', button: 0, buttons: 0, clientX: x + 128, clientY: y + 56 }));
-    root.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: 80, deltaY: 70, clientX: x, clientY: y }));
+    root.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: 80 * flip, deltaY: 70, clientX: baseX, clientY: baseY }));
     await sleep(250);
     const after = graphCounts();
-    logAction('pan', { actionLabel: label, before, after });
+    logAction('pan', { actionLabel: label, before, after, dragSegments: segmentResults });
     sample('after-pan-' + label);
     return true;
   };
@@ -537,8 +666,10 @@ const install = async () => pilotEval(`
   const isVisiblyActiveRunElement = (element) => {
     const target = element instanceof Element ? element : null;
     if (!target) return false;
-    const text = (target.textContent || '').trim().toLowerCase();
-    return /\\b(pending|creating|initializing|running|streaming)\\b/.test(text);
+    const node = target.closest?.('.react-flow__node') ?? target;
+    const id = node.getAttribute?.('data-id');
+    const status = id ? String(runStatusStore?.getState?.().byNodeId?.[id]?.status || '').toLowerCase() : '';
+    return ['pending', 'creating', 'initializing', 'running', 'streaming'].includes(status);
   };
   const cssEscape = (value) => {
     if (window.CSS?.escape) return window.CSS.escape(value);
@@ -716,7 +847,15 @@ const install = async () => pilotEval(`
     return chosen;
   };
   const clickVisibleNode = async (label, avoidIds = [], options = {}) => {
-    const chosen = await pickSemanticClickableNode(label, avoidIds, options);
+    let chosen = await pickSemanticClickableNode(label, avoidIds, options);
+    if (!chosen?.element && options.completedAssistantOnly && options.allowAnyVisibleFallback) {
+      logAction('click-node-fallback-any-visible', { actionLabel: label, avoidIds });
+      chosen = await pickSemanticClickableNode(label + '-any-visible', avoidIds, {
+        ...options,
+        completedAssistantOnly: false,
+        allowAnyVisibleFallback: false,
+      });
+    }
     if (!chosen?.element) {
       logAction('click-node-missing', { actionLabel: label, avoidIds });
       sample('after-click-missing-' + label);
@@ -811,6 +950,7 @@ const install = async () => pilotEval(`
       clickedId = await clickVisibleNode(label, clickAvoidIds, {
         avoidActiveRuns: true,
         completedAssistantOnly: Boolean(options.completedAssistantOnly),
+        allowAnyVisibleFallback: Boolean(options.allowAnyVisibleFallback),
       });
       if (clickedId) clickedIds.push(clickedId);
     }
@@ -973,6 +1113,7 @@ const install = async () => pilotEval(`
       sample('installed');
       await ensureStores();
       sample('stores-ready');
+      await hideChatPanel('initial');
       await clearSelectionState('initial');
       await clearStaleCancelState('initial');
       let parentForNextSend = await ensureLatestRunnableFocus('initial');
@@ -1030,7 +1171,10 @@ const install = async () => pilotEval(`
         await sleep(4500);
       } else {
         for (let i = 0; i < 5; i += 1) {
-          await interactWithGraphDuringRun('active-observation-' + (i + 1), clickedIds, { completedAssistantOnly: true });
+          await interactWithGraphDuringRun('active-observation-' + (i + 1), clickedIds, {
+            completedAssistantOnly: true,
+            allowAnyVisibleFallback: true,
+          });
           await sleep(900);
         }
       }
@@ -1065,7 +1209,7 @@ const install = async () => pilotEval(`
   window.__PARALLEL_AGENT_FLOW__ = probe;
   window.__PARALLEL_AGENT_FLOW_SUMMARY__ = summarizeProbe;
   window.setTimeout(run, 250);
-  return { label, url: location.href, promptCount: prompts.length, testAgentModel, sendSpacingMs, disableGraphInteractions, graphInteractionsDuringLaunch, disablePerfCapture };
+  return { label, url: location.href, promptCount: prompts.length, testAgentModel, sendSpacingMs, composerSurface, disableGraphInteractions, graphInteractionsDuringLaunch, disablePerfCapture, allowVisibleUnfocusedWebview: ${JSON.stringify(ALLOW_VISIBLE_UNFOCUSED_WEBVIEW)} };
 })()
 `);
 
@@ -1447,6 +1591,7 @@ const main = async () => {
     errors: [],
   };
   try {
+    assertSingleDevAgentreeRuntime();
     report.install = (await install()).value;
     report.wait = await waitDoneFromPilot();
   } catch (error) {
@@ -1487,7 +1632,12 @@ const main = async () => {
     validationErrors.push('no successful graph node focus click was observed while agents were running');
   }
   const launchParentSelections = (summary?.actions ?? []).filter((action) => action.type === 'next-parent-selected-from-click');
-  if (!DISABLE_GRAPH_INTERACTIONS && !DISABLE_GRAPH_CLICKS && launchParentSelections.length < Math.max(0, PROMPTS.length - 1)) {
+  if (
+    !DISABLE_GRAPH_INTERACTIONS &&
+    !DISABLE_GRAPH_CLICKS &&
+    GRAPH_INTERACTIONS_DURING_LAUNCH &&
+    launchParentSelections.length < Math.max(0, PROMPTS.length - 1)
+  ) {
     validationErrors.push(`only ${launchParentSelections.length}/${Math.max(0, PROMPTS.length - 1)} subsequent parent selection(s) came from completed assistant node clicks`);
   }
   const clickedParentIds = launchParentSelections

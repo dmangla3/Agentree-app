@@ -19,6 +19,7 @@ import { resolveNodeState } from '../../../lib/runStateResolver';
 import { agentRunManager } from '../../../agent-runs/agentRunManager';
 import { recordAssistantTextVisible } from '../../../perf/agentRunVisibilityPerf';
 import { getAssistantIdentityLabel } from '../../../lib/assistantIdentity';
+import { getNodeFailureReason, isNodeFailureStatus } from '../../../lib/nodeFailureReason';
 
 const AgentChip = ({
   agentId,
@@ -445,6 +446,9 @@ export const ChatAssistantCard = memo(({
   const usage = executionData?.usage ?? null;
   const providerErrorCode = executionData?.meta?.provider_error_code ?? null;
   const providerErrorMessage = executionData?.meta?.provider_error_message ?? null;
+  const failureReason = isNodeFailureStatus(displayStatus)
+    ? getNodeFailureReason(executionData, providerErrorMessage)
+    : null;
   const promptTokens = message?.promptTokens ?? usage?.input_tokens ?? usage?.prompt_tokens ?? null;
   const completionTokens = message?.completionTokens ?? usage?.output_tokens ?? usage?.completion_tokens ?? null;
   const cachedInputTokens = typeof usage?.cached_input_tokens === 'number' ? usage.cached_input_tokens : null;
@@ -667,6 +671,18 @@ export const ChatAssistantCard = memo(({
             <div className="font-medium">Codex usage limit reached</div>
             <div className="mt-0.5 text-amber-900/90">
               {providerErrorMessage || 'Codex cannot start another run until the account limit resets.'}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {failureReason && (
+        <div className="relative z-10 mb-4 flex min-w-0 max-w-full items-start gap-2 rounded-md border border-red-200/75 bg-red-50/80 px-3 py-2 text-sm text-red-950 dark:border-red-900/75 dark:bg-red-950/25 dark:text-red-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
+          <div className="min-w-0">
+            <div className="font-medium">Failure reason</div>
+            <div className="mt-0.5 break-words text-red-900/90 dark:text-red-100/85">
+              {failureReason}
             </div>
           </div>
         </div>

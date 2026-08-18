@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
+import readline from 'node:readline';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 const FINAL_RESULT_SCHEMA = {
@@ -368,6 +369,81 @@ function emitToolStarted(block, seenToolUseIds) {
   });
 }
 
+function sdkUserMessage(content, priority = 'now') {
+  return {
+    type: 'user',
+    parent_tool_use_id: null,
+    isSynthetic: false,
+    priority,
+    timestamp: new Date().toISOString(),
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text: content }],
+    },
+  };
+}
+
+function createMessageQueue() {
+  const messages = [];
+  const waiters = [];
+  let closed = false;
+  return {
+    push(message) {
+      if (closed) return;
+      const waiter = waiters.shift();
+      if (waiter) {
+        waiter({ value: message, done: false });
+      } else {
+        messages.push(message);
+      }
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      while (waiters.length > 0) {
+        const waiter = waiters.shift();
+        waiter({ value: undefined, done: true });
+      }
+    },
+    [Symbol.asyncIterator]() {
+      return {
+        next() {
+          if (messages.length > 0) {
+            return Promise.resolve({ value: messages.shift(), done: false });
+          }
+          if (closed) {
+            return Promise.resolve({ value: undefined, done: true });
+          }
+          return new Promise((resolve) => waiters.push(resolve));
+        },
+      };
+    },
+  };
+}
+
+function createControlReader(onControl) {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    crlfDelay: Infinity,
+    terminal: false,
+  });
+  rl.on('line', (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      const control = JSON.parse(trimmed);
+      onControl(control);
+    } catch (error) {
+      emit({
+        type: 'provider_steer_failed',
+        error: `Invalid control message: ${error.message}`,
+        timestamp: nowMs(),
+      });
+    }
+  });
+  return rl;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const prompt = args.prompt ?? '';
@@ -552,8 +628,32 @@ async function main() {
     },
   };
 
+  const inputQueue = createMessageQueue();
+  inputQueue.push(sdkUserMessage(prompt));
+  const controlReader = createControlReader((control) => {
+    if (control.type !== 'steer' && control.control_type !== 'steer') return;
+    const content = typeof control.content === 'string' ? control.content.trim() : '';
+    if (!content) {
+      emit({
+        type: 'provider_steer_failed',
+        idempotency_key: control.idempotency_key ?? null,
+        error: 'Steering message cannot be empty.',
+        timestamp: nowMs(),
+      });
+      return;
+    }
+    inputQueue.push(sdkUserMessage(content, 'now'));
+    emit({
+      type: 'provider_steer_ack',
+      idempotency_key: control.idempotency_key ?? null,
+      provider_thread_id: activeSessionId,
+      provider_turn_id: lastAssistantUuid,
+      timestamp: nowMs(),
+    });
+  });
+
   try {
-    const stream = query({ prompt, options });
+    const stream = query({ prompt: inputQueue, options });
     for await (const message of stream) {
       rawMessageTypes.add(message.type);
       if (message.session_id && message.session_id !== activeSessionId) {
@@ -793,6 +893,9 @@ async function main() {
       timestamp: nowMs(),
     });
     return 1;
+  } finally {
+    inputQueue.close();
+    controlReader.close();
   }
 }
 

@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query';
 import {
+  isGraphInteractionGateIdle,
   scheduleLocalCommitGraphRefreshWhenGraphIdle,
   scheduleMessagesRefreshWhenGraphIdle,
 } from '../lib/graphInteractionGate';
@@ -16,6 +17,7 @@ type PendingWorkspaceRefresh = {
   reasons: Set<string>;
   includeCommitGraph: boolean;
   catchUpHotDeltas: boolean;
+  createdAt: number;
   timer: ReturnType<typeof setTimeout>;
 };
 
@@ -34,6 +36,8 @@ export type AgentWorkspaceRefreshOptions = {
 };
 
 const COMMIT_GRAPH_REFETCH_RECHECK_MS = 900;
+const WORKSPACE_REFRESH_BUSY_RECHECK_MS = 250;
+const WORKSPACE_REFRESH_BUSY_MAX_WAIT_MS = 3_000;
 const pendingByWorkspace = new Map<string, PendingWorkspaceRefresh>();
 const pendingCommitGraphRefetchByWorkspace = new Map<string, PendingCommitGraphRefetch>();
 
@@ -92,9 +96,40 @@ const scheduleCommitGraphRefetch = (
   });
 };
 
-const flushWorkspaceRefresh = (workspaceId: string) => {
+const flushWorkspaceRefresh = (
+  workspaceId: string,
+  options: { force?: boolean } = {},
+) => {
   const pending = pendingByWorkspace.get(workspaceId);
   if (!pending) return;
+
+  const pendingAgeMs = Date.now() - pending.createdAt;
+  const activeRunCount = useRunStatusStore.getState().getRunningCount(workspaceId);
+  const waitForActiveRun = activeRunCount > 0 || useWorkspaceStore.getState().activeSendFlowFocus?.workspaceId === workspaceId;
+  const waitForGraphIdle = !isGraphInteractionGateIdle();
+  if (
+    !options.force &&
+    (waitForActiveRun || waitForGraphIdle) &&
+    pendingAgeMs < WORKSPACE_REFRESH_BUSY_MAX_WAIT_MS
+  ) {
+    const reason = Array.from(pending.reasons).join('+') || 'agent-run';
+    recordPerfEvent('query.agent-workspace-refresh.wait-responsive-idle', {
+      workspaceId,
+      reason,
+      includeCommitGraph: pending.includeCommitGraph,
+      catchUpHotDeltas: pending.catchUpHotDeltas,
+      pendingAgeMs,
+      activeRunCount,
+      waitForActiveRun,
+      waitForGraphIdle,
+    }, { source: 'agentRunWorkspaceRefresh' });
+    pending.timer = setTimeout(
+      () => flushWorkspaceRefresh(workspaceId),
+      WORKSPACE_REFRESH_BUSY_RECHECK_MS,
+    );
+    return;
+  }
+
   pendingByWorkspace.delete(workspaceId);
 
   const reason = Array.from(pending.reasons).join('+') || 'agent-run';
@@ -177,6 +212,7 @@ export const requestAgentWorkspaceRefresh = (
     reasons: new Set([options.reason]),
     includeCommitGraph: Boolean(options.includeCommitGraph),
     catchUpHotDeltas: Boolean(options.catchUpHotDeltas),
+    createdAt: Date.now(),
     timer: setTimeout(() => flushWorkspaceRefresh(workspaceId), debounceMs),
   };
   pendingByWorkspace.set(workspaceId, pending);
@@ -186,7 +222,7 @@ export const flushAgentWorkspaceRefreshesForTest = () => {
   for (const workspaceId of Array.from(pendingByWorkspace.keys())) {
     const pending = pendingByWorkspace.get(workspaceId);
     if (pending) clearTimeout(pending.timer);
-    flushWorkspaceRefresh(workspaceId);
+    flushWorkspaceRefresh(workspaceId, { force: true });
   }
   for (const workspaceId of Array.from(pendingCommitGraphRefetchByWorkspace.keys())) {
     const pending = pendingCommitGraphRefetchByWorkspace.get(workspaceId);

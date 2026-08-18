@@ -1,7 +1,11 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CHAT_HOT_PATH_HELPERS_SOURCE } from './tauri-pilot-chat-hot-path-lib.mjs';
+import {
+  assertSingleDevAgentreeRuntime,
+  assertVisibleFocusedWebviewSource,
+} from './tauri-pilot-desktop-preflight-lib.mjs';
 
 const OUT_DIR = process.env.AGENTREE_TAURI_PILOT_OUT_DIR ?? 'runtime-logs/tauri-pilot-diagnostics';
 const LABEL = process.env.AGENTREE_TAURI_PILOT_LABEL ?? `tauri-pilot-graph-interaction-${Date.now()}`;
@@ -9,6 +13,7 @@ const TEST_AGENT_MODEL = process.env.AGENTREE_TAURI_PILOT_AGENT_MODEL ?? 'gpt-5.
 const RUN_TIMEOUT_MS = Number(process.env.AGENTREE_TAURI_PILOT_RUN_TIMEOUT_MS ?? 240000);
 const FOCUS_ONLY_CLICKS = Number(process.env.AGENTREE_TAURI_PILOT_FOCUS_ONLY_CLICKS ?? 0);
 const MIN_GRAPH_NODES = Number(process.env.AGENTREE_TAURI_PILOT_MIN_GRAPH_NODES ?? 0);
+const ALLOW_VISIBLE_UNFOCUSED_WEBVIEW = process.env.AGENTREE_TAURI_PILOT_ALLOW_VISIBLE_UNFOCUSED_WEBVIEW === 'true';
 const PROMPTS = (process.env.AGENTREE_TAURI_PILOT_PROMPTS
   ? JSON.parse(process.env.AGENTREE_TAURI_PILOT_PROMPTS)
   : [
@@ -19,34 +24,7 @@ const PROMPTS = (process.env.AGENTREE_TAURI_PILOT_PROMPTS
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const desktopPreflight = () => {
-  const raw = execFileSync('ps', ['-axo', 'pid=,command='], {
-    encoding: 'utf8',
-  }).trim();
-  const processes = raw
-    ? raw
-        .split('\n')
-        .map((line) => {
-          const match = line.match(/^\s*(\d+)\s+(.*)$/);
-          return match ? { pid: match[1], command: match[2] } : null;
-        })
-        .filter(Boolean)
-        .filter((process) => (
-          process.command.includes('target/debug/agentree') ||
-          process.command.includes('/Applications/agentree.app/Contents/MacOS/agentree')
-        ))
-    : [];
-  const devProcesses = processes.filter((process) => process.command.includes('target/debug/agentree'));
-  const packagedProcesses = processes.filter((process) => process.command.includes('/Applications/agentree.app/Contents/MacOS/agentree'));
-
-  if (packagedProcesses.length > 0) {
-    throw new Error(`desktop preflight failed: close packaged Agentree before perf tests: ${packagedProcesses.map((process) => `${process.pid}:${process.command}`).join(' | ')}`);
-  }
-  if (devProcesses.length !== 1) {
-    throw new Error(`desktop preflight failed: expected exactly one dev Agentree process, found ${devProcesses.length}: ${processes.map((process) => `${process.pid}:${process.command}`).join(' | ')}`);
-  }
-  return { processes, devProcess: devProcesses[0] };
-};
+const desktopPreflight = () => assertSingleDevAgentreeRuntime();
 
 const pilotEval = async (script, timeoutMs = 120000) => {
   const startedAt = Date.now();
@@ -96,9 +74,8 @@ const install = async () => pilotEval(`
   const runTimeoutMs = ${JSON.stringify(RUN_TIMEOUT_MS)};
   const focusOnlyClicks = ${JSON.stringify(FOCUS_ONLY_CLICKS)};
   const minGraphNodes = ${JSON.stringify(MIN_GRAPH_NODES)};
-  if (document.visibilityState !== 'visible') {
-    throw new Error('desktop visibility preflight failed: document.visibilityState=' + document.visibilityState);
-  }
+  globalThis.__AGENTREE_TAURI_PILOT_ALLOW_VISIBLE_UNFOCUSED_WEBVIEW = ${JSON.stringify(ALLOW_VISIBLE_UNFOCUSED_WEBVIEW)};
+  ${assertVisibleFocusedWebviewSource};
   window.__AGENTREE_PERF__?.clear?.();
   window.__AGENTREE_FUNDAMENTALS__?.clear?.();
   window.__AGENTREE_PERF__?.startCapture?.(label);

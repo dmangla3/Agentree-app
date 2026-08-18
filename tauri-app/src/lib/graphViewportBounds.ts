@@ -11,6 +11,11 @@ export type GraphNodeBounds = {
   maxY: number;
 };
 
+export type FullGraphViewportBoundsModel = {
+  nodeBounds: GraphNodeBounds;
+  translateExtent: CoordinateExtent;
+};
+
 const getNodeDimension = (primary: unknown, fallback: unknown, defaultValue: number): number => {
   if (typeof primary === 'number' && Number.isFinite(primary) && primary > 0) return primary;
   if (typeof fallback === 'number' && Number.isFinite(fallback) && fallback > 0) return fallback;
@@ -62,6 +67,20 @@ export const buildGraphTranslateExtent = (nodes: Node<any>[]): CoordinateExtent 
   ];
 };
 
+export const buildFullGraphViewportBoundsModel = (nodes: Node<any>[]): FullGraphViewportBoundsModel | null => {
+  const nodeBounds = buildGraphNodeBounds(nodes);
+  if (!nodeBounds) return null;
+  const paddedBounds = padGraphNodeBounds(nodeBounds);
+
+  return {
+    nodeBounds,
+    translateExtent: [
+      [paddedBounds.minX, paddedBounds.minY],
+      [paddedBounds.maxX, paddedBounds.maxY],
+    ],
+  };
+};
+
 export const clampPointToGraphBounds = (
   point: { x: number; y: number },
   bounds: GraphNodeBounds | null,
@@ -76,12 +95,11 @@ export const clampPointToGraphBounds = (
   };
 };
 
-export const clampGraphViewportToNodeBounds = (
+export const clampGraphViewportToBounds = (
   viewport: Viewport,
-  nodes: Node<any>[],
+  bounds: GraphNodeBounds | null,
   flowSize: { width: number; height: number },
 ): Viewport => {
-  const bounds = buildGraphNodeBounds(nodes);
   const zoom = Math.max(viewport.zoom || 1, 0.0001);
   const width = flowSize.width / zoom;
   const height = flowSize.height / zoom;
@@ -98,3 +116,15 @@ export const clampGraphViewportToNodeBounds = (
     zoom: viewport.zoom,
   };
 };
+
+export const clampGraphViewportToFullGraphBoundsModel = (
+  viewport: Viewport,
+  model: FullGraphViewportBoundsModel | null,
+  flowSize: { width: number; height: number },
+): Viewport => clampGraphViewportToBounds(viewport, model?.nodeBounds ?? null, flowSize);
+
+export const clampGraphViewportToNodeBounds = (
+  viewport: Viewport,
+  nodes: Node<any>[],
+  flowSize: { width: number; height: number },
+): Viewport => clampGraphViewportToBounds(viewport, buildGraphNodeBounds(nodes), flowSize);

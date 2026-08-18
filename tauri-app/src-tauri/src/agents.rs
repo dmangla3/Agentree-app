@@ -4,9 +4,9 @@ use libc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -111,6 +111,7 @@ pub(crate) struct AgentRunState {
     last_stream_seq: Option<u64>,
     terminal_status: Option<String>,
     stop_reason: Option<String>,
+    failure_reason: Option<String>,
     provider_thread_id: Option<String>,
     provider_turn_id: Option<String>,
     final_content_override: Option<String>,
@@ -130,6 +131,7 @@ impl AgentRunState {
             last_stream_seq: None,
             terminal_status: None,
             stop_reason: None,
+            failure_reason: None,
             provider_thread_id: None,
             provider_turn_id: None,
             final_content_override: None,
@@ -142,6 +144,7 @@ impl AgentRunState {
 pub struct AgentState {
     pub children: Mutex<HashMap<u32, Child>>,
     pub sessions: Mutex<HashMap<String, u32>>,
+    pub stdins: Mutex<HashMap<String, Arc<Mutex<ChildStdin>>>>,
     pub session_tokens: Mutex<HashMap<String, String>>,
     pub run_states: Mutex<HashMap<String, Arc<Mutex<AgentRunState>>>>,
 }
@@ -822,6 +825,12 @@ fn normalize_timeline_event(event: &JsonValue) -> Option<JsonValue> {
                 .or_else(|| event.get("content").cloned())
                 .unwrap_or(JsonValue::Null),
         })),
+        "user_steer_requested" => Some(serde_json::json!({
+            "type": "user_steer_requested",
+            "timestamp": timestamp,
+            "content": event.get("content").cloned().unwrap_or(JsonValue::Null),
+            "idempotency_key": event.get("idempotency_key").cloned().unwrap_or(JsonValue::Null),
+        })),
         "tool_use" => Some(serde_json::json!({
             "type": "tool_use",
             "timestamp": timestamp,
@@ -943,6 +952,18 @@ fn build_latency_trace_value(trace: &LatencyTraceState) -> Option<JsonValue> {
     }))
 }
 
+fn clean_failure_reason(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.chars().take(500).collect())
+}
+
+fn should_persist_failure_reason(status: &str) -> bool {
+    matches!(status, "failed" | "error" | "failed_setup" | "failed_spawn")
+}
+
 fn update_run_state_from_event(run_state: &mut AgentRunState, event: &JsonValue) {
     if let Some(stream_seq) = event.get("stream_seq").and_then(|value| value.as_u64()) {
         run_state.last_stream_seq = Some(stream_seq);
@@ -984,6 +1005,16 @@ fn update_run_state_from_event(run_state: &mut AgentRunState, event: &JsonValue)
         "provider_meta" => {
             if let Some(meta) = event.get("meta").and_then(|value| value.as_object()) {
                 merge_json_maps(&mut run_state.meta, meta);
+            }
+        }
+        "error" | "stderr" => {
+            if let Some(reason) = event
+                .get("data")
+                .or_else(|| event.get("content"))
+                .and_then(|value| value.as_str())
+                .and_then(clean_failure_reason)
+            {
+                run_state.failure_reason = Some(reason);
             }
         }
         "tool_output_delta" => {
@@ -1150,6 +1181,19 @@ fn build_finalize_snapshot(
             "stop_reason".to_string(),
             JsonValue::String(stop_reason.clone()),
         );
+    }
+    if should_persist_failure_reason(&status) {
+        if let Some(failure_reason) = run_state
+            .failure_reason
+            .as_deref()
+            .or(run_state.stop_reason.as_deref())
+            .and_then(clean_failure_reason)
+        {
+            execution_object.insert(
+                "failure_reason".to_string(),
+                JsonValue::String(failure_reason),
+            );
+        }
     }
     if let Some(last_stream_seq) = run_state.last_stream_seq {
         execution_object.insert(
@@ -1969,6 +2013,7 @@ fn spawn_agent_internal(
                 .map(|path| path.to_string_lossy().into_owned())
                 .unwrap_or_default(),
         )
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -2021,6 +2066,8 @@ fn spawn_agent_internal(
     };
 
     let child_id = child.id();
+    let child_stdin = child.stdin.take();
+    let child_stdin = child_stdin.map(|stdin| Arc::new(Mutex::new(stdin)));
     if let Some(run_context) = run_context.as_ref() {
         upsert_run_ledger_for_context(
             &app,
@@ -2201,6 +2248,13 @@ fn spawn_agent_internal(
         .lock()
         .unwrap()
         .insert(session_id.clone(), child_id);
+    if let Some(child_stdin) = child_stdin {
+        state
+            .stdins
+            .lock()
+            .unwrap()
+            .insert(session_id.clone(), child_stdin);
+    }
     state
         .session_tokens
         .lock()
@@ -2305,6 +2359,8 @@ fn spawn_agent_internal(
                     children.remove(&child_id);
                     let mut sessions = app_state.sessions.lock().unwrap();
                     sessions.remove(&session_id_for_wait);
+                    let mut stdins = app_state.stdins.lock().unwrap();
+                    stdins.remove(&session_id_for_wait);
                     let mut tokens = app_state.session_tokens.lock().unwrap();
                     tokens.remove(&session_id_for_wait);
                     let mut run_states = app_state.run_states.lock().unwrap();
@@ -2530,6 +2586,99 @@ fn chrono_like_now() -> String {
 
 #[tauri::command]
 #[specta::specta]
+pub fn steer_agent_run(
+    app: AppHandle,
+    state: State<AgentState>,
+    assistant_node_id: String,
+    content: String,
+    idempotency_key: String,
+) -> Result<(), String> {
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err("Steering message cannot be empty.".to_string());
+    }
+
+    let stdin = {
+        let stdins = state.stdins.lock().map_err(|e| e.to_string())?;
+        stdins.get(&assistant_node_id).cloned()
+    };
+    let Some(stdin) = stdin else {
+        let failure = serde_json::json!({
+            "type": "provider_steer_failed",
+            "assistant_node_id": assistant_node_id.clone(),
+            "idempotency_key": idempotency_key.clone(),
+            "content": content.clone(),
+            "error": "No active agent control channel found.",
+        });
+        emit_agent_event(&app, &assistant_node_id, &failure);
+        return Err(format!(
+            "No active agent control channel found for {}",
+            assistant_node_id
+        ));
+    };
+
+    let requested = serde_json::json!({
+        "type": "user_steer_requested",
+        "assistant_node_id": assistant_node_id.clone(),
+        "idempotency_key": idempotency_key.clone(),
+        "content": content.clone(),
+    });
+    if let Some(run_state) = state
+        .run_states
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(&assistant_node_id)
+        .cloned()
+    {
+        let mut run_state = run_state.lock().map_err(|e| e.to_string())?;
+        update_run_state_from_event(&mut run_state, &requested);
+    }
+    emit_agent_event(&app, &assistant_node_id, &requested);
+
+    let control = serde_json::json!({
+        "type": "steer_agent_run",
+        "control_type": "steer",
+        "content": content.clone(),
+        "idempotency_key": idempotency_key.clone(),
+        "timestamp": unix_timestamp_millis(),
+    });
+    let mut line = control.to_string();
+    line.push('\n');
+
+    let write_result = {
+        let mut stdin = stdin.lock().map_err(|e| e.to_string())?;
+        stdin
+            .write_all(line.as_bytes())
+            .and_then(|_| stdin.flush())
+            .map_err(|err| err.to_string())
+    };
+
+    match write_result {
+        Ok(()) => {
+            let ack = serde_json::json!({
+                "type": "provider_steer_ack",
+                "assistant_node_id": assistant_node_id.clone(),
+                "idempotency_key": idempotency_key.clone(),
+            });
+            emit_agent_event(&app, &assistant_node_id, &ack);
+            Ok(())
+        }
+        Err(err) => {
+            let failure = serde_json::json!({
+                "type": "provider_steer_failed",
+                "assistant_node_id": assistant_node_id.clone(),
+                "idempotency_key": idempotency_key.clone(),
+                "content": content.clone(),
+                "error": err.clone(),
+            });
+            emit_agent_event(&app, &assistant_node_id, &failure);
+            Err(err)
+        }
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn stop_agent(
     _app: AppHandle,
     state: State<AgentState>,
@@ -2630,11 +2779,11 @@ pub fn get_agent_run_state(
 #[cfg(test)]
 mod tests {
     use super::{
-        ai_label_from_execution_data, cleanup_requires_server_final_persisted,
-        cleanup_terminal_status_allows_cleanup, commit_message_for_snapshot,
-        commit_subject_from_execution_data, local_node_payload_for_snapshot,
-        run_ledger_user_node_id_from_context, update_run_state_from_event, AgentRunContext,
-        AgentRunSnapshot, AgentRunState,
+        ai_label_from_execution_data, build_finalize_snapshot,
+        cleanup_requires_server_final_persisted, cleanup_terminal_status_allows_cleanup,
+        commit_message_for_snapshot, commit_subject_from_execution_data,
+        local_node_payload_for_snapshot, run_ledger_user_node_id_from_context,
+        update_run_state_from_event, AgentRunContext, AgentRunSnapshot, AgentRunState,
     };
     use serde_json::json;
 
@@ -2708,6 +2857,44 @@ mod tests {
         assert_eq!(
             payload["execution_data"]["meta"]["provider_model"],
             "openai/gpt-5.5-high"
+        );
+    }
+
+    #[test]
+    fn failed_snapshot_persists_stderr_failure_reason() {
+        let mut state = AgentRunState::new(AgentRunContext {
+            run_id: "run-1".to_string(),
+            execution_data: json!({
+                "workspace_id": "workspace-1",
+                "parentId": "user-1"
+            }),
+            git_branch_name: None,
+            repo_path: None,
+            parent_commit: None,
+            author_name: None,
+            prompt_fallback: None,
+        });
+
+        update_run_state_from_event(
+            &mut state,
+            &json!({
+                "type": "stderr",
+                "data": "ImportError: cannot import name 'ParamSpec' from 'typing'"
+            }),
+        );
+
+        let snapshot =
+            build_finalize_snapshot(&mut state, "assistant-1").expect("failed run snapshot");
+
+        assert_eq!(snapshot.status, "failed");
+        assert_eq!(
+            snapshot.execution_data["failure_reason"],
+            "ImportError: cannot import name 'ParamSpec' from 'typing'"
+        );
+        assert_eq!(
+            local_node_payload_for_snapshot(&snapshot, "workspace-1")["execution_data"]
+                ["failure_reason"],
+            "ImportError: cannot import name 'ParamSpec' from 'typing'"
         );
     }
 

@@ -1,10 +1,10 @@
 import type { Agent } from '../hooks/useAgents';
 import type { ProjectedNodeEntity } from '../domain/workspaceProjection';
 import type { Message } from '../stores/workspaceStore';
+import { isActiveAgentRunStatus, isSteerableAssistantNode } from './agentRunSteering';
 
 type QuickReplyAgent = Pick<Agent, 'id' | 'type' | 'model_config'>;
-
-const ACTIVE_NODE_STATUSES = new Set(['pending', 'creating', 'initializing', 'running', 'streaming']);
+export type HoverReplyMode = 'reply' | 'steer';
 
 export const QUICK_REPLY_KEEP_HOVER_OPEN_EVENT = 'agentree:quick-reply-keep-hover-open';
 
@@ -39,13 +39,34 @@ export const stopQuickReplyControlEvent = (event: { stopPropagation: () => void 
   event.stopPropagation();
 };
 
-export const canShowHoverQuickReply = (entity: ProjectedNodeEntity | null | undefined): boolean => {
-  if (!entity) return false;
-  if (entity.kind === 'thread_link') return false;
-  if (entity.kind === 'commit_message') return false;
-  if (!(entity.focusMessageId || entity.messageId)) return false;
-  const status = clean(entity.status ?? entity.message?.status)?.toLowerCase();
-  return !status || !ACTIVE_NODE_STATUSES.has(status);
+export const canShowHoverQuickReply = (
+  entity: ProjectedNodeEntity | null | undefined,
+  runStatus?: string | null | undefined,
+): boolean => {
+  return getHoverReplyMode(entity, runStatus) !== null;
+};
+
+export const getHoverReplyMode = (
+  entity: ProjectedNodeEntity | null | undefined,
+  runStatus?: string | null | undefined,
+): HoverReplyMode | null => {
+  if (!entity) return null;
+  if (entity.kind === 'thread_link') return null;
+  if (entity.kind === 'commit_message') return null;
+  const replyParentId = entity.focusMessageId || entity.messageId;
+  if (!replyParentId) return null;
+  const status = clean(runStatus ?? entity.status ?? entity.message?.status)?.toLowerCase();
+
+  if (isSteerableAssistantNode({
+    nodeId: replyParentId,
+    role: entity.message?.role ?? (entity.kind === 'assistant_message' ? 'assistant' : null),
+    status,
+  })) {
+    return 'steer';
+  }
+
+  if (isActiveAgentRunStatus(status)) return null;
+  return 'reply';
 };
 
 const findNearestAssistantMessage = (

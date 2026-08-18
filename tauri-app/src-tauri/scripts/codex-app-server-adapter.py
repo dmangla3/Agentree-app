@@ -4,11 +4,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +99,61 @@ class AgentreeCodex:
     def thread_fork(self, thread_id: str, **kwargs: Any) -> Thread:
         forked = self._client.thread_fork(thread_id, kwargs)
         return Thread(self._client, forked.thread.id)
+
+
+class _ControlReader:
+    def __init__(self) -> None:
+        self._queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._thread = threading.Thread(target=self._read_stdin, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def drain(self) -> list[dict[str, Any]]:
+        controls: list[dict[str, Any]] = []
+        while True:
+            try:
+                controls.append(self._queue.get_nowait())
+            except queue.Empty:
+                return controls
+
+    def _read_stdin(self) -> None:
+        for line in sys.stdin:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                control = json.loads(stripped)
+            except Exception as error:  # noqa: BLE001
+                self._queue.put(
+                    {
+                        "type": "invalid",
+                        "error": f"Invalid control message: {error}",
+                    }
+                )
+                continue
+            if isinstance(control, dict):
+                self._queue.put(control)
+
+
+def _steer_turn_without_waiting_for_response(turn: Any, content: str) -> None:
+    client = getattr(turn, "_client", None)
+    if client is None:
+        raise RuntimeError("active Codex turn does not expose a client")
+    writer = getattr(client, "_write_message", None)
+    if writer is None:
+        raise RuntimeError("active Codex client does not expose a JSON-RPC writer")
+    writer(
+        {
+            "id": str(uuid.uuid4()),
+            "method": "turn/steer",
+            "params": {
+                "threadId": turn.thread_id,
+                "expectedTurnId": turn.id,
+                "input": [{"type": "text", "text": content}],
+            },
+        }
+    )
 
 
 def _emit(event: dict[str, Any]) -> None:
@@ -1019,6 +1077,8 @@ def main() -> int:
     structured_final_output: dict[str, str | None] | None = None
     last_provider_error: dict[str, Any] | None = None
     output_deltas_by_item_id: dict[str, str] = {}
+    control_reader = _ControlReader()
+    control_reader.start()
 
     def _fail_provider_thread_reuse(
         *,
@@ -1284,6 +1344,63 @@ def main() -> int:
                 cwd=args.cwd,
                 output_schema=FINAL_RESULT_SCHEMA,
             )
+
+            control_done = threading.Event()
+
+            def _drain_controls() -> None:
+                for control in control_reader.drain():
+                    now_control_ms = int(time.time() * 1000)
+                    if control.get("type") == "invalid":
+                        _emit(
+                            {
+                                "type": "provider_steer_failed",
+                                "error": control.get("error") or "Invalid control message.",
+                                "timestamp": now_control_ms,
+                            }
+                        )
+                        continue
+                    if control.get("type") != "steer" and control.get("control_type") != "steer":
+                        continue
+                    content = control.get("content")
+                    content = content.strip() if isinstance(content, str) else ""
+                    if not content:
+                        _emit(
+                            {
+                                "type": "provider_steer_failed",
+                                "idempotency_key": control.get("idempotency_key"),
+                                "error": "Steering message cannot be empty.",
+                                "timestamp": now_control_ms,
+                            }
+                        )
+                        continue
+                    try:
+                        _steer_turn_without_waiting_for_response(turn, content)
+                        _emit(
+                            {
+                                "type": "provider_steer_ack",
+                                "idempotency_key": control.get("idempotency_key"),
+                                "provider_thread_id": active_thread_id,
+                                "provider_turn_id": active_turn_id,
+                                "timestamp": now_control_ms,
+                            }
+                        )
+                    except Exception as steer_error:  # noqa: BLE001
+                        _emit(
+                            {
+                                "type": "provider_steer_failed",
+                                "idempotency_key": control.get("idempotency_key"),
+                                "error": str(steer_error),
+                                "timestamp": now_control_ms,
+                            }
+                        )
+
+            def _control_loop() -> None:
+                while not control_done.is_set():
+                    _drain_controls()
+                    time.sleep(0.05)
+
+            threading.Thread(target=_control_loop, daemon=True).start()
+
             for event in turn.stream():
                 method = event.method
                 payload = event.payload
@@ -1576,6 +1693,7 @@ def main() -> int:
                             "timestamp": now_ms,
                         }
                     )
+                    control_done.set()
                     return 0 if status == "completed" else 1
 
     except Exception as error:  # noqa: BLE001

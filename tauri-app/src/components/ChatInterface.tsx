@@ -376,6 +376,20 @@ export function ChatInterface() {
     const focusPhase = typeof lastFocusMetadata?.phase === 'string' ? lastFocusMetadata.phase : null;
     const isComposerSendFocus = lastFocusSource === 'composer' || Boolean(flowId);
     const isDirectSelectionFocus = lastFocusSource === 'graph' || lastFocusSource === 'chat' || lastFocusSource === 'timeline';
+    if (isComposerSendFocus && runningCount > 0) {
+      recordPerfEvent('chat.focus-scroll.skipped', {
+        focusedMessageId,
+        source: lastFocusSource,
+        flowId,
+        focusPhase,
+        targetFound: null,
+        reason: 'active-run',
+        chatItemCount: projection.chatItems.length,
+        focusNonce,
+        runningCount,
+      }, { source: 'ChatInterface' });
+      return;
+    }
     const scrollBehavior: ScrollBehavior = isComposerSendFocus || lastFocusSource === 'graph' ? 'auto' : 'smooth';
     const scrollDelayMs = 0;
     const isNewComposerFlow = isComposerSendFocus && !!flowId && activeScrollFlowIdRef.current !== flowId;
@@ -521,7 +535,7 @@ export function ChatInterface() {
       if (endTimeoutId !== null) window.clearTimeout(endTimeoutId);
       if (endRafId !== null) window.cancelAnimationFrame(endRafId);
     };
-  }, [focusedMessageId, focusNonce, lastFocusMetadata, lastFocusSource]);
+  }, [focusedMessageId, focusNonce, lastFocusMetadata, lastFocusSource, runningCount]);
 
   const chatScrollAnchorFingerprint = useMemo(() => (
     messages.map((message) => [

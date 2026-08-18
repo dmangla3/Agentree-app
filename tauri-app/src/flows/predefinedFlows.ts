@@ -3,11 +3,11 @@ import type { FlowSource } from './types';
 export const PREDEFINED_FLOW_SOURCES: FlowSource[] = [
   {
     id: 'parallel_review_until_satisfied',
-    label: 'Parallel Review Until Satisfied',
+    label: 'Parallel Synthesis Review',
     scope: 'global',
     source: `flow:
   id: parallel_review_until_satisfied
-  label: Parallel Review Until Satisfied
+  label: Parallel Synthesis Review
 
 inputs:
   input:
@@ -22,8 +22,8 @@ nodes:
   - use: core.implementer@1
     as: Implementer
 
-  - use: core.selector@1
-    as: Judge
+  - use: core.synthesizer@1
+    as: Synthesizer
 
   - use: core.reviewer@1
     as: Reviewer
@@ -40,28 +40,28 @@ run:
         request: input.input
       parent: root
 
-  - set: judge
-    call: Judge
+  - set: synthesizer
+    call: Synthesizer
     parent: root
     args:
       request: input.input
       candidates: implementations
 
   - set: implementation
-    value: judge.selected
+    value: synthesizer
 
   - set: commit
     value: implementation.commit
 
   - if: commit == null
     then:
-      stop: selected_implementation_has_no_commit
+      stop: synthesized_implementation_has_no_commit
 
   - set: fixer_parent
     value: implementation
 
   - set: reviewer_parent
-    value: judge
+    value: implementation
 
   - set: latest_fix
     value: null

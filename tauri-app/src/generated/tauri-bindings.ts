@@ -65,6 +65,7 @@ export const commands = {
 	processLocalSyncEvents: (authToken: string, limit: number | null) => __TAURI_INVOKE<number>("process_local_sync_events", { authToken, limit }),
 	startAgentRun: (intent: StartAgentRunIntent) => __TAURI_INVOKE<StartAgentRunResponse>("start_agent_run", { intent }),
 	stopAgent: (sessionId: string) => __TAURI_INVOKE<null>("stop_agent", { sessionId }),
+	steerAgentRun: (assistantNodeId: string, content: string, idempotencyKey: string) => __TAURI_INVOKE<null>("steer_agent_run", { assistantNodeId, content, idempotencyKey }),
 	getAgentRunState: (assistantNodeId: string) => __TAURI_INVOKE<AgentRunStateResponse>("get_agent_run_state", { assistantNodeId }),
 	checkRuntimeReadiness: (provider: string) => __TAURI_INVOKE<RuntimeReadiness>("check_runtime_readiness", { provider }),
 	checkAllRuntimeReadiness: () => __TAURI_INVOKE<RuntimeReadiness[]>("check_all_runtime_readiness"),

@@ -112,6 +112,40 @@ describe('GraphControls', () => {
     expect(source).not.toContain('bg-gradient-');
   });
 
+  it('shows a workspace execution timeline popover from any view mode', () => {
+    const onExecutionTimelineOpenChange = vi.fn();
+    const { rerender } = render(
+      <TooltipProvider>
+        <GraphControls
+          {...makeProps({
+            executionTimelineOpen: false,
+            onExecutionTimelineOpenChange,
+            renderExecutionTimelinePanel: () => <div>Workspace execution timeline panel</div>,
+          })}
+        />
+      </TooltipProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open execution timeline' }));
+    expect(onExecutionTimelineOpenChange).toHaveBeenCalledWith(true);
+
+    rerender(
+      <TooltipProvider>
+        <GraphControls
+          {...makeProps({
+            viewMode: 'timeline',
+            executionTimelineOpen: true,
+            onExecutionTimelineOpenChange,
+            renderExecutionTimelinePanel: () => <div>Workspace execution timeline panel</div>,
+          })}
+        />
+      </TooltipProvider>
+    );
+
+    expect(screen.getByRole('button', { name: 'Close execution timeline' })).toBeTruthy();
+    expect(screen.getByText('Workspace execution timeline panel')).toBeTruthy();
+  });
+
   it('shows a create-thread action in thread tabs', () => {
     const onCreateThread = vi.fn();
     const onThreadFocus = vi.fn();
@@ -208,6 +242,58 @@ describe('GraphControls', () => {
     expect(railContent?.children[0]?.textContent).toContain('Threads');
     expect(railContent?.children[1]?.getAttribute('aria-label')).toBe('Start new thread');
     expect(railContent?.children[2]?.getAttribute('role')).toBe('tablist');
+  });
+
+  it('collapses vertical thread tabs into a compact rail control', () => {
+    const onThreadBarCollapsedChange = vi.fn();
+
+    render(
+      <TooltipProvider>
+        <GraphThreadTabs
+          orientation="vertical"
+          threadItems={[
+            {
+              threadRootId: 'thread-active',
+              label: 'Fix checkout race condition',
+              turnCount: 8,
+              commitCount: 3,
+              updatedLabel: '12m ago',
+              runningCount: 1,
+              hidden: false,
+              done: false,
+              current: true,
+            },
+            {
+              threadRootId: 'thread-done',
+              label: 'Old completed task',
+              turnCount: 2,
+              commitCount: 1,
+              updatedLabel: 'yesterday',
+              runningCount: 0,
+              hidden: false,
+              done: true,
+              current: false,
+            },
+          ]}
+          onThreadFocus={vi.fn()}
+          onThreadDoneChange={vi.fn()}
+          doneThreadsCollapsed={true}
+          onDoneThreadsCollapsedChange={vi.fn()}
+          threadBarCollapsed={true}
+          onThreadBarCollapsedChange={onThreadBarCollapsedChange}
+          onCreateThread={vi.fn()}
+        />
+      </TooltipProvider>
+    );
+
+    expect(screen.queryByRole('tablist', { name: 'Graph threads' })).toBeNull();
+    expect(screen.getByLabelText('Graph threads (2)')).toBeTruthy();
+    expect(screen.getByLabelText('Running threads (1)')).toBeTruthy();
+    expect(screen.getByLabelText('Done threads (1)')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand threads bar' }));
+
+    expect(onThreadBarCollapsedChange).toHaveBeenCalledWith(false);
   });
 
   it('shows compact thread navigation in the toolbar dropdown', async () => {

@@ -89,6 +89,22 @@ const stallKind = (eventName) => {
   return null;
 };
 
+const STALL_FREQUENCY_THRESHOLDS_MS = [250, 500, 1000];
+
+const emptyStallFrequencyBuckets = () => ({
+  gte250Ms: 0,
+  gte500Ms: 0,
+  gte1000Ms: 0,
+});
+
+const addStallToFrequencyBuckets = (buckets, durationMs) => {
+  for (const thresholdMs of STALL_FREQUENCY_THRESHOLDS_MS) {
+    if (durationMs >= thresholdMs) {
+      buckets[`gte${thresholdMs}Ms`] += 1;
+    }
+  }
+};
+
 const lifecyclePhaseForRuntimeActivity = (event) => {
   const category = String(event?.details?.runtimeActivityCategory ?? '').toLowerCase();
   const name = String(event?.details?.runtimeActivityName ?? '').toLowerCase();
@@ -120,8 +136,10 @@ const lifecyclePhaseForEvent = (event) => {
 const emptyPhaseBucket = () => ({
   eventLoopCount: 0,
   eventLoopMaxMs: null,
+  eventLoopBuckets: emptyStallFrequencyBuckets(),
   rafCount: 0,
   rafMaxMs: null,
+  rafBuckets: emptyStallFrequencyBuckets(),
   totalCount: 0,
 });
 
@@ -130,12 +148,30 @@ const addStallToBucket = (bucket, kind, durationMs) => {
   if (kind === 'eventLoop') {
     bucket.eventLoopCount += 1;
     bucket.eventLoopMaxMs = Math.max(bucket.eventLoopMaxMs ?? 0, durationMs);
+    addStallToFrequencyBuckets(bucket.eventLoopBuckets, durationMs);
     return;
   }
   if (kind === 'raf') {
     bucket.rafCount += 1;
     bucket.rafMaxMs = Math.max(bucket.rafMaxMs ?? 0, durationMs);
+    addStallToFrequencyBuckets(bucket.rafBuckets, durationMs);
   }
+};
+
+export const summarizeRuntimeStallFrequencyBuckets = (events) => {
+  if (!Array.isArray(events)) return null;
+  const buckets = {
+    eventLoop: emptyStallFrequencyBuckets(),
+    raf: emptyStallFrequencyBuckets(),
+  };
+  for (const event of events) {
+    const kind = stallKind(event?.name);
+    if (!kind) continue;
+    const durationMs = numberOrNull(event?.durationMs);
+    if (durationMs === null) continue;
+    addStallToFrequencyBuckets(buckets[kind], durationMs);
+  }
+  return buckets;
 };
 
 export const summarizeRuntimeStallsByPhase = (events, options = {}) => {
@@ -247,9 +283,15 @@ const summarizePerfCapture = (root, entry, data) => {
 
 const summarizePhaseBuckets = (phaseBuckets) => (
   Object.entries(phaseBuckets ?? {})
-    .map(([phase, bucket]) => `${phase}:raf=${bucket.rafCount}/${duration(bucket.rafMaxMs)},event=${bucket.eventLoopCount}/${duration(bucket.eventLoopMaxMs)}`)
+    .map(([phase, bucket]) => `${phase}:raf=${bucket.rafCount}/${duration(bucket.rafMaxMs)} ${formatStallFrequencyBuckets(bucket.rafBuckets)},event=${bucket.eventLoopCount}/${duration(bucket.eventLoopMaxMs)} ${formatStallFrequencyBuckets(bucket.eventLoopBuckets)}`)
     .join(' | ') || '-'
 );
+
+const formatStallFrequencyBuckets = (buckets) => {
+  if (!buckets) return '>=250/500/1000=-/-/-';
+  const safeBuckets = buckets;
+  return `>=250/500/1000=${safeBuckets.gte250Ms}/${safeBuckets.gte500Ms}/${safeBuckets.gte1000Ms}`;
+};
 
 const summarizePilotReport = (root, entry, data) => {
   if (!entry || !data) return null;
@@ -308,10 +350,16 @@ export const collectLatestPerfSummary = async (root = process.cwd()) => {
   const perfEventsPath = perfEntry ? perfEventsPathForSummaryPath(perfEntry.filePath) : null;
   const perfEvents = perfEventsPath ? await safeJson(perfEventsPath) : null;
   const perfCapture = summarizePerfCapture(root, perfEntry, perfData);
+  const runtimeFrequencyBuckets = summarizeRuntimeStallFrequencyBuckets(perfEvents);
   return {
     root,
     perfCapture: perfCapture ? {
       ...perfCapture,
+      runtime: {
+        ...perfCapture.runtime,
+        eventLoopStallBuckets: runtimeFrequencyBuckets?.eventLoop ?? null,
+        rafStallBuckets: runtimeFrequencyBuckets?.raf ?? null,
+      },
       runtimePhaseBuckets: summarizeRuntimeStallsByPhase(perfEvents),
       runtimeActivityBuckets: summarizeRuntimeStallsByActivity(perfEvents),
     } : null,
@@ -331,7 +379,7 @@ export const formatPerfSummary = (summary) => {
     lines.push(...section('Perf Capture', [
       `path: ${perf.path}`,
       `session: ${valueOrDash(perf.sessionLabel)} (${valueOrDash(perf.sessionId)})`,
-      `runtime: event-loop: stalls=${perf.runtime.eventLoopStallCount} freezes=${perf.runtime.eventLoopFreezeCount} max=${duration(perf.runtime.maxEventLoopStallMs)} | raf: stalls=${perf.runtime.rafStallCount} freezes=${perf.runtime.rafFreezeCount} max=${duration(perf.runtime.maxRafStallMs)} | longTasks=${perf.runtime.longTaskCount} max=${duration(perf.runtime.maxLongTaskMs)} | loaf=${perf.runtime.longAnimationFrameCount} max=${duration(perf.runtime.maxLongAnimationFrameMs)}`,
+      `runtime: event-loop: stalls=${perf.runtime.eventLoopStallCount} freezes=${perf.runtime.eventLoopFreezeCount} max=${duration(perf.runtime.maxEventLoopStallMs)} ${formatStallFrequencyBuckets(perf.runtime.eventLoopStallBuckets)} | raf: stalls=${perf.runtime.rafStallCount} freezes=${perf.runtime.rafFreezeCount} max=${duration(perf.runtime.maxRafStallMs)} ${formatStallFrequencyBuckets(perf.runtime.rafStallBuckets)} | longTasks=${perf.runtime.longTaskCount} max=${duration(perf.runtime.maxLongTaskMs)} | loaf=${perf.runtime.longAnimationFrameCount} max=${duration(perf.runtime.maxLongAnimationFrameMs)}`,
       `runtime phases: ${summarizePhaseBuckets(perf.runtimePhaseBuckets)}`,
       `runtime active: ${summarizePhaseBuckets(perf.runtimeActivityBuckets)}`,
       `flows: ${perf.flowCount} findings=${perf.findingsCount}`,

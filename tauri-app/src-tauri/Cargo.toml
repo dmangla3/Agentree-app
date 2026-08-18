@@ -1,6 +1,6 @@
 [package]
 name = "agentree"
-version = "0.1.13"
+version = "0.1.16"
 description = "Agentree - AI-powered development workspace"
 authors = ["you"]
 edition = "2021"

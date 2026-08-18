@@ -28,31 +28,36 @@ vi.mock('../../../perf/agentRunVisibilityPerf', () => ({
   recordAssistantTextVisible: vi.fn(),
 }));
 
-const makeAssistantEntity = (): ProjectedNodeEntity => ({
-  entityId: 'message:assistant-1',
-  kind: 'assistant_message',
-  messageId: 'assistant-1',
-  focusMessageId: 'assistant-1',
-  turnGroupId: 'turn-1',
-  sortTs: 1,
-  preview: 'Assistant content',
-  shortLabel: 'Generated AI topic label',
-  status: null,
-  message: {
-    id: 'assistant-1',
-    role: 'assistant',
-    content: 'Assistant content',
-    parentId: 'user-1',
-    workspaceId: 'workspace-1',
-    createdAt: '2026-05-16T00:00:00.000Z',
-    updatedAt: '2026-05-16T00:00:00.000Z',
-    agent_id: null,
-    llmModel: 'openai/gpt-5.5',
-    llmProvider: 'openai',
-    aiLabel: 'Generated AI topic label',
-    tags: [],
-  },
-});
+const makeAssistantEntity = (overrides: Partial<ProjectedNodeEntity> = {}): ProjectedNodeEntity => {
+  const { message: messageOverrides, ...entityOverrides } = overrides;
+  return {
+    entityId: 'message:assistant-1',
+    kind: 'assistant_message',
+    messageId: 'assistant-1',
+    focusMessageId: 'assistant-1',
+    turnGroupId: 'turn-1',
+    sortTs: 1,
+    preview: 'Assistant content',
+    shortLabel: 'Generated AI topic label',
+    status: null,
+    message: {
+      id: 'assistant-1',
+      role: 'assistant',
+      content: 'Assistant content',
+      parentId: 'user-1',
+      workspaceId: 'workspace-1',
+      createdAt: '2026-05-16T00:00:00.000Z',
+      updatedAt: '2026-05-16T00:00:00.000Z',
+      agent_id: null,
+      llmModel: 'openai/gpt-5.5',
+      llmProvider: 'openai',
+      aiLabel: 'Generated AI topic label',
+      tags: [],
+      ...(messageOverrides ?? {}),
+    },
+    ...entityOverrides,
+  };
+};
 
 describe('ChatAssistantCard identity', () => {
   it('uses the model identity for the agent chip and shows the generated AI label separately', () => {
@@ -70,5 +75,30 @@ describe('ChatAssistantCard identity', () => {
 
     expect(screen.getByText('GPT 5.5')).toBeTruthy();
     expect(screen.getByText('Generated AI topic label')).toBeTruthy();
+  });
+
+  it('shows the persisted failure reason for failed assistant nodes', () => {
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          status: 'failed' as any,
+          message: {
+            status: 'failed' as any,
+            execution_data: {
+              failure_reason: "ImportError: cannot import name 'ParamSpec' from 'typing'",
+            },
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByText('Failure reason')).toBeTruthy();
+    expect(screen.getByText("ImportError: cannot import name 'ParamSpec' from 'typing'")).toBeTruthy();
   });
 });

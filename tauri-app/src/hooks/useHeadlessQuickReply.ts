@@ -19,6 +19,28 @@ export function useHeadlessQuickReply() {
   const [status, setStatus] = useState<QuickReplyStatus>('idle');
   const [error, setError] = useState<string | null>(null);
 
+  const sendSteeringReply = useCallback(async (input: {
+    assistantNodeId: string;
+    prompt: string;
+  }) => {
+    const prompt = input.prompt.trim();
+    const assistantNodeId = input.assistantNodeId.trim();
+    if (!assistantNodeId || !prompt) return;
+
+    setStatus('sending');
+    setError(null);
+
+    try {
+      await agentClient.steerAgentRun(assistantNodeId, prompt, crypto.randomUUID());
+      setStatus('idle');
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : 'Steering failed.';
+      setStatus('error');
+      setError(message);
+      throw caught;
+    }
+  }, []);
+
   const sendQuickReply = useCallback(async (input: {
     workspaceId: string;
     replyParentId: string;
@@ -93,6 +115,7 @@ export function useHeadlessQuickReply() {
 
   return {
     sendQuickReply,
+    sendSteeringReply,
     isSending: status === 'sending',
     error,
   };

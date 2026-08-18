@@ -116,6 +116,17 @@ describe('agentRun.machine', () => {
     expect(snapshot.lastSeq).toBe(11);
   });
 
+  it('keeps stderr as the live failure reason for failed runs', () => {
+    const reason = "ImportError: cannot import name 'ParamSpec' from 'typing'";
+    const snapshot = reduce([
+      { type: 'native_event', event: { type: 'stderr', seq: 9, data: reason } },
+      { type: 'native_event', event: { type: 'exit', seq: 10, status: 'failed' } },
+    ]);
+
+    expect(snapshot.status).toBe('failed');
+    expect(snapshot.executionData.failure_reason).toBe(reason);
+  });
+
   it('ignores payload statuses on non-lifecycle native events', () => {
     const snapshot = reduce([
       { type: 'status', status: 'running', progress: 'Running...' },

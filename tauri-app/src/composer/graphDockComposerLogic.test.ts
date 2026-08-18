@@ -4,6 +4,8 @@ import type { Message, Workspace } from '../stores/workspaceStore';
 import {
   resolveGraphDockComposerAgent,
   resolveGraphDockComposerBase,
+  resolveGraphDockComposerEffectiveAgentId,
+  resolveGraphDockComposerRunCountsForEffectiveAgent,
   resolveGraphDockComposerTarget,
 } from './graphDockComposerLogic';
 
@@ -138,5 +140,61 @@ describe('graph dock composer logic', () => {
       selectedAgentId: null,
       parentMessage: parent,
     })?.id).toBe('claude-sonnet');
+  });
+
+  it('uses the resolved default agent id for run-count normalization when no agent is selected', () => {
+    const parent = message({
+      id: 'parent',
+      role: 'assistant',
+      llmProvider: 'claude',
+      llmModel: 'claude-sonnet',
+    });
+    const resolvedAgent = resolveGraphDockComposerAgent({
+      agents,
+      selectedAgentId: null,
+      parentMessage: parent,
+    });
+
+    expect(resolveGraphDockComposerEffectiveAgentId({
+      selectedAgentId: null,
+      resolvedAgent,
+    })).toBe('claude-sonnet');
+  });
+
+  it('preserves an explicit selected agent id for graph dock run counts', () => {
+    const resolvedAgent = resolveGraphDockComposerAgent({
+      agents,
+      selectedAgentId: 'codex:gpt-5.5:high',
+      parentMessage: null,
+    });
+
+    expect(resolveGraphDockComposerEffectiveAgentId({
+      selectedAgentId: 'codex:gpt-5.5:high',
+      resolvedAgent,
+    })).toBe('codex:gpt-5.5:high');
+  });
+
+  it('moves a stale implicit single run count to the current effective agent', () => {
+    expect(resolveGraphDockComposerRunCountsForEffectiveAgent({
+      selectedAgentId: null,
+      effectiveSelectedAgentId: 'codex:gpt-5.5:high',
+      currentCounts: { 'claude-sonnet': 1 },
+    })).toEqual({ 'codex:gpt-5.5:high': 1 });
+  });
+
+  it('preserves run counts when an explicit agent is selected', () => {
+    expect(resolveGraphDockComposerRunCountsForEffectiveAgent({
+      selectedAgentId: 'codex:gpt-5.5:high',
+      effectiveSelectedAgentId: 'codex:gpt-5.5:high',
+      currentCounts: { 'claude-sonnet': 1 },
+    })).toEqual({ 'claude-sonnet': 1 });
+  });
+
+  it('preserves multiple selected run counts for implicit defaults', () => {
+    expect(resolveGraphDockComposerRunCountsForEffectiveAgent({
+      selectedAgentId: null,
+      effectiveSelectedAgentId: 'codex:gpt-5.5:high',
+      currentCounts: { 'claude-sonnet': 1, 'codex:gpt-5.5:high': 1 },
+    })).toEqual({ 'claude-sonnet': 1, 'codex:gpt-5.5:high': 1 });
   });
 });

@@ -4,6 +4,10 @@ import { describe, expect, it } from 'vitest';
 
 const readChatInputSource = () => readFileSync(join(process.cwd(), 'src/components/ChatInput.tsx'), 'utf8');
 const readAgentsSource = () => readFileSync(join(process.cwd(), 'src-tauri/src/agents.rs'), 'utf8');
+const readGeneratedBindingsSource = () => readFileSync(join(process.cwd(), 'src/generated/tauri-bindings.ts'), 'utf8');
+const readStreamDispatchSource = () => readFileSync(join(process.cwd(), 'src/agent-runs/agentRunStreamDispatch.ts'), 'utf8');
+const readClaudeAdapterSource = () => readFileSync(join(process.cwd(), 'src-tauri/scripts/claude-agent-sdk-adapter.mjs'), 'utf8');
+const readCodexAdapterSource = () => readFileSync(join(process.cwd(), 'src-tauri/scripts/codex-app-server-adapter.py'), 'utf8');
 
 describe('agent lifecycle ownership boundaries', () => {
   it('does not persist terminal agent payloads directly from ChatInput', () => {
@@ -61,7 +65,8 @@ describe('agent lifecycle ownership boundaries', () => {
   it('does not let user message lifecycle metadata drive the composer cancel state', () => {
     const source = readChatInputSource();
     expect(source).toContain("const selectedNodeRole = selectedProjection?.role ?? selectedNodeMessage?.role ?? null;");
-    expect(source).toContain("if (selectedNodeRole !== 'assistant') return false;");
+    expect(source).toContain("import { isSteerableAssistantNode } from '../lib/agentRunSteering';");
+    expect(source).toContain('const isSteeringRunningAssistant = isSteerableAssistantNode({');
   });
 
   it('keeps start_agent_run off a synchronous async-runtime block for worktree preview', () => {
@@ -77,6 +82,53 @@ describe('agent lifecycle ownership boundaries', () => {
     );
     expect(commandRegion).toContain('crate::git_workspace::preview_agent_worktree(');
     expect(commandRegion).toContain('.await?');
+  });
+
+  it('keeps a stdin control channel for steering active agent runs', () => {
+    const source = readAgentsSource();
+    expect(source).toContain('stdins: Mutex<HashMap<String, Arc<Mutex<ChildStdin>>>>');
+    expect(source).toContain('.stdin(Stdio::piped())');
+    expect(source).toContain('child.stdin.take()');
+    expect(source).toContain('state.stdins.lock()');
+    expect(source).toContain('remove(&session_id_for_wait)');
+  });
+
+  it('exposes a native steer command that writes intervention events and control JSON', () => {
+    const source = readAgentsSource();
+    const libSource = readFileSync(join(process.cwd(), 'src-tauri/src/lib.rs'), 'utf8');
+    const bindingsSource = readGeneratedBindingsSource();
+
+    expect(source).toContain('pub fn steer_agent_run(');
+    expect(source).toContain('"user_steer_requested"');
+    expect(source).toContain('"provider_steer_ack"');
+    expect(source).toContain('"steer_agent_run"');
+    expect(libSource).toContain('agents::steer_agent_run');
+    expect(bindingsSource).toContain('steerAgentRun: (assistantNodeId: string, content: string, idempotencyKey: string)');
+  });
+
+  it('routes running-assistant composer submissions through steering instead of child branching', () => {
+    const source = readChatInputSource();
+    expect(source).toContain('const isSteeringRunningAssistant =');
+    expect(source).toContain('await commands.steerAgentRun(');
+    expect(source).toContain("const sendButtonLabel = isSteeringRunningAssistant ? 'Steer'");
+    expect(source).toContain('const showPrimaryCancel = showCancel && !isSteeringRunningAssistant;');
+    expect(source).toContain('disabled={showPrimaryCancel ? false : isPrimaryActionDisabled}');
+  });
+
+  it('projects steering requests into the assistant timeline', () => {
+    const source = readStreamDispatchSource();
+    expect(source).toContain("data.type === 'user_steer_requested'");
+    expect(source).toContain("type: 'user_steer_requested'");
+  });
+
+  it('adapters listen for native steering control messages', () => {
+    const claudeSource = readClaudeAdapterSource();
+    const codexSource = readCodexAdapterSource();
+
+    expect(claudeSource).toContain('createControlReader');
+    expect(claudeSource).toContain("control.type !== 'steer'");
+    expect(codexSource).toContain('_ControlReader');
+    expect(codexSource).toContain('"method": "turn/steer"');
   });
 
   it('paints optimistic send feedback before graph focus and agent status work', () => {
