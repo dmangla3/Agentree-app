@@ -25,9 +25,10 @@ interface NodeContextMenuProps {
   onAddCommitShasToMergePanel?: (commitShas: string[]) => void;
   onAddCommitToNode?: (messageId: string) => void;
   onFocusThread?: (threadRootId: string) => void;
-  onHideThread?: (threadRootId: string) => void;
+  onMarkThreadDone?: (threadRootId: string) => void;
   onHideSubgraph?: (messageId: string) => void;
   onViewSubgraph?: (messageId: string) => void;
+  onConvertSubgraphToThread?: (messageId: string) => void;
   onShareNode?: (messageId: string) => void;
 }
 
@@ -41,26 +42,28 @@ export function NodeContextMenu({
   onAddCommitShasToMergePanel,
   onAddCommitToNode,
   onFocusThread,
-  onHideThread,
+  onMarkThreadDone,
   onHideSubgraph,
   onViewSubgraph,
+  onConvertSubgraphToThread,
   onShareNode,
 }: NodeContextMenuProps) {
   const targetIds = contextMenu?.targetIds ?? [];
   const targetKey = targetIds.join('\u0000');
-  const [hideThreadAfterMerge, setHideThreadAfterMerge] = useState(true);
+  const [markThreadDoneAfterMerge, setMarkThreadDoneAfterMerge] = useState(true);
 
   useEffect(() => {
-    if (contextMenu) setHideThreadAfterMerge(true);
+    if (contextMenu) setMarkThreadDoneAfterMerge(true);
   }, [contextMenu, targetKey]);
 
-  const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, mergeableCommitShas, actionNodeId, actionThreadRootId, mergeThreadRootId } = useMemo(() => {
+  const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, mergeableCommitShas, actionNodeId, actionThreadRootId, convertSubgraphNodeId, mergeThreadRootId } = useMemo(() => {
     const deletableIds = new Set<string>();
     const deletableShas = new Set<string>();
     const mergeableIds = new Set<string>();
     const mergeableShas = new Set<string>();
     let singleActionId: string | null = null;
     let singleThreadRootId: string | null = null;
+    let singleConvertSubgraphNodeId: string | null = null;
     let singleMergeThreadRootId: string | null = null;
     let hasMultipleMergeThreadRoots = false;
 
@@ -125,7 +128,16 @@ export function NodeContextMenu({
       if (!entity) continue;
       if (targetIds.length === 1 && entity.messageId) {
         singleActionId = entity.messageId;
-        singleThreadRootId = entity.threadRootId ?? null;
+        singleThreadRootId = entity.kind === 'thread_link'
+          ? entity.threadLinkRootId ?? entity.threadRootId ?? null
+          : entity.threadRootId ?? null;
+        if (
+          entity.kind === 'user_message' &&
+          entity.message?.parentId &&
+          !entity.isThreadRoot
+        ) {
+          singleConvertSubgraphNodeId = entity.messageId;
+        }
       }
 
       if (entity.kind === 'user_message' || entity.kind === 'assistant_message' || entity.kind === 'commit_message') {
@@ -144,6 +156,7 @@ export function NodeContextMenu({
       mergeableCommitShas: Array.from(mergeableShas),
       actionNodeId: singleActionId,
       actionThreadRootId: singleThreadRootId,
+      convertSubgraphNodeId: singleConvertSubgraphNodeId,
       mergeThreadRootId: hasMultipleMergeThreadRoots ? null : singleMergeThreadRootId,
     };
   }, [projection.commitBySha, projection.entitiesById, projection.entitiesByMessageId, projection.threadRootIdByMessageId, targetIds]);
@@ -155,12 +168,13 @@ export function NodeContextMenu({
     || (mergeableCommitShas.length > 0 && !!onAddCommitShasToMergePanel);
   const canAddCommit = !!actionNodeId && !!onAddCommitToNode;
   const canFocusThread = !!actionThreadRootId && !!onFocusThread;
-  const canHideThread = !!actionThreadRootId && !!onHideThread;
+  const canMarkThreadDone = !!actionThreadRootId && !!onMarkThreadDone;
   const canHideSubgraph = !!actionNodeId && !!onHideSubgraph;
   const canViewSubgraph = !!actionNodeId && !!onViewSubgraph;
+  const canConvertSubgraphToThread = !!convertSubgraphNodeId && !!onConvertSubgraphToThread;
   const canShareNode = !!actionNodeId && !!onShareNode;
 
-  if (!canDelete && !canAddToMergePanel && !canAddCommit && !canFocusThread && !canHideThread && !canHideSubgraph && !canViewSubgraph && !canShareNode) {
+  if (!canDelete && !canAddToMergePanel && !canAddCommit && !canFocusThread && !canMarkThreadDone && !canHideSubgraph && !canViewSubgraph && !canConvertSubgraphToThread && !canShareNode) {
     return null;
   }
 
@@ -170,7 +184,7 @@ export function NodeContextMenu({
   const mergeLabel = mergeCount === 1
     ? 'Add to merge panel'
     : `Add ${mergeCount} commits to merge panel`;
-  const canHideThreadAfterMerge = canAddToMergePanel && !!mergeThreadRootId && !!onHideThread;
+  const canMarkThreadDoneAfterMerge = canAddToMergePanel && !!mergeThreadRootId && !!onMarkThreadDone;
 
   return (
     <DropdownMenu
@@ -209,6 +223,17 @@ export function NodeContextMenu({
           </DropdownMenuItem>
         ) : null}
 
+        {canConvertSubgraphToThread ? (
+          <DropdownMenuItem
+            onClick={() => {
+              onConvertSubgraphToThread?.(convertSubgraphNodeId!);
+              onClose();
+            }}
+          >
+            Convert subgraph to thread
+          </DropdownMenuItem>
+        ) : null}
+
         {canShareNode ? (
           <DropdownMenuItem
             onClick={() => {
@@ -220,14 +245,14 @@ export function NodeContextMenu({
           </DropdownMenuItem>
         ) : null}
 
-        {canHideThread ? (
+        {canMarkThreadDone ? (
           <DropdownMenuItem
             onClick={() => {
-              onHideThread?.(actionThreadRootId!);
+              onMarkThreadDone?.(actionThreadRootId!);
               onClose();
             }}
           >
-            Hide thread
+            Mark thread done
           </DropdownMenuItem>
         ) : null}
 
@@ -268,22 +293,22 @@ export function NodeContextMenu({
                 if (mergeableCommitShas.length > 0) {
                   onAddCommitShasToMergePanel?.(mergeableCommitShas);
                 }
-                if (canHideThreadAfterMerge && hideThreadAfterMerge) {
-                  onHideThread?.(mergeThreadRootId!);
+                if (canMarkThreadDoneAfterMerge && markThreadDoneAfterMerge) {
+                  onMarkThreadDone?.(mergeThreadRootId!);
                 }
                 onClose();
               }}
             >
               {mergeLabel}
             </DropdownMenuItem>
-            {canHideThreadAfterMerge ? (
+            {canMarkThreadDoneAfterMerge ? (
               <DropdownMenuCheckboxItem
-                checked={hideThreadAfterMerge}
+                checked={markThreadDoneAfterMerge}
                 className="mt-0.5 min-h-7 rounded-[5px] py-1 pl-7 pr-2 text-xs text-muted-foreground focus:bg-background/80 focus:text-foreground"
                 onSelect={(event) => event.preventDefault()}
-                onCheckedChange={(checked) => setHideThreadAfterMerge(checked === true)}
+                onCheckedChange={(checked) => setMarkThreadDoneAfterMerge(checked === true)}
               >
-                Hide thread
+                Mark thread done
               </DropdownMenuCheckboxItem>
             ) : null}
           </div>

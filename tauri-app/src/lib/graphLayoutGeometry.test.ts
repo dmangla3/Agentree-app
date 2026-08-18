@@ -109,6 +109,69 @@ const buildTurnWithLocalAssistantOutputCommit = (): Message[] => [
   }, 1),
 ];
 
+const buildTurnWithLocalAssistantCommitStack = (): Message[] => [
+  makeMessage({
+    id: 'user-1',
+    role: 'user',
+    parentId: null,
+    content: 'Create a stack of local generated commits.',
+  }, 0),
+  makeMessage({
+    id: 'assistant-1',
+    role: 'assistant',
+    parentId: 'user-1',
+    content: 'Created three commits.',
+    status: 'completed',
+    agent_id: 'agent-1',
+    base_commit_sha: 'base0001',
+    output_commit_sha: 'agentcommit0003',
+    execution_data: {
+      meta: {
+        commit_created: true,
+        commit_message: 'Final generated commit',
+      },
+    },
+  }, 1),
+];
+
+const buildLocalAssistantGeneratedCommitStack = () => {
+  const commits: CommitEntity[] = [
+    {
+      sha: 'base0001',
+      workspace_id: workspaceId,
+      subject: 'Base commit',
+      source_kind: 'external',
+      produced_by_node_id: null,
+      first_parent_sha: null,
+      committed_at: isoAt(1),
+      authored_at: isoAt(1),
+    },
+    ...[1, 2, 3].map((index) => ({
+      sha: `agentcommit000${index}`,
+      workspace_id: workspaceId,
+      subject: `Generated commit ${index}`,
+      source_kind: 'agent',
+      produced_by_node_id: 'assistant-1',
+      first_parent_sha: index === 1 ? 'base0001' : `agentcommit000${index - 1}`,
+      committed_at: isoAt(1 + index),
+      authored_at: isoAt(1 + index),
+    })),
+  ];
+  const commitParents = [
+    { child_sha: 'agentcommit0001', parent_sha: 'base0001', parent_index: 0 },
+    { child_sha: 'agentcommit0002', parent_sha: 'agentcommit0001', parent_index: 0 },
+    { child_sha: 'agentcommit0003', parent_sha: 'agentcommit0002', parent_index: 0 },
+  ];
+  const commitObservations = commits.map((commit) => ({
+    commit_sha: commit.sha,
+    source_kind: commit.source_kind ?? 'unknown',
+    git_ref: commit.produced_by_node_id ? 'agent' : 'refs/heads/main',
+    first_seen_at: isoAt(10),
+    last_seen_at: isoAt(11),
+  }));
+  return { commits, commitParents, commitObservations };
+};
+
 const buildGeneratedCommitFromParentCommitScenario = (): Message[] => [
   makeMessage({
     id: 'user-1',
@@ -852,6 +915,38 @@ describe('graph layout geometry QA', () => {
     const laneGap = layoutedCommit.position.x - (layoutedAssistant.position.x + numberStyle(layoutedAssistant.style?.width));
     expect(laneGap).toBeGreaterThanOrEqual(0);
     expect(laneGap).toBeLessThanOrEqual(3);
+  });
+
+  it('renders a multi-commit assistant output as one compact generated commit stack', () => {
+    const mapped = buildMappedGraph(
+      buildTurnWithLocalAssistantCommitStack(),
+      'assistant-1',
+      buildLocalAssistantGeneratedCommitStack(),
+    );
+    const assistant = getNode(mapped.nodes, 'assistant-1');
+    const syntheticCommit = getNode(mapped.nodes, 'commit:assistant-1');
+    const baseCommit = getNode(mapped.nodes, 'base0001');
+
+    expect((assistant.data as any).entity.commitCount).toBe(3);
+    expect((syntheticCommit.data as any).entity.commitCount).toBe(3);
+    expect((syntheticCommit.data as any).entity.shortSha).toBe('agentcom');
+    expect((syntheticCommit.data as any).entity.message.commit.sha).toBe('agentcommit0003');
+    expect((syntheticCommit.data as any).entity.parentShas).toEqual(['base0001']);
+    expect(mapped.nodes.some((node) => node.id === 'agentcommit0001')).toBe(false);
+    expect(mapped.nodes.some((node) => node.id === 'agentcommit0002')).toBe(false);
+    expect(mapped.nodes.some((node) => node.id === 'agentcommit0003')).toBe(false);
+
+    const stackEdge = mapped.edges.find((edge) => edge.source === 'base0001' && edge.target === 'commit:assistant-1');
+    expect((stackEdge?.data as any)?.relationship).toBe('git-parent');
+    expect((stackEdge?.data as any)?.layout).toBe(true);
+    expect(mapped.edges.some((edge) => edge.source === 'commit:assistant-1' && edge.target === 'commit:assistant-1')).toBe(false);
+
+    const layouted = getTidyTreeLayoutedElements(mapped.nodes, mapped.edges);
+    const layoutedAssistant = getNode(layouted.nodes, 'assistant-1');
+    const layoutedCommit = getNode(layouted.nodes, 'commit:assistant-1');
+    const layoutedBaseCommit = getNode(layouted.nodes, baseCommit.id);
+    expect(layoutedCommit.position.x).toBeGreaterThan(layoutedAssistant.position.x);
+    expect(layoutedCommit.position.y).toBeGreaterThan(layoutedBaseCommit.position.y);
   });
 
   it('highlights a generated assistant commit as composer base without inheriting assistant focus', () => {

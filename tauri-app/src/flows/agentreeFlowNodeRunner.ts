@@ -1,6 +1,7 @@
 import type { FlowNodeRunner } from './flowExecutor';
 import type { FlowNodeValue, FlowRuntimeValue, FlowNodeStatus } from './types';
 import type { LaunchAgentNodeInput, LaunchAgentNodeResult } from '../hooks/useAgentNodeLauncher';
+import type { ComposerContextManifest } from '../lib/composerContext';
 import type { Message } from '../stores/workspaceStore';
 
 export type AgentreeFlowNodeLauncher = (input: LaunchAgentNodeInput) => Promise<LaunchAgentNodeResult>;
@@ -15,6 +16,9 @@ export interface AgentreeFlowNodeRunnerInput {
   selectedAgentType: string;
   baseNodeId: string | null;
   baseCommitSha: string | null;
+  rootParentNodeId?: string | null;
+  rootContextParentNodeId?: string | null;
+  rootContextManifest?: ComposerContextManifest | null;
   flowId: string;
   flowRunId: string;
   threadOriginId?: string | null;
@@ -30,20 +34,26 @@ export interface AgentreeFlowNodeRunnerInput {
 export function createAgentreeFlowNodeRunner(input: AgentreeFlowNodeRunnerInput): FlowNodeRunner {
   return {
     async runNode(runInput) {
-      const parentNodeId = resolveParentNodeId(runInput.parent);
+      const isRootNode = isRootParent(runInput.parent);
+      const parentNodeId = resolveParentNodeId(runInput.parent, input.rootParentNodeId ?? null);
+      const contextParentNodeId = isRootNode
+        ? input.rootContextParentNodeId ?? parentNodeId
+        : parentNodeId;
       const launchResult = await input.launchAgentNode({
         workspaceId: input.workspaceId,
         agentId: input.selectedAgentId,
         agentType: input.selectedAgentType,
         parentNodeId,
-        contextParentNodeId: parentNodeId,
+        contextParentNodeId,
         baseNodeId: input.baseNodeId,
         baseCommitSha: input.baseCommitSha,
         prompt: runInput.prompt,
+        contextManifest: isRootNode ? input.rootContextManifest ?? null : null,
         flowId: input.flowId,
         flowRunId: input.flowRunId,
         threadOriginId: parentNodeId ? null : input.threadOriginId ?? null,
         flowNodeTemplateId: runInput.templateId,
+        flowNodeRegistryId: runInput.registryId,
         agentCliArgs: input.agentCliArgs,
         agentPromptFlag: input.agentPromptFlag,
         agentName: input.agentName,
@@ -51,15 +61,11 @@ export function createAgentreeFlowNodeRunner(input: AgentreeFlowNodeRunnerInput)
         reasoningEffort: input.reasoningEffort,
       });
       const completedMessage = await input.waitForAssistantNode(launchResult.assistantNodeId, {
-        requireCommit: requiresFinalizedCommit(runInput.templateId),
+        requireCommit: runInput.requiresFinalizedCommit ?? false,
       });
       return messageToFlowNode(completedMessage, runInput.templateId);
     },
   };
-}
-
-function requiresFinalizedCommit(templateId: string): boolean {
-  return templateId === 'Implementer' || templateId === 'Fixer';
 }
 
 export function messageToFlowNode(message: Message, templateId: string): FlowNodeValue {
@@ -73,7 +79,17 @@ export function messageToFlowNode(message: Message, templateId: string): FlowNod
   };
 }
 
-function resolveParentNodeId(parent: FlowRuntimeValue): string | null {
+function isRootParent(parent: FlowRuntimeValue): boolean {
+  if (parent === null || parent === 'root') {
+    return true;
+  }
+  return false;
+}
+
+function resolveParentNodeId(parent: FlowRuntimeValue, rootParentNodeId: string | null = null): string | null {
+  if (isRootParent(parent)) {
+    return rootParentNodeId;
+  }
   if (parent === null || parent === 'root') {
     return null;
   }

@@ -22,10 +22,7 @@ export function evaluateFlowExpression(
 
   const trimmed = expression.trim();
   if (!PATH_PATTERN.test(trimmed)) {
-    return {
-      value: null,
-      issues: [{ path: expression, message: 'Expression must be a variable path.' }],
-    };
+    return { value: expression, issues: [] };
   }
 
   return resolveFlowPath(trimmed, scope);

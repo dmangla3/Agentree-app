@@ -16,6 +16,7 @@ describe('createFlowNodeMessages', () => {
       flowRunId: 'flow-run-1',
       threadOriginId: 'thread-origin-1',
       flowNodeTemplateId: 'Reviewer',
+      flowNodeRegistryId: 'core.reviewer@1',
       llmModel: 'gpt-5.4-mini',
       reasoningEffort: 'high',
       now: '2026-05-25T08:00:00.000Z',
@@ -47,6 +48,7 @@ describe('createFlowNodeMessages', () => {
       flow_run_id: 'flow-run-1',
       flow_node_template_id: 'Reviewer',
       thread_origin_id: 'thread-origin-1',
+      flow_node_registry_id: 'core.reviewer@1',
       provider_model: 'gpt-5.4-mini',
       provider_reasoning_effort: 'high',
     }));

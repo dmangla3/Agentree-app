@@ -1,10 +1,15 @@
-import { memo, ReactNode, RefObject, TouchEvent, WheelEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, ReactNode, RefObject, SyntheticEvent, TouchEvent, WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '../../../@/components/ui/button';
 import {
     HoverCard,
     HoverCardContent,
     HoverCardTrigger,
 } from '../../../@/components/ui/hover-card';
+import {
+    Popover,
+    PopoverContent,
+    PopoverTrigger,
+} from '../../../@/components/ui/popover';
 import {
     Tooltip,
     TooltipContent,
@@ -46,13 +51,27 @@ import {
     RotateCcw,
     User,
     Leaf,
-    EyeOff,
     Eye,
+    Plus,
+    ChevronLeft,
+    ChevronRight,
+    Loader2,
+    CheckCircle2,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { Insight } from '../../stores/workspaceStore';
+import type { Insight, Message, Summary } from '../../stores/workspaceStore';
+import type { MergeTabRunIndicator } from '../../stores/integrationStore';
 import { LayoutMode, LaneStrategy } from '../../hooks/graph/useGraphLayout';
 import { AgentOperator, GroupOperator, MessageNodeType, TagOperator, TimePreset } from '../../hooks/graph/useTagFilter';
+import { NodeHoverCardContent } from '../NodeHoverCardContent';
+import { useWorkspaceProjection } from '../../hooks/useWorkspaceProjection';
+import { QUICK_REPLY_KEEP_HOVER_OPEN_EVENT } from '../../lib/quickReply';
+
+interface ThreadHoverProjectionInput {
+    messages: Message[];
+    summaries: Summary[];
+    disabledSummaryIds: Set<string>;
+}
 
 function ParallelThreadsIcon({ size = 15, strokeWidth = 2 }: { size?: number; strokeWidth?: number }) {
     return (
@@ -77,6 +96,30 @@ function ParallelThreadsIcon({ size = 15, strokeWidth = 2 }: { size?: number; st
             <circle cx="7" cy="20" r="1" fill="currentColor" stroke="none" />
             <circle cx="12" cy="20" r="1" fill="currentColor" stroke="none" />
             <circle cx="17" cy="20" r="1" fill="currentColor" stroke="none" />
+        </svg>
+    );
+}
+
+function SimpleMergeIcon({ size = 15, strokeWidth = 2 }: { size?: number; strokeWidth?: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={strokeWidth}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+            focusable="false"
+        >
+            <path d="M7 4v16" />
+            <path d="M17 8c-4.2 0-6.3 4-8.4 4" />
+            <circle cx="7" cy="4" r="1.75" fill="currentColor" stroke="none" />
+            <circle cx="17" cy="8" r="1.75" fill="currentColor" stroke="none" />
+            <circle cx="7" cy="12" r="2.15" fill="currentColor" stroke="none" />
+            <circle cx="7" cy="20" r="1.75" fill="currentColor" stroke="none" />
         </svg>
     );
 }
@@ -115,11 +158,15 @@ export interface ThreadNavigationItem {
     updatedLabel: string;
     runningCount: number;
     hidden: boolean;
+    done: boolean;
     current: boolean;
     lastUpdatedAt?: number;
+    unreadCompletedLeafCount?: number;
+    initialPreviewNodeId?: string | null;
+    previewNodeIds?: string[];
 }
 
-type ThreadListFilter = 'all' | 'visible' | 'hidden';
+type ThreadListFilter = 'all' | 'active' | 'done';
 
 export interface GraphControlsProps {
     // Refs
@@ -179,12 +226,15 @@ export interface GraphControlsProps {
     // Actions
     threadItems: ThreadNavigationItem[];
     onThreadFocus: (threadRootId: string) => void;
-    onThreadHide: (threadRootId: string) => void;
-    onThreadRestore: (threadRootId: string) => void;
-    onHideAllThreads: () => void;
-    onRestoreAllHiddenThreads: () => void;
+    onThreadDoneChange: (threadRootId: string, done: boolean) => void;
+    doneThreadsCollapsed: boolean;
+    onDoneThreadsCollapsedChange: (collapsed: boolean) => void;
     leafNodes: LeafNodeNavigationItem[];
     onLeafNodeFocus: (id: string) => void;
+    mergeSourceCount: number;
+    mergeRunIndicator: MergeTabRunIndicator;
+    mergeAttentionNonce: number;
+    renderMergePanel?: (onClose: () => void) => ReactNode;
     onResetLayout: () => void;
     isRefreshingGraph: boolean;
     autoRefreshEligible: boolean;
@@ -215,31 +265,310 @@ const formatThreadMetadata = (thread: ThreadNavigationItem) => (
     `${thread.turnCount} ${thread.turnCount === 1 ? 'turn' : 'turns'} · ${thread.commitCount} ${thread.commitCount === 1 ? 'commit' : 'commits'} · ${thread.updatedLabel}`
 );
 
+const sortThreadsByRunningThenRecent = (left: ThreadNavigationItem, right: ThreadNavigationItem) => (
+    Number(right.runningCount > 0) - Number(left.runningCount > 0) ||
+    right.runningCount - left.runningCount ||
+    (right.lastUpdatedAt ?? 0) - (left.lastUpdatedAt ?? 0) ||
+    left.threadRootId.localeCompare(right.threadRootId)
+);
+
+const sortThreadsByRecent = (left: ThreadNavigationItem, right: ThreadNavigationItem) => (
+    (right.lastUpdatedAt ?? 0) - (left.lastUpdatedAt ?? 0) ||
+    left.threadRootId.localeCompare(right.threadRootId)
+);
+
+const stopThreadHoverCardControlEvent = (event: SyntheticEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+};
+
+const stopThreadHoverCardPropagation = (event: SyntheticEvent) => {
+    event.stopPropagation();
+};
+
+function ThreadUnreadBadge({
+    count,
+    className,
+}: {
+    count: number;
+    className?: string;
+}) {
+    if (count <= 0) return null;
+    const label = `${count} completed leaf ${count === 1 ? 'node' : 'nodes'} since last visit`;
+    const displayCount = count > 99 ? '99+' : String(count);
+
+    return (
+        <span
+            aria-label={label}
+            className={cn(
+                "inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full border border-[hsl(var(--background)/0.88)] bg-[hsl(var(--app-accent)/0.94)] px-1.5 font-mono text-[9px] font-bold leading-none text-white shadow-[0_7px_16px_-12px_hsl(var(--app-accent)/0.95),inset_0_1px_0_rgba(255,255,255,0.22)] ring-1 ring-white/25 tabular-nums dark:border-[hsl(var(--app-panel-strong)/0.92)] dark:ring-white/10",
+                className,
+            )}
+        >
+            {displayCount}
+        </span>
+    );
+}
+
+interface ThreadNodeHoverCardProps {
+    thread: ThreadNavigationItem;
+    projectionInput?: ThreadHoverProjectionInput;
+    side: 'right' | 'bottom';
+    children: ReactNode;
+}
+
+interface ThreadNodeHoverCardContentProps {
+    thread: ThreadNavigationItem;
+    projectionInput: ThreadHoverProjectionInput;
+    previewNodeIds: string[];
+    previewIndex: number;
+    onPreviewIndexChange: (index: number | ((current: number) => number)) => void;
+}
+
+export function getThreadPreviewDisplayIndex(previewIndex: number, previewNodeCount: number): number {
+    if (previewNodeCount <= 0) return 0;
+    const clampedPreviewIndex = Math.min(Math.max(previewIndex, 0), previewNodeCount - 1);
+    return previewNodeCount - clampedPreviewIndex;
+}
+
+export function getThreadPreviewIndexForDisplayStep(
+    previewIndex: number,
+    previewNodeCount: number,
+    step: -1 | 1,
+): number {
+    if (previewNodeCount <= 0) return 0;
+    const clampedPreviewIndex = Math.min(Math.max(previewIndex, 0), previewNodeCount - 1);
+    const nextIndex = clampedPreviewIndex - step;
+    return Math.min(Math.max(nextIndex, 0), previewNodeCount - 1);
+}
+
+function ThreadNodeHoverCardContent({
+    thread,
+    projectionInput,
+    previewNodeIds,
+    previewIndex,
+    onPreviewIndexChange,
+}: ThreadNodeHoverCardContentProps) {
+    const projection = useWorkspaceProjection(
+        projectionInput.messages,
+        projectionInput.summaries,
+        null,
+        projectionInput.disabledSummaryIds,
+        'thread-hover',
+    );
+    const clampedPreviewIndex = Math.min(Math.max(previewIndex, 0), previewNodeIds.length - 1);
+    const previewNodeId = previewNodeIds[clampedPreviewIndex] ?? null;
+    const previewEntity = previewNodeId ? projection.entitiesByMessageId.get(previewNodeId) : null;
+    const canShowPrevious = clampedPreviewIndex > 0;
+    const canShowNext = clampedPreviewIndex < previewNodeIds.length - 1;
+    const canNavigate = previewNodeIds.length > 1;
+
+    if (!previewEntity) return null;
+
+    const navigationChrome = canNavigate ? (
+        <div
+            className="mb-2 flex items-center justify-end border-b border-[hsl(var(--app-border)/0.46)] pb-2"
+            onPointerDown={stopThreadHoverCardPropagation}
+            onMouseDown={stopThreadHoverCardPropagation}
+            onClick={stopThreadHoverCardPropagation}
+        >
+            <div className="flex h-9 items-center rounded-full border border-[hsl(var(--app-border)/0.56)] bg-[hsl(var(--background)/0.78)] p-0.5 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04),0_8px_20px_-18px_hsl(var(--foreground)/0.5)] backdrop-blur-md">
+                <button
+                    type="button"
+                    aria-label="Show older thread node"
+                    disabled={!canShowNext}
+                    onPointerDown={stopThreadHoverCardPropagation}
+                    onMouseDown={stopThreadHoverCardPropagation}
+                    onClick={(event) => {
+                        stopThreadHoverCardControlEvent(event);
+                        onPreviewIndexChange((current) => getThreadPreviewIndexForDisplayStep(current, previewNodeIds.length, -1));
+                    }}
+                    className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-[background-color,color,opacity,transform] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.62)] hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
+                >
+                    <ChevronLeft size={14} strokeWidth={2.2} />
+                </button>
+                <div className="min-w-12 px-1 text-center font-mono text-[10px] font-semibold leading-none text-muted-foreground tabular-nums">
+                    {getThreadPreviewDisplayIndex(clampedPreviewIndex, previewNodeIds.length)} / {previewNodeIds.length}
+                </div>
+                <button
+                    type="button"
+                    aria-label="Show newer thread node"
+                    disabled={!canShowPrevious}
+                    onPointerDown={stopThreadHoverCardPropagation}
+                    onMouseDown={stopThreadHoverCardPropagation}
+                    onClick={(event) => {
+                        stopThreadHoverCardControlEvent(event);
+                        onPreviewIndexChange((current) => getThreadPreviewIndexForDisplayStep(current, previewNodeIds.length, 1));
+                    }}
+                    className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-[background-color,color,opacity,transform] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.62)] hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
+                >
+                    <ChevronRight size={14} strokeWidth={2.2} />
+                </button>
+            </div>
+        </div>
+    ) : null;
+
+    return (
+        <div data-agentree-thread-hover-card="true">
+            <NodeHoverCardContent
+                key={`${thread.threadRootId}:${previewEntity.messageId ?? previewEntity.entityId}`}
+                entity={previewEntity}
+                projection={projection}
+                headerAccessory={navigationChrome}
+            />
+        </div>
+    );
+}
+
+function ThreadNodeHoverCard({
+    thread,
+    projectionInput,
+    side,
+    children,
+}: ThreadNodeHoverCardProps) {
+    const hoverContentRef = useRef<HTMLDivElement | null>(null);
+    const keepHoverOpenRef = useRef(false);
+    const [hoverOpen, setHoverOpen] = useState(false);
+    const previewNodeIds = thread.previewNodeIds ?? [];
+    const initialPreviewIndex = useMemo(() => {
+        if (previewNodeIds.length === 0) return 0;
+        const preferredIndex = thread.initialPreviewNodeId
+            ? previewNodeIds.indexOf(thread.initialPreviewNodeId)
+            : -1;
+        return preferredIndex >= 0 ? preferredIndex : 0;
+    }, [previewNodeIds, thread.initialPreviewNodeId]);
+    const [previewIndex, setPreviewIndex] = useState(initialPreviewIndex);
+
+    useEffect(() => {
+        if (!hoverOpen) return;
+        setPreviewIndex(initialPreviewIndex);
+    }, [hoverOpen, initialPreviewIndex, thread.threadRootId]);
+
+    useEffect(() => {
+        if (previewNodeIds.length === 0) return;
+        setPreviewIndex((current) => Math.min(Math.max(current, 0), previewNodeIds.length - 1));
+    }, [previewNodeIds.length]);
+
+    useEffect(() => {
+        if (!projectionInput || previewNodeIds.length === 0) return;
+        const previewNodeIdSet = new Set(previewNodeIds);
+        const keepHoverCardOpen = (event: Event) => {
+            const messageId = (event as CustomEvent<{ messageId?: string | null }>).detail?.messageId ?? null;
+            if (messageId && !previewNodeIdSet.has(messageId)) return;
+            keepHoverOpenRef.current = true;
+            setHoverOpen(true);
+        };
+        window.addEventListener(QUICK_REPLY_KEEP_HOVER_OPEN_EVENT, keepHoverCardOpen);
+        return () => {
+            window.removeEventListener(QUICK_REPLY_KEEP_HOVER_OPEN_EVENT, keepHoverCardOpen);
+        };
+    }, [previewNodeIds, projectionInput]);
+
+    if (!projectionInput || previewNodeIds.length === 0) {
+        return <>{children}</>;
+    }
+
+    return (
+        <HoverCard
+            open={hoverOpen}
+            onOpenChange={(open) => {
+                if (open) {
+                    setHoverOpen(true);
+                    return;
+                }
+                const activeElement = document.activeElement;
+                if (
+                    keepHoverOpenRef.current &&
+                    activeElement &&
+                    hoverContentRef.current?.contains(activeElement)
+                ) {
+                    setHoverOpen(true);
+                    return;
+                }
+                keepHoverOpenRef.current = false;
+                setHoverOpen(false);
+            }}
+            openDelay={520}
+            closeDelay={140}
+        >
+            <HoverCardTrigger asChild>
+                {children}
+            </HoverCardTrigger>
+            <HoverCardContent
+                ref={hoverContentRef}
+                side={side}
+                align="center"
+                sideOffset={10}
+                collisionPadding={16}
+                className="z-50 w-auto border-none bg-transparent p-0 shadow-none"
+                onPointerDownCapture={(event) => event.stopPropagation()}
+                onMouseDownCapture={(event) => event.stopPropagation()}
+                onBlurCapture={(event) => {
+                    const nextFocus = event.relatedTarget as Node | null;
+                    if (nextFocus && event.currentTarget.contains(nextFocus)) return;
+                    keepHoverOpenRef.current = false;
+                    setHoverOpen(false);
+                }}
+                onKeyDownCapture={(event) => {
+                    if (event.key !== 'Escape') return;
+                    keepHoverOpenRef.current = false;
+                    setHoverOpen(false);
+                }}
+            >
+                {hoverOpen ? (
+                    <ThreadNodeHoverCardContent
+                        thread={thread}
+                        projectionInput={projectionInput}
+                        previewNodeIds={previewNodeIds}
+                        previewIndex={previewIndex}
+                        onPreviewIndexChange={setPreviewIndex}
+                    />
+                ) : null}
+            </HoverCardContent>
+        </HoverCard>
+    );
+}
+
 interface GraphThreadTabsProps {
     threadItems: ThreadNavigationItem[];
+    threadHoverProjectionInput?: ThreadHoverProjectionInput;
     onThreadFocus: (threadRootId: string) => void;
-    onThreadHide: (threadRootId: string) => void;
-    onThreadRestore: (threadRootId: string) => void;
+    onThreadDoneChange: (threadRootId: string, done: boolean) => void;
+    doneThreadsCollapsed: boolean;
+    onDoneThreadsCollapsedChange: (collapsed: boolean) => void;
+    onCreateThread: () => void;
+    orientation?: 'horizontal' | 'vertical';
 }
 
 export const GraphThreadTabs = memo(function GraphThreadTabs({
     threadItems,
+    threadHoverProjectionInput,
     onThreadFocus,
-    onThreadHide,
-    onThreadRestore,
+    onThreadDoneChange,
+    doneThreadsCollapsed,
+    onDoneThreadsCollapsedChange,
+    onCreateThread,
+    orientation = 'horizontal',
 }: GraphThreadTabsProps) {
     const tabListRef = useRef<HTMLDivElement | null>(null);
-    const threadTabItems = useMemo(() => {
-        const byUpdatedAsc = (left: ThreadNavigationItem, right: ThreadNavigationItem) => (
-            (left.lastUpdatedAt ?? 0) - (right.lastUpdatedAt ?? 0) || left.threadRootId.localeCompare(right.threadRootId)
-        );
-        const hidden = threadItems.filter((thread) => thread.hidden).sort(byUpdatedAsc);
-        const visible = threadItems.filter((thread) => !thread.hidden).sort(byUpdatedAsc);
-        return [...hidden, ...visible];
-    }, [threadItems]);
+    const isVertical = orientation === 'vertical';
+    const activeThreadItems = useMemo(() => (
+        threadItems
+            .filter((thread) => !thread.done || thread.runningCount > 0)
+            .sort(sortThreadsByRunningThenRecent)
+    ), [threadItems]);
+    const doneThreadItems = useMemo(() => (
+        threadItems
+            .filter((thread) => thread.done && thread.runningCount === 0)
+            .sort(sortThreadsByRecent)
+    ), [threadItems]);
+    const threadTabItems = activeThreadItems;
     const threadOrderKey = useMemo(
-        () => threadTabItems.map((thread) => `${thread.threadRootId}:${thread.hidden ? 'h' : 'v'}`).join('|'),
-        [threadTabItems]
+        () => [
+            ...threadTabItems.map((thread) => `${thread.threadRootId}:${thread.done ? 'd' : 'a'}`),
+            `done:${doneThreadItems.length}:${doneThreadsCollapsed ? 'collapsed' : 'open'}`,
+        ].join('|'),
+        [doneThreadItems.length, doneThreadsCollapsed, threadTabItems]
     );
     const totalRunningAgents = useMemo(
         () => threadItems.reduce((total, thread) => total + thread.runningCount, 0),
@@ -249,105 +578,186 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
     useEffect(() => {
         const tabList = tabListRef.current;
         if (!tabList) return;
-        tabList.scrollLeft = tabList.scrollWidth;
-    }, [threadOrderKey]);
+        if (isVertical) {
+            tabList.scrollTop = tabList.scrollHeight;
+        } else {
+            tabList.scrollLeft = tabList.scrollWidth;
+        }
+    }, [isVertical, threadOrderKey]);
 
-    if (threadTabItems.length === 0) return null;
+    if (threadTabItems.length === 0 && doneThreadItems.length === 0) return null;
+
+    const renderThreadTab = (thread: ThreadNavigationItem) => {
+        const metadata = formatThreadMetadata(thread);
+        const activityLabel = `${thread.runningCount} running`;
+        const baseCommitLabel = thread.baseCommitSha ? thread.baseCommitSha.slice(0, 8) : 'unknown base';
+        const doneActionLabel = thread.done ? `Reopen thread ${thread.label}` : `Mark done ${thread.label}`;
+        const unreadCompletedLeafCount = thread.unreadCompletedLeafCount ?? 0;
+
+        const tab = (
+            <div
+                key={thread.threadRootId}
+                className={cn(
+                    "group/thread-tab relative flex shrink-0 items-stretch overflow-hidden rounded-lg border shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[border-color,background-color,box-shadow,opacity,transform] duration-150",
+                    isVertical ? "w-full min-w-0" : "min-w-[9.5rem] max-w-[14.5rem]",
+                    thread.current
+                        ? "border-[hsl(var(--app-accent)/0.34)] bg-[hsl(var(--app-accent-soft)/0.46)] text-[hsl(var(--app-accent))] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.045),0_6px_16px_-16px_hsl(var(--app-accent)/0.7)]"
+                        : "border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.54)] text-foreground hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-panel)/0.76)]",
+                    thread.done && thread.runningCount === 0 && "opacity-65"
+                )}
+            >
+                <button
+                    type="button"
+                    role="tab"
+                    aria-selected={thread.current}
+                    aria-label={`Open thread ${thread.label}`}
+                    onClick={() => onThreadFocus(thread.threadRootId)}
+                    className={cn(
+                        "min-w-0 flex-1 px-2 py-1.5 text-left outline-none transition-[opacity,transform] duration-150 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+                        unreadCompletedLeafCount > 0 && "pr-8",
+                    )}
+                >
+                    <span className="flex min-w-0 items-center gap-1.5">
+                        <span
+                            className={cn(
+                                "h-1.5 w-1.5 shrink-0 rounded-full",
+                                thread.current
+                                    ? "bg-[hsl(var(--app-accent))]"
+                                    : thread.runningCount > 0
+                                        ? "bg-[hsl(var(--app-warning))]"
+                                        : thread.done
+                                            ? "bg-muted-foreground/30"
+                                            : "bg-muted-foreground/45"
+                            )}
+                        />
+                        <span className="min-w-0 truncate text-[11px] font-semibold leading-none">
+                            {thread.label}
+                        </span>
+                        {thread.current ? (
+                            <span className="shrink-0 rounded bg-[hsl(var(--app-accent)/0.13)] px-1 py-0.5 text-[8px] font-bold leading-none">
+                                Current
+                            </span>
+                        ) : null}
+                        {thread.runningCount > 0 ? (
+                            <span className="shrink-0 rounded bg-[hsl(var(--app-warning)/0.12)] px-1 py-0.5 text-[8px] font-bold leading-none text-[hsl(var(--app-warning))]">
+                                {activityLabel}
+                            </span>
+                        ) : thread.done ? (
+                            <span className="shrink-0 rounded bg-[hsl(var(--app-bg-muted))] px-1 py-0.5 text-[8px] font-bold leading-none text-muted-foreground">
+                                Done
+                            </span>
+                        ) : null}
+                    </span>
+                    <span className="mt-1 block truncate text-[9px] leading-none text-muted-foreground">
+                        <span className="font-mono text-foreground/70">{baseCommitLabel}</span>
+                        <span className="px-1 text-muted-foreground/45">·</span>
+                        {metadata}
+                    </span>
+                </button>
+                <button
+                    type="button"
+                    onClick={() => onThreadDoneChange(thread.threadRootId, !thread.done)}
+                    aria-label={doneActionLabel}
+                    className={cn(
+                        "flex w-6 shrink-0 items-center justify-center border-l border-[hsl(var(--app-border)/0.4)] text-muted-foreground opacity-55 transition-[background-color,color,opacity] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.38)] hover:text-foreground group-hover/thread-tab:opacity-100",
+                        thread.done && "text-[hsl(var(--app-accent))] opacity-100"
+                    )}
+                >
+                    {thread.done ? <Eye size={11} strokeWidth={2} /> : <Check size={11} strokeWidth={2} />}
+                </button>
+                <ThreadUnreadBadge
+                    count={unreadCompletedLeafCount}
+                    className="pointer-events-none absolute right-[1.65rem] top-1.5"
+                />
+            </div>
+        );
+
+        return (
+            <ThreadNodeHoverCard
+                key={thread.threadRootId}
+                thread={thread}
+                projectionInput={threadHoverProjectionInput}
+                side={isVertical ? 'right' : 'bottom'}
+            >
+                {tab}
+            </ThreadNodeHoverCard>
+        );
+    };
 
     return (
-        <div className="border-b border-[hsl(var(--app-border)/0.38)] bg-[hsl(var(--app-panel-strong)/0.36)] px-3 py-1.5 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.022)]">
-            <div className="flex min-w-0 items-center gap-1.5">
-                <div className="hidden shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.48)] px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.1em] text-muted-foreground md:flex">
+        <div
+            className={cn(
+                "bg-[hsl(var(--app-panel-strong)/0.36)] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.022)]",
+                isVertical
+                    ? "flex h-full w-[16rem] shrink-0 flex-col border-r border-[hsl(var(--app-border)/0.48)] px-2 py-2"
+                    : "border-b border-[hsl(var(--app-border)/0.38)] px-3 py-1.5"
+            )}
+        >
+            <div className={cn("flex min-w-0 gap-1.5", isVertical ? "min-h-0 flex-1 flex-col" : "items-center")}>
+                <div
+                    className={cn(
+                        "shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.48)] px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.1em] text-muted-foreground",
+                        isVertical ? "flex justify-between" : "hidden md:flex"
+                    )}
+                >
                     <ParallelThreadsIcon size={11} strokeWidth={2} />
-                    Threads
+                    <span>Threads</span>
                     <span className="rounded bg-[hsl(var(--app-bg-muted)/0.72)] px-1.5 py-0.5 font-mono text-[8px] tracking-normal text-foreground/70">
                         {totalRunningAgents} running
                     </span>
                 </div>
+                {isVertical ? (
+                    <button
+                        type="button"
+                        aria-label="Start new thread"
+                        onClick={onCreateThread}
+                        className="flex h-8 w-full shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.56)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.58)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                    >
+                        <Plus size={14} strokeWidth={2.3} />
+                    </button>
+                ) : (
+                    <button
+                        type="button"
+                        aria-label="Start new thread"
+                        onClick={onCreateThread}
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.56)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.58)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                    >
+                        <Plus size={14} strokeWidth={2.3} />
+                    </button>
+                )}
                 <div
                     ref={tabListRef}
-                    className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overscroll-x-contain scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
+                    className={cn(
+                        "flex min-w-0 flex-1 gap-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent",
+                        isVertical
+                            ? "min-h-0 flex-col items-stretch overflow-y-auto overscroll-y-contain"
+                            : "items-center overflow-x-auto overscroll-x-contain"
+                    )}
                     onWheelCapture={stopNestedScrollPropagation}
                     onTouchMoveCapture={stopNestedScrollPropagation}
                     role="tablist"
                     aria-label="Graph threads"
+                    aria-orientation={orientation}
                 >
-                    {threadTabItems.map((thread) => {
-                        const metadata = formatThreadMetadata(thread);
-                        const activityLabel = `${thread.runningCount} running`;
-                        const baseCommitLabel = thread.baseCommitSha ? thread.baseCommitSha.slice(0, 8) : 'unknown base';
-
-                        return (
-                            <div
-                                key={thread.threadRootId}
-                                className={cn(
-                                    "group/thread-tab flex min-w-[9.5rem] max-w-[14.5rem] shrink-0 items-stretch overflow-hidden rounded-lg border shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[border-color,background-color,box-shadow,opacity,transform] duration-150",
-                                    thread.current
-                                        ? "border-[hsl(var(--app-accent)/0.34)] bg-[hsl(var(--app-accent-soft)/0.46)] text-[hsl(var(--app-accent))] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.045),0_6px_16px_-16px_hsl(var(--app-accent)/0.7)]"
-                                        : "border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.54)] text-foreground hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-panel)/0.76)]",
-                                    thread.hidden && "opacity-55"
-                                )}
+                    {threadTabItems.map((thread) => renderThreadTab(thread))}
+                    {isVertical && doneThreadItems.length > 0 ? (
+                        <div className="mt-2 border-t border-[hsl(var(--app-border)/0.48)] pt-2">
+                            <button
+                                type="button"
+                                aria-expanded={!doneThreadsCollapsed}
+                                onClick={() => onDoneThreadsCollapsedChange(!doneThreadsCollapsed)}
+                                className="flex w-full items-center justify-between rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground transition-colors hover:bg-[hsl(var(--app-panel)/0.7)] hover:text-foreground"
                             >
-                                <button
-                                    type="button"
-                                    role="tab"
-                                    aria-selected={thread.current}
-                                    aria-label={`Open thread ${thread.label}`}
-                                    disabled={thread.hidden}
-                                    onClick={() => onThreadFocus(thread.threadRootId)}
-                                    className="min-w-0 flex-1 px-2 py-1.5 text-left outline-none transition-[opacity,transform] duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-                                >
-                                    <span className="flex min-w-0 items-center gap-1.5">
-                                        <span
-                                            className={cn(
-                                                "h-1.5 w-1.5 shrink-0 rounded-full",
-                                                thread.current
-                                                    ? "bg-[hsl(var(--app-accent))]"
-                                                    : thread.runningCount > 0
-                                                        ? "bg-[hsl(var(--app-warning))]"
-                                                        : "bg-muted-foreground/45"
-                                            )}
-                                        />
-                                        <span className="min-w-0 truncate text-[11px] font-semibold leading-none">
-                                            {thread.label}
-                                        </span>
-                                        {thread.current ? (
-                                            <span className="shrink-0 rounded bg-[hsl(var(--app-accent)/0.13)] px-1 py-0.5 text-[8px] font-bold leading-none">
-                                                Current
-                                            </span>
-                                        ) : null}
-                                        {thread.runningCount > 0 ? (
-                                            <span className="shrink-0 rounded bg-[hsl(var(--app-warning)/0.12)] px-1 py-0.5 text-[8px] font-bold leading-none text-[hsl(var(--app-warning))]">
-                                                {activityLabel}
-                                            </span>
-                                        ) : null}
-                                    </span>
-                                    <span className="mt-1 block truncate text-[9px] leading-none text-muted-foreground">
-                                        <span className="font-mono text-foreground/70">{baseCommitLabel}</span>
-                                        <span className="px-1 text-muted-foreground/45">·</span>
-                                        {metadata}
-                                    </span>
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        if (thread.hidden) {
-                                            onThreadRestore(thread.threadRootId);
-                                        } else {
-                                            onThreadHide(thread.threadRootId);
-                                        }
-                                    }}
-                                    aria-label={`${thread.hidden ? 'Restore' : 'Hide'} thread ${thread.label}`}
-                                    className={cn(
-                                        "flex w-6 shrink-0 items-center justify-center border-l border-[hsl(var(--app-border)/0.4)] text-muted-foreground opacity-55 transition-[background-color,color,opacity] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.38)] hover:text-foreground group-hover/thread-tab:opacity-100",
-                                        thread.hidden && "text-[hsl(var(--app-accent))] opacity-100"
-                                    )}
-                                >
-                                    {thread.hidden ? <Eye size={11} strokeWidth={2} /> : <EyeOff size={11} strokeWidth={2} />}
-                                </button>
-                            </div>
-                        );
-                    })}
+                                <span>Done threads</span>
+                                <span className="font-mono tracking-normal">{doneThreadItems.length}</span>
+                            </button>
+                            {!doneThreadsCollapsed ? (
+                                <div className="mt-1 flex flex-col gap-1">
+                                    {doneThreadItems.map((thread) => renderThreadTab(thread))}
+                                </div>
+                            ) : null}
+                        </div>
+                    ) : null}
                 </div>
             </div>
         </div>
@@ -407,12 +817,15 @@ export function GraphControls({
     onToggleShowInsightsInGraph,
     threadItems,
     onThreadFocus,
-    onThreadHide,
-    onThreadRestore,
-    onHideAllThreads,
-    onRestoreAllHiddenThreads,
+    onThreadDoneChange,
+    doneThreadsCollapsed,
+    onDoneThreadsCollapsedChange,
     leafNodes,
     onLeafNodeFocus,
+    mergeSourceCount,
+    mergeRunIndicator,
+    mergeAttentionNonce,
+    renderMergePanel,
     onResetLayout,
     isRefreshingGraph,
     autoRefreshEligible,
@@ -424,6 +837,25 @@ export function GraphControls({
     const [tagSearch, setTagSearch] = useState('');
     const [threadListFilter, setThreadListFilter] = useState<ThreadListFilter>('all');
     const [threadDropdownOpen, setThreadDropdownOpen] = useState(false);
+    const [mergeDropdownOpen, setMergeDropdownOpen] = useState(false);
+    const [mergeAttentionActive, setMergeAttentionActive] = useState(false);
+    const lastMergeAttentionNonceRef = useRef(mergeAttentionNonce);
+    const [localDoneThreadsCollapsed, setLocalDoneThreadsCollapsed] = useState(doneThreadsCollapsed);
+    useEffect(() => {
+        setLocalDoneThreadsCollapsed(doneThreadsCollapsed);
+    }, [doneThreadsCollapsed]);
+    useEffect(() => {
+        if (mergeAttentionNonce <= 0 || mergeAttentionNonce === lastMergeAttentionNonceRef.current) return;
+        lastMergeAttentionNonceRef.current = mergeAttentionNonce;
+        setMergeDropdownOpen(true);
+        setMergeAttentionActive(true);
+        const timeoutId = window.setTimeout(() => setMergeAttentionActive(false), 1600);
+        return () => window.clearTimeout(timeoutId);
+    }, [mergeAttentionNonce]);
+    const handleDoneThreadsCollapsedChange = useCallback((collapsed: boolean) => {
+        setLocalDoneThreadsCollapsed(collapsed);
+        onDoneThreadsCollapsedChange(collapsed);
+    }, [onDoneThreadsCollapsedChange]);
     const filteredAgentIds = useMemo(() => {
         const q = agentSearch.trim().toLowerCase();
         if (!q) return uniqueAgentIds;
@@ -464,17 +896,31 @@ export function GraphControls({
         if (!nextDueAt) return null;
         return formatCountdownLabel(nextDueAt - clockNow);
     }, [autoRefreshEligible, clockNow, syncStatusItems]);
-    const hiddenThreadCount = useMemo(() => threadItems.filter((thread) => thread.hidden).length, [threadItems]);
-    const visibleThreadCount = threadItems.length - hiddenThreadCount;
-    const filteredThreadItems = useMemo(() => {
-        if (threadListFilter === 'visible') {
-            return threadItems.filter((thread) => !thread.hidden);
-        }
-        if (threadListFilter === 'hidden') {
-            return threadItems.filter((thread) => thread.hidden);
-        }
-        return threadItems;
-    }, [threadItems, threadListFilter]);
+    const openThreadItems = useMemo(() => (
+        threadItems
+            .filter((thread) => !thread.done || thread.runningCount > 0)
+            .sort(sortThreadsByRunningThenRecent)
+    ), [threadItems]);
+    const doneThreadItems = useMemo(() => (
+        threadItems
+            .filter((thread) => thread.done && thread.runningCount === 0)
+            .sort(sortThreadsByRecent)
+    ), [threadItems]);
+    const activeThreadCount = openThreadItems.length;
+    const doneThreadCount = doneThreadItems.length;
+    const filteredOpenThreadItems = useMemo(() => {
+        if (threadListFilter === 'done') return [];
+        return openThreadItems;
+    }, [openThreadItems, threadListFilter]);
+    const filteredDoneThreadItems = useMemo(() => {
+        if (threadListFilter === 'active') return [];
+        if (threadListFilter === 'done') return doneThreadItems;
+        return localDoneThreadsCollapsed ? [] : doneThreadItems;
+    }, [doneThreadItems, localDoneThreadsCollapsed, threadListFilter]);
+    const hasFilteredThreads = filteredOpenThreadItems.length > 0 || filteredDoneThreadItems.length > 0;
+    const showDoneThreadGroup = doneThreadItems.length > 0 && threadListFilter !== 'active';
+    const hasVisibleDoneThreadRows = filteredDoneThreadItems.length > 0;
+    const hasCollapsedDoneThreadRows = showDoneThreadGroup && !hasVisibleDoneThreadRows && threadListFilter === 'all';
     const hasCurrentThread = threadItems.some((thread) => thread.current);
     const hasActiveThread = threadItems.some((thread) => thread.runningCount > 0);
     const timeLabel = timePreset === 'all'
@@ -506,6 +952,12 @@ export function GraphControls({
         tone: string;
     }> = [
         {
+            id: 'thread_link',
+            label: 'Thread link',
+            icon: <GitBranch size={11} />,
+            tone: 'bg-cyan-100 dark:bg-cyan-900/30 text-cyan-600 dark:text-cyan-300',
+        },
+        {
             id: 'user_message',
             label: 'User',
             icon: <User size={11} />,
@@ -535,6 +987,17 @@ export function GraphControls({
     const iconButtonGhost = cn("h-8 w-8 px-0", toolbarButtonClass);
     const iconContainer = "flex items-center justify-center transition-transform duration-150 group-active:scale-95";
     const iconGlow = "absolute inset-0 rounded-lg bg-[hsl(var(--app-accent-soft)/0.28)] opacity-0 transition-opacity duration-150 group-hover:opacity-100";
+    const mergeButtonActive = mergeDropdownOpen || mergeSourceCount > 0 || mergeRunIndicator !== 'idle';
+    const mergeAriaLabel = mergeSourceCount > 0
+        ? `Merge panel (${mergeSourceCount} ${mergeSourceCount === 1 ? 'source' : 'sources'})`
+        : 'Merge panel';
+    const mergeTooltipLabel = mergeRunIndicator === 'running'
+        ? 'Merge review or apply is running.'
+        : mergeRunIndicator === 'completed'
+            ? 'Merge review completed. Review and apply from this dropdown.'
+            : mergeSourceCount > 0
+                ? `${mergeSourceCount} merge ${mergeSourceCount === 1 ? 'source' : 'sources'} selected.`
+                : 'Open the merge workflow without switching to chat.';
     const leafStatusToneClass = {
         active: 'bg-amber-500/12 text-amber-700 dark:bg-amber-400/12 dark:text-amber-300',
         success: 'bg-emerald-500/12 text-emerald-700 dark:bg-emerald-400/12 dark:text-emerald-300',
@@ -543,8 +1006,8 @@ export function GraphControls({
     };
     const threadListFilterOptions: Array<{ id: ThreadListFilter; label: string; count: number }> = [
         { id: 'all', label: 'All', count: threadItems.length },
-        { id: 'visible', label: 'Visible', count: visibleThreadCount },
-        { id: 'hidden', label: 'Hidden', count: hiddenThreadCount },
+        { id: 'active', label: 'Active', count: activeThreadCount },
+        { id: 'done', label: 'Done', count: doneThreadCount },
     ];
     return (
         <div
@@ -1008,8 +1471,8 @@ export function GraphControls({
                                             <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--background)/0.92)] px-1 text-[9px] font-semibold leading-none tabular-nums text-foreground shadow-sm">
                                                 {threadItems.length}
                                             </span>
-                                            {hiddenThreadCount > 0 ? (
-                                                <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-[hsl(var(--background))] bg-[hsl(var(--app-warning))]" />
+                                            {doneThreadCount > 0 ? (
+                                                <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-[hsl(var(--background))] bg-[hsl(var(--app-success))]" />
                                             ) : null}
                                         </button>
                                     </DropdownMenuTrigger>
@@ -1035,25 +1498,8 @@ export function GraphControls({
                                                 </p>
                                             </div>
                                         </div>
-                                        <div className="flex shrink-0 items-center gap-1">
-                                            {visibleThreadCount > 0 ? (
-                                                <button
-                                                    type="button"
-                                                    onClick={onHideAllThreads}
-                                                    className="rounded-md px-2 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                                                >
-                                                    Hide all
-                                                </button>
-                                            ) : null}
-                                            {hiddenThreadCount > 0 ? (
-                                                <button
-                                                    type="button"
-                                                    onClick={onRestoreAllHiddenThreads}
-                                                    className="rounded-md px-2 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                                                >
-                                                    Restore hidden
-                                                </button>
-                                            ) : null}
+                                        <div className="flex shrink-0 items-center gap-1 text-[11px] font-semibold text-muted-foreground">
+                                            {activeThreadCount} active
                                         </div>
                                     </div>
                                     <div className="mt-3 grid grid-cols-3 gap-1 rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.72)] p-1 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]">
@@ -1090,14 +1536,16 @@ export function GraphControls({
                                     onWheelCapture={stopNestedScrollPropagation}
                                     onTouchMoveCapture={stopNestedScrollPropagation}
                                 >
-                                    {filteredThreadItems.length === 0 ? (
+                                    {!hasFilteredThreads && !hasCollapsedDoneThreadRows ? (
                                         <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-                                            No {threadListFilter === 'hidden' ? 'hidden' : 'visible'} threads.
+                                            No {threadListFilter === 'done' ? 'done' : 'active'} threads.
                                         </div>
                                     ) : null}
-                                    {filteredThreadItems.map((thread) => {
+                                    {filteredOpenThreadItems.map((thread) => {
                                         const metadata = formatThreadMetadata(thread);
                                         const activityLabel = thread.runningCount > 1 ? `${thread.runningCount} running` : 'Active';
+                                        const actionLabel = thread.done ? `Reopen thread ${thread.label}` : `Mark done ${thread.label}`;
+                                        const unreadCompletedLeafCount = thread.unreadCompletedLeafCount ?? 0;
 
                                         return (
                                             <div
@@ -1107,7 +1555,7 @@ export function GraphControls({
                                                     thread.current
                                                         ? "bg-[hsl(var(--app-accent-soft)/0.58)]"
                                                         : "hover:bg-[hsl(var(--app-accent-soft)/0.34)]",
-                                                    thread.hidden && "opacity-70"
+                                                    thread.done && "opacity-80"
                                                 )}
                                             >
                                                 <button
@@ -1116,9 +1564,8 @@ export function GraphControls({
                                                         onThreadFocus(thread.threadRootId);
                                                         setThreadDropdownOpen(false);
                                                     }}
-                                                    disabled={thread.hidden}
                                                     aria-label={`Open thread ${thread.label}`}
-                                                    className="min-w-0 flex-1 rounded-md text-left outline-none transition-opacity disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                                                    className="min-w-0 flex-1 rounded-md text-left outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
                                                 >
                                                     <span className="flex min-w-0 items-center gap-1.5">
                                                         <span className="min-w-0 truncate text-xs font-semibold text-foreground">
@@ -1129,14 +1576,13 @@ export function GraphControls({
                                                                 Current
                                                             </span>
                                                         ) : null}
-                                                        {thread.hidden ? (
-                                                            <span className="shrink-0 rounded-md bg-[hsl(var(--app-bg-muted))] px-1.5 py-0.5 text-[9px] font-semibold leading-none text-muted-foreground">
-                                                                Hidden
-                                                            </span>
-                                                        ) : null}
                                                         {thread.runningCount > 0 ? (
                                                             <span className="shrink-0 rounded-md bg-[hsl(var(--app-warning)/0.12)] px-1.5 py-0.5 text-[9px] font-semibold leading-none text-[hsl(var(--app-warning))]">
                                                                 {activityLabel}
+                                                            </span>
+                                                        ) : thread.done ? (
+                                                            <span className="shrink-0 rounded-md bg-[hsl(var(--app-bg-muted))] px-1.5 py-0.5 text-[9px] font-semibold leading-none text-muted-foreground">
+                                                                Done
                                                             </span>
                                                         ) : null}
                                                     </span>
@@ -1144,32 +1590,165 @@ export function GraphControls({
                                                         {metadata}
                                                     </span>
                                                 </button>
+                                                <ThreadUnreadBadge
+                                                    count={unreadCompletedLeafCount}
+                                                    className="shrink-0"
+                                                />
                                                 <button
                                                     type="button"
-                                                    onClick={() => {
-                                                        if (thread.hidden) {
-                                                            onThreadRestore(thread.threadRootId);
-                                                        } else {
-                                                            onThreadHide(thread.threadRootId);
-                                                        }
-                                                    }}
-                                                    aria-label={`${thread.hidden ? 'Restore' : 'Hide'} thread ${thread.label}`}
+                                                    onClick={() => onThreadDoneChange(thread.threadRootId, !thread.done)}
+                                                    aria-label={actionLabel}
                                                     className={cn(
                                                         "shrink-0 rounded-md px-2 py-1 text-[10px] font-semibold transition-colors",
-                                                        thread.hidden
+                                                        thread.done
                                                             ? "text-[hsl(var(--app-accent))] hover:bg-[hsl(var(--app-accent-soft)/0.58)]"
                                                             : "text-muted-foreground opacity-70 hover:bg-muted hover:text-foreground group-hover/thread:opacity-100"
                                                     )}
                                                 >
-                                                    {thread.hidden ? 'Restore' : 'Hide'}
+                                                    {thread.done ? 'Reopen' : 'Done'}
                                                 </button>
                                             </div>
                                         );
                                     })}
+                                    {showDoneThreadGroup ? (
+                                        <div className="mt-1 border-t border-[hsl(var(--app-border)/0.5)] pt-1.5">
+                                            <div className="flex items-center justify-between px-2 py-1">
+                                                <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+                                                    Done threads
+                                                </span>
+                                                {threadListFilter === 'all' ? (
+                                                    <button
+                                                        type="button"
+                                                        aria-label={localDoneThreadsCollapsed ? 'Show done threads' : 'Hide done threads'}
+                                                        onClick={() => handleDoneThreadsCollapsedChange(!localDoneThreadsCollapsed)}
+                                                        className="rounded-md px-2 py-1 text-[10px] font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                                    >
+                                                        {localDoneThreadsCollapsed ? 'Show' : 'Hide'}
+                                                    </button>
+                                                ) : null}
+                                            </div>
+                                            {hasVisibleDoneThreadRows ? (
+                                                <div className="mt-0.5 space-y-0.5">
+                                                    {filteredDoneThreadItems.map((thread) => {
+                                                        const metadata = formatThreadMetadata(thread);
+                                                        const unreadCompletedLeafCount = thread.unreadCompletedLeafCount ?? 0;
+
+                                                        return (
+                                                            <div
+                                                                key={thread.threadRootId}
+                                                                className={cn(
+                                                                    "group/thread flex items-center gap-2 rounded-lg px-2 py-2 opacity-78 transition-colors",
+                                                                    thread.current
+                                                                        ? "bg-[hsl(var(--app-accent-soft)/0.58)]"
+                                                                        : "hover:bg-[hsl(var(--app-accent-soft)/0.34)]"
+                                                                )}
+                                                            >
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        onThreadFocus(thread.threadRootId);
+                                                                        setThreadDropdownOpen(false);
+                                                                    }}
+                                                                    aria-label={`Open thread ${thread.label}`}
+                                                                    className="min-w-0 flex-1 rounded-md text-left outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                                                                >
+                                                                    <span className="flex min-w-0 items-center gap-1.5">
+                                                                        <span className="min-w-0 truncate text-xs font-semibold text-foreground">
+                                                                            {thread.label}
+                                                                        </span>
+                                                                        <span className="shrink-0 rounded-md bg-[hsl(var(--app-bg-muted))] px-1.5 py-0.5 text-[9px] font-semibold leading-none text-muted-foreground">
+                                                                            Done
+                                                                        </span>
+                                                                    </span>
+                                                                    <span className="mt-1 block truncate text-[11px] leading-none text-muted-foreground">
+                                                                        {metadata}
+                                                                    </span>
+                                                                </button>
+                                                                <ThreadUnreadBadge
+                                                                    count={unreadCompletedLeafCount}
+                                                                    className="shrink-0"
+                                                                />
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => onThreadDoneChange(thread.threadRootId, false)}
+                                                                    aria-label={`Reopen thread ${thread.label}`}
+                                                                    className="shrink-0 rounded-md px-2 py-1 text-[10px] font-semibold text-[hsl(var(--app-accent))] transition-colors hover:bg-[hsl(var(--app-accent-soft)/0.58)]"
+                                                                >
+                                                                    Reopen
+                                                                </button>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                    ) : null}
                                 </div>
                             </DropdownMenuContent>
                         </DropdownMenu>
                     ) : null}
+
+                    {/* Merge workflow */}
+                    <Popover open={mergeDropdownOpen} onOpenChange={setMergeDropdownOpen}>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <PopoverTrigger asChild>
+                                    <button
+                                        type="button"
+                                        className={cn(
+                                            iconButtonBase,
+                                            toolbarButtonClass,
+                                            "h-8 w-8 px-0",
+                                            mergeButtonActive && activeToolbarButtonClass,
+                                            mergeRunIndicator === 'running' && "border-[hsl(var(--app-warning)/0.38)] bg-[hsl(var(--app-warning)/0.1)] text-[hsl(var(--app-warning))]",
+                                            mergeAttentionActive && "animate-pulse"
+                                        )}
+                                        aria-label={mergeAriaLabel}
+                                    >
+                                        <span className={iconGlow} />
+                                        <span className={iconContainer}>
+                                            <SimpleMergeIcon size={16} strokeWidth={2} />
+                                        </span>
+                                        {mergeSourceCount > 0 ? (
+                                            <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--background)/0.94)] px-1 text-[9px] font-semibold leading-none tabular-nums text-foreground shadow-sm">
+                                                {mergeSourceCount > 99 ? '99+' : mergeSourceCount}
+                                            </span>
+                                        ) : null}
+                                        {mergeRunIndicator === 'running' ? (
+                                            <span className="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full border border-[hsl(var(--background))] bg-[hsl(var(--app-warning))] text-white">
+                                                <Loader2 size={9} className="animate-spin" strokeWidth={2.4} />
+                                            </span>
+                                        ) : mergeRunIndicator === 'completed' ? (
+                                            <span className="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full border border-[hsl(var(--background))] bg-[hsl(var(--app-success))] text-white">
+                                                <CheckCircle2 size={10} strokeWidth={2.4} />
+                                            </span>
+                                        ) : null}
+                                    </button>
+                                </PopoverTrigger>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" align="end">
+                                {mergeTooltipLabel}
+                            </TooltipContent>
+                        </Tooltip>
+                        <PopoverContent
+                            align="end"
+                            side="bottom"
+                            sideOffset={8}
+                            collisionPadding={12}
+                            className="h-[min(760px,calc(100vh-5rem))] w-[min(1020px,calc(100vw-2rem))] overflow-hidden rounded-[18px] border border-[hsl(var(--app-border)/0.7)] bg-[linear-gradient(180deg,hsl(var(--app-panel)/0.98),hsl(var(--app-bg)/0.96))] p-0 shadow-[0_32px_90px_-42px_hsl(var(--foreground)/0.55),0_12px_28px_-22px_hsl(var(--foreground)/0.36),inset_0_1px_0_hsl(var(--foreground)/0.045)] backdrop-blur-xl dark:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-bg)/0.98))]"
+                            onOpenAutoFocus={(event) => event.preventDefault()}
+                            onWheelCapture={stopNestedScrollPropagation}
+                            onTouchMoveCapture={stopNestedScrollPropagation}
+                        >
+                            {renderMergePanel ? (
+                                renderMergePanel(() => setMergeDropdownOpen(false))
+                            ) : (
+                                <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
+                                    Merge panel is unavailable in this view.
+                                </div>
+                            )}
+                        </PopoverContent>
+                    </Popover>
 
                     {/* Leaf nodes */}
                     <DropdownMenu>

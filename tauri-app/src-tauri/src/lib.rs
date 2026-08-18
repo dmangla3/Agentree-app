@@ -17,6 +17,7 @@ use tauri_specta::{collect_commands, Builder as SpectaBuilder, ErrorHandlingMode
 
 mod agents;
 mod auth_callback;
+mod cli_path;
 mod command_guards;
 mod config;
 mod db;

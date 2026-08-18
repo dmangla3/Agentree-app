@@ -372,7 +372,8 @@ export const buildSendFlowSessionReport = (events: PerfEvent[]): SendFlowSession
   const flows = flowIds.map((flowId) => buildSummary(flowId, validEvents));
   const eventLoopStalls = validEvents.filter((event) => event.name === 'runtime.event-loop-stall');
   const rafStalls = validEvents.filter((event) => event.name === 'runtime.raf-stall');
-  const longTasks = validEvents.filter((event) => event.name === 'browser.long-task');
+  const longTasks = validEvents.filter((event) => event.name === 'browser.long-task' || event.name === 'runtime.long-task');
+  const longAnimationFrames = validEvents.filter((event) => event.name === 'runtime.long-animation-frame');
   return {
     generatedAt: new Date().toISOString(),
     sessionId: flows[0]?.sessionId ?? null,
@@ -387,6 +388,8 @@ export const buildSendFlowSessionReport = (events: PerfEvent[]): SendFlowSession
       maxRafStallMs: maxDuration(rafStalls),
       longTaskCount: longTasks.length,
       maxLongTaskMs: maxDuration(longTasks),
+      longAnimationFrameCount: longAnimationFrames.length,
+      maxLongAnimationFrameMs: maxDuration(longAnimationFrames),
     },
     findings: flows.flatMap((flow) => flow.findings),
     flows,

@@ -19,63 +19,17 @@ inputs:
     max: 5
 
 nodes:
-  - id: Implementer
-    params: [input]
-    parent: root
-    prompt: |
-      Please implement:
-      {{ input }}
+  - use: core.implementer@1
+    as: Implementer
 
-  - id: Judge
-    params: [implementations, spawn_parent]
-    parent: "{{ spawn_parent }}"
-    returns:
-      selected: node
-      verdict: [pass, fail]
-    prompt: |
-      Compare these implementations and choose the best one:
+  - use: core.selector@1
+    as: Judge
 
-      {{ implementations }}
+  - use: core.reviewer@1
+    as: Reviewer
 
-      End with:
-
-      selected: <one implementation node>
-      verdict: pass | fail
-
-  - id: Reviewer
-    params: [input, commit, fixer_node, spawn_parent]
-    parent: "{{ spawn_parent }}"
-    returns:
-      verdict: [pass, fail]
-    prompt: |
-      Review this implementation against the original request.
-
-      Original request:
-      {{ input }}
-
-      Commit:
-      {{ commit }}
-
-      Latest fixer response, if any:
-      {{ fixer_node }}
-
-      Provide feedback normally.
-      End with:
-
-      verdict: pass | fail
-
-  - id: Fixer
-    params: [reviewer_node, spawn_parent]
-    parent: "{{ spawn_parent }}"
-    prompt: |
-      Please check this feedback on your implementation.
-      You inherit implementation context from your parent.
-
-      Feedback:
-      {{ reviewer_node }}
-
-      If you disagree with any feedback, explain why.
-      Otherwise implement the fix.
+  - use: core.fixer@1
+    as: Fixer
 
 run:
   - set: implementations
@@ -83,14 +37,15 @@ run:
       count: input.count
       call: Implementer
       args:
-        input: input.input
+        request: input.input
       parent: root
 
   - set: judge
     call: Judge
+    parent: root
     args:
-      implementations: implementations
-      spawn_parent: root
+      request: input.input
+      candidates: implementations
 
   - set: implementation
     value: judge.selected
@@ -108,7 +63,7 @@ run:
   - set: reviewer_parent
     value: judge
 
-  - set: fixer_node
+  - set: latest_fix
     value: null
 
   - loop:
@@ -116,11 +71,13 @@ run:
       steps:
         - set: reviewer
           call: Reviewer
+          parent: reviewer_parent
           args:
-            input: input.input
+            request: input.input
+            target_node: implementation
             commit: commit
-            fixer_node: fixer_node
-            spawn_parent: reviewer_parent
+            latest_fix: latest_fix
+            criteria: "Review correctness against the original request."
 
         - if: reviewer.verdict == pass
           then:
@@ -128,14 +85,14 @@ run:
 
         - set: fixer
           call: Fixer
+          parent: fixer_parent
           args:
-            reviewer_node: reviewer
-            spawn_parent: fixer_parent
+            review: reviewer
 
         - set: commit
           value: fixer.commit
 
-        - set: fixer_node
+        - set: latest_fix
           value: fixer
 
         - set: fixer_parent

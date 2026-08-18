@@ -32,18 +32,18 @@ export const TimelineSummaryRow = memo(({
       showSelectionControl={showSelectionControl}
       disableHoverCard={disableHoverCard}
       hoverCardContent={hoverCardContent}
-      className={cn(ROLE_COLORS.summary_block.bg, "border-dashed border-l-2 mx-2")}
+      className="mx-1 border-dashed border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.46)] dark:bg-white/[0.025]"
     >
       <div className="flex-1 flex flex-col gap-1 min-w-0">
-        <p className="text-sm font-medium text-slate-700 dark:text-slate-300 italic whitespace-normal break-words leading-snug line-clamp-2">
+        <p className="whitespace-normal break-words text-sm font-medium italic leading-snug text-muted-foreground line-clamp-2">
           "{entity.preview}"
         </p>
-        <div className="flex flex-wrap items-center gap-2 mt-1 text-[10px] text-slate-500 w-full">
-          <div className="flex min-w-0 items-center gap-1 p-0.5 px-1 bg-violet-100 dark:bg-violet-900/40 rounded text-violet-700 dark:text-violet-400">
+        <div className="mt-1 flex w-full flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
+          <div className={cn("flex min-w-0 items-center gap-1 rounded border border-[hsl(var(--app-border)/0.48)] px-1 py-0.5", ROLE_COLORS.summary_block.chip)}>
             <Layers size={10} />
             <span className="font-semibold text-[9px] uppercase tracking-wider">Summary</span>
           </div>
-          <div className="ml-auto flex shrink-0 items-center text-[10px] font-medium text-slate-400 tabular-nums">
+          <div className="ml-auto flex shrink-0 items-center text-[10px] font-medium text-muted-foreground/70 tabular-nums">
             {timestamp}
           </div>
         </div>

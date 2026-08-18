@@ -1,5 +1,6 @@
 import { devInfo } from '../lib/appLogger';
 import { exportPerfCaptureBundle } from './captureExport';
+import { startFreezeAttributionProbe, type FreezeAttributionProbeController } from './freezeAttributionProbe';
 import { startRuntimeFreezeProbe, type RuntimeFreezeProbeController } from './freezeProbe';
 import type { PerfEvent, PerfExportStatus, PerfSession } from './types';
 
@@ -15,6 +16,7 @@ const PERF_STORAGE_WRITE_DELAY_MS = 500;
 let storedEventsCache: PerfEvent[] | null = null;
 let storedEventsWriteTimer: number | null = null;
 let runtimeFreezeProbe: RuntimeFreezeProbeController | null = null;
+let freezeAttributionProbe: FreezeAttributionProbeController | null = null;
 
 declare global {
   interface Window {
@@ -193,6 +195,12 @@ const stopRuntimeFreezeProbe = () => {
   runtimeFreezeProbe = null;
 };
 
+const stopFreezeAttributionProbe = () => {
+  if (!freezeAttributionProbe) return;
+  freezeAttributionProbe.stop();
+  freezeAttributionProbe = null;
+};
+
 export const getAppStartTimeMs = (): number | null => {
   if (typeof window === 'undefined') return null;
   const raw = window.__APP_START_TIME__;
@@ -233,6 +241,7 @@ export const recordPerfEvent = (
 
 export const startPerfCapture = (label = 'send-message-capture'): PerfSession => {
   stopRuntimeFreezeProbe();
+  stopFreezeAttributionProbe();
   const session: PerfSession = {
     id: `perf-${Date.now()}`,
     label,
@@ -251,6 +260,7 @@ export const startPerfCapture = (label = 'send-message-capture'): PerfSession =>
     startedAt: session.startedAt,
   }, { source: 'perf-recorder' });
   runtimeFreezeProbe = startRuntimeFreezeProbe(recordPerfEvent);
+  freezeAttributionProbe = startFreezeAttributionProbe(recordPerfEvent);
   return session;
 };
 
@@ -263,6 +273,7 @@ export const stopPerfCapture = async () => {
     stoppedAt,
   }, { source: 'perf-recorder' });
   stopRuntimeFreezeProbe();
+  stopFreezeAttributionProbe();
   flushStoredEvents();
   const sessionEvents = readStoredEvents().filter((event) => event.sessionId === activeSession.id);
   writeActiveSession(null);

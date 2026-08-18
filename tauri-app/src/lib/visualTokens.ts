@@ -23,6 +23,13 @@ export const ROLE_COLORS: Record<CanonicalNodeKind, { bg: string, text: string, 
     accent: 'bg-[hsl(var(--app-muted-foreground))]',
     chip: 'bg-[hsl(var(--app-bg-muted))] text-muted-foreground',
   },
+  thread_link: {
+    bg: 'bg-cyan-50/90 dark:bg-cyan-950/40',
+    text: 'text-cyan-950 dark:text-cyan-50',
+    border: 'border-cyan-200/80 dark:border-cyan-900/70',
+    accent: 'bg-cyan-600',
+    chip: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-200',
+  },
   user_message: {
     bg: 'bg-[hsl(var(--app-bg-muted)/0.9)]',
     text: 'text-foreground',

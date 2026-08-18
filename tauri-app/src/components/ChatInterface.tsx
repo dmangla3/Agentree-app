@@ -15,6 +15,7 @@ import { useIntegrationStore } from '../stores/integrationStore';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { useToastHelpers } from './Toast';
 import { agentClient } from '../lib/agentClient';
+import { reconcileTerminalAgentRunsFromMessages } from '../lib/agentRunTerminalReconciliation';
 
 import { ChatNodeDispatcher } from './nodes/chat/ChatNodeDispatcher';
 import { ChatTurnGroupLayout } from './nodes/chat/ChatTurnGroupLayout';
@@ -123,6 +124,9 @@ export function ChatInterface() {
   const snapshotSummaries = useMemo(() => graphSnapshotToSummaries(graphSnapshotQuery.data), [graphSnapshotQuery.data]);
   const persistedMessages = useMemo(() => (messagesQuery.data ?? []) as Message[], [messagesQuery.data]);
   const messages = useWorkspaceMessages(selectedWorkspaceId, persistedMessages, localNodesQuery.data);
+  useEffect(() => {
+    reconcileTerminalAgentRunsFromMessages(messages);
+  }, [messages]);
   const branchPointers = useMemo(() => branchPointersData ?? [], [branchPointersData]);
   const summaries = useMemo(() => (summariesQuery.data ?? snapshotSummaries) as Summary[], [snapshotSummaries, summariesQuery.data]);
 

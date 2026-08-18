@@ -11,6 +11,11 @@ import {
   shouldSkipActiveGraphClickCentering,
   shouldTreatGraphMoveAsViewportInteraction,
 } from './GraphView';
+import {
+  buildGraphTranslateExtent,
+  clampGraphViewportToNodeBounds,
+  GRAPH_VIEWPORT_NODE_BOUNDS_PADDING,
+} from '../lib/graphViewportBounds';
 
 const makeMessage = (
   id: string,
@@ -133,11 +138,101 @@ describe('clampGraphZoom', () => {
   });
 });
 
+describe('buildGraphTranslateExtent', () => {
+  it('uses padded laid-out graph bounds for viewport panning', () => {
+    expect(buildGraphTranslateExtent([
+      {
+        id: 'a',
+        position: { x: 100, y: 200 },
+        data: {},
+        width: 150,
+        height: 80,
+      },
+      {
+        id: 'b',
+        position: { x: 500, y: 700 },
+        data: {},
+        style: { width: 240, height: 160 },
+      },
+    ])).toEqual([
+      [100 - GRAPH_VIEWPORT_NODE_BOUNDS_PADDING, 200 - GRAPH_VIEWPORT_NODE_BOUNDS_PADDING],
+      [740 + GRAPH_VIEWPORT_NODE_BOUNDS_PADDING, 860 + GRAPH_VIEWPORT_NODE_BOUNDS_PADDING],
+    ]);
+  });
+
+  it('does not constrain an empty graph', () => {
+    expect(buildGraphTranslateExtent([])).toBeUndefined();
+  });
+});
+
+describe('clampGraphViewportToNodeBounds', () => {
+  const nodes = [
+    {
+      id: 'a',
+      position: { x: 100, y: 200 },
+      data: {},
+      width: 150,
+      height: 80,
+    },
+    {
+      id: 'b',
+      position: { x: 500, y: 700 },
+      data: {},
+      width: 240,
+      height: 160,
+    },
+  ];
+
+  it('keeps the viewport center inside the padded graph node bounds', () => {
+    expect(clampGraphViewportToNodeBounds(
+      { x: -3000, y: -4000, zoom: 1 },
+      nodes,
+      { width: 1000, height: 800 }
+    )).toEqual({
+      x: -560,
+      y: -780,
+      zoom: 1,
+    });
+  });
+
+  it('leaves in-bounds viewport positions unchanged', () => {
+    expect(clampGraphViewportToNodeBounds(
+      { x: 150, y: 0, zoom: 1 },
+      nodes,
+      { width: 1000, height: 800 }
+    )).toEqual({ x: 150, y: 0, zoom: 1 });
+  });
+});
+
 describe('GraphView canvas running status', () => {
   it('does not render a graph-canvas running count shortcut to timeline view', () => {
     const source = readFileSync(join(process.cwd(), 'src/components/GraphView.tsx'), 'utf8');
 
     expect(source).not.toContain('<span>{runningCount} Running</span>');
+  });
+
+  it('stores and restores viewport by active thread root id', () => {
+    const source = readFileSync(join(process.cwd(), 'src/components/GraphView.tsx'), 'utf8');
+
+    expect(source).toContain('viewportByThreadRootIdRef');
+    expect(source).toContain('saveViewportForActiveThread');
+    expect(source).toContain('restoreViewportForActiveThread');
+    expect(source).toContain('threadGraphScope.activeThreadRootId');
+  });
+
+  it('records thread switch performance boundaries', () => {
+    const source = readFileSync(join(process.cwd(), 'src/components/GraphView.tsx'), 'utf8');
+
+    expect(source).toContain("recordPerfEvent('graph.thread-switch.start'");
+    expect(source).toContain("recordPerfEvent('graph.thread-switch.rendered'");
+    expect(source).toContain('threadSwitchStartedAtRef');
+    expect(source).toContain('renderedNodeCount');
+  });
+
+  it('passes full graph translate extent to React Flow', () => {
+    const source = readFileSync(join(process.cwd(), 'src/components/GraphView.tsx'), 'utf8');
+
+    expect(source).toContain('translateExtent={graphTranslateExtent}');
   });
 });
 

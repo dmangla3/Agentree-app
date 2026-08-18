@@ -19,29 +19,7 @@ pub struct AgentSandboxEnv {
 }
 
 pub fn build_agent_path() -> String {
-    let mut parts: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|raw| std::env::split_paths(&raw).collect())
-        .unwrap_or_default();
-
-    for extra in [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-        "/usr/sbin",
-        "/sbin",
-    ] {
-        let path = PathBuf::from(extra);
-        if !parts.iter().any(|p| p == &path) {
-            parts.push(path);
-        }
-    }
-
-    std::env::join_paths(parts)
-        .map(|joined| joined.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| {
-            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string()
-        })
+    crate::cli_path::build_tool_path()
 }
 
 fn sandbox_root(override_root: Option<&Path>) -> PathBuf {
@@ -305,7 +283,10 @@ pub fn apply_agent_command_env(
 
     command
         .env("PATH", guarded_path)
-        .env("PYTHON_BIN", crate::runtime_scripts::runtime_python_command(app))
+        .env(
+            "PYTHON_BIN",
+            crate::runtime_scripts::runtime_python_command(app),
+        )
         .env("AGENTREE_GUARD_REAL_PATH", base_path)
         .env(
             "AGENTREE_PACKAGE_MANAGER_GUARD",
@@ -318,8 +299,31 @@ pub fn apply_agent_command_env(
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_sandbox_env, sanitize_sandbox_segment};
+    use super::{agent_sandbox_env, build_agent_path, sanitize_sandbox_segment};
+    use std::ffi::OsString;
     use std::path::Path;
+
+    struct EnvVarGuard {
+        name: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(name: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(name);
+            std::env::set_var(name, value);
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.as_ref() {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
 
     #[test]
     fn sandbox_env_uses_stable_worktree_and_agent_segments() {
@@ -361,5 +365,26 @@ mod tests {
         );
         assert_eq!(sanitize_sandbox_segment("///"), "unknown");
         assert_eq!(sanitize_sandbox_segment(""), "unknown");
+    }
+
+    #[test]
+    fn agent_path_includes_nvm_cli_bins_when_app_path_is_limited() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let nvm_bin = temp_dir
+            .path()
+            .join(".nvm")
+            .join("versions")
+            .join("node")
+            .join("v22.22.1")
+            .join("bin");
+        std::fs::create_dir_all(&nvm_bin).unwrap();
+
+        let _home = EnvVarGuard::set("HOME", temp_dir.path());
+        let _path = EnvVarGuard::set("PATH", "/usr/bin:/bin");
+
+        let built_path = build_agent_path();
+        let entries = std::env::split_paths(&built_path).collect::<Vec<_>>();
+
+        assert!(entries.iter().any(|entry| entry == &nvm_bin));
     }
 }

@@ -8,7 +8,6 @@ import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../st
 import { useProviderLimitsStore } from '../stores/providerLimitsStore';
 import { useQueryClient } from '@tanstack/react-query';
 import { UnifiedAgentModelSelector } from './UnifiedAgentModelSelector';
-import { ComposerFlowTab } from './flows/ComposerFlowTab';
 import { AttachmentPreview } from './AttachmentPreview';
 import { Badge } from "../../@/components/ui/badge";
 import { Alert, AlertDescription } from "../../@/components/ui/alert";
@@ -23,6 +22,11 @@ import {
 } from "../../@/components/ui/dropdown-menu";
 import { useToast } from './Toast';
 import { cn } from '../lib/utils';
+import {
+    getChatInputSurfaceClasses,
+    getChatInputSurfaceLabel,
+    type ChatInputSurface,
+} from '../lib/chatInputSurface';
 import axios from 'axios';
 import { api } from '../lib/api';
 import { getAccessToken } from '../lib/authSession';
@@ -93,10 +97,10 @@ import {
     shouldClearPersistedOptimisticUserProjection,
 } from '../agent-runs/agentRunOptimisticProjectionCleanup';
 import {
-    deriveIncrementalText,
     dispatchAgentRunUsage,
     dispatchProviderStreamEvent,
     dispatchStreamingAssistantText,
+    deriveStreamingAppendText,
     extractMessageText,
     mergeStreamingOutput,
     resolveProviderAssistantOutput,
@@ -173,6 +177,9 @@ interface ActiveFileMention {
 
 // --- Constants ---
 const STREAM_LOG_PREFIX = '[RCSTRM]';
+const FLOW_NONE_ID = '__none__';
+const FLOW_PARALLEL_MIN_COUNT = 1;
+const FLOW_PARALLEL_MAX_COUNT = 5;
 const FULL_STREAM_UNWATCHED_GRACE_MS = 5_000;
 const STREAM_DEBUG_ENABLED = ['1', 'true', 'yes'].includes(String(import.meta.env.VITE_STREAM_DEBUG || '').toLowerCase());
 const SEND_FLOW_DEBUG_ENABLED = ['1', 'true', 'yes'].includes(String(import.meta.env.VITE_SEND_FLOW_DEBUG || '').toLowerCase()) || STREAM_DEBUG_ENABLED;
@@ -205,6 +212,12 @@ const sendFlowDebug = (message: string, details?: Record<string, unknown>) => {
 
 // --- Helpers ---
 const truncateText = (text: string, maxLength: number = 50): string => { return text.length <= maxLength ? text : text.substring(0, maxLength).trim() + '...' };
+const clampFlowParallelCount = (value: number): number => {
+    if (!Number.isFinite(value)) {
+        return 3;
+    }
+    return Math.max(FLOW_PARALLEL_MIN_COUNT, Math.min(FLOW_PARALLEL_MAX_COUNT, Math.trunc(value)));
+};
 const getActiveFileMention = (value: string, cursorPosition: number): ActiveFileMention | null => {
     const beforeCursor = value.slice(0, cursorPosition);
     const mentionMatch = beforeCursor.match(/(^|\s)@([^\s@]*)$/);
@@ -423,6 +436,7 @@ interface ChatInputProps {
     autoFocus?: boolean;
     onRequestClose?: () => void;
     onSendComplete?: () => void;
+    surface?: ChatInputSurface;
 }
 
 interface ContextBadgeProps {
@@ -472,11 +486,12 @@ export function ChatInput({
     autoFocus = false,
     onRequestClose,
     onSendComplete,
+    surface = 'chat-panel',
 }: ChatInputProps = {}) {
     const [prompt, setPrompt] = useState('');
     const promptRef = useRef('');
     const [promptHasContent, setPromptHasContent] = useState(false);
-    const [composerMode, setComposerMode] = useState<'chat' | 'flow'>('chat');
+    const [flowParallelCount, setFlowParallelCount] = useState(3);
     const [editDraftSource, setEditDraftSource] = useState<Message | null>(null);
     // --- NEW: Knowledge Base Context State ---
     const { data: filesData } = useKnowledgeTree();
@@ -508,6 +523,9 @@ export function ChatInput({
         setSelectedAgentId,
         setComposerContextPreview,
         setComposerBaseCommitOverride,
+        getComposerDraft,
+        setComposerDraft,
+        clearComposerDraft,
     } = useWorkspaceStore(
         useShallow((state) => ({
             selectedWorkspaceId: state.selectedWorkspaceId,
@@ -525,8 +543,13 @@ export function ChatInput({
             setSelectedAgentId: state.setSelectedAgentId,
             setComposerContextPreview: state.setComposerContextPreview,
             setComposerBaseCommitOverride: state.setComposerBaseCommitOverride,
+            getComposerDraft: state.getComposerDraft,
+            setComposerDraft: state.setComposerDraft,
+            clearComposerDraft: state.clearComposerDraft,
         }))
     );
+    const surfaceClasses = getChatInputSurfaceClasses(surface);
+    const surfaceLabel = getChatInputSurfaceLabel(surface);
     // Optimistic send setup creates projected-message inputs, but lifecycle
     // ownership starts as soon as they are seeded into AgentRunActor.
     const seedAgentRunProjection = useCallback((nodeId: string, message: AgentRunProjectedMessage | null) => {
@@ -1491,10 +1514,16 @@ export function ChatInput({
             }
 
             const current = getAgentRunProjection(nodeId);
-            const currentContent = typeof current?.content === 'string' ? current.content : '';
-            if (currentContent === output) return;
+            const projectedContent = typeof current?.content === 'string' ? current.content : '';
+            const actorContent = agentRunManager.snapshot(nodeId)?.content;
+            if ((actorContent ?? projectedContent) === output) {
+                if (options?.force && projectedContent !== output) {
+                    agentRunManager.promoteProjection(nodeId);
+                }
+                return;
+            }
 
-            const appended = deriveIncrementalText(currentContent, output);
+            const appended = deriveStreamingAppendText(actorContent, projectedContent, output);
             dispatchStreamingAssistantText(output, {
                 nodeId,
                 parentId,
@@ -2249,10 +2278,21 @@ export function ChatInput({
         promptRef.current = nextPrompt;
         setPrompt(nextPrompt);
         setPromptHasContent(nextPrompt.trim().length > 0);
+        setComposerDraft(selectedWorkspaceId, nextPrompt);
         if (textareaRef.current && textareaRef.current.value !== nextPrompt) {
             textareaRef.current.value = nextPrompt;
         }
-    }, []);
+    }, [selectedWorkspaceId, setComposerDraft]);
+
+    useEffect(() => {
+        const savedPrompt = getComposerDraft(selectedWorkspaceId);
+        promptRef.current = savedPrompt;
+        setPrompt(savedPrompt);
+        setPromptHasContent(savedPrompt.trim().length > 0);
+        if (textareaRef.current && textareaRef.current.value !== savedPrompt) {
+            textareaRef.current.value = savedPrompt;
+        }
+    }, [getComposerDraft, selectedWorkspaceId]);
 
     const [isAgentPickerOpen, setIsAgentPickerOpen] = useState(false);
     const refreshProviderLimitsIfStale = useProviderLimitsStore((state) => state.refreshIfStale);
@@ -2699,12 +2739,51 @@ export function ChatInput({
         ),
         [startStreamForNode]
     );
+    const flowRootParentNodeId = useMemo(
+        () => resolvePersistedMessageId(replyParentMessageId) ?? replyParentMessageId ?? null,
+        [replyParentMessageId, resolvePersistedMessageId]
+    );
+    const flowContextPolicy: ContextPolicy = isNewThreadTarget ? 'fresh' : contextPolicy;
+    const flowRootContextParentNodeId = useMemo(
+        () => resolvePersistedMessageId(
+            flowContextPolicy === 'fresh' ? null : effectiveContextParentId
+        ) ?? (flowContextPolicy === 'fresh' ? null : effectiveContextParentId),
+        [effectiveContextParentId, flowContextPolicy, resolvePersistedMessageId]
+    );
+    const flowRootContextStartId = useMemo(
+        () => resolvePersistedMessageId(
+            flowContextPolicy === 'fresh' ? null : effectiveContextStartId
+        ) ?? (flowContextPolicy === 'fresh' ? null : effectiveContextStartId),
+        [effectiveContextStartId, flowContextPolicy, resolvePersistedMessageId]
+    );
+    const flowRootContextManifest = useMemo<ComposerContextManifest>(() => {
+        if (!flowRootParentNodeId || flowContextPolicy === 'fresh') {
+            return EMPTY_COMPOSER_CONTEXT_MANIFEST;
+        }
+        const selection = buildComposerContextSelection(
+            flowRootParentNodeId,
+            messageLookupMessages,
+            flowRootContextParentNodeId,
+            flowContextPolicy,
+            flowRootContextStartId
+        );
+        return buildComposerContextManifest(selection.turns, new Set(selection.defaultSelectedIds));
+    }, [
+        flowRootParentNodeId,
+        flowContextPolicy,
+        messageLookupMessages,
+        flowRootContextParentNodeId,
+        flowRootContextStartId,
+    ]);
     const flowRunner = useAgentFlowRunner({
         workspaceId: selectedWorkspaceId,
         selectedAgentId,
         selectedAgentType: selectedAgent?.type ?? null,
-        baseNodeId: defaultBaseResolution.selectedFromNodeId ?? replyParentMessageId,
+        baseNodeId: defaultBaseResolution.selectedFromNodeId ?? flowRootParentNodeId,
         baseCommitSha: effectiveBaseCommitSha,
+        rootParentNodeId: flowRootParentNodeId,
+        rootContextParentNodeId: flowContextPolicy === 'fresh' ? null : flowRootContextParentNodeId,
+        rootContextManifest: flowRootContextManifest,
         agentCliArgs: selectedAgent?.cliArgs ?? null,
         agentPromptFlag: selectedAgent?.promptFlag ?? null,
         agentName: selectedAgent?.name ?? null,
@@ -2712,6 +2791,12 @@ export function ChatInput({
         reasoningEffort: selectedFlowReasoningEffort,
         startStreamForNode: startFlowStreamForNode,
     });
+    const selectedComposerFlow = useMemo(
+        () => flowRunner.flows.find((flow) => flow.id === flowRunner.selectedFlowId) ?? null,
+        [flowRunner.flows, flowRunner.selectedFlowId]
+    );
+    const isFlowSelected = Boolean(selectedComposerFlow);
+    const latestFlowEvent = flowRunner.events[flowRunner.events.length - 1] ?? null;
     const handleRunFlow = useCallback(async (input: { input: string; count: number }) => {
         try {
             await flowRunner.runFlow(input);
@@ -2787,6 +2872,14 @@ export function ChatInput({
             setSelectedAgentRunCounts(normalized);
         }
     }, [agents, selectedAgentId, selectedAgentRunCounts]);
+
+    useEffect(() => {
+        if (!isFlowSelected || !selectedAgentId) return;
+        const nextCounts = { [selectedAgentId]: 1 };
+        if (!areAgentRunCountsEqual(normalizedSelectedAgentRunCounts, nextCounts)) {
+            setSelectedAgentRunCounts(nextCounts);
+        }
+    }, [isFlowSelected, normalizedSelectedAgentRunCounts, selectedAgentId]);
 
     useEffect(() => {
         if (!selectedWorkspaceId) return;
@@ -2943,6 +3036,23 @@ export function ChatInput({
     }, [setComposerPrompt]);
 
     useEffect(() => {
+        const handleStartNewThread = () => {
+            setEditDraftSource(null);
+            setComposerTargetMode('new-thread');
+            setContextPolicy('fresh');
+            setSelectedContextStartId(null);
+            setSelectedMergeContextParentId(null);
+            setTimeout(() => textareaRef.current?.focus(), 0);
+        };
+
+        window.addEventListener('agentree:startNewThread', handleStartNewThread);
+
+        return () => {
+            window.removeEventListener('agentree:startNewThread', handleStartNewThread);
+        };
+    }, []);
+
+    useEffect(() => {
         const handleEditUserMessage = (event: CustomEvent<{ message?: Message }>) => {
             const sourceMessage = event.detail?.message;
             if (!sourceMessage || sourceMessage.role !== 'user') return;
@@ -3085,6 +3195,9 @@ export function ChatInput({
     const handleAgentSelect = (agentId: string) => {
         autoSelectedAgentIdRef.current = null;
         manuallySelectedAgentIdRef.current = agentId;
+        if (isFlowSelected) {
+            setSelectedAgentRunCounts({ [agentId]: 1 });
+        }
         setSelectedAgentId(agentId);
         setTimeout(() => textareaRef.current?.focus(), 0);
     };
@@ -3101,6 +3214,127 @@ export function ChatInput({
         setSelectedAgentRunCounts(normalized);
         setSelectedAgentId(nextSelectedAgentId);
     }, [agents, normalizedSelectedAgentRunCounts, setSelectedAgentId]);
+
+    const updateFlowParallelCount = useCallback((nextCount: number) => {
+        setFlowParallelCount(clampFlowParallelCount(nextCount));
+    }, []);
+
+    const handleFlowSelection = useCallback((flowId: string) => {
+        flowRunner.setSelectedFlowId(flowId === FLOW_NONE_ID ? '' : flowId);
+        if (flowId !== FLOW_NONE_ID && selectedAgentId) {
+            setSelectedAgentRunCounts({ [selectedAgentId]: 1 });
+        }
+    }, [flowRunner, selectedAgentId]);
+
+    const renderFlowSelector = () => {
+        const flowLabel = selectedComposerFlow?.label ?? 'None';
+
+        return (
+            <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                    <button
+                        type="button"
+                        disabled={isSendingMessage || !selectedWorkspaceId}
+                        className={cn(
+                            "flex h-7 max-w-[190px] flex-shrink-0 items-center gap-1.5 rounded-md border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong))] pl-1.5 pr-2 text-left shadow-[0_1px_2px_rgba(22,26,32,0.05)] transition-all",
+                            "hover:border-[hsl(var(--app-border-strong))] hover:bg-background",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1",
+                            "disabled:cursor-not-allowed disabled:opacity-50",
+                            isFlowSelected && "border-[hsl(var(--app-accent)/0.42)] bg-[hsl(var(--app-accent-soft)/0.72)]"
+                        )}
+                        aria-label="Select flow"
+                    >
+                        <div className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))] shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.52)]">
+                            <Workflow className="h-3 w-3" />
+                        </div>
+                        <span className="max-w-[118px] truncate text-[11.5px] font-semibold text-foreground">
+                            {flowLabel}
+                        </span>
+                        <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+                    </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                    align="start"
+                    side="top"
+                    sideOffset={8}
+                    collisionPadding={12}
+                    className={cn(composerPopupLayerClass, "w-[min(21rem,calc(100vw-1.5rem))] rounded-xl border border-border/70 bg-popover/95 p-1.5 shadow-[0_18px_48px_-24px_rgba(15,23,42,0.55),0_8px_20px_-16px_rgba(15,23,42,0.40)] backdrop-blur-xl")}
+                >
+                    <DropdownMenuLabel className="px-1.5 py-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Flow</DropdownMenuLabel>
+                    <DropdownMenuItem
+                        onClick={() => handleFlowSelection(FLOW_NONE_ID)}
+                        className="min-h-9 gap-2 rounded-lg px-2 py-1.5"
+                    >
+                        <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-muted/65 text-muted-foreground">
+                            {!isFlowSelected ? <Check className="h-3.5 w-3.5 text-foreground" /> : <X className="h-3.5 w-3.5" />}
+                        </div>
+                        <div className="min-w-0">
+                            <div className="text-[12px] font-semibold text-foreground">None</div>
+                            <div className="truncate text-[10.5px] text-muted-foreground">Send a normal chat request</div>
+                        </div>
+                    </DropdownMenuItem>
+                    {flowRunner.flows.length > 0 ? <DropdownMenuSeparator className="my-1" /> : null}
+                    {flowRunner.flows.map((flow) => {
+                        const selected = flow.id === flowRunner.selectedFlowId;
+                        return (
+                            <DropdownMenuItem
+                                key={flow.id}
+                                onClick={() => handleFlowSelection(flow.id)}
+                                className="min-h-10 gap-2 rounded-lg px-2 py-1.5"
+                            >
+                                <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))]">
+                                    {selected ? <Check className="h-3.5 w-3.5" /> : <Workflow className="h-3.5 w-3.5" />}
+                                </div>
+                                <div className="min-w-0">
+                                    <div className="truncate text-[12px] font-semibold text-foreground">{flow.label}</div>
+                                    <div className="truncate text-[10.5px] text-muted-foreground">Runs variants, judges, then reviews</div>
+                                </div>
+                            </DropdownMenuItem>
+                        );
+                    })}
+                    {isFlowSelected ? (
+                        <div
+                            className="mt-1 rounded-lg border border-border/65 bg-background/72 px-2 py-2"
+                            onClick={(event) => event.stopPropagation()}
+                            onPointerDown={(event) => event.stopPropagation()}
+                        >
+                            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Parallel count</div>
+                            <div className="flex h-7 w-fit items-center rounded-md border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong))]">
+                                <button
+                                    type="button"
+                                    aria-label="Decrease flow count"
+                                    onClick={() => updateFlowParallelCount(flowParallelCount - 1)}
+                                    className="flex h-7 w-7 items-center justify-center text-muted-foreground transition-[background-color,color,transform] duration-150 hover:bg-muted hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40"
+                                    disabled={flowParallelCount <= FLOW_PARALLEL_MIN_COUNT}
+                                >
+                                    <Minus className="h-3.5 w-3.5" />
+                                </button>
+                                <input
+                                    aria-label="Parallel count"
+                                    type="number"
+                                    min={FLOW_PARALLEL_MIN_COUNT}
+                                    max={FLOW_PARALLEL_MAX_COUNT}
+                                    value={flowParallelCount}
+                                    onChange={(event) => updateFlowParallelCount(Number(event.target.value))}
+                                    onKeyDown={(event) => event.stopPropagation()}
+                                    className="h-7 w-10 border-x border-[hsl(var(--app-border)/0.7)] bg-transparent text-center text-xs font-semibold tabular-nums text-foreground outline-none disabled:opacity-50"
+                                />
+                                <button
+                                    type="button"
+                                    aria-label="Increase flow count"
+                                    onClick={() => updateFlowParallelCount(flowParallelCount + 1)}
+                                    className="flex h-7 w-7 items-center justify-center text-muted-foreground transition-[background-color,color,transform] duration-150 hover:bg-muted hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40"
+                                    disabled={flowParallelCount >= FLOW_PARALLEL_MAX_COUNT}
+                                >
+                                    <Plus className="h-3.5 w-3.5" />
+                                </button>
+                            </div>
+                        </div>
+                    ) : null}
+                </DropdownMenuContent>
+            </DropdownMenu>
+        );
+    };
 
     const renderAgentModelSelector = ({ mode }: { mode: 'chat' | 'flow' }) => {
         const supportsMultiRun = mode === 'chat';
@@ -3176,8 +3410,7 @@ export function ChatInput({
 
     const handlePromptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
         const newPrompt = e.target.value;
-        promptRef.current = newPrompt;
-        setPrompt(newPrompt);
+        setComposerPrompt(newPrompt);
 
         const nextHasContent = newPrompt.trim().length > 0;
         if (nextHasContent !== promptHasContent) {
@@ -3366,6 +3599,7 @@ export function ChatInput({
             queuedComposerSendsRef.current.push(queuedSend);
             setQueuedComposerSendCount(queuedComposerSendsRef.current.length);
             setComposerPrompt('');
+            clearComposerDraft(selectedWorkspaceId);
             setAttachments([]);
             setContextIds([]);
             setEditDraftSource(null);
@@ -3394,6 +3628,7 @@ export function ChatInput({
                 workspaceId: selectedWorkspaceId,
             });
             setComposerPrompt('');
+            clearComposerDraft(selectedWorkspaceId);
             setAttachments([]);
             setContextIds([]);
             setEditDraftSource(null);
@@ -3709,6 +3944,7 @@ export function ChatInput({
             seedAgentRunProjection(run.assistantMessageId, run.assistantMessage);
         }
         setComposerPrompt('');
+        clearComposerDraft(selectedWorkspaceId);
         setAttachments([]);
         setContextIds([]);
         setEditDraftSource(null);
@@ -4306,6 +4542,7 @@ export function ChatInput({
     }, [
         attachments,
         setComposerPrompt,
+        clearComposerDraft,
         sendMessageMutation,
         parentMessageId,
         editDraftSource,
@@ -5187,10 +5424,33 @@ export function ChatInput({
     const replyTargetControlLabel = isNewThreadTarget ? 'New thread' : replyParentDisplayLabel;
     const replyTargetEyebrow = isNewThreadTarget ? 'Target' : 'Reply to';
     const canReplyToSelectedNode = Boolean(replyCandidateMessageId || selectedNodeMessage?.id);
+    const trimmedPrompt = prompt.trim();
+    const isFlowRunDisabled = !trimmedPrompt
+        || !selectedWorkspaceId
+        || !selectedAgentId
+        || isParentIncomplete;
+    const isPrimaryActionDisabled = isFlowSelected
+        ? isFlowRunDisabled
+        : isParentIncomplete || (!promptHasContent && totalAttachments === 0 && contextIds.length === 0) || !selectedWorkspaceId;
+    const primaryActionLabel = isFlowSelected
+        ? 'Run Flow'
+        : (isSendAcceptanceInFlight ? (queuedComposerSendCount > 0 ? `Queue ${queuedComposerSendCount + 1}` : 'Queue') : sendButtonLabel);
+    const handlePrimaryAction = showCancel
+        ? handleCancel
+        : isFlowSelected
+            ? () => {
+                if (isFlowRunDisabled) return;
+                void handleRunFlow({ input: trimmedPrompt, count: flowParallelCount });
+            }
+            : handleSend;
 
     // --- Render ---
     return (
-        <div className="flex w-full max-w-full flex-col gap-1.5">
+        <div
+            className={cn('flex flex-col gap-1.5', surfaceClasses.root)}
+            data-chat-input-surface={surface}
+            aria-label={surfaceLabel}
+        >
             {contextFetchError && (
                 <Alert variant="destructive">
                     <AlertDescription>{contextFetchError}</AlertDescription>
@@ -5216,8 +5476,9 @@ export function ChatInput({
                 </div>
             )}
             <div className={cn(
-                "relative flex w-full flex-col rounded-[18px] border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel)/0.95)] shadow-[0_18px_48px_-36px_rgba(24,28,36,0.62),0_1px_0_rgba(255,255,255,0.72)_inset] backdrop-blur-xl transition-all duration-200 dark:shadow-[0_18px_48px_-34px_rgba(0,0,0,0.82),0_1px_0_rgba(255,255,255,0.05)_inset]",
+                "relative flex w-full flex-col border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel)/0.95)] shadow-[0_18px_48px_-36px_rgba(24,28,36,0.62),0_1px_0_rgba(255,255,255,0.72)_inset] backdrop-blur-xl transition-all duration-200 dark:shadow-[0_18px_48px_-34px_rgba(0,0,0,0.82),0_1px_0_rgba(255,255,255,0.05)_inset]",
                 "focus-within:border-[hsl(var(--app-border-strong))] focus-within:bg-[hsl(var(--app-panel-strong))] focus-within:shadow-[0_22px_58px_-34px_rgba(24,28,36,0.72),0_0_0_3px_rgba(85,112,175,0.09),0_1px_0_rgba(255,255,255,0.78)_inset] dark:focus-within:shadow-[0_22px_58px_-34px_rgba(0,0,0,0.86),0_0_0_3px_rgba(126,160,230,0.11),0_1px_0_rgba(255,255,255,0.06)_inset]",
+                surfaceClasses.shell,
                 activeFileMention ? "overflow-visible" : "overflow-hidden"
             )}>
                 {/* Run context summary */}
@@ -5270,24 +5531,6 @@ export function ChatInput({
                                         </div>
                                     </div>
                                     {!isNewThreadTarget && <Check className="ml-auto h-3.5 w-3.5" />}
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                    onClick={() => {
-                                        setComposerTargetMode('new-thread');
-                                        setContextPolicy('fresh');
-                                        setSelectedContextStartId(null);
-                                        setSelectedMergeContextParentId(null);
-                                    }}
-                                    className="min-h-10 gap-2 rounded-md"
-                                >
-                                    <Plus className="h-3.5 w-3.5" />
-                                    <div className="min-w-0">
-                                        <div className="text-sm font-medium">Start new thread</div>
-                                        <div className="truncate text-[11px] text-muted-foreground">
-                                            Fresh thread with no parent
-                                        </div>
-                                    </div>
-                                    {isNewThreadTarget && <Check className="ml-auto h-3.5 w-3.5" />}
                                 </DropdownMenuItem>
                             </DropdownMenuContent>
                         </DropdownMenu>
@@ -5529,37 +5772,6 @@ export function ChatInput({
                     </div>
                 </div>
 
-                <div className="flex items-center gap-1 border-b border-[hsl(var(--app-border)/0.48)] bg-[hsl(var(--app-bg-elevated)/0.46)] px-2.5 py-1">
-                    <button
-                        type="button"
-                        onClick={() => setComposerMode('chat')}
-                        className={cn(
-                            "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-semibold transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.96]",
-                            composerMode === 'chat'
-                                ? "bg-background text-foreground shadow-[0_1px_2px_rgba(22,26,32,0.06),inset_0_0_0_1px_hsl(var(--app-border)/0.75)]"
-                                : "text-muted-foreground hover:bg-background/70 hover:text-foreground"
-                        )}
-                        aria-pressed={composerMode === 'chat'}
-                    >
-                        <Send className="h-3.5 w-3.5" />
-                        Chat
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => setComposerMode('flow')}
-                        className={cn(
-                            "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-semibold transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.96]",
-                            composerMode === 'flow'
-                                ? "bg-background text-foreground shadow-[0_1px_2px_rgba(22,26,32,0.06),inset_0_0_0_1px_hsl(var(--app-border)/0.75)]"
-                                : "text-muted-foreground hover:bg-background/70 hover:text-foreground"
-                        )}
-                        aria-pressed={composerMode === 'flow'}
-                    >
-                        <Workflow className="h-3.5 w-3.5" />
-                        Flow
-                    </button>
-                </div>
-
                 {/* Context Chips Area */}
                 {contextIds.length > 0 && (
                     <div className="px-2.5 pt-1.5 pb-0">
@@ -5687,7 +5899,8 @@ export function ChatInput({
                                 disabled={!selectedWorkspaceId}
                                 placeholder="Ask anything... Type @ to reference files"
                                 className={cn(
-                                    "min-h-0 w-full flex-1 resize-none rounded-none border-0 px-3.5 py-2.5 max-h-[172px]",
+                                    "min-h-0 w-full flex-1 resize-none rounded-none border-0 px-3.5 py-2.5",
+                                    surfaceClasses.textarea,
                                     "bg-transparent",
                                     "text-[14px] leading-relaxed text-foreground placeholder:text-muted-foreground/55 focus:outline-none focus:ring-0 shadow-none",
                                     "disabled:opacity-50 disabled:cursor-not-allowed"
@@ -5731,14 +5944,15 @@ export function ChatInput({
                     </PopoverContent>
                 </Popover>
 
-                {composerMode === 'chat' ? (
                 <div className="flex items-center justify-between gap-2.5 border-t border-[hsl(var(--app-border)/0.55)] bg-[hsl(var(--app-bg-elevated)/0.58)] px-2.5 py-1">
                     {/* Left Actions */}
                     <div className="flex min-w-0 items-center gap-1.5">
-                        {/* Model Selector - Modern chip style */}
-                        {renderAgentModelSelector({ mode: 'chat' })}
+                        {renderFlowSelector()}
 
-                        {selectedAgentRunChips.length > 0 ? (
+                        {/* Model Selector - Modern chip style */}
+                        {renderAgentModelSelector({ mode: isFlowSelected ? 'flow' : 'chat' })}
+
+                        {!isFlowSelected && selectedAgentRunChips.length > 0 ? (
                             <div className="hidden min-w-0 items-center gap-1 sm:flex">
                                 {selectedAgentRunChips.slice(0, 3).map(({ agent, count }) => {
                                     const canRemove = selectedRunTotal > count;
@@ -5746,10 +5960,10 @@ export function ChatInput({
                                     return (
                                         <div
                                             key={agent.id}
-                                            className="group/chip flex h-7 min-w-0 items-center gap-1 rounded-md bg-[hsl(var(--app-panel-strong))] pl-2 pr-1 text-[11px] font-semibold text-foreground shadow-[0_1px_2px_rgba(22,26,32,0.06),inset_0_0_0_1px_hsl(var(--app-border)/0.76)] transition-[background-color,box-shadow] duration-150 hover:bg-background hover:shadow-[0_4px_16px_-12px_rgba(15,23,42,0.65),inset_0_0_0_1px_hsl(var(--app-border-strong)/0.8)]"
+                                            className="group/chip flex h-6 min-w-0 items-center gap-0.5 rounded-md bg-[hsl(var(--app-panel-strong))] pl-1.5 pr-0.5 text-[10.5px] font-semibold text-foreground shadow-[0_1px_2px_rgba(22,26,32,0.06),inset_0_0_0_1px_hsl(var(--app-border)/0.76)] transition-[background-color,box-shadow] duration-150 hover:bg-background hover:shadow-[0_4px_16px_-12px_rgba(15,23,42,0.65),inset_0_0_0_1px_hsl(var(--app-border-strong)/0.8)]"
                                         >
-                                            <span className="max-w-[118px] truncate">{agent.name}</span>
-                                            <span className="rounded bg-muted/60 px-1 text-[10px] tabular-nums text-muted-foreground">
+                                            <span className="max-w-[104px] truncate">{agent.name}</span>
+                                            <span className="rounded bg-muted/60 px-1 text-[9.5px] tabular-nums text-muted-foreground">
                                                 {count}x
                                             </span>
                                             <div className="ml-0.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover/chip:opacity-100 group-focus-within/chip:opacity-100">
@@ -5757,27 +5971,27 @@ export function ChatInput({
                                                     type="button"
                                                     onClick={() => handleAgentRunCountChange(agent.id, 0)}
                                                     disabled={!canRemove}
-                                                    className="flex h-5 w-5 items-center justify-center rounded bg-background text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.75)] transition-[background-color,color,transform,opacity] duration-150 hover:bg-red-50 hover:text-red-600 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+                                                    className="flex h-4 w-4 items-center justify-center rounded bg-background text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.75)] transition-[background-color,color,transform,opacity] duration-150 hover:bg-red-50 hover:text-red-600 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35 dark:hover:bg-red-950/40 dark:hover:text-red-300"
                                                     aria-label={`Remove ${agent.name}`}
                                                 >
-                                                    <X className="h-3 w-3" strokeWidth={2.5} />
+                                                    <X className="h-2.5 w-2.5" strokeWidth={2.5} />
                                                 </button>
                                                 <button
                                                     type="button"
                                                     onClick={() => handleAgentRunCountChange(agent.id, count - 1)}
                                                     disabled={!canDecrement}
-                                                    className="flex h-5 w-5 items-center justify-center rounded bg-background text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.75)] transition-[background-color,color,transform,opacity] duration-150 hover:bg-muted hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
+                                                    className="flex h-4 w-4 items-center justify-center rounded bg-background text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.75)] transition-[background-color,color,transform,opacity] duration-150 hover:bg-muted hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
                                                     aria-label={`Decrease ${agent.name}`}
                                                 >
-                                                    <Minus className="h-3 w-3" strokeWidth={2.5} />
+                                                    <Minus className="h-2.5 w-2.5" strokeWidth={2.5} />
                                                 </button>
                                                 <button
                                                     type="button"
                                                     onClick={() => handleAgentRunCountChange(agent.id, count + 1)}
-                                                    className="flex h-5 w-5 items-center justify-center rounded bg-emerald-600 text-white shadow-[0_6px_16px_-10px_rgba(16,185,129,0.7)] transition-[background-color,transform] duration-150 hover:bg-emerald-700 active:scale-[0.96]"
+                                                    className="flex h-4 w-4 items-center justify-center rounded bg-emerald-600 text-white shadow-[0_6px_16px_-10px_rgba(16,185,129,0.7)] transition-[background-color,transform] duration-150 hover:bg-emerald-700 active:scale-[0.96]"
                                                     aria-label={`Increase ${agent.name}`}
                                                 >
-                                                    <Plus className="h-3 w-3" strokeWidth={2.6} />
+                                                    <Plus className="h-2.5 w-2.5" strokeWidth={2.6} />
                                                 </button>
                                             </div>
                                         </div>
@@ -5789,6 +6003,12 @@ export function ChatInput({
                                     </span>
                                 ) : null}
                             </div>
+                        ) : null}
+
+                        {isFlowSelected ? (
+                            <span className="hidden max-w-[260px] truncate rounded-md bg-background/70 px-2 py-1 text-[10.5px] font-medium text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.58)] md:inline-flex">
+                                {latestFlowEvent?.message ?? `${flowParallelCount} parallel runs`}
+                            </span>
                         ) : null}
 
                     </div>
@@ -5824,10 +6044,10 @@ export function ChatInput({
                             type="button"
                             data-testid="chat-send-button"
                             onMouseDown={() => {
-                                if (!showCancel) triggerSendPressFeedback();
+                                if (!showCancel && !isFlowSelected) triggerSendPressFeedback();
                             }}
-                            onClick={showCancel ? handleCancel : handleSend}
-                            disabled={showCancel ? false : isParentIncomplete || (!promptHasContent && totalAttachments === 0 && contextIds.length === 0) || !selectedWorkspaceId}
+                            onClick={handlePrimaryAction}
+                            disabled={showCancel ? false : isPrimaryActionDisabled}
                             className={cn(
                                 "flex-shrink-0 flex items-center justify-center gap-1.5",
                                 "h-7 px-3 rounded-md",
@@ -5837,11 +6057,11 @@ export function ChatInput({
                                 showCancel
                                     ? "bg-destructive text-destructive-foreground shadow-[0_10px_26px_-18px_hsl(var(--destructive))] hover:bg-destructive/90"
                                     : "bg-[hsl(var(--app-accent))] text-white shadow-[0_14px_34px_-20px_hsl(var(--app-accent)/0.65)] hover:brightness-105 dark:text-white",
-                                sendPressFeedback && !showCancel && "scale-95 ring-2 ring-primary/40 ring-offset-2",
+                                sendPressFeedback && !showCancel && !isFlowSelected && "scale-95 ring-2 ring-primary/40 ring-offset-2",
                                 "disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:opacity-40 disabled:hover:shadow-none"
                             )}
-                            aria-label={showCancel ? "Cancel sending message" : sendButtonLabel}
-                            title={showCancel && isParentIncomplete ? parentStatusLabel : undefined}
+                            aria-label={showCancel ? "Cancel sending message" : primaryActionLabel}
+                            title={isParentIncomplete ? parentStatusLabel : undefined}
                         >
                             {showCancel ? (
                                 <>
@@ -5853,31 +6073,19 @@ export function ChatInput({
                                     {sendPressFeedback && (
                                         <span className="pointer-events-none absolute inset-0 animate-ping rounded-md bg-white/25 dark:bg-black/15" />
                                     )}
-                                    {editDraftSource ? (
+                                    {isFlowSelected ? (
+                                        <Workflow className="h-3 w-3" />
+                                    ) : editDraftSource ? (
                                         <Pencil className="h-3 w-3" />
                                     ) : (
                                         <Send className="h-3 w-3" />
                                     )}
-                                    <span>{isSendAcceptanceInFlight ? (queuedComposerSendCount > 0 ? `Queue ${queuedComposerSendCount + 1}` : 'Queue') : sendButtonLabel}</span>
+                                    <span>{primaryActionLabel}</span>
                                 </>
                             )}
                         </button>
                     </div>
                 </div>
-                ) : (
-                    <ComposerFlowTab
-                        flows={flowRunner.flows}
-                        selectedFlowId={flowRunner.selectedFlowId}
-                        onSelectFlow={flowRunner.setSelectedFlowId}
-                        prompt={prompt}
-                        workspaceId={selectedWorkspaceId}
-                        selectedAgentId={selectedAgentId}
-                        isRunning={flowRunner.isRunning}
-                        events={flowRunner.events}
-                        onRunFlow={handleRunFlow}
-                        modelSelector={renderAgentModelSelector({ mode: 'flow' })}
-                    />
-                )}
             </div>
         </div>
     );

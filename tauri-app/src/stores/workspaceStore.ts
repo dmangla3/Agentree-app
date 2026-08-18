@@ -226,6 +226,7 @@ interface WorkspaceState {
   focusNonce: number;
   composerContextPreview: ComposerContextPreviewState | null;
   composerBaseCommitOverride: ComposerBaseCommitOverrideState | null;
+  composerDraftByWorkspace: Record<string, string>;
   lastFocusedMessageByWorkspace: Record<string, string>;
   recentFocusedMessageIdsByWorkspace: Record<string, string[]>;
   autoCheckoutOnAgentCommit: boolean;
@@ -240,9 +241,6 @@ interface WorkspaceState {
   showInsightsInGraph: boolean;
   isLoadingInsights: boolean;
 
-  rightPanelTab: 'chat' | 'merge';
-
-  setRightPanelTab: (tab: 'chat' | 'merge') => void;
   selectWorkspace: (id: string, initialFocusId?: string | null) => void;
   setHoveredWorkspace: (id: string | null) => void;
   beginSendFlowFocus: (input: ActiveSendFlowFocus) => void;
@@ -264,6 +262,9 @@ interface WorkspaceState {
   clearSelectedMessageIds: () => void;
   setComposerContextPreview: (preview: ComposerContextPreviewState | null) => void;
   setComposerBaseCommitOverride: (override: ComposerBaseCommitOverrideState | null) => void;
+  getComposerDraft: (workspaceId: string | null | undefined) => string;
+  setComposerDraft: (workspaceId: string | null | undefined, prompt: string) => void;
+  clearComposerDraft: (workspaceId: string | null | undefined) => void;
   setAutoCheckoutOnAgentCommit: (enabled: boolean) => void;
   clearPendingInitialFocusId: () => void;
   toggleSummaryDisabled: (summaryId: string) => void;
@@ -287,7 +288,7 @@ interface WorkspaceState {
 
 export const useWorkspaceStore = create<WorkspaceState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       selectedWorkspaceId: null,
       focusedMessageId: null,
       lastFocusSource: null,
@@ -296,6 +297,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       focusNonce: 0,
       composerContextPreview: null,
       composerBaseCommitOverride: null,
+      composerDraftByWorkspace: {},
       lastFocusedMessageByWorkspace: {},
       recentFocusedMessageIdsByWorkspace: {},
       autoCheckoutOnAgentCommit: false,
@@ -304,16 +306,12 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       disabledSummaryIds: [],
       activeSendFlowFocus: null,
       selectedAgentId: null,
-      rightPanelTab: 'chat',
-
       insights: [],
       insightsVisible: true,
       showInsightsInGraph: false,
       isLoadingInsights: false,
       isFloatingChatInputOpen: false,
       floatingChatInputParentId: null,
-
-      setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
 
       clearSelectedWorkspace: () =>
         set({
@@ -326,6 +324,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           focusNonce: 0,
           composerContextPreview: null,
           composerBaseCommitOverride: null,
+          composerDraftByWorkspace: {},
           activeSendFlowFocus: null,
           insights: [],
         }),
@@ -455,6 +454,26 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           return { composerContextPreview: preview };
         }),
       setComposerBaseCommitOverride: (override) => set({ composerBaseCommitOverride: override }),
+      getComposerDraft: (workspaceId) => {
+        if (!workspaceId) return '';
+        return get().composerDraftByWorkspace[workspaceId] ?? '';
+      },
+      setComposerDraft: (workspaceId, prompt) => {
+        if (!workspaceId) return;
+        set((state) => ({
+          composerDraftByWorkspace: {
+            ...state.composerDraftByWorkspace,
+            [workspaceId]: prompt,
+          },
+        }));
+      },
+      clearComposerDraft: (workspaceId) => {
+        if (!workspaceId) return;
+        set((state) => {
+          const { [workspaceId]: _removed, ...rest } = state.composerDraftByWorkspace;
+          return { composerDraftByWorkspace: rest };
+        });
+      },
       setAutoCheckoutOnAgentCommit: (enabled) => set({ autoCheckoutOnAgentCommit: enabled }),
       clearPendingInitialFocusId: () => set({ pendingInitialFocusId: null }),
       toggleSummaryDisabled: (summaryId) =>
@@ -506,7 +525,6 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         focusNonce: state.focusNonce,
         autoCheckoutOnAgentCommit: state.autoCheckoutOnAgentCommit,
         disabledSummaryIds: state.disabledSummaryIds,
-        rightPanelTab: state.rightPanelTab,
       }),
     }
   )

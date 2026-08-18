@@ -52,6 +52,7 @@ const renderLayout = (
   focusedMessageId: string,
   contextPathMessageIds: string[],
   inputMessages: Message[] = messages,
+  layoutCacheScopeKey = 'default',
 ) => {
   const projection = buildWorkspaceProjection({
     messages: inputMessages,
@@ -83,6 +84,7 @@ const renderLayout = (
     workspaceRepoMap: new Map(),
     branchPointersByNodeId: new Map(),
     resetNonce: 0,
+    layoutCacheScopeKey,
     ...callbacks,
   });
 };
@@ -151,5 +153,47 @@ describe('useGraphLayout visual reuse', () => {
     const node = result.current.nodes.find((candidate) => candidate.id === 'assistant-1');
     expect(node?.data.message.status).toBe('completed');
     expect(node?.data.heightKey).toContain('status:completed');
+  });
+
+  it('keeps separate layout cache entries for repeated thread scopes', () => {
+    const threadAMessages: Message[] = [
+      makeMessage({ id: 'thread-a', role: 'user', parentId: null, content: 'Thread A task.' }, 0),
+      makeMessage({ id: 'assistant-a', role: 'assistant', parentId: 'thread-a', content: 'Thread A result.' }, 1),
+    ];
+    const threadBMessages: Message[] = [
+      makeMessage({ id: 'thread-b', role: 'user', parentId: null, content: 'Thread B task.' }, 2),
+      makeMessage({ id: 'assistant-b', role: 'assistant', parentId: 'thread-b', content: 'Thread B result.' }, 3),
+    ];
+
+    const { result, rerender } = renderHook(
+      ({ inputMessages, focusedMessageId, path, cacheScopeKey }) => (
+        renderLayout(focusedMessageId, path, inputMessages, cacheScopeKey)
+      ),
+      {
+        initialProps: {
+          inputMessages: threadAMessages,
+          focusedMessageId: 'assistant-a',
+          path: ['thread-a', 'assistant-a'],
+          cacheScopeKey: 'workspace-1:thread-a',
+        },
+      },
+    );
+
+    const firstNodes = result.current.nodes;
+
+    rerender({
+      inputMessages: threadBMessages,
+      focusedMessageId: 'assistant-b',
+      path: ['thread-b', 'assistant-b'],
+      cacheScopeKey: 'workspace-1:thread-b',
+    });
+    rerender({
+      inputMessages: threadAMessages,
+      focusedMessageId: 'assistant-a',
+      path: ['thread-a', 'assistant-a'],
+      cacheScopeKey: 'workspace-1:thread-a',
+    });
+
+    expect(result.current.nodes).toBe(firstNodes);
   });
 });

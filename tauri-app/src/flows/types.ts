@@ -25,10 +25,13 @@ export interface FlowInputDefinition {
 
 export interface FlowNodeTemplate {
   id: string;
+  registryId?: string;
+  label?: string;
   params?: string[];
   parent: string;
   returns?: Record<string, FlowReturnDefinition>;
   prompt: string;
+  requiresFinalizedCommit?: boolean;
 }
 
 export type FlowReturnDefinition = FlowScalarType | string[];
@@ -45,6 +48,7 @@ export type FlowStatement =
 export interface FlowCallStatement {
   set: string;
   call: string;
+  parent?: string;
   args?: Record<string, string>;
 }
 

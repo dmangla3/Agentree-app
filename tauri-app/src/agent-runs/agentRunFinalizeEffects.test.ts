@@ -71,6 +71,16 @@ describe('agentRun finalize effects', () => {
   it('patches message and local-node caches from a finalize ack snapshot', () => {
     queryClient.setQueryData(['messages', 'workspace-1'], [message()]);
     queryClient.setQueryData(localNodeKeys.workspace('workspace-1'), [localNode()]);
+    queryClient.setQueryData(['graph-snapshot', 'workspace-1'], {
+      version: 2,
+      workspaceId: 'workspace-1',
+      generatedAt: '2026-05-19T09:59:00.000Z',
+      messages: [message()],
+      summaries: [],
+      commits: [],
+      commitParents: [],
+      commitObservations: [],
+    });
 
     agentRunManager.dispatch('assistant-1', {
       type: 'finalize_ack',
@@ -107,6 +117,19 @@ describe('agentRun finalize effects', () => {
       status: 'completed',
       output_commit_sha: 'commit-1',
       git_branch_name: 'agent/run-1',
+    });
+    expect(queryClient.getQueryData<any>(['graph-snapshot', 'workspace-1'])?.messages?.[0]).toMatchObject({
+      id: 'assistant-1',
+      status: 'completed',
+      output_commit_sha: 'commit-1',
+      git_branch_name: 'agent/run-1',
+      execution_data: {
+        output_commit_sha: 'commit-1',
+        meta: {
+          output_commit_sha: 'commit-1',
+          commit_created: true,
+        },
+      },
     });
 
     vi.advanceTimersByTime(50);
@@ -235,7 +258,7 @@ describe('agentRun finalize effects', () => {
     });
     agentRunManager.dispatch('assistant-1', ack);
 
-    expect(setQueryDataSpy).toHaveBeenCalledTimes(2);
+    expect(setQueryDataSpy).toHaveBeenCalledTimes(3);
 
     vi.advanceTimersByTime(50);
 

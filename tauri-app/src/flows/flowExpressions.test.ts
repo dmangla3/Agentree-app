@@ -48,6 +48,13 @@ describe('flow expressions', () => {
     expect(evaluateFlowExpression('input.count', scope)).toEqual({ value: 3, issues: [] });
   });
 
+  it('allows sentence literals for flow call arguments', () => {
+    expect(evaluateFlowExpression('Review correctness against the original request.', scope)).toEqual({
+      value: 'Review correctness against the original request.',
+      issues: [],
+    });
+  });
+
   it('evaluates equality checks against bare enum literals', () => {
     expect(evaluateFlowCondition('judge.verdict == fail', scope)).toEqual({ value: true, issues: [] });
     expect(evaluateFlowCondition('reviewer.verdict == pass', scope)).toEqual({ value: true, issues: [] });

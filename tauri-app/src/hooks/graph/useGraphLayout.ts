@@ -44,6 +44,7 @@ export interface UseGraphLayoutOptions {
     constrainedCommitFiltering?: boolean;
     pinnedCommitShas?: Set<string>;
     hiddenThreadRootIds?: Set<string>;
+    layoutCacheScopeKey?: string;
     visibleNodeSections: Set<GraphNodeSectionId>;
     insights: Insight[];
     showInsightsInGraph: boolean;
@@ -53,6 +54,7 @@ export interface UseGraphLayoutOptions {
     onToggleSummary: (id: string) => void;
     onToggleCollapse: (id: string, collapsed: boolean) => void;
     onFocus: (id: string) => void;
+    onOpenThread?: (threadRootId: string) => void;
     onSelect: (id: string, multi: boolean) => void;
     onContextMenu: (id: string, e: React.MouseEvent) => void;
     onMeasureNodeHeight?: (id: string, height: number) => void;
@@ -68,6 +70,7 @@ export interface UseGraphLayoutResult {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const HEIGHT_FINGERPRINT_TEXT_BUCKET_SIZE = 36;
+const MAX_LAYOUT_SCOPE_CACHE_ENTRIES = 8;
 
 const getRenderedNodeWidth = (node: Node<any>): number => {
     if (typeof node.style?.width === 'number') return node.style.width;
@@ -266,6 +269,7 @@ interface VisualCacheEntry {
     composerBaseCommitSha: string | null;
     visualFingerprint: string;
     onFocus: UseGraphLayoutOptions['onFocus'];
+    onOpenThread: UseGraphLayoutOptions['onOpenThread'];
     onSelect: UseGraphLayoutOptions['onSelect'];
     onContextMenu: UseGraphLayoutOptions['onContextMenu'];
     result: UseGraphLayoutResult;
@@ -352,6 +356,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         constrainedCommitFiltering = false,
         pinnedCommitShas = new Set<string>(),
         hiddenThreadRootIds = new Set<string>(),
+        layoutCacheScopeKey = 'default',
         visibleNodeSections,
         insights,
         showInsightsInGraph,
@@ -361,16 +366,35 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         onToggleSummary,
         onToggleCollapse,
         onFocus,
+        onOpenThread,
         onSelect,
         onContextMenu,
         onMeasureNodeHeight
     } = options;
 
-    const layoutCacheRef = useRef<LayoutCacheEntry | null>(null);
-    const visualCacheRef = useRef<VisualCacheEntry | null>(null);
+    const layoutCacheByScopeRef = useRef(new Map<string, LayoutCacheEntry>());
+    const visualCacheByScopeRef = useRef(new Map<string, VisualCacheEntry>());
 
     const { nodes, edges } = useMemo(() => {
         const startedAt = performance.now();
+        const layoutCacheEntry = layoutCacheByScopeRef.current.get(layoutCacheScopeKey) ?? null;
+        const visualCacheEntry = visualCacheByScopeRef.current.get(layoutCacheScopeKey) ?? null;
+        const rememberLayoutCacheEntry = (entry: LayoutCacheEntry) => {
+            const cache = layoutCacheByScopeRef.current;
+            cache.delete(layoutCacheScopeKey);
+            cache.set(layoutCacheScopeKey, entry);
+            while (cache.size > MAX_LAYOUT_SCOPE_CACHE_ENTRIES) {
+                const oldestKey = cache.keys().next().value as string | undefined;
+                if (!oldestKey) break;
+                cache.delete(oldestKey);
+                visualCacheByScopeRef.current.delete(oldestKey);
+            }
+        };
+        const rememberVisualCacheEntry = (entry: VisualCacheEntry) => {
+            const cache = visualCacheByScopeRef.current;
+            cache.delete(layoutCacheScopeKey);
+            cache.set(layoutCacheScopeKey, entry);
+        };
         const visualFingerprint = '';
         const contextPathFingerprint = Array.from(contextPathMessageIds).sort().join(',');
         const messagesVisualFingerprint = createMessagesVisualFingerprint(messages);
@@ -394,13 +418,13 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             resetNonce,
             commitProjectionFingerprint: createCommitProjectionFingerprint(projection),
         };
-        const keyChanges = changedLayoutKeyFields(layoutCacheRef.current?.key, currentCacheKey);
+        const keyChanges = changedLayoutKeyFields(layoutCacheEntry?.key, currentCacheKey);
 
-        if (layoutCacheRef.current && cacheKeysEqual(layoutCacheRef.current.key, currentCacheKey)) {
-            const previousVisual = visualCacheRef.current;
+        if (layoutCacheEntry && cacheKeysEqual(layoutCacheEntry.key, currentCacheKey)) {
+            const previousVisual = visualCacheEntry;
             const visualChanges = previousVisual ? {
-                cachedNodesChanged: previousVisual.cachedNodes !== layoutCacheRef.current.nodes,
-                cachedEdgesChanged: previousVisual.cachedEdges !== layoutCacheRef.current.edges,
+                cachedNodesChanged: previousVisual.cachedNodes !== layoutCacheEntry.nodes,
+                cachedEdgesChanged: previousVisual.cachedEdges !== layoutCacheEntry.edges,
                 messagesFingerprintChanged: previousVisual.messagesFingerprint !== currentCacheKey.messagesFingerprint,
                 messagesVisualFingerprintChanged: previousVisual.messagesVisualFingerprint !== messagesVisualFingerprint,
                 filterFingerprintChanged: previousVisual.filterFingerprint !== currentCacheKey.filterFingerprint,
@@ -411,6 +435,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 composerBaseCommitChanged: previousVisual.composerBaseCommitSha !== composerBaseCommitSha,
                 visualFingerprintChanged: previousVisual.visualFingerprint !== visualFingerprint,
                 onFocusChanged: previousVisual.onFocus !== onFocus,
+                onOpenThreadChanged: previousVisual.onOpenThread !== onOpenThread,
                 onSelectChanged: previousVisual.onSelect !== onSelect,
                 onContextMenuChanged: previousVisual.onContextMenu !== onContextMenu,
             } : null;
@@ -422,8 +447,8 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 : 'no-previous-visual';
             if (
                 previousVisual &&
-                previousVisual.cachedNodes === layoutCacheRef.current.nodes &&
-                previousVisual.cachedEdges === layoutCacheRef.current.edges &&
+                previousVisual.cachedNodes === layoutCacheEntry.nodes &&
+                previousVisual.cachedEdges === layoutCacheEntry.edges &&
                 previousVisual.messagesFingerprint === currentCacheKey.messagesFingerprint &&
                 previousVisual.messagesVisualFingerprint === messagesVisualFingerprint &&
                 previousVisual.filterFingerprint === currentCacheKey.filterFingerprint &&
@@ -434,22 +459,23 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 previousVisual.composerBaseCommitSha === composerBaseCommitSha &&
                 previousVisual.visualFingerprint === visualFingerprint &&
                 previousVisual.onFocus === onFocus &&
+                previousVisual.onOpenThread === onOpenThread &&
                 previousVisual.onSelect === onSelect &&
                 previousVisual.onContextMenu === onContextMenu
             ) {
                 recordGraphLayoutAttribution('cache-hit', performance.now() - startedAt, keyChanges, {
                     messageCount: messages.length,
                     summaryCount: summaries.length,
-                    nodeCount: layoutCacheRef.current.nodes.length,
-                    edgeCount: layoutCacheRef.current.edges.length,
+                    nodeCount: layoutCacheEntry.nodes.length,
+                    edgeCount: layoutCacheEntry.edges.length,
                     layoutMode,
                 });
                 return previousVisual.result;
             }
 
             const visualResult = applyVisualProperties(
-                layoutCacheRef.current.nodes,
-                layoutCacheRef.current.edges,
+                layoutCacheEntry.nodes,
+                layoutCacheEntry.edges,
                 messages,
                 projection,
                 focusedMessageId,
@@ -461,13 +487,14 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 keepAncestors,
                 keepDescendants,
                 onFocus,
+                onOpenThread,
                 onSelect,
                 onContextMenu,
                 previousVisual?.result ?? null
             );
-            visualCacheRef.current = {
-                cachedNodes: layoutCacheRef.current.nodes,
-                cachedEdges: layoutCacheRef.current.edges,
+            rememberVisualCacheEntry({
+                cachedNodes: layoutCacheEntry.nodes,
+                cachedEdges: layoutCacheEntry.edges,
                 messagesFingerprint: currentCacheKey.messagesFingerprint,
                 messagesVisualFingerprint,
                 filterFingerprint: currentCacheKey.filterFingerprint,
@@ -478,15 +505,16 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 composerBaseCommitSha,
                 visualFingerprint,
                 onFocus,
+                onOpenThread,
                 onSelect,
                 onContextMenu,
                 result: visualResult,
-            };
+            });
             recordGraphLayoutAttribution('visual-only', performance.now() - startedAt, keyChanges, {
                 messageCount: messages.length,
                 summaryCount: summaries.length,
-                nodeCount: layoutCacheRef.current.nodes.length,
-                edgeCount: layoutCacheRef.current.edges.length,
+                nodeCount: layoutCacheEntry.nodes.length,
+                edgeCount: layoutCacheEntry.edges.length,
                 layoutMode,
                 visualChanges,
                 visualChangeKey,
@@ -520,13 +548,14 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 visibleNodeSections,
                 constrainedCommitFiltering,
                 pinnedCommitShas,
-                hiddenThreadRootIds
+                hiddenThreadRootIds,
+                onOpenThread
         );
 
         if (mappedNodes.length === 0) {
             const emptyResult = { nodes: [], edges: [] };
-            layoutCacheRef.current = { key: currentCacheKey, nodes: emptyResult.nodes, edges: emptyResult.edges };
-            visualCacheRef.current = {
+            rememberLayoutCacheEntry({ key: currentCacheKey, nodes: emptyResult.nodes, edges: emptyResult.edges });
+            rememberVisualCacheEntry({
                 cachedNodes: emptyResult.nodes,
                 cachedEdges: emptyResult.edges,
                 messagesFingerprint: currentCacheKey.messagesFingerprint,
@@ -539,10 +568,11 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 composerBaseCommitSha,
                 visualFingerprint,
                 onFocus,
+                onOpenThread,
                 onSelect,
                 onContextMenu,
                 result: emptyResult,
-            };
+            });
             recordGraphLayoutAttribution('recomputed', performance.now() - startedAt, keyChanges, {
                 messageCount: messages.length,
                 summaryCount: summaries.length,
@@ -576,7 +606,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         }
 
         layoutedEdges = applyDirectionalEdgeHandles(layoutedNodes, layoutedEdges);
-        layoutCacheRef.current = { key: currentCacheKey, nodes: layoutedNodes, edges: layoutedEdges };
+        rememberLayoutCacheEntry({ key: currentCacheKey, nodes: layoutedNodes, edges: layoutedEdges });
         const visualResult = applyVisualProperties(
             layoutedNodes,
             layoutedEdges,
@@ -591,10 +621,11 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             keepAncestors,
             keepDescendants,
             onFocus,
+            onOpenThread,
             onSelect,
             onContextMenu
         );
-        visualCacheRef.current = {
+        rememberVisualCacheEntry({
             cachedNodes: layoutedNodes,
             cachedEdges: layoutedEdges,
             messagesFingerprint: currentCacheKey.messagesFingerprint,
@@ -607,10 +638,11 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             composerBaseCommitSha,
             visualFingerprint,
             onFocus,
+            onOpenThread,
             onSelect,
             onContextMenu,
             result: visualResult,
-        };
+        });
         recordGraphLayoutAttribution('recomputed', performance.now() - startedAt, keyChanges, {
             messageCount: messages.length,
             summaryCount: summaries.length,
@@ -624,7 +656,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         focusedMessageId, contextPathMessageIds, composerBaseCommitSha, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, constrainedCommitFiltering, pinnedCommitShas, hiddenThreadRootIds, insights, showInsightsInGraph,
         visibleNodeSections,
         workspaceRepoMap, branchPointersByNodeId, onToggleSummary, onToggleCollapse,
-        onFocus, onSelect, onContextMenu, onMeasureNodeHeight, resetNonce
+        onFocus, onOpenThread, onSelect, onContextMenu, onMeasureNodeHeight, resetNonce, layoutCacheScopeKey
     ]);
 
     return { nodes, edges };
@@ -644,6 +676,7 @@ function applyVisualProperties(
     _keepAncestors: boolean,
     _keepDescendants: boolean,
     onFocus: (id: string) => void,
+    onOpenThread: ((threadRootId: string) => void) | undefined,
     onSelect: (id: string, multi: boolean) => void,
     onContextMenu: (id: string, e: React.MouseEvent) => void,
     previousResult?: UseGraphLayoutResult | null
@@ -728,7 +761,7 @@ function applyVisualProperties(
                 ? projection.entitiesBySummaryId.get(data.entity.summary.id)
                 : undefined;
         const latestMessage = data.message?.id ? messageMap.get(data.message.id) : undefined;
-        const nodeKind = node.type === 'user_message' || node.type === 'assistant_message' || node.type === 'commit_message'
+        const nodeKind = node.type === 'thread_link' || node.type === 'user_message' || node.type === 'assistant_message' || node.type === 'commit_message'
             ? node.type
             : undefined;
         const branchPointers = Array.isArray(data.branchPointers) ? data.branchPointers as BranchPointer[] : [];
@@ -769,6 +802,7 @@ function applyVisualProperties(
                 changedFilesCount,
             } : {}),
             onFocus,
+            onOpenThread,
             onSelect,
             onContextMenu,
             isFocused,
@@ -979,6 +1013,7 @@ const canReuseVisualNode = (
         'agentId',
         'collapsed',
         'onFocus',
+        'onOpenThread',
         'onSelect',
         'onContextMenu',
         'isFocused',

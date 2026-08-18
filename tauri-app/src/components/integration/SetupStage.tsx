@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { Target, GitBranch, X, ArrowRight, Loader2, Check, Bot, ChevronDown, Sparkles, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { Target, GitBranch, GitMerge, X, ArrowRight, Loader2, Check, Bot, ChevronDown, Sparkles, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useIntegrationStore } from '../../stores/integrationStore';
 import { useWorkspaceStore, type Message } from '../../stores/workspaceStore';
@@ -52,11 +52,11 @@ function CommitListItem({
       onClick={() => onSelect?.()}
       disabled={!isSelectable && !showCheckbox}
       className={cn(
-        'flex w-full items-center gap-1.5 rounded-sm px-1.5 py-0.5 text-left text-[11px] transition-colors',
+        'flex min-h-8 w-full items-center gap-2 rounded-lg border px-2 py-1 text-left text-[11px] transition-[background-color,border-color,box-shadow,transform,opacity] duration-150 active:scale-[0.99]',
         isSelected 
-          ? 'bg-primary/10 border border-primary/30' 
+          ? 'border-[hsl(var(--app-graph-commit)/0.34)] bg-[hsl(var(--app-graph-commit)/0.1)] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]' 
           : isSelectable || showCheckbox
-            ? 'hover:bg-muted'
+            ? 'border-transparent hover:border-[hsl(var(--app-border)/0.64)] hover:bg-[hsl(var(--app-panel-strong)/0.68)]'
             : 'opacity-50 cursor-not-allowed'
       )}
     >
@@ -66,29 +66,29 @@ function CommitListItem({
             checked={isChecked}
             onCheckedChange={onToggle}
             indicatorMode="check"
-            className="h-2.5 w-2.5"
+            className="h-3.5 w-3.5 rounded-[4px]"
           />
         </div>
       )}
-      <div className="flex-1 min-w-0 flex items-center gap-1.5">
-        <span className="text-[9px] font-mono text-muted-foreground shrink-0">
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="shrink-0 rounded border border-[hsl(var(--app-border)/0.46)] bg-[hsl(var(--app-bg-muted)/0.45)] px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground tabular-nums">
           {commit.sha.slice(0, 7)}
         </span>
         {commit.refName && (
-          <Badge variant="secondary" className="text-[8px] h-3 px-1 shrink-0 bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
-            <GitBranch className="h-2 w-2 mr-0.5" />
+          <Badge variant="secondary" className="h-3.5 shrink-0 gap-1 border border-[hsl(var(--app-graph-agent)/0.18)] bg-[hsl(var(--app-graph-agent)/0.1)] px-1 text-[8px] text-[hsl(var(--app-graph-agent))]">
+            <GitBranch className="h-2.5 w-2.5" />
             {commit.refName}
           </Badge>
         )}
-        <span className="truncate font-medium">
+        <span className="truncate font-medium text-foreground">
           {commit.subject}
         </span>
       </div>
-      <span className="text-[8px] text-muted-foreground shrink-0">
+      <span className="shrink-0 text-[9px] font-medium text-muted-foreground">
         {commit.authored_at ? new Date(commit.authored_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''}
       </span>
       {isSelected && !showCheckbox && (
-        <Check className="h-3 w-3 text-primary shrink-0" />
+        <Check className="h-3.5 w-3.5 shrink-0 text-[hsl(var(--app-graph-commit))]" />
       )}
     </button>
   );
@@ -115,8 +115,8 @@ function TargetSelector({
 }: TargetSelectorProps) {
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center rounded-md border px-3 py-4 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+      <div className="flex items-center justify-center rounded-xl border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.54)] px-3 py-4 text-sm text-muted-foreground">
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
         Loading commits...
       </div>
     );
@@ -124,7 +124,7 @@ function TargetSelector({
 
   if (commits.length === 0) {
     return (
-      <p className="text-xs text-muted-foreground py-2">
+      <p className="rounded-xl border border-dashed border-[hsl(var(--app-border)/0.58)] px-3 py-4 text-center text-xs text-muted-foreground">
         No commits available.
       </p>
     );
@@ -149,10 +149,10 @@ function TargetSelector({
   const availableCommits = sortedCommits.filter(c => !excludeShas.includes(c.sha));
 
   return (
-    <ScrollArea className="h-64 rounded-md border">
-      <div className="p-2 space-y-0.5">
+    <ScrollArea className="h-52 rounded-xl border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.34)] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)]">
+      <div className="space-y-1 p-1.5">
         {availableCommits.length === 0 ? (
-          <p className="text-xs text-muted-foreground p-2">
+          <p className="p-4 text-center text-xs text-muted-foreground">
             No commits available.
           </p>
         ) : (
@@ -212,20 +212,27 @@ function MultiSourceSelector({
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center rounded-md border px-3 py-4 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+      <div className="flex items-center justify-center rounded-xl border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.54)] px-3 py-4 text-sm text-muted-foreground">
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
         Loading commits...
       </div>
     );
   }
 
   return (
-    <div className="space-y-2 mt-2">
-      <Label className="text-xs font-medium text-muted-foreground">Available Commits</Label>
-      <ScrollArea className="h-64 rounded-md border">
-        <div className="p-2 space-y-0.5">
+    <div className="mt-1.5 space-y-1.5">
+      <div className="flex items-center justify-between gap-3">
+        <Label className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Available commits</Label>
+        {selectedShas.length > 0 ? (
+          <span className="rounded-full border border-[hsl(var(--app-border)/0.54)] bg-[hsl(var(--app-panel-strong)/0.58)] px-2 py-0.5 text-[10px] font-semibold text-muted-foreground tabular-nums">
+            {selectedShas.length} selected
+          </span>
+        ) : null}
+      </div>
+      <ScrollArea className="h-52 rounded-xl border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.34)] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)]">
+        <div className="space-y-1 p-1.5">
           {availableCommits.length === 0 ? (
-            <p className="text-xs text-muted-foreground p-2">
+            <p className="p-4 text-center text-xs text-muted-foreground">
               No commits available.
             </p>
           ) : (
@@ -252,60 +259,57 @@ function MultiSourceSelector({
 interface GitConflictPreviewProps {
   canCheck: boolean;
   isLoading: boolean;
-  isApplying: boolean;
   preview: GitMergePreview | null;
   error: string | null;
-  onMergeClean: () => void;
 }
 
-function GitConflictPreview({ canCheck, isLoading, isApplying, preview, error, onMergeClean }: GitConflictPreviewProps) {
+function GitConflictPreview({ canCheck, isLoading, preview, error }: GitConflictPreviewProps) {
   if (!canCheck) return null;
 
   const totalFiles = (preview?.auto_mergeable_files.length || 0) + (preview?.conflicted_files.length || 0);
-  const canMergeClean = Boolean(preview && !preview.has_conflicts && totalFiles > 0);
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-base">
-          <GitBranch className="h-4 w-4 text-primary" />
+    <Card className="gap-2 overflow-hidden border-[hsl(var(--app-border)/0.66)] bg-[hsl(var(--app-panel)/0.72)] p-2.5 shadow-[0_14px_34px_-30px_hsl(var(--foreground)/0.4),inset_0_1px_0_hsl(var(--foreground)/0.035)]">
+      <CardHeader className="p-0">
+        <CardTitle className="flex items-center gap-1.5 text-[13px] leading-none">
+          <GitBranch className="h-3.5 w-3.5 text-[hsl(var(--app-graph-commit))]" />
           Git Conflict Check
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-2 p-0">
         {isLoading ? (
-          <div className="flex items-center gap-2 rounded-md border px-3 py-3 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 rounded-xl border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.38)] px-3 py-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             Checking code-level git conflicts for this merge...
           </div>
         ) : error ? (
-          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-3 text-sm text-destructive">
+          <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {error}
           </div>
         ) : preview ? (
           <>
-            <div className="flex flex-wrap gap-3">
-              <Badge variant="secondary" className="gap-1.5">
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="secondary" className="gap-1.5 rounded-full border border-[hsl(var(--app-success)/0.24)] bg-[hsl(var(--app-success)/0.1)] text-[hsl(var(--app-success))]">
                 <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
                 {preview.auto_mergeable_files.length} auto-mergeable
               </Badge>
-              <Badge variant={preview.has_conflicts ? 'destructive' : 'secondary'} className="gap-1.5">
+              <Badge variant={preview.has_conflicts ? 'destructive' : 'secondary'} className="gap-1.5 rounded-full">
                 <AlertTriangle className="h-3.5 w-3.5" />
                 {preview.conflicted_files.length} conflicts
               </Badge>
             </div>
 
             {totalFiles === 0 ? (
-              <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-3 text-sm text-emerald-700 dark:text-emerald-300">
+              <div className="rounded-xl border border-[hsl(var(--app-success)/0.28)] bg-[hsl(var(--app-success)/0.1)] px-3 py-2 text-sm text-[hsl(var(--app-success))]">
                 Nothing new to merge. The selected target already contains these changes.
               </div>
             ) : preview.has_conflicts ? (
-              <div className="space-y-3">
-                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-sm text-amber-700 dark:text-amber-300">
+              <div className="space-y-2">
+                <div className="rounded-xl border border-[hsl(var(--app-warning)/0.28)] bg-[hsl(var(--app-warning)/0.1)] px-3 py-2 text-sm text-[hsl(var(--app-warning))]">
                   Standard git found text conflicts that need resolution before this merge can apply cleanly.
                 </div>
-                <div className="rounded-md border bg-muted/30">
-                  <div className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">
+                <div className="overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.32)]">
+                  <div className="border-b border-[hsl(var(--app-border)/0.5)] px-3 py-2 text-xs font-medium text-muted-foreground">
                     Conflicted Files
                   </div>
                   <ScrollArea className="max-h-40">
@@ -320,31 +324,23 @@ function GitConflictPreview({ canCheck, isLoading, isApplying, preview, error, o
                 </div>
               </div>
             ) : (
-              <div className="flex flex-col gap-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-3 text-sm text-emerald-700 dark:text-emerald-300 sm:flex-row sm:items-center sm:justify-between">
-                <span>No code-level git conflicts were detected for the current selection.</span>
-                <Button
-                  size="sm"
-                  onClick={onMergeClean}
-                  disabled={!canMergeClean || isApplying}
-                  className="gap-2 self-start sm:self-auto"
-                >
-                  {isApplying ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Merging...
-                    </>
-                  ) : (
-                    <>
-                      <GitBranch className="h-4 w-4" />
-                      Merge Now
-                    </>
-                  )}
-                </Button>
+              <div className="rounded-xl border border-[hsl(var(--app-success)/0.34)] bg-[hsl(var(--app-success)/0.1)] px-3 py-2 text-sm text-[hsl(var(--app-success))] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]">
+                <div className="flex min-w-0 items-start gap-2.5">
+                  <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--app-success)/0.14)]">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="font-semibold text-foreground">Clean git merge ready</p>
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      {totalFiles} file{totalFiles === 1 ? '' : 's'} can be merged directly without starting an AI merge.
+                    </p>
+                  </div>
+                </div>
               </div>
             )}
           </>
         ) : (
-          <div className="rounded-md border px-3 py-3 text-sm text-muted-foreground">
+          <div className="rounded-xl border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.32)] px-3 py-2 text-sm text-muted-foreground">
             Select a target and at least one source to check merge conflicts.
           </div>
         )}
@@ -446,6 +442,15 @@ export function SetupStage() {
   const sourceShas = session.sources.map((s) => s.commitSha);
   const selectionKey = session.target ? `${session.target.commitSha}::${sourceShas.join(',')}` : '';
   const isPreviewCurrent = Boolean(canProceed && session.preview);
+  const previewTotalFiles = isPreviewCurrent && session.preview
+    ? session.preview.auto_mergeable_files.length + session.preview.conflicted_files.length
+    : 0;
+  const canMergeCleanDirect = Boolean(
+    isPreviewCurrent &&
+    session.preview &&
+    !session.preview.has_conflicts &&
+    previewTotalFiles > 0
+  );
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) || null;
   const displayName = selectedAgent?.name || 'Select model';
 
@@ -853,40 +858,45 @@ export function SetupStage() {
   };
 
   return (
-    <div className="flex flex-col h-full space-y-0 relative">
-      <div className="flex-1 overflow-y-auto space-y-6 pb-20 pr-2">
+    <div className="relative flex h-full flex-col space-y-0">
+      <div className="flex-1 space-y-3 overflow-y-auto pb-20 pr-2">
         {/* Header */}
-        <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Configure Merge</h3>
-          <p className="text-sm text-muted-foreground">
+        <div className="flex flex-col gap-1.5 rounded-xl border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.58)] p-3 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.035)]">
+          <div className="flex items-center gap-1.5">
+            <span className="flex h-6 w-6 items-center justify-center rounded-md bg-[hsl(var(--app-graph-commit)/0.11)] text-[hsl(var(--app-graph-commit))]">
+              <GitMerge className="h-3.5 w-3.5" strokeWidth={1.9} />
+            </span>
+            <h3 className="text-sm font-semibold text-foreground">Configure Merge</h3>
+          </div>
+          <p className="max-w-2xl text-xs leading-5 text-muted-foreground">
             Select the target commit and one or more source commits to merge into it.
           </p>
         </div>
 
-        <div className="flex flex-col gap-6">
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
           {/* Target Selection */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Target className="h-4 w-4 text-primary" />
+          <Card className="gap-2 overflow-hidden border-[hsl(var(--app-border)/0.66)] bg-[hsl(var(--app-panel)/0.72)] p-2.5 shadow-[0_14px_34px_-30px_hsl(var(--foreground)/0.4),inset_0_1px_0_hsl(var(--foreground)/0.035)]">
+            <CardHeader className="p-0">
+              <CardTitle className="flex items-center gap-1.5 text-[13px] leading-none">
+                <Target className="h-3.5 w-3.5 text-[hsl(var(--app-graph-commit))]" />
                 Target (base)
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="space-y-2 p-0">
               {session.target ? (
-                <div className="flex items-center gap-2 rounded-md border bg-primary/5 px-3 py-2">
-                  <Target className="h-4 w-4 text-primary" />
-                  <div className="flex-1 min-w-0">
-                    <span className="truncate text-sm block">{session.target.label}</span>
-                    <span className="text-[10px] text-muted-foreground font-mono">
+                <div className="flex items-center gap-2.5 rounded-xl border border-[hsl(var(--app-graph-commit)/0.28)] bg-[hsl(var(--app-graph-commit)/0.08)] px-3 py-2 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]">
+                  <Target className="h-4 w-4 shrink-0 text-[hsl(var(--app-graph-commit))]" />
+                  <div className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-semibold">{session.target.label}</span>
+                    <span className="font-mono text-[10px] text-muted-foreground tabular-nums">
                       {session.target.commitSha.slice(0, 7)}
                     </span>
                   </div>
-                  <Badge variant="secondary" className="text-[10px]">Selected</Badge>
+                  <Badge variant="secondary" className="rounded-full border border-[hsl(var(--app-graph-commit)/0.2)] bg-[hsl(var(--app-graph-commit)/0.11)] text-[10px] text-[hsl(var(--app-graph-commit))]">Selected</Badge>
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-6 w-6"
+                    className="h-8 w-8 rounded-lg text-muted-foreground active:scale-[0.96]"
                     onClick={() => {
                       const { session, openMergeSession } = useIntegrationStore.getState();
                       if (session) {
@@ -910,17 +920,17 @@ export function SetupStage() {
           </Card>
 
           {/* Source Selection */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <GitBranch className="h-4 w-4 text-primary" />
+          <Card className="gap-2 overflow-hidden border-[hsl(var(--app-border)/0.66)] bg-[hsl(var(--app-panel)/0.72)] p-2.5 shadow-[0_14px_34px_-30px_hsl(var(--foreground)/0.4),inset_0_1px_0_hsl(var(--foreground)/0.035)]">
+            <CardHeader className="p-0">
+              <CardTitle className="flex items-center gap-1.5 text-[13px] leading-none">
+                <GitBranch className="h-3.5 w-3.5 text-[hsl(var(--app-graph-agent))]" />
                 Sources ({session.sources.length})
                 {session.sources.length > 1 && (
-                  <Badge variant="secondary" className="text-[10px]">Multi-source</Badge>
+                  <Badge variant="secondary" className="rounded-full border border-[hsl(var(--app-border)/0.54)] bg-[hsl(var(--app-bg-muted)/0.46)] text-[10px]">Multi-source</Badge>
                 )}
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="space-y-2 p-0">
               {session.target && (
                 <MultiSourceSelector
                   commits={sourceCommits}
@@ -930,23 +940,28 @@ export function SetupStage() {
                   isLoading={isLoadingTarget}
                 />
               )}
+              {!session.target ? (
+                <div className="rounded-xl border border-dashed border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.28)] px-3 py-4 text-center text-xs text-muted-foreground">
+                  Choose a target before selecting sources.
+                </div>
+              ) : null}
             </CardContent>
           </Card>
+        </div>
 
+        <div className="space-y-3">
           <GitConflictPreview
             canCheck={canProceed}
             isLoading={isCheckingConflicts}
-            isApplying={isApplyingCleanMerge}
             preview={isPreviewCurrent ? session.preview : null}
             error={previewError}
-            onMergeClean={handleMergeClean}
           />
         </div>
       </div>
 
       {/* Footer Actions */}
-      <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between border-t bg-background/95 backdrop-blur pt-4 pb-2 pr-4 z-10">
-        <div className="text-xs text-muted-foreground">
+      <div className="absolute bottom-0 left-0 right-0 z-10 flex flex-col gap-2 border-t border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg)/0.88)] py-2 pr-3 backdrop-blur-md sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0 rounded-full border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.7)] px-3 py-1.5 text-xs text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.035)]">
           {isLoadingCommits ? (
             <span>Loading commits...</span>
           ) : canProceed && !repoPath ? (
@@ -957,10 +972,16 @@ export function SetupStage() {
             <span>Starting AI merge agent...</span>
           ) : previewError ? (
             <span className="text-destructive">{previewError}</span>
-          ) : isPreviewCurrent && session.preview && !session.preview.has_conflicts ? (
-            <span className="text-primary">
-              Clean git merge is ready. Merge now or start an AI merge agent.
+          ) : isPreviewCurrent && session.preview && !session.preview.has_conflicts && previewTotalFiles > 0 ? (
+            <span className="text-[hsl(var(--app-success))]">
+              Clean git merge is ready. Merge directly or use AI.
             </span>
+          ) : isPreviewCurrent && session.preview && session.preview.has_conflicts ? (
+            <span className="text-[hsl(var(--app-warning))]">
+              Git conflicts detected. Use AI merge to resolve them.
+            </span>
+          ) : isPreviewCurrent && previewTotalFiles === 0 ? (
+            <span>Nothing new to merge.</span>
           ) : canProceed ? (
             <span className={cn(isPreviewCurrent && 'text-primary')}>
               Ready to start an AI merge agent
@@ -971,43 +992,72 @@ export function SetupStage() {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-3">
-          <Popover open={isAgentPopoverOpen} onOpenChange={setIsAgentPopoverOpen}>
-            <PopoverTrigger asChild>
-              <Button variant="outline" className="min-w-[220px] justify-between">
-                <div className="flex items-center gap-2 overflow-hidden">
-                  <Bot className="h-4 w-4 text-primary shrink-0" />
-                  <span className="truncate">{displayName}</span>
-                </div>
-                <ChevronDown className="h-4 w-4 opacity-50 shrink-0" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-[500px] h-[400px] p-0" align="end" sideOffset={8}>
-              <UnifiedAgentModelSelector
-                onSelectAgent={(id) => { setSelectedAgentId(id); setIsAgentPopoverOpen(false); }}
-                selectedAgentId={selectedAgentId}
-              />
-            </PopoverContent>
-          </Popover>
-
+        <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-end">
           <Button
-            onClick={handleMergeUsingAi}
-            disabled={!canProceed || !repoPath || !selectedAgent || isCheckingConflicts || isLoadingCommits || isApplyingCleanMerge || isStartingAiMerge}
-            className="gap-2"
+            onClick={handleMergeClean}
+            disabled={!canMergeCleanDirect || isApplyingCleanMerge || isStartingAiMerge}
+            className={cn(
+              "h-8 gap-1.5 rounded-lg px-3 text-xs font-semibold transition-[background-color,border-color,box-shadow,transform,opacity] duration-150 active:scale-[0.96]",
+              canMergeCleanDirect
+                ? "bg-[hsl(var(--app-success))] text-white shadow-[0_10px_22px_-20px_hsl(var(--app-success)/0.82),inset_0_1px_0_rgba(255,255,255,0.16)] hover:bg-[hsl(var(--app-success)/0.9)]"
+                : "border border-[hsl(var(--app-border)/0.54)] bg-[hsl(var(--app-panel)/0.42)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.025)]"
+            )}
           >
-            {isStartingAiMerge ? (
+            {isApplyingCleanMerge ? (
               <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Starting...
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Merging...
               </>
             ) : (
               <>
-                <Sparkles className="h-4 w-4" />
-                Merge Using AI
-                <ArrowRight className="h-4 w-4" />
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Merge Directly
               </>
             )}
           </Button>
+
+          <div className="flex min-w-[188px] flex-col gap-1">
+            <Popover open={isAgentPopoverOpen} onOpenChange={setIsAgentPopoverOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  className="h-7 w-full justify-between rounded-lg border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.58)] px-2.5 text-[11px] font-medium shadow-[inset_0_1px_0_hsl(var(--foreground)/0.035)] transition-[background-color,border-color,transform,opacity] duration-150 hover:bg-[hsl(var(--app-panel-strong)/0.72)] active:scale-[0.96]"
+                >
+                  <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                    <Bot className="h-3 w-3 shrink-0 text-[hsl(var(--app-graph-agent))]" />
+                    <span className="shrink-0 text-muted-foreground">AI model</span>
+                    <span className="truncate text-foreground">{displayName}</span>
+                  </div>
+                  <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="h-[400px] w-[min(500px,calc(100vw-2rem))] overflow-hidden rounded-2xl border-[hsl(var(--app-border)/0.7)] p-0 shadow-[0_24px_70px_-38px_hsl(var(--foreground)/0.54)]" align="end" sideOffset={8}>
+                <UnifiedAgentModelSelector
+                  onSelectAgent={(id) => { setSelectedAgentId(id); setIsAgentPopoverOpen(false); }}
+                  selectedAgentId={selectedAgentId}
+                />
+              </PopoverContent>
+            </Popover>
+
+            <Button
+              onClick={handleMergeUsingAi}
+              disabled={!canProceed || !repoPath || !selectedAgent || isCheckingConflicts || isLoadingCommits || isApplyingCleanMerge || isStartingAiMerge}
+              className="h-8 w-full gap-1.5 rounded-lg bg-[hsl(var(--app-graph-commit)/0.92)] px-3 text-xs font-semibold text-white shadow-[0_10px_22px_-20px_hsl(var(--app-graph-commit)/0.88),inset_0_1px_0_rgba(255,255,255,0.16)] transition-[background-color,border-color,box-shadow,transform,opacity] duration-150 hover:bg-[hsl(var(--app-graph-commit))] active:scale-[0.96]"
+            >
+              {isStartingAiMerge ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Starting...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Merge Using AI
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </>
+              )}
+            </Button>
+          </div>
         </div>
       </div>
     </div>

@@ -62,6 +62,29 @@ describe('graph commit visibility', () => {
     expect(result.visibleCommitLaneRows).toEqual([]);
   });
 
+  it('hides generated commits when all owning threads are hidden', () => {
+    const result = getVisibleCommitProjection({
+      commitBySha: new Map([
+        ['generated-a', commit({
+          sha: 'generated-a',
+          ownerKind: 'agentree',
+          placement: 'conversation_sidecar',
+          isMerge: false,
+          isProminentMerge: false,
+          owningThreadRootIds: ['thread-a'],
+        })],
+      ]),
+      commitLaneRows: [{ rowId: 'commit-row:generated-a', type: 'commit', commitSha: 'generated-a', sortTs: 1 }],
+      layoutDerivedCommitGroups: [],
+      hiddenThreadRootIds: new Set(['thread-a']),
+      directDependencyCommitShas: new Set(),
+    });
+
+    expect(result.visibleCommitShas.has('generated-a')).toBe(false);
+    expect(result.referenceCommitShas.has('generated-a')).toBe(false);
+    expect(result.visibleCommitLaneRows).toEqual([]);
+  });
+
   it('keeps hidden-owned direct dependencies as references', () => {
     const result = getVisibleCommitProjection({
       commitBySha: new Map([
@@ -76,6 +99,55 @@ describe('graph commit visibility', () => {
     expect(result.visibleCommitShas.has('merge-a')).toBe(true);
     expect(result.referenceCommitShas.has('merge-a')).toBe(true);
     expect(result.visibleCommitLaneRows).toHaveLength(1);
+  });
+
+  it('hides generated sidecar commits without a resolvable owning thread', () => {
+    const result = getVisibleCommitProjection({
+      commitBySha: new Map([
+        ['generated-orphan', commit({
+          sha: 'generated-orphan',
+          ownerKind: 'agentree',
+          placement: 'conversation_sidecar',
+          isMerge: false,
+          isProminentMerge: false,
+          owningThreadRootIds: [],
+        })],
+      ]),
+      commitLaneRows: [{ rowId: 'commit-row:generated-orphan', type: 'commit', commitSha: 'generated-orphan', sortTs: 1 }],
+      layoutDerivedCommitGroups: [],
+      hiddenThreadRootIds: new Set(),
+      directDependencyCommitShas: new Set(),
+      hideBackgroundCommits: true,
+    });
+
+    expect(result.visibleCommitShas.has('generated-orphan')).toBe(false);
+    expect(result.visibleCommitLaneRows).toEqual([]);
+  });
+
+  it('keeps unresolved generated direct dependencies as references', () => {
+    const result = getVisibleCommitProjection({
+      commitBySha: new Map([
+        ['generated-base', commit({
+          sha: 'generated-base',
+          ownerKind: 'agentree',
+          placement: 'conversation_sidecar',
+          isMerge: false,
+          isProminentMerge: false,
+          owningThreadRootIds: [],
+        })],
+      ]),
+      commitLaneRows: [{ rowId: 'commit-row:generated-base', type: 'commit', commitSha: 'generated-base', sortTs: 1 }],
+      layoutDerivedCommitGroups: [],
+      hiddenThreadRootIds: new Set(),
+      directDependencyCommitShas: new Set(['generated-base']),
+      hideBackgroundCommits: true,
+    });
+
+    expect(result.visibleCommitShas).toEqual(new Set(['generated-base']));
+    expect(result.referenceCommitShas).toEqual(new Set(['generated-base']));
+    expect(result.visibleCommitLaneRows).toEqual([
+      { rowId: 'commit-row:generated-base', type: 'commit', commitSha: 'generated-base', sortTs: 1 },
+    ]);
   });
 
   it('keeps merges visible when at least one owning thread remains visible', () => {
@@ -129,5 +201,47 @@ describe('graph commit visibility', () => {
     expect(result.referenceCommitShas.size).toBe(0);
     expect(result.visibleCommitLaneRows).toBe(laneRows);
     expect(result.visibleCommitGroups).toBe(groups);
+  });
+
+  it('hides background imported commit groups when requested', () => {
+    const result = getVisibleCommitProjection({
+      commitBySha: new Map([
+        ['import-a', commit({ sha: 'import-a', kind: 'imported_commit', sourceKind: 'external', isMerge: false, isProminentMerge: false })],
+        ['import-b', commit({ sha: 'import-b', kind: 'imported_commit', sourceKind: 'external', isMerge: false, isProminentMerge: false })],
+        ['import-c', commit({ sha: 'import-c', kind: 'imported_commit', sourceKind: 'external', isMerge: false, isProminentMerge: false })],
+      ]),
+      commitLaneRows: [{ rowId: 'group:import-a-import-b-import-c', type: 'group', groupId: 'group:import-a-import-b-import-c', sortTs: 1 }],
+      layoutDerivedCommitGroups: [group(['import-a', 'import-b', 'import-c'])],
+      hiddenThreadRootIds: new Set(),
+      directDependencyCommitShas: new Set(),
+      hideBackgroundCommits: true,
+    });
+
+    expect(result.visibleCommitShas.size).toBe(0);
+    expect(result.referenceCommitShas.size).toBe(0);
+    expect(result.visibleCommitGroups).toEqual([]);
+    expect(result.visibleCommitLaneRows).toEqual([]);
+  });
+
+  it('keeps imported direct dependencies as reference commits instead of import batches', () => {
+    const result = getVisibleCommitProjection({
+      commitBySha: new Map([
+        ['import-a', commit({ sha: 'import-a', kind: 'imported_commit', sourceKind: 'external', isMerge: false, isProminentMerge: false })],
+        ['import-b', commit({ sha: 'import-b', kind: 'imported_commit', sourceKind: 'external', isMerge: false, isProminentMerge: false })],
+        ['import-c', commit({ sha: 'import-c', kind: 'imported_commit', sourceKind: 'external', isMerge: false, isProminentMerge: false })],
+      ]),
+      commitLaneRows: [{ rowId: 'group:import-a-import-b-import-c', type: 'group', groupId: 'group:import-a-import-b-import-c', sortTs: 1 }],
+      layoutDerivedCommitGroups: [group(['import-a', 'import-b', 'import-c'])],
+      hiddenThreadRootIds: new Set(),
+      directDependencyCommitShas: new Set(['import-b']),
+      hideBackgroundCommits: true,
+    });
+
+    expect(result.visibleCommitShas).toEqual(new Set(['import-b']));
+    expect(result.referenceCommitShas).toEqual(new Set(['import-b']));
+    expect(result.visibleCommitGroups).toEqual([]);
+    expect(result.visibleCommitLaneRows).toEqual([
+      { rowId: 'commit-row:import-b:reference', type: 'commit', commitSha: 'import-b', sortTs: 1 },
+    ]);
   });
 });

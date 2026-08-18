@@ -60,8 +60,8 @@ export const ChatUserCard = memo(({
 
       {/* Content */}
       <div className={cn(
-        "prose prose-sm min-w-0 max-w-none prose-p:my-1 prose-p:leading-relaxed font-medium break-words [overflow-wrap:anywhere]",
-        "prose-p:text-current text-sm",
+        "prose prose-sm min-w-0 max-w-none break-words text-[14px] font-normal leading-[1.58] [overflow-wrap:anywhere]",
+        "prose-p:my-1.5 prose-p:max-w-[74ch] prose-p:text-current prose-p:leading-[1.58] prose-li:max-w-[74ch] prose-li:leading-[1.56]",
         ROLE_COLORS.user_message.text
       )}>
         <ChatMarkdown>{entity.message?.content || ''}</ChatMarkdown>

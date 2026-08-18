@@ -113,6 +113,33 @@ describe('graph thread roots', () => {
     ]);
   });
 
+  it('treats a nested user message with a thread origin id as a new thread boundary', () => {
+    const messages = [
+      makeMessage('thread-a', 'user', null),
+      makeMessage('assistant-a', 'assistant', 'thread-a'),
+      {
+        ...makeMessage('nested-user', 'user', 'assistant-a'),
+        execution_data: { meta: { thread_origin_id: 'nested-user' } },
+      },
+      makeMessage('nested-assistant', 'assistant', 'nested-user'),
+      makeMessage('sibling-user', 'user', 'assistant-a'),
+    ];
+    const messageMap = new Map(messages.map((message) => [message.id, message]));
+    const index = buildThreadRootIndex(messages);
+
+    expect(getThreadRootId('nested-assistant', messageMap)).toBe('nested-user');
+    expect(index.threadRootIds).toEqual(['thread-a', 'nested-user']);
+    expect(Array.from(index.messageIdsByThreadRootId.get('thread-a') ?? []).sort()).toEqual([
+      'assistant-a',
+      'sibling-user',
+      'thread-a',
+    ]);
+    expect(Array.from(index.messageIdsByThreadRootId.get('nested-user') ?? []).sort()).toEqual([
+      'nested-assistant',
+      'nested-user',
+    ]);
+  });
+
   it('collects descendants for one thread root without crossing into another root', () => {
     const messages = [
       makeMessage('thread-a', 'user', null),

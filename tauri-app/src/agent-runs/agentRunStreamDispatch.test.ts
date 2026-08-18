@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveProviderAssistantOutput } from './agentRunStreamDispatch';
+import { deriveStreamingAppendText, resolveProviderAssistantOutput } from './agentRunStreamDispatch';
 
 describe('resolveProviderAssistantOutput', () => {
   it('replaces prior Codex assistant item text when a later item completes', () => {
@@ -33,5 +33,25 @@ describe('resolveProviderAssistantOutput', () => {
 
     expect(result.output).toBe('thethe');
     expect(result.providerItemId).toBe('msg-1');
+  });
+
+  it('derives timeline append text from actor content when projection is throttled', () => {
+    const appended = deriveStreamingAppendText(
+      'I’ll inspect',
+      '',
+      'I’ll inspect the relevant UI',
+    );
+
+    expect(appended).toBe(' the relevant UI');
+  });
+
+  it('falls back to projected content before an actor exists', () => {
+    const appended = deriveStreamingAppendText(
+      null,
+      'I’ll inspect',
+      'I’ll inspect the relevant UI',
+    );
+
+    expect(appended).toBe(' the relevant UI');
   });
 });

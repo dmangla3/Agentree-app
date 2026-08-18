@@ -12,9 +12,7 @@ import {
 import { WorkspaceSelectionDialog } from '../components/WorkspaceSelectionDialog';
 import { Sidebar } from '../components/Sidebar';
 import { useWorkspaces } from '../hooks/useWorkspaces';
-import { getMergeTabRunIndicator, useIntegrationStore } from '../stores/integrationStore';
 import { AppHeader } from '../components/AppHeader';
-import { ChatPanelHeader } from '../components/ChatPanelHeader';
 import { useOnboardingStore } from '../stores/onboardingStore';
 import { trackScreenViewed } from '../lib/analytics';
 import { devLogLazy } from '../lib/appLogger';
@@ -27,9 +25,9 @@ const AdvancedSearchPanel = lazy(() => import('../components/AdvancedSearchPanel
 const ChatInterface = lazy(() => import('../components/ChatInterface').then((module) => ({ default: module.ChatInterface })));
 const FirstRunExperience = lazy(() => import('../components/onboarding/FirstRunExperience').then((module) => ({ default: module.FirstRunExperience })));
 const FlowsPanel = lazy(() => import('../components/flows/FlowsPanel').then((module) => ({ default: module.FlowsPanel })));
+const GraphComposerDock = lazy(() => import('../components/GraphComposerDock').then((module) => ({ default: module.GraphComposerDock })));
 const GraphView = lazy(() => import('../components/GraphView').then((module) => ({ default: module.GraphView })));
 const KnowledgeBase = lazy(() => import('../components/KnowledgeBase/KnowledgeBase').then((module) => ({ default: module.KnowledgeBase })));
-const MergePanel = lazy(() => import('../components/MergePanel').then((module) => ({ default: module.MergePanel })));
 const SkillsPanel = lazy(() => import('../components/SkillsPanel').then((module) => ({ default: module.SkillsPanel })));
 const TrackingDashboard = lazy(() => import('../components/TrackingDashboard').then((module) => ({ default: module.TrackingDashboard })));
 
@@ -51,8 +49,6 @@ export function HomePage() {
     selectedWorkspaceId,
     selectWorkspace,
     clearSelectedWorkspace,
-    rightPanelTab,
-    setRightPanelTab,
     isFloatingChatInputOpen,
     floatingChatInputParentId,
     closeFloatingChatInput,
@@ -62,16 +58,11 @@ export function HomePage() {
   const { workspaceId } = useParams();
   const [searchParams] = useSearchParams();
   const messageId = searchParams.get('messageId');
-  const mergeSession = useIntegrationStore((state) => state.session);
-  const mergeTabAttentionNonce = useIntegrationStore((state) => state.mergeTabAttentionNonce);
 
   const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
   const [activeView, setActiveView] = useState<'chat' | 'flows' | 'tracking' | 'knowledge' | 'skills'>('chat');
-  const [mergeTabAttentionActive, setMergeTabAttentionActive] = useState(false);
-  const mergeSourceCount = mergeSession?.sources.length ?? 0;
-  const mergeTabRunIndicator = getMergeTabRunIndicator(mergeSession);
   const [isWorkspaceSelectorOpen, setIsWorkspaceSelectorOpen] = useState(false);
-  const [isChatCollapsed, setIsChatCollapsed] = useState(false);
+  const [isChatCollapsed, setIsChatCollapsed] = useState(true);
   const shellReadyLoggedRef = useRef(false);
   const graphPanelRef = useRef<ImperativePanelHandle>(null);
   const chatPanelRef = useRef<ImperativePanelHandle>(null);
@@ -105,13 +96,6 @@ export function HomePage() {
     selectedWorkspace &&
     (!workspaceId || workspaceId === selectedWorkspaceId)
   );
-
-  useEffect(() => {
-    if (mergeTabAttentionNonce <= 0) return;
-    setMergeTabAttentionActive(true);
-    const timeoutId = window.setTimeout(() => setMergeTabAttentionActive(false), 1600);
-    return () => window.clearTimeout(timeoutId);
-  }, [mergeTabAttentionNonce]);
 
   useEffect(() => {
     if (!user) return;
@@ -183,12 +167,20 @@ export function HomePage() {
     setIsChatCollapsed(layout[1] <= 1);
   }, []);
 
+  const restoreChatPanel = useCallback(() => {
+    const [graphPercent, chatPercent] = getGraphChatRestoreSplit(rememberedGraphChatSplitRef.current);
+    graphPanelRef.current?.resize(graphPercent);
+    chatPanelRef.current?.resize(chatPercent);
+    setIsChatCollapsed(false);
+    recordPerfEvent('workspace.chat-panel-restored', {
+      selectedWorkspaceId,
+      activeView,
+    }, { source: 'HomePage' });
+  }, [activeView, selectedWorkspaceId]);
+
   const toggleChatPanelCollapsed = useCallback(() => {
     if (isChatCollapsed) {
-      const [graphPercent, chatPercent] = getGraphChatRestoreSplit(rememberedGraphChatSplitRef.current);
-      graphPanelRef.current?.resize(graphPercent);
-      chatPanelRef.current?.resize(chatPercent);
-      setIsChatCollapsed(false);
+      restoreChatPanel();
       return;
     }
 
@@ -204,7 +196,11 @@ export function HomePage() {
     chatPanelRef.current?.collapse();
     graphPanelRef.current?.resize(100);
     setIsChatCollapsed(true);
-  }, [isChatCollapsed]);
+    recordPerfEvent('workspace.chat-panel-hidden', {
+      selectedWorkspaceId,
+      activeView,
+    }, { source: 'HomePage' });
+  }, [activeView, isChatCollapsed, restoreChatPanel, selectedWorkspaceId]);
 
   // If no user, ProtectedRoute should have redirected, but double-check
   useEffect(() => {
@@ -271,17 +267,22 @@ export function HomePage() {
                 >
                   <ResizablePanel
                     ref={graphPanelRef}
-                    defaultSize={rememberedGraphChatSplitRef.current[0]}
+                    defaultSize={isChatCollapsed ? 100 : rememberedGraphChatSplitRef.current[0]}
                     minSize={0}
                     collapsible={true}
                   >
                     {/* Left Panel: Graph View */}
-                    <div className="flex min-w-0 flex-col h-full">
+                    <div className="relative flex min-w-0 flex-col h-full">
                       <div className="flex-1 min-w-0 overflow-hidden">
                         <Suspense fallback={<PanelLoading />}>
-                          <GraphView />
+                          <GraphView threadNavigationOrientation={isChatCollapsed ? 'vertical' : 'horizontal'} />
                         </Suspense>
                       </div>
+                      <Suspense fallback={null}>
+                        <GraphComposerDock
+                          isVisible={isChatCollapsed}
+                        />
+                      </Suspense>
                     </div>
                   </ResizablePanel>
                   <ResizableHandle className="app-resizable-handle">
@@ -301,36 +302,20 @@ export function HomePage() {
                   </ResizableHandle>
                   <ResizablePanel
                     ref={chatPanelRef}
-                    defaultSize={rememberedGraphChatSplitRef.current[1]}
+                    defaultSize={isChatCollapsed ? 0 : rememberedGraphChatSplitRef.current[1]}
                     minSize={0}
                     collapsible={true}
                     collapsedSize={0}
                   >
-                    {/* Right Panel: Chat/Merge */}
+                    {/* Right Panel: Chat */}
                     <div className="flex h-full min-w-0 flex-col overflow-hidden border-l border-[hsl(var(--app-border)/0.72)] bg-[hsl(var(--app-panel)/0.96)]">
-                      {/* Chat Sub-Header */}
-                      <ChatPanelHeader
-                        rightPanelTab={rightPanelTab}
-                        onTabChange={setRightPanelTab}
-                        mergeSourceCount={mergeSourceCount}
-                        mergeTabRunIndicator={mergeTabRunIndicator}
-                        mergeTabAttentionActive={mergeTabAttentionActive}
-                      />
-
-                      {/* Tab Content */}
-                      <div className="flex-1 min-w-0 overflow-hidden">
-                        {rightPanelTab === 'chat' ? (
+                      {!isChatCollapsed && (
+                        <div className="flex-1 min-w-0 overflow-hidden">
                           <Suspense fallback={<PanelLoading />}>
                             <ChatInterface key={selectedWorkspaceId} />
                           </Suspense>
-                        ) : (
-                          <Suspense fallback={<PanelLoading />}>
-                            <MergePanel onClose={() => {
-                              setRightPanelTab('chat');
-                            }} />
-                          </Suspense>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </div>
                   </ResizablePanel>
                 </ResizablePanelGroup>

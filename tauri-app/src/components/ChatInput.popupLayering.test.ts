@@ -51,4 +51,38 @@ describe('chat composer popup layering', () => {
     expect(chatInputSource).toContain('previousBaseSelectionContextKey');
     expect(chatInputSource).toContain('setComposerBaseCommitOverride(null);');
   });
+
+  it('keeps ChatInput scoped to the chat-panel composer surface', () => {
+    const chatInputSource = readSource('src/components/ChatInput.tsx');
+    const surfaceSource = readSource('src/lib/chatInputSurface.ts');
+
+    expect(chatInputSource).toContain("surface = 'chat-panel'");
+    expect(chatInputSource).toContain('getChatInputSurfaceClasses(surface)');
+    expect(chatInputSource).toContain('getChatInputSurfaceLabel(surface)');
+    expect(surfaceSource).not.toContain("'graph-dock'");
+    expect(chatInputSource).toContain('setComposerDraft(selectedWorkspaceId, nextPrompt)');
+    expect(chatInputSource).toContain('clearComposerDraft(selectedWorkspaceId)');
+    expect(chatInputSource).not.toContain('function GraphComposerSend');
+  });
+
+  it('keeps start-new-thread creation on graph controls instead of the composer reply target menu', () => {
+    const chatInputSource = readSource('src/components/ChatInput.tsx');
+    const graphViewSource = readSource('src/components/GraphView.tsx');
+    const graphControlsSource = readSource('src/components/graph/GraphControls.tsx');
+
+    expect(chatInputSource).toContain("window.addEventListener('agentree:startNewThread'");
+    expect(chatInputSource).not.toContain('Start new thread</div>');
+    expect(graphViewSource).toContain("window.dispatchEvent(new CustomEvent('agentree:startNewThread'))");
+    expect(graphControlsSource).toContain('aria-label="Start new thread"');
+  });
+
+  it('keeps graph composer dock below composer popups and above graph minimap', () => {
+    const graphComposerDockSource = readSource('src/components/GraphComposerDock.tsx');
+    const chatInputSource = readSource('src/components/ChatInput.tsx');
+    const miniMapPanelSource = readSource('src/components/graph/MiniMapPanel.tsx');
+
+    expect(graphComposerDockSource).toContain('z-[45]');
+    expect(chatInputSource).toContain('const composerPopupLayerClass = "z-[90]"');
+    expect(miniMapPanelSource).toContain('const minimapLayerClass = "z-[30]"');
+  });
 });

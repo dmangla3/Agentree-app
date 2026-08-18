@@ -56,11 +56,13 @@ export const TimelineRowWrapper = memo(({
         ...style
       }}
       className={cn(
-        "group relative flex items-start gap-2.5 px-3 py-2 cursor-pointer transition-all duration-200 border w-full min-w-0",
+        "group relative flex w-full min-w-0 cursor-pointer items-start gap-2.5 border px-3 py-2.5 transition-[background-color,border-color,box-shadow,transform] duration-200",
         CARD_TOKENS.radius,
-        isFocused ? "bg-primary/5 dark:bg-primary/10 border-primary ring-2 ring-primary/20 shadow-md z-10" : "border-transparent",
-        isSelected && "bg-blue-50/50 dark:bg-blue-950/20",
-        !isFocused && "hover:-translate-y-[1px] hover:shadow-sm",
+        isFocused
+          ? "z-10 border-[hsl(var(--app-accent)/0.56)] bg-[hsl(var(--app-accent-soft)/0.34)] shadow-[0_16px_36px_-30px_hsl(var(--app-accent)/0.72),inset_0_1px_0_hsl(var(--foreground)/0.05)] ring-2 ring-[hsl(var(--app-accent)/0.16)]"
+          : "border-[hsl(var(--app-border)/0.58)] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.035)]",
+        isSelected && "border-[hsl(var(--app-accent)/0.42)] bg-[hsl(var(--app-accent-soft)/0.24)]",
+        !isFocused && "hover:-translate-y-[1px] hover:border-[hsl(var(--app-border)/0.82)] hover:bg-[hsl(var(--app-panel-strong)/0.78)] hover:shadow-[0_12px_28px_-26px_hsl(var(--foreground)/0.48),inset_0_1px_0_hsl(var(--foreground)/0.04)] dark:hover:bg-white/[0.055]",
         className
       )}
     >

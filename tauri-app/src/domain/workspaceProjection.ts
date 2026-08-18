@@ -4,6 +4,7 @@ import { getGraphParentId } from '../lib/graph/lineage';
 import { isRedundantCommitNode } from '../lib/graph/turnUtils';
 import { getMessageBaseCommitSha } from '../lib/graph/commitAccessors';
 import { buildThreadRootIndex, getThreadOriginNodeId, type ThreadRootIndex } from '../lib/graphThreadRoots';
+import { getSubgraphThreadLinkTargetId } from '../lib/graphSubgraphThreads';
 import { resolveNodeState } from '../lib/runStateResolver';
 import { buildFocusRoute, isImportedGitMessage, type FocusRoute } from './focusRoute';
 import {
@@ -35,6 +36,7 @@ export interface ProjectedNodeEntity extends CanonicalNodeEntity {
   importedFromRef?: string | null;
   parentShas?: string[];
   threadRootId?: string | null;
+  threadLinkRootId?: string | null;
   rootMessageId?: string | null;
   isThreadRoot?: boolean;
 }
@@ -393,8 +395,11 @@ const getProjectedMessageEntity = (
   const shortSha = outputCommitSha ? outputCommitSha.slice(0, 8) : null;
   const shortLabel = kind === 'commit_message'
     ? (shortSha || 'Commit')
+    : kind === 'thread_link'
+      ? 'Thread'
     : (message.aiLabel?.trim() || (message.llmModel?.split('/').pop() || (message.role === 'user' ? 'Prompt' : 'Assistant')));
   const threadRootId = threadRootIdByMessageId.get(message.id) ?? null;
+  const threadLinkRootId = kind === 'thread_link' ? getSubgraphThreadLinkTargetId(message) : null;
 
   return {
     entityId: getMessageEntityId(message, messageMap),
@@ -402,7 +407,7 @@ const getProjectedMessageEntity = (
     messageId: message.id,
     focusMessageId: message.id,
     parentEntityId: graphParent ? getMessageEntityId(graphParent, messageMap) : undefined,
-    turnGroupId: getTurnGroupIdForMessage(message, messageMap),
+    turnGroupId: kind === 'thread_link' ? undefined : getTurnGroupIdForMessage(message, messageMap),
     sortTs: new Date(message.createdAt).getTime(),
     message,
     preview: getNodePreview(message),
@@ -417,6 +422,7 @@ const getProjectedMessageEntity = (
     importedFromRef: typeof meta.imported_from_ref === 'string' ? meta.imported_from_ref : null,
     parentShas: kind === 'commit_message' ? getCommitParentShas(message) : undefined,
     threadRootId,
+    threadLinkRootId,
     isThreadRoot: Boolean(threadRootId && threadRootId === message.id),
   };
 };
@@ -1148,6 +1154,7 @@ function getStableWorkspaceProjectionBase(
   const turnGroupMap = new Map<string, ProjectedTurnGroup>();
   for (const message of sortedMessages) {
     if (message.role !== 'user') continue;
+    if (classifyMessageNodeKind(message, messageMap) === 'thread_link') continue;
     const turnGroupId = getTurnGroupIdForMessage(message, messageMap);
     const assistantMessages = assistantMessagesByGraphParentId.get(message.id) ?? [];
     const commitEntities = assistantMessages.flatMap((assistantMessage) => {

@@ -1,7 +1,7 @@
 {
   "name": "tauri-app",
   "private": true,
-  "version": "0.1.10",
+  "version": "0.1.13",
   "type": "module",
   "scripts": {
     "dev": "npm run dev:infisical",
@@ -18,6 +18,7 @@
     "perf:composer-typing:tauri": "node ./tests/perf/tauri-pilot-composer-typing-latency.mjs",
     "perf:scroll-behavior:tauri": "node ./tests/perf/tauri-pilot-scroll-behavior-flow.mjs",
     "perf:latest-summary": "node ./scripts/perf-latest-summary.mjs",
+    "perf:trace": "node ./scripts/perf-trace.mjs",
     "smoke:send-flow:tauri": "node ./tests/perf/tauri-pilot-send-stream-status-smoke.mjs",
     "pilot:install": "cargo install tauri-pilot-cli --locked",
     "pilot:dev": "npm run tauri -- dev",
@@ -44,7 +45,7 @@
     "test:graph": "vitest run src/lib/graphLayoutGeometry.test.ts src/lib/graphThreadRoots.test.ts src/lib/graphSubgraphFilter.test.ts src/hooks/graph src/components/GraphView.focusMove.test.ts src/components/graph src/components/nodes/graph src/mocks/frontendProjection.msw.test.ts",
     "test:send": "vitest run src/agent-runs src/components/ChatInput.popupLayering.test.ts src/lib/composerSendParent.test.ts src/lib/composerAgentRuns.test.ts src/perf/sendFlow.test.ts",
     "test:rust": "cd src-tauri && cargo test",
-    "test:perf:deterministic": "vitest run src/perf scripts/perf-latest-summary.test.mjs tests/perf/tauri-pilot-chat-hot-path-lib.test.mjs tests/perf/tauri-pilot-click-feedback-lib.test.mjs src/mocks/frontendProjection.msw.test.ts src/hooks/graph/useGraphLayout.visualReuse.test.tsx src/lib/graphLayoutGeometry.test.ts",
+    "test:perf:deterministic": "vitest run src/perf scripts/perf-latest-summary.test.mjs scripts/perf-trace.test.mjs tests/perf/tauri-pilot-chat-hot-path-lib.test.mjs tests/perf/tauri-pilot-click-feedback-lib.test.mjs src/mocks/frontendProjection.msw.test.ts src/hooks/graph/useGraphLayout.visualReuse.test.tsx src/lib/graphLayoutGeometry.test.ts",
     "test:perf:pilot": "npm run smoke:send-flow:tauri && npm run perf:send-flow:tauri && npm run perf:cancel:tauri && npm run perf:composer-typing:tauri && npm run perf:scroll-behavior:tauri && npm run perf:graph-100:tauri && npm run perf:parallel:tauri",
     "test:agent-runs": "vitest run src/agent-runs/*.test.ts",
     "test:msw": "vitest run src/mocks",
@@ -54,7 +55,9 @@
     "perf:native-lifecycle-idle:tauri": "node ./tests/perf/tauri-pilot-native-lifecycle-idle-flow.mjs",
     "perf:parallel:tauri": "node ./tests/perf/tauri-pilot-staggered-parent-parallel-flow.mjs",
     "perf:parallel:tauri:basic": "node ./tests/perf/tauri-pilot-parallel-agent-flow.mjs",
-    "bindings:tauri": "cd src-tauri && cargo test export_tauri_specta_bindings -- --nocapture"
+    "bindings:tauri": "cd src-tauri && cargo test export_tauri_specta_bindings -- --nocapture",
+    "perf:graph-composer-open:tauri": "node ./tests/perf/tauri-pilot-graph-composer-open-flow.mjs",
+    "smoke:graph-composer-send:tauri": "node ./tests/perf/tauri-pilot-graph-composer-send-flow.mjs"
   },
   "dependencies": {
     "@amplitude/analytics-browser": "^2.39.0",
@@ -95,6 +98,7 @@
     "dagre": "^0.8.5",
     "date-fns": "^4.1.0",
     "framer-motion": "^12.26.2",
+    "geist": "^1.7.1",
     "lucide-react": "^0.562.0",
     "mermaid": "^11.14.0",
     "react": "^19.1.0",

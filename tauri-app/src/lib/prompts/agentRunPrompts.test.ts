@@ -50,4 +50,19 @@ describe('agent run prompts', () => {
     expect(result.prompt).toContain('Review this generated implementation.');
     expect(result.agentreeContextInjected).toBe(false);
   });
+
+  it('wraps selected Agentree context for flow prompts when provided', () => {
+    const result = buildAgentRunPrompt({
+      mode: 'flow',
+      userPrompt: 'Run the selected flow.',
+      contextManifest: {
+        ...EMPTY_COMPOSER_CONTEXT_MANIFEST,
+        contextText: '[Turn 3] ASSISTANT (a3:assistant)\nImportant prior decision',
+      },
+    });
+
+    expect(result.prompt).toContain('[Selected Workspace Context]\n[Turn 3] ASSISTANT (a3:assistant)\nImportant prior decision');
+    expect(result.prompt).toContain('[Latest User Request]\nRun the selected flow.');
+    expect(result.agentreeContextInjected).toBe(true);
+  });
 });

@@ -236,6 +236,8 @@ const summarizePerfCapture = (root, entry, data) => {
       maxRafStallMs: runtime.maxRafStallMs ?? null,
       longTaskCount: runtime.longTaskCount ?? 0,
       maxLongTaskMs: runtime.maxLongTaskMs ?? null,
+      longAnimationFrameCount: runtime.longAnimationFrameCount ?? 0,
+      maxLongAnimationFrameMs: runtime.maxLongAnimationFrameMs ?? null,
     },
     flowCount: flows.length,
     findingsCount: Array.isArray(data.findings) ? data.findings.length : 0,
@@ -329,7 +331,7 @@ export const formatPerfSummary = (summary) => {
     lines.push(...section('Perf Capture', [
       `path: ${perf.path}`,
       `session: ${valueOrDash(perf.sessionLabel)} (${valueOrDash(perf.sessionId)})`,
-      `runtime: event-loop: stalls=${perf.runtime.eventLoopStallCount} freezes=${perf.runtime.eventLoopFreezeCount} max=${duration(perf.runtime.maxEventLoopStallMs)} | raf: stalls=${perf.runtime.rafStallCount} freezes=${perf.runtime.rafFreezeCount} max=${duration(perf.runtime.maxRafStallMs)} | longTasks=${perf.runtime.longTaskCount} max=${duration(perf.runtime.maxLongTaskMs)}`,
+      `runtime: event-loop: stalls=${perf.runtime.eventLoopStallCount} freezes=${perf.runtime.eventLoopFreezeCount} max=${duration(perf.runtime.maxEventLoopStallMs)} | raf: stalls=${perf.runtime.rafStallCount} freezes=${perf.runtime.rafFreezeCount} max=${duration(perf.runtime.maxRafStallMs)} | longTasks=${perf.runtime.longTaskCount} max=${duration(perf.runtime.maxLongTaskMs)} | loaf=${perf.runtime.longAnimationFrameCount} max=${duration(perf.runtime.maxLongAnimationFrameMs)}`,
       `runtime phases: ${summarizePhaseBuckets(perf.runtimePhaseBuckets)}`,
       `runtime active: ${summarizePhaseBuckets(perf.runtimeActivityBuckets)}`,
       `flows: ${perf.flowCount} findings=${perf.findingsCount}`,

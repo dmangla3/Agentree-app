@@ -134,7 +134,7 @@ const StreamingMarkdown = memo(function StreamingMarkdown({
   }, [isStreaming, targetText]);
 
   if (isStreaming || !shouldRenderMarkdown) {
-    return <div className="min-w-0 max-w-full whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{targetText}</div>;
+    return <div className="min-w-0 max-w-full whitespace-pre-wrap break-words text-[14px] leading-[1.62] text-foreground/90 [overflow-wrap:anywhere]">{targetText}</div>;
   }
 
   return (
@@ -684,7 +684,7 @@ export const ChatAssistantCard = memo(({
                     key={row.key ?? `message-${index}`}
                     className="min-w-0 max-w-full rounded-xl border border-border/40 bg-background/80 px-3 py-2.5 shadow-sm"
                   >
-                    <div className="min-w-0 max-w-full prose dark:prose-invert prose-sm max-w-none break-words [overflow-wrap:anywhere] prose-p:my-1 prose-p:text-foreground/90 prose-p:leading-relaxed prose-pre:my-0 prose-pre:max-w-full prose-pre:whitespace-pre-wrap prose-pre:break-words prose-table:my-1.5 prose-th:py-1 prose-td:py-1">
+                    <div className="min-w-0 max-w-full prose dark:prose-invert prose-sm max-w-none break-words text-[14px] leading-[1.62] [overflow-wrap:anywhere] prose-p:my-1.5 prose-p:max-w-[74ch] prose-p:text-foreground/90 prose-p:leading-[1.62] prose-li:max-w-[74ch] prose-li:leading-[1.58] prose-pre:my-1.5 prose-pre:max-w-full prose-pre:whitespace-pre-wrap prose-pre:break-words prose-table:my-1.5 prose-th:py-1 prose-td:py-1">
                       <StreamingMarkdown text={row.content} isStreaming={shouldRevealStream} />
                     </div>
                   </div>
@@ -735,7 +735,7 @@ export const ChatAssistantCard = memo(({
             })}
           </div>
         ) : (
-          <div className="min-w-0 max-w-full prose dark:prose-invert prose-sm max-w-none break-words [overflow-wrap:anywhere] prose-p:my-1 prose-p:text-foreground/90 prose-p:leading-relaxed prose-pre:my-0 prose-pre:max-w-full prose-pre:whitespace-pre-wrap prose-pre:break-words prose-table:my-1.5 prose-th:py-1 prose-td:py-1">
+          <div className="min-w-0 max-w-full prose dark:prose-invert prose-sm max-w-none break-words text-[14px] leading-[1.62] [overflow-wrap:anywhere] prose-p:my-1.5 prose-p:max-w-[74ch] prose-p:text-foreground/90 prose-p:leading-[1.62] prose-li:max-w-[74ch] prose-li:leading-[1.58] prose-pre:my-1.5 prose-pre:max-w-full prose-pre:whitespace-pre-wrap prose-pre:break-words prose-table:my-1.5 prose-th:py-1 prose-td:py-1">
             <StreamingMarkdown text={message?.content || ''} isStreaming={shouldRevealStream} />
           </div>
         )}

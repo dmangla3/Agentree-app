@@ -50,7 +50,7 @@ export function buildAgentRunPrompt(input: BuildAgentRunPromptInput): BuildAgent
   let body = input.userPrompt;
   let agentreeContextInjected = false;
 
-  if ((input.mode === 'agentree_context' || input.mode === 'cross_provider') && contextText.length > 0) {
+  if ((input.mode === 'agentree_context' || input.mode === 'cross_provider' || input.mode === 'flow') && contextText.length > 0) {
     body = buildAgentreeContextPrompt(contextText, input.userPrompt);
     agentreeContextInjected = true;
   }

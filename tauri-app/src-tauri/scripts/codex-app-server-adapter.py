@@ -112,15 +112,38 @@ def _json_default(value: Any) -> Any:
 
 def _resolve_codex_bin() -> str:
     env_path = os.environ.get("CODEX_BIN")
-    if env_path:
-        return env_path
+    if env_path and env_path.strip():
+        return env_path.strip()
     located = shutil.which("codex")
     if located:
         return located
+    for candidate in _shell_manager_codex_candidates():
+        if candidate.is_file():
+            return str(candidate)
     fallback = "/opt/homebrew/bin/codex"
     if Path(fallback).exists():
         return fallback
-    raise FileNotFoundError("Could not find `codex` binary in PATH. Set CODEX_BIN.")
+    raise FileNotFoundError(
+        "Could not find `codex` binary in PATH or common Node manager locations. Set CODEX_BIN."
+    )
+
+
+def _shell_manager_codex_candidates() -> list[Path]:
+    home = Path.home()
+    patterns = [
+        ".nvm/versions/node/*/bin/codex",
+        ".fnm/node-versions/*/installation/bin/codex",
+        "Library/pnpm/codex",
+    ]
+    candidates = [
+        home / ".volta" / "bin" / "codex",
+        home / ".asdf" / "shims" / "codex",
+        home / ".local" / "bin" / "codex",
+        home / ".npm-global" / "bin" / "codex",
+    ]
+    for pattern in patterns:
+        candidates.extend(sorted(home.glob(pattern), reverse=True))
+    return candidates
 
 
 def _resolve_codex_home() -> str:

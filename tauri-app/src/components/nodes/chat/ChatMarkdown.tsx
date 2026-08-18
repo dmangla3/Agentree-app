@@ -14,7 +14,7 @@ export const chatMarkdownComponents = {
 
     if (!inline && match) {
       return (
-        <pre className="my-1.5 min-w-0 max-w-full overflow-x-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-md border border-border/60 bg-muted/25 p-3 text-xs leading-relaxed">
+        <pre className="my-2 min-w-0 max-w-full overflow-x-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-md border border-border/60 bg-muted/25 p-3 text-xs leading-[1.55]">
           <code className="font-mono" {...rest}>
             {codeContent}
           </code>
@@ -25,7 +25,7 @@ export const chatMarkdownComponents = {
     return (
       <code
         className={cn(
-          "rounded-sm bg-muted/50 px-1 py-0.5 text-[0.9em] font-mono whitespace-pre-wrap break-words [overflow-wrap:anywhere]",
+          "rounded-sm bg-muted/50 px-1 py-0.5 text-[0.9em] font-mono whitespace-pre-wrap break-words leading-[1.45] [overflow-wrap:anywhere]",
           codeClassName
         )}
         {...rest}
@@ -36,11 +36,11 @@ export const chatMarkdownComponents = {
   },
   pre: (props: any) => (
     <pre
-      className="my-1.5 min-w-0 max-w-full overflow-x-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent"
+      className="my-2 min-w-0 max-w-full overflow-x-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent"
       {...props}
     />
   ),
-  p: (props: any) => <p className="mb-1 min-w-0 max-w-full break-words [overflow-wrap:anywhere] last:mb-0" {...props} />,
+  p: (props: any) => <p className="mb-1.5 min-w-0 max-w-full break-words [text-wrap:pretty] [overflow-wrap:anywhere] last:mb-0" {...props} />,
   a: (props: any) => (
     <a
       target="_blank"
@@ -50,11 +50,11 @@ export const chatMarkdownComponents = {
     />
   ),
   blockquote: (props: any) => (
-    <blockquote className="my-1.5 min-w-0 max-w-full break-words [overflow-wrap:anywhere] border-l-2 border-border pl-3 italic" {...props} />
+    <blockquote className="my-2 min-w-0 max-w-full break-words [overflow-wrap:anywhere] border-l-2 border-border pl-3 italic" {...props} />
   ),
-  ul: (props: any) => <ul className="my-1.5 min-w-0 max-w-full list-inside list-disc space-y-1 pl-2" {...props} />,
-  ol: (props: any) => <ol className="my-1.5 min-w-0 max-w-full list-inside list-decimal space-y-1 pl-2" {...props} />,
-  li: (props: any) => <li className="min-w-0 max-w-full break-words [overflow-wrap:anywhere] pl-1" {...props} />,
+  ul: (props: any) => <ul className="my-2 min-w-0 max-w-full list-inside list-disc space-y-1.5 pl-2" {...props} />,
+  ol: (props: any) => <ol className="my-2 min-w-0 max-w-full list-inside list-decimal space-y-1.5 pl-2" {...props} />,
+  li: (props: any) => <li className="min-w-0 max-w-full break-words pl-1 leading-[1.58] [overflow-wrap:anywhere]" {...props} />,
   table: (props: any) => (
     <div className="my-1.5 min-w-0 max-w-full overflow-x-auto">
       <table className="min-w-0 max-w-full table-auto border-collapse border border-border" {...props} />

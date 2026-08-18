@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { agentRunManager } from './agentRunManager';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
+import { reconcileTerminalAgentRunsFromMessages } from '../lib/agentRunTerminalReconciliation';
 
 const message = (overrides: Record<string, any> = {}) => ({
   id: 'assistant-1',
@@ -101,6 +102,27 @@ describe('agentRun projection integration', () => {
     agentRunManager.dispatch('user-1', { type: 'setup_progress', progress: 'Sending...' });
 
     expect(useRunStatusStore.getState().byNodeId['user-1']?.status).toBe('pending');
+    expect(useRunStatusStore.getState().getRunningCount('workspace-1')).toBe(0);
+  });
+
+  it('reconciles stale active actor status from authoritative terminal messages', () => {
+    agentRunManager.seed(message({ status: 'pending', content: '' }), 'run-1');
+    agentRunManager.dispatch('assistant-1', { type: 'status', status: 'running' });
+
+    expect(useRunStatusStore.getState().getRunningCount('workspace-1')).toBe(1);
+
+    const reconciledCount = reconcileTerminalAgentRunsFromMessages([
+      message({
+        status: 'completed',
+        content: 'done',
+        execution_data: { last_terminal_status: 'completed' },
+      }),
+    ]);
+
+    expect(reconciledCount).toBe(1);
+    expect(agentRunManager.snapshot('assistant-1')?.status).toBe('completed');
+    expect(agentRunManager.snapshot('assistant-1')?.phase).toBe('terminal');
+    expect(useRunStatusStore.getState().byNodeId['assistant-1']?.status).toBe('completed');
     expect(useRunStatusStore.getState().getRunningCount('workspace-1')).toBe(0);
   });
 

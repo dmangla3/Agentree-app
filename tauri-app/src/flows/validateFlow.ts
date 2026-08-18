@@ -169,10 +169,15 @@ function validateNodes(
     const returns = validateReturns(value.returns, `${path}.returns`, issues);
     const template: FlowNodeTemplate = {
       id,
+      ...(typeof value.registryId === 'string' ? { registryId: value.registryId } : {}),
+      ...(typeof value.label === 'string' ? { label: value.label } : {}),
       ...(params ? { params } : {}),
       parent: isNonEmptyString(parent) ? parent : '',
       ...(returns ? { returns } : {}),
       prompt: isNonEmptyString(prompt) ? prompt : '',
+      ...(typeof value.requiresFinalizedCommit === 'boolean'
+        ? { requiresFinalizedCommit: value.requiresFinalizedCommit }
+        : {}),
     };
 
     templates.push(template);
@@ -275,9 +280,13 @@ function validateStatement(
     case 'call':
       validateSetKey(input.set, `${path}.set`, issues);
       validateCall(input.call, input.args, path, nodeTemplates, issues);
+      if (input.parent !== undefined && !isNonEmptyString(input.parent)) {
+        issues.push({ path: `${path}.parent`, message: 'Call parent must be a non-empty string.' });
+      }
       return {
         set: typeof input.set === 'string' ? input.set : '',
         call: typeof input.call === 'string' ? input.call : '',
+        ...(typeof input.parent === 'string' ? { parent: input.parent } : {}),
         ...(isRecord(input.args) ? { args: stringifyRecord(input.args) } : {}),
       };
     case 'parallel':
@@ -497,6 +506,8 @@ function detectStatementShape(input: Record<string, unknown>):
   switch (key) {
     case 'args,call,set':
     case 'call,set':
+    case 'args,call,parent,set':
+    case 'call,parent,set':
       return 'call';
     case 'parallel,set':
       return 'parallel';

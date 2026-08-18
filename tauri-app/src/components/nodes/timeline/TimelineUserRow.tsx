@@ -32,7 +32,7 @@ export const TimelineUserRow = memo(({
       showSelectionControl={showSelectionControl}
       disableHoverCard={disableHoverCard}
       hoverCardContent={hoverCardContent}
-      className={cn(ROLE_COLORS.user_message.bg, ROLE_COLORS.user_message.border, "border mx-2")}
+      className="mx-1 border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-bg-muted)/0.62)] text-foreground dark:bg-white/[0.026]"
     >
       <div className="flex-1 flex flex-col gap-1 min-w-0">
         {/* Content */}
@@ -41,12 +41,12 @@ export const TimelineUserRow = memo(({
         </p>
 
         {/* Footer Metrics */}
-        <div className="flex flex-wrap items-center gap-2 mt-1 gap-y-1 text-[10px] text-slate-500 w-full">
-          <div className={cn("p-0.5 rounded", ROLE_COLORS.user_message.chip)} title="User message">
+        <div className="mt-1 flex w-full flex-wrap items-center gap-2 gap-y-1 text-[10px] text-muted-foreground">
+          <div className={cn("rounded border border-[hsl(var(--app-border)/0.48)] p-0.5", ROLE_COLORS.user_message.chip)} title="User message">
             <User size={10} />
           </div>
-          <span className="font-semibold text-slate-600 dark:text-slate-400">User</span>
-          <div className="ml-auto flex shrink-0 items-center text-[10px] font-medium text-slate-400 tabular-nums">
+          <span className="font-semibold text-muted-foreground">User</span>
+          <div className="ml-auto flex shrink-0 items-center text-[10px] font-medium text-muted-foreground/70 tabular-nums">
             {timestamp}
           </div>
         </div>

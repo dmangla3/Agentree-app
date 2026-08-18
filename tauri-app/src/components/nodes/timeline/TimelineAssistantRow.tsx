@@ -42,7 +42,7 @@ const StatusIcon = ({ status }: { status: AgentStatus | null | undefined }) => {
 
   return (
     <div
-      className={cn("p-1 rounded bg-white dark:bg-slate-900 z-10 relative", config.colorClass)}
+      className={cn("relative z-10 rounded border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.72)] p-1 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.035)] dark:bg-white/[0.04]", config.colorClass)}
       title={`Agent ${config.label}`}
     >
       <Icon size={11} className={cn(config.animate && "animate-spin")} />
@@ -73,7 +73,7 @@ const AgentChip = ({
 
   return (
     <div className={cn(
-      "px-1.5 py-0.5 rounded text-[8px] font-bold text-white shadow-sm uppercase tracking-wider leading-none shrink-0",
+      "shrink-0 rounded px-1.5 py-0.5 text-[8px] font-bold uppercase leading-none tracking-wider text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.22)]",
       colorClass
     )}>
       {name}
@@ -87,7 +87,7 @@ const AiLabelChip = ({ aiLabel }: { aiLabel?: string | null }) => {
 
   return (
     <div
-      className="max-w-[10rem] truncate rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[8px] font-medium leading-none text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
+      className="max-w-[10rem] truncate rounded border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong)/0.58)] px-1.5 py-0.5 text-[8px] font-medium leading-none text-muted-foreground dark:bg-white/[0.04]"
       title={`AI label: ${label}`}
     >
       {label}
@@ -187,9 +187,8 @@ export const TimelineAssistantRow = memo(({
       disableHoverCard={disableHoverCard}
       hoverCardContent={hoverCardContent}
       className={cn(
-        ROLE_COLORS.assistant_message.bg,
-        ROLE_COLORS.assistant_message.border,
-        "border shadow-sm mx-2"
+        "mx-1 bg-[hsl(var(--app-panel)/0.72)] text-foreground dark:bg-white/[0.035]",
+        "border-[hsl(var(--app-border)/0.64)]"
       )}
     >
       <AgentStateOverlay status={displayStatus as any} />
@@ -200,7 +199,7 @@ export const TimelineAssistantRow = memo(({
       </p>
 
       {/* Compact metrics & icons at bottom */}
-      <div className="flex flex-wrap items-center gap-2 mt-1 gap-y-1 text-[10px] text-slate-500 w-full">
+      <div className="mt-1 flex w-full flex-wrap items-center gap-2 gap-y-1 text-[10px] text-muted-foreground">
         <StatusIcon status={displayStatus as any} />
         <AgentChip
           agentId={entity.message?.agent_id}
@@ -211,26 +210,26 @@ export const TimelineAssistantRow = memo(({
 
         {entity.toolCallCount !== undefined && entity.toolCallCount > 0 && (
           <div className="flex items-center gap-0.5" title={`${entity.toolCallCount} tool calls`}>
-            <Wrench size={10} className="text-sky-500" />
+            <Wrench size={10} className="text-[hsl(var(--app-graph-agent))]" />
             <span className="tabular-nums">{entity.toolCallCount}</span>
           </div>
         )}
 
         {entity.commitCount !== undefined && entity.commitCount > 0 && (
           <div className="flex items-center gap-0.5" title={`${entity.commitCount} commits`}>
-            <Layers size={10} className="text-emerald-500" />
+            <Layers size={10} className="text-[hsl(var(--app-graph-commit))]" />
             <span className="tabular-nums">{entity.commitCount}</span>
           </div>
         )}
 
         {entity.totalTokens !== undefined && entity.totalTokens !== null && entity.totalTokens > 0 && (
           <div className="flex items-center gap-0.5" title={`${entity.totalTokens.toLocaleString()} tokens`}>
-            <Zap size={10} className="text-amber-500" />
+            <Zap size={10} className="text-[hsl(var(--app-graph-external))]" />
             <span className="tabular-nums">{(entity.totalTokens / 1000).toFixed(1)}k</span>
           </div>
         )}
 
-        <div className="ml-auto flex items-center shrink-0 text-[10px] font-medium text-slate-400 tabular-nums">
+        <div className="ml-auto flex shrink-0 items-center text-[10px] font-medium text-muted-foreground/70 tabular-nums">
           {timestamp}
         </div>
       </div>

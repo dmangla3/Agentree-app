@@ -1,0 +1,109 @@
+import type { Agent } from '../hooks/useAgents';
+import { resolveComposerDefaultBaseCommit, type ComposerBaseMessage, type ComposerCommitPickerRef, type ComposerDefaultBaseSource } from '../lib/composerBaseCommit';
+import { resolveComposerDefaultAgentId } from '../lib/composerModelDefaults';
+import { resolveFocusedCommitSha } from '../lib/composerSendParent';
+import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
+import type { ComposerBaseCommitOverrideState, Message, Workspace } from '../stores/workspaceStore';
+
+export interface GraphDockComposerTarget {
+  parentMessageId: string | null;
+  selectedNodeId: string | null;
+  focusedCommitSha: string | null;
+}
+
+export interface GraphDockComposerBase {
+  commitSha: string;
+  selectedFromNodeId: string | null;
+  source: ComposerDefaultBaseSource | 'override' | 'focused-commit';
+}
+
+export const toComposerBaseMessages = (messages: Message[]): ComposerBaseMessage[] => (
+  messages.map((message) => ({
+    id: message.id,
+    parentId: message.parentId ?? null,
+    output_commit_sha: getMessageOutputCommitSha(message),
+    base_commit_sha: message.base_commit_sha ?? null,
+  }))
+);
+
+export const resolveGraphDockComposerTarget = (input: {
+  focusedMessageId: string | null;
+  lastFocusSource: string | null;
+  lastFocusMetadata: Record<string, unknown> | null;
+}): GraphDockComposerTarget => {
+  const focusedCommitSha = resolveFocusedCommitSha({
+    focusedMessageId: input.focusedMessageId,
+    lastFocusSource: input.lastFocusSource,
+    lastFocusMetadata: input.lastFocusMetadata,
+  });
+  const parentMessageId = focusedCommitSha
+    ? null
+    : input.focusedMessageId;
+
+  return {
+    parentMessageId,
+    selectedNodeId: input.focusedMessageId,
+    focusedCommitSha,
+  };
+};
+
+export const resolveGraphDockComposerBase = (input: {
+  replyParentMessageId: string | null;
+  selectedNodeId: string | null;
+  focusedCommitSha: string | null;
+  messages: Message[];
+  refs?: ComposerCommitPickerRef[];
+  workspace: Workspace | null | undefined;
+  override: ComposerBaseCommitOverrideState | null;
+}): GraphDockComposerBase | null => {
+  const override = input.override?.workspaceId === input.workspace?.id ? input.override : null;
+  if (override?.commitSha.trim()) {
+    return {
+      commitSha: override.commitSha.trim(),
+      selectedFromNodeId: null,
+      source: 'override',
+    };
+  }
+
+  if (input.focusedCommitSha) {
+    return {
+      commitSha: input.focusedCommitSha,
+      selectedFromNodeId: null,
+      source: 'focused-commit',
+    };
+  }
+
+  const resolution = resolveComposerDefaultBaseCommit({
+    targetMode: 'reply',
+    replyParentMessageId: input.replyParentMessageId,
+    selectedNodeId: input.selectedNodeId,
+    messages: toComposerBaseMessages(input.messages),
+    refs: input.refs ?? [],
+    workspaceBaseCommitSha: input.workspace?.base_commit_sha ?? null,
+  });
+
+  return resolution.sha
+    ? {
+      commitSha: resolution.sha,
+      selectedFromNodeId: resolution.selectedFromNodeId,
+      source: resolution.source,
+    }
+    : null;
+};
+
+export const resolveGraphDockComposerAgent = (input: {
+  agents: Agent[];
+  selectedAgentId: string | null;
+  parentMessage: Message | null;
+}): Agent | null => {
+  const selectedAgent = input.selectedAgentId
+    ? input.agents.find((agent) => agent.id === input.selectedAgentId) ?? null
+    : null;
+  if (selectedAgent) return selectedAgent;
+
+  const defaultAgentId = resolveComposerDefaultAgentId({
+    agents: input.agents,
+    parentMessage: input.parentMessage,
+  });
+  return input.agents.find((agent) => agent.id === defaultAgentId) ?? input.agents[0] ?? null;
+};

@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { executeFlow, type FlowNodeRunner, type FlowNodeRunInput } from './flowExecutor';
+import { compileFlowDefinition } from './flowNodeRegistry';
 import { parseFlowYaml } from './parseFlowYaml';
 import { PREDEFINED_FLOW_SOURCES } from './predefinedFlows';
 import type { FlowDefinition, FlowNodeValue } from './types';
-import { validateFlowDefinition } from './validateFlow';
 
 function predefinedDefinition(): FlowDefinition {
-  const result = validateFlowDefinition(parseFlowYaml(PREDEFINED_FLOW_SOURCES[0].source));
+  const result = compileFlowDefinition(parseFlowYaml(PREDEFINED_FLOW_SOURCES[0].source));
   if (!result.definition || result.issues.length > 0) {
     throw new Error(`Invalid predefined flow: ${JSON.stringify(result.issues)}`);
   }
@@ -42,10 +42,11 @@ describe('executeFlow', () => {
           });
         }
         if (input.templateId === 'Judge') {
-          expect(input.args.implementations).toEqual([
+          expect(input.args.candidates).toEqual([
             expect.objectContaining({ id: 'impl-1' }),
             expect.objectContaining({ id: 'impl-2' }),
           ]);
+          expect(input.args.request).toBe('Build the feature');
           return node({
             id: 'judge-1',
             label: 'Judge',
@@ -54,30 +55,33 @@ describe('executeFlow', () => {
         }
         if (input.templateId === 'Reviewer') {
           if (nextCount === 1) {
-            expect(input.args.input).toBe('Build the feature');
+            expect(input.args.request).toBe('Build the feature');
+            expect(input.args.target_node).toEqual(expect.objectContaining({ id: 'impl-2' }));
             expect(input.args.commit).toBe('commit-2');
-            expect(input.args.fixer_node).toBeNull();
+            expect(input.args.latest_fix).toBeNull();
+            expect(input.args.criteria).toBe('Review correctness against the original request.');
             expect(input.prompt).toContain('Original request:');
             expect(input.prompt).toContain('Build the feature');
-            expect(input.prompt).toContain('Latest fixer response, if any:');
+            expect(input.prompt).toContain('Latest fix attempt, if any:');
             expect(input.prompt).not.toContain('counterpoint: reviewer missed context');
-            expect(input.prompt).not.toContain('implementation 2');
+            expect(input.prompt).toContain('implementation 2');
             expect(input.prompt).not.toContain('null');
             return node({ id: 'reviewer-1', label: 'Reviewer 1', message: 'verdict: fail' });
           }
-          expect(input.args.input).toBe('Build the feature');
+          expect(input.args.request).toBe('Build the feature');
           expect(input.args.commit).toBe('commit-fix-1');
-          expect(input.args.fixer_node).toEqual(expect.objectContaining({
+          expect(input.args.latest_fix).toEqual(expect.objectContaining({
             id: 'fixer-1',
             message: expect.stringContaining('counterpoint: reviewer missed context'),
           }));
           expect(input.prompt).toContain('Original request:');
           expect(input.prompt).toContain('Build the feature');
           expect(input.prompt).toContain('counterpoint: reviewer missed context');
-          expect(input.prompt).not.toContain('implementation 2');
+          expect(input.prompt).toContain('implementation 2');
           return node({ id: 'reviewer-2', label: 'Reviewer 2', message: 'verdict: pass' });
         }
         if (input.templateId === 'Fixer') {
+          expect(input.args.review).toEqual(expect.objectContaining({ id: 'reviewer-1' }));
           return node({
             id: 'fixer-1',
             label: 'Fixer',
@@ -100,8 +104,8 @@ describe('executeFlow', () => {
     }
     expect(result.status).toBe('completed');
     expect(calls.slice(0, 2).map((call) => call.templateId)).toEqual(['Implementer', 'Implementer']);
-    expect(calls[0].args).toEqual({ input: 'Build the feature' });
-    expect(calls[1].args).toEqual({ input: 'Build the feature' });
+    expect(calls[0].args).toEqual({ request: 'Build the feature' });
+    expect(calls[1].args).toEqual({ request: 'Build the feature' });
     expect(calls[0].prompt).toBe(calls[1].prompt);
     expect(calls[2].templateId).toBe('Judge');
     expect(calls[3]).toEqual(expect.objectContaining({

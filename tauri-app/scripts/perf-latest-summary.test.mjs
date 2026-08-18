@@ -31,6 +31,8 @@ describe('perf latest summary', () => {
         maxRafStallMs: 1500,
         longTaskCount: 1,
         maxLongTaskMs: 88,
+        longAnimationFrameCount: 2,
+        maxLongAnimationFrameMs: 456,
       },
       flows: [{
         flowId: 'sendflow-abc123',
@@ -80,6 +82,7 @@ describe('perf latest summary', () => {
 
     expect(output).toContain('Perf Capture');
     expect(output).toContain('event-loop: stalls=2 freezes=1 max=1234ms');
+    expect(output).toContain('loaf=2 max=456ms');
     expect(output).toContain('firstText=250ms');
     expect(output).toContain('text->project=32ms');
     expect(output).toContain('Pilot Report');

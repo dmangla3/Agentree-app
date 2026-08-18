@@ -15,7 +15,7 @@ import '@xyflow/react/dist/style.css';
 
 // Stores
 import { useWorkspaceStore, Message, Summary } from '../stores/workspaceStore';
-import { getMergeSourcePrunePlan, useIntegrationStore } from '../stores/integrationStore';
+import { getMergeSourcePrunePlan, getMergeTabRunIndicator, useIntegrationStore } from '../stores/integrationStore';
 
 // Hooks - Data
 import { useMessages, useSummaries, useDeleteMessageBranch, useToggleCollapse } from '../hooks/useMessages';
@@ -43,14 +43,33 @@ import { LlmNodeData, getLlmLegend } from '../lib/graphUtils';
 import { mapLocalCommitToCommitEntity } from '../lib/localCommitGraphProjection';
 import { createSubgraphFilterState, getSubgraphMessageIds, shouldClearSubgraphForFocus } from '../lib/graphSubgraphFilter';
 import { buildThreadRootIndex, getHiddenConversationMessageIds, getLatestThreadMessageId } from '../lib/graphThreadRoots';
-import { pruneHiddenThreadRootIds, readHiddenThreadRootIds, rememberHiddenThreadRootIds } from '../lib/graphThreadVisibilityStorage';
+import {
+    filterCommitContextForThreadScope,
+    filterSummariesForThreadScope,
+    getInactiveThreadRootIds,
+    getThreadScopeKey,
+    resolveInitialActiveThreadRootId,
+    resolveThreadGraphScope,
+} from '../lib/graphThreadScope';
+import {
+    readGraphThreadState,
+    rememberGraphThreadState,
+} from '../lib/graphThreadStateStorage';
+import {
+    applySubgraphThreadConversions,
+    readConvertedSubgraphThreadRootIds,
+    rememberConvertedSubgraphThreadRootIds,
+} from '../lib/graphSubgraphThreads';
 import { buildThreadBands, getThreadDividerRectsFromNodes, type ThreadBand } from '../lib/graphThreadDividers';
 import { buildComposerContextPathIds } from '../lib/composerContext';
 import { collectDeleteBranchMessageIds, getDeleteBranchPreview, getTopLevelDeleteBranchIds } from '../domain/deleteBranchPreview';
 import { getBranchPointerCommitSha, getMessageBaseCommitSha, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { shouldRefreshHeldGraphMessagesForStructuralChange } from '../lib/graph/graphComputationHold';
+import { reconcileTerminalAgentRunsFromMessages } from '../lib/agentRunTerminalReconciliation';
 import { addDeletedGraphCommitShas, readDeletedGraphCommitShas } from '../lib/graph/commitGraphTombstones';
 import { getLeafMessagesByRecency, getLeafNavigationLabel } from '../lib/graph/leafNodes';
+import { getThreadAwarenessSummary } from '../lib/graph/threadAwareness';
+import { buildGraphTranslateExtent, clampGraphViewportToNodeBounds } from '../lib/graphViewportBounds';
 import { collapseRenderedFocusRoute } from '../domain/focusRoute';
 import { cn } from '../lib/utils';
 import { writeClipboardText } from '../lib/clipboard';
@@ -90,6 +109,7 @@ import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder'
 import { recordFundamentalCounter } from '../perf/fundamentalCounters';
 import { createGraphDiagnosticCapture, registerGraphDiagnosticProvider } from '../lib/graphDiagnostics';
 import { markGraphInteractionEnd, markGraphInteractionStart, scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
+import { dispatchGraphComposerDockCollapse, dispatchGraphComposerDockExpand } from '../lib/graphComposerDockEvents';
 import {
     getGraphNodeDetailDensityCount,
     getGraphNodeDetailEffectiveZoom,
@@ -104,6 +124,20 @@ import type { FocusTriggerMetrics } from '../types/nodes';
 import { graphNodeTypes } from './graph/graphNodeTypes';
 import { hasLayoutAnchoredGraphNodes, resolveAnchoredGraphWindowNodeIds } from './graph/graphRenderWindow';
 import { getGraphEdgeEndpointDotVariant, isInterTurnEndpointEdge } from './graphEdgeEndpointDots';
+
+const GraphMergePanel = React.lazy(() => import('./MergePanel').then((module) => ({ default: module.MergePanel })));
+
+function GraphMergePanelLoading() {
+    return (
+        <div className="flex h-full items-center justify-center bg-background/80 p-6">
+            <div className="w-full max-w-md space-y-3">
+                <div className="app-skeleton h-8 w-40" />
+                <div className="app-skeleton h-24 w-full" />
+                <div className="app-skeleton h-24 w-5/6" />
+            </div>
+        </div>
+    );
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // NODE & EDGE TYPES
@@ -558,6 +592,7 @@ interface GraphViewInternalProps {
     hideLegend?: boolean;
     className?: string;
     forcedViewMode?: ViewMode;
+    threadNavigationOrientation?: 'horizontal' | 'vertical';
 }
 
 const REF_SYNC_INTERVAL_MS = 60_000;
@@ -701,6 +736,7 @@ function GraphViewInternal({
     hideLegend = false,
     className: propClassName,
     forcedViewMode,
+    threadNavigationOrientation = 'horizontal',
 }: GraphViewInternalProps) {
     const queryClient = useQueryClient();
     const sendFlowGraphDiagFlags = useMemo(() => getSendFlowGraphDiagnosticFlags(), []);
@@ -726,6 +762,10 @@ function GraphViewInternal({
     const toggleInsightsVisible = useWorkspaceStore(state => state.toggleInsightsVisible);
     const toggleShowInsightsInGraph = useWorkspaceStore(state => state.toggleShowInsightsInGraph);
     const dismissInsight = useWorkspaceStore(state => state.dismissInsight);
+    const mergeSession = useIntegrationStore((state) => state.session);
+    const mergeAttentionNonce = useIntegrationStore((state) => state.mergeTabAttentionNonce);
+    const mergeSourceCount = mergeSession?.sources.length ?? 0;
+    const mergeRunIndicator = getMergeTabRunIndicator(mergeSession);
     const runningCount = useRunStatusStore((state) => state.getRunningCount(selectedWorkspaceId));
     const activeRunStatusNodeIdKey = useRunStatusStore((state) => (
         Object.values(state.byNodeId)
@@ -757,21 +797,27 @@ function GraphViewInternal({
     ), [activeRunStatusNodeIds, activeSendFlowMessageIdKey]);
     const [graphResetNonce, setGraphResetNonce] = useState(0);
     const [subgraphRootNodeId, setSubgraphRootNodeId] = useState<string | null>(null);
-    const [hiddenThreadRootIds, setHiddenThreadRootIds] = useState<Set<string>>(() => readHiddenThreadRootIds(selectedWorkspaceId));
+    const initialThreadState = useMemo(() => readGraphThreadState(selectedWorkspaceId), [selectedWorkspaceId]);
+    const [activeThreadRootId, setActiveThreadRootId] = useState<string | null>(initialThreadState.activeThreadRootId);
+    const [doneThreadRootIds, setDoneThreadRootIds] = useState<Set<string>>(initialThreadState.doneThreadRootIds);
+    const [doneThreadsCollapsed, setDoneThreadsCollapsed] = useState(initialThreadState.doneThreadsCollapsed);
+    const [lastVisitedAtByThreadRootId, setLastVisitedAtByThreadRootId] = useState<Map<string, number>>(
+        initialThreadState.lastVisitedAtByThreadRootId
+    );
     const [hiddenSubgraphRootIds, setHiddenSubgraphRootIds] = useState<Set<string>>(() => new Set());
+    const [convertedSubgraphThreadRootIds, setConvertedSubgraphThreadRootIds] = useState<Set<string>>(
+        () => readConvertedSubgraphThreadRootIds(selectedWorkspaceId)
+    );
 
     useEffect(() => {
-        setHiddenThreadRootIds(readHiddenThreadRootIds(selectedWorkspaceId));
+        const state = readGraphThreadState(selectedWorkspaceId);
+        setActiveThreadRootId(state.activeThreadRootId);
+        setDoneThreadRootIds(state.doneThreadRootIds);
+        setDoneThreadsCollapsed(state.doneThreadsCollapsed);
+        setLastVisitedAtByThreadRootId(state.lastVisitedAtByThreadRootId);
         setHiddenSubgraphRootIds(new Set());
+        setConvertedSubgraphThreadRootIds(readConvertedSubgraphThreadRootIds(selectedWorkspaceId));
         setSubgraphRootNodeId(null);
-    }, [selectedWorkspaceId]);
-
-    const updateHiddenThreadRootIds = useCallback((updater: Set<string> | ((current: Set<string>) => Set<string>)) => {
-        setHiddenThreadRootIds((current) => {
-            const next = typeof updater === 'function' ? updater(current) : updater;
-            rememberHiddenThreadRootIds(selectedWorkspaceId, next);
-            return next;
-        });
     }, [selectedWorkspaceId]);
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -864,6 +910,9 @@ function GraphViewInternal({
     }, [canUseLiveFocusedMessageId, runningCount, storeFocusedMessageId]);
 
     const messages = messagesOverride ?? storeMessages;
+    useEffect(() => {
+        reconcileTerminalAgentRunsFromMessages(messages as Message[]);
+    }, [messages]);
     const focusedMessageId = focusedIdOverride !== undefined
         ? focusedIdOverride
         : (runningCount > 0 && !canUseLiveFocusedMessageId ? graphFocusedMessageIdRef.current : storeFocusedMessageId);
@@ -903,8 +952,8 @@ function GraphViewInternal({
         return map;
     }, [branchPointers, messages]);
 
-    const graphMessages = useMemo(() => (
-        (messages as Message[]).map((message) => {
+    const graphMessages = useMemo(() => {
+        const branchPointerMessages = (messages as Message[]).map((message) => {
             const resolvedPointers = branchPointersByNodeId.get(message.id) ?? [];
             const currentPointers = message.branchPointers ?? [];
             if (currentPointers === resolvedPointers) return message;
@@ -915,25 +964,24 @@ function GraphViewInternal({
                 ...message,
                 branchPointers: resolvedPointers,
             };
-        })
-    ), [branchPointersByNodeId, messages]);
-    const hiddenConversationMessageIds = useMemo(() => getHiddenConversationMessageIds({
-        messages: graphMessages as Message[],
-        hiddenThreadRootIds,
-        hiddenSubgraphRootIds,
-    }), [graphMessages, hiddenSubgraphRootIds, hiddenThreadRootIds]);
-    const hiddenGraphFilterCount = hiddenSubgraphRootIds.size;
-    const threadRootIndex = useMemo(() => buildThreadRootIndex(graphMessages as Message[]), [graphMessages]);
+        });
+        return applySubgraphThreadConversions({
+            messages: branchPointerMessages,
+            convertedRootIds: convertedSubgraphThreadRootIds,
+        });
+    }, [branchPointersByNodeId, convertedSubgraphThreadRootIds, messages]);
     useEffect(() => {
-        if (!selectedWorkspaceId || threadRootIndex.threadRootIds.length === 0) return;
-
-        setHiddenThreadRootIds((current) => {
-            const next = pruneHiddenThreadRootIds(current, threadRootIndex.threadRootIds);
+        if (!selectedWorkspaceId) return;
+        const availableMessageIds = new Set((messages as Message[]).map((message) => message.id));
+        setConvertedSubgraphThreadRootIds((current) => {
+            const next = new Set(Array.from(current).filter((messageId) => availableMessageIds.has(messageId)));
             if (next.size === current.size) return current;
-            rememberHiddenThreadRootIds(selectedWorkspaceId, next);
+            rememberConvertedSubgraphThreadRootIds(selectedWorkspaceId, next);
             return next;
         });
-    }, [selectedWorkspaceId, threadRootIndex.threadRootIds]);
+    }, [messages, selectedWorkspaceId]);
+    const hiddenGraphFilterCount = hiddenSubgraphRootIds.size;
+    const threadRootIndex = useMemo(() => buildThreadRootIndex(graphMessages as Message[]), [graphMessages]);
     const currentThreadRootId = useMemo(() => (
         subgraphRootNodeId ? threadRootIndex.threadRootIdByMessageId.get(subgraphRootNodeId) ?? null : null
     ), [subgraphRootNodeId, threadRootIndex]);
@@ -982,6 +1030,10 @@ function GraphViewInternal({
             for (const messageId of threadMessageIds) {
                 if (activeRunStatusNodeIds.has(messageId)) runningThreadCount += 1;
             }
+            const awareness = getThreadAwarenessSummary({
+                messages: threadMessages,
+                lastVisitedAt: lastVisitedAtByThreadRootId.get(threadRootId) ?? 0,
+            });
             const baseCommitSha = getMessageBaseCommitSha(rootMessage)
                 ?? getMessageBaseCommitSha(firstAssistantMessage)
                 ?? selectedWorkspace?.base_commit_sha
@@ -996,15 +1048,82 @@ function GraphViewInternal({
                 baseCommitSha,
                 updatedLabel: formatThreadUpdatedLabel(lastUpdatedAt, now),
                 runningCount: runningThreadCount,
-                hidden: hiddenThreadRootIds.has(threadRootId),
-                current: focusedThreadRootId === threadRootId,
+                hidden: false,
+                done: doneThreadRootIds.has(threadRootId),
+                current: activeThreadRootId === threadRootId,
                 lastUpdatedAt,
+                unreadCompletedLeafCount: activeThreadRootId === threadRootId ? 0 : awareness.unreadCompletedLeafCount,
+                initialPreviewNodeId: awareness.initialPreviewNodeId,
+                previewNodeIds: awareness.previewNodeIds,
             };
         }).sort((left, right) => right.lastUpdatedAt - left.lastUpdatedAt || left.threadRootId.localeCompare(right.threadRootId));
-    }, [activeRunStatusNodeIds, focusedThreadRootId, graphMessages, hiddenThreadRootIds, selectedWorkspace?.base_commit_sha, threadRootIndex]);
+    }, [activeRunStatusNodeIds, activeThreadRootId, doneThreadRootIds, graphMessages, lastVisitedAtByThreadRootId, selectedWorkspace?.base_commit_sha, threadRootIndex]);
+    const markThreadVisited = useCallback((threadRootId: string, visitedAt = Date.now()) => {
+        setLastVisitedAtByThreadRootId((current) => {
+            const currentVisitedAt = current.get(threadRootId) ?? 0;
+            if (currentVisitedAt >= visitedAt) return current;
+            const next = new Map(current);
+            next.set(threadRootId, visitedAt);
+            rememberGraphThreadState(selectedWorkspaceId, {
+                activeThreadRootId: threadRootId,
+                doneThreadRootIds,
+                doneThreadsCollapsed,
+                lastVisitedAtByThreadRootId: next,
+            });
+            return next;
+        });
+    }, [doneThreadRootIds, doneThreadsCollapsed, selectedWorkspaceId]);
+    useEffect(() => {
+        if (!selectedWorkspaceId || threadRootIndex.threadRootIds.length === 0) return;
+        const nextActiveThreadRootId = resolveInitialActiveThreadRootId({
+            preferredThreadRootId: activeThreadRootId,
+            threadRootIds: threadRootIndex.threadRootIds,
+            threadItems: threadIndexItems,
+        });
+        if (nextActiveThreadRootId === activeThreadRootId) return;
+        setActiveThreadRootId(nextActiveThreadRootId);
+        rememberGraphThreadState(selectedWorkspaceId, {
+            activeThreadRootId: nextActiveThreadRootId,
+            doneThreadRootIds,
+            doneThreadsCollapsed,
+            lastVisitedAtByThreadRootId,
+        });
+    }, [
+        activeThreadRootId,
+        doneThreadRootIds,
+        doneThreadsCollapsed,
+        lastVisitedAtByThreadRootId,
+        selectedWorkspaceId,
+        threadIndexItems,
+        threadRootIndex.threadRootIds,
+    ]);
+    const lastRecordedThreadVisitRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!selectedWorkspaceId || !activeThreadRootId) return;
+        const visitKey = `${selectedWorkspaceId}:${activeThreadRootId}`;
+        if (lastRecordedThreadVisitRef.current === visitKey) return;
+        lastRecordedThreadVisitRef.current = visitKey;
+        markThreadVisited(activeThreadRootId);
+    }, [activeThreadRootId, markThreadVisited, selectedWorkspaceId]);
+    const threadGraphScope = useMemo(() => resolveThreadGraphScope({
+        messages: graphMessages as Message[],
+        threadRootIndex,
+        activeThreadRootId,
+    }), [activeThreadRootId, graphMessages, threadRootIndex]);
+    const scopedGraphMessages = threadGraphScope.scopedMessages;
+    const scopedSummaries = filterSummariesForThreadScope(summaries as Summary[], threadGraphScope);
+    const hiddenThreadRootIdsForLayout = useMemo(
+        () => getInactiveThreadRootIds(threadRootIndex.threadRootIds, threadGraphScope.activeThreadRootId),
+        [threadGraphScope.activeThreadRootId, threadRootIndex.threadRootIds]
+    );
+    const hiddenConversationMessageIds = useMemo(() => getHiddenConversationMessageIds({
+        messages: scopedGraphMessages,
+        hiddenThreadRootIds: new Set(),
+        hiddenSubgraphRootIds,
+    }), [hiddenSubgraphRootIds, scopedGraphMessages]);
     const visibleGraphMessages = useMemo(() => (
-        (graphMessages as Message[]).filter((message) => !hiddenConversationMessageIds.has(message.id))
-    ), [graphMessages, hiddenConversationMessageIds]);
+        scopedGraphMessages.filter((message) => !hiddenConversationMessageIds.has(message.id))
+    ), [hiddenConversationMessageIds, scopedGraphMessages]);
     const leafNodeNavigationItems = useMemo(() => (
         getLeafMessagesByRecency(visibleGraphMessages as Message[])
             .map((message) => toLeafNodeNavigationItem(message, agentLabelsById))
@@ -1078,42 +1197,42 @@ function GraphViewInternal({
         });
         return current;
     }, [activeGraphComputationHold, activePinnedMessageIdKey, activeSendFlowFocus?.workspaceId, visibleGraphMessages, runningCount, selectedWorkspaceId]);
-    const graphProjectionMessagesRef = useRef<Message[]>(graphMessages as Message[]);
+    const graphProjectionMessagesRef = useRef<Message[]>(visibleGraphMessages as Message[]);
     const graphProjectionMessages = useMemo(() => {
         const current = graphProjectionMessagesRef.current;
         if (!activeGraphComputationHold) {
-            graphProjectionMessagesRef.current = graphMessages as Message[];
+            graphProjectionMessagesRef.current = visibleGraphMessages as Message[];
             recordFundamentalCounter('graph.projection-messages', {
                 mode: 'live',
-                messageCount: graphMessages.length,
+                messageCount: visibleGraphMessages.length,
                 runningCount,
                 activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
             });
-            return graphMessages as Message[];
+            return visibleGraphMessages as Message[];
         }
 
-        if (!current || current.length === 0 || graphMessages.length !== current.length) {
-            graphProjectionMessagesRef.current = graphMessages as Message[];
+        if (!current || current.length === 0 || visibleGraphMessages.length !== current.length) {
+            graphProjectionMessagesRef.current = visibleGraphMessages as Message[];
             recordFundamentalCounter('graph.projection-messages', {
                 mode: 'active-refresh',
-                messageCount: graphMessages.length,
+                messageCount: visibleGraphMessages.length,
                 previousMessageCount: current?.length ?? 0,
                 runningCount,
                 activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
             });
-            return graphMessages as Message[];
+            return visibleGraphMessages as Message[];
         }
 
-        if (shouldRefreshHeldGraphMessagesForStructuralChange(current, graphMessages as Message[])) {
-            graphProjectionMessagesRef.current = graphMessages as Message[];
+        if (shouldRefreshHeldGraphMessagesForStructuralChange(current, visibleGraphMessages as Message[])) {
+            graphProjectionMessagesRef.current = visibleGraphMessages as Message[];
             recordFundamentalCounter('graph.projection-messages', {
                 mode: 'active-refresh-structural',
-                messageCount: graphMessages.length,
+                messageCount: visibleGraphMessages.length,
                 previousMessageCount: current.length,
                 runningCount,
                 activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
             });
-            return graphMessages as Message[];
+            return visibleGraphMessages as Message[];
         }
 
         const activePinnedMessageIds = activePinnedMessageIdKey
@@ -1121,31 +1240,31 @@ function GraphViewInternal({
             : [];
         if (activePinnedMessageIds.length > 0) {
             const currentIds = new Set(current.map((message) => message.id));
-            const incomingIds = new Set((graphMessages as Message[]).map((message) => message.id));
+            const incomingIds = new Set((visibleGraphMessages as Message[]).map((message) => message.id));
             const hasNewPinnedMessage = activePinnedMessageIds.some((id) => incomingIds.has(id) && !currentIds.has(id));
             if (hasNewPinnedMessage) {
-                graphProjectionMessagesRef.current = graphMessages as Message[];
+                graphProjectionMessagesRef.current = visibleGraphMessages as Message[];
                 recordFundamentalCounter('graph.projection-messages', {
                     mode: 'active-refresh-pinned',
-                    messageCount: graphMessages.length,
+                    messageCount: visibleGraphMessages.length,
                     previousMessageCount: current.length,
                     pinnedMessageCount: activePinnedMessageIds.length,
                     runningCount,
                     activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
                 });
-                return graphMessages as Message[];
+                return visibleGraphMessages as Message[];
             }
         }
 
         recordFundamentalCounter('graph.projection-messages', {
             mode: 'active-held',
             messageCount: current.length,
-            incomingMessageCount: graphMessages.length,
+            incomingMessageCount: visibleGraphMessages.length,
             runningCount,
             activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
         });
         return current;
-    }, [activeGraphComputationHold, activePinnedMessageIdKey, activeSendFlowFocus?.workspaceId, graphMessages, runningCount, selectedWorkspaceId]);
+    }, [activeGraphComputationHold, activePinnedMessageIdKey, activeSendFlowFocus?.workspaceId, visibleGraphMessages, runningCount, selectedWorkspaceId]);
     const contextPathMessageIdSet = useMemo(() => {
         if (!composerContextPreview || composerContextPreview.workspaceId !== selectedWorkspaceId) {
             return new Set<string>();
@@ -1286,6 +1405,22 @@ function GraphViewInternal({
         () => snapshotCommitObservations.filter((observation) => visibleSnapshotCommitShaSet.has(observation.commit_sha)),
         [snapshotCommitObservations, visibleSnapshotCommitShaSet]
     );
+    const scopedSnapshotCommitContext = useMemo(() => filterCommitContextForThreadScope({
+        messages: graphProjectionMessages,
+        scope: threadGraphScope,
+        commits: visibleSnapshotCommits,
+        commitParents: visibleSnapshotCommitParents,
+        commitObservations: visibleSnapshotCommitObservations,
+    }), [
+        graphProjectionMessages,
+        threadGraphScope,
+        visibleSnapshotCommits,
+        visibleSnapshotCommitParents,
+        visibleSnapshotCommitObservations,
+    ]);
+    const scopedVisibleSnapshotCommits = scopedSnapshotCommitContext.commits;
+    const scopedVisibleSnapshotCommitParents = scopedSnapshotCommitContext.commitParents;
+    const scopedVisibleSnapshotCommitObservations = scopedSnapshotCommitContext.commitObservations;
     const repoPath = selectedWorkspace?.git_repo_path ?? selectedWorkspace?.folderPath ?? null;
     const { runSync, isSyncing } = useGitSync(
         selectedWorkspaceId,
@@ -1372,6 +1507,9 @@ function GraphViewInternal({
     const viewportPointerDownAtRef = useRef<number | null>(null);
     const viewportPointerUpAtRef = useRef<number | null>(null);
     const viewportDragStartViewportRef = useRef<{ x: number; y: number; zoom: number } | null>(null);
+    const viewportByThreadRootIdRef = useRef(new Map<string, { x: number; y: number; zoom: number }>());
+    const threadSwitchStartedAtRef = useRef<number | null>(null);
+    const threadSwitchTargetRef = useRef<string | null>(null);
     const viewportFirstVisibleMoveLoggedRef = useRef(false);
     const activeGraphWindowLastUpdateAtRef = useRef(0);
     const activeGraphWindowUpdateTimeoutRef = useRef<number | null>(null);
@@ -1414,6 +1552,30 @@ function GraphViewInternal({
     const [graphDetailViewportVersion, setGraphDetailViewportVersion] = useState(0);
     const graphDetailZoomBucketRef = useRef(graphDetailZoomBucket);
     const graphDetailZoomUpdateTimeoutRef = useRef<number | null>(null);
+    const clampViewportToGraphBounds = useCallback((viewport: { x: number; y: number; zoom: number }) => {
+        const canvas = branchCanvasRef.current;
+        if (!canvas) return viewport;
+        return clampGraphViewportToNodeBounds(viewport, layoutNodesRef.current, {
+            width: canvas.clientWidth,
+            height: canvas.clientHeight,
+        });
+    }, []);
+
+    const saveViewportForActiveThread = useCallback(() => {
+        const threadRootId = threadGraphScope.activeThreadRootId;
+        if (!threadRootId) return;
+        viewportByThreadRootIdRef.current.set(threadRootId, reactFlowInstance.getViewport());
+    }, [reactFlowInstance, threadGraphScope.activeThreadRootId]);
+
+    const restoreViewportForActiveThread = useCallback(() => {
+        const threadRootId = threadGraphScope.activeThreadRootId;
+        if (!threadRootId) return;
+        const savedViewport = viewportByThreadRootIdRef.current.get(threadRootId);
+        if (!savedViewport) return;
+        window.requestAnimationFrame(() => {
+            reactFlowInstance.setViewport(clampViewportToGraphBounds(savedViewport), { duration: 0 });
+        });
+    }, [clampViewportToGraphBounds, reactFlowInstance, threadGraphScope.activeThreadRootId]);
 
     useEffect(() => {
         graphDetailZoomBucketRef.current = graphDetailZoomBucket;
@@ -1997,9 +2159,9 @@ function GraphViewInternal({
                 commits += 1;
             }
         }
-        commits += visibleSnapshotCommits.length;
+        commits += scopedVisibleSnapshotCommits.length;
         return { conversation, commits };
-    }, [graphComputationMessages, visibleSnapshotCommits.length]);
+    }, [graphComputationMessages, scopedVisibleSnapshotCommits.length]);
     const handleToggleNodeSection = useCallback((sectionId: GraphNodeSectionId) => {
         setVisibleNodeSections((previous) => {
             const next = new Set(previous);
@@ -2013,20 +2175,24 @@ function GraphViewInternal({
         });
     }, []);
     const nodeSelection = useNodeSelection(graphComputationMessages);
-    const { openMergeSession } = useIntegrationStore();
+    const openMergeSession = useIntegrationStore((state) => state.openMergeSession);
     const disabledSummaryIdsSet = useMemo(() => new Set(disabledSummaryIds), [disabledSummaryIds]);
+    const threadHoverProjectionInput = useMemo(() => ({
+        messages: graphMessages as Message[],
+        summaries: summaries as Summary[],
+        disabledSummaryIds: disabledSummaryIdsSet,
+    }), [disabledSummaryIdsSet, graphMessages, summaries]);
     const workspaceProjection = useWorkspaceProjection(
         graphProjectionMessages,
-        summaries as Summary[],
+        scopedSummaries,
         focusedMessageId,
         disabledSummaryIdsSet,
         'graph',
-        visibleSnapshotCommits,
-        visibleSnapshotCommitParents,
-        visibleSnapshotCommitObservations,
+        scopedVisibleSnapshotCommits,
+        scopedVisibleSnapshotCommitParents,
+        scopedVisibleSnapshotCommitObservations,
     );
     const handleMergeSelection = useCallback((selectionIds?: Iterable<string>) => {
-        const { setRightPanelTab } = useWorkspaceStore.getState();
         const selectedIds = selectionIds ? Array.from(selectionIds) : Array.from(nodeSelection.selectedNodeIds);
         if (selectedIds.length < 2) {
             toast.error('Selection required', 'Select at least 2 nodes to merge');
@@ -2062,7 +2228,6 @@ function GraphViewInternal({
 
         // Open the integration workspace
         openMergeSession(selectedWorkspaceId, repoPath);
-        setRightPanelTab('merge');
 
         // Add target and sources to the session
         const { setTarget, addSource } = useIntegrationStore.getState();
@@ -2409,7 +2574,15 @@ function GraphViewInternal({
         setViewportInteractingDomState(false);
         markGraphInteractionEnd('viewport-drag');
 
-        const viewport = viewportOverride ?? reactFlowInstance.getViewport();
+        const rawViewport = viewportOverride ?? reactFlowInstance.getViewport();
+        const viewport = clampViewportToGraphBounds(rawViewport);
+        if (
+            viewport.x !== rawViewport.x ||
+            viewport.y !== rawViewport.y ||
+            viewport.zoom !== rawViewport.zoom
+        ) {
+            reactFlowInstance.setViewport(viewport, { duration: 120 });
+        }
         const endedAt = performance.now();
         const pointerDownAt = viewportPointerDownAtRef.current;
         const pointerUpAt = viewportPointerUpAtRef.current;
@@ -2431,7 +2604,7 @@ function GraphViewInternal({
         viewportPointerUpAtRef.current = null;
         viewportDragStartViewportRef.current = null;
         viewportFirstVisibleMoveLoggedRef.current = false;
-    }, [reactFlowInstance, setViewportInteractingDomState]);
+    }, [clampViewportToGraphBounds, reactFlowInstance, setViewportInteractingDomState]);
 
     const startViewportInteraction = useCallback((viewport: { x: number; y: number; zoom: number }) => {
         if (isViewportInteractingRef.current) return;
@@ -2531,12 +2704,12 @@ function GraphViewInternal({
             d3Zoom.translateBy(d3Selection, dx / viewport.zoom, dy / viewport.zoom);
             return;
         }
-        reactFlowInstance.setViewport({
+        reactFlowInstance.setViewport(clampViewportToGraphBounds({
             x: viewport.x + dx,
             y: viewport.y + dy,
             zoom: viewport.zoom,
-        });
-    }, [reactFlowInstance, reactFlowStore]);
+        }));
+    }, [clampViewportToGraphBounds, reactFlowInstance, reactFlowStore]);
 
     const applyViewportWheelFallback = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
         const root = (event.target as HTMLElement | null)?.closest?.('.react-flow') as HTMLElement | null;
@@ -2564,11 +2737,11 @@ function GraphViewInternal({
                     x: event.clientX,
                     y: event.clientY,
                 });
-                reactFlowInstance.setViewport({
+                reactFlowInstance.setViewport(clampViewportToGraphBounds({
                     x: pointerX - anchor.x * nextZoom,
                     y: pointerY - anchor.y * nextZoom,
                     zoom: nextZoom,
-                });
+                }));
             }
         } else {
             const normalize = event.deltaMode === 1 ? 20 : 1;
@@ -2579,11 +2752,11 @@ function GraphViewInternal({
                     -(event.deltaY * normalize * 0.5) / viewport.zoom,
                 );
             } else {
-                reactFlowInstance.setViewport({
+                reactFlowInstance.setViewport(clampViewportToGraphBounds({
                     x: viewport.x - event.deltaX * normalize * 0.5,
                     y: viewport.y - event.deltaY * normalize * 0.5,
                     zoom: viewport.zoom,
-                });
+                }));
             }
         }
 
@@ -2598,7 +2771,7 @@ function GraphViewInternal({
         event.preventDefault();
         event.stopPropagation();
         return true;
-    }, [ensureViewportInteractionStarted, reactFlowInstance, reactFlowStore, recordRootFallbackGeometry, stopViewportInteraction]);
+    }, [clampViewportToGraphBounds, ensureViewportInteractionStarted, reactFlowInstance, reactFlowStore, recordRootFallbackGeometry, stopViewportInteraction]);
 
     const clearFocusCenterTimers = useCallback(() => {
         programmaticFocusCenterActiveRef.current = false;
@@ -2685,11 +2858,11 @@ function GraphViewInternal({
                 : currentZoom;
         const nodeCenterX = targetNode.position.x + width / 2;
         const nodeCenterY = targetNode.position.y + height / 2;
-        const finalViewport = {
+        const finalViewport = clampViewportToGraphBounds({
             x: FOCUS_VIEWPORT_BAND_X * canvasWidth - nodeCenterX * targetZoom,
             y: FOCUS_VIEWPORT_BAND_Y * canvasHeight - nodeCenterY * targetZoom,
             zoom: targetZoom,
-        };
+        });
         const deltaX = finalViewport.x - currentViewport.x;
         const deltaY = finalViewport.y - currentViewport.y;
         const viewportDistance = Math.hypot(deltaX, deltaY);
@@ -2775,18 +2948,18 @@ function GraphViewInternal({
             viewportDistance: Number(viewportDistance.toFixed(2)),
             zoomDelta: Number(zoomDelta.toFixed(3)),
         };
-    }, [activeSendFlowFocus?.workspaceId, captureGraphGeometrySnapshot, clearFocusCenterTimers, normalizeReactFlowLayerGeometry, reactFlowInstance, selectedWorkspaceId, sendFlowGraphDiagFlags.disableGraphAutoCenter, viewMode]);
+    }, [activeSendFlowFocus?.workspaceId, captureGraphGeometrySnapshot, clampViewportToGraphBounds, clearFocusCenterTimers, normalizeReactFlowLayerGeometry, reactFlowInstance, selectedWorkspaceId, sendFlowGraphDiagFlags.disableGraphAutoCenter, viewMode]);
 
     const queueFocusedNodeCenter = useCallback((messageId: string, centerKey: string, options?: { respectImperativeCenter?: boolean }) => {
         if (viewMode !== 'branch') return;
         if (centeredFocusIdRef.current === centerKey) return;
         const isUserFocusSource = lastFocusSource === 'graph' || lastFocusSource === 'chat' || lastFocusSource === 'timeline';
         const focusFlowId = typeof lastFocusMetadata?.flowId === 'string' ? lastFocusMetadata.flowId : null;
-        const isComposerSendFlowFocusSource =
-            lastFocusSource === 'composer' &&
-            !!focusFlowId &&
-            activeSendFlowFocus?.flowId === focusFlowId;
-        const canUseLiveFocusedMessageId = isUserFocusSource || isComposerSendFlowFocusSource;
+        const isActiveGraphNodeClick =
+            runningCount > 0 &&
+            lastFocusSource === 'graph' &&
+            lastFocusMetadata?.via === 'react-flow-node-click';
+        const canUseLiveFocusedMessageId = isUserFocusSource && !isActiveGraphNodeClick;
         const shouldSuppressAgentDrivenCentering = !canUseLiveFocusedMessageId && (
             runningCount > 0 ||
             activeSendFlowFocus?.workspaceId === selectedWorkspaceId
@@ -2989,10 +3162,23 @@ function GraphViewInternal({
     }, [dispatchFocus, nodeSelection.clearSelection]);
 
     const handleFocusThread = useCallback((threadRootId: string) => {
+        const switchStartedAt = performance.now();
+        threadSwitchStartedAtRef.current = switchStartedAt;
+        threadSwitchTargetRef.current = threadRootId;
+        recordPerfEvent('graph.thread-switch.start', {
+            fromThreadRootId: threadGraphScope.activeThreadRootId,
+            toThreadRootId: threadRootId,
+        }, { source: 'GraphView' });
+        saveViewportForActiveThread();
         const focusMessageId = resolveThreadDropdownSelection({
             threadRootId,
-            messages: visibleGraphMessages as Message[],
+            messages: graphMessages as Message[],
         });
+        if (threadGraphScope.activeThreadRootId && threadGraphScope.activeThreadRootId !== threadRootId) {
+            markThreadVisited(threadGraphScope.activeThreadRootId);
+        }
+        setActiveThreadRootId(threadRootId);
+        markThreadVisited(threadRootId);
         setViewMode('branch');
         nodeSelection.clearSelection();
         dispatchFocus({
@@ -3000,39 +3186,52 @@ function GraphViewInternal({
             source: 'graph',
             metadata: { reason: 'focus-thread' },
         });
-    }, [dispatchFocus, nodeSelection.clearSelection, visibleGraphMessages]);
+    }, [
+        dispatchFocus,
+        doneThreadRootIds,
+        doneThreadsCollapsed,
+        graphMessages,
+        markThreadVisited,
+        nodeSelection.clearSelection,
+        saveViewportForActiveThread,
+        selectedWorkspaceId,
+        threadGraphScope.activeThreadRootId,
+    ]);
 
-    const handleHideThread = useCallback((threadRootId: string) => {
-        updateHiddenThreadRootIds((current) => {
+    const handleThreadDoneChange = useCallback((threadRootId: string, done: boolean) => {
+        setDoneThreadRootIds((current) => {
             const next = new Set(current);
-            next.add(threadRootId);
+            if (done) {
+                next.add(threadRootId);
+            } else {
+                next.delete(threadRootId);
+            }
+            rememberGraphThreadState(selectedWorkspaceId, {
+                activeThreadRootId,
+                doneThreadRootIds: next,
+                doneThreadsCollapsed,
+                lastVisitedAtByThreadRootId,
+            });
             return next;
         });
-        if (subgraphRootNodeId === threadRootId) {
-            setSubgraphRootNodeId(null);
-        }
-        nodeSelection.clearSelection();
-        toast.success('Thread hidden', 'Use the Threads menu to restore it.');
-    }, [nodeSelection.clearSelection, subgraphRootNodeId, toast, updateHiddenThreadRootIds]);
+    }, [activeThreadRootId, doneThreadsCollapsed, lastVisitedAtByThreadRootId, selectedWorkspaceId]);
 
-    const handleRestoreThread = useCallback((threadRootId: string) => {
-        updateHiddenThreadRootIds((current) => {
-            const next = new Set(current);
-            next.delete(threadRootId);
-            return next;
+    const handleDoneThreadsCollapsedChange = useCallback((collapsed: boolean) => {
+        setDoneThreadsCollapsed(collapsed);
+        rememberGraphThreadState(selectedWorkspaceId, {
+            activeThreadRootId,
+            doneThreadRootIds,
+            doneThreadsCollapsed: collapsed,
+            lastVisitedAtByThreadRootId,
         });
-    }, [updateHiddenThreadRootIds]);
+    }, [activeThreadRootId, doneThreadRootIds, lastVisitedAtByThreadRootId, selectedWorkspaceId]);
 
-    const handleHideAllThreads = useCallback(() => {
-        updateHiddenThreadRootIds(new Set(threadRootIndex.threadRootIds));
-        setSubgraphRootNodeId(null);
-        nodeSelection.clearSelection();
-        toast.success('All threads hidden', 'Use the Threads menu to restore them.');
-    }, [nodeSelection.clearSelection, threadRootIndex.threadRootIds, toast, updateHiddenThreadRootIds]);
-
-    const handleRestoreAllHiddenThreads = useCallback(() => {
-        updateHiddenThreadRootIds(new Set());
-    }, [updateHiddenThreadRootIds]);
+    const handleCreateThread = useCallback(() => {
+        dispatchGraphComposerDockExpand();
+        window.setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('agentree:startNewThread'));
+        }, 0);
+    }, []);
 
     const handleHideSubgraph = useCallback((messageId: string) => {
         setHiddenSubgraphRootIds((current) => {
@@ -3047,10 +3246,39 @@ function GraphViewInternal({
         toast.success('Subgraph hidden', 'Use the hidden graph filter pill to restore it.');
     }, [nodeSelection.clearSelection, subgraphRootNodeId, toast]);
 
+    const handleConvertSubgraphToThread = useCallback((messageId: string) => {
+        const message = (messages as Message[]).find((candidate) => candidate.id === messageId) ?? null;
+        if (!message || message.role !== 'user' || !message.parentId) {
+            toast.error('Cannot convert subgraph', 'Only nested user nodes can become threads.');
+            return;
+        }
+
+        setConvertedSubgraphThreadRootIds((current) => {
+            if (current.has(messageId)) return current;
+            const next = new Set(current);
+            next.add(messageId);
+            rememberConvertedSubgraphThreadRootIds(selectedWorkspaceId, next);
+            return next;
+        });
+        setHiddenSubgraphRootIds((current) => {
+            if (!current.has(messageId)) return current;
+            const next = new Set(current);
+            next.delete(messageId);
+            return next;
+        });
+        if (subgraphRootNodeId === messageId) {
+            setSubgraphRootNodeId(null);
+        }
+        setNodeContextMenu(null);
+        nodeSelection.clearSelection();
+        toast.success('Subgraph converted to thread');
+    }, [messages, nodeSelection.clearSelection, selectedWorkspaceId, subgraphRootNodeId, toast]);
+
+    const graphLayoutCacheScopeKey = getThreadScopeKey(selectedWorkspaceId, threadGraphScope.activeThreadRootId);
     const { nodes: layoutNodes, edges: layoutEdges } = useGraphLayout({
         projection: workspaceProjection,
         messages: graphComputationMessages,
-        summaries: summaries as Summary[],
+        summaries: scopedSummaries,
         measuredNodeHeights,
         layoutMode,
         laneStrategy,
@@ -3065,7 +3293,8 @@ function GraphViewInternal({
         keepDescendants: graphFilterState.keepDescendants,
         constrainedCommitFiltering: Boolean(subgraphRootNodeId),
         pinnedCommitShas,
-        hiddenThreadRootIds,
+        hiddenThreadRootIds: hiddenThreadRootIdsForLayout,
+        layoutCacheScopeKey: graphLayoutCacheScopeKey,
         visibleNodeSections,
         insights,
         showInsightsInGraph,
@@ -3075,6 +3304,7 @@ function GraphViewInternal({
         onToggleSummary: toggleSummaryDisabled,
         onToggleCollapse: handleToggleCollapse,
         onFocus: handleFocus,
+        onOpenThread: handleFocusThread,
         onSelect: handleSelect,
         onMeasureNodeHeight: handleMeasureNodeHeight,
         onContextMenu: handleNodeContextMenu
@@ -3093,7 +3323,7 @@ function GraphViewInternal({
                 commits += Array.isArray(shas) ? shas.length : 1;
                 continue;
             }
-            if (node.type === 'user_message' || node.type === 'assistant_message' || node.type === 'summary_block') {
+            if (node.type === 'thread_link' || node.type === 'user_message' || node.type === 'assistant_message' || node.type === 'summary_block') {
                 nodes += 1;
             }
         }
@@ -3594,6 +3824,10 @@ function GraphViewInternal({
             const nodeData = node.data as any;
             if (node.type === 'user_message' || node.type === 'assistant_message' || node.type === 'commit_message') {
                 messageId = nodeData?.entity?.messageId ?? node.id;
+            } else if (node.type === 'thread_link') {
+                const threadRootId = nodeData?.entity?.threadLinkRootId ?? nodeData?.entity?.threadRootId ?? null;
+                if (threadRootId) handleFocusThread(threadRootId);
+                return;
             } else if (node.type === 'summary_block') {
                 messageId = nodeData?.entity?.focusMessageId ?? null;
             } else {
@@ -3630,6 +3864,7 @@ function GraphViewInternal({
     }, [
         dispatchFocus,
         handleFocus,
+        handleFocusThread,
         onNodeClickOverride,
         viewMode,
     ]);
@@ -4351,11 +4586,16 @@ function GraphViewInternal({
         return result;
     }, [activeSendFlowFocus?.workspaceId, layoutNodes, nodeSelection.selectedNodeIds, selectedWorkspaceId]);
     const activeGraphRenderHold = runningCount > 0 || activeSendFlowFocus?.workspaceId === selectedWorkspaceId;
+    const graphTranslateExtent = useMemo(
+        () => buildGraphTranslateExtent(branchNodesForRender),
+        [branchNodesForRender]
+    );
+    const shouldShowThreadBands = !threadGraphScope.isThreadScoped && !activeGraphRenderHold;
     const threadBands = useMemo(() => {
-        if (activeGraphRenderHold) return [];
+        if (!shouldShowThreadBands) return [];
         const rects = getThreadDividerRectsFromNodes(branchNodesForRender, threadRootIndex.threadRootIdByMessageId);
         return buildThreadBands(rects, { padding: 260, horizontalPadding: 88, equalVerticalExtent: true });
-    }, [activeGraphRenderHold, branchNodesForRender, threadRootIndex.threadRootIdByMessageId]);
+    }, [branchNodesForRender, shouldShowThreadBands, threadRootIndex.threadRootIdByMessageId]);
     useEffect(() => {
         if (activeGraphRenderHold) {
             setGraphRenderHoldUntil(Number.POSITIVE_INFINITY);
@@ -4710,6 +4950,26 @@ function GraphViewInternal({
         }, performance.now() - startedAt);
         return nodes;
     }, [activeGraphWindowSpatialIndex, graphDetailViewportVersion, graphDetailZoomBucket, graphRenderElements.mode, graphRenderElements.nodes, reactFlowInstance]);
+    useEffect(() => {
+        restoreViewportForActiveThread();
+    }, [graphNodesForReactFlow.length, restoreViewportForActiveThread]);
+    useEffect(() => {
+        const startedAt = threadSwitchStartedAtRef.current;
+        const targetThreadRootId = threadSwitchTargetRef.current;
+        if (startedAt === null || !targetThreadRootId) return;
+        if (targetThreadRootId !== threadGraphScope.activeThreadRootId) return;
+
+        recordPerfEvent('graph.thread-switch.rendered', {
+            threadRootId: targetThreadRootId,
+            durationMs: Number((performance.now() - startedAt).toFixed(2)),
+            renderedNodeCount: graphNodesForReactFlow.length,
+            layoutNodeCount: layoutNodes.length,
+            edgeCount: layoutEdges.length,
+        }, { source: 'GraphView' });
+
+        threadSwitchStartedAtRef.current = null;
+        threadSwitchTargetRef.current = null;
+    }, [graphNodesForReactFlow.length, layoutEdges.length, layoutNodes.length, threadGraphScope.activeThreadRootId]);
     const shouldLetReactFlowCullVisibleElements = useMemo(() => (
         !hasLayoutAnchoredGraphNodes(graphNodesForReactFlow)
     ), [graphNodesForReactFlow]);
@@ -4796,7 +5056,9 @@ function GraphViewInternal({
                 ? styleHeight
                 : typeof node.height === 'number'
                     ? node.height
-                    : node.type === 'assistant_message'
+                    : node.type === 'thread_link'
+                        ? 64
+                        : node.type === 'assistant_message'
                         ? 130
                         : node.type === 'commit_message'
                             ? 110
@@ -5271,12 +5533,19 @@ function GraphViewInternal({
                         onToggleShowInsightsInGraph={toggleShowInsightsInGraph}
                         threadItems={threadIndexItems}
                         onThreadFocus={handleFocusThread}
-                        onThreadHide={handleHideThread}
-                        onThreadRestore={handleRestoreThread}
-                        onHideAllThreads={handleHideAllThreads}
-                        onRestoreAllHiddenThreads={handleRestoreAllHiddenThreads}
+                        onThreadDoneChange={handleThreadDoneChange}
+                        doneThreadsCollapsed={doneThreadsCollapsed}
+                        onDoneThreadsCollapsedChange={handleDoneThreadsCollapsedChange}
                         leafNodes={leafNodeNavigationItems}
                         onLeafNodeFocus={handleFocus}
+                        mergeSourceCount={mergeSourceCount}
+                        mergeRunIndicator={mergeRunIndicator}
+                        mergeAttentionNonce={mergeAttentionNonce}
+                        renderMergePanel={(onClose) => (
+                            <React.Suspense fallback={<GraphMergePanelLoading />}>
+                                <GraphMergePanel onClose={onClose} />
+                            </React.Suspense>
+                        )}
                         onResetLayout={handleResetLayout}
                         isRefreshingGraph={isSyncing || isFullRefreshing}
                         autoRefreshEligible={autoRefreshEligible}
@@ -5287,17 +5556,41 @@ function GraphViewInternal({
                         workspaceId={selectedWorkspaceId}
                         repoPath={selectedWorkspace?.git_repo_path ?? selectedWorkspace?.folderPath ?? null}
                     />
-                    <GraphThreadTabs
-                        threadItems={threadIndexItems}
-                        onThreadFocus={handleFocusThread}
-                        onThreadHide={handleHideThread}
-                        onThreadRestore={handleRestoreThread}
-                    />
+                    {threadNavigationOrientation === 'horizontal' ? (
+                        <GraphThreadTabs
+                            threadItems={threadIndexItems}
+                            threadHoverProjectionInput={threadHoverProjectionInput}
+                            onThreadFocus={handleFocusThread}
+                            onThreadDoneChange={handleThreadDoneChange}
+                            doneThreadsCollapsed={doneThreadsCollapsed}
+                            onDoneThreadsCollapsedChange={handleDoneThreadsCollapsedChange}
+                            onCreateThread={handleCreateThread}
+                        />
+                    ) : null}
                 </>
             )}
 
             {/* Content Area */}
-            <div className="flex-1 overflow-hidden relative">
+            <div className={cn(
+                "flex-1 overflow-hidden",
+                threadNavigationOrientation === 'vertical' ? 'flex min-h-0' : 'relative'
+            )}>
+                {!hideControls && threadNavigationOrientation === 'vertical' ? (
+                    <GraphThreadTabs
+                        orientation="vertical"
+                        threadItems={threadIndexItems}
+                        threadHoverProjectionInput={threadHoverProjectionInput}
+                        onThreadFocus={handleFocusThread}
+                        onThreadDoneChange={handleThreadDoneChange}
+                        doneThreadsCollapsed={doneThreadsCollapsed}
+                        onDoneThreadsCollapsedChange={handleDoneThreadsCollapsedChange}
+                        onCreateThread={handleCreateThread}
+                    />
+                ) : null}
+                <div className={cn(
+                    "relative",
+                    threadNavigationOrientation === 'vertical' ? 'min-w-0 flex-1 overflow-hidden' : 'h-full w-full'
+                )}>
                 {hiddenGraphFilterCount > 0 ? (
                     <div className="absolute right-4 top-4 z-40 flex items-center gap-2 rounded-full border border-amber-300/80 bg-amber-50/[0.94] px-3 py-2 text-xs text-amber-900 shadow-sm backdrop-blur-md dark:border-amber-700/80 dark:bg-amber-950/[0.88] dark:text-amber-100">
                         <span className="font-semibold tabular-nums">
@@ -5402,12 +5695,21 @@ function GraphViewInternal({
                                                         : event?.type === 'touchstart'
                                                             ? 'touch-gesture'
                                                             : 'react-flow';
+                                                dispatchGraphComposerDockCollapse();
                                                 ensureViewportInteractionStarted(viewport, sourceLayer);
                                                 if (graphRenderElements.mode === 'hold-visible') {
                                                     scheduleActiveGraphWindowUpdate('move-start', false);
                                                 }
                                             }}
                                             onMove={(event, viewport) => {
+                                                const clampedViewport = clampViewportToGraphBounds(viewport);
+                                                if (
+                                                    clampedViewport.x !== viewport.x ||
+                                                    clampedViewport.y !== viewport.y ||
+                                                    clampedViewport.zoom !== viewport.zoom
+                                                ) {
+                                                    reactFlowInstance.setViewport(clampedViewport, { duration: 0 });
+                                                }
                                                 if (graphRenderElements.mode === 'hold-visible') {
                                                     scheduleActiveGraphWindowUpdate('move', true);
                                                 }
@@ -5444,6 +5746,7 @@ function GraphViewInternal({
                                             }}
                                             onMoveEnd={(_event, viewport) => {
                                                 stopViewportInteraction(viewport);
+                                                saveViewportForActiveThread();
                                                 scheduleGraphDetailZoomBucketUpdate(120);
                                                 if (graphRenderElements.mode === 'hold-visible') {
                                                     scheduleActiveGraphWindowUpdate('move-end', false);
@@ -5465,6 +5768,7 @@ function GraphViewInternal({
                                             preventScrolling
                                             minZoom={GRAPH_MIN_ZOOM}
                                             maxZoom={GRAPH_MAX_ZOOM}
+                                            translateExtent={graphTranslateExtent}
                                             className="agentree-react-flow-root"
                                             style={{ width: '100%', height: '100%' }}
                                         >
@@ -5482,7 +5786,10 @@ function GraphViewInternal({
                         </GraphInteractionContext.Provider>
                         {!sendFlowGraphDiagFlags.disableGraphSurface && (
                             <>
-                                <MiniMapPanel />
+                                <MiniMapPanel
+                                    graphNodes={branchNodesForRender}
+                                    threadRootIdByMessageId={threadGraphScope.isThreadScoped ? new Map() : threadRootIndex.threadRootIdByMessageId}
+                                />
                                 <GraphCanvasIndexPanel
                                     isVisible={isIndexVisible}
                                     onToggleVisible={setIsIndexVisible}
@@ -5524,7 +5831,7 @@ function GraphViewInternal({
                         )}
                     </div>
                 ) : (
-                    <div className={cn('h-full w-full', backgroundClass)}>
+                    <div className="h-full w-full bg-[hsl(var(--app-bg))]">
                         <TimelineView
                             projection={workspaceProjection}
                             focusedMessageId={focusedMessageId}
@@ -5542,6 +5849,7 @@ function GraphViewInternal({
                         />
                     </div>
                 )}
+                </div>
             </div>
 
             <NodeContextMenu
@@ -5558,9 +5866,10 @@ function GraphViewInternal({
                 onAddCommitShasToMergePanel={handleAddCommitShasToMergePanel}
                 onAddCommitToNode={setAddCommitTargetId}
                 onFocusThread={handleFocusThread}
-                onHideThread={handleHideThread}
+                onMarkThreadDone={(threadRootId) => handleThreadDoneChange(threadRootId, true)}
                 onHideSubgraph={handleHideSubgraph}
                 onViewSubgraph={handleViewSubgraph}
+                onConvertSubgraphToThread={handleConvertSubgraphToThread}
                 onShareNode={handleShareNode}
             />
             <AddCommitDialog

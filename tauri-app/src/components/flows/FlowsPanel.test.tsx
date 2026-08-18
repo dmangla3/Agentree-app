@@ -27,6 +27,11 @@ describe('FlowsPanel', () => {
     expect(screen.getByText('Judge')).toBeTruthy();
     expect(screen.getByText('Reviewer')).toBeTruthy();
     expect(screen.getByText('Fixer')).toBeTruthy();
+    expect(screen.getByText('uses core.implementer@1')).toBeTruthy();
+    expect(screen.getByText('uses core.selector@1')).toBeTruthy();
+    expect(screen.getByText('uses core.reviewer@1')).toBeTruthy();
+    expect(screen.getByText('uses core.fixer@1')).toBeTruthy();
+    expect(screen.getAllByText('requires commit')).toHaveLength(2);
     expect(screen.getByText('selected: node')).toBeTruthy();
     expect(screen.getAllByText('verdict: pass, fail').length).toBeGreaterThan(0);
 
@@ -56,6 +61,7 @@ describe('FlowsPanel', () => {
     expect(diagram.textContent).not.toContain('selected_implementation_has_no_commit');
     expect(diagram.textContent).not.toContain('set commit');
     expect(screen.queryByLabelText('Flow run sequence')).toBeNull();
-    expect(screen.getByText(/selected: <one implementation node>/)).toBeTruthy();
+    expect(screen.getByText(/use: core.implementer@1/)).toBeTruthy();
+    expect(screen.getByText(/selected: <one candidate node>/)).toBeTruthy();
   });
 });

@@ -1,12 +1,13 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { isTerminalAgentRunStatus } from './agentRun.machine';
-import { patchFinalizedLocalNodes, patchFinalizedMessages } from './agentRunFinalizeCache';
+import { patchFinalizedGraphSnapshot, patchFinalizedLocalNodes, patchFinalizedMessages } from './agentRunFinalizeCache';
 import { projectAgentRunStatus, projectAgentRunToProjectedMessage } from './agentRunProjection';
 import { requestAgentWorkspaceRefresh } from './agentRunWorkspaceRefresh';
 import type { AgentRunSnapshot } from './agentRun.types';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
 import { localNodeKeys, type LocalNodeMessage } from '../hooks/useLocalNodes';
+import type { GraphSnapshot } from '../hooks/useGraphSnapshot';
 import type { Message } from '../stores/workspaceStore';
 
 const CLEANUP_DELAY_MS = 3000;
@@ -108,6 +109,10 @@ export const applyAgentRunFinalizeSnapshotEffects = (
   queryClient.setQueryData<LocalNodeMessage[]>(
     localNodeKeys.workspace(snapshot.workspaceId),
     (current) => patchFinalizedLocalNodes(current, cachePatch),
+  );
+  queryClient.setQueryData<GraphSnapshot>(
+    ['graph-snapshot', snapshot.workspaceId],
+    (current) => patchFinalizedGraphSnapshot(current, cachePatch),
   );
   requestAgentWorkspaceRefresh(queryClient, snapshot.workspaceId, {
     reason: 'agent-finalize-ack',

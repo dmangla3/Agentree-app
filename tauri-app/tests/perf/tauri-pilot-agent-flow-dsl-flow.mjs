@@ -174,6 +174,17 @@ const installAndStartFlow = async ({ mainSha, startedAtIso }) => {
     await sleep(100);
     return input.value;
   };
+  const selectFlowAndSetCount = async () => {
+    await clickButton('Select flow', (_button, text) => text === 'Select flow' || text.includes('Parallel Review Until Satisfied'));
+    await clickMenuItem('Parallel Review Until Satisfied', (_item, text) => text.includes('Parallel Review Until Satisfied'));
+    await sleep(250);
+    if (count === 3) return String(count);
+    await clickButton('Selected flow', (_button, text) => text.includes('Parallel Review Until Satisfied'));
+    const countValue = await setNumberInput('input[aria-label="Parallel count"]', count);
+    document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }));
+    await sleep(150);
+    return countValue;
+  };
 
   const { useWorkspaceStore } = await import('http://localhost:1420/src/stores/workspaceStore.ts');
   const { runtimeModels } = await import('http://localhost:1420/src/lib/runtimeModels.ts');
@@ -190,9 +201,8 @@ const installAndStartFlow = async ({ mainSha, startedAtIso }) => {
   await sleep(250);
   await clickButton('Select reply target', (_button, text) => text === 'Select reply target');
   await clickMenuItem('Start new thread', (_item, text) => text.includes('Start new thread'));
-  await clickButton('Flow tab', (_button, text) => text === 'Flow');
+  const countValue = await selectFlowAndSetCount();
   await setTextArea(prompt);
-  const countValue = await setNumberInput('#flow-parallel-count', count);
   const runButton = findButton((_button, text) => text === 'Run Flow');
   if (!runButton) throw new Error('Run Flow button not found');
   if (runButton.disabled) throw new Error('Run Flow button is disabled');
@@ -388,11 +398,11 @@ const validateReport = (report) => {
   if (fixerAssistants.length > 0 && reviewerAssistants.length < 2) {
     errors.push('Fixer completed, but a follow-up Reviewer did not run');
   }
-  if (reviewerUsers.length > 0 && !reviewerUsers.every((message) => message.content.includes('Latest fixer response, if any:'))) {
+  if (reviewerUsers.length > 0 && !reviewerUsers.every((message) => message.content.includes('Latest fix attempt, if any:'))) {
     errors.push('Reviewer prompts did not include the optional fixer response slot');
   }
-  if (reviewerUsers.some((message) => message.content.includes('label: Implementer') || message.content.includes('Please implement:'))) {
-    errors.push('Reviewer prompt leaked implementer node/message context');
+  if (reviewerUsers.some((message) => message.content.includes('Candidates:') || message.content.includes('Please implement:'))) {
+    errors.push('Reviewer prompt leaked judge candidate list or implementer launch prompt');
   }
   if (fixerAssistants.length > 0) {
     const postFixReviewerUser = reviewerUsers[reviewerUsers.length - 1] ?? null;

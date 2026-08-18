@@ -6,6 +6,7 @@ import { CARD_TOKENS } from '../../../lib/visualTokens';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../../@/components/ui/hover-card';
 import type { FocusTriggerMetrics } from '../../../types/nodes';
 import { agentRunManager } from '../../../agent-runs/agentRunManager';
+import { QUICK_REPLY_KEEP_HOVER_OPEN_EVENT } from '../../../lib/quickReply';
 
 interface GraphNodeWrapperProps {
   nodeId?: string;
@@ -45,6 +46,8 @@ export const GraphNodeWrapper = memo(({
   onContextMenu
 }: GraphNodeWrapperProps) => {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const hoverContentRef = useRef<HTMLDivElement | null>(null);
+  const keepQuickReplyHoverOpenRef = useRef(false);
   const pointerDownAtRef = useRef<number | null>(null);
   const focusFeedbackTimeoutRef = useRef<number | null>(null);
   const [isFocusFeedbackActive, setIsFocusFeedbackActive] = useState(false);
@@ -207,12 +210,29 @@ export const GraphNodeWrapper = memo(({
 
   useEffect(() => {
     if (!hoverCardContent || !hoverOpen) return;
-    const closeHoverCardForViewportMove = () => setHoverOpen(false);
+    const closeHoverCardForViewportMove = () => {
+      keepQuickReplyHoverOpenRef.current = false;
+      setHoverOpen(false);
+    };
     window.addEventListener('agentree:graph-viewport-interaction-start', closeHoverCardForViewportMove);
     return () => {
       window.removeEventListener('agentree:graph-viewport-interaction-start', closeHoverCardForViewportMove);
     };
   }, [hoverCardContent, hoverOpen]);
+
+  useEffect(() => {
+    if (!hoverCardContent) return;
+    const keepHoverCardOpen = (event: Event) => {
+      const messageId = (event as CustomEvent<{ messageId?: string | null }>).detail?.messageId ?? null;
+      if (messageId && nodeId && messageId !== nodeId) return;
+      keepQuickReplyHoverOpenRef.current = true;
+      setHoverOpen(true);
+    };
+    window.addEventListener(QUICK_REPLY_KEEP_HOVER_OPEN_EVENT, keepHoverCardOpen);
+    return () => {
+      window.removeEventListener(QUICK_REPLY_KEEP_HOVER_OPEN_EVENT, keepHoverCardOpen);
+    };
+  }, [hoverCardContent, nodeId]);
 
   useEffect(() => {
     if (!nodeId || !hoverOpen || shouldDisableHoverCard) return;
@@ -230,7 +250,26 @@ export const GraphNodeWrapper = memo(({
     <HoverCard
       open={shouldDisableHoverCard ? false : hoverOpen}
       onOpenChange={(open) => {
-        setHoverOpen(shouldDisableHoverCard ? false : open);
+        if (shouldDisableHoverCard) {
+          keepQuickReplyHoverOpenRef.current = false;
+          setHoverOpen(false);
+          return;
+        }
+        if (open) {
+          setHoverOpen(true);
+          return;
+        }
+        const activeElement = document.activeElement;
+        if (
+          keepQuickReplyHoverOpenRef.current &&
+          activeElement &&
+          hoverContentRef.current?.contains(activeElement)
+        ) {
+          setHoverOpen(true);
+          return;
+        }
+        keepQuickReplyHoverOpenRef.current = false;
+        setHoverOpen(false);
       }}
       openDelay={hoverOpenDelay}
       closeDelay={120}
@@ -238,7 +277,24 @@ export const GraphNodeWrapper = memo(({
       <HoverCardTrigger asChild>
         {nodeBody}
       </HoverCardTrigger>
-      <HoverCardContent side="right" align="center" sideOffset={8} className="z-50 w-auto border-none bg-transparent p-0 shadow-none">
+      <HoverCardContent
+        ref={hoverContentRef}
+        side="right"
+        align="center"
+        sideOffset={8}
+        className="z-50 w-auto border-none bg-transparent p-0 shadow-none"
+        onBlurCapture={(event) => {
+          const nextFocus = event.relatedTarget as Node | null;
+          if (nextFocus && event.currentTarget.contains(nextFocus)) return;
+          keepQuickReplyHoverOpenRef.current = false;
+          setHoverOpen(false);
+        }}
+        onKeyDownCapture={(event) => {
+          if (event.key !== 'Escape') return;
+          keepQuickReplyHoverOpenRef.current = false;
+          setHoverOpen(false);
+        }}
+      >
         {hoverOpen ? hoverCardContent : null}
       </HoverCardContent>
     </HoverCard>

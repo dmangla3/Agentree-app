@@ -75,9 +75,9 @@ describe('NodeContextMenu', () => {
     expect(onAddCommitShasToMergePanel).toHaveBeenCalledWith([commit.sha]);
   });
 
-  it('hides the owning thread by default when adding a graph commit to the merge panel', () => {
+  it('marks the owning thread done by default when adding a graph commit to the merge panel', () => {
     const onAddCommitShasToMergePanel = vi.fn();
-    const onHideThread = vi.fn();
+    const onMarkThreadDone = vi.fn();
     const commit = makeGeneratedCommit();
     const assistantEntity: ProjectedNodeEntity = {
       entityId: 'assistant_message:assistant-1',
@@ -105,22 +105,22 @@ describe('NodeContextMenu', () => {
         projection={makeProjection(commit, [assistantEntity])}
         onClose={() => {}}
         onAddCommitShasToMergePanel={onAddCommitShasToMergePanel}
-        onHideThread={onHideThread}
+        onMarkThreadDone={onMarkThreadDone}
       />
     );
 
-    const hideThreadCheckbox = screen.getByRole('menuitemcheckbox', { name: 'Hide thread' });
-    expect(hideThreadCheckbox.getAttribute('aria-checked')).toBe('true');
+    const markDoneCheckbox = screen.getByRole('menuitemcheckbox', { name: 'Mark thread done' });
+    expect(markDoneCheckbox.getAttribute('aria-checked')).toBe('true');
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Add to merge panel' }));
 
     expect(onAddCommitShasToMergePanel).toHaveBeenCalledWith([commit.sha]);
-    expect(onHideThread).toHaveBeenCalledWith('user-root');
+    expect(onMarkThreadDone).toHaveBeenCalledWith('user-root');
   });
 
-  it('keeps the owning thread visible when the merge-panel hide-thread option is unchecked', () => {
+  it('keeps the owning thread open when the merge-panel mark-done option is unchecked', () => {
     const onAddCommitShasToMergePanel = vi.fn();
-    const onHideThread = vi.fn();
+    const onMarkThreadDone = vi.fn();
     const commit = makeGeneratedCommit();
     const assistantEntity: ProjectedNodeEntity = {
       entityId: 'assistant_message:assistant-1',
@@ -148,15 +148,15 @@ describe('NodeContextMenu', () => {
         projection={makeProjection(commit, [assistantEntity])}
         onClose={() => {}}
         onAddCommitShasToMergePanel={onAddCommitShasToMergePanel}
-        onHideThread={onHideThread}
+        onMarkThreadDone={onMarkThreadDone}
       />
     );
 
-    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Hide thread' }));
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Mark thread done' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Add to merge panel' }));
 
     expect(onAddCommitShasToMergePanel).toHaveBeenCalledWith([commit.sha]);
-    expect(onHideThread).not.toHaveBeenCalled();
+    expect(onMarkThreadDone).not.toHaveBeenCalled();
   });
 
   it('does not show add-to-merge for conversation nodes', () => {
@@ -194,7 +194,7 @@ describe('NodeContextMenu', () => {
 
   it('shows thread actions for a node with thread root metadata', () => {
     const onFocusThread = vi.fn();
-    const onHideThread = vi.fn();
+    const onMarkThreadDone = vi.fn();
     const onHideSubgraph = vi.fn();
     const assistantEntity: ProjectedNodeEntity = {
       entityId: 'assistant_message:assistant-1',
@@ -222,17 +222,117 @@ describe('NodeContextMenu', () => {
         projection={makeProjection(makeGeneratedCommit(), [assistantEntity])}
         onClose={() => {}}
         onFocusThread={onFocusThread}
-        onHideThread={onHideThread}
+        onMarkThreadDone={onMarkThreadDone}
         onHideSubgraph={onHideSubgraph}
       />
     );
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Focus thread' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Hide thread' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mark thread done' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Hide subgraph' }));
 
     expect(onFocusThread).toHaveBeenCalledWith('user-root');
-    expect(onHideThread).toHaveBeenCalledWith('user-root');
+    expect(onMarkThreadDone).toHaveBeenCalledWith('user-root');
     expect(onHideSubgraph).toHaveBeenCalledWith('assistant-1');
+  });
+
+  it('shows convert-subgraph only for nested user nodes', () => {
+    const onConvertSubgraphToThread = vi.fn();
+    const userEntity: ProjectedNodeEntity = {
+      entityId: 'user_message:user-2',
+      kind: 'user_message',
+      messageId: 'user-2',
+      focusMessageId: 'user-2',
+      sortTs: 0,
+      message: {
+        id: 'user-2',
+        role: 'user',
+        content: 'Nested follow-up',
+        parentId: 'assistant-1',
+        createdAt: '2026-05-19T00:00:00.000Z',
+        updatedAt: '2026-05-19T00:00:00.000Z',
+      } as ProjectedNodeEntity['message'],
+      preview: 'Nested follow-up',
+      shortLabel: 'User',
+      threadRootId: 'user-root',
+      isThreadRoot: false,
+    };
+
+    render(
+      <NodeContextMenu
+        contextMenu={{ x: 20, y: 30, targetIds: ['user-2'] }}
+        projection={makeProjection(makeGeneratedCommit(), [userEntity])}
+        onClose={() => {}}
+        onConvertSubgraphToThread={onConvertSubgraphToThread}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Convert subgraph to thread' }));
+
+    expect(onConvertSubgraphToThread).toHaveBeenCalledWith('user-2');
+  });
+
+  it('does not show convert-subgraph for assistant nodes or root user nodes', () => {
+    const onConvertSubgraphToThread = vi.fn();
+    const assistantEntity: ProjectedNodeEntity = {
+      entityId: 'assistant_message:assistant-1',
+      kind: 'assistant_message',
+      messageId: 'assistant-1',
+      focusMessageId: 'assistant-1',
+      sortTs: 0,
+      message: {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'Assistant reply',
+        parentId: 'user-root',
+        createdAt: '2026-05-19T00:00:00.000Z',
+        updatedAt: '2026-05-19T00:00:00.000Z',
+      } as ProjectedNodeEntity['message'],
+      preview: 'Assistant reply',
+      shortLabel: 'Assistant',
+      threadRootId: 'user-root',
+      isThreadRoot: false,
+    };
+    const rootUserEntity: ProjectedNodeEntity = {
+      entityId: 'user_message:user-root',
+      kind: 'user_message',
+      messageId: 'user-root',
+      focusMessageId: 'user-root',
+      sortTs: 0,
+      message: {
+        id: 'user-root',
+        role: 'user',
+        content: 'Root prompt',
+        parentId: null,
+        createdAt: '2026-05-19T00:00:00.000Z',
+        updatedAt: '2026-05-19T00:00:00.000Z',
+      } as ProjectedNodeEntity['message'],
+      preview: 'Root prompt',
+      shortLabel: 'User',
+      threadRootId: 'user-root',
+      isThreadRoot: true,
+    };
+
+    const { rerender } = render(
+      <NodeContextMenu
+        contextMenu={{ x: 20, y: 30, targetIds: ['assistant-1'] }}
+        projection={makeProjection(makeGeneratedCommit(), [assistantEntity])}
+        onClose={() => {}}
+        onConvertSubgraphToThread={onConvertSubgraphToThread}
+        onViewSubgraph={() => {}}
+      />
+    );
+    expect(screen.queryByRole('menuitem', { name: 'Convert subgraph to thread' })).toBeNull();
+
+    rerender(
+      <NodeContextMenu
+        contextMenu={{ x: 20, y: 30, targetIds: ['user-root'] }}
+        projection={makeProjection(makeGeneratedCommit(), [rootUserEntity])}
+        onClose={() => {}}
+        onConvertSubgraphToThread={onConvertSubgraphToThread}
+        onViewSubgraph={() => {}}
+      />
+    );
+    expect(screen.queryByRole('menuitem', { name: 'Convert subgraph to thread' })).toBeNull();
   });
 });

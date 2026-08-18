@@ -113,7 +113,7 @@ pub struct GitRefSnapshot {
     pub refs: Vec<GitRefTipInfo>,
 }
 
-#[derive(Debug, Serialize, specta::Type)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct GitCommitMetadata {
     pub sha: String,
     pub parents: Vec<String>,
@@ -881,6 +881,51 @@ pub fn read_commit_metadata_sync(
         .ok_or_else(|| "Failed to parse commit metadata".to_string())?;
     attach_commit_stats(repo_path, &mut commit);
     Ok(commit)
+}
+
+pub fn read_commit_metadata_range_sync(
+    repo_path: &str,
+    base_commit: &str,
+    tip_commit: &str,
+) -> Result<Vec<GitCommitMetadata>, String> {
+    let normalized_base = run_git(
+        repo_path,
+        &["rev-parse", &format!("{}^{{commit}}", base_commit.trim())],
+    )?
+    .trim()
+    .to_string();
+    let normalized_tip = run_git(
+        repo_path,
+        &["rev-parse", &format!("{}^{{commit}}", tip_commit.trim())],
+    )?
+    .trim()
+    .to_string();
+
+    if normalized_base == normalized_tip {
+        return Ok(Vec::new());
+    }
+    if !commit_is_descendant(repo_path, &normalized_base, &normalized_tip) {
+        return Err("Tip commit is not a descendant of the base commit.".to_string());
+    }
+
+    let range = format!("{}..{}", normalized_base, normalized_tip);
+    let output = run_git(
+        repo_path,
+        &[
+            "log",
+            "--first-parent",
+            "--reverse",
+            "--format=%H\t%P\t%s\t%an\t%ae\t%aI",
+            &range,
+        ],
+    )?;
+    let mut commits = output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(parse_commit_metadata_line)
+        .collect::<Vec<_>>();
+    attach_commit_stats_to_all(repo_path, &mut commits);
+    Ok(commits)
 }
 
 fn ref_kind(git_ref: &str) -> String {
@@ -1692,10 +1737,12 @@ fn advance_target_branch_to_commit(
     for path in &checked_out_paths {
         let status = run_git(path, &["status", "--porcelain"])?;
         if !status.trim().is_empty() {
-            return Err(format!(
-                "Target branch {} is checked out at {} with uncommitted changes. Commit or stash them before updating the branch to the AI merge result.",
-                branch_name, path
-            ));
+            crate::app_log!(
+                "[AGENT_WORKTREE] event=target_branch_update_skipped branch={} path={} reason=dirty_worktree",
+                branch_name,
+                path
+            );
+            return Ok(false);
         }
     }
     run_git(&checked_out_paths[0], &["reset", "--hard", new_commit])?;
@@ -1842,7 +1889,8 @@ pub async fn cleanup_worktree_owned(
 mod tests {
     use super::{
         agent_worktree_head_commit_if_advanced, finalize_agent_merge_worktree,
-        finalize_agent_worktree, is_env_file, link_dependencies, worktree_root,
+        finalize_agent_worktree, is_env_file, link_dependencies, read_commit_metadata_range_sync,
+        worktree_root,
     };
     use std::fs;
     use std::path::Path;
@@ -1931,6 +1979,42 @@ mod tests {
         assert!(is_env_file(Path::new("nested/.env.production")));
         assert!(!is_env_file(Path::new("README.md")));
         assert!(!is_env_file(Path::new(".gitignore")));
+    }
+
+    #[test]
+    fn read_commit_metadata_range_sync_returns_first_parent_commit_stack() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let base_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+
+        fs::write(dir.path().join("first.txt"), "first\n").expect("write first file");
+        run_test_git(dir.path(), &["add", "first.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "agent commit 1"]);
+        let first_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+
+        fs::write(dir.path().join("second.txt"), "second\n").expect("write second file");
+        run_test_git(dir.path(), &["add", "second.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "agent commit 2"]);
+        let second_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+
+        let commits = read_commit_metadata_range_sync(&repo_path, &base_commit, &second_commit)
+            .expect("read commit range");
+
+        assert_eq!(
+            commits
+                .iter()
+                .map(|commit| commit.sha.as_str())
+                .collect::<Vec<_>>(),
+            vec![first_commit.as_str(), second_commit.as_str()]
+        );
+        assert_eq!(
+            commits
+                .iter()
+                .map(|commit| commit.subject.as_str())
+                .collect::<Vec<_>>(),
+            vec!["agent commit 1", "agent commit 2"]
+        );
+        assert_eq!(commits[0].parents.first(), Some(&base_commit));
     }
 
     #[test]
@@ -2195,6 +2279,74 @@ mod tests {
                 &["show", &format!("{}:decision.txt", merge_commit.sha)]
             ),
             "ai decision"
+        );
+    }
+
+    #[test]
+    fn finalize_agent_merge_worktree_keeps_merge_commit_when_target_branch_is_dirty() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        run_test_git(dir.path(), &["branch", "-M", "main"]);
+        let target_commit = run_test_git(dir.path(), &["rev-parse", "main"]);
+
+        run_test_git(dir.path(), &["checkout", "-b", "feature", "main"]);
+        fs::write(dir.path().join("feature.txt"), "feature\n").expect("write feature file");
+        run_test_git(dir.path(), &["add", "feature.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "feature commit"]);
+        let source_commit = run_test_git(dir.path(), &["rev-parse", "feature"]);
+        run_test_git(dir.path(), &["checkout", "main"]);
+        fs::write(dir.path().join("dirty.txt"), "local dirty work\n").expect("write dirty file");
+
+        let node_id = "assistant-merge-dirty-target";
+        let worktree_path = worktree_root(&repo_path)
+            .expect("worktree root")
+            .join(node_id);
+        let worktree_path_string = worktree_path.to_string_lossy().to_string();
+        run_test_git(
+            dir.path(),
+            &[
+                "worktree",
+                "add",
+                &worktree_path_string,
+                "-B",
+                &format!("agentree/{node_id}"),
+                &target_commit,
+            ],
+        );
+        fs::write(worktree_path.join("feature.txt"), "feature\n").expect("write resolved file");
+        fs::write(worktree_path.join("decision.txt"), "ai decision\n")
+            .expect("write decision file");
+
+        let (merge_commit, target_updated) = finalize_agent_merge_worktree(
+            &repo_path,
+            node_id,
+            &target_commit,
+            &[source_commit.clone()],
+            "AI merge result",
+            None,
+            Some("main"),
+        )
+        .expect("finalize merge worktree");
+
+        assert!(!target_updated);
+        assert_eq!(
+            merge_commit.parents,
+            vec![target_commit.clone(), source_commit]
+        );
+        assert_eq!(
+            run_test_git(dir.path(), &["rev-parse", "main"]),
+            target_commit
+        );
+        assert_eq!(
+            run_test_git(
+                dir.path(),
+                &["show", &format!("{}:decision.txt", merge_commit.sha)]
+            ),
+            "ai decision"
+        );
+        assert_eq!(
+            run_test_git(&worktree_path, &["rev-parse", "HEAD"]),
+            merge_commit.sha
         );
     }
 }

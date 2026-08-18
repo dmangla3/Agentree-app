@@ -263,31 +263,48 @@ export const TimelineView = memo(({
   }, [focusedMessageId, projection.entitiesByMessageId, timelineItems.length]);
 
   return (
-    <div className="flex flex-col h-full bg-slate-50 dark:bg-slate-950 overflow-hidden relative">
+    <div className="relative flex h-full flex-col overflow-hidden bg-[linear-gradient(180deg,hsl(var(--app-bg-elevated)/0.62),hsl(var(--app-bg))_22%,hsl(var(--app-bg-muted)/0.56)_100%)] dark:bg-[linear-gradient(180deg,hsl(var(--app-bg-elevated)/0.58),hsl(var(--app-bg))_34%,hsl(var(--background))_100%)]">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,hsl(var(--app-border)/0.16)_1px,transparent_1px),linear-gradient(to_bottom,hsl(var(--app-border)/0.12)_1px,transparent_1px)] bg-[size:56px_56px] opacity-35 dark:opacity-[0.08]"
+      />
       <ScrollArea
-        className="flex-1"
+        className="relative flex-1"
         viewportRef={viewportRef}
         onViewportScroll={handleViewportScroll}
       >
-        <div className="flex flex-col pb-24 max-w-xl w-full mx-auto px-4 md:px-6 min-w-0" onClick={handleBackgroundClick}>
-          {sortedDays.map((dateKey) => (
+        <div className="mx-auto flex w-full max-w-[760px] min-w-0 flex-col px-4 pb-24 pt-3 md:px-6" onClick={handleBackgroundClick}>
+          {sortedDays.length === 0 ? (
+            <div className="flex min-h-[min(520px,calc(100dvh-12rem))] items-center justify-center">
+              <div className="flex max-w-sm flex-col items-center gap-3 text-center">
+                <div className="flex h-10 w-10 items-center justify-center rounded-full border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--app-panel)/0.72)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]">
+                  <Clock size={16} strokeWidth={1.8} />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold text-foreground">No timeline items</p>
+                  <p className="text-xs leading-5 text-muted-foreground">Messages, agent activity, summaries, and commits will appear here as the workspace changes.</p>
+                </div>
+              </div>
+            </div>
+          ) : sortedDays.map((dateKey) => (
             <div key={dateKey} className="flex flex-col min-w-0">
-              <div className="sticky top-0 z-20 py-3 bg-slate-50/90 dark:bg-slate-950/90 backdrop-blur-sm">
-                <div className="flex items-center gap-2">
-                  <Clock size={14} className="text-slate-400" />
-                  <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">
+              <div className="sticky top-0 z-20 -mx-1 px-1 py-3">
+                <div className="flex items-center gap-2 rounded-md border border-[hsl(var(--app-border)/0.46)] bg-[hsl(var(--app-bg)/0.86)] px-2.5 py-2 shadow-[0_10px_28px_-24px_hsl(var(--foreground)/0.42),inset_0_1px_0_hsl(var(--foreground)/0.035)] backdrop-blur-md dark:bg-[hsl(var(--app-bg-elevated)/0.82)]">
+                  <Clock size={14} strokeWidth={1.8} className="text-muted-foreground" />
+                  <span className="text-[11px] font-semibold uppercase leading-none tracking-[0.16em] text-muted-foreground">
                     {isToday(parseISO(dateKey)) ? 'Today' : isYesterday(parseISO(dateKey)) ? 'Yesterday' : format(parseISO(dateKey), 'EEEE, MMMM do')}
                   </span>
                 </div>
               </div>
 
-              <div className="flex flex-col border-l border-slate-200 dark:border-slate-800 ml-1.5 pl-3 min-w-0">
+              <div className="ml-2 flex min-w-0 flex-col border-l border-[hsl(var(--app-border)/0.54)] pl-4 dark:border-white/[0.08]">
                 {groupTimelineItemsByTurn(projection, groupedByDay[dateKey]).map((group, groupIndex, groups) => (
                   <div
                     key={group.key}
-                    className={group.turnGroupId ? "flex flex-col gap-0 mb-4 min-w-0" : "flex flex-col mb-4 min-w-0"}
+                    className={group.turnGroupId ? "relative mb-4 flex min-w-0 flex-col gap-1.5" : "relative mb-4 flex min-w-0 flex-col"}
                     style={{ marginBottom: groupIndex === groups.length - 1 ? 0 : undefined }}
                   >
+                    <span className="absolute -left-[21px] top-3 h-2.5 w-2.5 rounded-full border border-[hsl(var(--app-bg))] bg-[hsl(var(--app-border))] shadow-[0_0_0_3px_hsl(var(--app-bg)/0.88)] dark:border-[hsl(var(--app-bg))] dark:bg-white/20 dark:shadow-[0_0_0_3px_hsl(var(--app-bg)/0.92)]" />
                     {group.items.map((item) => {
                       const selectionId = getTimelineItemSelectionId(projection, item);
                       const id = item.entityId;

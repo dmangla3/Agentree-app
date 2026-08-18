@@ -1,4 +1,5 @@
 import type { LocalNodeMessage } from '../hooks/useLocalNodes';
+import type { GraphSnapshot } from '../hooks/useGraphSnapshot';
 import type { Message } from '../stores/workspaceStore';
 
 export type FinalizeCachePatch = {
@@ -120,4 +121,18 @@ export const patchFinalizedLocalNodes = (
     };
   });
   return changed ? next : current;
+};
+
+export const patchFinalizedGraphSnapshot = (
+  current: GraphSnapshot | undefined,
+  patch: FinalizeCachePatch,
+): GraphSnapshot | undefined => {
+  if (!current) return current;
+  let changed = false;
+  const messages = current.messages.map((message) => {
+    if (message.id !== patch.nodeId) return message;
+    changed = true;
+    return patchFinalizedMessage(message as typeof message & { id: string }, patch);
+  });
+  return changed ? { ...current, messages } : current;
 };

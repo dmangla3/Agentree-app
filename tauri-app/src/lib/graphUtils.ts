@@ -18,7 +18,7 @@ export interface LlmNodeData {
   [key: string]: unknown;
   entity?: ProjectedNodeEntity;
   message: Message;
-  nodeKind?: 'thread_origin' | 'user_message' | 'assistant_message' | 'commit_message';
+  nodeKind?: 'thread_origin' | 'thread_link' | 'user_message' | 'assistant_message' | 'commit_message';
   repoPath?: string | null;
   branchPointers?: BranchPointer[];
   isFocused: boolean;
@@ -101,7 +101,7 @@ export const createMessageHeightKey = ({
 }: {
   message: Message;
   entity: ProjectedNodeEntity;
-  nodeKind: 'user_message' | 'assistant_message' | 'commit_message';
+  nodeKind: 'thread_link' | 'user_message' | 'assistant_message' | 'commit_message';
   branchPointers: BranchPointer[];
   toolCallCount?: number;
   commitCount?: number;
@@ -162,7 +162,7 @@ const FOCUSED_SUMMARY_EDGE_STROKE_WIDTH = 6.5;
 const ACTIVE_EDGE_STROKE = '#4f46e5';
 const INACTIVE_EDGE_STROKE = '#64748b';
 
-const CANONICAL_MESSAGE_NODE_TYPES = new Set(['thread_origin', 'user_message', 'assistant_message', 'commit_message']);
+const CANONICAL_MESSAGE_NODE_TYPES = new Set(['thread_origin', 'thread_link', 'user_message', 'assistant_message', 'commit_message']);
 const CANONICAL_SUMMARY_NODE_TYPES = new Set(['summary_block']);
 const TURN_LAYOUT_NODE_TYPE = '__turn_layout_unit__';
 const TURN_NODE_GAP = 0;
@@ -181,6 +181,7 @@ const getNodeWidth = (node: Node<any>): number => {
   const explicitWidth = typeof node.style?.width === 'number' ? node.style.width : null;
   if (explicitWidth) return explicitWidth;
   if (node.type === 'thread_origin') return TURN_CONVERSATION_NODE_WIDTH;
+  if (node.type === 'thread_link') return TURN_CONVERSATION_NODE_WIDTH;
   if (node.type === 'assistant_message') return TURN_CONVERSATION_NODE_WIDTH;
   if (node.type === 'user_message') return TURN_CONVERSATION_NODE_WIDTH;
   if (node.type === 'commit_message') return TURN_COMMIT_NODE_WIDTH;
@@ -197,6 +198,7 @@ const getNodeHeight = (node: Node<any>): number => {
   if (node.type === 'canonical_commit') return TURN_COMMIT_NODE_HEIGHT;
   if (node.type === 'layout_derived_commit_group') return 118;
   if (node.type === 'thread_origin') return 64;
+  if (node.type === 'thread_link') return 64;
   if (node.type === 'assistant_message') return 112;
   if (node.type === 'user_message') return 82;
   return NODE_HEIGHT;
@@ -400,6 +402,7 @@ const getNodeSortTs = (node: Node<any>): number => {
 const getTurnMemberPriority = (node: Node<any>): number => {
   const kind = (node.data as any)?.entity?.kind;
   if (kind === 'thread_origin') return -1;
+  if (kind === 'thread_link') return 0;
   if (kind === 'user_message') return 0;
   if (kind === 'assistant_message') return 1;
   if (kind === 'commit_message' || isCommitLaneLayoutMember(node)) return 2;
@@ -456,7 +459,7 @@ const getTurnCommitMembers = (members: Node<any>[]): Node<any>[] => (
 const hasTurnConversationMembers = (members: Node<any>[]): boolean => (
   members.some((member) => {
     const kind = getNodeEntityKind(member);
-    return kind === 'thread_origin' || kind === 'user_message' || kind === 'assistant_message';
+    return kind === 'thread_origin' || kind === 'thread_link' || kind === 'user_message' || kind === 'assistant_message';
   })
 );
 
@@ -545,7 +548,7 @@ const buildLayoutModel = (
   const layoutUnits = new Map<string, LayoutUnit>();
   const hasVisibleConversationLayer = nodes.some((node) => {
     const kind = getNodeEntityKind(node);
-    return kind === 'thread_origin' || kind === 'user_message' || kind === 'assistant_message';
+    return kind === 'thread_origin' || kind === 'thread_link' || kind === 'user_message' || kind === 'assistant_message';
   });
   const hasVisibleCommitLayer = nodes.some(isCommitLaneLayoutMember);
   const reserveEmptyLanes = hasVisibleConversationLayer && hasVisibleCommitLayer;
@@ -998,7 +1001,7 @@ const applyTurnGroupHullBounds = <T extends Node<any>>(nodes: T[]): T[] => {
   const nodesById = new Map(result.map(node => [node.id, node]));
   const hasVisibleConversationLayer = result.some((node) => {
     const kind = getNodeEntityKind(node);
-    return kind === 'thread_origin' || kind === 'user_message' || kind === 'assistant_message';
+    return kind === 'thread_origin' || kind === 'thread_link' || kind === 'user_message' || kind === 'assistant_message';
   });
   const hasVisibleCommitLayer = result.some((node) => !isHullNodeType(node.type) && isCommitLaneLayoutMember(node));
   const shouldCoverFullTurnSlot = hasVisibleConversationLayer && hasVisibleCommitLayer;
@@ -1022,7 +1025,7 @@ const applyTurnGroupHullBounds = <T extends Node<any>>(nodes: T[]): T[] => {
       const width = getNodeWidth(memberNode);
       const height = getNodeHeight(memberNode);
       const kind = getNodeEntityKind(memberNode);
-      hasConversationMember = hasConversationMember || kind === 'thread_origin' || kind === 'user_message' || kind === 'assistant_message';
+      hasConversationMember = hasConversationMember || kind === 'thread_origin' || kind === 'thread_link' || kind === 'user_message' || kind === 'assistant_message';
       hasCommitMember = hasCommitMember || isCommitLaneLayoutMember(memberNode);
       minX = Math.min(minX, memberNode.position.x);
       minY = Math.min(minY, memberNode.position.y);
@@ -1349,7 +1352,8 @@ export const mapMessagesToGraphElements = (
   visibleNodeSections: Set<'conversation' | 'commits'> = new Set(['conversation', 'commits']),
   constrainedCommitFiltering: boolean = false,
   pinnedCommitShas: Set<string> = new Set(),
-  hiddenThreadRootIds: Set<string> = new Set()
+  hiddenThreadRootIds: Set<string> = new Set(),
+  onOpenThread: (threadRootId: string) => void = () => { }
 ): { nodes: Node<LlmNodeData | SummaryNodeData | Record<string, unknown> | any>[]; edges: Edge[] } => {
   if (!messages || messages.length === 0) {
     return { nodes: [], edges: [] };
@@ -1361,6 +1365,9 @@ export const mapMessagesToGraphElements = (
   const messageIdByCommitSha = new Map<string, string>();
   const renderedCommitNodeIdBySha = new Map<string, string>();
   const producedCommitByNodeId = new Map<string, ProjectedCommitEntity>();
+  const producedCommitsByNodeId = new Map<string, ProjectedCommitEntity[]>();
+  const producedCommitShasByNodeId = new Map<string, Set<string>>();
+  const producedCommitCountByNodeId = new Map<string, number>();
   const showConversationNodes = visibleNodeSections.has('conversation');
   const showCommitNodes = visibleNodeSections.has('commits');
   messages.forEach((message) => {
@@ -1376,10 +1383,23 @@ export const mapMessagesToGraphElements = (
   projection.commitBySha.forEach((commit) => {
     const ownerNodeId = commit.producedByNodeId ?? commit.visualOwnerNodeId;
     if (commit.placement !== 'conversation_sidecar' || !ownerNodeId) return;
-    const existing = producedCommitByNodeId.get(ownerNodeId);
-    if (!existing || commit.sortTs >= existing.sortTs) {
-      producedCommitByNodeId.set(ownerNodeId, commit);
-    }
+    const producedCommits = producedCommitsByNodeId.get(ownerNodeId) ?? [];
+    producedCommits.push(commit);
+    producedCommitsByNodeId.set(ownerNodeId, producedCommits);
+  });
+  producedCommitsByNodeId.forEach((producedCommits, ownerNodeId) => {
+    producedCommits.sort((left, right) => {
+      if (left.sortTs !== right.sortTs) return left.sortTs - right.sortTs;
+      return left.sha.localeCompare(right.sha);
+    });
+    const ownerMessage = messageMap.get(ownerNodeId);
+    const outputCommitSha = ownerMessage ? getMessageOutputCommitSha(ownerMessage) : null;
+    const outputCommit = outputCommitSha
+      ? producedCommits.find((commit) => commit.sha === outputCommitSha)
+      : null;
+    producedCommitByNodeId.set(ownerNodeId, outputCommit ?? producedCommits[producedCommits.length - 1]);
+    producedCommitShasByNodeId.set(ownerNodeId, new Set(producedCommits.map((commit) => commit.sha)));
+    producedCommitCountByNodeId.set(ownerNodeId, producedCommits.length);
   });
 
   // Inject branchPointers from the branchPointersByNodeId map onto each message.
@@ -1656,6 +1676,41 @@ export const mapMessagesToGraphElements = (
       return getMessageOutputCommitSha(parentAssistantMessage);
     };
 
+    const getRenderedParentShasForProducedCommit = (
+      ownerNodeId: string,
+      commit: ProjectedCommitEntity | null,
+      fallbackParentShas: string[],
+    ): string[] => {
+      if (!commit) return fallbackParentShas;
+
+      const ownerProducedShas = producedCommitShasByNodeId.get(ownerNodeId);
+      if (!ownerProducedShas || ownerProducedShas.size <= 1) {
+        return commit.parentShas.length > 0 ? commit.parentShas : fallbackParentShas;
+      }
+
+      const renderedParentShas: string[] = [];
+      const visited = new Set<string>();
+      const addRenderedParentSha = (sha: string) => {
+        const normalizedSha = sha.trim();
+        if (!normalizedSha || visited.has(normalizedSha)) return;
+        visited.add(normalizedSha);
+
+        if (ownerProducedShas.has(normalizedSha)) {
+          const parentCommit = projection.commitBySha.get(normalizedSha);
+          parentCommit?.parentShas.forEach(addRenderedParentSha);
+          return;
+        }
+
+        if (!renderedParentShas.includes(normalizedSha)) {
+          renderedParentShas.push(normalizedSha);
+        }
+      };
+
+      const parentShas = commit.parentShas.length > 0 ? commit.parentShas : fallbackParentShas;
+      parentShas.forEach(addRenderedParentSha);
+      return renderedParentShas.length > 0 ? renderedParentShas : fallbackParentShas;
+    };
+
     const constrainedCommitShas = new Set<string>();
     const addConstrainedCommitSha = (sha: string | null | undefined) => {
       const normalized = typeof sha === 'string' ? sha.trim() : '';
@@ -1682,13 +1737,14 @@ export const mapMessagesToGraphElements = (
     }
 
     const hasHiddenThreadRoots = hiddenThreadRootIds.size > 0;
+    const hideBackgroundCommits = true;
     const directDependencyCommitShas = new Set<string>();
     const addDirectDependencyCommitSha = (sha: string | null | undefined) => {
       const normalized = typeof sha === 'string' ? sha.trim() : '';
       if (normalized) directDependencyCommitShas.add(normalized);
     };
 
-    if (hasHiddenThreadRoots) {
+    if (hasHiddenThreadRoots || hideBackgroundCommits) {
       pinnedCommitShas.forEach(addDirectDependencyCommitSha);
       messages.forEach((message) => {
         addDirectDependencyCommitSha(getMessageBaseCommitSha(message));
@@ -1699,13 +1755,14 @@ export const mapMessagesToGraphElements = (
       });
     }
 
-    const commitVisibility = hasHiddenThreadRoots
+    const commitVisibility = hasHiddenThreadRoots || hideBackgroundCommits
       ? getVisibleCommitProjection({
         commitBySha: projection.commitBySha,
         commitLaneRows: projection.commitLaneRows,
         layoutDerivedCommitGroups: projection.layoutDerivedCommitGroups,
         hiddenThreadRootIds,
         directDependencyCommitShas,
+        hideBackgroundCommits,
       })
       : null;
     const visibleCommitLaneRows = commitVisibility?.visibleCommitLaneRows ?? projection.commitLaneRows;
@@ -1772,6 +1829,7 @@ export const mapMessagesToGraphElements = (
             isSelected: false,
             heightKey: `thread-origin:${threadRootId}`,
             onFocus,
+            onOpenThread,
             onSelect,
             onContextMenu,
             message: entity.message!,
@@ -1827,24 +1885,35 @@ export const mapMessagesToGraphElements = (
 
       const width = nodeKind === 'commit_message' ? TURN_COMMIT_NODE_WIDTH : TURN_CONVERSATION_NODE_WIDTH;
       const measuredHeight = nodeKind === 'commit_message' ? undefined : measuredNodeHeights.get(msg.id);
-      const height = measuredHeight ?? (nodeKind === 'assistant_message' ? 112 : nodeKind === 'user_message' ? 82 : TURN_COMMIT_NODE_HEIGHT);
+      const height = measuredHeight ?? (
+        nodeKind === 'thread_link'
+          ? 64
+          : nodeKind === 'assistant_message'
+            ? 112
+            : nodeKind === 'user_message'
+              ? 82
+              : TURN_COMMIT_NODE_HEIGHT
+      );
       const branchPointers = branchPointersByNodeId.get(msg.id) ?? [];
       const toolCallCount = getToolCallCount(msg);
-      const commitCount = getAssistantCommitCount(msg, messages, messageMap);
+      const messageCommitCount = getAssistantCommitCount(msg, messages, messageMap);
+      const producedCommitCount = producedCommitCountByNodeId.get(msg.id);
+      const commitCount = Math.max(entity.commitCount ?? 0, messageCommitCount ?? 0, producedCommitCount ?? 0) || undefined;
       const filesChanged = getFilesChanged(msg);
       const changedFilesCount = filesChanged.length || undefined;
+      const displayEntity = commitCount !== entity.commitCount ? { ...entity, commitCount } : entity;
       if (renderMessageNode) {
         nodes.push({
           id: msg.id,
           type: nodeKind, // Use the canonical node kind as the type
           position: { x: 0, y: 0 },
           data: {
-            entity,
+            entity: displayEntity,
             projection,
             isSelected: false, // Selection will be updated in applyVisualProperties
             heightKey: createMessageHeightKey({
               message: msg,
-              entity,
+              entity: displayEntity,
               nodeKind,
               branchPointers,
               toolCallCount,
@@ -1853,6 +1922,7 @@ export const mapMessagesToGraphElements = (
             }),
             onMeasureHeight: onMeasureNodeHeight,
             onFocus,
+            onOpenThread,
             onSelect,
             onContextMenu,
             message: msg,
@@ -1904,13 +1974,18 @@ export const mapMessagesToGraphElements = (
       );
       if (showCommitNodes && assistantOutputCommitSha && shouldRenderSyntheticOutputCommit) {
         const commitNodeId = getAssistantOutputCommitNodeId(msg.id);
-        const parentShas = projectedProducedCommit?.parentShas ?? getRawGitParentShas(msg);
         const baseParentSha = inferAssistantBaseCommitSha(msg);
-        const commitParentShas = parentShas.length > 0
-          ? parentShas
+        const fallbackParentShas = getRawGitParentShas(msg);
+        const rawCommitParentShas = fallbackParentShas.length > 0
+          ? fallbackParentShas
           : baseParentSha
             ? [baseParentSha]
             : [];
+        const commitParentShas = getRenderedParentShasForProducedCommit(
+          msg.id,
+          projectedProducedCommit,
+          rawCommitParentShas,
+        );
         const commitSubject = projectedProducedCommit?.subject
           || ((msg.execution_data as any)?.meta?.commit_message as string | undefined)?.trim()
           || msg.aiLabel?.trim()
@@ -1946,7 +2021,7 @@ export const mapMessagesToGraphElements = (
           shortSha: assistantOutputCommitSha.slice(0, 8),
           status: null,
           parentShas: commitParentShas,
-          commitCount: undefined,
+          commitCount: producedCommitCountByNodeId.get(msg.id),
           authorName: typeof ((msg.execution_data as any)?.meta || {}).git_author_name === 'string'
             ? ((msg.execution_data as any).meta.git_author_name as string)
             : null,
@@ -2125,21 +2200,32 @@ export const mapMessagesToGraphElements = (
 
       if (showCommitNodes && assistantOutputCommitSha && shouldRenderSyntheticOutputCommit) {
         const commitNodeId = getAssistantOutputCommitNodeId(msg.id);
-        const parentShas = getRawGitParentShas(msg);
         const baseParentSha = inferAssistantBaseCommitSha(msg);
-        const commitParentShas = parentShas.length > 0
-          ? parentShas
+        const fallbackParentShas = getRawGitParentShas(msg);
+        const rawCommitParentShas = fallbackParentShas.length > 0
+          ? fallbackParentShas
           : baseParentSha
             ? [baseParentSha]
             : [];
+        const commitParentShas = getRenderedParentShasForProducedCommit(
+          msg.id,
+          projectedProducedCommit,
+          rawCommitParentShas,
+        );
         commitParentShas.forEach((parentSha, parentIndex) => {
           const parentNodeId = renderedCommitNodeIdBySha.get(parentSha);
           if (!parentNodeId || parentNodeId === commitNodeId) return;
           const parentMessageId = messageIdByCommitSha.get(parentSha);
           if (parentMessageId && !shouldRenderMessageNode(parentMessageId)) return;
+          const ownerProducedShas = producedCommitShasByNodeId.get(msg.id);
+          const layoutParentSha = projectedProducedCommit?.layoutParentSha ?? null;
+          const layoutParentCollapsedIntoStack = Boolean(
+            layoutParentSha && ownerProducedShas?.has(layoutParentSha),
+          );
           const isLayoutParent = !isNonOriginRootThreadAssistant && (
-            !projectedProducedCommit?.layoutParentSha ||
-            projectedProducedCommit.layoutParentSha === parentSha
+            !layoutParentSha ||
+            layoutParentSha === parentSha ||
+            (layoutParentCollapsedIntoStack && parentIndex === 0)
           );
           pushSemanticEdge({
             id: `${parentNodeId}->${commitNodeId}:git-parent:${parentIndex}`,

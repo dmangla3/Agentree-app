@@ -962,6 +962,7 @@ const install = async () => pilotEval(`
           logAction('perf-capture-skipped');
         } else {
           window.__AGENTREE_PERF__?.clear?.();
+          window.__AGENTREE_FUNDAMENTALS__?.clear?.();
           await window.__AGENTREE_PERF__?.startCapture?.(label);
           logAction('perf-capture-started');
         }

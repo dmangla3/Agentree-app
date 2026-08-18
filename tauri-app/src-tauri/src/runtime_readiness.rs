@@ -35,29 +35,7 @@ pub struct RuntimeReadiness {
 }
 
 fn build_probe_path() -> String {
-    let mut parts: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|raw| std::env::split_paths(&raw).collect())
-        .unwrap_or_default();
-
-    for extra in [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-        "/usr/sbin",
-        "/sbin",
-    ] {
-        let path = PathBuf::from(extra);
-        if !parts.iter().any(|entry| entry == &path) {
-            parts.push(path);
-        }
-    }
-
-    std::env::join_paths(parts)
-        .map(|joined| joined.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| {
-            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string()
-        })
+    crate::cli_path::build_tool_path()
 }
 
 fn command_excerpt(output: &Output) -> String {
@@ -138,14 +116,7 @@ fn run_probe(command: &str, args: &[&str]) -> CommandProbe {
 }
 
 fn find_cli(command: &str) -> Option<String> {
-    let probe_path = build_probe_path();
-    for path in std::env::split_paths(&probe_path) {
-        let candidate = path.join(command);
-        if candidate.exists() {
-            return Some(candidate.to_string_lossy().into_owned());
-        }
-    }
-    None
+    crate::cli_path::find_on_tool_path(command)
 }
 
 fn home_dir_path(name: &str) -> Option<PathBuf> {

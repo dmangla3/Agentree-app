@@ -6,6 +6,7 @@ import { cn } from '../../lib/utils';
 import { type MinimapPosition, useMinimapStore } from '../../stores/minimapStore';
 import { LlmNodeData, extractColorFromClasses } from '../../lib/graphUtils';
 import { buildThreadBands, getThreadDividerRectsFromNodes } from '../../lib/graphThreadDividers';
+import { buildGraphNodeBounds, clampPointToGraphBounds } from '../../lib/graphViewportBounds';
 
 type MinimapNodeShape = {
     id: string;
@@ -26,6 +27,24 @@ type MinimapBounds = {
     height: number;
 };
 
+type MinimapModel = {
+    shapes: MinimapNodeShape[];
+    dividerRects: ReturnType<typeof getThreadDividerRectsFromNodes>;
+    selectedCount: number;
+    focusedCount: number;
+};
+
+type MiniMapPanelProps = {
+    graphNodes?: Node<any>[];
+    threadRootIdByMessageId?: Map<string, string>;
+};
+
+type BuildMinimapModelOptions = {
+    graphNodes?: Node<any>[];
+    mountedNodes?: Node<any>[];
+    threadRootIdByMessageId?: Map<string, string>;
+};
+
 const MINIMAP_COLLAPSED_SIZE = { width: 240, height: 160 };
 const MINIMAP_EXPANDED_SIZE = { width: 560, height: 380 };
 const MINIMAP_CONTENT_PADDING = 96;
@@ -44,6 +63,47 @@ const getNodeDimensions = (node: Node<any>) => ({
     width: node.measured?.width ?? node.width ?? node.initialWidth ?? 0,
     height: node.measured?.height ?? node.height ?? node.initialHeight ?? 0,
 });
+
+const readNumericPosition = (value: unknown): number => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+        const parsed = Number.parseFloat(value);
+        if (Number.isFinite(parsed)) return parsed;
+    }
+    return 0;
+};
+
+const buildAbsolutePositionReader = (nodes: Node<any>[]) => {
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    const cache = new Map<string, { x: number; y: number }>();
+
+    const readPosition = (node: Node<any>, visitedNodeIds = new Set<string>()): { x: number; y: number } => {
+        const cached = cache.get(node.id);
+        if (cached) return cached;
+        if (visitedNodeIds.has(node.id)) return {
+            x: readNumericPosition(node.position?.x),
+            y: readNumericPosition(node.position?.y),
+        };
+        visitedNodeIds.add(node.id);
+
+        const ownPosition = {
+            x: readNumericPosition(node.position?.x),
+            y: readNumericPosition(node.position?.y),
+        };
+        const parent = node.parentId ? nodeById.get(node.parentId) : null;
+        const position = parent
+            ? {
+                x: readPosition(parent, new Set(visitedNodeIds)).x + ownPosition.x,
+                y: readPosition(parent, new Set(visitedNodeIds)).y + ownPosition.y,
+            }
+            : ownPosition;
+
+        cache.set(node.id, position);
+        return position;
+    };
+
+    return readPosition;
+};
 
 const shouldRenderNodeInMinimap = (node: Node<any>): boolean => {
     if (node.hidden) return false;
@@ -99,6 +159,38 @@ const toMinimapNodeShape = (node: Node<any>, absolutePosition: { x: number; y: n
         color: getNodeColor(node),
         strokeColor: getNodeStrokeColor(node),
         strokeWidth: node.selected ? 2 : 1.5,
+    };
+};
+
+export const buildMinimapModelFromGraphNodes = ({
+    graphNodes,
+    mountedNodes = [],
+    threadRootIdByMessageId = new Map(),
+}: BuildMinimapModelOptions): MinimapModel => {
+    const sourceNodes = graphNodes ?? mountedNodes;
+    const readAbsolutePosition = buildAbsolutePositionReader(sourceNodes);
+    const nextShapes: MinimapNodeShape[] = [];
+    const dividerNodes: Node<any>[] = [];
+    let nextSelectedCount = 0;
+    let nextFocusedCount = 0;
+
+    sourceNodes.forEach((node) => {
+        if (node.hidden) return;
+        const data = node.data as (LlmNodeData & { isFocused?: boolean; isInContextPath?: boolean }) | undefined;
+        if (node.selected) nextSelectedCount += 1;
+        if (data?.isFocused || data?.isInContextPath) nextFocusedCount += 1;
+
+        dividerNodes.push(node);
+        if (!shouldRenderNodeInMinimap(node)) return;
+        const shape = toMinimapNodeShape(node, readAbsolutePosition(node));
+        if (shape) nextShapes.push(shape);
+    });
+
+    return {
+        shapes: nextShapes,
+        dividerRects: getThreadDividerRectsFromNodes(dividerNodes, threadRootIdByMessageId),
+        selectedCount: nextSelectedCount,
+        focusedCount: nextFocusedCount,
     };
 };
 
@@ -175,7 +267,7 @@ const mapFromMinimap = (
     y: viewBox.y + (y / minimapHeight) * viewBox.height,
 });
 
-export function MiniMapPanel() {
+export function MiniMapPanel({ graphNodes, threadRootIdByMessageId = new Map() }: MiniMapPanelProps) {
     const { isVisible, isExpanded, position, setExpanded, setPosition, setVisible } = useMinimapStore();
     const pointerStateRef = useRef<{ pointerId: number; x: number; y: number; dragged: boolean } | null>(null);
     const { setCenter, getZoom } = useReactFlow();
@@ -194,37 +286,30 @@ export function MiniMapPanel() {
         flowHeight: state.height,
     }), shallow);
 
-    const { shapes, dividerRects, selectedCount, focusedCount } = useMemo(() => {
-        const nextShapes: MinimapNodeShape[] = [];
-        const dividerNodes: Node<any>[] = [];
-        let nextSelectedCount = 0;
-        let nextFocusedCount = 0;
-
+    const mountedNodes = useMemo(() => {
+        const nextNodes: Node<any>[] = [];
         nodeLookup.forEach((internalNode: any) => {
             const userNode = internalNode.internals?.userNode as Node<any> | undefined;
             if (!userNode || userNode.hidden) return;
-            const data = userNode.data as (LlmNodeData & { isFocused?: boolean; isInContextPath?: boolean }) | undefined;
-            if (userNode.selected) nextSelectedCount += 1;
-            if (data?.isFocused || data?.isInContextPath) nextFocusedCount += 1;
 
             const positionAbsolute = internalNode.internals?.positionAbsolute ?? userNode.position;
-            dividerNodes.push({
+            nextNodes.push({
                 ...userNode,
                 parentId: undefined,
                 position: positionAbsolute,
             });
-            if (!shouldRenderNodeInMinimap(userNode)) return;
-            const shape = toMinimapNodeShape(userNode, positionAbsolute);
-            if (shape) nextShapes.push(shape);
         });
-
-        return {
-            shapes: nextShapes,
-            dividerRects: getThreadDividerRectsFromNodes(dividerNodes, new Map()),
-            selectedCount: nextSelectedCount,
-            focusedCount: nextFocusedCount,
-        };
+        return nextNodes;
     }, [nodeLookup, nodes]);
+
+    const { shapes, dividerRects, selectedCount, focusedCount } = useMemo(() => (
+        buildMinimapModelFromGraphNodes({
+            graphNodes,
+            mountedNodes,
+            threadRootIdByMessageId,
+        })
+    ), [graphNodes, mountedNodes, threadRootIdByMessageId]);
+    const graphNodeBounds = useMemo(() => buildGraphNodeBounds(graphNodes ?? mountedNodes), [graphNodes, mountedNodes]);
 
     const zoomLabel = `${Math.round((viewport.zoom || 1) * 100)}%`;
 
@@ -262,12 +347,14 @@ export function MiniMapPanel() {
                 minimapSize.height
             );
 
-            setCenter(point.x, point.y, {
+            const clampedPoint = clampPointToGraphBounds(point, graphNodeBounds);
+
+            setCenter(clampedPoint.x, clampedPoint.y, {
                 zoom: getZoom(),
                 duration,
             });
         },
-        [getZoom, minimapSize.height, minimapSize.width, setCenter, viewBox]
+        [getZoom, graphNodeBounds, minimapSize.height, minimapSize.width, setCenter, viewBox]
     );
 
     const handleMinimapClick = useCallback(

@@ -1,14 +1,15 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { TERMINAL_STATUSES } from '@shared/agentStatus';
 import { createAgentreeFlowNodeRunner } from '../flows/agentreeFlowNodeRunner';
 import { executeFlow, type FlowExecutionEvent, type FlowExecutionResult } from '../flows/flowExecutor';
+import { compileFlowDefinition } from '../flows/flowNodeRegistry';
 import { parseFlowYaml } from '../flows/parseFlowYaml';
 import { PREDEFINED_FLOW_SOURCES } from '../flows/predefinedFlows';
 import type { FlowDefinition } from '../flows/types';
-import { validateFlowDefinition } from '../flows/validateFlow';
 import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
 import type { Message } from '../stores/workspaceStore';
+import type { ComposerContextManifest } from '../lib/composerContext';
 import { agentClient } from '../lib/agentClient';
 import { localNodeKeys, parseLocalNode, type LocalNodeMessage } from './useLocalNodes';
 import { useAgentNodeLauncher, type UseAgentNodeLauncherOptions } from './useAgentNodeLauncher';
@@ -19,6 +20,9 @@ export interface UseAgentFlowRunnerInput extends UseAgentNodeLauncherOptions {
   selectedAgentType: string | null;
   baseNodeId: string | null;
   baseCommitSha: string | null;
+  rootParentNodeId?: string | null;
+  rootContextParentNodeId?: string | null;
+  rootContextManifest?: ComposerContextManifest | null;
   agentCliArgs?: string | null;
   agentPromptFlag?: string | null;
   agentName?: string | null;
@@ -36,17 +40,14 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
   const queryClient = useQueryClient();
   const { launchAgentNode } = useAgentNodeLauncher({ startStreamForNode: input.startStreamForNode });
   const flows = useMemo(() => compilePredefinedFlows(), []);
-  const [selectedFlowId, setSelectedFlowId] = useState(flows[0]?.id ?? '');
-  const [isRunning, setIsRunning] = useState(false);
+  const [selectedFlowId, setSelectedFlowId] = useState('');
   const [events, setEvents] = useState<FlowExecutionEvent[]>([]);
-  const cancelledRef = useRef(false);
 
   const waitForAssistantNode = useCallback((assistantNodeId: string, options?: { requireCommit?: boolean }) => (
     waitForAssistantNodeCompletion({
       assistantNodeId,
       queryClient,
       workspaceId: input.workspaceId,
-      isCancelled: () => cancelledRef.current,
       requireCommit: options?.requireCommit ?? false,
     })
   ), [input.workspaceId, queryClient]);
@@ -59,13 +60,11 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
       throw new Error('Base commit is required to run a flow.');
     }
 
-    const selectedFlow = flows.find((flow) => flow.id === selectedFlowId) ?? flows[0];
+    const selectedFlow = flows.find((flow) => flow.id === selectedFlowId);
     if (!selectedFlow) {
-      throw new Error('No predefined flow is available.');
+      throw new Error('Select a flow before running.');
     }
 
-    cancelledRef.current = false;
-    setIsRunning(true);
     setEvents([]);
     const flowRunId = crypto.randomUUID();
     const threadOriginId = crypto.randomUUID();
@@ -75,6 +74,9 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
       selectedAgentType: input.selectedAgentType,
       baseNodeId: input.baseNodeId,
       baseCommitSha: input.baseCommitSha,
+      rootParentNodeId: input.rootParentNodeId ?? null,
+      rootContextParentNodeId: input.rootContextParentNodeId ?? null,
+      rootContextManifest: input.rootContextManifest ?? null,
       flowId: selectedFlow.id,
       flowRunId,
       threadOriginId,
@@ -87,16 +89,12 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
       waitForAssistantNode,
     });
 
-    try {
-      return await executeFlow({
-        definition: selectedFlow.definition,
-        inputs: { input: runInput.input, count: runInput.count },
-        runner,
-        onEvent: (event) => setEvents((current) => [...current, event]),
-      });
-    } finally {
-      setIsRunning(false);
-    }
+    return await executeFlow({
+      definition: selectedFlow.definition,
+      inputs: { input: runInput.input, count: runInput.count },
+      runner,
+      onEvent: (event) => setEvents((current) => [...current, event]),
+    });
   }, [
     flows,
     input.agentCliArgs,
@@ -106,6 +104,9 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
     input.baseNodeId,
     input.llmModel,
     input.reasoningEffort,
+    input.rootContextManifest,
+    input.rootContextParentNodeId,
+    input.rootParentNodeId,
     input.selectedAgentId,
     input.selectedAgentType,
     input.workspaceId,
@@ -114,25 +115,18 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
     waitForAssistantNode,
   ]);
 
-  const cancelFlow = useCallback(() => {
-    cancelledRef.current = true;
-    setIsRunning(false);
-  }, []);
-
   return {
     flows,
     selectedFlowId,
     setSelectedFlowId,
-    isRunning,
     events,
     runFlow,
-    cancelFlow,
   };
 }
 
 function compilePredefinedFlows(): PredefinedFlowDescriptor[] {
   return PREDEFINED_FLOW_SOURCES.map((source) => {
-    const result = validateFlowDefinition(parseFlowYaml(source.source));
+    const result = compileFlowDefinition(parseFlowYaml(source.source));
     if (!result.definition || result.issues.length > 0) {
       throw new Error(`Invalid predefined flow "${source.id}": ${JSON.stringify(result.issues)}`);
     }
@@ -148,16 +142,12 @@ async function waitForAssistantNodeCompletion(input: {
   assistantNodeId: string;
   queryClient: ReturnType<typeof useQueryClient>;
   workspaceId: string | null;
-  isCancelled: () => boolean;
   requireCommit?: boolean;
 }): Promise<Message> {
   const startedAt = Date.now();
   let terminalObservedAt: number | null = null;
   let latestTerminalMessage: Message | null = null;
   while (Date.now() - startedAt < 30 * 60 * 1000) {
-    if (input.isCancelled()) {
-      throw new Error('Flow run was cancelled.');
-    }
     const message = readAssistantNode(input.assistantNodeId, input.workspaceId, input.queryClient);
     if (message?.status && TERMINAL_STATUSES.includes(message.status as never)) {
       latestTerminalMessage = message;

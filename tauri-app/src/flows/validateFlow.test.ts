@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseFlowYaml } from './parseFlowYaml';
 import { PREDEFINED_FLOW_SOURCES } from './predefinedFlows';
+import { compileFlowDefinition } from './flowNodeRegistry';
 import { validateFlowDefinition } from './validateFlow';
 
 describe('predefined flows', () => {
@@ -18,10 +19,30 @@ describe('predefined flows', () => {
 
 describe('validateFlowDefinition', () => {
   it('validates the predefined parallel review flow', () => {
-    const parsed = parseFlowYaml(PREDEFINED_FLOW_SOURCES[0].source);
-    const result = validateFlowDefinition(parsed);
+    const result = compileFlowDefinition(parseFlowYaml(PREDEFINED_FLOW_SOURCES[0].source));
     expect(result.issues).toEqual([]);
     expect(result.definition?.flow.id).toBe('parallel_review_until_satisfied');
+  });
+
+  it('accepts call-level parent expressions for reusable node placement', () => {
+    const result = validateFlowDefinition({
+      flow: { id: 'call_parent' },
+      nodes: [
+        { id: 'Reviewer', params: ['request'], parent: 'root', prompt: 'Review {{ request }}' },
+      ],
+      run: [
+        { set: 'reviewer_parent', value: 'root' },
+        { set: 'review', call: 'Reviewer', parent: 'reviewer_parent', args: { request: 'input.input' } },
+      ],
+    });
+
+    expect(result.issues).toEqual([]);
+    expect(result.definition?.run[1]).toEqual({
+      set: 'review',
+      call: 'Reviewer',
+      parent: 'reviewer_parent',
+      args: { request: 'input.input' },
+    });
   });
 
   it('rejects duplicate node ids', () => {

@@ -47,6 +47,8 @@ describe('buildSendFlowSessionReport', () => {
       event('runtime.event-loop-stall', '2026-05-19T00:00:01.000Z', { severity: 'stall' }),
       { ...event('runtime.raf-stall', '2026-05-19T00:00:02.000Z', { severity: 'freeze' }), durationMs: 1250 },
       { ...event('browser.long-task', '2026-05-19T00:00:03.000Z'), durationMs: 80 },
+      { ...event('runtime.long-task', '2026-05-19T00:00:04.000Z'), durationMs: 110 },
+      { ...event('runtime.long-animation-frame', '2026-05-19T00:00:05.000Z'), durationMs: 340 },
     ]);
 
     expect(report.runtime).toEqual({
@@ -56,8 +58,10 @@ describe('buildSendFlowSessionReport', () => {
       rafStallCount: 1,
       rafFreezeCount: 1,
       maxRafStallMs: 1250,
-      longTaskCount: 1,
-      maxLongTaskMs: 80,
+      longTaskCount: 2,
+      maxLongTaskMs: 110,
+      longAnimationFrameCount: 1,
+      maxLongAnimationFrameMs: 340,
     });
   });
 });

@@ -5,6 +5,7 @@ import { agentRunManager } from '../agent-runs/agentRunManager';
 import { agentClient, type StartAgentRunIntent } from '../lib/agentClient';
 import { getAccessToken } from '../lib/authSession';
 import { buildAgentRunPrompt } from '../lib/prompts';
+import type { ComposerContextManifest } from '../lib/composerContext';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from './useLocalNodes';
 import { useWorkspaces } from './useWorkspaces';
 import type { Message, Workspace } from '../stores/workspaceStore';
@@ -18,8 +19,10 @@ export interface LaunchAgentNodeInput {
   baseNodeId: string | null;
   baseCommitSha: string | null;
   prompt: string;
+  contextManifest?: ComposerContextManifest | null;
   flowId: string;
   flowNodeTemplateId: string;
+  flowNodeRegistryId?: string | null;
   flowRunId?: string;
   threadOriginId?: string | null;
   agentCliArgs?: string | null;
@@ -52,13 +55,23 @@ export interface UseAgentNodeLauncherOptions {
 }
 
 export function createFlowNodeMessages(input: CreateFlowNodeMessagesInput): FlowNodeMessagePair {
+  const contextManifest = input.contextManifest ?? null;
+  const contextTextChars = contextManifest?.contextText.trim().length ?? 0;
   const executionMeta = {
     context_parent_node_id: input.contextParentNodeId,
     context_base_node_id: input.baseNodeId,
+    agentree_context_available_chars: contextTextChars,
+    agentree_context_available_estimated_tokens: Math.ceil(contextTextChars / 4),
+    agentree_context_manifest_version: contextManifest?.version ?? null,
+    agentree_context_manifest_hash: contextManifest?.manifestHash ?? null,
+    agentree_context_stable_prefix_hash: contextManifest?.stablePrefixHash ?? null,
+    agentree_context_volatile_tail_hash: contextManifest?.volatileTailHash ?? null,
+    agentree_context_block_count: contextManifest?.blocks.length ?? 0,
     flow_id: input.flowId,
     flow_run_id: input.flowRunId,
     flow_node_template_id: input.flowNodeTemplateId,
     ...(input.threadOriginId ? { thread_origin_id: input.threadOriginId } : {}),
+    ...(input.flowNodeRegistryId ? { flow_node_registry_id: input.flowNodeRegistryId } : {}),
     ...(input.llmModel ? { provider_model: input.llmModel } : {}),
     ...(input.reasoningEffort ? { provider_reasoning_effort: input.reasoningEffort } : {}),
   };
@@ -178,6 +191,7 @@ export function useAgentNodeLauncher(options: UseAgentNodeLauncherOptions = {}) 
     const effectivePrompt = buildAgentRunPrompt({
       mode: 'flow',
       userPrompt: input.prompt,
+      contextManifest: input.contextManifest ?? undefined,
     }).prompt;
     const runId = crypto.randomUUID();
     const executionData = {
@@ -192,6 +206,7 @@ export function useAgentNodeLauncher(options: UseAgentNodeLauncherOptions = {}) 
         flow_id: input.flowId,
         flow_run_id: flowRunId,
         flow_node_template_id: input.flowNodeTemplateId,
+        ...(input.flowNodeRegistryId ? { flow_node_registry_id: input.flowNodeRegistryId } : {}),
       },
     };
     agentRunManager.dispatch(pair.assistantNode.id, { type: 'execution_data', patch: executionData });

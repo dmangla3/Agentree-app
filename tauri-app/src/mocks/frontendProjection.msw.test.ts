@@ -140,7 +140,7 @@ describe('MSW projection/perf contracts', () => {
     const graphIds = new Set(graphMessageIds);
     const visibleChatIds = chatMessageIds(projection);
 
-    expect(projection.entities).toHaveLength(messages.length);
+    expect(projection.entitiesByMessageId.size).toBe(messages.length);
     expect(graphMessageIds).toHaveLength(messages.length);
     expect(graph.edges).toHaveLength(87);
     expect(new Set(graph.edges.map((edge) => (edge.data as any)?.relationship))).toEqual(
@@ -163,7 +163,7 @@ describe('MSW projection/perf contracts', () => {
     const graph = mapProjectionToGraph(projection, messages, focusedMessageId);
     const durationMs = performance.now() - startedAt;
 
-    expect(projection.entities).toHaveLength(messages.length);
+    expect(projection.entitiesByMessageId.size).toBe(messages.length);
     expect(graphMessageNodeIds(graph, messages)).toHaveLength(messages.length);
     expect(graph.edges).toHaveLength(1497);
     expect(new Set(graph.edges.map((edge) => (edge.data as any)?.relationship))).toEqual(

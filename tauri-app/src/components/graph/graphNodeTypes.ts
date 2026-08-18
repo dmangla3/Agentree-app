@@ -3,6 +3,7 @@ import { GraphTurnGroupHull } from '../nodes/graph/GraphTurnGroupHull';
 
 export const graphNodeTypes = {
   thread_origin: GraphNodeDispatcher,
+  thread_link: GraphNodeDispatcher,
   user_message: GraphNodeDispatcher,
   assistant_message: GraphNodeDispatcher,
   commit_message: GraphNodeDispatcher,

@@ -81,7 +81,7 @@ const getBaseCommitSha = (message: ComposerBaseMessage | null | undefined): stri
   return sha || null;
 };
 
-const findLatestAncestorOutput = (
+export const findLatestAncestorOutput = (
   messageMap: Map<string, ComposerBaseMessage>,
   startId: string | null | undefined
 ): { sha: string; nodeId: string } | null => {

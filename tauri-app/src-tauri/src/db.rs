@@ -2335,7 +2335,7 @@ impl TelemetryDb {
                         WHEN local_commits.source_kind IN ('agent', 'merge') THEN local_commits.source_kind
                         ELSE excluded.source_kind
                     END,
-                    produced_by_node_id = COALESCE(excluded.produced_by_node_id, local_commits.produced_by_node_id),
+                    produced_by_node_id = COALESCE(local_commits.produced_by_node_id, excluded.produced_by_node_id),
                     first_parent_sha = COALESCE(excluded.first_parent_sha, local_commits.first_parent_sha),
                     files_changed_count = COALESCE(excluded.files_changed_count, local_commits.files_changed_count),
                     total_additions = COALESCE(excluded.total_additions, local_commits.total_additions),
@@ -3381,6 +3381,79 @@ mod tests {
             snapshot.commit_observations[0].git_ref.as_deref(),
             Some("agentree/assistant-1")
         );
+    }
+
+    #[test]
+    fn local_commit_import_fills_but_does_not_steal_produced_by_node_id() {
+        fn commit_import(
+            source_kind: &str,
+            produced_by_node_id: Option<&str>,
+        ) -> LocalCommitImport {
+            LocalCommitImport {
+                sha: "generated-sha".to_string(),
+                parents: vec!["parent-sha".to_string()],
+                subject: Some("generated commit".to_string()),
+                author_name: None,
+                author_email: None,
+                authored_at: None,
+                committed_at: None,
+                source_kind: Some(source_kind.to_string()),
+                produced_by_node_id: produced_by_node_id.map(ToString::to_string),
+                files_changed_count: None,
+                total_additions: None,
+                total_deletions: None,
+            }
+        }
+
+        let (_dir, db) = open_test_db();
+        db.import_local_commits(
+            "workspace-1",
+            vec![commit_import("external", None)],
+            Some("refs/heads/main"),
+        )
+        .expect("seed external commit");
+
+        db.import_local_commits(
+            "workspace-1",
+            vec![commit_import("agent", Some("assistant-1"))],
+            Some("agentree/assistant-1"),
+        )
+        .expect("attribute external commit to assistant");
+
+        let snapshot = db
+            .list_local_commit_graph("workspace-1")
+            .expect("list local commit graph after attribution");
+        let commit = snapshot
+            .commits
+            .iter()
+            .find(|commit| commit.sha == "generated-sha")
+            .expect("generated commit exists");
+        assert_eq!(commit.source_kind, "agent");
+        assert_eq!(commit.produced_by_node_id.as_deref(), Some("assistant-1"));
+
+        db.import_local_commits(
+            "workspace-1",
+            vec![commit_import("agent", Some("assistant-2"))],
+            Some("agentree/assistant-2"),
+        )
+        .expect("attempt to reattribute generated commit");
+        db.import_local_commits(
+            "workspace-1",
+            vec![commit_import("external", None)],
+            Some("refs/heads/main"),
+        )
+        .expect("attempt to downgrade generated commit");
+
+        let snapshot = db
+            .list_local_commit_graph("workspace-1")
+            .expect("list local commit graph after reimports");
+        let commit = snapshot
+            .commits
+            .iter()
+            .find(|commit| commit.sha == "generated-sha")
+            .expect("generated commit exists");
+        assert_eq!(commit.source_kind, "agent");
+        assert_eq!(commit.produced_by_node_id.as_deref(), Some("assistant-1"));
     }
 
     #[test]

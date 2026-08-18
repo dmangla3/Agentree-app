@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import '../test/setup';
+import { invoke } from '@tauri-apps/api/core';
 import type { Node } from '@xyflow/react';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
@@ -26,6 +27,7 @@ vi.mock('../lib/agentClient', () => ({
 
 describe('MSW frontend API contracts', () => {
   beforeEach(() => {
+    delete (window as any).__TAURI_INTERNALS__;
     vi.mocked(agentClient.hasRuntime).mockReturnValue(false);
     vi.mocked(agentClient.listLocalNodes).mockResolvedValue([]);
     vi.mocked(agentClient.hydrateLocalNodesFromServer).mockResolvedValue(0);
@@ -51,6 +53,31 @@ describe('MSW frontend API contracts', () => {
       'msg-user-1',
       'msg-assistant-1',
     ]);
+  });
+
+  it('seeds the graph snapshot query cache from the native cache', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    });
+    vi.mocked(invoke).mockResolvedValueOnce(JSON.stringify({
+      version: 2,
+      workspaceId,
+      generatedAt: '2026-05-19T09:59:00.000Z',
+      messages,
+      summaries: [],
+      commits: [],
+      commitParents: [],
+      commitObservations: [],
+    }));
+    const { Wrapper, queryClient } = createQueryWrapper();
+
+    const { result } = renderHook(() => useGraphSnapshot(workspaceId), { wrapper: Wrapper });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(queryClient.getQueryData<any>(['graph-snapshot', workspaceId])?.messages.map((message: any) => message.id)).toEqual(
+      messages.map((message) => message.id),
+    );
   });
 
   it('keeps MSW snapshot graph nodes drawable by the React Flow minimap before DOM measurement', async () => {

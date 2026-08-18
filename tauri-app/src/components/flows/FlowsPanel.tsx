@@ -1,10 +1,10 @@
 import { FileCode2, ListChecks, Network, Workflow } from 'lucide-react';
 import { useMemo, type ReactNode } from 'react';
 import MermaidDiagram from '../MermaidDiagram';
+import { compileFlowDefinition } from '../../flows/flowNodeRegistry';
 import { parseFlowYaml } from '../../flows/parseFlowYaml';
 import { PREDEFINED_FLOW_SOURCES } from '../../flows/predefinedFlows';
 import type { FlowDefinition, FlowInputDefinition, FlowNodeTemplate, FlowSource, FlowStatement } from '../../flows/types';
-import { validateFlowDefinition } from '../../flows/validateFlow';
 import { cn } from '../../lib/utils';
 
 export interface FlowsPanelProps {
@@ -192,8 +192,10 @@ function NodeTemplateRow({ node, index }: { node: FlowNodeTemplate; index: numbe
           <span className="text-sm font-semibold text-foreground">{node.id}</span>
           <span className="text-xs text-muted-foreground">parent: {node.parent}</span>
         </div>
-        <div className="mt-1 text-xs text-muted-foreground">
-          {node.params?.length ? `params: ${node.params.join(', ')}` : 'no params'}
+        <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+          <span>{node.params?.length ? `params: ${node.params.join(', ')}` : 'no params'}</span>
+          {node.registryId ? <span>uses {node.registryId}</span> : null}
+          {node.requiresFinalizedCommit ? <span>requires commit</span> : null}
         </div>
         {returns.length > 0 ? (
           <div className="mt-2 flex flex-wrap gap-1.5">
@@ -328,7 +330,7 @@ function buildLinearFlowRunMermaid(statements: FlowStatement[]): string {
 }
 
 function toCatalogItem(source: FlowSource): FlowCatalogItem {
-  const result = validateFlowDefinition(parseFlowYaml(source.source));
+  const result = compileFlowDefinition(parseFlowYaml(source.source));
   return {
     source,
     definition: result.definition ?? null,

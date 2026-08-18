@@ -11,9 +11,11 @@ import type {
 
 export interface FlowNodeRunInput {
   templateId: string;
+  registryId?: string;
   parent: FlowRuntimeValue;
   prompt: string;
   args: Record<string, FlowRuntimeValue>;
+  requiresFinalizedCommit?: boolean;
 }
 
 export interface FlowNodeRunner {
@@ -99,7 +101,7 @@ async function executeStatement(
   context: ExecutionContext
 ): Promise<ExecutionSignal> {
   if ('call' in statement) {
-    const result = await executeCall(statement.call, statement.args ?? {}, undefined, scope, context);
+    const result = await executeCall(statement.call, statement.args ?? {}, statement.parent, scope, context);
     if (result.signal) {
       return result.signal;
     }
@@ -194,7 +196,9 @@ async function executeCall(
   let parent: FlowRuntimeValue;
   try {
     prompt = interpolateFlowPrompt(template.prompt, argsResult.args);
-    parent = resolveParent(parentOverride ?? template.parent, argsResult.args);
+    parent = parentOverride
+      ? resolveCallParent(parentOverride, scope)
+      : resolveTemplateParent(template.parent, argsResult.args);
   } catch (error) {
     return {
       node: emptyNode(templateId),
@@ -208,9 +212,11 @@ async function executeCall(
   context.emit({ type: 'node_started', templateId, message: `Started ${templateId}.` });
   const rawNode = await context.runner.runNode({
     templateId,
+    ...(template.registryId ? { registryId: template.registryId } : {}),
     parent,
     prompt,
     args: argsResult.args,
+    requiresFinalizedCommit: template.requiresFinalizedCommit ?? false,
   });
   if (rawNode.status === 'failed' || rawNode.status === 'cancelled') {
     return {
@@ -254,7 +260,18 @@ function evaluateArgs(
   return { args, issues };
 }
 
-function resolveParent(parentExpression: string, args: Record<string, FlowRuntimeValue>): FlowRuntimeValue {
+function resolveCallParent(parentExpression: string, scope: Record<string, FlowRuntimeValue>): FlowRuntimeValue {
+  if (parentExpression === 'root') {
+    return 'root';
+  }
+  const result = evaluateFlowExpression(parentExpression, scope);
+  if (result.issues.length > 0) {
+    throw new Error(result.issues.map((issue) => issue.message).join(' '));
+  }
+  return result.value;
+}
+
+function resolveTemplateParent(parentExpression: string, args: Record<string, FlowRuntimeValue>): FlowRuntimeValue {
   const tokenMatch = /^\{\{\s*([^}]+?)\s*\}\}$/.exec(parentExpression);
   if (!tokenMatch) {
     return parentExpression;

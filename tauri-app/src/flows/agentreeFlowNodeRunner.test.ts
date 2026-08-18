@@ -46,9 +46,11 @@ describe('createAgentreeFlowNodeRunner', () => {
 
     const result = await runner.runNode({
       templateId: 'Implementer',
+      registryId: 'core.implementer@1',
       parent: 'root',
       prompt: 'Please implement this exact prompt.',
       args: {},
+      requiresFinalizedCommit: true,
     });
 
     expect(launchCalls[0]).toEqual(expect.objectContaining({
@@ -56,6 +58,7 @@ describe('createAgentreeFlowNodeRunner', () => {
       contextParentNodeId: null,
       prompt: 'Please implement this exact prompt.',
       flowNodeTemplateId: 'Implementer',
+      flowNodeRegistryId: 'core.implementer@1',
     }));
     expect(waitOptions).toEqual({ requireCommit: true });
     expect(result).toEqual<FlowNodeValue>({
@@ -117,6 +120,41 @@ describe('createAgentreeFlowNodeRunner', () => {
     ]);
   });
 
+  it('attaches root flow nodes to the composer reply parent and selected context parent', async () => {
+    const launchCalls: Parameters<AgentreeFlowNodeLauncher>[0][] = [];
+    const launcher: AgentreeFlowNodeLauncher = async (input) => {
+      launchCalls.push(input);
+      return { userNodeId: 'user-1', assistantNodeId: 'assistant-1' };
+    };
+    const runner = createAgentreeFlowNodeRunner({
+      workspaceId: 'workspace-1',
+      selectedAgentId: 'agent-1',
+      selectedAgentType: 'codex',
+      baseNodeId: 'base-1',
+      baseCommitSha: 'base-commit',
+      flowId: 'parallel_review_until_satisfied',
+      flowRunId: 'flow-run-1',
+      rootParentNodeId: 'reply-parent',
+      rootContextParentNodeId: 'selected-context-parent',
+      threadOriginId: 'thread-origin-1',
+      launchAgentNode: launcher,
+      waitForAssistantNode: async (assistantNodeId) => message({ id: assistantNodeId }),
+    });
+
+    await runner.runNode({
+      templateId: 'Implementer',
+      parent: 'root',
+      prompt: 'Implement from selected composer parent.',
+      args: {},
+    });
+
+    expect(launchCalls[0]).toEqual(expect.objectContaining({
+      parentNodeId: 'reply-parent',
+      contextParentNodeId: 'selected-context-parent',
+      threadOriginId: null,
+    }));
+  });
+
   it('resolves node parents to assistant node ids and waits for completion', async () => {
     const launchCalls: Parameters<AgentreeFlowNodeLauncher>[0][] = [];
     let waitedFor: string | null = null;
@@ -152,9 +190,11 @@ describe('createAgentreeFlowNodeRunner', () => {
 
     const result = await runner.runNode({
       templateId: 'Reviewer',
+      registryId: 'core.reviewer@1',
       parent,
       prompt: 'Review commit.',
       args: {},
+      requiresFinalizedCommit: false,
     });
 
     expect(launchCalls[0]).toEqual(expect.objectContaining({
@@ -190,9 +230,11 @@ describe('createAgentreeFlowNodeRunner', () => {
 
     await expect(runner.runNode({
       templateId: 'Reviewer',
+      registryId: 'core.reviewer@1',
       parent: 'root',
       prompt: 'Review',
       args: {},
+      requiresFinalizedCommit: false,
     })).resolves.toEqual(expect.objectContaining({
       id: 'assistant-1',
       status: 'failed',

@@ -619,6 +619,13 @@ fn finalize_run_state_if_ready(
                 );
             }
             Err(err) => {
+                if let Err(persist_err) = persist_local_node_snapshot(app_handle, snapshot) {
+                    crate::app_log!(
+                        "[RCSTRM] finalize_failed_snapshot_persist_failed session_id={} err={}",
+                        session_id,
+                        persist_err
+                    );
+                }
                 let _ = telemetry.update_agent_run_phase(
                     session_id,
                     "failed_finalization",
@@ -1519,38 +1526,85 @@ fn record_output_commit_for_snapshot(
         .record_agent_run_output_commit(&snapshot.node_id, &commit_sha);
     if let Some(workspace_id) = workspace_id_from_execution_data(&snapshot.execution_data) {
         let fallback_timestamp = chrono_like_now();
-        let parents = if commit.parents.is_empty() {
-            vec![parent_commit.to_string()]
+        let output_commits = if source_kind == "agent" {
+            match crate::git_workspace::read_commit_metadata_range_sync(
+                repo_path,
+                parent_commit,
+                &commit_sha,
+            ) {
+                Ok(mut commits) => {
+                    if !commits.iter().any(|metadata| metadata.sha == commit_sha) {
+                        commits.push(commit.clone());
+                    }
+                    commits
+                }
+                Err(err) => {
+                    crate::app_log!(
+                        "[AGENT_WORKTREE] event=commit_range_read_failed node_id={} base_commit={} output_commit={} err={}",
+                        snapshot.node_id,
+                        parent_commit,
+                        commit_sha,
+                        err
+                    );
+                    vec![commit.clone()]
+                }
+            }
         } else {
-            commit.parents.clone()
+            vec![commit.clone()]
         };
+        let local_commits = output_commits
+            .into_iter()
+            .map(|metadata| {
+                let is_output_tip = metadata.sha == commit_sha;
+                let subject = if is_output_tip {
+                    commit_subject.clone()
+                } else if metadata.subject.trim().is_empty() {
+                    "Agent changes".to_string()
+                } else {
+                    metadata.subject.clone()
+                };
+                let parents = if is_output_tip && metadata.parents.is_empty() {
+                    vec![parent_commit.to_string()]
+                } else {
+                    metadata.parents.clone()
+                };
+
+                crate::db::LocalCommitImport {
+                    sha: metadata.sha,
+                    parents,
+                    subject: Some(subject),
+                    author_name: metadata
+                        .author_name
+                        .clone()
+                        .or_else(|| snapshot.author_name.clone()),
+                    author_email: metadata.author_email.clone(),
+                    authored_at: metadata
+                        .authored_at
+                        .clone()
+                        .or_else(|| Some(fallback_timestamp.clone())),
+                    committed_at: metadata
+                        .authored_at
+                        .clone()
+                        .or_else(|| Some(fallback_timestamp.clone())),
+                    source_kind: Some(source_kind.to_string()),
+                    produced_by_node_id: Some(snapshot.node_id.clone()),
+                    files_changed_count: metadata.files_changed_count.map(|value| value as i64).or(
+                        if is_output_tip {
+                            Some(files_changed_count)
+                        } else {
+                            None
+                        },
+                    ),
+                    total_additions: metadata.total_additions.map(|value| value as i64),
+                    total_deletions: metadata.total_deletions.map(|value| value as i64),
+                }
+            })
+            .collect::<Vec<_>>();
         let _ = app_handle
             .state::<crate::db::TelemetryDb>()
             .import_local_commits_with_parent_closure(
                 &workspace_id,
-                vec![crate::db::LocalCommitImport {
-                    sha: commit_sha,
-                    parents,
-                    subject: Some(commit_subject),
-                    author_name: commit
-                        .author_name
-                        .clone()
-                        .or_else(|| snapshot.author_name.clone()),
-                    author_email: commit.author_email.clone(),
-                    authored_at: commit
-                        .authored_at
-                        .clone()
-                        .or_else(|| Some(fallback_timestamp.clone())),
-                    committed_at: commit.authored_at.clone().or(Some(fallback_timestamp)),
-                    source_kind: Some(source_kind.to_string()),
-                    produced_by_node_id: Some(snapshot.node_id.clone()),
-                    files_changed_count: commit
-                        .files_changed_count
-                        .map(|value| value as i64)
-                        .or(Some(files_changed_count)),
-                    total_additions: commit.total_additions.map(|value| value as i64),
-                    total_deletions: commit.total_deletions.map(|value| value as i64),
-                }],
+                local_commits,
                 Some(source_kind),
                 Some(repo_path),
             );

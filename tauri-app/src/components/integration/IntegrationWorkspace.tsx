@@ -19,9 +19,10 @@ import { ResultStage } from './ResultStage';
 
 interface SessionHeaderProps {
   onClose?: () => void;
+  closeSessionOnClose?: boolean;
 }
 
-function SessionHeader({ onClose }: SessionHeaderProps) {
+function SessionHeader({ onClose, closeSessionOnClose = true }: SessionHeaderProps) {
   const { session, closeMergeSession, isApplying } = useIntegrationStore();
   
   if (!session) return null;
@@ -31,49 +32,54 @@ function SessionHeader({ onClose }: SessionHeaderProps) {
     ? session.sources[0]?.label || 'Source'
     : `${sourceCount} sources`;
   const targetLabel = session.target?.label || 'Target';
+  const targetSha = session.target?.commitSha ? session.target.commitSha.slice(0, 7) : null;
   
   const handleClose = (e?: React.MouseEvent) => {
     e?.preventDefault();
     e?.stopPropagation();
-    console.log('[IntegrationWorkspace] Close button clicked, onClose exists:', !!onClose);
-    closeMergeSession();
+    if (closeSessionOnClose) {
+      closeMergeSession();
+    }
     if (onClose) {
-      console.log('[IntegrationWorkspace] Calling onClose callback');
       onClose();
-    } else {
-      console.log('[IntegrationWorkspace] No onClose callback provided');
     }
   };
   
   return (
-    <div className="flex items-center justify-between border-b bg-card px-4 py-3">
-      <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
-          <GitMerge className="h-5 w-5 text-primary" />
+    <div className="flex items-center justify-between gap-3 border-b border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.78)] px-3 py-2 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]">
+      <div className="flex min-w-0 items-center gap-2.5">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-graph-commit)/0.22)] bg-[hsl(var(--app-graph-commit)/0.1)] text-[hsl(var(--app-graph-commit))] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]">
+          <GitMerge className="h-4 w-4" strokeWidth={1.9} />
         </div>
-        <div>
-          <h2 className="text-sm font-semibold">
-            {sourceLabel} <span className="text-muted-foreground">→</span> {targetLabel}
+        <div className="min-w-0">
+          <h2 className="flex min-w-0 flex-wrap items-center gap-1.5 text-sm font-semibold leading-5 text-foreground">
+            <span className="max-w-[18rem] truncate">{sourceLabel}</span>
+            <span className="text-muted-foreground">into</span>
+            <span className="max-w-[18rem] truncate">{targetLabel}</span>
           </h2>
-          <p className="text-xs text-muted-foreground">
-            {session.resolutionMode === 'manual' && 'Manual resolution'}
-            {session.resolutionMode === 'smart' && 'Smart AI resolution'}
-          </p>
+          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
+            <span className="rounded-full border border-[hsl(var(--app-border)/0.56)] bg-[hsl(var(--app-bg-muted)/0.48)] px-1.5 py-0.5 font-medium leading-none">
+              {session.resolutionMode === 'manual' && 'Manual resolution'}
+              {session.resolutionMode === 'smart' && 'Smart AI resolution'}
+            </span>
+            {targetSha ? <span className="font-mono tabular-nums">{targetSha}</span> : null}
+          </div>
         </div>
       </div>
       
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2">
         {isApplying && (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2 rounded-full border border-[hsl(var(--app-warning)/0.24)] bg-[hsl(var(--app-warning)/0.1)] px-2.5 py-1 text-xs font-medium text-[hsl(var(--app-warning))]">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            <span>Applying...</span>
+            <span>Applying</span>
           </div>
         )}
         <button
           type="button"
           onClick={(e) => handleClose(e)}
           disabled={isApplying}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-sm font-medium text-muted-foreground transition-[background-color,color,transform,opacity] duration-150 hover:bg-[hsl(var(--app-bg-muted)/0.78)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+          aria-label="Close merge panel"
         >
           <X className="h-4 w-4" />
         </button>
@@ -92,7 +98,7 @@ function ErrorBanner() {
   if (!applyError || isApplying) return null;
   
   return (
-    <div className="flex items-center gap-2 border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">
+    <div className="flex items-center gap-2 border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs font-medium text-destructive">
       <AlertTriangle className="h-3.5 w-3.5" />
       <span>{applyError}</span>
     </div>
@@ -135,42 +141,46 @@ interface EmbeddedIntegrationWorkspaceProps {
 export function EmbeddedIntegrationWorkspace({ onClose }: EmbeddedIntegrationWorkspaceProps) {
   const { session, renderStage } = useStageRenderer();
   const { closeMergeSession, isApplying } = useIntegrationStore();
+  const handleEmbeddedClose = React.useCallback(() => {
+    if (onClose) {
+      onClose();
+      return;
+    }
+    closeMergeSession();
+  }, [closeMergeSession, onClose]);
   
   // Handle escape key to close
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !isApplying) {
-        closeMergeSession();
-        onClose?.();
+        handleEmbeddedClose();
       }
     };
     
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isApplying, closeMergeSession, onClose]);
+  }, [handleEmbeddedClose, isApplying]);
   
   if (!session) return null;
   
   return (
-    <div className="flex h-full flex-col bg-background">
-      <SessionHeader onClose={onClose} />
-
-      <Separator />
+    <div className="flex h-full flex-col bg-[hsl(var(--app-bg))]">
+      <SessionHeader onClose={handleEmbeddedClose} closeSessionOnClose={false} />
       
       <ErrorBanner />
       
-      <div className="flex-1 overflow-hidden relative flex flex-col px-4 pt-4">
+      <div className="relative flex flex-1 flex-col overflow-hidden px-3 pt-3">
         {renderStage()}
       </div>
       
       {/* Status Bar */}
-      <div className="border-t bg-muted/50 px-4 py-2">
+      <div className="border-t border-[hsl(var(--app-border)/0.56)] bg-[hsl(var(--app-panel)/0.62)] px-3 py-1.5">
         <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>
+          <span className="font-medium">
             {session.sources.length} source{session.sources.length !== 1 ? 's' : ''} • 
             {' '}{session.fileDecisions.length} file{session.fileDecisions.length !== 1 ? 's' : ''}
         </span>
-          <span>
+          <span className="font-mono tabular-nums">
             {new Date(session.updatedAt).toLocaleTimeString()}
           </span>
         </div>

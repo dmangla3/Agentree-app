@@ -11,7 +11,7 @@ export type TimePreset = 'all' | '1h' | '5h' | '24h' | '7d' | '30d' | 'custom';
 export type AgentOperator = 'any_of' | 'none_of';
 export type TagOperator = 'has_any' | 'has_all' | 'has_none';
 export type GroupOperator = 'and' | 'or';
-export type MessageNodeType = 'user_message' | 'assistant_message' | 'commit_message';
+export type MessageNodeType = 'thread_link' | 'user_message' | 'assistant_message' | 'commit_message';
 
 export interface UseTagFilterResult {
     // Available filter values
@@ -155,6 +155,7 @@ export function useTagFilter(
     }, [messageMap, messages]);
     const nodeTypeCounts = useMemo<Record<MessageNodeType, number>>(() => {
         const counts: Record<MessageNodeType, number> = {
+            thread_link: 0,
             user_message: 0,
             assistant_message: 0,
             commit_message: 0,

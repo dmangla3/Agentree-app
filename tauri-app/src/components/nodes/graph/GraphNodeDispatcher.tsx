@@ -3,6 +3,7 @@ import type { Node, NodeProps } from '@xyflow/react';
 import { GraphUserNode } from './GraphUserNode';
 import { GraphAssistantNode } from './GraphAssistantNode';
 import { GraphThreadOriginNode } from './GraphThreadOriginNode';
+import { GraphThreadLinkNode } from './GraphThreadLinkNode';
 import { GraphCommitNode } from './GraphCommitNode';
 import { GraphCanonicalCommitNode } from './GraphCanonicalCommitNode';
 import { GraphDerivedCommitGroupNode } from './GraphDerivedCommitGroupNode';
@@ -17,6 +18,7 @@ import { createCommitHoverEntity } from './commitHoverEntity';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { getMessageOutputCommitSha } from '../../../lib/graph/commitAccessors';
 import { shouldEnableGraphNodeHover, type GraphNodeDetailLevel } from '../../../lib/graphNodeDetailLevel';
+import { dispatchGraphComposerDockExpand } from '../../../lib/graphComposerDockEvents';
 
 
 export interface GraphNodeData {
@@ -33,6 +35,7 @@ export interface GraphNodeData {
   heightKey?: string;
   onMeasureHeight?: (id: string, height: number) => void;
   onFocus: (id: string, metrics?: FocusTriggerMetrics) => void;
+  onOpenThread?: (threadRootId: string) => void;
   onSelect: (id: string, multi: boolean) => void;
   onContextMenu: (id: string, e: React.MouseEvent) => void;
 }
@@ -77,7 +80,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
   const isFocused = !!data.isFocused;
   const isComposerBaseCommit = !!data.isComposerBaseCommit;
   const detailLevel = data.detailLevel ?? 'full';
-  const enableHoverCard = shouldEnableGraphNodeHover({
+  const enableHoverCard = data.entity?.kind !== 'thread_link' && shouldEnableGraphNodeHover({
     detailLevel,
     isFocused,
     isSelected,
@@ -86,7 +89,24 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
 
   const handleFocus = useCallback((metrics?: FocusTriggerMetrics) => {
     if (data.entity?.focusMessageId) {
-      data.onFocus(data.entity.focusMessageId, metrics);
+      if (data.entity.kind === 'thread_link') {
+        const threadRootId = data.entity.threadLinkRootId ?? data.entity.threadRootId ?? null;
+        if (threadRootId) {
+          data.onOpenThread?.(threadRootId);
+        }
+        return;
+      }
+      if (data.entity.kind === 'user_message' || data.entity.kind === 'assistant_message') {
+        dispatchGraphComposerDockExpand();
+      }
+      data.onFocus(data.entity.focusMessageId, {
+        pointerDownAt: metrics?.pointerDownAt ?? null,
+        clickAt: metrics?.clickAt ?? performance.now(),
+        metadata: {
+          ...(metrics?.metadata ?? {}),
+          via: 'react-flow-node-click',
+        },
+      });
     }
   }, [data]);
 
@@ -199,6 +219,8 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
   switch (data.entity.kind) {
     case 'thread_origin':
       return <GraphThreadOriginNode {...sharedProps} entity={data.entity} />;
+    case 'thread_link':
+      return <GraphThreadLinkNode {...sharedProps} entity={data.entity} />;
     case 'user_message':
       return <GraphUserNode {...sharedProps} entity={data.entity} />;
     case 'assistant_message':

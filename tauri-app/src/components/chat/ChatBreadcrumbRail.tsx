@@ -1,4 +1,4 @@
-import { Bot, GitCommitHorizontal, UserRound } from 'lucide-react';
+import { Bot, GitBranch, GitCommitHorizontal, UserRound } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../../domain/workspaceProjection';
 import { cn } from '../../lib/utils';
@@ -74,6 +74,19 @@ const getBreadcrumbTitle = (entity: ProjectedNodeEntity) => {
 
 const getBreadcrumbKindMeta = (entity: ProjectedNodeEntity) => {
   switch (entity.kind) {
+    case 'thread_link':
+      return {
+        icon: GitBranch,
+        typeLabel: 'Thread',
+        idleClassName: cn(
+          ROLE_COLORS.thread_link.bg,
+          ROLE_COLORS.thread_link.border,
+          'text-cyan-800 hover:border-cyan-300/70 hover:bg-cyan-50/90 dark:text-cyan-200 dark:hover:border-cyan-800'
+        ),
+        focusedClassName: 'border-cyan-400/70 bg-cyan-100 text-cyan-950 shadow-[0_8px_24px_rgba(8,145,178,0.14)] dark:border-cyan-500/70 dark:bg-cyan-950/55 dark:text-cyan-50',
+        iconClassName: 'border-cyan-200/80 bg-white text-cyan-600 dark:border-cyan-800 dark:bg-slate-950/80 dark:text-cyan-300',
+        labelClassName: 'text-cyan-800 dark:text-cyan-100',
+      };
     case 'user_message':
       return {
         icon: UserRound,

@@ -26,6 +26,8 @@ export const getThreadRootId = (
   while (cursor && !visited.has(cursor.id)) {
     visited.add(cursor.id);
     if (cursor.role === 'user') {
+      const threadOriginId = getMessageThreadOriginId(cursor);
+      if (threadOriginId) return threadOriginId;
       earliestUserId = cursor.id;
     }
     if (!cursor.parentId) {
@@ -79,6 +81,15 @@ export const buildThreadRootIndex = (messages: Message[]): ThreadRootIndex => {
     const rightMessage = rootMessageIdByThreadRootId.get(right)
       ? messageMap.get(rootMessageIdByThreadRootId.get(right)!) ?? null
       : null;
+    const isTopLevelThreadRoot = (message: Message | null): boolean => {
+      if (!message) return false;
+      if (message.parentId === null) return true;
+      const parent = messageMap.get(message.parentId) ?? null;
+      return parent?.role === 'assistant' && parent.parentId === null;
+    };
+    const leftIsTopLevel = isTopLevelThreadRoot(leftMessage);
+    const rightIsTopLevel = isTopLevelThreadRoot(rightMessage);
+    if (leftIsTopLevel !== rightIsTopLevel) return leftIsTopLevel ? -1 : 1;
     const leftTs = leftMessage ? new Date(leftMessage.createdAt).getTime() : Number.POSITIVE_INFINITY;
     const rightTs = rightMessage ? new Date(rightMessage.createdAt).getTime() : Number.POSITIVE_INFINITY;
     if (leftTs !== rightTs) return leftTs - rightTs;

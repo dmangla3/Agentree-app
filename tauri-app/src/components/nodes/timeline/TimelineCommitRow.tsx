@@ -3,7 +3,6 @@ import { GitCommitHorizontal, User, Files, GitBranch } from 'lucide-react';
 import { TimelineRowWrapper } from './TimelineRowWrapper';
 import { SharedNodeProps } from '../../../types/nodes';
 import { cn } from '../../../lib/utils';
-import { ROLE_COLORS } from '../../../lib/visualTokens';
 import { Badge } from '../../../../@/components/ui/badge';
 import type { BranchPointer } from '../../../stores/workspaceStore';
 import { CopyCommitShaButton } from '../../CopyCommitShaButton';
@@ -69,21 +68,20 @@ export const TimelineCommitRow = memo(({
       disableHoverCard={disableHoverCard}
       hoverCardContent={hoverCardContent}
       className={cn(
-        ROLE_COLORS.commit_message.bg,
-        ROLE_COLORS.commit_message.border,
-        "border mx-2"
+        "mx-1 bg-[hsl(var(--app-panel-strong)/0.7)] dark:bg-[hsl(var(--app-graph-commit)/0.045)]",
+        "border-[hsl(var(--app-graph-commit)/0.24)]"
       )}
     >
       <div className="flex-1 flex flex-col gap-1 min-w-0">
-        <p className="text-sm font-medium text-slate-800 dark:text-slate-200 whitespace-normal break-words leading-snug flex-1 min-w-0 line-clamp-2">
+        <p className="min-w-0 flex-1 whitespace-normal break-words text-sm font-medium leading-snug text-foreground line-clamp-2">
           {entity.preview}
         </p>
 
-        <div className="flex flex-wrap items-center gap-2 mt-1 gap-y-1 text-[10px] text-slate-500 w-full">
-          <div className="flex min-w-0 items-center gap-1 p-0.5 px-1 bg-emerald-100 dark:bg-emerald-900/40 rounded text-emerald-700">
+        <div className="mt-1 flex w-full flex-wrap items-center gap-2 gap-y-1 text-[10px] text-muted-foreground">
+          <div className="flex min-w-0 items-center gap-1 rounded border border-[hsl(var(--app-graph-commit)/0.22)] bg-[hsl(var(--app-graph-commit)/0.1)] px-1 py-0.5 text-[hsl(var(--app-graph-commit))]">
             <GitCommitHorizontal size={10} />
             <span className="font-mono text-[9px]">{entity.shortSha}</span>
-            <CopyCommitShaButton commitSha={commitSha} className="h-3.5 w-3.5 text-emerald-700/70 dark:text-emerald-300/70" />
+            <CopyCommitShaButton commitSha={commitSha} className="h-3.5 w-3.5 text-[hsl(var(--app-graph-commit)/0.78)]" />
           </div>
           <CommitCheckoutButton
             repoPath={repoPath}
@@ -93,12 +91,12 @@ export const TimelineCommitRow = memo(({
           />
 
           {isExternal && (
-            <Badge variant="outline" className="h-4 px-1 text-[8px] border-emerald-200 text-emerald-600">
+            <Badge variant="outline" className="h-4 border-[hsl(var(--app-graph-commit)/0.28)] px-1 text-[8px] text-[hsl(var(--app-graph-commit))]">
               Import
             </Badge>
           )}
           {hasHead && (
-            <Badge className="h-4 px-1 text-[8px] bg-emerald-500 hover:bg-emerald-600 text-white border-none">
+            <Badge className="h-4 border-none bg-[hsl(var(--app-graph-commit))] px-1 text-[8px] text-white hover:bg-[hsl(var(--app-graph-commit))]">
               HEAD
             </Badge>
           )}
@@ -112,25 +110,25 @@ export const TimelineCommitRow = memo(({
 
           {fileCount > 0 ? (
             <div className="flex flex-wrap items-center gap-1.5 font-medium">
-              <div className="flex items-center gap-1 text-slate-600 dark:text-slate-400">
+              <div className="flex items-center gap-1 text-muted-foreground">
                 <Files size={10} />
                 <span>{fileCount} {fileCount === 1 ? 'file' : 'files'}</span>
               </div>
 
               {(totalAdditions > 0 || totalDeletions > 0) && (
                 <div className="flex items-center gap-1.5 ml-0.5">
-                  {totalAdditions > 0 && <span className="text-emerald-600 dark:text-emerald-400">+{totalAdditions}</span>}
+                  {totalAdditions > 0 && <span className="text-[hsl(var(--app-graph-commit))]">+{totalAdditions}</span>}
                   {totalDeletions > 0 && <span className="text-red-500 dark:text-red-400">-{totalDeletions}</span>}
                 </div>
               )}
 
               {statusSummary.length > 0 ? (
-                <span className="text-[9px] text-slate-400 ml-0.5">({statusSummary.join(', ')})</span>
+                <span className="ml-0.5 text-[9px] text-muted-foreground/70">({statusSummary.join(', ')})</span>
               ) : null}
             </div>
           ) : (
             entity.commitCount !== undefined && entity.commitCount > 0 && (
-              <div className="flex items-center gap-1 cursor-pointer hover:text-emerald-600">
+              <div className="flex cursor-pointer items-center gap-1 hover:text-[hsl(var(--app-graph-commit))]">
                 <Files size={10} />
                 {entity.commitCount} files
               </div>
@@ -138,12 +136,12 @@ export const TimelineCommitRow = memo(({
           )}
 
           {otherBranches.length > 0 && (
-            <div className="flex items-center gap-1 text-blue-500">
+            <div className="flex items-center gap-1 text-[hsl(var(--app-graph-agent))]">
               <GitBranch size={10} />
               {otherBranches[0].name}
             </div>
           )}
-          <div className="ml-auto flex shrink-0 items-center text-[10px] font-medium text-slate-400 tabular-nums">
+          <div className="ml-auto flex shrink-0 items-center text-[10px] font-medium text-muted-foreground/70 tabular-nums">
             {timestamp}
           </div>
         </div>

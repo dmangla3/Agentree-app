@@ -74,6 +74,8 @@ export type SendFlowSessionReport = {
     maxRafStallMs: number | null;
     longTaskCount: number;
     maxLongTaskMs: number | null;
+    longAnimationFrameCount: number;
+    maxLongAnimationFrameMs: number | null;
   };
   flows: SendFlowSummary[];
   findings: SendFlowFinding[];

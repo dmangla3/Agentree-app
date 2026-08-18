@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
 import { api } from '../lib/api';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
@@ -286,6 +286,7 @@ export const graphSnapshotToSummaries = (snapshot: GraphSnapshot | undefined): S
 
 export const useGraphSnapshot = (workspaceId: string | null, cacheResetNonce = 0): UseQueryResult<GraphSnapshot, Error> => {
   const isNativeRuntime = isTauriEnvironment();
+  const queryClient = useQueryClient();
   const localInitialSnapshot = useMemo(() => readCachedGraphSnapshot(workspaceId), [workspaceId, cacheResetNonce]);
   const shouldUseNativeCache = !!workspaceId && !localInitialSnapshot && isNativeRuntime;
   const [nativeCacheState, setNativeCacheState] = useState<{
@@ -310,6 +311,9 @@ export const useGraphSnapshot = (workspaceId: string | null, cacheResetNonce = 0
     readNativeCachedGraphSnapshot(workspaceId)
       .then((snapshot) => {
         if (cancelled) return;
+        if (snapshot) {
+          queryClient.setQueryData(['graph-snapshot', workspaceId], snapshot);
+        }
         setNativeCacheState({ ready: true, snapshot, workspaceId });
       })
       .catch((error) => {
@@ -326,7 +330,7 @@ export const useGraphSnapshot = (workspaceId: string | null, cacheResetNonce = 0
     return () => {
       cancelled = true;
     };
-  }, [shouldUseNativeCache, workspaceId, cacheResetNonce]);
+  }, [shouldUseNativeCache, workspaceId, cacheResetNonce, queryClient]);
 
   const queryResult = useQuery<GraphSnapshot>({
     queryKey: ['graph-snapshot', workspaceId],

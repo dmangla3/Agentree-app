@@ -6,12 +6,13 @@ describe('HomePage graph/chat split layout', () => {
   const readHomePageSource = () => readFileSync(join(process.cwd(), 'src/pages/HomePage.tsx'), 'utf8');
   const readSidebarSource = () => readFileSync(join(process.cwd(), 'src/components/Sidebar.tsx'), 'utf8');
 
-  it('initializes the graph/chat panels from the remembered 50/50 default split', () => {
+  it('opens the workspace in graph-only mode while keeping a remembered chat restore split', () => {
     const source = readHomePageSource();
 
+    expect(source).toContain('const [isChatCollapsed, setIsChatCollapsed] = useState(true)');
     expect(source).toContain('rememberedGraphChatSplitRef = useRef(readRememberedGraphChatSplit() ?? DEFAULT_GRAPH_CHAT_SPLIT)');
-    expect(source).toContain('defaultSize={rememberedGraphChatSplitRef.current[0]}');
-    expect(source).toContain('defaultSize={rememberedGraphChatSplitRef.current[1]}');
+    expect(source).toContain('defaultSize={isChatCollapsed ? 100 : rememberedGraphChatSplitRef.current[0]}');
+    expect(source).toContain('defaultSize={isChatCollapsed ? 0 : rememberedGraphChatSplitRef.current[1]}');
   });
 
   it('renders an accessible divider pill that toggles chat collapse and restore', () => {
@@ -47,6 +48,12 @@ describe('HomePage graph/chat split layout', () => {
 
     expect(source).toContain("isChatCollapsed ? 'h-10 w-10 -translate-x-2'");
     expect(source).toContain("isChatCollapsed ? 'h-4 w-4'");
+  });
+
+  it('passes chat collapse state into the graph so thread navigation can change orientation', () => {
+    const source = readHomePageSource();
+
+    expect(source).toContain('<GraphView threadNavigationOrientation={isChatCollapsed ? \'vertical\' : \'horizontal\'} />');
   });
 
   it('keeps the app header as persistent workspace chrome across primary views', () => {
@@ -103,5 +110,32 @@ describe('HomePage graph/chat split layout', () => {
     expect(source).toContain('w-16');
     expect(source).not.toContain('xl:w-[13.5rem]');
     expect(source).not.toContain('app-rail-button-label');
+  });
+
+  it('mounts the graph composer dock only while the chat panel is collapsed', () => {
+    const source = readHomePageSource();
+
+    expect(source).toContain("const GraphComposerDock = lazy");
+    expect(source).toContain('<GraphComposerDock');
+    expect(source).toContain('isVisible={isChatCollapsed}');
+    expect(source).not.toContain('onRestoreChatPanel={restoreChatPanel}');
+  });
+
+  it('unmounts chat panel content while graph-only mode is active', () => {
+    const source = readHomePageSource();
+
+    expect(source).toContain('{!isChatCollapsed && (');
+    expect(source).toContain('<ChatInterface key={selectedWorkspaceId} />');
+    expect(source).not.toContain('<ChatPanelHeader');
+    expect(source).not.toContain('<MergePanel');
+  });
+
+  it('does not keep ChatInterface mounted behind a collapsed chat panel', () => {
+    const source = readHomePageSource();
+    const chatInterfaceIndex = source.indexOf('<ChatInterface key={selectedWorkspaceId} />');
+    const collapsedGuardIndex = source.lastIndexOf('{!isChatCollapsed && (', chatInterfaceIndex);
+
+    expect(chatInterfaceIndex).toBeGreaterThan(0);
+    expect(collapsedGuardIndex).toBeGreaterThan(0);
   });
 });

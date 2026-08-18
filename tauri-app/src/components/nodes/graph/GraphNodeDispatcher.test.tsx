@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GraphNodeDispatcher } from './GraphNodeDispatcher';
 import type { ProjectedCommitEntity, ProjectedCommitGroup, ProjectedNodeEntity } from '../../../domain/workspaceProjection';
 import type { FocusTriggerMetrics } from '../../../types/nodes';
+import { GRAPH_COMPOSER_DOCK_EXPAND_EVENT } from '../../../lib/graphComposerDockEvents';
 
 const workspaceStoreMock = vi.hoisted(() => ({
   selectedWorkspaceId: 'workspace-1',
@@ -34,17 +35,28 @@ vi.mock('./GraphUserNode', () => ({
   GraphUserNode: ({
     detailLevel,
     hoverCardContent,
+    onFocus,
   }: {
     detailLevel?: string;
     hoverCardContent?: React.ReactNode;
+    onFocus?: (metrics?: FocusTriggerMetrics) => void;
   }) => (
     <div>
       <div data-testid="user-detail">{detailLevel ?? 'none'}</div>
+      <button type="button" onClick={() => onFocus?.({ clickAt: 12, pointerDownAt: 8 })}>user node</button>
       {hoverCardContent}
     </div>
   ),
 }));
-vi.mock('./GraphAssistantNode', () => ({ GraphAssistantNode: () => <div /> }));
+vi.mock('./GraphAssistantNode', () => ({
+  GraphAssistantNode: ({
+    onFocus,
+  }: {
+    onFocus?: (metrics?: FocusTriggerMetrics) => void;
+  }) => (
+    <button type="button" onClick={() => onFocus?.({ clickAt: 14, pointerDownAt: 9 })}>assistant node</button>
+  ),
+}));
 vi.mock('./GraphCommitNode', () => ({
   GraphCommitNode: ({
     onContextMenu,
@@ -95,6 +107,15 @@ vi.mock('./GraphDerivedCommitGroupNode', () => ({
   ),
 }));
 vi.mock('./GraphSummaryNode', () => ({ GraphSummaryNode: () => <div /> }));
+vi.mock('./GraphThreadLinkNode', () => ({
+  GraphThreadLinkNode: ({
+    onFocus,
+  }: {
+    onFocus?: (metrics?: FocusTriggerMetrics) => void;
+  }) => (
+    <button type="button" onClick={() => onFocus?.({ clickAt: 16, pointerDownAt: 11 })}>thread link node</button>
+  ),
+}));
 
 vi.mock('../../NodeHoverCardContent', () => ({
   NodeHoverCardContent: ({ entity }: { entity?: ProjectedNodeEntity }) => (
@@ -390,6 +411,103 @@ describe('GraphNodeDispatcher', () => {
 
     expect(screen.getByTestId('user-detail').textContent).toBe('minimal');
     expect(screen.getByText('hover entity kind: user_message')).toBeTruthy();
+  });
+
+  it('expands the graph composer dock when user and assistant message cards receive focus', () => {
+    const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+    const makeProps = (kind: 'user_message' | 'assistant_message', id: string) => ({
+      id,
+      type: kind,
+      selected: false,
+      isConnectable: false,
+      dragging: false,
+      zIndex: 0,
+      xPos: 0,
+      yPos: 0,
+      data: {
+        entity: {
+          entityId: `message:${id}`,
+          kind,
+          messageId: id,
+          focusMessageId: id,
+          sortTs: 0,
+          message: {
+            id,
+            role: kind === 'user_message' ? 'user' : 'assistant',
+            content: 'Conversation message',
+            createdAt: '2026-05-19T00:00:00.000Z',
+            updatedAt: '2026-05-19T00:00:00.000Z',
+          },
+          preview: 'Conversation message',
+          shortLabel: kind === 'user_message' ? 'User' : 'Assistant',
+        },
+        isSelected: false,
+        onFocus: () => {},
+        onSelect: () => {},
+        onContextMenu: () => {},
+      },
+    });
+
+    render(
+      <>
+        {React.createElement(GraphNodeDispatcher as any, makeProps('user_message', 'user-1'))}
+        {React.createElement(GraphNodeDispatcher as any, makeProps('assistant_message', 'assistant-1'))}
+      </>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'user node' }));
+    fireEvent.click(screen.getByRole('button', { name: 'assistant node' }));
+
+    expect(dispatchSpy.mock.calls.filter(([event]) => event.type === GRAPH_COMPOSER_DOCK_EXPAND_EVENT)).toHaveLength(2);
+  });
+
+  it('opens converted subgraph thread links through the thread switch callback', () => {
+    const onFocus = vi.fn();
+    const onOpenThread = vi.fn();
+    const props = {
+      id: 'thread-link:user-2',
+      type: 'thread_link',
+      selected: false,
+      isConnectable: false,
+      dragging: false,
+      zIndex: 0,
+      xPos: 0,
+      yPos: 0,
+      data: {
+        entity: {
+          entityId: 'thread_link:user-2',
+          kind: 'thread_link',
+          messageId: 'thread-link:user-2',
+          focusMessageId: 'user-2',
+          sortTs: 0,
+          message: {
+            id: 'thread-link:user-2',
+            role: 'user',
+            content: 'Nested follow-up',
+            parentId: 'assistant-1',
+            createdAt: '2026-05-19T00:00:00.000Z',
+            updatedAt: '2026-05-19T00:00:00.000Z',
+          },
+          preview: 'Nested follow-up',
+          shortLabel: 'Thread',
+          threadRootId: 'user-2',
+        },
+        isSelected: false,
+        onFocus,
+        onOpenThread,
+        onSelect: () => {},
+        onContextMenu: () => {},
+      },
+    };
+
+    render(
+      React.createElement(GraphNodeDispatcher as any, props)
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'thread link node' }));
+
+    expect(onOpenThread).toHaveBeenCalledWith('user-2');
+    expect(onFocus).not.toHaveBeenCalled();
   });
 
   it('keeps hover content for focused low-detail nodes', () => {
