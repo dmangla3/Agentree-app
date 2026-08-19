@@ -8,6 +8,7 @@ vi.mock('../lib/graphInteractionGate', () => ({
   isGraphInteractionGateIdle: vi.fn(() => true),
   scheduleMessagesRefreshWhenGraphIdle: vi.fn(() => Promise.resolve()),
   scheduleLocalCommitGraphRefreshWhenGraphIdle: vi.fn(() => Promise.resolve()),
+  scheduleLocalNodesRefreshWhenGraphIdle: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../hooks/useHotSendMessageDeltas', () => ({
@@ -21,6 +22,7 @@ vi.mock('../lib/perfRecorder', () => ({
 import {
   isGraphInteractionGateIdle,
   scheduleLocalCommitGraphRefreshWhenGraphIdle,
+  scheduleLocalNodesRefreshWhenGraphIdle,
   scheduleMessagesRefreshWhenGraphIdle,
 } from '../lib/graphInteractionGate';
 import { catchUpHotSendMessageDeltas } from '../hooks/useHotSendMessageDeltas';
@@ -35,6 +37,7 @@ describe('agentRunWorkspaceRefresh', () => {
     vi.mocked(isGraphInteractionGateIdle).mockReturnValue(true);
     vi.mocked(scheduleMessagesRefreshWhenGraphIdle).mockClear();
     vi.mocked(scheduleLocalCommitGraphRefreshWhenGraphIdle).mockClear();
+    vi.mocked(scheduleLocalNodesRefreshWhenGraphIdle).mockClear();
     vi.mocked(catchUpHotSendMessageDeltas).mockClear();
     vi.mocked(recordPerfEvent).mockClear();
     useRunStatusStore.getState().clearAllRunStatus();
@@ -67,6 +70,11 @@ describe('agentRunWorkspaceRefresh', () => {
     });
     expect(scheduleMessagesRefreshWhenGraphIdle).toHaveBeenCalledTimes(1);
     expect(scheduleMessagesRefreshWhenGraphIdle).toHaveBeenCalledWith(
+      queryClient,
+      'workspace-1',
+      { reason: 'agent-terminal+agent-finalize-ack' },
+    );
+    expect(scheduleLocalNodesRefreshWhenGraphIdle).toHaveBeenCalledWith(
       queryClient,
       'workspace-1',
       { reason: 'agent-terminal+agent-finalize-ack' },
@@ -197,6 +205,11 @@ describe('agentRunWorkspaceRefresh', () => {
       refetchType: 'none',
     });
     expect(scheduleMessagesRefreshWhenGraphIdle).toHaveBeenCalledWith(
+      queryClient,
+      'workspace-1',
+      { reason: 'agent-finalize-ack' },
+    );
+    expect(scheduleLocalNodesRefreshWhenGraphIdle).toHaveBeenCalledWith(
       queryClient,
       'workspace-1',
       { reason: 'agent-finalize-ack' },

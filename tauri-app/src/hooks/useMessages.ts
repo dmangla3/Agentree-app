@@ -59,6 +59,33 @@ const mergeServerMessages = (current: Message[] | undefined, incoming: Message[]
     return Array.from(merged.values()).sort(byCreatedAt);
 };
 
+export const removeMessageBranchFromCache = (
+    current: Message[] | undefined,
+    rootMessageId: string
+): Message[] => {
+    const messages = current ?? [];
+    if (!rootMessageId || messages.length === 0) return messages;
+
+    const childrenByParentId = new Map<string, string[]>();
+    for (const message of messages) {
+        if (!message.parentId) continue;
+        const children = childrenByParentId.get(message.parentId) ?? [];
+        children.push(message.id);
+        childrenByParentId.set(message.parentId, children);
+    }
+
+    const idsToRemove = new Set<string>();
+    const pending = [rootMessageId];
+    while (pending.length > 0) {
+        const id = pending.pop();
+        if (!id || idsToRemove.has(id)) continue;
+        idsToRemove.add(id);
+        pending.push(...(childrenByParentId.get(id) ?? []));
+    }
+
+    return messages.filter((message) => !idsToRemove.has(message.id));
+};
+
 export const useMessages = (
     workspaceId: string | null,
     options: { enabled?: boolean } = {}
@@ -301,6 +328,7 @@ export const useSendMessage = () => {
             contextParentId,
             baseCommitSha,
             baseSelectedFromNodeId,
+            threadId,
             threadOriginId,
             signal,
         }: {
@@ -320,6 +348,7 @@ export const useSendMessage = () => {
             contextParentId?: string | null;
             baseCommitSha?: string | null;
             baseSelectedFromNodeId?: string | null;
+            threadId?: string | null;
             threadOriginId?: string | null;
             perfFlowId?: string | null;
             signal?: AbortSignal;
@@ -339,6 +368,7 @@ export const useSendMessage = () => {
                 contextParentId,
                 baseCommitSha,
                 baseSelectedFromNodeId,
+                threadId,
                 threadOriginId,
             }, { signal });
             return response.data;
@@ -405,6 +435,20 @@ export const useDeleteMessageBranch = () => {
                 .catch(() => undefined);
         },
         onSuccess: (_, variables) => {
+            queryClient.setQueryData<Message[]>(
+                ['messages', variables.workspaceId],
+                (current) => removeMessageBranchFromCache(current, variables.messageId)
+            );
+            queryClient.setQueryData<any>(
+                ['graph-snapshot', variables.workspaceId],
+                (current: any) => current && Array.isArray(current.messages)
+                    ? {
+                        ...current,
+                        messages: removeMessageBranchFromCache(current.messages, variables.messageId),
+                        cacheWriteDisabled: true,
+                    }
+                    : current
+            );
             queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(variables.workspaceId) });
             void scheduleMessagesRefreshWhenGraphIdle(queryClient, variables.workspaceId, {
                 refetchActive: true,

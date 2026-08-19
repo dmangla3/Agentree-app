@@ -8,9 +8,8 @@ import { GRAPH_COMPOSER_DOCK_COLLAPSE_EVENT, GRAPH_COMPOSER_DOCK_EXPAND_EVENT } 
 
 vi.mock('../composer/GraphDockComposer', () => ({
   GraphDockComposer: () => (
-    <div
-      data-testid="mock-graph-dock-composer"
-    >
+    <div data-testid="mock-graph-dock-composer">
+      <input aria-label="Mock graph composer prompt" data-testid="mock-graph-dock-composer-input" defaultValue="" />
       composer
     </div>
   ),
@@ -36,12 +35,25 @@ describe('GraphComposerDock', () => {
     render(<GraphComposerDock isVisible={true} />);
     await user.click(screen.getByRole('button', { name: 'Collapse graph composer' }));
 
-    expect(screen.queryByTestId('mock-graph-dock-composer')).toBeNull();
+    expect(screen.getByTestId('graph-composer-dock').hasAttribute('hidden')).toBe(true);
     expect(screen.getByTestId('graph-composer-dock-pill')).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Expand graph composer' }));
 
+    expect(screen.getByTestId('graph-composer-dock').hasAttribute('hidden')).toBe(false);
     expect(screen.getByTestId('mock-graph-dock-composer')).toBeTruthy();
+  });
+
+  it('preserves graph composer draft while collapsed', async () => {
+    const user = userEvent.setup();
+
+    render(<GraphComposerDock isVisible={true} />);
+    await user.type(screen.getByLabelText('Mock graph composer prompt'), 'keep this draft');
+
+    await user.click(screen.getByRole('button', { name: 'Collapse graph composer' }));
+    await user.click(screen.getByRole('button', { name: 'Expand graph composer' }));
+
+    expect((screen.getByLabelText('Mock graph composer prompt') as HTMLInputElement).value).toBe('keep this draft');
   });
 
   it('collapses on graph movement and expands on conversation node focus events', async () => {
@@ -49,12 +61,13 @@ describe('GraphComposerDock', () => {
 
     window.dispatchEvent(new Event(GRAPH_COMPOSER_DOCK_COLLAPSE_EVENT));
 
-    await waitFor(() => expect(screen.queryByTestId('mock-graph-dock-composer')).toBeNull());
+    await waitFor(() => expect(screen.getByTestId('graph-composer-dock').hasAttribute('hidden')).toBe(true));
     expect(screen.getByTestId('graph-composer-dock-pill')).toBeTruthy();
 
     window.dispatchEvent(new Event(GRAPH_COMPOSER_DOCK_EXPAND_EVENT));
 
-    await waitFor(() => expect(screen.getByTestId('mock-graph-dock-composer')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('graph-composer-dock').hasAttribute('hidden')).toBe(false));
+    expect(screen.getByTestId('mock-graph-dock-composer')).toBeTruthy();
   });
 
   it('does not import the legacy ChatInput implementation', async () => {
@@ -119,14 +132,18 @@ describe('GraphComposerDock', () => {
     expect(composerSource).not.toContain("selectedFlow ? `${selectedFlow.label} · ${flowParallelCount} parallel runs` : modelSelectorLabel");
   });
 
-  it('does not keep an internal new-thread mode in the graph dock composer', async () => {
+  it('handles explicit thread composer targets inside the graph dock composer', async () => {
     const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
     const composerSource = readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
 
     expect(composerSource).not.toContain('agentree:startNewThread');
-    expect(composerSource).not.toContain('setTargetMode');
-    expect(composerSource).not.toContain("'new-thread'");
-    expect(composerSource).toContain('Reply');
+    expect(composerSource).toContain('threadComposerTarget');
+    expect(composerSource).toContain("type ComposerTargetMode = 'reply' | 'new-thread';");
+    expect(composerSource).toContain("setComposerTargetMode('new-thread');");
+    expect(composerSource).toContain('setPendingThreadId(threadComposerTarget.threadId)');
+    expect(composerSource).toContain('createThreadSession.mutateAsync');
+    expect(composerSource).toContain("setContextPolicy('fresh');");
+    expect(composerSource).toContain("setComposerTargetMode('reply');");
   });
 });

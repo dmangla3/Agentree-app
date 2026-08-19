@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '../test/setup';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GraphDockComposer } from './GraphDockComposer';
@@ -13,6 +13,7 @@ import { TooltipProvider } from '../../@/components/ui/tooltip';
 const hookMocks = vi.hoisted(() => ({
   steerAgentRun: vi.fn(),
   sendMessage: vi.fn(),
+  createThreadSession: vi.fn(),
   setSelectedFlowId: vi.fn(),
   runFlow: vi.fn(),
 }));
@@ -20,6 +21,8 @@ const hookMocks = vi.hoisted(() => ({
 vi.mock('../lib/agentClient', () => ({
   agentClient: {
     steerAgentRun: hookMocks.steerAgentRun,
+    hasRuntime: vi.fn(() => false),
+    upsertLocalNode: vi.fn(async () => undefined),
     listLocalRefs: vi.fn(async () => []),
     listAllCommits: vi.fn(async () => []),
   },
@@ -58,6 +61,12 @@ vi.mock('../hooks/useMessages', () => ({
   }),
   useCommitAncestors: () => ({ data: { commits: [] } }),
   useCommitDescendants: () => ({ data: { commits: [] } }),
+}));
+
+vi.mock('../hooks/useThreadSessions', () => ({
+  useCreateThreadSession: () => ({
+    mutateAsync: hookMocks.createThreadSession,
+  }),
 }));
 
 vi.mock('../hooks/useAgentFlowRunner', () => ({
@@ -122,6 +131,18 @@ describe('GraphDockComposer steering behavior', () => {
     hookMocks.steerAgentRun.mockReset();
     hookMocks.steerAgentRun.mockResolvedValue(undefined);
     hookMocks.sendMessage.mockReset();
+    hookMocks.createThreadSession.mockReset();
+    hookMocks.createThreadSession.mockResolvedValue({
+      id: 'created-thread',
+      workspaceId: 'workspace-1',
+      title: null,
+      status: 'active',
+      createdAt: '2026-05-27T00:00:00.000Z',
+      updatedAt: '2026-05-27T00:00:00.000Z',
+      baseCommitSha: null,
+      firstMessageId: null,
+      source: 'user',
+    });
     hookMocks.setSelectedFlowId.mockReset();
     hookMocks.runFlow.mockReset();
     useRunStatusStore.getState().clearAllRunStatus();
@@ -134,6 +155,7 @@ describe('GraphDockComposer steering behavior', () => {
       composerDraftByWorkspace: {},
       composerBaseCommitOverride: null,
       composerContextPreview: null,
+      threadComposerTarget: null,
     });
   });
 
@@ -179,5 +201,121 @@ describe('GraphDockComposer steering behavior', () => {
     });
     expect(hookMocks.sendMessage).not.toHaveBeenCalled();
     expect((composer as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('switches the graph dock composer to a fresh root target when the graph selects a thread target', async () => {
+    const user = userEvent.setup();
+    renderComposer([
+      message({
+        id: 'assistant-live',
+        role: 'assistant',
+        content: 'Running assistant',
+        status: 'completed' as any,
+        output_commit_sha: 'parent-output',
+      }),
+    ]);
+
+    act(() => {
+      useWorkspaceStore.getState().setThreadComposerTarget({
+        workspaceId: 'workspace-1',
+        threadId: 'pending-thread',
+        reason: 'create-thread',
+        nonce: 1,
+      });
+    });
+
+    expect(await screen.findByText('New thread')).toBeTruthy();
+    expect(screen.getByText('Workspace root')).toBeTruthy();
+
+    const composer = screen.getByPlaceholderText('Ask anything...');
+    await user.type(composer, 'Start a separate approach');
+    await user.click(screen.getByRole('button', { name: 'Send graph composer message' }));
+
+    await waitFor(() => {
+      expect(hookMocks.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        parentId: null,
+        contextPolicy: 'fresh',
+        threadId: 'pending-thread',
+        threadOriginId: 'pending-thread',
+      }));
+    });
+  });
+
+  it('returns the graph dock composer to reply mode after sending a new thread message', async () => {
+    const user = userEvent.setup();
+    hookMocks.sendMessage.mockResolvedValue({
+      userMessage: message({ id: 'user-root', role: 'user', parentId: null }),
+      assistantMessages: [message({ id: 'assistant-root', role: 'assistant', parentId: 'user-root' })],
+    });
+    renderComposer([
+      message({
+        id: 'assistant-live',
+        role: 'assistant',
+        content: 'Previous assistant reply',
+        status: 'completed' as any,
+        output_commit_sha: 'parent-output',
+      }),
+    ]);
+
+    act(() => {
+      useWorkspaceStore.getState().setThreadComposerTarget({
+        workspaceId: 'workspace-1',
+        threadId: 'pending-thread',
+        reason: 'create-thread',
+        nonce: 1,
+      });
+    });
+
+    expect(await screen.findByText('New thread')).toBeTruthy();
+
+    const composer = screen.getByPlaceholderText('Ask anything...');
+    await user.type(composer, 'Start a separate approach');
+    await user.click(screen.getByRole('button', { name: 'Send graph composer message' }));
+
+    await waitFor(() => {
+      expect(hookMocks.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        threadId: 'pending-thread',
+      }));
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Reply to')).toBeTruthy();
+      expect(screen.queryByText('New thread')).toBeNull();
+    });
+  });
+
+  it('keeps the fresh root target when thread creation also clears graph focus', async () => {
+    renderComposer([
+      message({
+        id: 'assistant-live',
+        role: 'assistant',
+        content: 'Previous assistant reply',
+        status: 'completed' as any,
+        output_commit_sha: 'parent-output',
+      }),
+    ]);
+
+    act(() => {
+      useWorkspaceStore.getState().setThreadComposerTarget({
+        workspaceId: 'workspace-1',
+        threadId: 'pending-thread',
+        reason: 'create-thread',
+        nonce: 1,
+      });
+    });
+
+    expect(await screen.findByText('New thread')).toBeTruthy();
+
+    act(() => {
+      useWorkspaceStore.getState().dispatchFocus({
+        messageId: null,
+        source: 'graph',
+        metadata: { reason: 'create-thread', threadRootId: 'pending-thread' },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('New thread')).toBeTruthy();
+      expect(screen.queryByText('Reply to')).toBeNull();
+    });
   });
 });

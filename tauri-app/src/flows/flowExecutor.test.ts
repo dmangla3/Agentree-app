@@ -42,12 +42,13 @@ describe('executeFlow', () => {
           });
         }
         if (input.templateId === 'Synthesizer') {
-          expect(input.args.candidates).toEqual([
-            expect.objectContaining({ id: 'impl-1' }),
-            expect.objectContaining({ id: 'impl-2' }),
-          ]);
+          expect(input.args.candidate_commits).toEqual(['commit-1', 'commit-2']);
           expect(input.args.request).toBe('Build the feature');
           expect(input.requiresFinalizedCommit).toBe(true);
+          expect(input.prompt).toContain('commit-1');
+          expect(input.prompt).toContain('commit-2');
+          expect(input.prompt).not.toContain('implementation 1');
+          expect(input.prompt).not.toContain('implementation 2');
           return node({
             id: 'synthesizer-1',
             label: 'Synthesizer',
@@ -58,28 +59,25 @@ describe('executeFlow', () => {
         if (input.templateId === 'Reviewer') {
           if (nextCount === 1) {
             expect(input.args.request).toBe('Build the feature');
-            expect(input.args.target_node).toEqual(expect.objectContaining({ id: 'synthesizer-1' }));
             expect(input.args.commit).toBe('commit-synth-1');
-            expect(input.args.latest_fix).toBeNull();
+            expect(input.args.latest_fix_commit).toBeNull();
             expect(input.args.criteria).toBe('Review correctness against the original request.');
             expect(input.prompt).toContain('Original request:');
             expect(input.prompt).toContain('Build the feature');
-            expect(input.prompt).toContain('Latest fix attempt, if any:');
+            expect(input.prompt).toContain('Latest fix commit, if any:');
             expect(input.prompt).not.toContain('counterpoint: reviewer missed context');
-            expect(input.prompt).toContain('Synthesized implementation 2');
+            expect(input.prompt).not.toContain('Synthesized implementation 2');
             expect(input.prompt).not.toContain('null');
             return node({ id: 'reviewer-1', label: 'Reviewer 1', message: 'verdict: fail' });
           }
           expect(input.args.request).toBe('Build the feature');
           expect(input.args.commit).toBe('commit-fix-1');
-          expect(input.args.latest_fix).toEqual(expect.objectContaining({
-            id: 'fixer-1',
-            message: expect.stringContaining('counterpoint: reviewer missed context'),
-          }));
+          expect(input.args.latest_fix_commit).toBe('commit-fix-1');
           expect(input.prompt).toContain('Original request:');
           expect(input.prompt).toContain('Build the feature');
-          expect(input.prompt).toContain('counterpoint: reviewer missed context');
-          expect(input.prompt).toContain('Synthesized implementation 2');
+          expect(input.prompt).toContain('commit-fix-1');
+          expect(input.prompt).not.toContain('counterpoint: reviewer missed context');
+          expect(input.prompt).not.toContain('Synthesized implementation 2');
           return node({ id: 'reviewer-2', label: 'Reviewer 2', message: 'verdict: pass' });
         }
         if (input.templateId === 'Fixer') {
@@ -112,7 +110,7 @@ describe('executeFlow', () => {
     expect(calls[2].templateId).toBe('Synthesizer');
     expect(calls[3]).toEqual(expect.objectContaining({
       templateId: 'Reviewer',
-      parent: expect.objectContaining({ id: 'synthesizer-1' }),
+      parent: 'root',
     }));
     expect(calls[4]).toEqual(expect.objectContaining({
       templateId: 'Fixer',
@@ -120,7 +118,7 @@ describe('executeFlow', () => {
     }));
     expect(calls[5]).toEqual(expect.objectContaining({
       templateId: 'Reviewer',
-      parent: expect.objectContaining({ id: 'reviewer-1' }),
+      parent: 'root',
     }));
   });
 
@@ -211,11 +209,9 @@ describe('executeFlow', () => {
           });
         }
         if (input.templateId === 'Reviewer') {
-          expect(input.args.target_node).toEqual(expect.objectContaining({
-            id: 'synthesizer',
-            commit: 'commit-synth',
-          }));
           expect(input.args.commit).toBe('commit-synth');
+          expect(input.args.latest_fix_commit).toBeNull();
+          expect(input.prompt).not.toContain('Using the first candidate unchanged');
           return node({ id: 'reviewer', message: 'verdict: pass' });
         }
         throw new Error(`Unexpected template ${input.templateId}`);

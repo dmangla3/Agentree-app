@@ -27,8 +27,20 @@ describe('Merge panel UI shell', () => {
     expect(source).toContain('CardHeader className="p-0"');
     expect(source).toContain('CardContent className="space-y-2 p-0"');
     expect(source).toContain('ScrollArea className="h-52');
-    expect(source).toContain('Choose a target before selecting sources.');
-    expect(source).toContain('lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]');
+    expect(source).toContain('Collect source commits first, then choose the target commit when you are ready to preview or apply.');
+    expect(source).toContain('Select a target when ready to preview or apply the queued sources.');
+    expect(source).not.toContain('Choose a target before selecting sources.');
+    expect(source).toContain('lg:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]');
+  });
+
+  it('does not nest checkbox buttons inside commit row buttons', () => {
+    const source = readFileSync(join(process.cwd(), 'src/components/integration/SetupStage.tsx'), 'utf8');
+
+    expect(source).toContain('if (showCheckbox) {');
+    expect(source).toContain('role="checkbox"');
+    expect(source).not.toContain('<Checkbox');
+    expect(source).toContain('<button');
+    expect(source.indexOf('if (showCheckbox) {')).toBeLessThan(source.indexOf('<button'));
   });
 
   it('keeps merge footer actions compact', () => {

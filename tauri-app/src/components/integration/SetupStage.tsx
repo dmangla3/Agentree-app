@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef, type KeyboardEvent } from 'react';
 import { Target, GitBranch, GitMerge, X, ArrowRight, Loader2, Check, Bot, ChevronDown, Sparkles, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useIntegrationStore } from '../../stores/integrationStore';
@@ -20,7 +20,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../../@/components/
 import { Label } from '../../../@/components/ui/label';
 import { Badge } from '../../../@/components/ui/badge';
 import { ScrollArea } from '../../../@/components/ui/scroll-area';
-import { Checkbox } from '../../../@/components/ui/checkbox';
 import { Popover, PopoverContent, PopoverTrigger } from '../../../@/components/ui/popover';
 import { UnifiedAgentModelSelector } from '../UnifiedAgentModelSelector';
 
@@ -33,7 +32,6 @@ interface CommitListItemProps {
   isSelected?: boolean;
   isSelectable?: boolean;
   onSelect?: () => void;
-  onToggle?: (checked: boolean) => void;
   showCheckbox?: boolean;
   isChecked?: boolean;
 }
@@ -43,33 +41,29 @@ function CommitListItem({
   isSelected, 
   isSelectable = true,
   onSelect,
-  onToggle,
   showCheckbox = false,
   isChecked = false,
 }: CommitListItemProps) {
-  return (
-    <button
-      onClick={() => onSelect?.()}
-      disabled={!isSelectable && !showCheckbox}
-      className={cn(
-        'flex min-h-8 w-full items-center gap-2 rounded-lg border px-2 py-1 text-left text-[11px] transition-[background-color,border-color,box-shadow,transform,opacity] duration-150 active:scale-[0.99]',
-        isSelected 
-          ? 'border-[hsl(var(--app-graph-commit)/0.34)] bg-[hsl(var(--app-graph-commit)/0.1)] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]' 
-          : isSelectable || showCheckbox
-            ? 'border-transparent hover:border-[hsl(var(--app-border)/0.64)] hover:bg-[hsl(var(--app-panel-strong)/0.68)]'
-            : 'opacity-50 cursor-not-allowed'
-      )}
-    >
-      {showCheckbox && (
-        <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
-          <Checkbox 
-            checked={isChecked}
-            onCheckedChange={onToggle}
-            indicatorMode="check"
-            className="h-3.5 w-3.5 rounded-[4px]"
-          />
-        </div>
-      )}
+  const isDisabled = !isSelectable && !showCheckbox;
+  const rowClassName = cn(
+    'flex min-h-8 w-full items-center gap-2 rounded-lg border px-2 py-1 text-left text-[11px] transition-[background-color,border-color,box-shadow,transform,opacity] duration-150 active:scale-[0.99]',
+    isSelected 
+      ? 'border-[hsl(var(--app-graph-commit)/0.34)] bg-[hsl(var(--app-graph-commit)/0.1)] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]' 
+      : isSelectable || showCheckbox
+        ? 'cursor-pointer border-transparent hover:border-[hsl(var(--app-border)/0.64)] hover:bg-[hsl(var(--app-panel-strong)/0.68)]'
+        : 'opacity-50 cursor-not-allowed'
+  );
+  const handleSelect = () => {
+    if (isDisabled) return;
+    onSelect?.();
+  };
+  const handleCheckboxRowKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    handleSelect();
+  };
+  const rowContent = (
+    <>
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <span className="shrink-0 rounded border border-[hsl(var(--app-border)/0.46)] bg-[hsl(var(--app-bg-muted)/0.45)] px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground tabular-nums">
           {commit.sha.slice(0, 7)}
@@ -90,6 +84,42 @@ function CommitListItem({
       {isSelected && !showCheckbox && (
         <Check className="h-3.5 w-3.5 shrink-0 text-[hsl(var(--app-graph-commit))]" />
       )}
+    </>
+  );
+
+  if (showCheckbox) {
+    return (
+      <div
+        role="checkbox"
+        aria-checked={isChecked}
+        tabIndex={0}
+        onClick={handleSelect}
+        onKeyDown={handleCheckboxRowKeyDown}
+        className={rowClassName}
+      >
+        <span
+          aria-hidden="true"
+          className={cn(
+            'flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border shadow-xs transition-colors',
+            isChecked
+              ? 'border-primary bg-primary text-primary-foreground'
+              : 'border-input bg-[hsl(var(--app-bg-muted)/0.45)] text-transparent'
+          )}
+        >
+          <Check className="h-3 w-3" />
+        </span>
+        {rowContent}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={handleSelect}
+      disabled={isDisabled}
+      className={rowClassName}
+    >
+      {rowContent}
     </button>
   );
 }
@@ -245,7 +275,6 @@ function MultiSourceSelector({
                   showCheckbox={true}
                   isChecked={isChecked}
                   onSelect={() => handleToggle(commit.sha, !isChecked)}
-                  onToggle={(checked) => handleToggle(commit.sha, checked as boolean)}
                 />
               );
             })
@@ -359,6 +388,7 @@ export function SetupStage() {
   const { 
     session, 
     setTarget, 
+    clearTarget,
     addSource, 
     moveToStage, 
     closeMergeSession,
@@ -869,11 +899,38 @@ export function SetupStage() {
             <h3 className="text-sm font-semibold text-foreground">Configure Merge</h3>
           </div>
           <p className="max-w-2xl text-xs leading-5 text-muted-foreground">
-            Select the target commit and one or more source commits to merge into it.
+            Collect source commits first, then choose the target commit when you are ready to preview or apply.
           </p>
         </div>
 
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
+          {/* Source Selection */}
+          <Card className="gap-2 overflow-hidden border-[hsl(var(--app-border)/0.66)] bg-[hsl(var(--app-panel)/0.72)] p-2.5 shadow-[0_14px_34px_-30px_hsl(var(--foreground)/0.4),inset_0_1px_0_hsl(var(--foreground)/0.035)]">
+            <CardHeader className="p-0">
+              <CardTitle className="flex items-center gap-1.5 text-[13px] leading-none">
+                <GitBranch className="h-3.5 w-3.5 text-[hsl(var(--app-graph-agent))]" />
+                Sources ({session.sources.length})
+                {session.sources.length > 1 && (
+                  <Badge variant="secondary" className="rounded-full border border-[hsl(var(--app-border)/0.54)] bg-[hsl(var(--app-bg-muted)/0.46)] text-[10px]">Multi-source</Badge>
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 p-0">
+              <MultiSourceSelector
+                commits={sourceCommits}
+                selectedShas={sourceShas}
+                onSelectionChange={handleSourceSelectionChange}
+                excludeSha={session.target?.commitSha ?? null}
+                isLoading={isLoadingTarget}
+              />
+              {!session.target ? (
+                <div className="rounded-xl border border-dashed border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.28)] px-3 py-2 text-center text-xs text-muted-foreground">
+                  Select a target when ready to preview or apply the queued sources.
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+
           {/* Target Selection */}
           <Card className="gap-2 overflow-hidden border-[hsl(var(--app-border)/0.66)] bg-[hsl(var(--app-panel)/0.72)] p-2.5 shadow-[0_14px_34px_-30px_hsl(var(--foreground)/0.4),inset_0_1px_0_hsl(var(--foreground)/0.035)]">
             <CardHeader className="p-0">
@@ -898,10 +955,7 @@ export function SetupStage() {
                     size="icon"
                     className="h-8 w-8 rounded-lg text-muted-foreground active:scale-[0.96]"
                     onClick={() => {
-                      const { session, openMergeSession } = useIntegrationStore.getState();
-                      if (session) {
-                        openMergeSession(session.workspaceId, session.repoPath);
-                      }
+                      clearTarget();
                     }}
                   >
                     <X className="h-3 w-3" />
@@ -916,35 +970,6 @@ export function SetupStage() {
                   isLoading={isLoadingTarget}
                 />
               )}
-            </CardContent>
-          </Card>
-
-          {/* Source Selection */}
-          <Card className="gap-2 overflow-hidden border-[hsl(var(--app-border)/0.66)] bg-[hsl(var(--app-panel)/0.72)] p-2.5 shadow-[0_14px_34px_-30px_hsl(var(--foreground)/0.4),inset_0_1px_0_hsl(var(--foreground)/0.035)]">
-            <CardHeader className="p-0">
-              <CardTitle className="flex items-center gap-1.5 text-[13px] leading-none">
-                <GitBranch className="h-3.5 w-3.5 text-[hsl(var(--app-graph-agent))]" />
-                Sources ({session.sources.length})
-                {session.sources.length > 1 && (
-                  <Badge variant="secondary" className="rounded-full border border-[hsl(var(--app-border)/0.54)] bg-[hsl(var(--app-bg-muted)/0.46)] text-[10px]">Multi-source</Badge>
-                )}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2 p-0">
-              {session.target && (
-                <MultiSourceSelector
-                  commits={sourceCommits}
-                  selectedShas={sourceShas}
-                  onSelectionChange={handleSourceSelectionChange}
-                  excludeSha={session.target.commitSha}
-                  isLoading={isLoadingTarget}
-                />
-              )}
-              {!session.target ? (
-                <div className="rounded-xl border border-dashed border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.28)] px-3 py-4 text-center text-xs text-muted-foreground">
-                  Choose a target before selecting sources.
-                </div>
-              ) : null}
             </CardContent>
           </Card>
         </div>

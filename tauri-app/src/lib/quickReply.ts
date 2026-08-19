@@ -6,8 +6,6 @@ import { isActiveAgentRunStatus, isSteerableAssistantNode } from './agentRunStee
 type QuickReplyAgent = Pick<Agent, 'id' | 'type' | 'model_config'>;
 export type HoverReplyMode = 'reply' | 'steer';
 
-export const QUICK_REPLY_KEEP_HOVER_OPEN_EVENT = 'agentree:quick-reply-keep-hover-open';
-
 const clean = (value: unknown): string | null => (
   typeof value === 'string' && value.trim() ? value.trim() : null
 );

@@ -53,7 +53,7 @@ export function HomePage() {
     floatingChatInputParentId,
     closeFloatingChatInput,
   } = useWorkspaceStore();
-  const { data: workspacesData, isLoading: isLoadingWorkspaces } = useWorkspaces();
+  const { data: workspacesData, isLoading: isLoadingWorkspaces, isFetching: isFetchingWorkspaces } = useWorkspaces();
   const navigate = useNavigate();
   const { workspaceId } = useParams();
   const [searchParams] = useSearchParams();
@@ -90,7 +90,8 @@ export function HomePage() {
     selectedWorkspaceId,
     workspaces,
     isLoadingWorkspaces,
-  }), [isLoadingWorkspaces, selectedWorkspaceId, workspaceId, workspaces]);
+    isFetchingWorkspaces,
+  }), [isFetchingWorkspaces, isLoadingWorkspaces, selectedWorkspaceId, workspaceId, workspaces]);
   const canOpenSelectedWorkspace = Boolean(
     selectedWorkspaceId &&
     selectedWorkspace &&

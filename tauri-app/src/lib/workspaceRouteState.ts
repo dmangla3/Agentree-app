@@ -12,9 +12,11 @@ export function resolveWorkspaceRouteState(input: {
   selectedWorkspaceId: string | null;
   workspaces: Pick<Workspace, 'id'>[];
   isLoadingWorkspaces: boolean;
+  isFetchingWorkspaces?: boolean;
 }): WorkspaceRouteState {
   const workspaceIdParam = input.workspaceIdParam?.trim() || null;
   const workspaceIds = new Set(input.workspaces.map((workspace) => workspace.id));
+  const isWorkspaceListPending = input.isLoadingWorkspaces || input.isFetchingWorkspaces === true;
 
   if (workspaceIdParam) {
     if (workspaceIds.has(workspaceIdParam)) {
@@ -23,7 +25,7 @@ export function resolveWorkspaceRouteState(input: {
         : { type: 'select', workspaceId: workspaceIdParam };
     }
 
-    if (input.isLoadingWorkspaces) {
+    if (isWorkspaceListPending) {
       return { type: 'wait' };
     }
 
@@ -43,7 +45,7 @@ export function resolveWorkspaceRouteState(input: {
     return { type: 'none' };
   }
 
-  if (input.isLoadingWorkspaces) {
+  if (isWorkspaceListPending) {
     return { type: 'wait' };
   }
 

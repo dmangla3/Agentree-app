@@ -9,6 +9,7 @@ import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage 
 import { useAgents, type Agent } from '../hooks/useAgents';
 import { useWorkspaces } from '../hooks/useWorkspaces';
 import { useCommitAncestors, useCommitDescendants, useSendMessage } from '../hooks/useMessages';
+import { useCreateThreadSession } from '../hooks/useThreadSessions';
 import { useAgentFlowRunner } from '../hooks/useAgentFlowRunner';
 import { getEnabledTrackedGitRefs, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
 import { useTrackedRefs } from '../hooks/useTrackedRefs';
@@ -46,8 +47,8 @@ import {
   DropdownMenuTrigger,
 } from '../../@/components/ui/dropdown-menu';
 import { Popover, PopoverContent, PopoverTrigger } from '../../@/components/ui/popover';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../../@/components/ui/tooltip';
 import { sendHeadlessComposerMessage } from './headlessComposerSend';
+import { resolveComposerTargetModeAfterSuccessfulSend } from '../lib/composerSendParent';
 import {
   resolveGraphDockComposerAgent,
   resolveGraphDockComposerBase,
@@ -61,6 +62,7 @@ const FLOW_PARALLEL_MIN_COUNT = 2;
 const FLOW_PARALLEL_MAX_COUNT = 8;
 
 type ContextPolicy = 'continue' | 'fresh';
+type ComposerTargetMode = 'reply' | 'new-thread';
 
 interface SelectedGraphBaseCommit {
   sha: string;
@@ -162,7 +164,7 @@ const baseSourceLabel = (source: string | undefined): string => {
   if (source === 'reply-parent-output') return 'Parent output';
   if (source === 'reply-parent-base') return 'Parent base';
   if (source === 'latest-ancestor-output') return 'Ancestor output';
-  if (source === 'thread-root-base') return 'Thread root';
+  if (source === 'tracked-ref') return 'Tracked ref';
   if (source === 'workspace-base') return 'Workspace base';
   if (source === 'override') return 'Selected base';
   return 'Base';
@@ -179,6 +181,8 @@ export function GraphDockComposer() {
   const queryClient = useQueryClient();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const assistantNodeIdRef = useRef<string | null>(null);
+  const [composerTargetMode, setComposerTargetMode] = useState<ComposerTargetMode>('reply');
+  const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
   const [contextPolicy, setContextPolicy] = useState<ContextPolicy>('continue');
   const [selectedBaseCommit, setSelectedBaseCommit] = useState<SelectedGraphBaseCommit | null>(null);
   const [baseCommitSearch, setBaseCommitSearch] = useState('');
@@ -200,6 +204,8 @@ export function GraphDockComposer() {
     setSelectedAgentId,
     setComposerContextPreview,
     composerBaseCommitOverride,
+    threadComposerTarget,
+    clearThreadComposerTarget,
     getComposerDraft,
     setComposerDraft,
     clearComposerDraft,
@@ -212,6 +218,8 @@ export function GraphDockComposer() {
     setSelectedAgentId: state.setSelectedAgentId,
     setComposerContextPreview: state.setComposerContextPreview,
     composerBaseCommitOverride: state.composerBaseCommitOverride,
+    threadComposerTarget: state.threadComposerTarget,
+    clearThreadComposerTarget: state.clearThreadComposerTarget,
     getComposerDraft: state.getComposerDraft,
     setComposerDraft: state.setComposerDraft,
     clearComposerDraft: state.clearComposerDraft,
@@ -219,6 +227,7 @@ export function GraphDockComposer() {
   const { data: agents = [] } = useAgents();
   const { data: workspaces = [] } = useWorkspaces();
   const sendMessageMutation = useSendMessage();
+  const createThreadSession = useCreateThreadSession();
   const selectedWorkspace = useMemo(
     () => (workspaces as Workspace[]).find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
     [selectedWorkspaceId, workspaces]
@@ -240,7 +249,8 @@ export function GraphDockComposer() {
     enabled: Boolean(selectedWorkspaceRepoPath && selectedWorkspaceId),
     staleTime: 30_000,
   });
-  const trackedRefsQuery = useTrackedRefs(isBasePickerOpen ? selectedWorkspaceId : null);
+  const shouldLoadBaseRefs = isBasePickerOpen || composerTargetMode === 'new-thread';
+  const trackedRefsQuery = useTrackedRefs(shouldLoadBaseRefs ? selectedWorkspaceId : null);
   const enabledTrackedGitRefs = useMemo(
     () => getEnabledTrackedGitRefs(trackedRefsQuery.data ?? []),
     [trackedRefsQuery.data]
@@ -281,11 +291,18 @@ export function GraphDockComposer() {
     () => new Map(messages.map((message) => [message.id, message])),
     [messages]
   );
-  const target = resolveGraphDockComposerTarget({
+  const rawTarget = resolveGraphDockComposerTarget({
     focusedMessageId,
     lastFocusSource,
     lastFocusMetadata,
   });
+  const target = composerTargetMode === 'new-thread'
+    ? {
+      parentMessageId: null,
+      selectedNodeId: rawTarget.selectedNodeId,
+      focusedCommitSha: null,
+    }
+    : rawTarget;
   const parentMessage = useMemo(
     () => target.parentMessageId
       ? messages.find((message) => message.id === target.parentMessageId) ?? null
@@ -366,11 +383,13 @@ export function GraphDockComposer() {
   ), [agents, normalizedSelectedAgentRunCounts]);
   const selectedRunTotal = selectedAgentRuns.length;
   const base = resolveGraphDockComposerBase({
+    targetMode: composerTargetMode,
     replyParentMessageId: target.parentMessageId,
     selectedNodeId: target.selectedNodeId,
     focusedCommitSha: target.focusedCommitSha,
     messages,
     refs: localRefsQuery.data ?? [],
+    trackedRefs: trackedRefsQuery.data ?? [],
     workspace: selectedWorkspace,
     override: composerBaseCommitOverride,
   });
@@ -663,6 +682,26 @@ export function GraphDockComposer() {
     setBaseCommitSearch('');
   }, [base?.commitSha, selectedWorkspaceId, target.parentMessageId]);
 
+  const consumedThreadComposerTargetNonceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!threadComposerTarget || threadComposerTarget.workspaceId !== selectedWorkspaceId) return;
+    if (consumedThreadComposerTargetNonceRef.current === threadComposerTarget.nonce) return;
+    consumedThreadComposerTargetNonceRef.current = threadComposerTarget.nonce;
+    setComposerTargetMode('new-thread');
+    setPendingThreadId(threadComposerTarget.threadId);
+    setContextPolicy('fresh');
+    setSelectedContextStartId(null);
+    setSelectedMergeContextParentId(null);
+    clearThreadComposerTarget(threadComposerTarget.nonce);
+    window.setTimeout(() => textareaRef.current?.focus(), 0);
+  }, [clearThreadComposerTarget, selectedWorkspaceId, threadComposerTarget]);
+
+  useEffect(() => {
+    if (!rawTarget.parentMessageId && !rawTarget.focusedCommitSha) return;
+    setComposerTargetMode('reply');
+    setPendingThreadId(null);
+  }, [rawTarget.parentMessageId, rawTarget.focusedCommitSha]);
+
   useEffect(() => {
     if (mergeContextOptions.length === 0) {
       setSelectedMergeContextParentId(null);
@@ -737,6 +776,11 @@ export function GraphDockComposer() {
   const handleFlowSelection = useCallback((flowId: string) => {
     flowRunner.setSelectedFlowId(flowId === FLOW_NONE_ID ? '' : flowId);
   }, [flowRunner]);
+
+  const resetComposerTargetAfterSuccessfulSend = useCallback(() => {
+    setComposerTargetMode((current) => resolveComposerTargetModeAfterSuccessfulSend(current));
+    setPendingThreadId(null);
+  }, []);
 
   const updateFlowParallelCount = useCallback((value: number) => {
     setFlowParallelCount(clampFlowParallelCount(value));
@@ -817,10 +861,20 @@ export function GraphDockComposer() {
         await flowRunner.runFlow({ input: trimmedPrompt, count: flowParallelCount });
         clearComposerDraft(selectedWorkspaceId);
         setPrompt('');
+        resetComposerTargetAfterSuccessfulSend();
         return;
       }
 
-      const threadOriginId = target.parentMessageId ? null : crypto.randomUUID();
+      let threadId = target.parentMessageId ? null : pendingThreadId;
+      if (!target.parentMessageId && selectedWorkspaceId && (!threadId || threadId.startsWith('workspace-empty-thread:'))) {
+        const thread = await createThreadSession.mutateAsync({
+          workspaceId: selectedWorkspaceId,
+          source: 'user',
+          baseCommitSha: effectiveBase.commitSha,
+        });
+        threadId = thread.id;
+        setPendingThreadId(thread.id);
+      }
       for (const run of runsToSend) {
         const flowId = createSendFlowId();
         await sendHeadlessComposerMessage({
@@ -866,7 +920,8 @@ export function GraphDockComposer() {
           perfFlowId: flowId,
           perfSource: 'GraphDockComposer',
           setupProgress: 'Starting graph composer run...',
-          threadOriginId,
+          threadId,
+          threadOriginId: threadId,
           meta: {
             composer_surface: 'graph-dock',
             base_source: effectiveBase.source,
@@ -877,6 +932,7 @@ export function GraphDockComposer() {
       }
       clearComposerDraft(selectedWorkspaceId);
       setPrompt('');
+      resetComposerTargetAfterSuccessfulSend();
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : 'Failed to send message.';
       recordSendFlowEvent('graph-dock.error', {
@@ -897,6 +953,7 @@ export function GraphDockComposer() {
   }, [
     agent,
     clearComposerDraft,
+    createThreadSession,
     effectiveBase,
     effectiveContextParentId,
     effectiveContextPolicy,
@@ -906,8 +963,10 @@ export function GraphDockComposer() {
     isPrimaryActionBusy,
     isSteeringRunningAssistant,
     messages,
+    pendingThreadId,
     prompt,
     queryClient,
+    resetComposerTargetAfterSuccessfulSend,
     selectedWorkspaceId,
     selectedAgentRunItems,
     selectedFlow,
@@ -916,6 +975,7 @@ export function GraphDockComposer() {
     workspaces,
   ]);
 
+  const targetModeLabel = composerTargetMode === 'new-thread' ? 'New thread' : 'Reply to';
   const sendButtonLabel = isSteeringRunningAssistant ? 'Steer' : selectedFlow ? 'Run Flow' : 'Send';
   const sendButtonBusyLabel = isSteeringRunningAssistant ? 'Steering' : 'Sending';
 
@@ -931,8 +991,8 @@ export function GraphDockComposer() {
       <div className="flex min-w-0 items-center justify-between gap-2 border-b border-[hsl(var(--app-border)/0.68)] bg-[linear-gradient(180deg,hsl(var(--app-bg-elevated)/0.78),hsl(var(--app-panel)/0.58))] px-2.5 py-1.5 text-[11px]">
         <div className="grid min-w-0 max-w-[min(28rem,calc(100vw-5rem))] grid-cols-[auto_minmax(0,1fr)] items-center gap-2 rounded-lg border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--background)/0.42)] px-2 py-1 shadow-[inset_0_1px_0_hsl(44_80%_99%/0.42)] sm:max-w-[30rem]">
           <span className="flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-[hsl(var(--app-accent-soft)/0.74)] px-1.5 text-[10px] font-semibold text-[hsl(var(--app-accent))] shadow-[inset_0_0_0_1px_hsl(var(--app-accent)/0.12)]">
-            <CornerDownRight className="h-3 w-3" />
-            Reply to
+            {composerTargetMode === 'new-thread' ? <Plus className="h-3 w-3" /> : <CornerDownRight className="h-3 w-3" />}
+            {targetModeLabel}
           </span>
           <div className="min-w-0 text-[11px] font-medium leading-5 text-foreground/86" title={targetLabel}>
             <div className="truncate">{targetLabel}</div>
@@ -961,31 +1021,25 @@ export function GraphDockComposer() {
         />
         <div data-testid="graph-dock-control-row" className="mt-1.5 grid min-w-0 grid-cols-2 gap-1.5 border-t border-[hsl(var(--app-border)/0.52)] px-0.5 pt-1.5 md:grid-cols-4">
           <DropdownMenu>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label="Select flow"
-                    disabled={isComposerConfigurationDisabled || !selectedWorkspaceId}
-                    className={cn(
-                      dockControlButtonClass,
-                      'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
-                      'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
-                      'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]',
-                      isFlowSelected && 'border-[hsl(var(--app-accent)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-accent-soft)/0.58),hsl(var(--app-panel-strong)/0.94))] shadow-[inset_0_1px_0_hsl(44_80%_99%/0.54),inset_0_-1px_0_hsl(var(--app-accent)/0.16),0_11px_24px_-18px_hsl(34_28%_18%/0.62)]'
-                    )}
-                  >
-                    <Workflow className="h-3 w-3 shrink-0 text-muted-foreground" />
-                    <span className="truncate">{selectedFlow?.label ?? 'No flow'}</span>
-                    <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-                  </button>
-                </DropdownMenuTrigger>
-              </TooltipTrigger>
-              <TooltipContent side="top" align="start" className="max-w-72 leading-relaxed">
-                Select a flow to run multiple agents in a predefined flow.
-              </TooltipContent>
-            </Tooltip>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Select flow"
+                title="Select a flow to run multiple agents in a predefined flow."
+                disabled={isComposerConfigurationDisabled || !selectedWorkspaceId}
+                className={cn(
+                  dockControlButtonClass,
+                  'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
+                  'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
+                  'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]',
+                  isFlowSelected && 'border-[hsl(var(--app-accent)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-accent-soft)/0.58),hsl(var(--app-panel-strong)/0.94))] shadow-[inset_0_1px_0_hsl(44_80%_99%/0.54),inset_0_-1px_0_hsl(var(--app-accent)/0.16),0_11px_24px_-18px_hsl(34_28%_18%/0.62)]'
+                )}
+              >
+                <Workflow className="h-3 w-3 shrink-0 text-muted-foreground" />
+                <span className="truncate">{selectedFlow?.label ?? 'No flow'}</span>
+                <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+              </button>
+            </DropdownMenuTrigger>
             <DropdownMenuContent align="start" side="top" sideOffset={8} className="w-[min(21rem,calc(100vw-1.5rem))] rounded-xl border border-border/70 bg-popover/95 p-1.5 shadow-xl backdrop-blur-xl">
               <DropdownMenuLabel className="px-1.5 py-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Flow</DropdownMenuLabel>
               <DropdownMenuItem onClick={() => handleFlowSelection(FLOW_NONE_ID)} className="min-h-9 gap-2 rounded-lg px-2 py-1.5">
@@ -1024,30 +1078,24 @@ export function GraphDockComposer() {
           </DropdownMenu>
 
           <Popover open={isAgentPickerOpen} onOpenChange={setIsAgentPickerOpen}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <PopoverTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label="Select model"
-                    disabled={isComposerConfigurationDisabled || !selectedWorkspaceId}
-                    className={cn(
-                      dockControlButtonClass,
-                      'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
-                      'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
-                      'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]'
-                    )}
-                  >
-                    <Bot className="h-3 w-3 shrink-0 text-muted-foreground" />
-                    <span className="truncate">{modelSelectorLabel}</span>
-                    <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-                  </button>
-                </PopoverTrigger>
-              </TooltipTrigger>
-              <TooltipContent side="top" align="start" className="max-w-80 leading-relaxed">
-                Select one or more models to use. These models' agents will be run in parallel using these models.
-              </TooltipContent>
-            </Tooltip>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                aria-label="Select model"
+                title="Select one or more models to run."
+                disabled={isComposerConfigurationDisabled || !selectedWorkspaceId}
+                className={cn(
+                  dockControlButtonClass,
+                  'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
+                  'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
+                  'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]'
+                )}
+              >
+                <Bot className="h-3 w-3 shrink-0 text-muted-foreground" />
+                <span className="truncate">{modelSelectorLabel}</span>
+                <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+              </button>
+            </PopoverTrigger>
             <PopoverContent disableAnimation className="h-[390px] w-[620px] p-0" side="top" align="start" sideOffset={8}>
               <UnifiedAgentModelSelector
                 onSelectAgent={handleAgentSelect}
@@ -1059,31 +1107,25 @@ export function GraphDockComposer() {
           </Popover>
 
           <DropdownMenu open={isBasePickerOpen} onOpenChange={setIsBasePickerOpen}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label="Select code base commit"
-                    disabled={isComposerConfigurationDisabled || !effectiveBase}
-                    className={cn(
-                      dockControlButtonClass,
-                      'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
-                      'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
-                      'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]'
-                    )}
-                  >
-                    <GitBranchIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
-                    <span className="truncate">{effectiveBaseLabel}</span>
-                    <span className="hidden font-mono text-[10px] text-muted-foreground md:inline">{effectiveBase ? shortCommitSha(effectiveBase.commitSha) : ''}</span>
-                    <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-                  </button>
-                </DropdownMenuTrigger>
-              </TooltipTrigger>
-              <TooltipContent side="top" align="start" className="max-w-72 leading-relaxed">
-                Base commit to use
-              </TooltipContent>
-            </Tooltip>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Select code base commit"
+                title="Base commit to use"
+                disabled={isComposerConfigurationDisabled || !effectiveBase}
+                className={cn(
+                  dockControlButtonClass,
+                  'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
+                  'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
+                  'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]'
+                )}
+              >
+                <GitBranchIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
+                <span className="truncate">{effectiveBaseLabel}</span>
+                <span className="hidden font-mono text-[10px] text-muted-foreground md:inline">{effectiveBase ? shortCommitSha(effectiveBase.commitSha) : ''}</span>
+                <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+              </button>
+            </DropdownMenuTrigger>
             <DropdownMenuContent align="start" side="top" sideOffset={8} className="w-[min(24rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-border/70 bg-popover/95 p-0 shadow-xl backdrop-blur-xl">
               <div className="border-b border-border/60 p-2.5">
                 <DropdownMenuLabel className="px-0 pb-2 pt-0 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Run from code base</DropdownMenuLabel>
@@ -1139,31 +1181,25 @@ export function GraphDockComposer() {
           </DropdownMenu>
 
           <DropdownMenu>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label="Select context"
-                    disabled={isComposerConfigurationDisabled}
-                    className={cn(
-                      dockControlButtonClass,
-                      'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
-                      'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
-                      'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]',
-                      effectiveContextPolicy === 'fresh' && 'border-[hsl(var(--app-accent)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-accent-soft)/0.58),hsl(var(--app-panel-strong)/0.94))] shadow-[inset_0_1px_0_hsl(44_80%_99%/0.54),inset_0_-1px_0_hsl(var(--app-accent)/0.16),0_11px_24px_-18px_hsl(34_28%_18%/0.62)]'
-                    )}
-                  >
-                    <History className="h-3 w-3 shrink-0 text-muted-foreground" />
-                    <span className="truncate">{contextParentLabel}</span>
-                    <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-                  </button>
-                </DropdownMenuTrigger>
-              </TooltipTrigger>
-              <TooltipContent side="top" align="start" className="max-w-72 leading-relaxed">
-                Manually filter context if required.
-              </TooltipContent>
-            </Tooltip>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Select context"
+                title="Manually filter context if required."
+                disabled={isComposerConfigurationDisabled}
+                className={cn(
+                  dockControlButtonClass,
+                  'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
+                  'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
+                  'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]',
+                  effectiveContextPolicy === 'fresh' && 'border-[hsl(var(--app-accent)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-accent-soft)/0.58),hsl(var(--app-panel-strong)/0.94))] shadow-[inset_0_1px_0_hsl(44_80%_99%/0.54),inset_0_-1px_0_hsl(var(--app-accent)/0.16),0_11px_24px_-18px_hsl(34_28%_18%/0.62)]'
+                )}
+              >
+                <History className="h-3 w-3 shrink-0 text-muted-foreground" />
+                <span className="truncate">{contextParentLabel}</span>
+                <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+              </button>
+            </DropdownMenuTrigger>
             <DropdownMenuContent align="end" side="top" sideOffset={8} className="w-80 rounded-xl border border-border/70 bg-popover/95 p-1.5 shadow-xl backdrop-blur-xl">
               <DropdownMenuLabel className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">End context</DropdownMenuLabel>
               {mergeContextOptions.length > 0 ? (

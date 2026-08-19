@@ -268,6 +268,20 @@ pub struct LocalNodeRow {
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
+pub struct ThreadSessionPayload {
+    pub id: String,
+    pub workspace_id: String,
+    pub title: Option<String>,
+    pub status: String,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub base_commit_sha: Option<String>,
+    pub first_message_id: Option<String>,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalSyncEventRow {
     pub id: String,
     pub workspace_id: Option<String>,
@@ -512,6 +526,7 @@ impl TelemetryDb {
                 role TEXT NOT NULL,
                 content TEXT NOT NULL DEFAULT '',
                 status TEXT,
+                thread_id TEXT,
                 execution_data_json TEXT,
                 payload_json TEXT,
                 prompt_tokens INTEGER,
@@ -530,6 +545,24 @@ impl TelemetryDb {
             );
             CREATE INDEX IF NOT EXISTS idx_local_nodes_workspace ON local_nodes(workspace_id, deleted_at, created_at);
             CREATE INDEX IF NOT EXISTS idx_local_nodes_parent ON local_nodes(parent_id);
+
+            CREATE TABLE IF NOT EXISTS thread_sessions (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                title TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                base_commit_sha TEXT,
+                first_message_id TEXT,
+                source TEXT NOT NULL DEFAULT 'user',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT,
+                local_updated_at INTEGER NOT NULL,
+                server_ack_at TEXT,
+                server_version TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_thread_sessions_workspace
+                ON thread_sessions(workspace_id, deleted_at, status, updated_at);
 
             CREATE TABLE IF NOT EXISTS local_workspaces (
                 id TEXT PRIMARY KEY,
@@ -630,6 +663,11 @@ impl TelemetryDb {
             "ALTER TABLE local_nodes ADD COLUMN base_selected_from_node_id TEXT",
             [],
         );
+        let _ = conn.execute("ALTER TABLE local_nodes ADD COLUMN thread_id TEXT", []);
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_local_nodes_thread ON local_nodes(workspace_id, thread_id)",
+            [],
+        );
         let _ = conn.execute(
             "UPDATE agent_run_ledger SET output_commit_sha = commit_sha WHERE output_commit_sha IS NULL AND commit_sha IS NOT NULL",
             [],
@@ -650,7 +688,7 @@ impl TelemetryDb {
         conn.execute(
             r#"
             INSERT OR IGNORE INTO local_nodes (
-                id, workspace_id, parent_id, role, content, status,
+                id, workspace_id, parent_id, role, content, status, thread_id,
                 execution_data_json, payload_json, prompt_tokens, completion_tokens, total_tokens,
                 base_commit_sha, output_commit_sha, base_selected_from_node_id, git_branch_name, created_at, updated_at,
                 deleted_at, local_updated_at, server_ack_at
@@ -662,6 +700,7 @@ impl TelemetryDb {
                 COALESCE(json_extract(payload, '$.role'), 'assistant'),
                 COALESCE(json_extract(payload, '$.content'), ''),
                 json_extract(payload, '$.status'),
+                COALESCE(json_extract(payload, '$.threadId'), json_extract(payload, '$.thread_id')),
                 json_extract(payload, '$.execution_data'),
                 payload,
                 json_extract(payload, '$.promptTokens'),
@@ -1521,6 +1560,10 @@ impl TelemetryDb {
             .and_then(|value| value.as_str())
             .unwrap_or("");
         let status = payload_value.get("status").and_then(|value| value.as_str());
+        let thread_id = payload_value
+            .get("threadId")
+            .or_else(|| payload_value.get("thread_id"))
+            .and_then(|value| value.as_str());
         let execution_data_json = payload_value
             .get("execution_data")
             .and_then(|value| serde_json::to_string(value).ok());
@@ -1561,18 +1604,19 @@ impl TelemetryDb {
         conn.execute(
             r#"
             INSERT INTO local_nodes (
-                id, workspace_id, parent_id, role, content, status,
+                id, workspace_id, parent_id, role, content, status, thread_id,
                 execution_data_json, payload_json, prompt_tokens, completion_tokens, total_tokens,
                 base_commit_sha, output_commit_sha, base_selected_from_node_id, git_branch_name, created_at, updated_at,
                 deleted_at, local_updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, NULL, ?18)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, ?19)
             ON CONFLICT(id) DO UPDATE SET
                 workspace_id = excluded.workspace_id,
                 parent_id = excluded.parent_id,
                 role = excluded.role,
                 content = excluded.content,
                 status = excluded.status,
+                thread_id = excluded.thread_id,
                 execution_data_json = excluded.execution_data_json,
                 payload_json = excluded.payload_json,
                 prompt_tokens = excluded.prompt_tokens,
@@ -1593,6 +1637,7 @@ impl TelemetryDb {
                 role,
                 content,
                 status,
+                thread_id,
                 execution_data_json,
                 payload,
                 prompt_tokens,
@@ -1682,6 +1727,10 @@ impl TelemetryDb {
                 .and_then(|value| value.as_str())
                 .unwrap_or("");
             let status = payload_value.get("status").and_then(|value| value.as_str());
+            let thread_id = payload_value
+                .get("threadId")
+                .or_else(|| payload_value.get("thread_id"))
+                .and_then(|value| value.as_str());
             let execution_data_json = payload_value
                 .get("execution_data")
                 .and_then(|value| serde_json::to_string(value).ok());
@@ -1722,12 +1771,12 @@ impl TelemetryDb {
             let changed = tx.execute(
                 r#"
                 INSERT INTO local_nodes (
-                    id, workspace_id, parent_id, role, content, status,
+                    id, workspace_id, parent_id, role, content, status, thread_id,
                     execution_data_json, payload_json, prompt_tokens, completion_tokens, total_tokens,
                     base_commit_sha, output_commit_sha, base_selected_from_node_id, git_branch_name, created_at, updated_at,
                     deleted_at, local_updated_at, server_ack_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, NULL, ?18, ?19)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, ?19, ?20)
                 ON CONFLICT(id) DO NOTHING
                 "#,
                 params![
@@ -1737,6 +1786,7 @@ impl TelemetryDb {
                     role,
                     content,
                     status,
+                    thread_id,
                     execution_data_json,
                     payload,
                     prompt_tokens,
@@ -1794,6 +1844,8 @@ impl TelemetryDb {
                                 'parentId', n.parent_id,
                                 'content', n.content,
                                 'status', n.status,
+                                'threadId', n.thread_id,
+                                'thread_id', n.thread_id,
                                 'execution_data', CASE
                                     WHEN n.execution_data_json IS NULL THEN json('{}')
                                     ELSE json(n.execution_data_json)
@@ -1817,6 +1869,8 @@ impl TelemetryDb {
                         'parentId', n.parent_id,
                         'content', n.content,
                         'status', n.status,
+                        'threadId', n.thread_id,
+                        'thread_id', n.thread_id,
                         'execution_data', CASE
                             WHEN n.execution_data_json IS NULL THEN json('{}')
                             ELSE json(n.execution_data_json)
@@ -1926,6 +1980,164 @@ impl TelemetryDb {
         }
         rows.sort_by_key(|row| row.finalized_at);
         Ok(rows)
+    }
+
+    pub fn upsert_thread_session(
+        &self,
+        payload: ThreadSessionPayload,
+    ) -> Result<ThreadSessionPayload, String> {
+        let id = payload.id.trim().to_string();
+        let workspace_id = payload.workspace_id.trim().to_string();
+        if id.is_empty() {
+            return Err("thread session id is required".to_string());
+        }
+        if workspace_id.is_empty() {
+            return Err("thread session workspace_id is required".to_string());
+        }
+        let created_at = payload.created_at.unwrap_or_else(chrono_like_now);
+        let updated_at = payload.updated_at.unwrap_or_else(|| created_at.clone());
+        let status = match payload.status.as_str() {
+            "done" | "archived" => payload.status,
+            _ => "active".to_string(),
+        };
+        let source = match payload.source.as_str() {
+            "workspace_default" | "flow" | "legacy" => payload.source,
+            _ => "user".to_string(),
+        };
+        let normalized = ThreadSessionPayload {
+            id,
+            workspace_id,
+            title: payload.title.and_then(|value| {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }),
+            status,
+            created_at: Some(created_at),
+            updated_at: Some(updated_at),
+            base_commit_sha: payload.base_commit_sha,
+            first_message_id: payload.first_message_id,
+            source,
+        };
+        let now = unix_timestamp();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            r#"
+            INSERT INTO thread_sessions (
+                id, workspace_id, title, status, base_commit_sha, first_message_id,
+                source, created_at, updated_at, deleted_at, local_updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10)
+            ON CONFLICT(id) DO UPDATE SET
+                workspace_id = excluded.workspace_id,
+                title = excluded.title,
+                status = excluded.status,
+                base_commit_sha = excluded.base_commit_sha,
+                first_message_id = COALESCE(excluded.first_message_id, thread_sessions.first_message_id),
+                source = excluded.source,
+                updated_at = excluded.updated_at,
+                deleted_at = thread_sessions.deleted_at,
+                local_updated_at = excluded.local_updated_at
+            "#,
+            params![
+                normalized.id,
+                normalized.workspace_id,
+                normalized.title,
+                normalized.status,
+                normalized.base_commit_sha,
+                normalized.first_message_id,
+                normalized.source,
+                normalized.created_at,
+                normalized.updated_at,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(normalized)
+    }
+
+    pub fn create_thread_session(
+        &self,
+        payload: ThreadSessionPayload,
+    ) -> Result<ThreadSessionPayload, String> {
+        self.upsert_thread_session(payload)
+    }
+
+    pub fn list_thread_sessions_for_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<ThreadSessionPayload>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT
+                    id, workspace_id, title, status, created_at, updated_at,
+                    base_commit_sha, first_message_id, source
+                FROM thread_sessions
+                WHERE workspace_id = ?1
+                  AND deleted_at IS NULL
+                ORDER BY
+                    CASE status
+                        WHEN 'active' THEN 0
+                        WHEN 'done' THEN 1
+                        ELSE 2
+                    END ASC,
+                    updated_at DESC,
+                    id ASC
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![workspace_id], |row| {
+                Ok(ThreadSessionPayload {
+                    id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    title: row.get(2)?,
+                    status: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                    base_commit_sha: row.get(6)?,
+                    first_message_id: row.get(7)?,
+                    source: row.get(8)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    pub fn archive_thread_session(&self, workspace_id: &str, thread_id: &str) -> Result<(), String> {
+        let workspace_id = workspace_id.trim();
+        let thread_id = thread_id.trim();
+        if workspace_id.is_empty() {
+            return Err("workspace_id is required".to_string());
+        }
+        if thread_id.is_empty() {
+            return Err("thread_id is required".to_string());
+        }
+        let now = unix_timestamp();
+        let deleted_at = chrono_like_now();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            r#"
+            UPDATE thread_sessions
+            SET status = 'archived',
+                deleted_at = ?3,
+                updated_at = ?3,
+                local_updated_at = ?4
+            WHERE workspace_id = ?1
+              AND id = ?2
+              AND deleted_at IS NULL
+            "#,
+            params![workspace_id, thread_id, deleted_at, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn get_local_node_payload(&self, node_id: &str) -> Result<Option<String>, String> {
@@ -3003,6 +3215,43 @@ pub fn hydrate_local_nodes_from_server(
 
 #[tauri::command]
 #[specta::specta]
+pub fn create_thread_session(
+    telemetry: State<TelemetryDb>,
+    payload: ThreadSessionPayload,
+) -> Result<ThreadSessionPayload, String> {
+    telemetry.create_thread_session(payload)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn upsert_thread_session(
+    telemetry: State<TelemetryDb>,
+    payload: ThreadSessionPayload,
+) -> Result<ThreadSessionPayload, String> {
+    telemetry.upsert_thread_session(payload)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn list_thread_sessions(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+) -> Result<Vec<ThreadSessionPayload>, String> {
+    telemetry.list_thread_sessions_for_workspace(&workspace_id)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn delete_thread_session(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+    thread_id: String,
+) -> Result<(), String> {
+    telemetry.archive_thread_session(&workspace_id, &thread_id)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn upsert_local_node(
     telemetry: State<TelemetryDb>,
     workspace_id: String,
@@ -3270,7 +3519,11 @@ pub fn process_local_sync_events(
                     event.event_type,
                     event.entity_type,
                     event.entity_id,
-                    if is_permanent_local_sync_error(&err) { "dead" } else { "retry" },
+                    if is_permanent_local_sync_error(&err) {
+                        "dead"
+                    } else {
+                        "retry"
+                    },
                     err
                 );
             }
@@ -3287,6 +3540,110 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = TelemetryDb::open(dir.path()).expect("open telemetry db");
         (dir, db)
+    }
+
+    #[test]
+    fn opening_existing_local_nodes_without_thread_id_migrates_schema() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("telemetry.db");
+        {
+            let conn = Connection::open(&db_path).expect("create legacy db");
+            conn.execute_batch(
+                r#"
+                CREATE TABLE local_nodes (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    parent_id TEXT,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL DEFAULT '',
+                    status TEXT,
+                    execution_data_json TEXT,
+                    payload_json TEXT,
+                    prompt_tokens INTEGER,
+                    completion_tokens INTEGER,
+                    total_tokens INTEGER,
+                    base_commit_sha TEXT,
+                    output_commit_sha TEXT,
+                    base_selected_from_node_id TEXT,
+                    git_branch_name TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted_at TEXT,
+                    local_updated_at INTEGER NOT NULL,
+                    server_ack_at TEXT,
+                    server_version TEXT
+                );
+                "#,
+            )
+            .expect("legacy local_nodes schema");
+        }
+
+        let db = TelemetryDb::open(dir.path()).expect("migrate existing db");
+        let conn = db.conn.lock().expect("lock db");
+        let has_thread_id = conn
+            .prepare("SELECT thread_id FROM local_nodes LIMIT 0")
+            .is_ok();
+        let has_thread_index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_local_nodes_thread'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("index count");
+        assert!(has_thread_id);
+        assert_eq!(has_thread_index, 1);
+    }
+
+    #[test]
+    fn thread_sessions_round_trip_locally() {
+        let (_dir, db) = open_test_db();
+        let session = ThreadSessionPayload {
+            id: "thread-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+            title: Some("Build feature".to_string()),
+            status: "active".to_string(),
+            created_at: Some("2026-05-28T00:00:00.000Z".to_string()),
+            updated_at: Some("2026-05-28T00:01:00.000Z".to_string()),
+            base_commit_sha: Some("base-sha".to_string()),
+            first_message_id: None,
+            source: "user".to_string(),
+        };
+
+        db.upsert_thread_session(session).expect("upsert thread");
+        let sessions = db
+            .list_thread_sessions_for_workspace("workspace-1")
+            .expect("list threads");
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "thread-1");
+        assert_eq!(sessions[0].workspace_id, "workspace-1");
+        assert_eq!(sessions[0].title.as_deref(), Some("Build feature"));
+        assert_eq!(sessions[0].base_commit_sha.as_deref(), Some("base-sha"));
+    }
+
+    #[test]
+    fn thread_sessions_can_be_archived_locally() {
+        let (_dir, db) = open_test_db();
+        db.upsert_thread_session(ThreadSessionPayload {
+            id: "thread-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+            title: None,
+            status: "active".to_string(),
+            created_at: Some("2026-05-28T00:00:00.000Z".to_string()),
+            updated_at: Some("2026-05-28T00:01:00.000Z".to_string()),
+            base_commit_sha: None,
+            first_message_id: None,
+            source: "user".to_string(),
+        })
+        .expect("upsert thread");
+
+        db.archive_thread_session("workspace-1", "thread-1")
+            .expect("archive thread");
+
+        let sessions = db
+            .list_thread_sessions_for_workspace("workspace-1")
+            .expect("list threads");
+        assert!(sessions.is_empty());
     }
 
     fn run_test_git(repo_path: &std::path::Path, args: &[&str]) -> String {

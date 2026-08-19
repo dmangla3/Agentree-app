@@ -6,6 +6,7 @@ import {
   type ComposerBaseMessage,
   type ComposerCommitPickerCommit,
   type ComposerCommitPickerRef,
+  type ComposerCommitPickerTrackedRef,
 } from './composerBaseCommit';
 
 const message = (input: Partial<ComposerBaseMessage> & Pick<ComposerBaseMessage, 'id'>): ComposerBaseMessage => ({
@@ -14,6 +15,15 @@ const message = (input: Partial<ComposerBaseMessage> & Pick<ComposerBaseMessage,
   output_commit_sha: input.output_commit_sha ?? null,
   base_commit_sha: input.base_commit_sha ?? null,
 });
+
+const trackedRef = (input: Partial<ComposerCommitPickerTrackedRef> & Pick<ComposerCommitPickerTrackedRef, 'git_ref'>): ComposerCommitPickerTrackedRef => ({
+  git_ref: input.git_ref,
+  display_name: input.display_name ?? input.git_ref.replace(/^refs\/heads\//, ''),
+  enabled: input.enabled ?? true,
+  last_seen_commit_sha: input.last_seen_commit_sha ?? null,
+  createdAt: input.createdAt ?? '2026-05-27T00:00:00.000Z',
+  updatedAt: input.updatedAt ?? '2026-05-27T00:00:00.000Z',
+} as ComposerCommitPickerTrackedRef);
 
 describe('resolveComposerDefaultBaseCommit', () => {
   it('uses the reply parent generated commit before the parent base commit', () => {
@@ -91,6 +101,7 @@ describe('resolveComposerDefaultBaseCommit', () => {
       selectedNodeId: 'selected',
       messages,
       refs,
+      trackedRefs: [],
       workspaceBaseCommitSha: 'workspace-base',
     })).toEqual({
       sha: 'main-tip',
@@ -99,7 +110,7 @@ describe('resolveComposerDefaultBaseCommit', () => {
     });
   });
 
-  it('falls back to the current thread first message base when main does not exist', () => {
+  it('uses a tracked ref for new threads when main does not exist', () => {
     const messages = [
       message({ id: 'thread-root', base_commit_sha: 'thread-root-base' }),
       message({ id: 'selected', parentId: 'thread-root' }),
@@ -111,11 +122,44 @@ describe('resolveComposerDefaultBaseCommit', () => {
       selectedNodeId: 'selected',
       messages,
       refs: [{ git_ref: 'refs/heads/feature/work', short_name: 'feature/work', commit_sha: 'feature-tip' }],
+      trackedRefs: [trackedRef({ git_ref: 'refs/heads/feature/work', last_seen_commit_sha: 'stale-feature-tip' })],
       workspaceBaseCommitSha: 'workspace-base',
     })).toEqual({
-      sha: 'thread-root-base',
-      source: 'thread-root-base',
-      selectedFromNodeId: 'thread-root',
+      sha: 'feature-tip',
+      source: 'tracked-ref',
+      selectedFromNodeId: null,
+    });
+  });
+
+  it('uses tracked ref last-seen commits before falling back to workspace base', () => {
+    expect(resolveComposerDefaultBaseCommit({
+      targetMode: 'new-thread',
+      replyParentMessageId: null,
+      selectedNodeId: null,
+      messages: [],
+      refs: [],
+      trackedRefs: [trackedRef({ git_ref: 'refs/heads/release', last_seen_commit_sha: 'release-tip' })],
+      workspaceBaseCommitSha: 'workspace-base',
+    })).toEqual({
+      sha: 'release-tip',
+      source: 'tracked-ref',
+      selectedFromNodeId: null,
+    });
+  });
+
+  it('falls back to the workspace base for new threads when main and tracked refs do not exist', () => {
+    expect(resolveComposerDefaultBaseCommit({
+      targetMode: 'new-thread',
+      replyParentMessageId: null,
+      selectedNodeId: null,
+      messages: [message({ id: 'thread-root', base_commit_sha: 'thread-root-base' })],
+      refs: [],
+      trackedRefs: [],
+      workspaceBaseCommitSha: 'workspace-base',
+    })).toEqual({
+      sha: 'workspace-base',
+      source: 'workspace-base',
+      selectedFromNodeId: null,
     });
   });
 });
@@ -153,6 +197,28 @@ describe('buildComposerCommitPickerItems', () => {
     expect(items[0].refNames).toEqual(['Picker branch', 'feature/search']);
     expect(items[0].searchText).toContain('improve code base picker');
     expect(items.some((item) => item.primaryLabel.includes('agentree'))).toBe(false);
+  });
+
+  it('orders non-tracked branch and commit choices by commit recency', () => {
+    const refs: ComposerCommitPickerRef[] = [
+      { git_ref: 'refs/heads/alpha', short_name: 'alpha', commit_sha: 'older-branch' },
+      { git_ref: 'refs/heads/zulu', short_name: 'zulu', commit_sha: 'newer-branch' },
+    ];
+    const commits = [
+      { ...commit('older-branch', 'Older branch'), authored_at: '2024-01-01T00:00:00Z' },
+      { ...commit('newer-branch', 'Newer branch'), authored_at: '2024-03-01T00:00:00Z' },
+      { ...commit('bare-commit', 'Bare commit'), authored_at: '2024-02-01T00:00:00Z' },
+    ];
+
+    const items = buildComposerCommitPickerItems({
+      defaultSha: null,
+      effectiveSha: null,
+      commits,
+      refs,
+      trackedRefs: [],
+    });
+
+    expect(items.map((item) => item.sha)).toEqual(['newer-branch', 'bare-commit', 'older-branch']);
   });
 
   it('orders chips as tracked refs, HEAD, then other refs by commit recency', () => {

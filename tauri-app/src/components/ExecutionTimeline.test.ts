@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getToolSummary, summarizeFileChangesPayload } from './ExecutionTimeline';
+import { buildTimelineRows, getToolSummary, summarizeFileChangesPayload } from './ExecutionTimeline';
 
 describe('summarizeFileChangesPayload', () => {
   it('summarizes file change payloads without exposing raw worktree paths', () => {
@@ -74,5 +74,24 @@ describe('getToolSummary', () => {
     });
 
     expect(summary).toBe('Read package.json, tauri-app/package.json');
+  });
+});
+
+describe('buildTimelineRows', () => {
+  it('projects user steering events as user-visible steer rows', () => {
+    const rows = buildTimelineRows([
+      {
+        type: 'user_steer_requested',
+        timestamp: 1,
+        content: 'Actually use the cached result.',
+      },
+    ]);
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        kind: 'user_steer',
+        content: 'Actually use the cached result.',
+      }),
+    ]);
   });
 });

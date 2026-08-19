@@ -41,13 +41,13 @@ describe('flow node registry', () => {
       {
         id: 'Synthesizer',
         registryId: 'core.synthesizer@1',
-        params: ['request', 'candidates'],
+        params: ['request', 'candidate_commits'],
         requiresFinalizedCommit: true,
       },
       {
         id: 'Reviewer',
         registryId: 'core.reviewer@1',
-        params: ['request', 'target_node', 'commit', 'latest_fix', 'criteria'],
+        params: ['request', 'commit', 'latest_fix_commit', 'criteria'],
         requiresFinalizedCommit: false,
       },
       {

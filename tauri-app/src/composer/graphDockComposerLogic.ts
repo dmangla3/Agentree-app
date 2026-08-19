@@ -1,6 +1,13 @@
 import type { Agent } from '../hooks/useAgents';
 import type { ComposerAgentRunCounts } from '../lib/composerAgentRuns';
-import { resolveComposerDefaultBaseCommit, type ComposerBaseMessage, type ComposerCommitPickerRef, type ComposerDefaultBaseSource } from '../lib/composerBaseCommit';
+import {
+  resolveComposerDefaultBaseCommit,
+  type ComposerBaseMessage,
+  type ComposerCommitPickerRef,
+  type ComposerCommitPickerTrackedRef,
+  type ComposerDefaultBaseSource,
+  type ComposerTargetModeForBase,
+} from '../lib/composerBaseCommit';
 import { resolveComposerDefaultAgentId } from '../lib/composerModelDefaults';
 import { resolveFocusedCommitSha } from '../lib/composerSendParent';
 import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
@@ -49,11 +56,13 @@ export const resolveGraphDockComposerTarget = (input: {
 };
 
 export const resolveGraphDockComposerBase = (input: {
+  targetMode?: ComposerTargetModeForBase;
   replyParentMessageId: string | null;
   selectedNodeId: string | null;
   focusedCommitSha: string | null;
   messages: Message[];
   refs?: ComposerCommitPickerRef[];
+  trackedRefs?: ComposerCommitPickerTrackedRef[];
   workspace: Workspace | null | undefined;
   override: ComposerBaseCommitOverrideState | null;
 }): GraphDockComposerBase | null => {
@@ -75,11 +84,12 @@ export const resolveGraphDockComposerBase = (input: {
   }
 
   const resolution = resolveComposerDefaultBaseCommit({
-    targetMode: 'reply',
+    targetMode: input.targetMode ?? 'reply',
     replyParentMessageId: input.replyParentMessageId,
     selectedNodeId: input.selectedNodeId,
     messages: toComposerBaseMessages(input.messages),
     refs: input.refs ?? [],
+    trackedRefs: input.trackedRefs ?? [],
     workspaceBaseCommitSha: input.workspace?.base_commit_sha ?? null,
   });
 

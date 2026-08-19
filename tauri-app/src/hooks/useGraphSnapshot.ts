@@ -6,6 +6,7 @@ import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder'
 import { isTauriEnvironment } from './useTauriWorkspace';
 import type { CommitEntity, CommitObservationEntity, CommitParentEntity, Message, Summary } from '../stores/workspaceStore';
 import { useRunStatusStore } from '../stores/runStatusStore';
+import { normalizeThreadSession, type ThreadSession } from '../lib/threadSessions';
 
 const GRAPH_SNAPSHOT_CACHE_PREFIX = 'agentree.graph-snapshot.v2';
 const LOCAL_STORAGE_GRAPH_SNAPSHOT_MAX_BYTES = 3 * 1024 * 1024;
@@ -42,6 +43,7 @@ export interface GraphSnapshot {
   commits?: CommitEntity[];
   commitParents?: CommitParentEntity[];
   commitObservations?: CommitObservationEntity[];
+  threadSessions?: ThreadSession[];
   cacheWriteDisabled?: boolean;
 }
 
@@ -50,6 +52,11 @@ const normalizeGraphSnapshot = (snapshot: GraphSnapshot): GraphSnapshot => ({
   commits: Array.isArray(snapshot.commits) ? snapshot.commits : [],
   commitParents: Array.isArray(snapshot.commitParents) ? snapshot.commitParents : [],
   commitObservations: Array.isArray(snapshot.commitObservations) ? snapshot.commitObservations : [],
+  threadSessions: Array.isArray(snapshot.threadSessions)
+    ? snapshot.threadSessions
+      .map((thread) => normalizeThreadSession(thread as unknown as Record<string, unknown>))
+      .filter((thread): thread is ThreadSession => Boolean(thread))
+    : [],
 });
 
 const emptyGraphSnapshot = (workspaceId: string): GraphSnapshot => ({
@@ -61,6 +68,7 @@ const emptyGraphSnapshot = (workspaceId: string): GraphSnapshot => ({
   commits: [],
   commitParents: [],
   commitObservations: [],
+  threadSessions: [],
   cacheWriteDisabled: true,
 });
 

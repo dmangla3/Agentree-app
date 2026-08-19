@@ -1,8 +1,9 @@
 import type { ReactNode } from 'react';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../@/components/ui/hover-card';
 import type { ExecutionTimelineItem } from '../../lib/executionTimelineModel';
-import type { WorkspaceProjection } from '../../domain/workspaceProjection';
+import type { ProjectedNodeEntity, WorkspaceProjection } from '../../domain/workspaceProjection';
 import { NodeHoverCardContent } from '../NodeHoverCardContent';
+import { createCommitHoverEntity } from '../nodes/graph/commitHoverEntity';
 
 interface ExecutionTimelineHoverCardProps {
   projection: WorkspaceProjection;
@@ -11,14 +12,26 @@ interface ExecutionTimelineHoverCardProps {
   onHoverChange?: (messageId: string | null) => void;
 }
 
+export function resolveExecutionTimelineHoverEntity(
+  projection: WorkspaceProjection,
+  item: ExecutionTimelineItem,
+): ProjectedNodeEntity | undefined {
+  if (item.kind === 'commit' && item.commitSha) {
+    const commit = projection.commitBySha.get(item.commitSha);
+    if (commit) return createCommitHoverEntity(commit);
+  }
+
+  return projection.entitiesByMessageId.get(item.messageId) ??
+    projection.entitiesById.get(item.entityId);
+}
+
 export function ExecutionTimelineHoverCard({
   projection,
   item,
   children,
   onHoverChange,
 }: ExecutionTimelineHoverCardProps) {
-  const entity = projection.entitiesByMessageId.get(item.messageId) ??
-    projection.entitiesById.get(item.entityId);
+  const entity = resolveExecutionTimelineHoverEntity(projection, item);
 
   return (
     <HoverCard

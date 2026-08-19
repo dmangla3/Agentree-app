@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspaceProjection';
 import { NodePreviewRenderer } from './NodePreviewRenderer';
@@ -7,9 +7,10 @@ import { Input } from '../../@/components/ui/input';
 import { AlertTriangle, Loader2, Reply } from 'lucide-react';
 import { useHeadlessQuickReply } from '../hooks/useHeadlessQuickReply';
 import { useRunStatusStore } from '../stores/runStatusStore';
-import { getHoverReplyMode, QUICK_REPLY_KEEP_HOVER_OPEN_EVENT, stopQuickReplyControlEvent } from '../lib/quickReply';
+import { getHoverReplyMode, stopQuickReplyControlEvent } from '../lib/quickReply';
 import { cn } from '../lib/utils';
 import { getNodeFailureReason, isNodeFailureStatus } from '../lib/nodeFailureReason';
+import { isActiveAgentRunStatus } from '../lib/agentRunSteering';
 
 interface NodeHoverCardContentProps {
   entity?: ProjectedNodeEntity;
@@ -20,11 +21,39 @@ interface NodeHoverCardContentProps {
 export function NodeHoverCardContent({ entity, projection, headerAccessory }: NodeHoverCardContentProps) {
   const [quickReplyPrompt, setQuickReplyPrompt] = useState('');
   const quickReplyInputRef = useRef<HTMLInputElement | null>(null);
+  const previewScrollRef = useRef<HTMLDivElement | null>(null);
   const { sendQuickReply, sendSteeringReply, isSending, error } = useHeadlessQuickReply();
   const replyParentId = entity?.focusMessageId || entity?.messageId || null;
   const replyRunStatus = useRunStatusStore((state) => (
     replyParentId ? state.byNodeId[replyParentId]?.status ?? null : null
   ));
+  const resolvedRunStatus = replyRunStatus ?? entity?.status ?? entity?.message?.status ?? null;
+  const isAssistantAgentHover = entity?.message?.role === 'assistant' || entity?.kind === 'assistant_message';
+  const shouldDefaultScrollPreviewToBottom = isAssistantAgentHover && isActiveAgentRunStatus(resolvedRunStatus);
+  useLayoutEffect(() => {
+    if (!shouldDefaultScrollPreviewToBottom) return;
+    const scrollArea = previewScrollRef.current;
+    if (!scrollArea) return;
+
+    let settledFrameId: number | null = null;
+    const scrollToBottom = () => {
+      scrollArea.scrollTop = scrollArea.scrollHeight;
+    };
+
+    scrollToBottom();
+    const frameId = window.requestAnimationFrame(() => {
+      scrollToBottom();
+      settledFrameId = window.requestAnimationFrame(scrollToBottom);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      if (settledFrameId !== null) {
+        window.cancelAnimationFrame(settledFrameId);
+      }
+    };
+  }, [replyParentId, shouldDefaultScrollPreviewToBottom]);
+
   if (!entity || !projection) return null;
   const replyMode = getHoverReplyMode(entity, replyRunStatus);
   const showReplyAction = Boolean(replyMode && replyParentId);
@@ -37,11 +66,6 @@ export function NodeHoverCardContent({ entity, projection, headerAccessory }: No
   const inputLabel = isSteeringReply ? 'Steering prompt' : 'Quick reply prompt';
   const actionLabel = isSteeringReply ? 'Steer' : 'Quick Reply';
   const sendingLabel = isSteeringReply ? 'Steering' : 'Sending';
-  const requestKeepHoverOpen = () => {
-    window.dispatchEvent(new CustomEvent(QUICK_REPLY_KEEP_HOVER_OPEN_EVENT, {
-      detail: { messageId: replyParentId },
-    }));
-  };
   const focusQuickReplyInput = () => {
     const input = quickReplyInputRef.current;
     if (!input) return;
@@ -52,7 +76,6 @@ export function NodeHoverCardContent({ entity, projection, headerAccessory }: No
     const prompt = quickReplyPrompt.trim();
     const workspaceId = entity.message?.workspaceId ?? projection.messageMap.get(replyParentId ?? '')?.workspaceId ?? null;
     if (!replyParentId || !prompt || isSending || !replyMode) return;
-    requestKeepHoverOpen();
     try {
       if (replyMode === 'steer') {
         await sendSteeringReply({
@@ -70,7 +93,6 @@ export function NodeHoverCardContent({ entity, projection, headerAccessory }: No
       }
       setQuickReplyPrompt('');
       window.requestAnimationFrame(() => {
-        requestKeepHoverOpen();
         focusQuickReplyInput();
       });
     } catch {
@@ -97,6 +119,7 @@ export function NodeHoverCardContent({ entity, projection, headerAccessory }: No
         </div>
       )}
       <div
+        ref={previewScrollRef}
         className="max-h-[calc(min(70vh,720px)-1.5rem)] w-full overflow-y-auto overscroll-contain"
         onWheelCapture={(event) => {
           event.stopPropagation();

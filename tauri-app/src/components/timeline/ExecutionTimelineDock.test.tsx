@@ -7,6 +7,7 @@ import { buildWorkspaceProjection } from '../../domain/workspaceProjection';
 import type { Message } from '../../stores/workspaceStore';
 import { buildExecutionTimelineItems, packExecutionTimelineItems } from '../../lib/executionTimelineModel';
 import { ExecutionTimelineDock } from './ExecutionTimelineDock';
+import { resolveExecutionTimelineHoverEntity } from './ExecutionTimelineHoverCard';
 
 vi.mock('../NodeHoverCardContent', () => ({
   NodeHoverCardContent: ({ entity }: { entity?: { kind?: string } }) => (
@@ -241,6 +242,18 @@ describe('ExecutionTimelineDock', () => {
     expect(onSelectMessage).toHaveBeenCalledWith('assistant-2', true);
   });
 
+  it('resolves generated commit markers to commit hover content instead of the owner message', () => {
+    const fixture = buildFixture();
+    const commitMarker = fixture.model.markers.find((marker) => marker.kind === 'commit');
+
+    expect(commitMarker).toBeTruthy();
+    const entity = resolveExecutionTimelineHoverEntity(fixture.projection, commitMarker!);
+
+    expect(entity?.kind).toBe('commit_message');
+    expect(entity?.messageId).toBe('commit:commit22222222:hover');
+    expect(entity?.messageId).not.toBe('assistant-2');
+  });
+
   it('renders lane zero below higher overlapping lanes', () => {
     const fixture = buildOverlappingFixture();
     renderDock({
@@ -402,35 +415,12 @@ describe('ExecutionTimelineDock', () => {
     expect(screen.getByTestId('execution-timeline-brush').getAttribute('data-display-span-pct')).toBe(initialSpan);
   });
 
-  it('filters timeline items through the multi-thread selector', () => {
+  it('filters timeline items to the current thread through the segmented scope control', () => {
     const fixture = buildOverlappingFixture();
     renderDock({
       projection: fixture.projection,
       model: fixture.model,
-      threadItems: [
-        {
-          threadRootId: 'user-overlap',
-          label: 'Overlap thread',
-          turnCount: 1,
-          commitCount: 0,
-          updatedLabel: 'now',
-          runningCount: 0,
-          hidden: false,
-          done: false,
-          current: false,
-        },
-        {
-          threadRootId: 'other-thread',
-          label: 'Other thread',
-          turnCount: 1,
-          commitCount: 0,
-          updatedLabel: 'now',
-          runningCount: 0,
-          hidden: false,
-          done: false,
-          current: false,
-        },
-      ],
+      currentThreadRootId: 'user-overlap',
       threadRootIdByMessageId: new Map([
         ['assistant-lane-0', 'user-overlap'],
         ['assistant-lane-1', 'other-thread'],
@@ -440,8 +430,7 @@ describe('ExecutionTimelineDock', () => {
     expect(screen.getByRole('button', { name: /Lane zero run/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Lane one run/ })).toBeTruthy();
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: /All threads/ }), { button: 0, ctrlKey: false });
-    fireEvent.click(screen.getByText('Overlap thread'));
+    fireEvent.click(screen.getByRole('button', { name: 'This thread' }));
 
     expect(screen.getByRole('button', { name: /Lane zero run/ })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Lane one run/ })).toBeNull();

@@ -4,6 +4,7 @@ import { getGraphParentId } from '../lib/graph/lineage';
 import { isRedundantCommitNode } from '../lib/graph/turnUtils';
 import { getMessageBaseCommitSha } from '../lib/graph/commitAccessors';
 import { buildThreadRootIndex, getThreadOriginNodeId, type ThreadRootIndex } from '../lib/graphThreadRoots';
+import type { ThreadSession } from '../lib/threadSessions';
 import { getSubgraphThreadLinkTargetId } from '../lib/graphSubgraphThreads';
 import { resolveNodeState } from '../lib/runStateResolver';
 import { buildFocusRoute, isImportedGitMessage, type FocusRoute } from './focusRoute';
@@ -158,6 +159,15 @@ interface BuildWorkspaceProjectionInput {
   commitObservations?: CommitObservationEntity[];
   focusedMessageId: string | null;
   disabledSummaryIds?: Set<string>;
+  emptyThreadRoot?: EmptyThreadRootInput | null;
+  syntheticThreadRoots?: EmptyThreadRootInput[];
+  threadSessions?: ThreadSession[];
+}
+
+export interface EmptyThreadRootInput {
+  threadRootId: string;
+  workspaceId: string;
+  createdAt?: string | null;
 }
 
 interface StableWorkspaceProjectionBase {
@@ -269,6 +279,9 @@ const getStableBaseCacheKey = (
   commits: CommitEntity[] = [],
   commitParents: CommitParentEntity[] = [],
   commitObservations: CommitObservationEntity[] = [],
+  emptyThreadRoot: EmptyThreadRootInput | null = null,
+  syntheticThreadRoots: EmptyThreadRootInput[] = [],
+  threadSessions: ThreadSession[] = [],
 ): string => (
   [
     'messages',
@@ -286,6 +299,26 @@ const getStableBaseCacheKey = (
     'commitObservations',
     commitObservations.length,
     ...commitObservations.map(getCommitObservationFingerprint),
+    'emptyThreadRoot',
+    emptyThreadRoot?.threadRootId ?? '',
+    emptyThreadRoot?.workspaceId ?? '',
+    emptyThreadRoot?.createdAt ?? '',
+    'syntheticThreadRoots',
+    syntheticThreadRoots.length,
+    ...syntheticThreadRoots.map((root) => `${root.threadRootId}:${root.workspaceId}:${root.createdAt ?? ''}`),
+    'threadSessions',
+    threadSessions.length,
+    ...threadSessions.map((thread) => [
+      thread.id,
+      thread.workspaceId,
+      thread.title ?? '',
+      thread.status,
+      thread.createdAt,
+      thread.updatedAt,
+      thread.baseCommitSha ?? '',
+      thread.firstMessageId ?? '',
+      thread.source,
+    ].join(':')),
   ].join('\u001e')
 );
 
@@ -350,6 +383,42 @@ const getThreadOriginEntity = (
   } as Message,
 });
 
+const getEmptyThreadOriginEntity = ({
+  threadRootId,
+  workspaceId,
+  createdAt,
+  title,
+}: EmptyThreadRootInput & { title?: string | null }): ProjectedNodeEntity => {
+  const timestamp = createdAt || new Date(0).toISOString();
+  const preview = title?.trim() || 'New thread';
+  return {
+    entityId: `thread_origin:${threadRootId}`,
+    kind: 'thread_origin',
+    messageId: null,
+    focusMessageId: null,
+    parentEntityId: undefined,
+    turnGroupId: `thread_origin:${threadRootId}`,
+    sortTs: new Date(timestamp).getTime(),
+    preview,
+    shortLabel: 'Thread origin',
+    threadRootId,
+    rootMessageId: null,
+    isThreadRoot: true,
+    message: {
+      id: getThreadOriginNodeId(threadRootId),
+      role: 'assistant',
+      content: preview,
+      parentId: null,
+      workspaceId,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      status: null,
+      agent_id: null,
+      execution_data: { meta: { node_kind: 'thread_origin', thread_origin_id: threadRootId, empty_workspace_thread: true } },
+    } as Message,
+  };
+};
+
 const getSummaryBypassedCount = (
   summary: Summary,
   messageMap: Map<string, Message>
@@ -383,7 +452,8 @@ const getProjectedMessageEntity = (
   message: Message,
   messages: Message[],
   messageMap: Map<string, Message>,
-  threadRootIdByMessageId: Map<string, string>
+  threadRootIdByMessageId: Map<string, string>,
+  rootMessageIdByThreadRootId: Map<string, string>,
 ): ProjectedNodeEntity => {
   const kind = classifyMessageNodeKind(message, messageMap);
   const graphParentId = getGraphParentId(message, messageMap);
@@ -423,7 +493,7 @@ const getProjectedMessageEntity = (
     parentShas: kind === 'commit_message' ? getCommitParentShas(message) : undefined,
     threadRootId,
     threadLinkRootId,
-    isThreadRoot: Boolean(threadRootId && threadRootId === message.id),
+    isThreadRoot: Boolean(threadRootId && rootMessageIdByThreadRootId.get(threadRootId) === message.id),
   };
 };
 
@@ -836,8 +906,11 @@ export function buildWorkspaceProjection({
   commitObservations = [],
   focusedMessageId,
   disabledSummaryIds = new Set<string>(),
+  emptyThreadRoot = null,
+  syntheticThreadRoots = [],
+  threadSessions = [],
 }: BuildWorkspaceProjectionInput): WorkspaceProjection {
-  const base = getStableWorkspaceProjectionBase(messages, summaries, commits, commitParents, commitObservations);
+  const base = getStableWorkspaceProjectionBase(messages, summaries, commits, commitParents, commitObservations, emptyThreadRoot, syntheticThreadRoots, threadSessions);
   const {
     sortedMessages,
     sortedSummaries,
@@ -1056,8 +1129,34 @@ function getStableWorkspaceProjectionBase(
   commits: CommitEntity[] = [],
   commitParents: CommitParentEntity[] = [],
   commitObservations: CommitObservationEntity[] = [],
+  emptyThreadRoot: EmptyThreadRootInput | null = null,
+  syntheticThreadRoots: EmptyThreadRootInput[] = [],
+  threadSessions: ThreadSession[] = [],
 ): StableWorkspaceProjectionBase {
-  const cacheKey = getStableBaseCacheKey(messages, summaries, commits, commitParents, commitObservations);
+  const normalizedEmptyThreadRoot = messages.length === 0 ? emptyThreadRoot : null;
+  const syntheticRootById = new Map<string, EmptyThreadRootInput>();
+  for (const root of syntheticThreadRoots) {
+    const threadRootId = root.threadRootId.trim();
+    if (!threadRootId) continue;
+    syntheticRootById.set(threadRootId, { ...root, threadRootId });
+  }
+  if (normalizedEmptyThreadRoot?.threadRootId.trim()) {
+    syntheticRootById.set(normalizedEmptyThreadRoot.threadRootId.trim(), {
+      ...normalizedEmptyThreadRoot,
+      threadRootId: normalizedEmptyThreadRoot.threadRootId.trim(),
+    });
+  }
+  const normalizedSyntheticThreadRoots = Array.from(syntheticRootById.values()).sort((left, right) => (
+    (Number.isFinite(new Date(left.createdAt ?? '').getTime()) ? new Date(left.createdAt ?? '').getTime() : 0) -
+    (Number.isFinite(new Date(right.createdAt ?? '').getTime()) ? new Date(right.createdAt ?? '').getTime() : 0) ||
+    left.threadRootId.localeCompare(right.threadRootId)
+  ));
+  const normalizedThreadSessions = [...threadSessions].sort((left, right) => (
+    new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()
+    || left.id.localeCompare(right.id)
+  ));
+  const threadSessionById = new Map(normalizedThreadSessions.map((thread) => [thread.id, thread]));
+  const cacheKey = getStableBaseCacheKey(messages, summaries, commits, commitParents, commitObservations, normalizedEmptyThreadRoot, normalizedSyntheticThreadRoots, normalizedThreadSessions);
   const cached = stableBaseCache.get(cacheKey);
   if (cached) {
     stableBaseCache.delete(cacheKey);
@@ -1069,7 +1168,11 @@ function getStableWorkspaceProjectionBase(
   const sortedSummaries = [...summaries].sort(byCreatedAt);
   const messageMap = new Map(sortedMessages.map((message) => [message.id, message]));
   const summaryMap = new Map(sortedSummaries.map((summary) => [summary.id, summary]));
-  const threadRootIndex = buildThreadRootIndex(sortedMessages);
+  const threadRootIndex = buildThreadRootIndex(sortedMessages, {
+    emptyThreadRootId: normalizedEmptyThreadRoot?.threadRootId ?? null,
+    syntheticThreadRootIds: normalizedSyntheticThreadRoots.map((root) => root.threadRootId),
+    threadSessions: normalizedThreadSessions,
+  });
   const originMessage = getOriginMessage(sortedMessages);
   const originMessageId = originMessage?.id ?? null;
   const agentCommitShas = new Set(
@@ -1105,12 +1208,23 @@ function getStableWorkspaceProjectionBase(
       message,
       sortedMessages,
       messageMap,
-      threadRootIndex.threadRootIdByMessageId
+      threadRootIndex.threadRootIdByMessageId,
+      threadRootIndex.rootMessageIdByThreadRootId
     ));
   const threadOriginEntities = threadRootIndex.threadRootIds
     .map((threadRootId) => {
       const rootMessageId = threadRootIndex.rootMessageIdByThreadRootId.get(threadRootId);
       const rootMessage = rootMessageId ? messageMap.get(rootMessageId) ?? null : null;
+      const threadSession = threadSessionById.get(threadRootId) ?? null;
+      const syntheticRoot = syntheticRootById.get(threadRootId) ?? null;
+      if (!rootMessage && (threadSession || syntheticRoot)) {
+        return getEmptyThreadOriginEntity({
+          threadRootId,
+          workspaceId: threadSession?.workspaceId ?? syntheticRoot!.workspaceId,
+          createdAt: threadSession?.createdAt ?? syntheticRoot?.createdAt ?? null,
+          title: threadSession?.title ?? null,
+        });
+      }
       return rootMessage ? getThreadOriginEntity(threadRootId, rootMessage) : null;
     })
     .filter((entity): entity is ProjectedNodeEntity => Boolean(entity));

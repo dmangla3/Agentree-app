@@ -77,6 +77,7 @@ import {
     type RepoMentionFile,
 } from '../lib/composerRepoMentions';
 import { hasFreshContextBoundary } from '../lib/messageContext';
+import { getLegacyThreadIdForMessage, getMessageThreadSessionId } from '../lib/threadSessions';
 import {
     scheduleMessagesRefreshWhenGraphIdle,
 } from '../lib/graphInteractionGate';
@@ -409,6 +410,7 @@ const parseCliArgs = (cliArgs: string | null | undefined) => {
 };
 
 import { useMessages, useSendMessage, useCommitDescendants, useCommitAncestors } from '../hooks/useMessages';
+import { useCreateThreadSession } from '../hooks/useThreadSessions';
 import { useWorkspaceMessages } from '../hooks/useLiveMessages';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, useLocalNodes, type LocalNodeMessage } from '../hooks/useLocalNodes';
 
@@ -682,6 +684,7 @@ export function ChatInput({
     ), [agents, normalizedSelectedAgentRunCounts]);
     const selectedRunTotal = selectedAgentRuns.length;
     const sendMessageMutation = useSendMessage();
+    const createThreadSession = useCreateThreadSession();
     // Track agent setup operations separately from message sending
     const agentSetupControllersRef = useRef<Map<string, AbortController>>(new Map());
     const mcpSetupStateRef = useRef<{
@@ -2360,6 +2363,7 @@ export function ChatInput({
                 selectedNodeId,
                 messages: composerBaseMessages,
                 refs: commitPickerRefs,
+                trackedRefs: trackedRefsQuery.data ?? [],
                 workspaceBaseCommitSha: selectedWorkspace?.base_commit_sha ?? null,
             })
     ), [
@@ -2370,6 +2374,7 @@ export function ChatInput({
         replyParentMessageId,
         selectedNodeId,
         selectedWorkspace?.base_commit_sha,
+        trackedRefsQuery.data,
     ]);
     const defaultBaseCommitSha = defaultBaseResolution.sha;
     const baseCommitCandidatesQuery = useCommitDescendants(selectedWorkspaceId, defaultBaseCommitSha, {
@@ -3041,23 +3046,6 @@ export function ChatInput({
             window.removeEventListener('populateChatInput', handlePopulateChatInput as EventListener);
         };
     }, [setComposerPrompt]);
-
-    useEffect(() => {
-        const handleStartNewThread = () => {
-            setEditDraftSource(null);
-            setComposerTargetMode('new-thread');
-            setContextPolicy('fresh');
-            setSelectedContextStartId(null);
-            setSelectedMergeContextParentId(null);
-            setTimeout(() => textareaRef.current?.focus(), 0);
-        };
-
-        window.addEventListener('agentree:startNewThread', handleStartNewThread);
-
-        return () => {
-            window.removeEventListener('agentree:startNewThread', handleStartNewThread);
-        };
-    }, []);
 
     useEffect(() => {
         const handleEditUserMessage = (event: CustomEvent<{ message?: Message }>) => {
@@ -3759,7 +3747,20 @@ export function ChatInput({
                     ? effectiveContextStartId || null
                     : resolveContextStartMessage(sendContextParentId, messageLookupMessages, messageById)?.id ?? null
         );
-        const sendThreadOriginId = sendParentMessageId ? null : crypto.randomUUID();
+        let sendThreadId: string | null = null;
+        if (sendParentMessageId) {
+            const parentThreadMessage = messageById.get(sendParentMessageId) ?? null;
+            sendThreadId = getMessageThreadSessionId(parentThreadMessage)
+                ?? (parentThreadMessage ? getLegacyThreadIdForMessage(parentThreadMessage, messageById) : null);
+        } else if (selectedWorkspaceId) {
+            const thread = await createThreadSession.mutateAsync({
+                workspaceId: selectedWorkspaceId,
+                source: 'user',
+                baseCommitSha: effectiveBaseCommitSha || selectedWorkspace?.base_commit_sha || null,
+            });
+            sendThreadId = thread.id;
+        }
+        const sendThreadOriginId = sendThreadId;
         // --- 3. CREATE OPTIMISTIC MESSAGES (IMMEDIATE UI UPDATE) ---
         const parentPathIds = resolvedParentMessage?.path_ids || [];
         const parentDepth = resolvedParentMessage?.depth ?? -1;
@@ -3888,15 +3889,22 @@ export function ChatInput({
             }, { source: 'ChatInput' });
         };
 
-        if (sendThreadOriginId) {
+        if (sendThreadId) {
             for (const userMessage of optimisticUserMessages) {
+                userMessage.threadId = sendThreadId;
+                userMessage.thread_id = sendThreadId;
                 userMessage.execution_data = {
                     ...(userMessage.execution_data || {}),
                     meta: {
                         ...(((userMessage.execution_data as any)?.meta) || {}),
-                        thread_origin_id: sendThreadOriginId,
+                        thread_origin_id: sendThreadId,
                     },
                 };
+            }
+            for (const run of assistantRunMessages) {
+                if (!run.assistantMessage) continue;
+                run.assistantMessage.threadId = sendThreadId;
+                run.assistantMessage.thread_id = sendThreadId;
             }
         }
 
@@ -4281,6 +4289,7 @@ export function ChatInput({
                 agentProvider: primarySelectedAgent?.type || null,
                 llmModel: selectedLlmModel,
                 contextParentId: sendContextParentId,
+                threadId: sendThreadId,
                 threadOriginId: sendThreadOriginId,
                 perfFlowId: flowId,
                 signal: controller.signal,
@@ -4566,6 +4575,7 @@ export function ChatInput({
         attachments,
         setComposerPrompt,
         clearComposerDraft,
+        createThreadSession,
         sendMessageMutation,
         parentMessageId,
         editDraftSource,

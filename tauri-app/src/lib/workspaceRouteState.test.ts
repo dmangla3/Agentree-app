@@ -31,6 +31,16 @@ describe('resolveWorkspaceRouteState', () => {
     })).toEqual({ type: 'redirect', workspaceId: 'workspace-1' });
   });
 
+  it('waits for refetching workspaces before rejecting a selected deep-linked workspace', () => {
+    expect(resolveWorkspaceRouteState({
+      workspaceIdParam: 'new-workspace',
+      selectedWorkspaceId: 'new-workspace',
+      workspaces: [workspace('workspace-1')],
+      isLoadingWorkspaces: false,
+      isFetchingWorkspaces: true,
+    })).toEqual({ type: 'wait' });
+  });
+
   it('clears selection when no workspace exists locally or remotely', () => {
     expect(resolveWorkspaceRouteState({
       workspaceIdParam: 'missing-workspace',

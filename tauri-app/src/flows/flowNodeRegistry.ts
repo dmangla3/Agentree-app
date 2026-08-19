@@ -35,25 +35,25 @@ export const FLOW_NODE_REGISTRY: Record<string, FlowNodeDefinition> = {
   'core.synthesizer@1': {
     id: 'core.synthesizer@1',
     label: 'Synthesizer',
-    params: ['request', 'candidates'],
+    params: ['request', 'candidate_commits'],
     parent: 'root',
     requiresFinalizedCommit: true,
-    prompt: `Compare these candidate implementation nodes for the request.
-Produce one finalized implementation commit. You may use one candidate unchanged when it is already the best answer, or create a synthesized implementation that keeps the strongest candidate's strengths and applies useful ideas, fixes, or tradeoffs from the other candidates when they improve the result.
+    prompt: `Compare these candidate implementation commits for the request.
+Produce one finalized implementation commit. You may use one candidate unchanged when it is already the best answer, or create a synthesized implementation that keeps the strongest candidate's strengths and applies useful ideas, fixes, or tradeoffs from the other candidate commits when they improve the result.
 Do not copy weaker or conflicting changes just because they are present.
 
 Request:
 {{ request }}
 
-Candidates:
-{{ candidates }}
+Candidate commits:
+{{ candidate_commits }}
 
 Finish by producing a commit. Do not end with structured flow returns.`,
   },
   'core.reviewer@1': {
     id: 'core.reviewer@1',
     label: 'Reviewer',
-    params: ['request', 'target_node', 'commit', 'latest_fix', 'criteria'],
+    params: ['request', 'commit', 'latest_fix_commit', 'criteria'],
     parent: 'root',
     returns: {
       verdict: ['pass', 'fail'],
@@ -63,14 +63,11 @@ Finish by producing a commit. Do not end with structured flow returns.`,
 Original request:
 {{ request }}
 
-Target implementation node:
-{{ target_node }}
-
-Commit:
+Implementation commit:
 {{ commit }}
 
-Latest fix attempt, if any:
-{{ latest_fix }}
+Latest fix commit, if any:
+{{ latest_fix_commit }}
 
 Review criteria:
 {{ criteria }}

@@ -77,6 +77,83 @@ describe('graph thread roots', () => {
     expect(index.threadRootIdByMessageId.has('commit-row')).toBe(false);
   });
 
+  it('indexes an explicit empty workspace thread when no messages exist', () => {
+    const index = buildThreadRootIndex([], {
+      emptyThreadRootId: 'workspace-empty-thread:workspace-1',
+    });
+
+    expect(index.threadRootIds).toEqual(['workspace-empty-thread:workspace-1']);
+    expect(index.messageIdsByThreadRootId.get('workspace-empty-thread:workspace-1')).toEqual(new Set());
+    expect(index.rootMessageIdByThreadRootId.has('workspace-empty-thread:workspace-1')).toBe(false);
+  });
+
+  it('indexes synthetic thread roots alongside existing message-backed threads', () => {
+    const messages = [
+      makeMessage('thread-a', 'user', null),
+      makeMessage('assistant-a', 'assistant', 'thread-a'),
+    ];
+
+    const index = buildThreadRootIndex(messages, {
+      syntheticThreadRootIds: ['pending-thread'],
+    });
+
+    expect(index.threadRootIds).toEqual(['thread-a', 'pending-thread']);
+    expect(index.messageIdsByThreadRootId.get('pending-thread')).toEqual(new Set());
+    expect(index.rootMessageIdByThreadRootId.has('pending-thread')).toBe(false);
+  });
+
+  it('indexes persisted thread sessions before falling back to inferred roots', () => {
+    const messages = [
+      {
+        ...makeMessage('user-a', 'user', null),
+        thread_id: 'persisted-thread',
+        execution_data: { meta: { thread_origin_id: 'legacy-thread' } },
+      },
+      {
+        ...makeMessage('assistant-a', 'assistant', 'user-a'),
+        thread_id: 'persisted-thread',
+      },
+    ];
+
+    const index = buildThreadRootIndex(messages, {
+      threadSessions: [{
+        id: 'persisted-thread',
+        workspaceId: 'workspace-1',
+        title: null,
+        status: 'active',
+        createdAt: '2026-05-28T00:00:00.000Z',
+        updatedAt: '2026-05-28T00:01:00.000Z',
+        baseCommitSha: null,
+        firstMessageId: 'user-a',
+        source: 'user',
+      }],
+    });
+
+    expect(index.threadRootIds).toEqual(['persisted-thread']);
+    expect(index.rootMessageIdByThreadRootId.get('persisted-thread')).toBe('user-a');
+    expect(index.threadRootIdByMessageId.get('assistant-a')).toBe('persisted-thread');
+  });
+
+  it('indexes empty persisted thread sessions without synthetic roots', () => {
+    const index = buildThreadRootIndex([], {
+      threadSessions: [{
+        id: 'empty-thread',
+        workspaceId: 'workspace-1',
+        title: null,
+        status: 'active',
+        createdAt: '2026-05-28T00:00:00.000Z',
+        updatedAt: '2026-05-28T00:00:00.000Z',
+        baseCommitSha: null,
+        firstMessageId: null,
+        source: 'user',
+      }],
+    });
+
+    expect(index.threadRootIds).toEqual(['empty-thread']);
+    expect(index.messageIdsByThreadRootId.get('empty-thread')).toEqual(new Set());
+    expect(index.rootMessageIdByThreadRootId.has('empty-thread')).toBe(false);
+  });
+
   it('groups multiple root user messages that share a thread origin id', () => {
     const messages = [
       {

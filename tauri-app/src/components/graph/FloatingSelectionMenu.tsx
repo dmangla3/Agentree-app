@@ -1,7 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { useViewport, useStore } from '@xyflow/react';
-import { Button } from '../../../@/components/ui/button';
-import { Separator } from '../../../@/components/ui/separator';
 import { GitCompare, FileText, Trash2, GitMerge } from 'lucide-react';
 
 export interface FloatingSelectionMenuProps {
@@ -59,91 +57,80 @@ export function FloatingSelectionMenu({
     const minY = padding + safeHeight;
     const maxY = Math.max(minY, viewportHeight - padding);
     const clampedY = Math.min(Math.max(screenY, minY), maxY);
+    const actionClassName = 'hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm outline-hidden [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground';
 
     return (
         <div
             ref={menuRef}
-            className="absolute z-50 pointer-events-auto animate-in fade-in slide-in-from-bottom-2 duration-150"
+            className="pointer-events-auto absolute z-50 animate-in fade-in zoom-in-95 slide-in-from-bottom-2 duration-150"
             style={{
                 left: clampedX,
                 top: clampedY,
                 transform: 'translate(-50%, -100%)',
             }}
         >
-            <div className="min-w-[240px] overflow-hidden rounded-2xl border border-sky-200/70 bg-white/97 shadow-sm">
-                <div className="border-b border-sky-100/80 bg-gradient-to-b from-sky-50/95 to-white px-3 py-2.5">
-                    <div className="flex items-center gap-2">
-                        <div className="flex h-6 min-w-6 items-center justify-center rounded-full bg-sky-500 px-2 text-[11px] font-semibold text-white [font-variant-numeric:tabular-nums]">
-                            {selectedCount}
-                        </div>
-                        <div className="min-w-0">
-                            <div className="text-[12px] font-semibold text-slate-900">
-                                Selection ready
-                            </div>
-                            <div className="text-[11px] text-slate-500 [font-variant-numeric:tabular-nums]">
-                                {selectedCount} node{selectedCount === 1 ? '' : 's'} selected
-                            </div>
-                        </div>
+            <div className="w-56 rounded-md border bg-popover p-1 text-popover-foreground shadow-md">
+                <div className="px-2 py-1.5">
+                    <div className="text-sm font-medium [font-variant-numeric:tabular-nums]">
+                        {selectedCount} node{selectedCount === 1 ? '' : 's'} selected
                     </div>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                        <div className="rounded-full border border-sky-200 bg-sky-100/80 px-2 py-1 text-[11px] font-medium text-sky-900 [font-variant-numeric:tabular-nums]">
+                    <div className="mt-0.5 flex gap-2 text-xs text-muted-foreground [font-variant-numeric:tabular-nums]">
+                        <span>
                             {selectedMessageCount} message{selectedMessageCount === 1 ? '' : 's'}
-                        </div>
-                        <div className="rounded-full border border-amber-200 bg-amber-100/80 px-2 py-1 text-[11px] font-medium text-amber-900 [font-variant-numeric:tabular-nums]">
+                        </span>
+                        <span aria-hidden="true">/</span>
+                        <span>
                             {selectedCommitCount} commit{selectedCommitCount === 1 ? '' : 's'}
-                        </div>
+                        </span>
                     </div>
-                    <div className="mt-2 text-[11px] text-slate-500">
+                    <div className="mt-1 text-xs text-muted-foreground">
                         Esc clears. Shift-drag marquee selects.
                     </div>
                 </div>
 
-                <Separator />
+                <div className="-mx-1 my-1 h-px bg-border" />
 
                 {canViewDiff && (
-                    <Button variant="ghost" size="sm" onClick={onViewDiff} className="h-9 w-full justify-start rounded-none px-3 active:scale-[0.98]">
-                        <GitCompare className="w-4 h-4 mr-2" />
+                    <button type="button" onClick={onViewDiff} className={actionClassName}>
+                        <GitCompare />
                         View Diff
-                    </Button>
+                    </button>
                 )}
 
                 {canGenerateSummary && (
-                    <Button
-                        variant="ghost"
-                        size="sm"
+                    <button
+                        type="button"
                         onClick={onGenerateSummary}
-                        className="h-9 w-full justify-start rounded-none px-3 active:scale-[0.98]"
+                        className={actionClassName}
                         title="Create a new node containing a summary of the selected workspace branch"
                     >
-                        <FileText className="w-4 h-4 mr-2" />
+                        <FileText />
                         Generate Summary Node
-                    </Button>
+                    </button>
                 )}
 
                 {canMerge && (
-                    <Button
-                        variant="ghost"
-                        size="sm"
+                    <button
+                        type="button"
                         onClick={onMerge}
-                        className="h-9 w-full justify-start rounded-none px-3 text-primary active:scale-[0.98]"
+                        className={actionClassName}
                         title="Open integration workspace to merge selected nodes"
                     >
-                        <GitMerge className="w-4 h-4 mr-2" />
+                        <GitMerge />
                         Merge Selection
-                    </Button>
+                    </button>
                 )}
 
-                <Separator />
+                <div className="-mx-1 my-1 h-px bg-border" />
 
-                <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-9 w-full justify-start rounded-none px-3 text-destructive active:scale-[0.98]"
+                <button
+                    type="button"
+                    className={`${actionClassName} text-destructive focus:text-destructive [&_svg]:text-destructive`}
                     onClick={onDelete}
                 >
-                    <Trash2 className="w-4 h-4 mr-2" />
+                    <Trash2 />
                     Delete Nodes
-                </Button>
+                </button>
             </div>
         </div>
     );

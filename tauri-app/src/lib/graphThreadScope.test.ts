@@ -5,6 +5,7 @@ import {
   filterCommitContextForThreadScope,
   filterSummariesForThreadScope,
   getThreadScopeKey,
+  resolveActiveThreadAfterDoneChange,
   resolveInitialActiveThreadRootId,
   resolveThreadGraphScope,
 } from './graphThreadScope';
@@ -77,6 +78,36 @@ describe('graph thread scope', () => {
         { threadRootId: 'thread-b', lastUpdatedAt: 5, done: true, runningCount: 1 },
       ],
     })).toBe('thread-b');
+  });
+
+  it('selects another active thread when the current thread is marked done', () => {
+    expect(resolveActiveThreadAfterDoneChange({
+      changedThreadRootId: 'thread-b',
+      done: true,
+      activeThreadRootId: 'thread-b',
+      threadRootIds: index.threadRootIds,
+      threadItems: [
+        { threadRootId: 'thread-a', lastUpdatedAt: 2, done: false, runningCount: 0 },
+        { threadRootId: 'thread-b', lastUpdatedAt: 5, done: true, runningCount: 0 },
+      ],
+    })).toBe('thread-a');
+  });
+
+  it('keeps an empty active thread scoped so its origin remains visible', () => {
+    const emptyIndex = buildThreadRootIndex([], {
+      emptyThreadRootId: 'workspace-empty-thread:workspace-1',
+    });
+
+    const scope = resolveThreadGraphScope({
+      messages: [],
+      threadRootIndex: emptyIndex,
+      activeThreadRootId: 'workspace-empty-thread:workspace-1',
+    });
+
+    expect(scope.activeThreadRootId).toBe('workspace-empty-thread:workspace-1');
+    expect(scope.rootMessageId).toBe(null);
+    expect(scope.scopedMessages).toEqual([]);
+    expect(scope.isThreadScoped).toBe(true);
   });
 
   it('returns only messages for the active thread', () => {

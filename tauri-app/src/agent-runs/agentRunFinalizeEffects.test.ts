@@ -9,8 +9,10 @@ import { flushAgentWorkspaceRefreshesForTest } from './agentRunWorkspaceRefresh'
 import { localNodeKeys } from '../hooks/useLocalNodes';
 
 vi.mock('../lib/graphInteractionGate', () => ({
+  isGraphInteractionGateIdle: vi.fn(() => true),
   scheduleMessagesRefreshWhenGraphIdle: vi.fn(() => Promise.resolve()),
   scheduleLocalCommitGraphRefreshWhenGraphIdle: vi.fn(() => Promise.resolve()),
+  scheduleLocalNodesRefreshWhenGraphIdle: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../hooks/useHotSendMessageDeltas', () => ({

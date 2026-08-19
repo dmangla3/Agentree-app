@@ -65,6 +65,41 @@ export const resolveInitialActiveThreadRootId = ({
   return any[0]?.threadRootId ?? threadRootIds[0] ?? null;
 };
 
+export const resolveActiveThreadAfterDoneChange = ({
+  changedThreadRootId,
+  done,
+  activeThreadRootId,
+  threadRootIds,
+  threadItems,
+}: {
+  changedThreadRootId: string;
+  done: boolean;
+  activeThreadRootId: string | null | undefined;
+  threadRootIds: string[];
+  threadItems: ThreadSelectionItem[];
+}): string | null => {
+  const available = new Set(threadRootIds);
+  if (!done || changedThreadRootId !== activeThreadRootId) {
+    return resolveInitialActiveThreadRootId({
+      preferredThreadRootId: activeThreadRootId,
+      threadRootIds,
+      threadItems,
+    });
+  }
+
+  const candidateThreadRootIds = threadRootIds.filter((threadRootId) => (
+    threadRootId !== changedThreadRootId
+  ));
+  const candidateThreadItems = threadItems.filter((item) => item.threadRootId !== changedThreadRootId);
+
+  const nextActiveThreadRootId = resolveInitialActiveThreadRootId({
+    preferredThreadRootId: null,
+    threadRootIds: candidateThreadRootIds,
+    threadItems: candidateThreadItems,
+  });
+  return nextActiveThreadRootId ?? (available.has(changedThreadRootId) ? changedThreadRootId : null);
+};
+
 export const resolveThreadGraphScope = ({
   messages,
   threadRootIndex,
@@ -78,7 +113,7 @@ export const resolveThreadGraphScope = ({
     ? threadRootIndex.messageIdsByThreadRootId.get(activeThreadRootId) ?? null
     : null;
 
-  if (!activeThreadRootId || !threadMessageIds || threadMessageIds.size === 0) {
+  if (!activeThreadRootId || !threadMessageIds) {
     return {
       activeThreadRootId: null,
       rootMessageId: null,
@@ -91,7 +126,7 @@ export const resolveThreadGraphScope = ({
 
   return {
     activeThreadRootId,
-    rootMessageId: threadRootIndex.rootMessageIdByThreadRootId.get(activeThreadRootId) ?? activeThreadRootId,
+    rootMessageId: threadRootIndex.rootMessageIdByThreadRootId.get(activeThreadRootId) ?? null,
     latestMessageId: getLatestThreadMessageId(activeThreadRootId, messages),
     scopedMessageIds: new Set(threadMessageIds),
     scopedMessages: messages.filter((message) => threadMessageIds.has(message.id)),

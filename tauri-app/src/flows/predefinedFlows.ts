@@ -40,12 +40,15 @@ run:
         request: input.input
       parent: root
 
+  - set: implementation_commits
+    value: implementations.commit
+
   - set: synthesizer
     call: Synthesizer
     parent: root
     args:
       request: input.input
-      candidates: implementations
+      candidate_commits: implementation_commits
 
   - set: implementation
     value: synthesizer
@@ -60,10 +63,7 @@ run:
   - set: fixer_parent
     value: implementation
 
-  - set: reviewer_parent
-    value: implementation
-
-  - set: latest_fix
+  - set: latest_fix_commit
     value: null
 
   - loop:
@@ -71,12 +71,11 @@ run:
       steps:
         - set: reviewer
           call: Reviewer
-          parent: reviewer_parent
+          parent: root
           args:
             request: input.input
-            target_node: implementation
             commit: commit
-            latest_fix: latest_fix
+            latest_fix_commit: latest_fix_commit
             criteria: "Review correctness against the original request."
 
         - if: reviewer.verdict == pass
@@ -92,14 +91,11 @@ run:
         - set: commit
           value: fixer.commit
 
-        - set: latest_fix
-          value: fixer
+        - set: latest_fix_commit
+          value: fixer.commit
 
         - set: fixer_parent
           value: fixer
-
-        - set: reviewer_parent
-          value: reviewer
 `,
   },
 ];

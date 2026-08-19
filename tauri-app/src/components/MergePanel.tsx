@@ -37,9 +37,13 @@ export function MergePanel({ onClose }: MergePanelProps) {
   
   // Initialize workspace if not already open
   React.useEffect(() => {
-    if (!session && selectedWorkspaceId && repoPath) {
-      const { openMergeSession } = useIntegrationStore.getState();
-      openMergeSession(selectedWorkspaceId, repoPath);
+    if (
+      selectedWorkspaceId &&
+      repoPath &&
+      (!session || session.workspaceId !== selectedWorkspaceId || session.repoPath !== repoPath)
+    ) {
+      const { ensureMergeSession } = useIntegrationStore.getState();
+      ensureMergeSession(selectedWorkspaceId, repoPath);
     }
   }, [session, selectedWorkspaceId, repoPath]);
 

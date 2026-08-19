@@ -6,9 +6,13 @@ import {
   clampGraphZoom,
   GRAPH_MIN_ZOOM,
   resolveFocusedThreadRootId,
+  resolveBlockingEmptyThreadRootId,
+  resolveThreadDeletePlan,
+  resolveThreadScopedDefaultFocus,
   resolveThreadDropdownSelection,
   shouldDispatchGraphFocusSynchronously,
   shouldClampViewportDuringMove,
+  shouldRestoreViewportAfterGraphNodeCountChange,
   shouldSkipActiveGraphClickCentering,
   shouldTreatGraphMoveAsViewportInteraction,
 } from './GraphView';
@@ -93,6 +97,32 @@ describe('shouldClampViewportDuringMove', () => {
 
     expect(shouldClampViewportDuringMove({
       eventType: undefined,
+      isViewportInteracting: false,
+    })).toBe(true);
+  });
+});
+
+describe('shouldRestoreViewportAfterGraphNodeCountChange', () => {
+  it('does not restore the saved thread viewport while the user is dragging', () => {
+    expect(shouldRestoreViewportAfterGraphNodeCountChange({
+      activeGraphRenderHold: false,
+      graphRenderMode: 'full',
+      isViewportInteracting: true,
+    })).toBe(false);
+  });
+
+  it('does not restore while active-run render hold is controlling the visible node window', () => {
+    expect(shouldRestoreViewportAfterGraphNodeCountChange({
+      activeGraphRenderHold: true,
+      graphRenderMode: 'hold-visible',
+      isViewportInteracting: false,
+    })).toBe(false);
+  });
+
+  it('allows idle full-graph node count changes to restore the saved thread viewport', () => {
+    expect(shouldRestoreViewportAfterGraphNodeCountChange({
+      activeGraphRenderHold: false,
+      graphRenderMode: 'full',
       isViewportInteracting: false,
     })).toBe(true);
   });
@@ -247,6 +277,15 @@ describe('GraphView canvas running status', () => {
     expect(source).toContain('threadGraphScope.activeThreadRootId');
   });
 
+  it('does not restore saved thread viewport from active-window node count churn', () => {
+    const source = readFileSync(join(process.cwd(), 'src/components/GraphView.tsx'), 'utf8');
+
+    expect(source).toContain('shouldRestoreViewportAfterGraphNodeCountChange({');
+    expect(source).toContain('activeGraphRenderHold,');
+    expect(source).toContain('graphRenderMode: graphRenderElements.mode');
+    expect(source).toContain('isViewportInteracting: isViewportInteractingRef.current');
+  });
+
   it('does not set a clamped viewport from React Flow onMove while active drag is in progress', () => {
     const source = readFileSync(join(process.cwd(), 'src/components/GraphView.tsx'), 'utf8');
 
@@ -326,6 +365,93 @@ describe('resolveThreadDropdownSelection', () => {
       threadRootId: 'thread-a',
       messages,
     })).toBe('assistant-running');
+  });
+
+  it('does not focus an empty first-class thread session as a message node', () => {
+    expect(resolveThreadDropdownSelection({
+      threadRootId: 'empty-thread-session',
+      messages: [],
+    })).toBeNull();
+  });
+});
+
+describe('resolveThreadScopedDefaultFocus', () => {
+  it('clears stale workspace focus when the active thread has no messages', () => {
+    expect(resolveThreadScopedDefaultFocus({
+      focusedMessageId: 'assistant-from-other-thread',
+      lastFocusSource: 'system',
+      lastFocusMetadata: { reason: 'restore-workspace-focus' },
+      rememberedFocusId: 'assistant-from-other-thread',
+      messages: [],
+    })).toEqual({
+      messageId: null,
+      reason: 'clear-thread-focus',
+    });
+  });
+
+  it('restores remembered focus only when it belongs to the active thread scope', () => {
+    const messages = [
+      makeMessage('thread-a', 'user', null, '2026-05-19T00:00:00.000Z'),
+      makeMessage('assistant-a', 'assistant', 'thread-a', '2026-05-19T00:01:00.000Z'),
+    ];
+
+    expect(resolveThreadScopedDefaultFocus({
+      focusedMessageId: 'assistant-from-other-thread',
+      lastFocusSource: 'system',
+      lastFocusMetadata: null,
+      rememberedFocusId: 'assistant-from-other-thread',
+      messages,
+    })).toEqual({
+      messageId: 'assistant-a',
+      reason: 'default-workspace-focus',
+    });
+  });
+});
+
+describe('resolveThreadDeletePlan', () => {
+  it('deletes the thread session directly when the thread has no messages', () => {
+    expect(resolveThreadDeletePlan({
+      threadRootId: 'empty-thread',
+      threadMessageIds: new Set(),
+    })).toEqual({
+      kind: 'thread-session',
+      threadRootId: 'empty-thread',
+    });
+  });
+
+  it('deletes message branches and the thread session when the thread has messages', () => {
+    expect(resolveThreadDeletePlan({
+      threadRootId: 'thread-a',
+      threadMessageIds: new Set(['thread-a', 'assistant-a']),
+    })).toEqual({
+      kind: 'message-branch',
+      threadRootId: 'thread-a',
+      messageIds: ['thread-a', 'assistant-a'],
+    });
+  });
+});
+
+describe('resolveBlockingEmptyThreadRootId', () => {
+  it('returns the first active thread without messages', () => {
+    expect(resolveBlockingEmptyThreadRootId({
+      threadRootIds: ['thread-a', 'thread-empty', 'thread-b'],
+      messageIdsByThreadRootId: new Map([
+        ['thread-a', new Set(['message-a'])],
+        ['thread-empty', new Set()],
+        ['thread-b', new Set()],
+      ]),
+      doneThreadRootIds: new Set(['thread-b']),
+    })).toBe('thread-empty');
+  });
+
+  it('ignores done empty threads', () => {
+    expect(resolveBlockingEmptyThreadRootId({
+      threadRootIds: ['thread-empty'],
+      messageIdsByThreadRootId: new Map([
+        ['thread-empty', new Set()],
+      ]),
+      doneThreadRootIds: new Set(['thread-empty']),
+    })).toBeNull();
   });
 });
 

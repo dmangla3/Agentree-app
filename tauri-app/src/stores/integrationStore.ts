@@ -267,6 +267,57 @@ const defaultPolicy: MergePolicy = {
   summarizeRiskyResolutions: true,
 };
 
+const createMergeSession = (workspaceId: string, repoPath: string, now = Date.now()): IntegrationSession => ({
+  id: crypto.randomUUID(),
+  workspaceId,
+  repoPath,
+  stage: 'setup',
+  target: null,
+  sources: [],
+  baseCommit: null,
+  resolutionMode: 'smart',
+  policy: { ...defaultPolicy },
+  preview: null,
+  fileDecisions: [],
+  agentActivities: [],
+  selectedFilePath: null,
+  smartResolutions: {},
+  reviewRun: { ...defaultReviewRun },
+  reviewSummary: null,
+  reviewIssues: [],
+  issueSelections: {},
+  reviewTimeline: [],
+  synthesizedSummaryText: null,
+  applyState: { ...defaultApplyState },
+  resultNodeId: null,
+  resultCommitSha: null,
+  promotionTarget: null,
+  createdAt: now,
+  updatedAt: now,
+});
+
+const clearTargetDependentState = (session: IntegrationSession, now = Date.now()): IntegrationSession => ({
+  ...session,
+  stage: 'setup',
+  baseCommit: null,
+  preview: null,
+  fileDecisions: [],
+  agentActivities: [],
+  selectedFilePath: null,
+  smartResolutions: {},
+  reviewRun: { ...defaultReviewRun },
+  reviewSummary: null,
+  reviewIssues: [],
+  issueSelections: {},
+  reviewTimeline: [],
+  synthesizedSummaryText: null,
+  applyState: { ...defaultApplyState },
+  resultNodeId: null,
+  resultCommitSha: null,
+  promotionTarget: null,
+  updatedAt: now,
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // STORE STATE
 // ═══════════════════════════════════════════════════════════════════════════
@@ -283,10 +334,12 @@ interface IntegrationState {
   
   // Actions
   openMergeSession: (workspaceId: string, repoPath: string) => void;
+  ensureMergeSession: (workspaceId: string, repoPath: string) => void;
   closeMergeSession: () => void;
   
   // Setup Stage
   setTarget: (target: MergeTarget) => void;
+  clearTarget: () => void;
   addSource: (source: MergeSource) => boolean;
   removeSource: (sourceId: string) => void;
   reorderSources: (sourceIds: string[]) => void;
@@ -347,36 +400,35 @@ export const useIntegrationStore = create<IntegrationState>((set) => ({
     const now = Date.now();
     set({
       isMergeOpen: true,
-      session: {
-        id: crypto.randomUUID(),
-        workspaceId,
-        repoPath,
-        stage: 'setup',
-        target: null,
-        sources: [],
-        baseCommit: null,
-        resolutionMode: 'smart',
-        policy: { ...defaultPolicy },
-        preview: null,
-        fileDecisions: [],
-        agentActivities: [],
-        selectedFilePath: null,
-        smartResolutions: {},
-        reviewRun: { ...defaultReviewRun },
-        reviewSummary: null,
-        reviewIssues: [],
-        issueSelections: {},
-        reviewTimeline: [],
-        synthesizedSummaryText: null,
-        applyState: { ...defaultApplyState },
-        resultNodeId: null,
-        resultCommitSha: null,
-        promotionTarget: null,
-        createdAt: now,
-        updatedAt: now,
-      },
+      session: createMergeSession(workspaceId, repoPath, now),
       isApplying: false,
       applyError: null,
+    });
+  },
+
+  ensureMergeSession: (workspaceId: string, repoPath: string) => {
+    const now = Date.now();
+    set((state) => {
+      if (
+        state.session &&
+        state.session.workspaceId === workspaceId &&
+        state.session.repoPath === repoPath
+      ) {
+        return {
+          isMergeOpen: true,
+          isApplying: state.session.applyState.status === 'running',
+          applyError: state.session.applyState.status === 'failed'
+            ? state.session.applyState.error || state.applyError
+            : null,
+        };
+      }
+
+      return {
+        isMergeOpen: true,
+        session: createMergeSession(workspaceId, repoPath, now),
+        isApplying: false,
+        applyError: null,
+      };
     });
   },
 
@@ -398,23 +450,25 @@ export const useIntegrationStore = create<IntegrationState>((set) => ({
       if (!state.session) return state;
       return {
         session: {
-          ...state.session,
+          ...clearTargetDependentState(state.session),
           target,
-          baseCommit: null,
-          preview: null,
-          fileDecisions: [],
-          agentActivities: [],
-          selectedFilePath: null,
-          smartResolutions: {},
-          reviewRun: { ...defaultReviewRun },
-          reviewSummary: null,
-          reviewIssues: [],
-          issueSelections: {},
-          reviewTimeline: [],
-          synthesizedSummaryText: null,
-          applyState: { ...defaultApplyState },
-          updatedAt: Date.now(),
         },
+        isApplying: false,
+        applyError: null,
+      };
+    });
+  },
+
+  clearTarget: () => {
+    set((state) => {
+      if (!state.session) return state;
+      return {
+        session: {
+          ...clearTargetDependentState(state.session),
+          target: null,
+        },
+        isApplying: false,
+        applyError: null,
       };
     });
   },
@@ -428,23 +482,11 @@ export const useIntegrationStore = create<IntegrationState>((set) => ({
       wasAdded = true;
       return {
         mergeTabAttentionNonce: state.mergeTabAttentionNonce + 1,
+        isApplying: false,
+        applyError: null,
         session: {
-          ...state.session,
+          ...clearTargetDependentState(state.session),
           sources: [...state.session.sources, source],
-          baseCommit: null,
-          preview: null,
-          fileDecisions: [],
-          agentActivities: [],
-          selectedFilePath: null,
-          smartResolutions: {},
-          reviewRun: { ...defaultReviewRun },
-          reviewSummary: null,
-          reviewIssues: [],
-          issueSelections: {},
-          reviewTimeline: [],
-          synthesizedSummaryText: null,
-          applyState: { ...defaultApplyState },
-          updatedAt: Date.now(),
         },
       };
     });
@@ -455,23 +497,11 @@ export const useIntegrationStore = create<IntegrationState>((set) => ({
     set((state) => {
       if (!state.session) return state;
       return {
+        isApplying: false,
+        applyError: null,
         session: {
-          ...state.session,
+          ...clearTargetDependentState(state.session),
           sources: state.session.sources.filter((s) => s.id !== sourceId),
-          baseCommit: null,
-          preview: null,
-          fileDecisions: [],
-          agentActivities: [],
-          selectedFilePath: null,
-          smartResolutions: {},
-          reviewRun: { ...defaultReviewRun },
-          reviewSummary: null,
-          reviewIssues: [],
-          issueSelections: {},
-          reviewTimeline: [],
-          synthesizedSummaryText: null,
-          applyState: { ...defaultApplyState },
-          updatedAt: Date.now(),
         },
       };
     });
@@ -485,23 +515,11 @@ export const useIntegrationStore = create<IntegrationState>((set) => ({
         .map((id) => sourceMap.get(id))
         .filter((s): s is MergeSource => !!s);
       return {
+        isApplying: false,
+        applyError: null,
         session: {
-          ...state.session,
+          ...clearTargetDependentState(state.session),
           sources: reordered,
-          baseCommit: null,
-          preview: null,
-          fileDecisions: [],
-          agentActivities: [],
-          selectedFilePath: null,
-          smartResolutions: {},
-          reviewRun: { ...defaultReviewRun },
-          reviewSummary: null,
-          reviewIssues: [],
-          issueSelections: {},
-          reviewTimeline: [],
-          synthesizedSummaryText: null,
-          applyState: { ...defaultApplyState },
-          updatedAt: Date.now(),
         },
       };
     });

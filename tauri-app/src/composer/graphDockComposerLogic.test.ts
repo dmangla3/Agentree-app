@@ -65,6 +65,7 @@ describe('graph dock composer logic', () => {
     ];
 
     expect(resolveGraphDockComposerBase({
+      targetMode: 'reply',
       replyParentMessageId: 'parent',
       selectedNodeId: 'parent',
       focusedCommitSha: null,
@@ -78,8 +79,9 @@ describe('graph dock composer logic', () => {
     });
   });
 
-  it('does not use graph thread creation base rules when no reply parent is selected', () => {
+  it('uses main as the default base for new graph threads', () => {
     expect(resolveGraphDockComposerBase({
+      targetMode: 'new-thread',
       replyParentMessageId: null,
       selectedNodeId: 'parent',
       focusedCommitSha: null,
@@ -91,14 +93,40 @@ describe('graph dock composer logic', () => {
       workspace: { id: 'workspace-1', base_commit_sha: 'workspace-base' } as Workspace,
       override: null,
     })).toEqual({
-      commitSha: 'workspace-base',
+      commitSha: 'main-tip',
       selectedFromNodeId: null,
-      source: 'workspace-base',
+      source: 'main-ref',
+    });
+  });
+
+  it('uses an enabled tracked ref before workspace base for new graph threads', () => {
+    expect(resolveGraphDockComposerBase({
+      targetMode: 'new-thread',
+      replyParentMessageId: null,
+      selectedNodeId: null,
+      focusedCommitSha: null,
+      messages: [],
+      refs: [],
+      trackedRefs: [{
+        git_ref: 'refs/heads/release',
+        display_name: 'release',
+        enabled: true,
+        last_seen_commit_sha: 'release-tip',
+        createdAt: '2026-05-27T00:00:00.000Z',
+        updatedAt: '2026-05-27T00:00:00.000Z',
+      }],
+      workspace: { id: 'workspace-1', base_commit_sha: 'workspace-base' } as Workspace,
+      override: null,
+    })).toEqual({
+      commitSha: 'release-tip',
+      selectedFromNodeId: null,
+      source: 'tracked-ref',
     });
   });
 
   it('uses workspace base when no reply parent base is available', () => {
     expect(resolveGraphDockComposerBase({
+      targetMode: 'reply',
       replyParentMessageId: null,
       selectedNodeId: 'parent',
       focusedCommitSha: null,

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '../../../test/setup';
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GraphNodeWrapper } from './GraphNodeWrapper';
 
@@ -25,10 +25,13 @@ vi.mock('../../../../@/components/ui/hover-card', () => ({
   }) => (
     <div>
       <button type="button" onClick={() => onOpenChange?.(true)}>open hover</button>
+      <button type="button" onClick={() => onOpenChange?.(false)}>close hover</button>
       {children}
     </div>
   ),
-  HoverCardContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  HoverCardContent: ({ children, ...props }: React.HTMLAttributes<HTMLDivElement> & { children: React.ReactNode }) => (
+    <div data-testid="hover-content" {...props}>{children}</div>
+  ),
   HoverCardTrigger: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
@@ -54,6 +57,7 @@ const baseProps = {
 
 describe('GraphNodeWrapper', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -96,5 +100,75 @@ describe('GraphNodeWrapper', () => {
 
     expect(screen.getByText('expensive hover content')).toBeTruthy();
     expect(ensureAgentRunHydrated).toHaveBeenCalledWith('node-1', 'hover');
+  });
+
+  it('does not close from focus churn while the pointer remains inside hover content', () => {
+    render(
+      <GraphNodeWrapper
+        {...baseProps}
+        hoverCardContent={<button type="button">hover action</button>}
+      >
+        <div>node body</div>
+      </GraphNodeWrapper>
+    );
+
+    fireEvent.click(screen.getByText('open hover'));
+    const content = screen.getByTestId('hover-content');
+    fireEvent.pointerEnter(content);
+    fireEvent.blur(screen.getByText('hover action'), { relatedTarget: document.body });
+    fireEvent.click(screen.getByText('close hover'));
+
+    expect(screen.getByText('hover action')).toBeTruthy();
+
+    fireEvent.pointerLeave(content);
+    fireEvent.click(screen.getByText('close hover'));
+
+    expect(screen.queryByText('hover action')).toBeNull();
+  });
+
+  it('clears transient click focus feedback after the feedback window', () => {
+    vi.useFakeTimers();
+
+    render(
+      <GraphNodeWrapper {...baseProps}>
+        <div>node body</div>
+      </GraphNodeWrapper>
+    );
+
+    const node = screen.getByText('node body').closest('[data-agentree-graph-node-id]');
+    expect(node).toBeTruthy();
+
+    fireEvent.pointerDown(node!, { button: 0 });
+    expect(node!.className).toContain('ring-indigo-500');
+
+    act(() => {
+      vi.advanceTimersByTime(421);
+    });
+
+    expect(node!.className).not.toContain('ring-indigo-500');
+  });
+
+  it('clears transient click focus feedback when the wrapper is reused for another node', () => {
+    vi.useFakeTimers();
+
+    const { rerender } = render(
+      <GraphNodeWrapper {...baseProps} nodeId="node-1">
+        <div>node body</div>
+      </GraphNodeWrapper>
+    );
+
+    const node = screen.getByText('node body').closest('[data-agentree-graph-node-id]');
+    expect(node).toBeTruthy();
+
+    fireEvent.pointerDown(node!, { button: 0 });
+    expect(node!.className).toContain('ring-indigo-500');
+
+    rerender(
+      <GraphNodeWrapper {...baseProps} nodeId="node-2">
+        <div>node body</div>
+      </GraphNodeWrapper>
+    );
+
+    expect(node!.className).not.toContain('ring-indigo-500');
   });
 });

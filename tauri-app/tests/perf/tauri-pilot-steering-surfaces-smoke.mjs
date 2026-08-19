@@ -103,6 +103,19 @@ const report = (await pilotEval(`
     element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
     element.dispatchEvent(new Event('change', { bubbles: true }));
   };
+  const hoverElement = async (element) => {
+    const rect = element.getBoundingClientRect();
+    const clientX = rect.left + Math.min(12, Math.max(1, rect.width / 2));
+    const clientY = rect.top + Math.min(12, Math.max(1, rect.height / 2));
+    for (const type of ['pointerover', 'pointerenter', 'pointermove', 'mouseover', 'mouseenter', 'mousemove']) {
+      const bubbles = !type.endsWith('enter');
+      const event = type.startsWith('pointer')
+        ? new PointerEvent(type, { bubbles, pointerType: 'mouse', clientX, clientY })
+        : new MouseEvent(type, { bubbles, clientX, clientY });
+      element.dispatchEvent(event);
+      await sleep(60);
+    }
+  };
   const waitFor = async (predicate, timeoutMs = 5000, intervalMs = 25) => {
     const startedAt = performance.now();
     while (performance.now() - startedAt < timeoutMs) {
@@ -238,9 +251,7 @@ const report = (await pilotEval(`
     window.dispatchEvent(new Event('agentree:graph-viewport-interaction-start'));
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     await sleep(150);
-    window.dispatchEvent(new CustomEvent('agentree:quick-reply-keep-hover-open', {
-      detail: { messageId: assistantId },
-    }));
+    await hoverElement(graphNode);
     const hoverInput = await waitFor(() => {
       const inputs = [...document.querySelectorAll('input[aria-label="Steering prompt"]')];
       return inputs[inputs.length - 1] ?? null;

@@ -41,6 +41,17 @@ const AGENTREE_GIT_COMMIT_PREFIX = 'git -c user.name=Agentree -c user.email=agen
 
 const quoteShellArg = (value: string) => `'${value.replace(/'/g, `'\"'\"'`)}'`;
 
+export function mergeWorkspaceIntoCachedWorkspaces(
+  current: Workspace[] | undefined,
+  workspace: Workspace
+): Workspace[] {
+  const existing = current ?? [];
+  return [
+    workspace,
+    ...existing.filter((candidate) => candidate.id !== workspace.id),
+  ];
+}
+
 async function prepareRepoForWorkspace(
   folderPath: string,
   allowGitInit: boolean,
@@ -198,6 +209,11 @@ export const useCreateWorkspace = () => {
         allow_git_init: variables.allowGitInit ?? false,
         dirty_strategy: variables.dirtyStrategy ?? null,
       });
+      if (workspace?.id) {
+        queryClient.setQueryData<Workspace[]>(['workspaces'], (current) =>
+          mergeWorkspaceIntoCachedWorkspaces(current, workspace as Workspace)
+        );
+      }
       queryClient.invalidateQueries({ queryKey: ['workspaces'] });
     },
     onError: (error: unknown) => {

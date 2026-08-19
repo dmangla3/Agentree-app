@@ -10,6 +10,8 @@ const message = (input: Partial<Message> & Pick<Message, 'id'>): Message => ({
   workspaceId: input.workspaceId ?? 'workspace-1',
   status: input.status ?? null,
   execution_data: input.execution_data ?? null,
+  threadId: input.threadId,
+  thread_id: input.thread_id,
   createdAt: input.createdAt ?? '2026-05-27T00:00:00.000Z',
   updatedAt: input.updatedAt ?? '2026-05-27T00:00:00.000Z',
 });
@@ -150,6 +152,90 @@ describe('sendHeadlessComposerReply', () => {
     expect(executionDataEvent?.[1].patch.meta.base_commit_sha).toBe('workspace-base');
   });
 
+  it('sends the first-class thread id and legacy thread origin for new graph threads', async () => {
+    const sendMessage = vi.fn().mockResolvedValue({
+      userMessage: message({ id: 'user-root', role: 'user', parentId: null }),
+      assistantMessages: [message({ id: 'assistant-root', role: 'assistant', parentId: 'user-root' })],
+    });
+
+    await sendHeadlessComposerMessage({
+      workspaceId: 'workspace-1',
+      parentMessageId: null,
+      contextParentId: null,
+      contextPolicy: 'fresh',
+      prompt: 'Start persisted thread',
+      messages: [],
+      agent: {
+        id: 'codex-agent',
+        type: 'codex',
+        name: 'Codex',
+        cliArgs: '',
+        promptFlag: null,
+        model_config: { model: 'gpt-5.5' },
+      },
+      base: {
+        commitSha: 'workspace-base',
+        selectedFromNodeId: null,
+      },
+      workspaces: [{ id: 'workspace-1', git_repo_path: '/repo' } as Workspace],
+      sendMessage,
+      hasRuntime: () => true,
+      startAgentRun: vi.fn().mockResolvedValue(undefined),
+      getAccessToken: vi.fn().mockResolvedValue('token-1'),
+      seedAgentRun: vi.fn(),
+      dispatchAgentRun: vi.fn(),
+      threadId: 'thread-session-1',
+      threadOriginId: 'thread-session-1',
+      createRunId: () => 'run-thread',
+    });
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: 'thread-session-1',
+      threadOriginId: 'thread-session-1',
+    }));
+  });
+
+  it('inherits first-class thread ids for replies', async () => {
+    const sendMessage = vi.fn().mockResolvedValue({
+      userMessage: message({ id: 'user-child', role: 'user', parentId: 'parent-1' }),
+      assistantMessages: [message({ id: 'assistant-child', role: 'assistant', parentId: 'user-child' })],
+    });
+
+    await sendHeadlessComposerMessage({
+      workspaceId: 'workspace-1',
+      parentMessageId: 'parent-1',
+      contextParentId: 'parent-1',
+      contextPolicy: 'continue',
+      prompt: 'Continue thread',
+      messages: [message({ id: 'parent-1', threadId: 'thread-session-1' })],
+      agent: {
+        id: 'codex-agent',
+        type: 'codex',
+        name: 'Codex',
+        cliArgs: '',
+        promptFlag: null,
+        model_config: { model: 'gpt-5.5' },
+      },
+      base: {
+        commitSha: 'base-sha',
+        selectedFromNodeId: 'parent-1',
+      },
+      workspaces: [{ id: 'workspace-1', git_repo_path: '/repo' } as Workspace],
+      sendMessage,
+      hasRuntime: () => true,
+      startAgentRun: vi.fn().mockResolvedValue(undefined),
+      getAccessToken: vi.fn().mockResolvedValue('token-1'),
+      seedAgentRun: vi.fn(),
+      dispatchAgentRun: vi.fn(),
+      createRunId: () => 'run-thread-reply',
+    });
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: 'thread-session-1',
+      threadOriginId: 'thread-session-1',
+    }));
+  });
+
   it('creates local runtime nodes when the message API returns no agent messages', async () => {
     const startAgentRun = vi.fn().mockResolvedValue(undefined);
     const persistLocalNode = vi.fn().mockResolvedValue(undefined);
@@ -210,6 +296,61 @@ describe('sendHeadlessComposerReply', () => {
       type: 'status',
       status: 'running',
     });
+  });
+
+  it('creates local runtime nodes when the message API rejects for a new thread send', async () => {
+    const startAgentRun = vi.fn().mockResolvedValue(undefined);
+    const persistLocalNode = vi.fn().mockResolvedValue(undefined);
+    const onMessagesCreated = vi.fn();
+
+    const response = await sendHeadlessComposerMessage({
+      workspaceId: 'workspace-1',
+      parentMessageId: null,
+      contextParentId: null,
+      contextPolicy: 'fresh',
+      prompt: 'Start local thread',
+      messages: [],
+      agent: {
+        id: 'codex-agent',
+        type: 'codex',
+        name: 'Codex',
+        cliArgs: '',
+        promptFlag: null,
+        model_config: { model: 'gpt-5.5' },
+      },
+      base: {
+        commitSha: 'main-tip',
+        selectedFromNodeId: null,
+      },
+      workspaces: [{ id: 'workspace-1', git_repo_path: '/repo' } as Workspace],
+      sendMessage: vi.fn().mockRejectedValue(new Error('server unavailable')),
+      hasRuntime: () => true,
+      startAgentRun,
+      getAccessToken: vi.fn().mockResolvedValue('token-1'),
+      seedAgentRun: vi.fn(),
+      dispatchAgentRun: vi.fn(),
+      persistLocalNode,
+      onMessagesCreated,
+      threadId: 'thread-session-1',
+      threadOriginId: 'thread-session-1',
+      createRunId: () => 'run-local-thread',
+      nowIso: () => '2026-05-27T01:02:03.000Z',
+    });
+
+    expect(persistLocalNode).toHaveBeenCalledTimes(2);
+    const userMessage = persistLocalNode.mock.calls[0][2] as Message;
+    const assistantMessage = persistLocalNode.mock.calls[1][2] as Message;
+    expect(userMessage.threadId).toBe('thread-session-1');
+    expect(assistantMessage.threadId).toBe('thread-session-1');
+    expect(assistantMessage.base_commit_sha).toBe('main-tip');
+    expect(onMessagesCreated).toHaveBeenCalledWith([userMessage, assistantMessage]);
+    expect(startAgentRun).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run-local-thread',
+      assistantNodeId: assistantMessage.id,
+      parentCommit: 'main-tip',
+    }));
+    expect(response.userMessage?.id).toBe(userMessage.id);
+    expect(response.assistantMessages?.[0]?.id).toBe(assistantMessage.id);
   });
 
   it('uses the selected context start when building the runtime prompt', async () => {

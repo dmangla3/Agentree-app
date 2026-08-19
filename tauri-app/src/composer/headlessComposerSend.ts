@@ -4,6 +4,7 @@ import { buildAgentRunPrompt } from '../lib/prompts';
 import type { Message, Workspace } from '../stores/workspaceStore';
 import type { Agent } from '../hooks/useAgents';
 import { createSendFlowId, recordSendFlowEvent } from '../perf/sendFlow';
+import { getLegacyThreadIdForMessage, getMessageThreadSessionId } from '../lib/threadSessions';
 
 export interface HeadlessComposerBase {
   commitSha: string;
@@ -46,6 +47,7 @@ export interface HeadlessComposerMessageInput extends Omit<HeadlessComposerReply
   perfSource?: string;
   setupProgress?: string;
   meta?: Record<string, unknown>;
+  threadId?: string | null;
   threadOriginId?: string | null;
 }
 
@@ -63,6 +65,7 @@ const createLocalHeadlessMessages = (input: {
   agent: Agent;
   base: HeadlessComposerBase;
   meta?: Record<string, unknown>;
+  threadId?: string | null;
   threadOriginId?: string | null;
   nowIso: string;
 }): { userMessage: Message; assistantMessage: Message } => {
@@ -105,6 +108,10 @@ const createLocalHeadlessMessages = (input: {
       },
     },
   };
+  if (input.threadId) {
+    userMessage.threadId = input.threadId;
+    userMessage.thread_id = input.threadId;
+  }
   const assistantMessage: Message = {
     id: assistantMessageId,
     role: 'assistant',
@@ -130,6 +137,10 @@ const createLocalHeadlessMessages = (input: {
       },
     },
   };
+  if (input.threadId) {
+    assistantMessage.threadId = input.threadId;
+    assistantMessage.thread_id = input.threadId;
+  }
 
   return { userMessage, assistantMessage };
 };
@@ -162,6 +173,13 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
   const flowId = input.perfFlowId ?? createSendFlowId();
   const perfSource = input.perfSource ?? 'HeadlessComposer';
   const startedAt = performance.now();
+  const messageMap = new Map(input.messages.map((message) => [message.id, message]));
+  const parentMessage = input.parentMessageId ? messageMap.get(input.parentMessageId) : null;
+  const effectiveThreadId = input.threadId
+    ?? getMessageThreadSessionId(parentMessage)
+    ?? (parentMessage ? getLegacyThreadIdForMessage(parentMessage, messageMap) : null);
+  const effectiveThreadOriginId = input.threadOriginId ?? effectiveThreadId;
+  const runtimeAvailable = input.hasRuntime();
 
   recordSendFlowEvent('flow.started', {
     flowId,
@@ -175,7 +193,8 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
     optimisticAssistantMessageId: null,
   }, { source: perfSource });
 
-  let response: HeadlessComposerReplyResponse;
+  let response: HeadlessComposerReplyResponse = {};
+  let localFallbackReason = 'api-response-missing-agent-messages';
   try {
     recordSendFlowEvent('api.request-start', {
       flowId,
@@ -197,7 +216,8 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
       llmModel: input.agent.model_config?.model ?? null,
       baseCommitSha: input.base.commitSha,
       baseSelectedFromNodeId: input.base.selectedFromNodeId,
-      threadOriginId: input.threadOriginId ?? undefined,
+      threadId: effectiveThreadId ?? undefined,
+      threadOriginId: effectiveThreadOriginId ?? undefined,
     });
     recordSendFlowEvent('api.response-received', {
       flowId,
@@ -209,18 +229,26 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
       durationMs: Number((performance.now() - startedAt).toFixed(2)),
     });
   } catch (error) {
-    recordSendFlowEvent('lifecycle.failed', {
+    if (!runtimeAvailable) {
+      recordSendFlowEvent('lifecycle.failed', {
+        flowId,
+        workspaceId: input.workspaceId,
+        errorType: 'HEADLESS_MESSAGE_CREATE_FAILED',
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }, { source: perfSource });
+      throw error;
+    }
+    localFallbackReason = 'api-request-failed';
+    recordSendFlowEvent('api.request-failed-local-fallback', {
       flowId,
       workspaceId: input.workspaceId,
-      errorType: 'HEADLESS_MESSAGE_CREATE_FAILED',
       errorMessage: error instanceof Error ? error.message : String(error),
     }, { source: perfSource });
-    throw error;
   }
 
   let userMessage = response?.userMessage;
   let assistantMessage = response?.assistantMessages?.[0];
-  if ((!userMessage || !assistantMessage) && input.hasRuntime()) {
+  if ((!userMessage || !assistantMessage) && runtimeAvailable) {
     const nowIso = input.nowIso?.() ?? new Date().toISOString();
     const localPair = createLocalHeadlessMessages({
       workspaceId: input.workspaceId,
@@ -232,7 +260,8 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
       agent: input.agent,
       base: input.base,
       meta: input.meta,
-      threadOriginId: input.threadOriginId,
+      threadId: effectiveThreadId,
+      threadOriginId: effectiveThreadOriginId,
       nowIso,
     });
     userMessage = localPair.userMessage;
@@ -247,7 +276,7 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
       workspaceId: input.workspaceId,
       userMessageId: userMessage.id,
       assistantMessageId: assistantMessage.id,
-      reason: 'api-response-missing-agent-messages',
+      reason: localFallbackReason,
     }, { source: perfSource });
   }
 
@@ -292,7 +321,7 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
     }, { source: perfSource });
   }
 
-  if (input.hasRuntime() && assistantMessage) {
+  if (runtimeAvailable && assistantMessage) {
     const workspace = input.workspaces.find((candidate) => candidate.id === input.workspaceId) ?? null;
     const repoPath = resolveWorkspaceRepoPath(workspace);
     if (!repoPath) {

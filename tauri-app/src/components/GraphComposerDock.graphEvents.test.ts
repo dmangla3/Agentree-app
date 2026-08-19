@@ -24,4 +24,14 @@ describe('graph composer dock graph events', () => {
     expect(dispatcherSource).toContain('dispatchGraphComposerDockExpand();');
     expect(dispatcherSource).toContain("data.entity.kind === 'user_message' || data.entity.kind === 'assistant_message'");
   });
+
+  it('opens the graph composer in new-thread mode when the active thread has no messages', () => {
+    const graphViewSource = readSource('src/components/GraphView.tsx');
+
+    expect(graphViewSource).toContain('activeEmptyThreadComposerKeyRef');
+    expect(graphViewSource).toContain('threadGraphScope.scopedMessageIds.size > 0');
+    expect(graphViewSource).toContain('dispatchGraphComposerDockExpand();');
+    expect(graphViewSource).toContain('setThreadComposerTarget({');
+    expect(graphViewSource).toContain("reason: 'empty-thread'");
+  });
 });

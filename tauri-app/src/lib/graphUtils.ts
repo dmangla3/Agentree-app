@@ -1355,7 +1355,7 @@ export const mapMessagesToGraphElements = (
   hiddenThreadRootIds: Set<string> = new Set(),
   onOpenThread: (threadRootId: string) => void = () => { }
 ): { nodes: Node<LlmNodeData | SummaryNodeData | Record<string, unknown> | any>[]; edges: Edge[] } => {
-  if (!messages || messages.length === 0) {
+  if ((!messages || messages.length === 0) && projection.threadRootIds.length === 0) {
     return { nodes: [], edges: [] };
   }
 
@@ -1804,21 +1804,25 @@ export const mapMessagesToGraphElements = (
         const rootMessageId = projection.rootMessageIdByThreadRootId.get(threadRootId);
         const rootMessage = rootMessageId ? messageMap.get(rootMessageId) ?? null : null;
         const entity = projection.entitiesById.get(`thread_origin:${threadRootId}`);
-        if (!rootMessage || !entity) return;
-        const graphParentId = getGraphParentId(rootMessage, messageMap);
+        if (!entity) return;
+        const isEmptyThreadOrigin = !rootMessage && entity.message?.execution_data
+          && (entity.message.execution_data as any)?.meta?.empty_workspace_thread === true;
+        const graphParentId = rootMessage ? getGraphParentId(rootMessage, messageMap) : null;
         const graphParent = graphParentId ? messageMap.get(graphParentId) ?? null : null;
         const replacesLegacyWelcomeOrigin = isOriginWelcomeMessage(graphParent);
-        const isMetadataBackedOrigin = threadRootId !== rootMessage.id;
-        if (!isMetadataBackedOrigin && !replacesLegacyWelcomeOrigin) return;
+        const isMetadataBackedOrigin = Boolean(rootMessage && threadRootId !== rootMessage.id);
+        if (!isEmptyThreadOrigin && !isMetadataBackedOrigin && !replacesLegacyWelcomeOrigin) return;
         const hasVisibleThreadMessage = messages.some((message) => (
           projection.threadRootIdByMessageId.get(message.id) === threadRootId &&
           !hiddenNodes.has(message.id) &&
           isMessageInVisibleBranch(message.id)
         ));
-        if (!hasVisibleThreadMessage) return;
+        if (!isEmptyThreadOrigin && !hasVisibleThreadMessage) return;
 
         const nodeId = getThreadOriginNodeId(threadRootId);
         renderedThreadOriginIds.add(threadRootId);
+        const originMessage = entity.message ?? rootMessage;
+        if (!originMessage) return;
         nodes.push({
           id: nodeId,
           type: 'thread_origin',
@@ -1832,11 +1836,11 @@ export const mapMessagesToGraphElements = (
             onOpenThread,
             onSelect,
             onContextMenu,
-            message: entity.message!,
+            message: originMessage,
             nodeKind: 'thread_origin',
-            repoPath: workspaceRepoMap.get(rootMessage.workspaceId) ?? null,
+            repoPath: workspaceRepoMap.get(originMessage.workspaceId) ?? null,
             branchPointers: [],
-            isFocused: focusedMessageId === rootMessage.id,
+            isFocused: Boolean(rootMessage && focusedMessageId === rootMessage.id),
             isInContextPath: false,
             llmColor: 'bg-gradient-to-br from-zinc-100 to-zinc-200',
             matchesTagFilter: true,

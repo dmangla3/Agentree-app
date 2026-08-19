@@ -53,6 +53,10 @@ export const commands = {
 	replayAgentRunEvents: (runId: string, afterSeq: number | null) => __TAURI_INVOKE<AgentRunJournalEvent[]>("replay_agent_run_events", { runId, afterSeq }),
 	listLocalNodes: (workspaceId: string) => __TAURI_INVOKE<LocalNodeRow[]>("list_local_nodes", { workspaceId }),
 	hydrateLocalNodesFromServer: (workspaceId: string, payloads: string[]) => __TAURI_INVOKE<number>("hydrate_local_nodes_from_server", { workspaceId, payloads }),
+	createThreadSession: (payload: ThreadSessionPayload) => __TAURI_INVOKE<ThreadSessionPayload>("create_thread_session", { payload }),
+	upsertThreadSession: (payload: ThreadSessionPayload) => __TAURI_INVOKE<ThreadSessionPayload>("upsert_thread_session", { payload }),
+	listThreadSessions: (workspaceId: string) => __TAURI_INVOKE<ThreadSessionPayload[]>("list_thread_sessions", { workspaceId }),
+	deleteThreadSession: (workspaceId: string, threadId: string) => __TAURI_INVOKE<null>("delete_thread_session", { workspaceId, threadId }),
 	upsertLocalNode: (workspaceId: string, nodeId: string, payload: string) => __TAURI_INVOKE<null>("upsert_local_node", { workspaceId, nodeId, payload }),
 	importLocalCommits: (workspaceId: string, commits: LocalCommitImport[], gitRef: string | null, repoPath: string | null) => __TAURI_INVOKE<number>("import_local_commits", { workspaceId, commits, gitRef, repoPath }),
 	listLocalCommitGraph: (workspaceId: string) => __TAURI_INVOKE<LocalCommitGraphSnapshot>("list_local_commit_graph", { workspaceId }),
@@ -617,6 +621,18 @@ export type TelemetrySessionSnapshot = {
 	worktreePath: string | null,
 	repoPath: string | null,
 	events: TelemetryEventRow[],
+};
+
+export type ThreadSessionPayload = {
+	id: string,
+	workspaceId: string,
+	title: string | null,
+	status: string,
+	createdAt: string | null,
+	updatedAt: string | null,
+	baseCommitSha: string | null,
+	firstMessageId: string | null,
+	source: string,
 };
 
 export type WorkspaceInfo = {

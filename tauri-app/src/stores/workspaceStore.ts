@@ -163,6 +163,8 @@ export interface Message {
   path_ids?: string[] | null;
   depth?: number | null;
   execution_data?: any | null;
+  threadId?: string | null;
+  thread_id?: string | null;
   last_event_at?: string | null;
   lease_expires_at?: string | null;
   heartbeat_at?: string | null;
@@ -217,6 +219,13 @@ export interface ComposerBaseCommitOverrideState {
   source: 'graph-header';
 }
 
+export interface ThreadComposerTargetState {
+  workspaceId: string;
+  threadId: string;
+  reason: 'create-thread' | 'empty-thread';
+  nonce: number;
+}
+
 interface WorkspaceState {
   selectedWorkspaceId: string | null;
   focusedMessageId: string | null;
@@ -226,6 +235,7 @@ interface WorkspaceState {
   focusNonce: number;
   composerContextPreview: ComposerContextPreviewState | null;
   composerBaseCommitOverride: ComposerBaseCommitOverrideState | null;
+  threadComposerTarget: ThreadComposerTargetState | null;
   composerDraftByWorkspace: Record<string, string>;
   lastFocusedMessageByWorkspace: Record<string, string>;
   recentFocusedMessageIdsByWorkspace: Record<string, string[]>;
@@ -262,6 +272,8 @@ interface WorkspaceState {
   clearSelectedMessageIds: () => void;
   setComposerContextPreview: (preview: ComposerContextPreviewState | null) => void;
   setComposerBaseCommitOverride: (override: ComposerBaseCommitOverrideState | null) => void;
+  setThreadComposerTarget: (target: ThreadComposerTargetState | null) => void;
+  clearThreadComposerTarget: (nonce?: number) => void;
   getComposerDraft: (workspaceId: string | null | undefined) => string;
   setComposerDraft: (workspaceId: string | null | undefined, prompt: string) => void;
   clearComposerDraft: (workspaceId: string | null | undefined) => void;
@@ -297,6 +309,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       focusNonce: 0,
       composerContextPreview: null,
       composerBaseCommitOverride: null,
+      threadComposerTarget: null,
       composerDraftByWorkspace: {},
       lastFocusedMessageByWorkspace: {},
       recentFocusedMessageIdsByWorkspace: {},
@@ -324,6 +337,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           focusNonce: 0,
           composerContextPreview: null,
           composerBaseCommitOverride: null,
+          threadComposerTarget: null,
           composerDraftByWorkspace: {},
           activeSendFlowFocus: null,
           insights: [],
@@ -342,6 +356,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             focusNonce: Date.now(),
             composerContextPreview: null,
             composerBaseCommitOverride: null,
+            threadComposerTarget: null,
             insights: [],
           };
         }),
@@ -454,6 +469,12 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           return { composerContextPreview: preview };
         }),
       setComposerBaseCommitOverride: (override) => set({ composerBaseCommitOverride: override }),
+      setThreadComposerTarget: (target) => set({ threadComposerTarget: target }),
+      clearThreadComposerTarget: (nonce) =>
+        set((state) => {
+          if (nonce !== undefined && state.threadComposerTarget?.nonce !== nonce) return state;
+          return { threadComposerTarget: null };
+        }),
       getComposerDraft: (workspaceId) => {
         if (!workspaceId) return '';
         return get().composerDraftByWorkspace[workspaceId] ?? '';

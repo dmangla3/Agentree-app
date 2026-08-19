@@ -740,6 +740,32 @@ const semanticEdgeKeys = (edges: ReturnType<typeof getLayoutedElements>['edges']
 );
 
 describe('graph layout geometry QA', () => {
+  it('renders a thread origin for an empty workspace thread', () => {
+    const projection = buildWorkspaceProjection({
+      messages: [],
+      summaries: [],
+      focusedMessageId: null,
+      emptyThreadRoot: {
+        threadRootId: 'workspace-empty-thread:workspace-1',
+        workspaceId: 'workspace-1',
+        createdAt: '2026-05-28T00:00:00.000Z',
+      },
+    });
+
+    const mapped = mapMessagesToGraphElements(
+      projection,
+      [],
+      [],
+      null,
+      new Set(),
+      new Set(),
+      false,
+    );
+
+    expect(mapped.nodes.map((node) => node.id)).toEqual(['thread-origin:workspace-empty-thread:workspace-1']);
+    expect(mapped.nodes[0].type).toBe('thread_origin');
+  });
+
   it('renders one virtual thread origin for sibling root prompts with the same origin id', () => {
     const messages = [
       makeMessage({

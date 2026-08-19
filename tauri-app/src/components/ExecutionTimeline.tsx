@@ -10,7 +10,8 @@ import {
   Sparkles,
   AlertTriangle,
   Activity,
-  Clock
+  Clock,
+  MessageSquarePlus
 } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
@@ -172,6 +173,11 @@ type TimelineRow =
           durationMs?: number;
       }
     | {
+          kind: 'user_steer';
+          key?: string;
+          content?: string;
+      }
+    | {
           kind: 'error';
           key?: string;
           content?: string;
@@ -244,6 +250,33 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                         )}
                     </div>
                     <p className="text-muted-foreground/80 text-[11px] leading-relaxed line-clamp-2">{row.content}</p>
+                </div>
+            </div>
+        );
+    }
+
+    if (row.kind === 'user_steer') {
+        return (
+            <div className="flex gap-3 group/item" onClick={stopCardFocus} onMouseDown={stopCardFocus}>
+                <div className="flex flex-col items-center">
+                    <div className={cn(
+                        "w-6 h-6 rounded-lg flex items-center justify-center shrink-0",
+                        "bg-gradient-to-br from-violet-50 to-fuchsia-50",
+                        "dark:from-violet-900/30 dark:to-fuchsia-900/20",
+                        "border border-violet-200 dark:border-violet-800",
+                        "shadow-sm"
+                    )}>
+                        <MessageSquarePlus size={12} className="text-violet-600 dark:text-violet-400" />
+                    </div>
+                    {!isLast && (
+                        <div className="w-px flex-1 bg-gradient-to-b from-border via-border/50 to-transparent my-1.5" />
+                    )}
+                </div>
+                <div className="pb-2 flex-1 min-w-0 pt-0.5">
+                    <p className="text-[11px] font-semibold text-violet-700 dark:text-violet-300 mb-1 flex items-center gap-1.5">
+                        User Steer
+                    </p>
+                    <p className="text-muted-foreground/85 text-[11px] leading-relaxed whitespace-pre-wrap break-words">{row.content}</p>
                 </div>
             </div>
         );
@@ -521,9 +554,9 @@ export function buildTimelineRows(events: TimelineEvent[]): TimelineRow[] {
 
         if (event.type === 'user_steer_requested') {
             rows.push({
-                kind: 'thinking',
+                kind: 'user_steer',
                 key: buildRowKey('user_steer_requested', event),
-                content: `User steered: ${event.content ?? ''}`,
+                content: event.content ?? '',
             });
             continue;
         }

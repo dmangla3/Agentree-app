@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '../../../test/setup';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ChatAssistantCard } from './ChatAssistantCard';
 import type { ProjectedNodeEntity } from '../../../domain/workspaceProjection';
@@ -100,5 +100,115 @@ describe('ChatAssistantCard identity', () => {
 
     expect(screen.getByText('Failure reason')).toBeTruthy();
     expect(screen.getByText("ImportError: cannot import name 'ParamSpec' from 'typing'")).toBeTruthy();
+  });
+
+  it('shows only final output for completed structured runs and keeps work details in collapsed logs', () => {
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          status: 'completed' as any,
+          message: {
+            status: 'completed' as any,
+            content: 'Final answer only.',
+            execution_data: {
+              timeline: [
+                { type: 'message', timestamp: 1, content: 'Interim progress update.' },
+                { type: 'thinking', timestamp: 2, content: 'Checking implementation details.' },
+                {
+                  type: 'tool_use',
+                  timestamp: 3,
+                  toolName: 'bash',
+                  toolInput: { command: 'npm test' },
+                  toolOutput: 'passed',
+                  toolUseId: 'tool-1',
+                },
+              ],
+            },
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByText('Final answer only.')).toBeTruthy();
+    expect(screen.queryByText('Interim progress update.')).toBeNull();
+    expect(screen.queryByText('Checking implementation details.')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /work logs/i }));
+
+    expect(screen.getByText('Interim progress update.')).toBeTruthy();
+    expect(screen.getByText('Checking implementation details.')).toBeTruthy();
+    expect(screen.getByText('npm test')).toBeTruthy();
+  });
+
+  it('keeps interleaved work visible while structured runs are active', () => {
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          status: 'running' as any,
+          message: {
+            status: 'running' as any,
+            content: 'Current streamed output.',
+            execution_data: {
+              timeline: [
+                { type: 'message', timestamp: 1, content: 'Live progress update.' },
+                {
+                  type: 'tool_use',
+                  timestamp: 2,
+                  toolName: 'bash',
+                  toolInput: { command: 'npm test' },
+                  toolUseId: 'tool-1',
+                },
+              ],
+            },
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByText('Live progress update.')).toBeTruthy();
+    expect(screen.getByText('npm test')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /work logs/i })).toBeNull();
+  });
+
+  it('shows user steering messages in the active chat assistant card', () => {
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          message: {
+            content: '',
+            execution_data: {
+              timeline: [
+                {
+                  type: 'user_steer_requested',
+                  timestamp: 1,
+                  content: 'Actually use the cached result.',
+                },
+              ],
+            },
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByText('User Steer')).toBeTruthy();
+    expect(screen.getByText('Actually use the cached result.')).toBeTruthy();
   });
 });

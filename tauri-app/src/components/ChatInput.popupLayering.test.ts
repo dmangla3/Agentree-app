@@ -70,9 +70,12 @@ describe('chat composer popup layering', () => {
     const graphViewSource = readSource('src/components/GraphView.tsx');
     const graphControlsSource = readSource('src/components/graph/GraphControls.tsx');
 
-    expect(chatInputSource).toContain("window.addEventListener('agentree:startNewThread'");
+    expect(chatInputSource).not.toContain("window.addEventListener('agentree:startNewThread'");
     expect(chatInputSource).not.toContain('Start new thread</div>');
-    expect(graphViewSource).toContain("window.dispatchEvent(new CustomEvent('agentree:startNewThread'))");
+    expect(graphViewSource).toContain('setThreadComposerTarget({');
+    expect(graphViewSource).toContain("reason: 'create-thread'");
+    expect(graphViewSource).not.toContain('setPendingThreadRoots');
+    expect(graphViewSource).toContain('setActiveThreadRootId(threadRootId)');
     expect(graphControlsSource).toContain('aria-label="Start new thread"');
   });
 

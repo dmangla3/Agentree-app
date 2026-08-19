@@ -2,6 +2,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import {
   isGraphInteractionGateIdle,
   scheduleLocalCommitGraphRefreshWhenGraphIdle,
+  scheduleLocalNodesRefreshWhenGraphIdle,
   scheduleMessagesRefreshWhenGraphIdle,
 } from '../lib/graphInteractionGate';
 import { recordPerfEvent } from '../lib/perfRecorder';
@@ -40,6 +41,10 @@ const WORKSPACE_REFRESH_BUSY_RECHECK_MS = 250;
 const WORKSPACE_REFRESH_BUSY_MAX_WAIT_MS = 3_000;
 const pendingByWorkspace = new Map<string, PendingWorkspaceRefresh>();
 const pendingCommitGraphRefetchByWorkspace = new Map<string, PendingCommitGraphRefetch>();
+
+const shouldReconcileLocalNodesForReasons = (reasons: Set<string>) => (
+  reasons.has('agent-finalize-ack') || reasons.has('agent-terminal')
+);
 
 const hasActiveWorkspaceRunState = (workspaceId: string) => {
   const runStatusStore = useRunStatusStore.getState();
@@ -145,6 +150,9 @@ const flushWorkspaceRefresh = (
     refetchType: 'none',
   }));
   void scheduleMessagesRefreshWhenGraphIdle(pending.queryClient, workspaceId, { reason });
+  if (shouldReconcileLocalNodesForReasons(pending.reasons)) {
+    void scheduleLocalNodesRefreshWhenGraphIdle(pending.queryClient, workspaceId, { reason });
+  }
 
   if (pending.includeCommitGraph) {
     recordPerfEvent('query.local-commit-graph.refresh', {

@@ -75,6 +75,14 @@ export function resolveFlowPath(path: string, scope: Record<string, FlowRuntimeV
 }
 
 function readSegment(value: FlowRuntimeValue, segment: string): FlowRuntimeValue | undefined {
+  if (Array.isArray(value)) {
+    const projected = value.map((entry) => readSegment(entry, segment));
+    if (projected.some((entry) => entry === undefined)) {
+      return undefined;
+    }
+    return projected as FlowRuntimeValue[];
+  }
+
   if (isFlowNodeValue(value)) {
     if (segment in value) {
       return value[segment as keyof FlowNodeValue] as FlowRuntimeValue | undefined;

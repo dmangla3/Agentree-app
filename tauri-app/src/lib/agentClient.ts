@@ -193,6 +193,18 @@ export interface LocalCommitGraphSnapshot {
     }>;
 }
 
+export interface ThreadSessionPayload {
+    id: string;
+    workspaceId: string;
+    title?: string | null;
+    status?: 'active' | 'done' | 'archived' | string | null;
+    createdAt?: string | null;
+    updatedAt?: string | null;
+    baseCommitSha?: string | null;
+    firstMessageId?: string | null;
+    source?: 'workspace_default' | 'user' | 'flow' | 'legacy' | string | null;
+}
+
 export interface StartAgentRunIntent {
     runId: string;
     assistantNodeId: string;
@@ -551,6 +563,22 @@ export const agentClient = {
     upsertLocalNode: async (workspaceId: string, nodeId: string, message: unknown): Promise<void> => {
         if (!hasTauriRuntime()) return;
         await tauriCommands.upsertLocalNode(workspaceId, nodeId, JSON.stringify(message));
+    },
+    createThreadSession: async (payload: ThreadSessionPayload): Promise<ThreadSessionPayload> => {
+        if (!hasTauriRuntime()) return payload;
+        return await (tauriCommands as any).createThreadSession(payload) as ThreadSessionPayload;
+    },
+    upsertThreadSession: async (payload: ThreadSessionPayload): Promise<ThreadSessionPayload> => {
+        if (!hasTauriRuntime()) return payload;
+        return await (tauriCommands as any).upsertThreadSession(payload) as ThreadSessionPayload;
+    },
+    listThreadSessions: async (workspaceId: string): Promise<ThreadSessionPayload[]> => {
+        if (!hasTauriRuntime()) return [];
+        return await (tauriCommands as any).listThreadSessions(workspaceId) as ThreadSessionPayload[];
+    },
+    deleteThreadSession: async (workspaceId: string, threadId: string): Promise<void> => {
+        if (!hasTauriRuntime()) return;
+        await (tauriCommands as any).deleteThreadSession(workspaceId, threadId);
     },
     importLocalCommits: async (workspaceId: string, commits: LocalCommitImport[], gitRef?: string | null, repoPath?: string | null): Promise<number> => {
         if (!hasTauriRuntime()) return 0;

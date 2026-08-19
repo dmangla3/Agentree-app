@@ -4,6 +4,7 @@ import {
   markGraphInteractionStart,
   resetGraphInteractionGateForTest,
   scheduleLocalCommitGraphRefreshWhenGraphIdle,
+  scheduleLocalNodesRefreshWhenGraphIdle,
   scheduleMessagesRefreshWhenGraphIdle,
 } from './graphInteractionGate';
 
@@ -104,6 +105,30 @@ describe('graphInteractionGate', () => {
     });
     expect(queryClient.refetchQueries).toHaveBeenCalledWith({
       queryKey: ['local-commits', 'workspace-1'],
+      type: 'active',
+    });
+  });
+
+  it('does not force-flush local-node refetches while graph interaction remains active', async () => {
+    const queryClient = {
+      invalidateQueries: vi.fn(() => Promise.resolve()),
+      refetchQueries: vi.fn(() => Promise.resolve()),
+    } as any;
+
+    markGraphInteractionStart('drag');
+    void scheduleLocalNodesRefreshWhenGraphIdle(queryClient, 'workspace-1', {
+      reason: 'agent-finalize-ack',
+    });
+
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(queryClient.refetchQueries).not.toHaveBeenCalled();
+
+    markGraphInteractionEnd('drag');
+    await vi.advanceTimersByTimeAsync(900);
+
+    expect(queryClient.refetchQueries).toHaveBeenCalledWith({
+      queryKey: ['local-nodes', 'workspace-1'],
       type: 'active',
     });
   });

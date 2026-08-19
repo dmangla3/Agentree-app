@@ -26,6 +26,7 @@ export interface ComposerCommitPickerTrackedRef {
   git_ref: string;
   display_name?: string | null;
   enabled?: boolean;
+  last_seen_commit_sha?: string | null;
   updatedAt?: string | null;
   createdAt?: string | null;
 }
@@ -35,7 +36,7 @@ export type ComposerDefaultBaseSource =
   | 'reply-parent-base'
   | 'latest-ancestor-output'
   | 'main-ref'
-  | 'thread-root-base'
+  | 'tracked-ref'
   | 'workspace-base'
   | 'none';
 
@@ -102,23 +103,6 @@ export const findLatestAncestorOutput = (
   return null;
 };
 
-const findThreadRoot = (
-  messageMap: Map<string, ComposerBaseMessage>,
-  startId: string | null | undefined
-): ComposerBaseMessage | null => {
-  let cursor = startId ? messageMap.get(startId) ?? null : null;
-  const visited = new Set<string>();
-  let latest = cursor;
-
-  while (cursor && !visited.has(cursor.id)) {
-    visited.add(cursor.id);
-    latest = cursor;
-    cursor = cursor.parentId ? messageMap.get(cursor.parentId) ?? null : null;
-  }
-
-  return latest;
-};
-
 const isMainRef = (ref: ComposerCommitPickerRef): boolean => (
   ref.git_ref === 'refs/heads/main' || ref.short_name === 'main'
 );
@@ -140,12 +124,36 @@ export const getVisibleRefName = (ref: ComposerCommitPickerRef): string | null =
   return ref.short_name || ref.git_ref;
 };
 
+const findTrackedRefBase = (
+  refs: ComposerCommitPickerRef[],
+  trackedRefs: ComposerCommitPickerTrackedRef[] = []
+): string | null => {
+  const refByGitRef = new Map(
+    refs
+      .map((ref) => [normalize(ref.git_ref), ref] as const)
+      .filter(([gitRef]) => Boolean(gitRef))
+  );
+
+  for (const trackedRef of trackedRefs) {
+    if (trackedRef.enabled === false) continue;
+    const gitRef = normalize(trackedRef.git_ref);
+    if (!gitRef || isInternalAgentreeRefName(gitRef)) continue;
+    const localRefCommit = normalize(refByGitRef.get(gitRef)?.commit_sha);
+    if (localRefCommit) return localRefCommit;
+    const lastSeenCommit = normalize(trackedRef.last_seen_commit_sha);
+    if (lastSeenCommit) return lastSeenCommit;
+  }
+
+  return null;
+};
+
 export const resolveComposerDefaultBaseCommit = (input: {
   targetMode: ComposerTargetModeForBase;
   replyParentMessageId: string | null;
   selectedNodeId: string | null;
   messages: ComposerBaseMessage[];
   refs: ComposerCommitPickerRef[];
+  trackedRefs?: ComposerCommitPickerTrackedRef[];
   workspaceBaseCommitSha: string | null | undefined;
 }): ComposerDefaultBaseResolution => {
   const messageMap = new Map(input.messages.map((message) => [message.id, message]));
@@ -190,13 +198,12 @@ export const resolveComposerDefaultBaseCommit = (input: {
       };
     }
 
-    const threadRoot = findThreadRoot(messageMap, input.selectedNodeId);
-    const threadRootBase = getBaseCommitSha(threadRoot);
-    if (threadRootBase) {
+    const trackedRefBase = findTrackedRefBase(input.refs, input.trackedRefs);
+    if (trackedRefBase) {
       return {
-        sha: threadRootBase,
-        source: 'thread-root-base',
-        selectedFromNodeId: threadRoot?.id ?? null,
+        sha: trackedRefBase,
+        source: 'tracked-ref',
+        selectedFromNodeId: null,
       };
     }
   }
@@ -351,9 +358,11 @@ export const buildComposerCommitPickerItems = (input: {
     .sort((left, right) => {
       if (left.selected !== right.selected) return left.selected ? -1 : 1;
       if (left.isDefault !== right.isDefault) return left.isDefault ? -1 : 1;
-      const leftHasRef = left.refNames.length > 0;
-      const rightHasRef = right.refNames.length > 0;
-      if (leftHasRef !== rightHasRef) return leftHasRef ? -1 : 1;
+      const leftCommit = commitBySha.get(left.sha);
+      const rightCommit = commitBySha.get(right.sha);
+      const leftRecency = parseTimestamp(leftCommit?.committed_at) || parseTimestamp(leftCommit?.authored_at);
+      const rightRecency = parseTimestamp(rightCommit?.committed_at) || parseTimestamp(rightCommit?.authored_at);
+      if (leftRecency !== rightRecency) return rightRecency - leftRecency;
       return left.primaryLabel.localeCompare(right.primaryLabel);
     });
 };

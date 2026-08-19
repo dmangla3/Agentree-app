@@ -341,15 +341,10 @@ const install = async () => pilotEval(`
     const workspaceId = workspaceStore?.getState?.().selectedWorkspaceId ?? null;
     if (!workspaceId) throw new Error('parallel preflight failed: no selected workspace');
     const apiModule = await import(new URL('/src/lib/api.ts', location.origin).href);
+    const agentClientModule = await import(new URL('/src/lib/agentClient.ts', location.origin).href);
     const gitNodeUtils = await import(new URL('/src/lib/gitNodeUtils.ts', location.origin).href);
-    try {
-      logAction('latest-runnable-focus-fetch-start', { actionLabel: label, workspaceId });
-      const response = await awaitWithProgress(
-        apiModule.api.get('/workspaces/' + workspaceId + '/messages'),
-        'latest-runnable-focus-fetch-' + label
-      );
-      const messages = Array.isArray(response.data) ? response.data : [];
-      logAction('latest-runnable-focus-fetch-finished', { actionLabel: label, workspaceId, messageCount: messages.length });
+    const localNodeModule = await import(new URL('/src/hooks/useLocalNodes.ts', location.origin).href);
+    const focusLatestRunnableMessage = (messages, actionType) => {
       const sortedMessages = messages.slice().sort((left, right) => {
         const leftTime = Date.parse(left.createdAt || left.updatedAt || '') || 0;
         const rightTime = Date.parse(right.createdAt || right.updatedAt || '') || 0;
@@ -359,24 +354,54 @@ const install = async () => pilotEval(`
         if (['running', 'pending', 'initializing', 'streaming'].includes(String(message.status || ''))) return false;
         return gitNodeUtils.resolveNodeCommit(message, messages, null);
       });
-      if (latestRunnable) {
-        workspaceStore.getState().dispatchFocus?.({
-          messageId: latestRunnable.id,
-          source: 'system',
-          metadata: { reason: 'parallel-perf-latest-runnable-focus', label },
-        });
-        logAction('latest-runnable-focus-set', {
-          actionLabel: label,
-          messageId: latestRunnable.id,
-          role: latestRunnable.role ?? null,
-          status: latestRunnable.status ?? null,
-          text: (latestRunnable.aiLabel || latestRunnable.content || '').trim().slice(0, 100),
-        });
-        return latestRunnable.id;
-      }
+      if (!latestRunnable) return null;
+      workspaceStore.getState().dispatchFocus?.({
+        messageId: latestRunnable.id,
+        source: 'system',
+        metadata: { reason: 'parallel-perf-latest-runnable-focus', label },
+      });
+      logAction(actionType, {
+        actionLabel: label,
+        messageId: latestRunnable.id,
+        role: latestRunnable.role ?? null,
+        status: latestRunnable.status ?? null,
+        text: (latestRunnable.aiLabel || latestRunnable.content || '').trim().slice(0, 100),
+      });
+      return latestRunnable.id;
+    };
+    try {
+      logAction('latest-runnable-focus-fetch-start', { actionLabel: label, workspaceId });
+      const response = await awaitWithProgress(
+        apiModule.api.get('/workspaces/' + workspaceId + '/messages'),
+        'latest-runnable-focus-fetch-' + label
+      );
+      const messages = Array.isArray(response.data) ? response.data : [];
+      logAction('latest-runnable-focus-fetch-finished', { actionLabel: label, workspaceId, messageCount: messages.length });
+      const serverRunnableId = focusLatestRunnableMessage(messages, 'latest-runnable-focus-set');
+      if (serverRunnableId) return serverRunnableId;
       logAction('latest-runnable-focus-missing', { actionLabel: label, workspaceId, messageCount: messages.length });
     } catch (error) {
       logAction('latest-runnable-focus-fetch-failed', { actionLabel: label, workspaceId, message: String(error?.message || error) });
+    }
+
+    try {
+      const agentClient = agentClientModule.agentClient;
+      if (agentClient?.hasRuntime?.()) {
+        logAction('latest-runnable-local-fetch-start', { actionLabel: label, workspaceId });
+        const rows = await awaitWithProgress(
+          agentClient.listLocalNodes(workspaceId),
+          'latest-runnable-local-fetch-' + label
+        );
+        const messages = (Array.isArray(rows) ? rows : [])
+          .map((row) => localNodeModule.parseLocalNode(row)?.message)
+          .filter(Boolean);
+        logAction('latest-runnable-local-fetch-finished', { actionLabel: label, workspaceId, messageCount: messages.length });
+        const localRunnableId = focusLatestRunnableMessage(messages, 'latest-runnable-local-focus-set');
+        if (localRunnableId) return localRunnableId;
+        logAction('latest-runnable-local-missing', { actionLabel: label, workspaceId, messageCount: messages.length });
+      }
+    } catch (error) {
+      logAction('latest-runnable-local-fetch-failed', { actionLabel: label, workspaceId, message: String(error?.message || error) });
     }
 
     const visibleGraphNode = [...document.querySelectorAll('.react-flow__node-assistant_message, .react-flow__node-user_message')]
@@ -464,6 +489,14 @@ const install = async () => pilotEval(`
     .slice()
     .reverse()
     .find((event) => event?.details?.flowId === flowId) || null;
+  const nodeTerminalEvent = (nodeId) => perfEvents()
+    .filter((event) => event?.name === 'run-status.changed')
+    .slice()
+    .reverse()
+    .find((event) => (
+      event?.details?.nodeId === nodeId &&
+      ['completed', 'failed', 'cancelled'].includes(String(event?.details?.nextStatus || '').toLowerCase())
+    )) || null;
   const flowPersistedAssistantEvent = (flowId) => perfEvents()
     .filter((event) => event?.name === 'send-flow.assistant.persisted')
     .slice()
@@ -608,11 +641,23 @@ const install = async () => pilotEval(`
       { name: 'small-correct', dx: -64 * flip, dy: -42, steps: 5, delayMs: 18 },
     ];
     const segmentResults = [];
+    const parseTranslate = (transform) => {
+      const match = String(transform || '').match(/translate\(([-0-9.]+)px,\s*([-0-9.]+)px\)/);
+      if (!match) return null;
+      return { x: Number(match[1]), y: Number(match[2]) };
+    };
+    const transformDistance = (beforeTransform, afterTransform) => {
+      const beforePoint = parseTranslate(beforeTransform);
+      const afterPoint = parseTranslate(afterTransform);
+      if (!beforePoint || !afterPoint) return null;
+      return Math.hypot(afterPoint.x - beforePoint.x, afterPoint.y - beforePoint.y);
+    };
     for (let segmentIndex = 0; segmentIndex < dragSegments.length; segmentIndex += 1) {
       const segment = dragSegments[segmentIndex];
       const pointerId = 110 + segmentIndex;
       const startX = baseX + segmentIndex * 18;
       const startY = baseY + segmentIndex * 14;
+      const segmentBefore = graphCounts();
       const dispatchDragEvent = (target, event) => target?.dispatchEvent?.(event);
       const mouseEvent = (type, x, y, buttons) => new MouseEvent(type, {
         bubbles: true,
@@ -650,14 +695,34 @@ const install = async () => pilotEval(`
         dispatchDragEvent(target, mouseEvent('mouseup', startX + segment.dx, startY + segment.dy, 0));
       }
       await sleep(70);
-      segmentResults.push({ name: segment.name, dx: segment.dx, dy: segment.dy, transform: graphCounts().transform });
+      const immediate = graphCounts();
+      await sleep(segment.name === 'large-sweep' ? 420 : 120);
+      const settled = graphCounts();
+      const snapbackPx = transformDistance(immediate.transform, settled.transform);
+      const movementPx = transformDistance(segmentBefore.transform, settled.transform);
+      const snappedBack = segment.name === 'large-sweep'
+        && snapbackPx !== null
+        && movementPx !== null
+        && snapbackPx > 64
+        && movementPx < Math.max(24, snapbackPx * 0.45);
+      segmentResults.push({
+        name: segment.name,
+        dx: segment.dx,
+        dy: segment.dy,
+        immediateTransform: immediate.transform,
+        settledTransform: settled.transform,
+        snapbackPx: snapbackPx === null ? null : Number(snapbackPx.toFixed(2)),
+        movementPx: movementPx === null ? null : Number(movementPx.toFixed(2)),
+        snappedBack,
+      });
     }
     root.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: 80 * flip, deltaY: 70, clientX: baseX, clientY: baseY }));
     await sleep(250);
     const after = graphCounts();
-    logAction('pan', { actionLabel: label, before, after, dragSegments: segmentResults });
+    const stickyDragDetected = segmentResults.some((segment) => segment.snappedBack);
+    logAction('pan', { actionLabel: label, before, after, dragSegments: segmentResults, stickyDragDetected });
     sample('after-pan-' + label);
-    return true;
+    return !stickyDragDetected;
   };
   const isUnsafeClickTarget = (element) => {
     const target = element instanceof Element ? element : null;
@@ -975,6 +1040,21 @@ const install = async () => pilotEval(`
     return interaction;
   };
   const waitComposerReady = async (label, timeoutMs = 12000) => {
+    if (composerSurface === 'graph-dock') {
+      try {
+        await ensureGraphDockComposerReady({ waitMs: timeoutMs });
+        sample('composer-ready-' + label);
+        return true;
+      } catch (error) {
+        logAction('composer-not-ready', {
+          actionLabel: label,
+          buttonLabel: buttonLabel(),
+          textareaDisabled: findComposer()?.disabled ?? null,
+          message: String(error?.message || error),
+        });
+        return false;
+      }
+    }
     const startedAt = performance.now();
     while (performance.now() - startedAt < timeoutMs) {
       if (isComposerReadyForPrompt()) {
@@ -1007,6 +1087,30 @@ const install = async () => pilotEval(`
         const terminal = flowTerminalEvent(send.flowId);
         if (terminal) {
           send.terminal = summarizeEvent(terminal);
+          logAction('terminal', { index: send.index, terminal: send.terminal });
+          sample('terminal-send-' + send.index);
+          continue;
+        }
+        const runStatusTerminal = send.optimisticAssistantMessageId
+          ? nodeTerminalEvent(send.optimisticAssistantMessageId)
+          : null;
+        if (runStatusTerminal) {
+          send.terminal = {
+            name: 'harness.run-status-terminal',
+            ts: runStatusTerminal.ts,
+            source: 'tauri-pilot-parallel-agent-flow',
+            details: {
+              flowId: send.flowId,
+              nodeId: send.optimisticAssistantMessageId,
+              status: runStatusTerminal.details?.previousStatus ?? null,
+              nextStatus: runStatusTerminal.details?.nextStatus ?? null,
+              finalStatus: runStatusTerminal.details?.nextStatus ?? null,
+              phase: 'run-status-store',
+              outputCommitSha: null,
+              commitCreated: null,
+              gitBranchName: null,
+            },
+          };
           logAction('terminal', { index: send.index, terminal: send.terminal });
           sample('terminal-send-' + send.index);
         }

@@ -7,7 +7,6 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../../@/com
 import type { FocusTriggerMetrics } from '../../../types/nodes';
 import { agentRunManager } from '../../../agent-runs/agentRunManager';
 import { ensureAgentRunHydrated } from '../../../agent-runs/agentRunHydration';
-import { QUICK_REPLY_KEEP_HOVER_OPEN_EVENT } from '../../../lib/quickReply';
 
 interface GraphNodeWrapperProps {
   nodeId?: string;
@@ -48,7 +47,7 @@ export const GraphNodeWrapper = memo(({
 }: GraphNodeWrapperProps) => {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const hoverContentRef = useRef<HTMLDivElement | null>(null);
-  const keepQuickReplyHoverOpenRef = useRef(false);
+  const pointerInsideHoverContentRef = useRef(false);
   const pointerDownAtRef = useRef<number | null>(null);
   const focusFeedbackTimeoutRef = useRef<number | null>(null);
   const [isFocusFeedbackActive, setIsFocusFeedbackActive] = useState(false);
@@ -67,7 +66,20 @@ export const GraphNodeWrapper = memo(({
   useEffect(() => {
     if (isFocused) {
       clearFocusFeedback();
+      return;
     }
+
+    if (!isFocusFeedbackActive) {
+      return;
+    }
+
+    if (focusFeedbackTimeoutRef.current !== null) {
+      window.clearTimeout(focusFeedbackTimeoutRef.current);
+    }
+    focusFeedbackTimeoutRef.current = window.setTimeout(() => {
+      focusFeedbackTimeoutRef.current = null;
+      setIsFocusFeedbackActive(false);
+    }, 420);
 
     return () => {
       if (focusFeedbackTimeoutRef.current !== null) {
@@ -75,7 +87,21 @@ export const GraphNodeWrapper = memo(({
         focusFeedbackTimeoutRef.current = null;
       }
     };
-  }, [isFocused]);
+  }, [isFocused, isFocusFeedbackActive]);
+
+  useEffect(() => {
+    return () => {
+      if (focusFeedbackTimeoutRef.current !== null) {
+        window.clearTimeout(focusFeedbackTimeoutRef.current);
+        focusFeedbackTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isFocusFeedbackActive) return;
+    clearFocusFeedback();
+  }, [nodeId]);
 
   useLayoutEffect(() => {
     if (!nodeId || !onMeasureHeight) return;
@@ -108,13 +134,6 @@ export const GraphNodeWrapper = memo(({
         pointerDownAtRef.current = performance.now();
         setSuppressFocusedHoverUntilLeave(true);
         setIsFocusFeedbackActive(true);
-        if (focusFeedbackTimeoutRef.current !== null) {
-          window.clearTimeout(focusFeedbackTimeoutRef.current);
-        }
-        focusFeedbackTimeoutRef.current = window.setTimeout(() => {
-          focusFeedbackTimeoutRef.current = null;
-          setIsFocusFeedbackActive(false);
-        }, 420);
       }}
       onPointerLeave={() => {
         setSuppressFocusedHoverUntilLeave(false);
@@ -212,7 +231,6 @@ export const GraphNodeWrapper = memo(({
   useEffect(() => {
     if (!hoverCardContent || !hoverOpen) return;
     const closeHoverCardForViewportMove = () => {
-      keepQuickReplyHoverOpenRef.current = false;
       setHoverOpen(false);
     };
     window.addEventListener('agentree:graph-viewport-interaction-start', closeHoverCardForViewportMove);
@@ -220,20 +238,6 @@ export const GraphNodeWrapper = memo(({
       window.removeEventListener('agentree:graph-viewport-interaction-start', closeHoverCardForViewportMove);
     };
   }, [hoverCardContent, hoverOpen]);
-
-  useEffect(() => {
-    if (!hoverCardContent) return;
-    const keepHoverCardOpen = (event: Event) => {
-      const messageId = (event as CustomEvent<{ messageId?: string | null }>).detail?.messageId ?? null;
-      if (messageId && nodeId && messageId !== nodeId) return;
-      keepQuickReplyHoverOpenRef.current = true;
-      setHoverOpen(true);
-    };
-    window.addEventListener(QUICK_REPLY_KEEP_HOVER_OPEN_EVENT, keepHoverCardOpen);
-    return () => {
-      window.removeEventListener(QUICK_REPLY_KEEP_HOVER_OPEN_EVENT, keepHoverCardOpen);
-    };
-  }, [hoverCardContent, nodeId]);
 
   useEffect(() => {
     if (!nodeId || !hoverOpen || shouldDisableHoverCard) return;
@@ -253,7 +257,6 @@ export const GraphNodeWrapper = memo(({
       open={shouldDisableHoverCard ? false : hoverOpen}
       onOpenChange={(open) => {
         if (shouldDisableHoverCard) {
-          keepQuickReplyHoverOpenRef.current = false;
           setHoverOpen(false);
           return;
         }
@@ -261,16 +264,10 @@ export const GraphNodeWrapper = memo(({
           setHoverOpen(true);
           return;
         }
-        const activeElement = document.activeElement;
-        if (
-          keepQuickReplyHoverOpenRef.current &&
-          activeElement &&
-          hoverContentRef.current?.contains(activeElement)
-        ) {
+        if (pointerInsideHoverContentRef.current) {
           setHoverOpen(true);
           return;
         }
-        keepQuickReplyHoverOpenRef.current = false;
         setHoverOpen(false);
       }}
       openDelay={hoverOpenDelay}
@@ -285,15 +282,21 @@ export const GraphNodeWrapper = memo(({
         align="center"
         sideOffset={8}
         className="z-50 w-auto border-none bg-transparent p-0 shadow-none"
+        onPointerEnter={() => {
+          pointerInsideHoverContentRef.current = true;
+        }}
+        onPointerLeave={() => {
+          pointerInsideHoverContentRef.current = false;
+        }}
         onBlurCapture={(event) => {
           const nextFocus = event.relatedTarget as Node | null;
           if (nextFocus && event.currentTarget.contains(nextFocus)) return;
-          keepQuickReplyHoverOpenRef.current = false;
+          if (pointerInsideHoverContentRef.current) return;
           setHoverOpen(false);
         }}
         onKeyDownCapture={(event) => {
           if (event.key !== 'Escape') return;
-          keepQuickReplyHoverOpenRef.current = false;
+          pointerInsideHoverContentRef.current = false;
           setHoverOpen(false);
         }}
       >

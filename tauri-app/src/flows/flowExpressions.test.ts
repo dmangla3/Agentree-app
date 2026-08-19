@@ -34,6 +34,24 @@ const scope: Record<string, FlowRuntimeValue> = {
     status: 'complete',
     commit: 'abc123',
   },
+  implementations: [
+    {
+      kind: 'node',
+      id: 'implementation-1',
+      label: 'Implementation 1',
+      status: 'complete',
+      commit: 'aaa111',
+      message: 'First implementation details',
+    },
+    {
+      kind: 'node',
+      id: 'implementation-2',
+      label: 'Implementation 2',
+      status: 'complete',
+      commit: 'bbb222',
+      message: 'Second implementation details',
+    },
+  ],
   noCommitImplementation: {
     kind: 'node',
     id: 'implementation-empty',
@@ -75,6 +93,13 @@ describe('flow expressions', () => {
         status: 'complete',
         commit: 'abc123',
       },
+      issues: [],
+    });
+  });
+
+  it('projects node properties across arrays without carrying sibling messages', () => {
+    expect(evaluateFlowExpression('implementations.commit', scope)).toEqual({
+      value: ['aaa111', 'bbb222'],
       issues: [],
     });
   });

@@ -429,6 +429,7 @@ export function MessageCard({
   const timelineEvents = persistedTimeline.length > 0 ? persistedTimeline : nodeEvents;
   const isNodeActive = message.status === 'running' || message.status === 'streaming';
   const [isExpandedLocally, setIsExpandedLocally] = useState(false);
+  const [areWorkLogsOpen, setAreWorkLogsOpen] = useState(false);
 
   const cachedInputTokens = useMemo(() => {
     const cacheUsage = (message.execution_data as any)?.cache_usage;
@@ -551,6 +552,16 @@ export function MessageCard({
     () => transcriptRows.some((row) => row.kind === 'message'),
     [transcriptRows]
   );
+  const showCompletedFinalOnly = role === 'assistant' && message.status === 'completed' && timelineEvents.length > 0;
+  const workLogRows = useMemo(() => {
+    if (!showCompletedFinalOnly) return transcriptRows;
+    const normalizedFinalContent = content.replace(/\s+/g, ' ').trim();
+    return transcriptRows.filter((row) => {
+      if (row.kind !== 'message') return true;
+      const normalizedRowContent = (row.content || '').replace(/\s+/g, ' ').trim();
+      return normalizedRowContent !== '' && normalizedRowContent !== normalizedFinalContent;
+    });
+  }, [content, showCompletedFinalOnly, transcriptRows]);
 
   /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
   const markdownComponents = useMemo(() => ({
@@ -686,7 +697,7 @@ export function MessageCard({
 
 
       {/* Execution Timeline - legacy fallback when no interleaved transcript exists */}
-      {!hasInterleavedTranscript && timelineEvents.length > 0 && (
+      {!hasInterleavedTranscript && !showCompletedFinalOnly && timelineEvents.length > 0 && (
         <ExecutionTimeline
           events={timelineEvents as TimelineEvent[]}
           isNodeActive={isNodeActive}
@@ -760,6 +771,101 @@ export function MessageCard({
         </Accordion>
       )}
 
+      {showCompletedFinalOnly && workLogRows.length > 0 ? (
+        <div className="mb-4 rounded-xl border border-border/50 bg-muted/20">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              setAreWorkLogsOpen((value) => !value);
+            }}
+            className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition-colors hover:bg-muted/35"
+            aria-expanded={areWorkLogsOpen}
+            aria-label="Work logs"
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              <Terminal size={13} className="shrink-0 text-muted-foreground/70" />
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Work logs</span>
+              <span className="rounded-full border border-border/60 bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {workLogRows.length}
+              </span>
+            </div>
+            <ChevronDown size={13} className={cn("shrink-0 text-muted-foreground/55 transition-transform", areWorkLogsOpen && "rotate-180")} />
+          </button>
+
+          {areWorkLogsOpen ? (
+            <div className="space-y-3 border-t border-border/40 px-3 py-3">
+              {workLogRows.map((row, index) => {
+                if (row.kind === 'message') {
+                  const blockContent = applyNodeLinksToContent(row.content || '', nodeMapping);
+                  if (!blockContent) return null;
+                  return (
+                    <div
+                      key={row.key ?? `work-message-${index}`}
+                      className="rounded-lg border border-border/40 bg-background/75 px-3 py-2"
+                    >
+                      {shouldRenderPlainText ? (
+                        <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
+                          {row.content || ''}
+                        </pre>
+                      ) : (
+                        <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-pre:my-0 prose-blockquote:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-table:my-1.5 prose-th:py-1 prose-td:py-1 break-words">
+                          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
+                            {blockContent}
+                          </ReactMarkdown>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                if (row.kind === 'tool') {
+                  return <InterleavedToolCard key={row.key ?? `work-tool-${index}`} row={row} />;
+                }
+
+                if (row.kind === 'exploration') {
+                  return <InterleavedExplorationCard key={row.key ?? `work-exploration-${index}`} row={row} />;
+                }
+
+                if (row.kind === 'thinking') {
+                  if (!row.content) return null;
+                  return (
+                    <div
+                      key={row.key ?? `work-thinking-${index}`}
+                      className="rounded-lg border border-blue-200/70 bg-blue-50/50 px-3 py-2 text-[11px] text-blue-900/80 dark:border-blue-900/70 dark:bg-blue-950/20 dark:text-blue-200/80"
+                    >
+                      <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
+                        <Sparkles size={12} />
+                        <span>Thinking</span>
+                      </div>
+                      <p className="whitespace-pre-wrap break-words">{row.content}</p>
+                    </div>
+                  );
+                }
+
+                if (row.kind === 'error') {
+                  if (!row.content) return null;
+                  return (
+                    <div
+                      key={row.key ?? `work-error-${index}`}
+                      className="rounded-lg border border-red-200/70 bg-red-50/60 px-3 py-2 text-[11px] text-red-900/90 dark:border-red-900/70 dark:bg-red-950/20 dark:text-red-200/90"
+                    >
+                      <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
+                        <AlertTriangle size={12} />
+                        <span>Error</span>
+                      </div>
+                      <p className="whitespace-pre-wrap break-words">{row.content}</p>
+                    </div>
+                  );
+                }
+
+                return null;
+              })}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       {/* Collapsible Content Area */}
       <div className="relative">
         <div
@@ -776,7 +882,7 @@ export function MessageCard({
           aria-label={shouldCollapse ? "Click to expand message" : undefined}
           tabIndex={shouldCollapse ? 0 : undefined}
         >
-          {hasInterleavedTranscript ? (
+          {hasInterleavedTranscript && !showCompletedFinalOnly ? (
             <div className="space-y-3">
               {transcriptRows.map((row, index) => {
                 if (row.kind === 'message') {
@@ -830,6 +936,22 @@ export function MessageCard({
                       <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
                         <Sparkles size={12} />
                         <span>Thinking</span>
+                      </div>
+                      <p className="whitespace-pre-wrap break-words">{row.content}</p>
+                    </div>
+                  );
+                }
+
+                if (row.kind === 'user_steer') {
+                  if (!row.content) return null;
+                  return (
+                    <div
+                      key={row.key ?? `user-steer-${index}`}
+                      className="rounded-xl border border-violet-200/70 bg-violet-50/55 px-3 py-2 text-[11px] text-violet-950/85 dark:border-violet-900/70 dark:bg-violet-950/20 dark:text-violet-100/85"
+                    >
+                      <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
+                        <MessageSquarePlus size={12} />
+                        <span>User Steer</span>
                       </div>
                       <p className="whitespace-pre-wrap break-words">{row.content}</p>
                     </div>

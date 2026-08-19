@@ -23,6 +23,108 @@ const makeMessage = (
 });
 
 describe('workspace projection thread roots', () => {
+  it('projects an empty workspace thread origin when there are no messages', () => {
+    const projection = buildWorkspaceProjection({
+      messages: [],
+      summaries: [],
+      focusedMessageId: null,
+      emptyThreadRoot: {
+        threadRootId: 'workspace-empty-thread:workspace-1',
+        workspaceId: 'workspace-1',
+        createdAt: '2026-05-28T00:00:00.000Z',
+      },
+    });
+
+    expect(projection.threadRootIds).toEqual(['workspace-empty-thread:workspace-1']);
+    expect(projection.rootMessageIdByThreadRootId.has('workspace-empty-thread:workspace-1')).toBe(false);
+    expect(projection.entitiesById.get('thread_origin:workspace-empty-thread:workspace-1')).toEqual(expect.objectContaining({
+      kind: 'thread_origin',
+      preview: 'New thread',
+      threadRootId: 'workspace-empty-thread:workspace-1',
+    }));
+  });
+
+  it('projects a pending synthetic thread origin beside existing threads', () => {
+    const projection = buildWorkspaceProjection({
+      messages: [
+        makeMessage('thread-a', 'user', null, '2026-05-28T00:00:00.000Z'),
+      ],
+      summaries: [],
+      focusedMessageId: null,
+      syntheticThreadRoots: [{
+        threadRootId: 'pending-thread',
+        workspaceId: 'workspace-1',
+        createdAt: '2026-05-28T00:01:00.000Z',
+      }],
+    });
+
+    expect(projection.threadRootIds).toEqual(['thread-a', 'pending-thread']);
+    expect(projection.rootMessageIdByThreadRootId.has('pending-thread')).toBe(false);
+    expect(projection.entitiesById.get('thread_origin:pending-thread')).toEqual(expect.objectContaining({
+      kind: 'thread_origin',
+      preview: 'New thread',
+      threadRootId: 'pending-thread',
+    }));
+  });
+
+  it('projects empty persisted thread sessions as thread origins', () => {
+    const projection = buildWorkspaceProjection({
+      messages: [],
+      summaries: [],
+      focusedMessageId: null,
+      threadSessions: [{
+        id: 'thread-session-1',
+        workspaceId: 'workspace-1',
+        title: 'Explore approach',
+        status: 'active',
+        createdAt: '2026-05-28T00:00:00.000Z',
+        updatedAt: '2026-05-28T00:00:00.000Z',
+        baseCommitSha: 'base-sha',
+        firstMessageId: null,
+        source: 'user',
+      }],
+    });
+
+    expect(projection.threadRootIds).toEqual(['thread-session-1']);
+    expect(projection.rootMessageIdByThreadRootId.has('thread-session-1')).toBe(false);
+    expect(projection.entitiesById.get('thread_origin:thread-session-1')).toEqual(expect.objectContaining({
+      kind: 'thread_origin',
+      preview: 'Explore approach',
+      threadRootId: 'thread-session-1',
+    }));
+  });
+
+  it('marks a persisted session first message as the thread root', () => {
+    const projection = buildWorkspaceProjection({
+      messages: [
+        makeMessage('user-a', 'user', null, '2026-05-28T00:00:00.000Z', {
+          thread_id: 'thread-session-1',
+        }),
+        makeMessage('assistant-a', 'assistant', 'user-a', '2026-05-28T00:01:00.000Z', {
+          thread_id: 'thread-session-1',
+        }),
+      ],
+      summaries: [],
+      focusedMessageId: null,
+      threadSessions: [{
+        id: 'thread-session-1',
+        workspaceId: 'workspace-1',
+        title: null,
+        status: 'active',
+        createdAt: '2026-05-28T00:00:00.000Z',
+        updatedAt: '2026-05-28T00:01:00.000Z',
+        baseCommitSha: null,
+        firstMessageId: 'user-a',
+        source: 'user',
+      }],
+    });
+
+    expect(projection.threadRootIds).toEqual(['thread-session-1']);
+    expect(projection.rootMessageIdByThreadRootId.get('thread-session-1')).toBe('user-a');
+    expect(projection.entitiesByMessageId.get('user-a')?.isThreadRoot).toBe(true);
+    expect(projection.entitiesByMessageId.get('assistant-a')?.threadRootId).toBe('thread-session-1');
+  });
+
   it('derives thread ownership from conversation roots instead of commit bases', () => {
     const messages = [
       makeMessage('thread-a', 'user', null, '2026-05-19T00:00:00.000Z'),

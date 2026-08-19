@@ -181,6 +181,93 @@ describe('GraphControls', () => {
     expect(onThreadFocus).not.toHaveBeenCalled();
   });
 
+  it('disables create-thread action while an empty thread already exists', () => {
+    const onCreateThread = vi.fn();
+
+    render(
+      <TooltipProvider>
+        <GraphThreadTabs
+          threadItems={[
+            {
+              threadRootId: 'empty-thread',
+              label: 'New thread',
+              turnCount: 0,
+              commitCount: 0,
+              updatedLabel: 'now',
+              runningCount: 0,
+              hidden: false,
+              done: false,
+              current: true,
+            },
+          ]}
+          onThreadFocus={vi.fn()}
+          onThreadDoneChange={vi.fn()}
+          doneThreadsCollapsed={true}
+          onDoneThreadsCollapsedChange={vi.fn()}
+          onCreateThread={onCreateThread}
+          createThreadDisabled={true}
+          createThreadDisabledReason="Finish the empty thread before starting another."
+        />
+      </TooltipProvider>
+    );
+
+    const button = screen.getByRole('button', { name: 'Start new thread' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe('Finish the empty thread before starting another.');
+
+    fireEvent.click(button);
+    expect(onCreateThread).not.toHaveBeenCalled();
+  });
+
+  it('opens a two-action context menu for thread tabs', () => {
+    const onThreadDelete = vi.fn();
+    const onThreadDoneChange = vi.fn();
+
+    render(
+      <TooltipProvider>
+        <GraphThreadTabs
+          threadItems={[
+            {
+              threadRootId: 'thread-active',
+              label: 'Fix checkout race condition',
+              turnCount: 8,
+              commitCount: 3,
+              updatedLabel: '12m ago',
+              runningCount: 0,
+              hidden: false,
+              done: false,
+              current: true,
+            },
+          ]}
+          onThreadFocus={vi.fn()}
+          onThreadDoneChange={onThreadDoneChange}
+          onThreadDelete={onThreadDelete}
+          doneThreadsCollapsed={true}
+          onDoneThreadsCollapsedChange={vi.fn()}
+          onCreateThread={vi.fn()}
+        />
+      </TooltipProvider>
+    );
+
+    fireEvent.contextMenu(screen.getByRole('tab', { name: 'Open thread Fix checkout race condition' }), {
+      clientX: 120,
+      clientY: 80,
+    });
+
+    const items = screen.getAllByRole('menuitem').map((item) => item.textContent);
+    expect(items).toEqual(['Delete thread', 'Mark as done']);
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as done' }));
+    expect(onThreadDoneChange).toHaveBeenCalledWith('thread-active', true);
+
+    fireEvent.contextMenu(screen.getByRole('tab', { name: 'Open thread Fix checkout race condition' }), {
+      clientX: 120,
+      clientY: 80,
+    });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete thread' }));
+    expect(onThreadDelete).toHaveBeenCalledWith('thread-active');
+  });
+
   it('shows unread completed leaf counts on thread tabs', () => {
     render(
       <TooltipProvider>
@@ -209,6 +296,58 @@ describe('GraphControls', () => {
     );
 
     expect(screen.getByLabelText('3 completed leaf nodes since last visit').textContent).toBe('3');
+  });
+
+  it('switches leaf nodes between all threads and this thread', () => {
+    const onLeafNodeFocus = vi.fn();
+    render(
+      <TooltipProvider>
+        <GraphControls
+          {...makeProps({
+            leafNodes: [
+              {
+                id: 'current-leaf',
+                label: 'Current thread leaf',
+                modelLabel: 'Codex',
+                statusLabel: 'Done',
+                statusTone: 'success',
+                timestampLabel: 'now',
+              },
+            ],
+            allLeafNodes: [
+              {
+                id: 'other-leaf',
+                label: 'Other thread leaf',
+                modelLabel: 'Claude',
+                statusLabel: 'Done',
+                statusTone: 'success',
+                timestampLabel: '1m ago',
+              },
+              {
+                id: 'current-leaf',
+                label: 'Current thread leaf',
+                modelLabel: 'Codex',
+                statusLabel: 'Done',
+                statusTone: 'success',
+                timestampLabel: 'now',
+              },
+            ],
+            onLeafNodeFocus,
+          })}
+        />
+      </TooltipProvider>
+    );
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Leaf nodes' }), { button: 0, ctrlKey: false });
+
+    expect(screen.getByText('Other thread leaf')).toBeTruthy();
+    expect(screen.getByText('Current thread leaf')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'This thread' }));
+
+    expect(screen.queryByText('Other thread leaf')).toBeNull();
+    fireEvent.click(screen.getByText('Current thread leaf'));
+    expect(onLeafNodeFocus).toHaveBeenCalledWith('current-leaf');
   });
 
   it('places the vertical create-thread action below the thread header', () => {

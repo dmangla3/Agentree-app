@@ -65,7 +65,6 @@ import { LayoutMode, LaneStrategy } from '../../hooks/graph/useGraphLayout';
 import { AgentOperator, GroupOperator, MessageNodeType, TagOperator, TimePreset } from '../../hooks/graph/useTagFilter';
 import { NodeHoverCardContent } from '../NodeHoverCardContent';
 import { useWorkspaceProjection } from '../../hooks/useWorkspaceProjection';
-import { QUICK_REPLY_KEEP_HOVER_OPEN_EVENT } from '../../lib/quickReply';
 
 interface ThreadHoverProjectionInput {
     messages: Message[];
@@ -230,9 +229,11 @@ export interface GraphControlsProps {
     threadItems: ThreadNavigationItem[];
     onThreadFocus: (threadRootId: string) => void;
     onThreadDoneChange: (threadRootId: string, done: boolean) => void;
+    onThreadDelete?: (threadRootId: string) => void;
     doneThreadsCollapsed: boolean;
     onDoneThreadsCollapsedChange: (collapsed: boolean) => void;
     leafNodes: LeafNodeNavigationItem[];
+    allLeafNodes?: LeafNodeNavigationItem[];
     onLeafNodeFocus: (id: string) => void;
     mergeSourceCount: number;
     mergeRunIndicator: MergeTabRunIndicator;
@@ -430,7 +431,7 @@ function ThreadNodeHoverCard({
     children,
 }: ThreadNodeHoverCardProps) {
     const hoverContentRef = useRef<HTMLDivElement | null>(null);
-    const keepHoverOpenRef = useRef(false);
+    const pointerInsideHoverContentRef = useRef(false);
     const [hoverOpen, setHoverOpen] = useState(false);
     const previewNodeIds = thread.previewNodeIds ?? [];
     const initialPreviewIndex = useMemo(() => {
@@ -452,21 +453,6 @@ function ThreadNodeHoverCard({
         setPreviewIndex((current) => Math.min(Math.max(current, 0), previewNodeIds.length - 1));
     }, [previewNodeIds.length]);
 
-    useEffect(() => {
-        if (!projectionInput || previewNodeIds.length === 0) return;
-        const previewNodeIdSet = new Set(previewNodeIds);
-        const keepHoverCardOpen = (event: Event) => {
-            const messageId = (event as CustomEvent<{ messageId?: string | null }>).detail?.messageId ?? null;
-            if (messageId && !previewNodeIdSet.has(messageId)) return;
-            keepHoverOpenRef.current = true;
-            setHoverOpen(true);
-        };
-        window.addEventListener(QUICK_REPLY_KEEP_HOVER_OPEN_EVENT, keepHoverCardOpen);
-        return () => {
-            window.removeEventListener(QUICK_REPLY_KEEP_HOVER_OPEN_EVENT, keepHoverCardOpen);
-        };
-    }, [previewNodeIds, projectionInput]);
-
     if (!projectionInput || previewNodeIds.length === 0) {
         return <>{children}</>;
     }
@@ -479,16 +465,10 @@ function ThreadNodeHoverCard({
                     setHoverOpen(true);
                     return;
                 }
-                const activeElement = document.activeElement;
-                if (
-                    keepHoverOpenRef.current &&
-                    activeElement &&
-                    hoverContentRef.current?.contains(activeElement)
-                ) {
+                if (pointerInsideHoverContentRef.current) {
                     setHoverOpen(true);
                     return;
                 }
-                keepHoverOpenRef.current = false;
                 setHoverOpen(false);
             }}
             openDelay={520}
@@ -504,17 +484,23 @@ function ThreadNodeHoverCard({
                 sideOffset={10}
                 collisionPadding={16}
                 className="z-50 w-auto border-none bg-transparent p-0 shadow-none"
+                onPointerEnter={() => {
+                    pointerInsideHoverContentRef.current = true;
+                }}
+                onPointerLeave={() => {
+                    pointerInsideHoverContentRef.current = false;
+                }}
                 onPointerDownCapture={(event) => event.stopPropagation()}
                 onMouseDownCapture={(event) => event.stopPropagation()}
                 onBlurCapture={(event) => {
                     const nextFocus = event.relatedTarget as Node | null;
                     if (nextFocus && event.currentTarget.contains(nextFocus)) return;
-                    keepHoverOpenRef.current = false;
+                    if (pointerInsideHoverContentRef.current) return;
                     setHoverOpen(false);
                 }}
                 onKeyDownCapture={(event) => {
                     if (event.key !== 'Escape') return;
-                    keepHoverOpenRef.current = false;
+                    pointerInsideHoverContentRef.current = false;
                     setHoverOpen(false);
                 }}
             >
@@ -537,12 +523,71 @@ interface GraphThreadTabsProps {
     threadHoverProjectionInput?: ThreadHoverProjectionInput;
     onThreadFocus: (threadRootId: string) => void;
     onThreadDoneChange: (threadRootId: string, done: boolean) => void;
+    onThreadDelete?: (threadRootId: string) => void;
     doneThreadsCollapsed: boolean;
     onDoneThreadsCollapsedChange: (collapsed: boolean) => void;
     threadBarCollapsed?: boolean;
     onThreadBarCollapsedChange?: (collapsed: boolean) => void;
     onCreateThread: () => void;
+    createThreadDisabled?: boolean;
+    createThreadDisabledReason?: string;
     orientation?: 'horizontal' | 'vertical';
+}
+
+interface ThreadContextMenuState {
+    x: number;
+    y: number;
+    thread: ThreadNavigationItem;
+}
+
+function ThreadContextMenu({
+    state,
+    onClose,
+    onThreadDoneChange,
+    onThreadDelete,
+}: {
+    state: ThreadContextMenuState | null;
+    onClose: () => void;
+    onThreadDoneChange: (threadRootId: string, done: boolean) => void;
+    onThreadDelete?: (threadRootId: string) => void;
+}) {
+    if (!state) return null;
+
+    return (
+        <DropdownMenu
+            open={!!state}
+            onOpenChange={(open) => {
+                if (!open) onClose();
+            }}
+            modal={false}
+        >
+            <DropdownMenuTrigger asChild>
+                <div
+                    style={{ position: 'fixed', top: state.y, left: state.x, width: 0, height: 0 }}
+                    aria-hidden="true"
+                />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className="w-44" onCloseAutoFocus={(event) => event.preventDefault()}>
+                <DropdownMenuItem
+                    className="text-destructive focus:text-destructive"
+                    onClick={() => {
+                        onThreadDelete?.(state.thread.threadRootId);
+                        onClose();
+                    }}
+                >
+                    Delete thread
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                    onClick={() => {
+                        onThreadDoneChange(state.thread.threadRootId, true);
+                        onClose();
+                    }}
+                >
+                    Mark as done
+                </DropdownMenuItem>
+            </DropdownMenuContent>
+        </DropdownMenu>
+    );
 }
 
 export const GraphThreadTabs = memo(function GraphThreadTabs({
@@ -550,14 +595,18 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
     threadHoverProjectionInput,
     onThreadFocus,
     onThreadDoneChange,
+    onThreadDelete,
     doneThreadsCollapsed,
     onDoneThreadsCollapsedChange,
     threadBarCollapsed = false,
     onThreadBarCollapsedChange,
     onCreateThread,
+    createThreadDisabled = false,
+    createThreadDisabledReason = 'Finish the empty thread before starting another.',
     orientation = 'horizontal',
 }: GraphThreadTabsProps) {
     const tabListRef = useRef<HTMLDivElement | null>(null);
+    const [threadContextMenu, setThreadContextMenu] = useState<ThreadContextMenuState | null>(null);
     const isVertical = orientation === 'vertical';
     const activeThreadItems = useMemo(() => (
         threadItems
@@ -582,6 +631,8 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
         [threadItems]
     );
     const doneThreadCount = doneThreadItems.length;
+    const createThreadButtonTitle = createThreadDisabled ? createThreadDisabledReason : undefined;
+    const createThreadButtonDisabledClass = "disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-[hsl(var(--app-border)/0.52)] disabled:hover:bg-[hsl(var(--app-panel)/0.56)] disabled:hover:text-muted-foreground disabled:active:scale-100";
 
     useEffect(() => {
         const tabList = tabListRef.current;
@@ -594,6 +645,17 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
     }, [isVertical, threadOrderKey]);
 
     if (threadTabItems.length === 0 && doneThreadItems.length === 0) return null;
+
+    const openThreadContextMenu = (event: SyntheticEvent, thread: ThreadNavigationItem) => {
+        const mouseEvent = event as unknown as { clientX?: number; clientY?: number };
+        event.preventDefault();
+        event.stopPropagation();
+        setThreadContextMenu({
+            x: mouseEvent.clientX ?? 0,
+            y: mouseEvent.clientY ?? 0,
+            thread,
+        });
+    };
 
     if (isVertical && threadBarCollapsed) {
         return (
@@ -638,8 +700,13 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
                 <button
                     type="button"
                     aria-label="Start new thread"
+                    disabled={createThreadDisabled}
+                    title={createThreadButtonTitle}
                     onClick={onCreateThread}
-                    className="mt-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.56)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.58)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                    className={cn(
+                        "mt-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.56)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.58)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+                        createThreadButtonDisabledClass
+                    )}
                 >
                     <Plus size={14} strokeWidth={2.3} />
                 </button>
@@ -657,6 +724,7 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
         const tab = (
             <div
                 key={thread.threadRootId}
+                onContextMenu={(event) => openThreadContextMenu(event, thread)}
                 className={cn(
                     "group/thread-tab relative flex shrink-0 items-stretch overflow-hidden rounded-lg border shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[border-color,background-color,box-shadow,opacity,transform] duration-150",
                     isVertical ? "w-full min-w-0" : "min-w-[9.5rem] max-w-[14.5rem]",
@@ -782,8 +850,13 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
                     <button
                         type="button"
                         aria-label="Start new thread"
+                        disabled={createThreadDisabled}
+                        title={createThreadButtonTitle}
                         onClick={onCreateThread}
-                        className="flex h-8 w-full shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.56)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.58)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                        className={cn(
+                            "flex h-8 w-full shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.56)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.58)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+                            createThreadButtonDisabledClass
+                        )}
                     >
                         <Plus size={14} strokeWidth={2.3} />
                     </button>
@@ -791,8 +864,13 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
                     <button
                         type="button"
                         aria-label="Start new thread"
+                        disabled={createThreadDisabled}
+                        title={createThreadButtonTitle}
                         onClick={onCreateThread}
-                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.56)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.58)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                        className={cn(
+                            "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.56)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.58)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+                            createThreadButtonDisabledClass
+                        )}
                     >
                         <Plus size={14} strokeWidth={2.3} />
                     </button>
@@ -832,6 +910,12 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
                     ) : null}
                 </div>
             </div>
+            <ThreadContextMenu
+                state={threadContextMenu}
+                onClose={() => setThreadContextMenu(null)}
+                onThreadDoneChange={onThreadDoneChange}
+                onThreadDelete={onThreadDelete}
+            />
         </div>
     );
 });
@@ -896,6 +980,7 @@ export function GraphControls({
     doneThreadsCollapsed,
     onDoneThreadsCollapsedChange,
     leafNodes,
+    allLeafNodes,
     onLeafNodeFocus,
     mergeSourceCount,
     mergeRunIndicator,
@@ -911,6 +996,7 @@ export function GraphControls({
     const [agentSearch, setAgentSearch] = useState('');
     const [tagSearch, setTagSearch] = useState('');
     const [threadListFilter, setThreadListFilter] = useState<ThreadListFilter>('all');
+    const [leafNodeScope, setLeafNodeScope] = useState<'all' | 'current'>('all');
     const [threadDropdownOpen, setThreadDropdownOpen] = useState(false);
     const [mergeDropdownOpen, setMergeDropdownOpen] = useState(false);
     const [mergeAttentionActive, setMergeAttentionActive] = useState(false);
@@ -1079,6 +1165,7 @@ export function GraphControls({
         danger: 'bg-red-500/12 text-red-700 dark:bg-red-400/12 dark:text-red-300',
         muted: 'bg-slate-500/12 text-slate-600 dark:bg-slate-400/12 dark:text-slate-300',
     };
+    const visibleLeafNodes = leafNodeScope === 'all' ? (allLeafNodes ?? leafNodes) : leafNodes;
     const threadListFilterOptions: Array<{ id: ThreadListFilter; label: string; count: number }> = [
         { id: 'all', label: 'All', count: threadItems.length },
         { id: 'active', label: 'Active', count: activeThreadCount },
@@ -1552,39 +1639,33 @@ export function GraphControls({
 
                     {threadItems.length > 0 ? (
                         <DropdownMenu modal={false} open={threadDropdownOpen} onOpenChange={setThreadDropdownOpen}>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <DropdownMenuTrigger asChild>
-                                        <button
-                                            type="button"
-                                            className={cn(
-                                                iconButtonBase,
-                                                toolbarButtonClass,
-                                                "h-8 w-8 px-0",
-                                                hasCurrentThread
-                                                    ? activeToolbarButtonClass
-                                                    : "",
-                                                hasActiveThread && !hasCurrentThread && "border-[hsl(var(--app-warning)/0.38)] bg-[hsl(var(--app-warning)/0.1)] text-[hsl(var(--app-warning))]"
-                                            )}
-                                            aria-label={`Threads (${threadItems.length})`}
-                                        >
-                                            <span className={iconGlow} />
-                                            <span className={iconContainer}>
-                                                <ParallelThreadsIcon size={15} strokeWidth={2} />
-                                            </span>
-                                            <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--background)/0.92)] px-1 text-[9px] font-semibold leading-none tabular-nums text-foreground shadow-sm">
-                                                {threadItems.length}
-                                            </span>
-                                            {doneThreadCount > 0 ? (
-                                                <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-[hsl(var(--background))] bg-[hsl(var(--app-success))]" />
-                                            ) : null}
-                                        </button>
-                                    </DropdownMenuTrigger>
-                                </TooltipTrigger>
-                                <TooltipContent side="bottom" align="end">
-                                    Thread roots in this workspace graph.
-                                </TooltipContent>
-                            </Tooltip>
+                            <DropdownMenuTrigger asChild>
+                                <button
+                                    type="button"
+                                    className={cn(
+                                        iconButtonBase,
+                                        toolbarButtonClass,
+                                        "h-8 w-8 px-0",
+                                        hasCurrentThread
+                                            ? activeToolbarButtonClass
+                                            : "",
+                                        hasActiveThread && !hasCurrentThread && "border-[hsl(var(--app-warning)/0.38)] bg-[hsl(var(--app-warning)/0.1)] text-[hsl(var(--app-warning))]"
+                                    )}
+                                    aria-label={`Threads (${threadItems.length})`}
+                                    title="Thread roots in this workspace graph."
+                                >
+                                    <span className={iconGlow} />
+                                    <span className={iconContainer}>
+                                        <ParallelThreadsIcon size={15} strokeWidth={2} />
+                                    </span>
+                                    <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--background)/0.92)] px-1 text-[9px] font-semibold leading-none tabular-nums text-foreground shadow-sm">
+                                        {threadItems.length}
+                                    </span>
+                                    {doneThreadCount > 0 ? (
+                                        <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-[hsl(var(--background))] bg-[hsl(var(--app-success))]" />
+                                    ) : null}
+                                </button>
+                            </DropdownMenuTrigger>
                             <DropdownMenuContent
                                 className="w-[min(24rem,calc(100vw-2rem))] overflow-hidden p-0"
                                 align="end"
@@ -1884,18 +1965,44 @@ export function GraphControls({
                                     <div>
                                         <p className="text-sm font-semibold leading-none">Leaf Nodes</p>
                                         <p className="mt-1 text-[11px] text-muted-foreground">
-                                            {leafNodes.length} branch endpoints, newest first
+                                            {visibleLeafNodes.length} branch endpoints, newest first
                                         </p>
                                     </div>
                                 </div>
+                                <div
+                                    className="mt-3 grid grid-cols-2 rounded-md border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.5)] p-0.5"
+                                    role="group"
+                                    aria-label="Leaf node thread scope"
+                                >
+                                    {(['all', 'current'] as const).map((scope) => (
+                                        <button
+                                            key={scope}
+                                            type="button"
+                                            onClick={(event) => {
+                                                event.preventDefault();
+                                                event.stopPropagation();
+                                                setLeafNodeScope(scope);
+                                            }}
+                                            className={cn(
+                                                "h-7 rounded-[5px] text-[11px] font-medium transition-[background-color,color,box-shadow]",
+                                                leafNodeScope === scope
+                                                    ? "bg-[hsl(var(--app-panel))] text-foreground shadow-sm"
+                                                    : "text-muted-foreground hover:text-foreground",
+                                            )}
+                                            aria-pressed={leafNodeScope === scope}
+                                        >
+                                            {scope === 'all' ? 'All threads' : 'This thread'}
+                                        </button>
+                                    ))}
+                                </div>
                             </div>
-                            {leafNodes.length > 0 ? (
+                            {visibleLeafNodes.length > 0 ? (
                                 <div
                                     className="max-h-80 overflow-y-auto overscroll-contain p-1.5 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
                                     onWheelCapture={stopNestedScrollPropagation}
                                     onTouchMoveCapture={stopNestedScrollPropagation}
                                 >
-                                    {leafNodes.map((node) => (
+                                    {visibleLeafNodes.map((node) => (
                                         <DropdownMenuItem
                                             key={node.id}
                                             onClick={() => onLeafNodeFocus(node.id)}

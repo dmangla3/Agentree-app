@@ -118,7 +118,6 @@ export function ChatInterface() {
   const { data: workspacesData } = useWorkspaces();
   const runningCount = useRunStatusStore((state) => state.getRunningCount(selectedWorkspaceId));
   const deleteMessageBranchMutation = useDeleteMessageBranch();
-  const { openMergeSession } = useIntegrationStore();
   const toast = useToastHelpers();
 
   const snapshotSummaries = useMemo(() => graphSnapshotToSummaries(graphSnapshotQuery.data), [graphSnapshotQuery.data]);
@@ -734,7 +733,7 @@ export function ChatInterface() {
 
     const integrationState = useIntegrationStore.getState();
     if (!integrationState.session || integrationState.session.workspaceId !== selectedWorkspaceId || integrationState.session.repoPath !== repoPath) {
-      openMergeSession(selectedWorkspaceId, repoPath);
+      useIntegrationStore.getState().ensureMergeSession(selectedWorkspaceId, repoPath);
     }
 
     const { addSource } = useIntegrationStore.getState();
@@ -768,7 +767,7 @@ export function ChatInterface() {
         duplicateCount === 1 ? '1 commit was already present.' : `${duplicateCount} commits were already present.`
       );
     }
-  }, [enrichedMessages, openMergeSession, selectedWorkspace, selectedWorkspaceId, toast]);
+  }, [enrichedMessages, selectedWorkspace, selectedWorkspaceId, toast]);
 
   const handleDeleteMessages = useCallback((messageIds: string[]) => {
     setPendingDeleteIds(getTopLevelDeleteBranchIds(messageIds, projection.messageMap));

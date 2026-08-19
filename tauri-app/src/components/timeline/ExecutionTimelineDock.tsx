@@ -20,11 +20,9 @@ import {
   unscaleTimelineDisplayMs,
 } from '../../lib/executionTimelineDisplayScale';
 import { cn } from '../../lib/utils';
-import type { ThreadNavigationItem } from '../graph/GraphControls';
 import { ExecutionTimelineHoverCard } from './ExecutionTimelineHoverCard';
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
@@ -33,13 +31,14 @@ import {
 type TimelineWindow = { startMs: number; endMs: number };
 type PackedExecutionTimelineItem = ExecutionTimelineItem & { lane: number };
 type TimelineRangePresetId = 'all' | '3h' | '6h' | '1d' | '3d';
+type TimelineThreadScope = 'all' | 'current';
 
 export type ExecutionTimelineDockProps = {
   projection: WorkspaceProjection;
   model: ExecutionTimelineModel;
   focusedMessageId: string | null;
   selectedNodeIds: Set<string>;
-  threadItems?: ThreadNavigationItem[];
+  currentThreadRootId?: string | null;
   threadRootIdByMessageId?: Map<string, string>;
   onFocusMessage: (messageId: string) => void;
   onSelectMessage: (messageId: string, multi: boolean) => void;
@@ -142,7 +141,7 @@ export const ExecutionTimelineDock = memo(({
   model,
   focusedMessageId,
   selectedNodeIds,
-  threadItems = [],
+  currentThreadRootId = null,
   threadRootIdByMessageId = projection.threadRootIdByMessageId,
   onFocusMessage,
   onSelectMessage,
@@ -154,7 +153,7 @@ export const ExecutionTimelineDock = memo(({
   const dragModeRef = useRef<'detail-pan' | 'brush-pan' | 'brush-left' | 'brush-right' | null>(null);
   const dragStartRef = useRef<{ clientX: number; viewport: TimelineWindow } | null>(null);
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
-  const [selectedThreadRootIds, setSelectedThreadRootIds] = useState<Set<string>>(() => new Set());
+  const [threadScope, setThreadScope] = useState<TimelineThreadScope>('all');
   const [selectedRangePresetId, setSelectedRangePresetId] = useState<TimelineRangePresetId>('all');
   const [viewport, setViewport] = useState<TimelineWindow>(() => getLatestTimelineWindow(model));
   const timezone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local time', []);
@@ -174,12 +173,12 @@ export const ExecutionTimelineDock = memo(({
     [model.bars, model.markers],
   );
   const threadFilteredItems = useMemo(() => {
-    if (selectedThreadRootIds.size === 0) return baseItems;
+    if (threadScope === 'all' || !currentThreadRootId) return baseItems;
     return baseItems.filter((item) => {
       const threadRootId = threadRootIdByMessageId.get(item.messageId);
-      return threadRootId ? selectedThreadRootIds.has(threadRootId) : false;
+      return threadRootId === currentThreadRootId;
     });
-  }, [baseItems, selectedThreadRootIds, threadRootIdByMessageId]);
+  }, [baseItems, currentThreadRootId, threadRootIdByMessageId, threadScope]);
   const threadFilteredModel = useMemo(() => packExecutionTimelineItems(threadFilteredItems), [threadFilteredItems]);
   const selectedRangePreset = RANGE_PRESETS.find((preset) => preset.id === selectedRangePresetId) ?? RANGE_PRESETS[0];
   const rangeDomain = useMemo(() => {
@@ -208,11 +207,6 @@ export const ExecutionTimelineDock = memo(({
     () => buildExecutionTimelineDisplayScale(visibleModel),
     [visibleModel],
   );
-  const selectedThreadLabel = selectedThreadRootIds.size === 0
-    ? 'All threads'
-    : selectedThreadRootIds.size === 1
-      ? threadItems.find((thread) => selectedThreadRootIds.has(thread.threadRootId))?.label ?? '1 thread'
-      : `${selectedThreadRootIds.size} threads`;
   const selectedRangeLabel = selectedRangePreset.label;
 
   useEffect(() => {
@@ -246,13 +240,8 @@ export const ExecutionTimelineDock = memo(({
   }, [displayScale, visibleModel]);
 
   useEffect(() => {
-    if (threadItems.length === 0 || selectedThreadRootIds.size === 0) return;
-    const availableIds = new Set(threadItems.map((thread) => thread.threadRootId));
-    setSelectedThreadRootIds((current) => {
-      const next = new Set(Array.from(current).filter((threadRootId) => availableIds.has(threadRootId)));
-      return next.size === current.size ? current : next;
-    });
-  }, [selectedThreadRootIds.size, threadItems]);
+    if (!currentThreadRootId && threadScope === 'current') setThreadScope('all');
+  }, [currentThreadRootId, threadScope]);
 
   useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
@@ -478,18 +467,6 @@ export const ExecutionTimelineDock = memo(({
     ));
   }, [displayScale, visibleModel, viewportDisplayEndMs, viewportDisplayStartMs]);
 
-  const toggleThreadRootId = useCallback((threadRootId: string, checked: boolean) => {
-    setSelectedThreadRootIds((current) => {
-      const next = new Set(current);
-      if (checked) {
-        next.add(threadRootId);
-      } else {
-        next.delete(threadRootId);
-      }
-      return next;
-    });
-  }, []);
-
   const handleItemClick = useCallback((item: ExecutionTimelineItem, event: React.MouseEvent) => {
     event.stopPropagation();
     if (event.metaKey || event.ctrlKey || event.shiftKey) {
@@ -552,42 +529,30 @@ export const ExecutionTimelineDock = memo(({
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
-          {threadItems.length > 0 ? (
-            <DropdownMenu modal={false}>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  className="flex h-8 max-w-56 items-center gap-1.5 rounded-md border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel-strong)/0.72)] px-2.5 text-xs font-medium text-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)] transition-[background-color,border-color,transform] hover:border-[hsl(var(--app-border-strong)/0.75)] hover:bg-[hsl(var(--app-accent-soft)/0.52)] active:scale-[0.98]"
-                  aria-label={`Thread filter: ${selectedThreadLabel}`}
-                >
-                  <span className="min-w-0 truncate">{selectedThreadLabel}</span>
-                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-64">
-                <DropdownMenuItem
-                  onSelect={(event) => {
-                    event.preventDefault();
-                    setSelectedThreadRootIds(new Set());
-                  }}
-                  className="text-xs"
-                >
-                  All threads
-                </DropdownMenuItem>
-                {threadItems.map((thread) => (
-                  <DropdownMenuCheckboxItem
-                    key={thread.threadRootId}
-                    checked={selectedThreadRootIds.has(thread.threadRootId)}
-                    onCheckedChange={(checked) => toggleThreadRootId(thread.threadRootId, Boolean(checked))}
-                    onSelect={(event) => event.preventDefault()}
-                    className="text-xs"
-                  >
-                    <span className="min-w-0 truncate">{thread.label}</span>
-                  </DropdownMenuCheckboxItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : null}
+          <div
+            className="flex h-8 items-center rounded-md border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel-strong)/0.72)] p-0.5 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]"
+            role="group"
+            aria-label="Timeline thread scope"
+          >
+            {(['all', 'current'] as const).map((scope) => (
+              <button
+                key={scope}
+                type="button"
+                onClick={() => setThreadScope(scope)}
+                disabled={scope === 'current' && !currentThreadRootId}
+                className={cn(
+                  "h-7 rounded-[5px] px-2.5 text-xs font-medium transition-[background-color,color,box-shadow]",
+                  threadScope === scope
+                    ? "bg-[hsl(var(--app-bg))] text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                  scope === 'current' && !currentThreadRootId && "cursor-not-allowed opacity-45 hover:text-muted-foreground",
+                )}
+                aria-pressed={threadScope === scope}
+              >
+                {scope === 'all' ? 'All threads' : 'This thread'}
+              </button>
+            ))}
+          </div>
           {onClose ? (
             <button
               type="button"

@@ -1,5 +1,10 @@
 import type { Message } from '../stores/workspaceStore';
 import { isFirstClassCommitMessage } from './graph/turnUtils';
+import {
+  getLegacyThreadIdForMessage,
+  getMessageThreadSessionId,
+  type ThreadSession,
+} from './threadSessions';
 
 export interface ThreadRootIndex {
   threadRootIds: string[];
@@ -10,41 +15,52 @@ export interface ThreadRootIndex {
 
 export const getThreadOriginNodeId = (threadRootId: string): string => `thread-origin:${threadRootId}`;
 
-const getMessageThreadOriginId = (message: Message | null | undefined): string | null => {
-  const value = (message?.execution_data as any)?.meta?.thread_origin_id;
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
-};
+export const getEmptyWorkspaceThreadRootId = (workspaceId: string): string => `workspace-empty-thread:${workspaceId}`;
 
 export const getThreadRootId = (
   messageId: string | null | undefined,
   messageMap: Map<string, Message>,
 ): string | null => {
-  let cursor = messageId ? messageMap.get(messageId) ?? null : null;
-  const visited = new Set<string>();
-  let earliestUserId: string | null = null;
-
-  while (cursor && !visited.has(cursor.id)) {
-    visited.add(cursor.id);
-    if (cursor.role === 'user') {
-      const threadOriginId = getMessageThreadOriginId(cursor);
-      if (threadOriginId) return threadOriginId;
-      earliestUserId = cursor.id;
-    }
-    if (!cursor.parentId) {
-      const earliestUser = earliestUserId ? messageMap.get(earliestUserId) ?? null : null;
-      return getMessageThreadOriginId(earliestUser) ?? earliestUserId;
-    }
-    cursor = messageMap.get(cursor.parentId) ?? null;
-  }
-
-  return null;
+  const directThreadId = messageId ? getMessageThreadSessionId(messageMap.get(messageId)) : null;
+  return directThreadId ?? getLegacyThreadIdForMessage(messageId, messageMap);
 };
 
-export const buildThreadRootIndex = (messages: Message[]): ThreadRootIndex => {
+export const buildThreadRootIndex = (
+  messages: Message[],
+  options: {
+    emptyThreadRootId?: string | null;
+    syntheticThreadRootIds?: string[];
+    threadSessions?: ThreadSession[];
+  } = {},
+): ThreadRootIndex => {
   const messageMap = new Map(messages.map((message) => [message.id, message]));
   const threadRootIdByMessageId = new Map<string, string>();
   const messageIdsByThreadRootId = new Map<string, Set<string>>();
   const rootMessageIdByThreadRootId = new Map<string, string>();
+  const threadSessionById = new Map<string, ThreadSession>();
+
+  for (const thread of options.threadSessions ?? []) {
+    const threadRootId = thread.id.trim();
+    if (!threadRootId) continue;
+    threadSessionById.set(threadRootId, thread);
+    if (!messageIdsByThreadRootId.has(threadRootId)) {
+      messageIdsByThreadRootId.set(threadRootId, new Set());
+    }
+    if (thread.firstMessageId && messageMap.has(thread.firstMessageId)) {
+      rootMessageIdByThreadRootId.set(threadRootId, thread.firstMessageId);
+    }
+  }
+
+  const emptyThreadRootId = options.emptyThreadRootId?.trim();
+  if (messages.length === 0 && emptyThreadRootId) {
+    messageIdsByThreadRootId.set(emptyThreadRootId, new Set());
+  }
+
+  for (const syntheticThreadRootId of options.syntheticThreadRootIds ?? []) {
+    const threadRootId = syntheticThreadRootId.trim();
+    if (!threadRootId || messageIdsByThreadRootId.has(threadRootId)) continue;
+    messageIdsByThreadRootId.set(threadRootId, new Set());
+  }
 
   for (const message of messages) {
     if (isFirstClassCommitMessage(message, { messageMap })) continue;
@@ -90,8 +106,18 @@ export const buildThreadRootIndex = (messages: Message[]): ThreadRootIndex => {
     const leftIsTopLevel = isTopLevelThreadRoot(leftMessage);
     const rightIsTopLevel = isTopLevelThreadRoot(rightMessage);
     if (leftIsTopLevel !== rightIsTopLevel) return leftIsTopLevel ? -1 : 1;
-    const leftTs = leftMessage ? new Date(leftMessage.createdAt).getTime() : Number.POSITIVE_INFINITY;
-    const rightTs = rightMessage ? new Date(rightMessage.createdAt).getTime() : Number.POSITIVE_INFINITY;
+    const leftThread = threadSessionById.get(left);
+    const rightThread = threadSessionById.get(right);
+    const leftTs = leftMessage
+      ? new Date(leftMessage.createdAt).getTime()
+      : leftThread
+        ? new Date(leftThread.createdAt).getTime()
+        : Number.POSITIVE_INFINITY;
+    const rightTs = rightMessage
+      ? new Date(rightMessage.createdAt).getTime()
+      : rightThread
+        ? new Date(rightThread.createdAt).getTime()
+        : Number.POSITIVE_INFINITY;
     if (leftTs !== rightTs) return leftTs - rightTs;
     return left.localeCompare(right);
   });

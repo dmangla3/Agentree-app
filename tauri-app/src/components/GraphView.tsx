@@ -31,6 +31,7 @@ import { getEnabledTrackedGitRefs, getTrackedRefsNeedingSync, useGitRefSnapshot 
 import { useLocalNodes } from '../hooks/useLocalNodes';
 import { useGraphMessages } from '../hooks/useLiveMessages';
 import { getPublicShareUrl, useCreateNodePublicShare } from '../hooks/useWorkspacePublicShare';
+import { useCreateThreadSession, useDeleteThreadSession, useThreadSessions } from '../hooks/useThreadSessions';
 
 // Hooks - Graph (extracted)
 import { useTagFilter } from '../hooks/graph/useTagFilter';
@@ -42,12 +43,14 @@ import { clearCachedGraphSnapshot, graphSnapshotToSummaries, useGraphSnapshot } 
 import { LlmNodeData, getLlmLegend } from '../lib/graphUtils';
 import { mapLocalCommitToCommitEntity } from '../lib/localCommitGraphProjection';
 import { createSubgraphFilterState, getSubgraphMessageIds, shouldClearSubgraphForFocus } from '../lib/graphSubgraphFilter';
-import { buildThreadRootIndex, getHiddenConversationMessageIds, getLatestThreadMessageId } from '../lib/graphThreadRoots';
+import { buildThreadRootIndex, getEmptyWorkspaceThreadRootId, getHiddenConversationMessageIds, getLatestThreadMessageId } from '../lib/graphThreadRoots';
+import { deriveBackfilledThreadSessions, threadSessionSortKey } from '../lib/threadSessions';
 import {
     filterCommitContextForThreadScope,
     filterSummariesForThreadScope,
     getInactiveThreadRootIds,
     getThreadScopeKey,
+    resolveActiveThreadAfterDoneChange,
     resolveInitialActiveThreadRootId,
     resolveThreadGraphScope,
 } from '../lib/graphThreadScope';
@@ -62,6 +65,7 @@ import {
 } from '../lib/graphSubgraphThreads';
 import { buildThreadBands, getThreadDividerRectsFromNodes, type ThreadBand } from '../lib/graphThreadDividers';
 import { buildComposerContextPathIds } from '../lib/composerContext';
+import { resolveComposerDefaultBaseCommit } from '../lib/composerBaseCommit';
 import { collectDeleteBranchMessageIds, getDeleteBranchPreview, getTopLevelDeleteBranchIds } from '../domain/deleteBranchPreview';
 import { getBranchPointerCommitSha, getMessageBaseCommitSha, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { shouldRefreshHeldGraphMessagesForStructuralChange } from '../lib/graph/graphComputationHold';
@@ -198,6 +202,16 @@ export const shouldClampViewportDuringMove = (input: {
     return input.eventType === 'wheel';
 };
 
+export const shouldRestoreViewportAfterGraphNodeCountChange = (input: {
+    activeGraphRenderHold: boolean;
+    graphRenderMode: 'full' | 'hold-visible';
+    isViewportInteracting: boolean;
+}): boolean => {
+    if (input.isViewportInteracting) return false;
+    if (input.activeGraphRenderHold) return false;
+    return input.graphRenderMode === 'full';
+};
+
 export const shouldDispatchGraphFocusSynchronously = ({
     activeRunCount,
     activeSendFlowWorkspaceId,
@@ -234,7 +248,95 @@ export const resolveThreadDropdownSelection = ({
 }: {
     threadRootId: string;
     messages: Message[];
-}) => getLatestThreadMessageId(threadRootId, messages) ?? threadRootId;
+}) => getLatestThreadMessageId(threadRootId, messages) ?? null;
+
+export const resolveThreadScopedDefaultFocus = ({
+    focusedMessageId,
+    lastFocusSource,
+    lastFocusMetadata,
+    rememberedFocusId,
+    messages,
+}: {
+    focusedMessageId: string | null;
+    lastFocusSource: string | null;
+    lastFocusMetadata: Record<string, unknown> | null;
+    rememberedFocusId: string | null;
+    messages: Message[];
+}): { messageId: string | null; reason: 'restore-workspace-focus' | 'default-workspace-focus' | 'clear-thread-focus' } | null => {
+    const messageIds = new Set(messages.map((message) => message.id));
+    if (focusedMessageId && messageIds.has(focusedMessageId)) return null;
+
+    const focusedCommitSha = typeof lastFocusMetadata?.commitSha === 'string'
+        ? lastFocusMetadata.commitSha.trim()
+        : '';
+    if (
+        lastFocusSource === 'graph'
+        && focusedCommitSha
+        && focusedMessageId === focusedCommitSha
+        && messages.some((message) => getMessageOutputCommitSha(message) === focusedCommitSha)
+    ) {
+        return null;
+    }
+
+    if (messages.length === 0) {
+        return focusedMessageId ? { messageId: null, reason: 'clear-thread-focus' } : null;
+    }
+
+    const rememberedMessageId = rememberedFocusId && messageIds.has(rememberedFocusId)
+        ? rememberedFocusId
+        : null;
+    let latestMessage: Message | null = null;
+    for (const message of messages) {
+        if (!latestMessage) {
+            latestMessage = message;
+            continue;
+        }
+        const messageTime = new Date(message.updatedAt || message.createdAt).getTime();
+        const latestTime = new Date(latestMessage.updatedAt || latestMessage.createdAt).getTime();
+        if (messageTime > latestTime) latestMessage = message;
+    }
+
+    const fallbackMessageId = rememberedMessageId ?? latestMessage?.id ?? null;
+    if (!fallbackMessageId || fallbackMessageId === focusedMessageId) return null;
+    return {
+        messageId: fallbackMessageId,
+        reason: rememberedMessageId === fallbackMessageId ? 'restore-workspace-focus' : 'default-workspace-focus',
+    };
+};
+
+export type ThreadDeletePlan =
+    | { kind: 'thread-session'; threadRootId: string }
+    | { kind: 'message-branch'; threadRootId: string; messageIds: string[] };
+
+export const resolveThreadDeletePlan = ({
+    threadRootId,
+    threadMessageIds,
+}: {
+    threadRootId: string;
+    threadMessageIds: Set<string> | undefined;
+}): ThreadDeletePlan => {
+    const messageIds = Array.from(threadMessageIds ?? []);
+    return messageIds.length > 0
+        ? { kind: 'message-branch', threadRootId, messageIds }
+        : { kind: 'thread-session', threadRootId };
+};
+
+export const resolveBlockingEmptyThreadRootId = ({
+    threadRootIds,
+    messageIdsByThreadRootId,
+    doneThreadRootIds,
+}: {
+    threadRootIds: string[];
+    messageIdsByThreadRootId: Map<string, Set<string>>;
+    doneThreadRootIds: Set<string>;
+}): string | null => {
+    for (const threadRootId of threadRootIds) {
+        if (doneThreadRootIds.has(threadRootId)) continue;
+        const threadMessageIds = messageIdsByThreadRootId.get(threadRootId);
+        if ((threadMessageIds?.size ?? 0) === 0) return threadRootId;
+    }
+    return null;
+};
 
 export const buildFocusedThreadRootLookup = ({
     messages,
@@ -767,6 +869,7 @@ function GraphViewInternal({
     const disabledSummaryIds = useWorkspaceStore(state => state.disabledSummaryIds);
     const toggleSummaryDisabled = useWorkspaceStore(state => state.toggleSummaryDisabled);
     const composerContextPreview = useWorkspaceStore(state => state.composerContextPreview);
+    const setThreadComposerTarget = useWorkspaceStore(state => state.setThreadComposerTarget);
 
     // Insights
     const insights = useWorkspaceStore(state => state.insights);
@@ -842,6 +945,8 @@ function GraphViewInternal({
     const shouldHydrateFullMessages = graphSnapshotQuery.isSuccess || graphSnapshotQuery.isError;
     const messagesQuery = useMessages(selectedWorkspaceId || '');
     const localNodesQuery = useLocalNodes(selectedWorkspaceId || null);
+    const threadSessionsQuery = useThreadSessions(selectedWorkspaceId || null);
+    const createThreadSession = useCreateThreadSession();
     const summariesQuery = useSummaries(selectedWorkspaceId || '', { enabled: shouldHydrateFullMessages && !agentClient.hasRuntime() });
     const { data: workspacesData } = useWorkspaces();
     const workspaces = useMemo(() => workspacesData ?? [], [workspacesData]);
@@ -1000,7 +1105,53 @@ function GraphViewInternal({
         });
     }, [messages, selectedWorkspaceId]);
     const hiddenGraphFilterCount = hiddenSubgraphRootIds.size;
-    const threadRootIndex = useMemo(() => buildThreadRootIndex(graphMessages as Message[]), [graphMessages]);
+    const persistedThreadSessions = useMemo(() => {
+        const byId = new Map((graphSnapshotQuery.data?.threadSessions ?? []).map((thread) => [thread.id, thread]));
+        for (const thread of threadSessionsQuery.data ?? []) {
+            byId.set(thread.id, thread);
+        }
+        return Array.from(byId.values());
+    }, [graphSnapshotQuery.data?.threadSessions, threadSessionsQuery.data]);
+    const threadSessions = useMemo(() => {
+        const byId = new Map(
+            deriveBackfilledThreadSessions(graphMessages as Message[], selectedWorkspaceId).map((thread) => [thread.id, thread])
+        );
+        for (const thread of persistedThreadSessions) {
+            byId.set(thread.id, thread);
+        }
+        return Array.from(byId.values()).sort((left, right) => {
+            const leftKey = threadSessionSortKey(left);
+            const rightKey = threadSessionSortKey(right);
+            if (leftKey.statusRank !== rightKey.statusRank) return leftKey.statusRank - rightKey.statusRank;
+            if (leftKey.updatedAtMs !== rightKey.updatedAtMs) return rightKey.updatedAtMs - leftKey.updatedAtMs;
+            return leftKey.id.localeCompare(rightKey.id);
+        });
+    }, [graphMessages, persistedThreadSessions, selectedWorkspaceId]);
+    const emptyThreadRoot = useMemo(() => {
+        if (!selectedWorkspaceId || (graphMessages as Message[]).length > 0 || threadSessions.length > 0) return null;
+        return {
+            threadRootId: getEmptyWorkspaceThreadRootId(selectedWorkspaceId),
+            workspaceId: selectedWorkspaceId,
+            createdAt: selectedWorkspace?.createdAt ?? selectedWorkspace?.updatedAt ?? null,
+        };
+    }, [graphMessages, selectedWorkspace?.createdAt, selectedWorkspace?.updatedAt, selectedWorkspaceId, threadSessions.length]);
+    const syntheticThreadRoots = useMemo<Array<{ threadRootId: string; workspaceId: string; createdAt: string | null }>>(() => [], []);
+    const threadRootIndex = useMemo(() => buildThreadRootIndex(graphMessages as Message[], {
+        emptyThreadRootId: emptyThreadRoot?.threadRootId ?? null,
+        syntheticThreadRootIds: syntheticThreadRoots.map((root) => root.threadRootId),
+        threadSessions,
+    }), [emptyThreadRoot?.threadRootId, graphMessages, syntheticThreadRoots, threadSessions]);
+    const blockingEmptyThreadRootId = useMemo(() => resolveBlockingEmptyThreadRootId({
+        threadRootIds: threadRootIndex.threadRootIds,
+        messageIdsByThreadRootId: threadRootIndex.messageIdsByThreadRootId,
+        doneThreadRootIds,
+    }), [doneThreadRootIds, threadRootIndex.messageIdsByThreadRootId, threadRootIndex.threadRootIds]);
+    const createThreadDisabled = Boolean(blockingEmptyThreadRootId) || createThreadSession.isPending;
+    const createThreadDisabledReason = blockingEmptyThreadRootId
+        ? 'Finish the empty thread before starting another.'
+        : createThreadSession.isPending
+            ? 'Creating thread...'
+            : undefined;
     const currentThreadRootId = useMemo(() => (
         subgraphRootNodeId ? threadRootIndex.threadRootIdByMessageId.get(subgraphRootNodeId) ?? null : null
     ), [subgraphRootNodeId, threadRootIndex]);
@@ -1058,19 +1209,21 @@ function GraphViewInternal({
                 ?? selectedWorkspace?.base_commit_sha
                 ?? null;
             const commitCount = commitShas.size;
-            const label = cleanNodePreview(rootMessage?.content || '') || rootMessage?.aiLabel || 'Untitled thread';
+            const label = rootMessage
+                ? cleanNodePreview(rootMessage.content || '') || rootMessage.aiLabel || 'Untitled thread'
+                : 'New thread';
             return {
                 threadRootId,
                 label: label.length > 56 ? `${label.slice(0, 56)}...` : label,
                 turnCount,
                 commitCount,
                 baseCommitSha,
-                updatedLabel: formatThreadUpdatedLabel(lastUpdatedAt, now),
+                updatedLabel: formatThreadUpdatedLabel(lastUpdatedAt || now, now),
                 runningCount: runningThreadCount,
                 hidden: false,
                 done: doneThreadRootIds.has(threadRootId),
                 current: activeThreadRootId === threadRootId,
-                lastUpdatedAt,
+                lastUpdatedAt: lastUpdatedAt || now,
                 unreadCompletedLeafCount: activeThreadRootId === threadRootId ? 0 : awareness.unreadCompletedLeafCount,
                 initialPreviewNodeId: awareness.initialPreviewNodeId,
                 previewNodeIds: awareness.previewNodeIds,
@@ -1132,6 +1285,27 @@ function GraphViewInternal({
         threadRootIndex,
         activeThreadRootId,
     }), [activeThreadRootId, graphMessages, threadRootIndex]);
+    const activeEmptyThreadComposerKeyRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!selectedWorkspaceId || !threadGraphScope.activeThreadRootId) {
+            activeEmptyThreadComposerKeyRef.current = null;
+            return;
+        }
+        if (threadGraphScope.scopedMessageIds.size > 0) {
+            activeEmptyThreadComposerKeyRef.current = null;
+            return;
+        }
+        const emptyThreadKey = `${selectedWorkspaceId}:${threadGraphScope.activeThreadRootId}`;
+        if (activeEmptyThreadComposerKeyRef.current === emptyThreadKey) return;
+        activeEmptyThreadComposerKeyRef.current = emptyThreadKey;
+        dispatchGraphComposerDockExpand();
+        setThreadComposerTarget({
+            workspaceId: selectedWorkspaceId,
+            threadId: threadGraphScope.activeThreadRootId,
+            reason: 'empty-thread',
+            nonce: Date.now(),
+        });
+    }, [selectedWorkspaceId, setThreadComposerTarget, threadGraphScope.activeThreadRootId, threadGraphScope.scopedMessageIds.size]);
     const scopedGraphMessages = threadGraphScope.scopedMessages;
     const scopedSummaries = filterSummariesForThreadScope(summaries as Summary[], threadGraphScope);
     const hiddenThreadRootIdsForLayout = useMemo(
@@ -1150,6 +1324,10 @@ function GraphViewInternal({
         getLeafMessagesByRecency(visibleGraphMessages as Message[])
             .map((message) => toLeafNodeNavigationItem(message, agentLabelsById))
     ), [agentLabelsById, visibleGraphMessages]);
+    const allLeafNodeNavigationItems = useMemo(() => (
+        getLeafMessagesByRecency(graphMessages as Message[])
+            .map((message) => toLeafNodeNavigationItem(message, agentLabelsById))
+    ), [agentLabelsById, graphMessages]);
     const activeGraphComputationHold = runningCount > 0 || activeSendFlowFocus?.workspaceId === selectedWorkspaceId;
     const graphComputationMessagesRef = useRef<Message[]>(visibleGraphMessages as Message[]);
     const graphComputationMessages = useMemo(() => {
@@ -1308,44 +1486,34 @@ function GraphViewInternal({
         : null;
 
     useEffect(() => {
-        if (focusedIdOverride !== undefined || !selectedWorkspaceId || graphMessages.length === 0) return;
+        if (focusedIdOverride !== undefined || !selectedWorkspaceId) return;
         if (activeSendFlowFocus?.workspaceId === selectedWorkspaceId) return;
 
-        const workspaceMessages = graphMessages as Message[];
-        const messageIds = new Set(workspaceMessages.map((message) => message.id));
-        if (focusedMessageId && messageIds.has(focusedMessageId)) return;
-        const focusedCommitSha = typeof lastFocusMetadata?.commitSha === 'string'
-            ? lastFocusMetadata.commitSha.trim()
-            : '';
-        if (lastFocusSource === 'graph' && focusedCommitSha && focusedMessageId === focusedCommitSha) return;
-
-        const rememberedFocusId = lastFocusedMessageByWorkspace[selectedWorkspaceId] ?? null;
-        const fallbackMessageId = rememberedFocusId && messageIds.has(rememberedFocusId)
-            ? rememberedFocusId
-            : [...workspaceMessages].sort((a, b) => {
-                const aTime = new Date(a.updatedAt || a.createdAt).getTime();
-                const bTime = new Date(b.updatedAt || b.createdAt).getTime();
-                return bTime - aTime;
-            })[0]?.id ?? null;
-
-        if (!fallbackMessageId || fallbackMessageId === focusedMessageId) return;
+        const focusDecision = resolveThreadScopedDefaultFocus({
+            focusedMessageId,
+            lastFocusSource,
+            lastFocusMetadata,
+            rememberedFocusId: lastFocusedMessageByWorkspace[selectedWorkspaceId] ?? null,
+            messages: scopedGraphMessages as Message[],
+        });
+        if (!focusDecision) return;
 
         dispatchFocus({
-            messageId: fallbackMessageId,
+            messageId: focusDecision.messageId,
             source: 'system',
             metadata: {
-                reason: rememberedFocusId === fallbackMessageId ? 'restore-workspace-focus' : 'default-workspace-focus',
+                reason: focusDecision.reason,
             },
         });
     }, [
         dispatchFocus,
         focusedIdOverride,
         focusedMessageId,
-        graphMessages,
         lastFocusMetadata,
         lastFocusSource,
         lastFocusedMessageByWorkspace,
         activeSendFlowFocus,
+        scopedGraphMessages,
         selectedWorkspaceId,
     ]);
 
@@ -1375,6 +1543,7 @@ function GraphViewInternal({
     // MUTATIONS
     // ─────────────────────────────────────────────────────────────────────────
     const deleteMessageBranchMutation = useDeleteMessageBranch();
+    const deleteThreadSessionMutation = useDeleteThreadSession();
     const createNodePublicShare = useCreateNodePublicShare();
     const { mutate: toggleCollapse } = useToggleCollapse();
     const { openDiff } = useDiff();
@@ -1400,6 +1569,7 @@ function GraphViewInternal({
     const selectionAnchorIdRef = useRef<string | null>(null);
     const [isBulkDeleteAlertOpen, setIsBulkDeleteAlertOpen] = useState(false);
     const [bulkDeleteIds, setBulkDeleteIds] = useState<string[]>([]);
+    const [bulkDeleteThreadRootId, setBulkDeleteThreadRootId] = useState<string | null>(null);
     const [bulkDeleteExplicitCommitShas, setBulkDeleteExplicitCommitShas] = useState<string[]>([]);
     const [removeCommitsFromGraph, setRemoveCommitsFromGraph] = useState(false);
     const [deletedGraphCommitShas, setDeletedGraphCommitShas] = useState<Set<string>>(() => new Set());
@@ -1463,6 +1633,34 @@ function GraphViewInternal({
             .filter((ref) => Boolean(ref.commit_sha))
             .map((ref) => [ref.git_ref, ref.commit_sha])
     ), [gitRefSnapshot]);
+    const newThreadBaseRefs = useMemo(() => (
+        branchPointers
+            .map((pointer) => {
+                const commitSha = getBranchPointerCommitSha(pointer)?.trim();
+                const gitRef = (pointer.git_ref ?? '').trim();
+                if (!commitSha || !gitRef) return null;
+                const shortName = (pointer.name ?? gitRef.replace(/^refs\/heads\//, '')).trim() || gitRef;
+                return {
+                    git_ref: gitRef,
+                    short_name: shortName,
+                    commit_sha: commitSha,
+                };
+            })
+            .filter(Boolean)
+    ), [branchPointers]);
+    const newThreadTrackedRefs = useMemo(() => trackedRefs.map((ref) => ({
+        ...ref,
+        last_seen_commit_sha: trackedRefTipByRef.get(ref.git_ref)?.trim() || ref.last_seen_commit_sha || null,
+    })), [trackedRefTipByRef, trackedRefs]);
+    const defaultNewThreadBaseCommitSha = useMemo(() => resolveComposerDefaultBaseCommit({
+        targetMode: 'new-thread',
+        replyParentMessageId: null,
+        selectedNodeId: null,
+        messages: [],
+        refs: newThreadBaseRefs,
+        trackedRefs: newThreadTrackedRefs,
+        workspaceBaseCommitSha: selectedWorkspace?.base_commit_sha ?? null,
+    }).sha, [newThreadBaseRefs, newThreadTrackedRefs, selectedWorkspace?.base_commit_sha]);
     const pinnedCommitShas = useMemo(() => {
         const shas = new Set<string>();
         for (const pointer of branchPointers) {
@@ -2214,6 +2412,9 @@ function GraphViewInternal({
         scopedVisibleSnapshotCommits,
         scopedVisibleSnapshotCommitParents,
         scopedVisibleSnapshotCommitObservations,
+        emptyThreadRoot,
+        syntheticThreadRoots,
+        threadSessions,
     );
     const executionTimelineProjection = useWorkspaceProjection(
         graphMessages as Message[],
@@ -2224,6 +2425,9 @@ function GraphViewInternal({
         visibleSnapshotCommits,
         visibleSnapshotCommitParents,
         visibleSnapshotCommitObservations,
+        emptyThreadRoot,
+        syntheticThreadRoots,
+        threadSessions,
     );
     const executionTimelineModel = useMemo(() => {
         const items = buildExecutionTimelineItems(executionTimelineProjection);
@@ -2313,7 +2517,7 @@ function GraphViewInternal({
 
         const integrationState = useIntegrationStore.getState();
         if (!integrationState.session || integrationState.session.workspaceId !== selectedWorkspaceId || integrationState.session.repoPath !== repoPath) {
-            openMergeSession(selectedWorkspaceId, repoPath);
+            useIntegrationStore.getState().ensureMergeSession(selectedWorkspaceId, repoPath);
         }
 
         const mergeableMessages = messageIds
@@ -2360,7 +2564,7 @@ function GraphViewInternal({
                 duplicateCount === 1 ? '1 commit was already represented by the selected sources.' : `${duplicateCount} commits were already represented by the selected sources.`
             );
         }
-    }, [messages, openMergeSession, selectedWorkspace, selectedWorkspaceId, toast, workspaceProjection.commitBySha]);
+    }, [messages, selectedWorkspace, selectedWorkspaceId, toast, workspaceProjection.commitBySha]);
 
     const handleAddCommitShasToMergePanel = useCallback((commitShas: string[]) => {
         if (!selectedWorkspaceId) return;
@@ -2373,7 +2577,7 @@ function GraphViewInternal({
 
         const integrationState = useIntegrationStore.getState();
         if (!integrationState.session || integrationState.session.workspaceId !== selectedWorkspaceId || integrationState.session.repoPath !== repoPath) {
-            openMergeSession(selectedWorkspaceId, repoPath);
+            useIntegrationStore.getState().ensureMergeSession(selectedWorkspaceId, repoPath);
         }
 
         const mergeableCommits = commitShas.map((sha) => ({
@@ -2423,7 +2627,7 @@ function GraphViewInternal({
                 duplicateCount === 1 ? '1 commit was already represented by the selected sources.' : `${duplicateCount} commits were already represented by the selected sources.`
             );
         }
-    }, [openMergeSession, selectedWorkspace, selectedWorkspaceId, toast, workspaceProjection.commitBySha]);
+    }, [selectedWorkspace, selectedWorkspaceId, toast, workspaceProjection.commitBySha]);
 
     const handleToggleCollapse = useCallback((id: string, collapsed: boolean) => {
         if (!selectedWorkspaceId) return;
@@ -3236,23 +3440,43 @@ function GraphViewInternal({
     ]);
 
     const handleThreadDoneChange = useCallback((threadRootId: string, done: boolean) => {
-        setDoneThreadRootIds((current) => {
-            const next = new Set(current);
-            if (done) {
-                next.add(threadRootId);
-            } else {
-                next.delete(threadRootId);
-            }
-            rememberGraphThreadState(selectedWorkspaceId, {
-                activeThreadRootId,
-                doneThreadRootIds: next,
-                doneThreadsCollapsed,
-                threadBarCollapsed,
-                lastVisitedAtByThreadRootId,
-            });
-            return next;
+        const nextDoneThreadRootIds = new Set(doneThreadRootIds);
+        if (done) {
+            nextDoneThreadRootIds.add(threadRootId);
+        } else {
+            nextDoneThreadRootIds.delete(threadRootId);
+        }
+        const nextThreadItems = threadIndexItems.map((thread) => (
+            thread.threadRootId === threadRootId ? { ...thread, done } : thread
+        ));
+        const nextActiveThreadRootId = resolveActiveThreadAfterDoneChange({
+            changedThreadRootId: threadRootId,
+            done,
+            activeThreadRootId,
+            threadRootIds: threadRootIndex.threadRootIds,
+            threadItems: nextThreadItems,
         });
-    }, [activeThreadRootId, doneThreadsCollapsed, lastVisitedAtByThreadRootId, selectedWorkspaceId, threadBarCollapsed]);
+        setDoneThreadRootIds(nextDoneThreadRootIds);
+        if (nextActiveThreadRootId !== activeThreadRootId) {
+            setActiveThreadRootId(nextActiveThreadRootId);
+        }
+        rememberGraphThreadState(selectedWorkspaceId, {
+            activeThreadRootId: nextActiveThreadRootId,
+            doneThreadRootIds: nextDoneThreadRootIds,
+            doneThreadsCollapsed,
+            threadBarCollapsed,
+            lastVisitedAtByThreadRootId,
+        });
+    }, [
+        activeThreadRootId,
+        doneThreadRootIds,
+        doneThreadsCollapsed,
+        lastVisitedAtByThreadRootId,
+        selectedWorkspaceId,
+        threadBarCollapsed,
+        threadIndexItems,
+        threadRootIndex.threadRootIds,
+    ]);
 
     const handleDoneThreadsCollapsedChange = useCallback((collapsed: boolean) => {
         setDoneThreadsCollapsed(collapsed);
@@ -3276,12 +3500,42 @@ function GraphViewInternal({
         });
     }, [activeThreadRootId, doneThreadRootIds, doneThreadsCollapsed, lastVisitedAtByThreadRootId, selectedWorkspaceId]);
 
-    const handleCreateThread = useCallback(() => {
+    const handleCreateThread = useCallback(async () => {
+        if (!selectedWorkspaceId || createThreadDisabled) return;
+        saveViewportForActiveThread();
+        const thread = await createThreadSession.mutateAsync({
+            workspaceId: selectedWorkspaceId,
+            source: 'user',
+            baseCommitSha: defaultNewThreadBaseCommitSha,
+        });
+        const threadRootId = thread.id;
+        setActiveThreadRootId(threadRootId);
+        markThreadVisited(threadRootId);
+        setViewMode('branch');
+        nodeSelection.clearSelection();
+        dispatchFocus({
+            messageId: null,
+            source: 'graph',
+            metadata: { reason: 'create-thread', threadRootId },
+        });
         dispatchGraphComposerDockExpand();
-        window.setTimeout(() => {
-            window.dispatchEvent(new CustomEvent('agentree:startNewThread'));
-        }, 0);
-    }, []);
+        setThreadComposerTarget({
+            workspaceId: selectedWorkspaceId,
+            threadId: threadRootId,
+            reason: 'create-thread',
+            nonce: Date.now(),
+        });
+    }, [
+        createThreadDisabled,
+        createThreadSession,
+        dispatchFocus,
+        markThreadVisited,
+        nodeSelection.clearSelection,
+        saveViewportForActiveThread,
+        defaultNewThreadBaseCommitSha,
+        selectedWorkspaceId,
+        setThreadComposerTarget,
+    ]);
 
     const handleHideSubgraph = useCallback((messageId: string) => {
         setHiddenSubgraphRootIds((current) => {
@@ -4479,19 +4733,40 @@ function GraphViewInternal({
         return Array.from(shas);
     }, [deletedGraphCommitShas]);
 
-    const openBulkDeleteDialog = useCallback((messageIds: Iterable<string>, commitShas: Iterable<string> = []) => {
+    const openBulkDeleteDialog = useCallback((messageIds: Iterable<string>, commitShas: Iterable<string> = [], threadRootId: string | null = null) => {
         const rootIds = getBulkDeleteTargets(new Set(messageIds));
         const explicitCommitShas = Array.from(new Set(commitShas)).filter((sha) => sha && !deletedGraphCommitShas.has(sha));
         setBulkDeleteIds(rootIds);
+        setBulkDeleteThreadRootId(threadRootId);
         setBulkDeleteExplicitCommitShas(explicitCommitShas);
         setRemoveCommitsFromGraph(rootIds.length === 0 && explicitCommitShas.length > 0);
         setBulkDeletePhase('idle');
         setIsBulkDeleteAlertOpen(true);
     }, [deletedGraphCommitShas, getBulkDeleteTargets]);
 
+    const handleThreadDelete = useCallback(async (threadRootId: string) => {
+        const threadMessageIds = threadRootIndex.messageIdsByThreadRootId.get(threadRootId);
+        const deletePlan = resolveThreadDeletePlan({ threadRootId, threadMessageIds });
+        if (deletePlan.kind === 'thread-session') {
+            if (!selectedWorkspaceId) return;
+            try {
+                await deleteThreadSessionMutation.mutateAsync({
+                    workspaceId: selectedWorkspaceId,
+                    threadId: deletePlan.threadRootId,
+                });
+            } catch (error) {
+                console.error('[GraphView] Thread delete failed:', error);
+                toast.error('Delete failed', 'The empty thread could not be deleted.');
+            }
+            return;
+        }
+        openBulkDeleteDialog(deletePlan.messageIds, [], deletePlan.threadRootId);
+    }, [deleteThreadSessionMutation, openBulkDeleteDialog, selectedWorkspaceId, threadRootIndex.messageIdsByThreadRootId, toast]);
+
     const resetBulkDeleteDialog = useCallback(() => {
         setIsBulkDeleteAlertOpen(false);
         setBulkDeleteIds([]);
+        setBulkDeleteThreadRootId(null);
         setBulkDeleteExplicitCommitShas([]);
         setRemoveCommitsFromGraph(false);
         setBulkDeletePhase('idle');
@@ -4511,6 +4786,12 @@ function GraphViewInternal({
                     messageId: id,
                 });
             }
+            if (bulkDeleteThreadRootId) {
+                await deleteThreadSessionMutation.mutateAsync({
+                    workspaceId: selectedWorkspaceId,
+                    threadId: bulkDeleteThreadRootId,
+                });
+            }
             if (commitShasToDelete.length > 0) {
                 setDeletedGraphCommitShas(addDeletedGraphCommitShas(selectedWorkspaceId, commitShasToDelete));
             }
@@ -4522,7 +4803,7 @@ function GraphViewInternal({
             toast.error('Delete failed', 'Some nodes could not be deleted.');
             setBulkDeletePhase('idle');
         }
-    }, [bulkDeleteAvailableCommitShas, bulkDeleteIds, deleteMessageBranchMutation, nodeSelection, removeCommitsFromGraph, resetBulkDeleteDialog, selectedWorkspaceId, toast]);
+    }, [bulkDeleteAvailableCommitShas, bulkDeleteIds, bulkDeleteThreadRootId, deleteMessageBranchMutation, deleteThreadSessionMutation, nodeSelection, removeCommitsFromGraph, resetBulkDeleteDialog, selectedWorkspaceId, toast]);
 
     // ─────────────────────────────────────────────────────────────────────────
     // DERIVED VALUES
@@ -5005,8 +5286,15 @@ function GraphViewInternal({
         return nodes;
     }, [activeGraphWindowSpatialIndex, graphDetailViewportVersion, graphDetailZoomBucket, graphRenderElements.mode, graphRenderElements.nodes, reactFlowInstance]);
     useEffect(() => {
+        if (!shouldRestoreViewportAfterGraphNodeCountChange({
+            activeGraphRenderHold,
+            graphRenderMode: graphRenderElements.mode,
+            isViewportInteracting: isViewportInteractingRef.current,
+        })) {
+            return;
+        }
         restoreViewportForActiveThread();
-    }, [graphNodesForReactFlow.length, restoreViewportForActiveThread]);
+    }, [activeGraphRenderHold, graphNodesForReactFlow.length, graphRenderElements.mode, restoreViewportForActiveThread]);
     useEffect(() => {
         const startedAt = threadSwitchStartedAtRef.current;
         const targetThreadRootId = threadSwitchTargetRef.current;
@@ -5552,7 +5840,7 @@ function GraphViewInternal({
                                 model={executionTimelineModel}
                                 focusedMessageId={focusedMessageId}
                                 selectedNodeIds={nodeSelection.selectedNodeIds}
-                                threadItems={threadIndexItems}
+                                currentThreadRootId={threadGraphScope.activeThreadRootId}
                                 threadRootIdByMessageId={threadRootIndex.threadRootIdByMessageId}
                                 onFocusMessage={(messageId) => {
                                     handleFocus(messageId, {
@@ -5613,6 +5901,7 @@ function GraphViewInternal({
                         doneThreadsCollapsed={doneThreadsCollapsed}
                         onDoneThreadsCollapsedChange={handleDoneThreadsCollapsedChange}
                         leafNodes={leafNodeNavigationItems}
+                        allLeafNodes={allLeafNodeNavigationItems}
                         onLeafNodeFocus={handleFocus}
                         mergeSourceCount={mergeSourceCount}
                         mergeRunIndicator={mergeRunIndicator}
@@ -5638,11 +5927,14 @@ function GraphViewInternal({
                             threadHoverProjectionInput={threadHoverProjectionInput}
                             onThreadFocus={handleFocusThread}
                             onThreadDoneChange={handleThreadDoneChange}
+                            onThreadDelete={handleThreadDelete}
                             doneThreadsCollapsed={doneThreadsCollapsed}
                             onDoneThreadsCollapsedChange={handleDoneThreadsCollapsedChange}
                             threadBarCollapsed={threadBarCollapsed}
                             onThreadBarCollapsedChange={handleThreadBarCollapsedChange}
                             onCreateThread={handleCreateThread}
+                            createThreadDisabled={createThreadDisabled}
+                            createThreadDisabledReason={createThreadDisabledReason}
                         />
                     ) : null}
                 </>
@@ -5660,11 +5952,14 @@ function GraphViewInternal({
                         threadHoverProjectionInput={threadHoverProjectionInput}
                         onThreadFocus={handleFocusThread}
                         onThreadDoneChange={handleThreadDoneChange}
+                        onThreadDelete={handleThreadDelete}
                         doneThreadsCollapsed={doneThreadsCollapsed}
                         onDoneThreadsCollapsedChange={handleDoneThreadsCollapsedChange}
                         threadBarCollapsed={threadBarCollapsed}
                         onThreadBarCollapsedChange={handleThreadBarCollapsedChange}
                         onCreateThread={handleCreateThread}
+                        createThreadDisabled={createThreadDisabled}
+                        createThreadDisabledReason={createThreadDisabledReason}
                     />
                 ) : null}
                 <div className={cn(

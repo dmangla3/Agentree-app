@@ -50,6 +50,15 @@ type PendingLocalCommitGraphRefresh = {
 
 const pendingLocalCommitGraphRefreshes = new Map<string, PendingLocalCommitGraphRefresh>();
 
+type PendingLocalNodesRefresh = {
+  queryClient: QueryClient;
+  workspaceId: string;
+  reason?: string;
+  requestedAt: number;
+};
+
+const pendingLocalNodesRefreshes = new Map<string, PendingLocalNodesRefresh>();
+
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
 const isGraphInteractionIdle = () => {
@@ -77,7 +86,8 @@ const getOldestPendingRefreshAgeMs = () => {
 const hasPendingRefreshes = () => (
   pendingMessageRefreshes.size > 0 ||
   pendingStructuralRefreshes.size > 0 ||
-  pendingLocalCommitGraphRefreshes.size > 0
+  pendingLocalCommitGraphRefreshes.size > 0 ||
+  pendingLocalNodesRefreshes.size > 0
 );
 
 const flushPendingMessageRefreshes = async () => {
@@ -215,6 +225,41 @@ const flushPendingMessageRefreshes = async () => {
       type: 'active',
     }));
   }));
+
+  if (isGraphInteractionIdle()) {
+    const pendingLocalNodes = Array.from(pendingLocalNodesRefreshes.values());
+    pendingLocalNodesRefreshes.clear();
+    await Promise.all(pendingLocalNodes.map(async ({ queryClient, workspaceId, reason }) => {
+      recordPerfEvent('query.local-nodes.refetch.flushed', {
+        workspaceId,
+        reason: reason ?? null,
+        refetchActive: true,
+      }, { source: 'graphInteractionGate' });
+      await runCacheRefreshOperation({
+        phase: 'local-nodes.refetch.flushed',
+        workspaceId,
+        reason: reason ?? null,
+        queryKey: ['local-nodes', workspaceId],
+        refetchType: 'active',
+        source: 'graphInteractionGate',
+      }, () => queryClient.refetchQueries({
+        queryKey: ['local-nodes', workspaceId],
+        type: 'active',
+      }));
+      const rows = typeof queryClient.getQueryData === 'function'
+        ? queryClient.getQueryData(['local-nodes', workspaceId])
+        : null;
+      recordPerfEvent('query.local-nodes.refetch.completed', {
+        workspaceId,
+        reason: reason ?? null,
+        rowCount: Array.isArray(rows) ? rows.length : null,
+      }, { source: 'graphInteractionGate' });
+    }));
+  }
+
+  if (hasPendingRefreshes()) {
+    scheduleIdleFlush();
+  }
 };
 
 const scheduleIdleFlush = () => {
@@ -429,6 +474,36 @@ export const scheduleLocalCommitGraphRefreshWhenGraphIdle = async (
   scheduleIdleFlush();
 };
 
+export const scheduleLocalNodesRefreshWhenGraphIdle = async (
+  queryClient: QueryClient,
+  workspaceId: string | null | undefined,
+  options: { reason?: string } = {},
+) => {
+  if (!workspaceId) return;
+
+  const merged = pendingLocalNodesRefreshes.get(workspaceId);
+  pendingLocalNodesRefreshes.set(workspaceId, {
+    queryClient,
+    workspaceId,
+    reason: options.reason ?? merged?.reason,
+    requestedAt: merged?.requestedAt ?? now(),
+  });
+
+  if (isGraphInteractionIdle()) {
+    await flushPendingMessageRefreshes();
+    return;
+  }
+
+  recordPerfEvent('query.local-nodes.refetch.deferred', {
+    workspaceId,
+    reason: options.reason ?? null,
+    refetchActive: true,
+    activeInteractionCount,
+    msSinceLastInteraction: Number((now() - lastInteractionAt).toFixed(2)),
+  }, { source: 'graphInteractionGate' });
+  scheduleIdleFlush();
+};
+
 export const resetGraphInteractionGateForTest = () => {
   activeInteractionCount = 0;
   lastInteractionAt = 0;
@@ -444,4 +519,5 @@ export const resetGraphInteractionGateForTest = () => {
   pendingMessageRefreshes.clear();
   pendingStructuralRefreshes.clear();
   pendingLocalCommitGraphRefreshes.clear();
+  pendingLocalNodesRefreshes.clear();
 };

@@ -6,7 +6,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NodeHoverCardContent } from './NodeHoverCardContent';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspaceProjection';
 import type { Message } from '../stores/workspaceStore';
-import { QUICK_REPLY_KEEP_HOVER_OPEN_EVENT } from '../lib/quickReply';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -217,6 +216,93 @@ describe('NodeHoverCardContent', () => {
     expect(quickReplyMocks.sendQuickReply).not.toHaveBeenCalled();
   });
 
+  it('defaults running agent hover cards to the bottom of the preview', () => {
+    const scrollHeightSpy = vi
+      .spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
+      .mockReturnValue(1400);
+    const runningAssistant = makeMessage({
+      id: 'assistant-running',
+      role: 'assistant',
+      status: 'running' as any,
+    });
+
+    try {
+      render(
+        <NodeHoverCardContent
+          entity={makeEntity('assistant_message', {
+            status: 'running' as any,
+            message: runningAssistant,
+            messageId: runningAssistant.id,
+            focusMessageId: runningAssistant.id,
+          })}
+          projection={makeProjection([runningAssistant])}
+        />
+      );
+
+      const scrollArea = screen
+        .getByText('hover body: assistant_message preview')
+        .closest('.overflow-y-auto') as HTMLElement | null;
+
+      expect(scrollArea).toBeTruthy();
+      expect(scrollArea!.scrollTop).toBe(1400);
+    } finally {
+      scrollHeightSpy.mockRestore();
+    }
+  });
+
+  it('rechecks the running agent preview bottom after the first frame settles layout', () => {
+    const rafCallbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrameSpy = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback: FrameRequestCallback) => {
+        rafCallbacks.push(callback);
+        return rafCallbacks.length;
+      });
+    const cancelAnimationFrameSpy = vi
+      .spyOn(window, 'cancelAnimationFrame')
+      .mockImplementation(() => {});
+    let scrollHeight = 900;
+    const scrollHeightSpy = vi
+      .spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
+      .mockImplementation(() => scrollHeight);
+    const runningAssistant = makeMessage({
+      id: 'assistant-running',
+      role: 'assistant',
+      status: 'running' as any,
+    });
+
+    try {
+      render(
+        <NodeHoverCardContent
+          entity={makeEntity('assistant_message', {
+            status: 'running' as any,
+            message: runningAssistant,
+            messageId: runningAssistant.id,
+            focusMessageId: runningAssistant.id,
+          })}
+          projection={makeProjection([runningAssistant])}
+        />
+      );
+
+      const scrollArea = screen
+        .getByText('hover body: assistant_message preview')
+        .closest('.overflow-y-auto') as HTMLElement | null;
+
+      expect(scrollArea).toBeTruthy();
+      expect(scrollArea!.scrollTop).toBe(900);
+      expect(rafCallbacks).toHaveLength(1);
+
+      scrollHeight = 1400;
+      rafCallbacks[0](performance.now());
+
+      expect(scrollArea!.scrollTop).toBe(1400);
+    } finally {
+      scrollHeightSpy.mockRestore();
+      requestAnimationFrameSpy.mockRestore();
+      cancelAnimationFrameSpy.mockRestore();
+    }
+  });
+
   it('hides quick reply for running non-assistant hover cards', () => {
     const runningUser = makeMessage({
       id: 'user-running',
@@ -243,8 +329,6 @@ describe('NodeHoverCardContent', () => {
 
   it('directly sends a quick reply without opening the floating composer', async () => {
     const user = userEvent.setup();
-    const keepOpenListener = vi.fn();
-    window.addEventListener(QUICK_REPLY_KEEP_HOVER_OPEN_EVENT, keepOpenListener);
     const messages = [
       makeMessage({ id: 'ancestor', output_commit_sha: 'ancestor-output-sha' }),
       makeMessage({ id: 'message-1', role: 'user', parentId: 'ancestor', base_commit_sha: 'stale-parent-base' }),
@@ -261,14 +345,10 @@ describe('NodeHoverCardContent', () => {
       prompt: 'Ship it',
       messages,
     });
-    expect(keepOpenListener).toHaveBeenCalledWith(expect.objectContaining({
-      detail: { messageId: 'message-1' },
-    }));
     await waitFor(() => {
       expect(input.value).toBe('');
       expect(document.activeElement).toBe(input);
     });
-    window.removeEventListener(QUICK_REPLY_KEEP_HOVER_OPEN_EVENT, keepOpenListener);
   });
 
   it('uses the neutral node preview renderer instead of importing chat rendering directly', () => {
