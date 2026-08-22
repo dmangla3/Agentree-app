@@ -25,6 +25,17 @@ export interface GraphDockComposerBase {
   source: ComposerDefaultBaseSource | 'override' | 'focused-commit';
 }
 
+export interface GraphDockComposerKeyInput {
+  key: string;
+  shiftKey: boolean;
+  metaKey?: boolean;
+  ctrlKey?: boolean;
+}
+
+export const shouldSubmitGraphDockComposerKey = (event: GraphDockComposerKeyInput): boolean => (
+  event.key === 'Enter' && !event.shiftKey
+);
+
 export const toComposerBaseMessages = (messages: Message[]): ComposerBaseMessage[] => (
   messages.map((message) => ({
     id: message.id,

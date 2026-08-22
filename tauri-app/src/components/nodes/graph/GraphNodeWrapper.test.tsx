@@ -91,7 +91,7 @@ describe('GraphNodeWrapper', () => {
     const { ensureAgentRunHydrated } = await import('../../../agent-runs/agentRunHydration');
 
     render(
-      <GraphNodeWrapper {...baseProps} hoverCardContent={<div>expensive hover content</div>}>
+      <GraphNodeWrapper {...baseProps} hoverHydrationEnabled hoverCardContent={<div>expensive hover content</div>}>
         <div>node body</div>
       </GraphNodeWrapper>
     );
@@ -100,6 +100,21 @@ describe('GraphNodeWrapper', () => {
 
     expect(screen.getByText('expensive hover content')).toBeTruthy();
     expect(ensureAgentRunHydrated).toHaveBeenCalledWith('node-1', 'hover');
+  });
+
+  it('does not request shared run hydration when hover hydration is disabled', async () => {
+    const { ensureAgentRunHydrated } = await import('../../../agent-runs/agentRunHydration');
+
+    render(
+      <GraphNodeWrapper {...baseProps} hoverHydrationEnabled={false} hoverCardContent={<div>expensive hover content</div>}>
+        <div>node body</div>
+      </GraphNodeWrapper>
+    );
+
+    fireEvent.click(screen.getByText('open hover'));
+
+    expect(screen.getByText('expensive hover content')).toBeTruthy();
+    expect(ensureAgentRunHydrated).not.toHaveBeenCalled();
   });
 
   it('does not close from focus churn while the pointer remains inside hover content', () => {
@@ -126,6 +141,50 @@ describe('GraphNodeWrapper', () => {
     expect(screen.queryByText('hover action')).toBeNull();
   });
 
+  it('closes when the pointer leaves hover content without retained focus', () => {
+    render(
+      <GraphNodeWrapper
+        {...baseProps}
+        hoverCardContent={<button type="button">hover action</button>}
+      >
+        <div>node body</div>
+      </GraphNodeWrapper>
+    );
+
+    fireEvent.click(screen.getByText('open hover'));
+    const content = screen.getByTestId('hover-content');
+    fireEvent.pointerEnter(content);
+    fireEvent.click(screen.getByText('close hover'));
+
+    expect(screen.getByText('hover action')).toBeTruthy();
+
+    fireEvent.pointerLeave(content);
+
+    expect(screen.queryByText('hover action')).toBeNull();
+  });
+
+  it('closes an open hover card when the document is hidden', () => {
+    render(
+      <GraphNodeWrapper {...baseProps} hoverCardContent={<div>hover details</div>}>
+        <div>node body</div>
+      </GraphNodeWrapper>
+    );
+
+    fireEvent.click(screen.getByText('open hover'));
+    expect(screen.getByText('hover details')).toBeTruthy();
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'hidden',
+    });
+    expect(document.visibilityState).toBe('hidden');
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    expect(screen.queryByText('hover details')).toBeNull();
+  });
+
   it('clears transient click focus feedback after the feedback window', () => {
     vi.useFakeTimers();
 
@@ -144,6 +203,21 @@ describe('GraphNodeWrapper', () => {
     act(() => {
       vi.advanceTimersByTime(421);
     });
+
+    expect(node!.className).not.toContain('ring-indigo-500');
+  });
+
+  it('can skip transient focus feedback for redirected proxy nodes', () => {
+    render(
+      <GraphNodeWrapper {...baseProps} focusFeedbackEnabled={false}>
+        <div>node body</div>
+      </GraphNodeWrapper>
+    );
+
+    const node = screen.getByText('node body').closest('[data-agentree-graph-node-id]');
+    expect(node).toBeTruthy();
+
+    fireEvent.pointerDown(node!, { button: 0 });
 
     expect(node!.className).not.toContain('ring-indigo-500');
   });

@@ -394,7 +394,7 @@ def _run_codex_probe(codex_bin: str, args: list[str], codex_home: str, timeout: 
 
 def _codex_environment_detail(codex_bin: str, codex_home: str) -> dict[str, Any]:
     codex_home_path = Path(codex_home)
-    return {
+    detail = {
         "codex_bin": codex_bin,
         "codex_home": codex_home,
         "codex_bin_exists": _path_exists(codex_bin),
@@ -411,6 +411,8 @@ def _codex_environment_detail(codex_bin: str, codex_home: str) -> dict[str, Any]
         "has_OPENAI_API_KEY": _has_env_value("OPENAI_API_KEY"),
         "has_CODEX_API_KEY": _has_env_value("CODEX_API_KEY"),
     }
+    detail.pop("auth_json", None)
+    return detail
 
 
 def _sanitize_account(account: Any) -> dict[str, Any] | None:

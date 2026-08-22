@@ -25,6 +25,23 @@ describe('graph composer dock graph events', () => {
     expect(dispatcherSource).toContain("data.entity.kind === 'user_message' || data.entity.kind === 'assistant_message'");
   });
 
+  it('routes user-message edit events into the graph dock composer', () => {
+    const composerSource = readSource('src/composer/GraphDockComposer.tsx');
+
+    expect(composerSource).toContain("window.addEventListener('editUserMessage'");
+    expect(composerSource).toContain('setEditDraftSource(sourceMessage)');
+    expect(composerSource).toContain('setComposerDraft(selectedWorkspaceId, sourceMessage.content || \'\')');
+    expect(composerSource).toContain('dispatchGraphComposerDockExpand();');
+  });
+
+  it('targets clicked thread origins as root-level composer sends', () => {
+    const dispatcherSource = readSource('src/components/nodes/graph/GraphNodeDispatcher.tsx');
+
+    expect(dispatcherSource).toContain("data.entity?.kind === 'thread_origin'");
+    expect(dispatcherSource).toContain('setThreadComposerTarget({');
+    expect(dispatcherSource).toContain("reason: 'thread-origin'");
+  });
+
   it('opens the graph composer in new-thread mode when the active thread has no messages', () => {
     const graphViewSource = readSource('src/components/GraphView.tsx');
 
@@ -33,5 +50,14 @@ describe('graph composer dock graph events', () => {
     expect(graphViewSource).toContain('dispatchGraphComposerDockExpand();');
     expect(graphViewSource).toContain('setThreadComposerTarget({');
     expect(graphViewSource).toContain("reason: 'empty-thread'");
+  });
+
+  it('opens the graph composer against a clicked thread origin without focusing a child message', () => {
+    const graphViewSource = readSource('src/components/GraphView.tsx');
+
+    expect(graphViewSource).toContain("node.type === 'thread_origin'");
+    expect(graphViewSource).toContain("reason: 'thread-origin'");
+    expect(graphViewSource).toContain('threadId: threadRootId');
+    expect(graphViewSource).toContain('dispatchGraphComposerDockExpand();');
   });
 });

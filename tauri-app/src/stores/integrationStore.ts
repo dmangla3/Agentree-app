@@ -1,4 +1,5 @@
-import { create } from 'zustand';
+import { create, type StateCreator } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
 import {
   GitMergePreview,
   MergeResolutionSynthesisResult,
@@ -8,6 +9,7 @@ import {
   MergeReviewSummary,
   MergeReviewTimelineEvent,
 } from '../lib/agentClient';
+import { createBestEffortStorage } from '../lib/bestEffortStorage';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -296,6 +298,30 @@ const createMergeSession = (workspaceId: string, repoPath: string, now = Date.no
   updatedAt: now,
 });
 
+const sanitizeMergeDraftForPersistence = (session: IntegrationSession | null): IntegrationSession | null => {
+  if (!session || typeof session.workspaceId !== 'string' || typeof session.repoPath !== 'string') {
+    return null;
+  }
+
+  const now = Date.now();
+  const createdAt = Number.isFinite(session.createdAt) ? session.createdAt : now;
+  const updatedAt = Number.isFinite(session.updatedAt) ? session.updatedAt : now;
+
+  return {
+    ...createMergeSession(session.workspaceId, session.repoPath, createdAt),
+    id: typeof session.id === 'string' && session.id ? session.id : crypto.randomUUID(),
+    target: session.target ?? null,
+    sources: Array.isArray(session.sources) ? session.sources : [],
+    resolutionMode: session.resolutionMode === 'manual' ? 'manual' : 'smart',
+    policy: {
+      ...defaultPolicy,
+      ...(session.policy ?? {}),
+    },
+    createdAt,
+    updatedAt,
+  };
+};
+
 const clearTargetDependentState = (session: IntegrationSession, now = Date.now()): IntegrationSession => ({
   ...session,
   stage: 'setup',
@@ -384,7 +410,7 @@ interface IntegrationState {
 // STORE IMPLEMENTATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const useIntegrationStore = create<IntegrationState>((set) => ({
+const createIntegrationStore: StateCreator<IntegrationState> = (set) => ({
   // Initial State
   session: null,
   isMergeOpen: false,
@@ -983,7 +1009,30 @@ export const useIntegrationStore = create<IntegrationState>((set) => ({
       applyError: null,
     });
   },
-}));
+});
+
+export const useIntegrationStore = create<IntegrationState>()(
+  persist(
+    createIntegrationStore,
+    {
+      name: 'integration-merge-storage',
+      storage: createJSONStorage(() => createBestEffortStorage(() => localStorage)),
+      partialize: (state): Partial<IntegrationState> => ({
+        session: sanitizeMergeDraftForPersistence(state.session),
+      }),
+      merge: (persistedState, currentState): IntegrationState => {
+        const persisted = persistedState as Partial<IntegrationState> | undefined;
+        return {
+          ...currentState,
+          session: sanitizeMergeDraftForPersistence(persisted?.session ?? null),
+          isMergeOpen: false,
+          isApplying: false,
+          applyError: null,
+        };
+      },
+    }
+  )
+);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SELECTORS / HELPERS

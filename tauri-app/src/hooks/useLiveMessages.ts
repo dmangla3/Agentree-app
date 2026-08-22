@@ -163,13 +163,11 @@ function mergeGraphMessage(base: Message | null, live: AgentRunProjectedMessage)
   const resolved = resolveNodeState(base, live);
   const nextStatus = normalizeLiveStatus(resolved.status) ?? normalizeLiveStatus(liveStatus) ?? normalizeLiveStatus(base?.status ?? null);
   const useLiveContent = shouldUseGraphContent(base, live);
-  const liveStatusNormalized = normalizeLiveStatus(liveStatus);
-  const useTerminalFields = Boolean(liveStatusNormalized && TERMINAL_STATUSES.has(liveStatusNormalized));
   return {
     ...(base || live),
     ...live,
     status: nextStatus,
-    updatedAt: useTerminalFields ? (live.updatedAt ?? base?.updatedAt ?? '') : (base?.updatedAt ?? live.updatedAt ?? ''),
+    updatedAt: base?.updatedAt ?? live.updatedAt ?? '',
     // Graph should not receive continuous streamed body text, but terminal text is safe.
     content: live.role === 'assistant' && !useLiveContent
       ? (base?.content ?? '')

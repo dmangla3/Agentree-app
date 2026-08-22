@@ -97,6 +97,7 @@ pub struct GitLocalRefInfo {
     pub git_ref: String,
     pub short_name: String,
     pub commit_sha: String,
+    pub committed_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, specta::Type)]
@@ -1350,6 +1351,7 @@ pub async fn create_agent_worktree(
             agent_type: agent_type.clone(),
             status: "preparing_worktree".to_string(),
             phase: "preparing_worktree".to_string(),
+            login_profile_id: None,
         };
         telemetry.upsert_agent_run_ledger(&run)?;
     }
@@ -2986,7 +2988,8 @@ pub async fn list_local_refs(repo_path: String) -> Result<Vec<GitLocalRefInfo>, 
         &repo_path,
         &[
             "for-each-ref",
-            "--format=%(refname)\t%(refname:short)\t%(objectname)",
+            "--sort=-committerdate",
+            "--format=%(refname)\t%(refname:short)\t%(objectname)\t%(committerdate:iso-strict)",
             "refs/heads",
             "refs/agentree/pointers",
         ],
@@ -2996,14 +2999,19 @@ pub async fn list_local_refs(repo_path: String) -> Result<Vec<GitLocalRefInfo>, 
         .lines()
         .filter(|line| !line.is_empty())
         .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(3, '\t').collect();
-            if parts.len() != 3 {
+            let parts: Vec<&str> = line.splitn(4, '\t').collect();
+            if parts.len() != 4 {
                 return None;
             }
             Some(GitLocalRefInfo {
                 git_ref: parts[0].to_string(),
                 short_name: parts[1].to_string(),
                 commit_sha: parts[2].to_string(),
+                committed_at: if parts[3].is_empty() {
+                    None
+                } else {
+                    Some(parts[3].to_string())
+                },
             })
         })
         .collect())

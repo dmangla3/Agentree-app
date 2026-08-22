@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { applyLocalNodeMessages } from './useLiveMessages';
+// @vitest-environment jsdom
+import { renderHook } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
+import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
+import { applyLocalNodeMessages, useGraphMessages } from './useLiveMessages';
 import type { Message } from '../stores/workspaceStore';
 import type { LocalNodeMessage } from './useLocalNodes';
 
@@ -41,6 +44,18 @@ const localMessage = (overrides: Partial<LocalNodeMessage> = {}): LocalNodeMessa
     totalTokens: 33,
   },
   ...overrides,
+});
+
+const projectedMessage = (overrides: Partial<AgentRunProjectedMessage> = {}): AgentRunProjectedMessage => ({
+  ...baseMessage(),
+  content: 'server preview',
+  updatedAt: '2026-05-29T00:00:00.000Z',
+  _optimisticStatus: 'completed',
+  ...overrides,
+});
+
+afterEach(() => {
+  useAgentRunProjectionStore.getState().clearAllProjections();
 });
 
 describe('applyLocalNodeMessages', () => {
@@ -86,5 +101,28 @@ describe('applyLocalNodeMessages', () => {
     );
 
     expect(messages[0].content).toBe('server preview');
+  });
+});
+
+describe('useGraphMessages', () => {
+  it('keeps persisted updatedAt when hover hydration projects an already-completed node', () => {
+    useAgentRunProjectionStore.getState().setProjectionForNode('assistant-1', projectedMessage());
+
+    const { result } = renderHook(() => useGraphMessages('workspace-1', [baseMessage()]));
+
+    expect(result.current).toHaveLength(1);
+    expect(result.current[0].updatedAt).toBe('2026-05-08T00:00:01.000Z');
+  });
+
+  it('keeps persisted updatedAt when hover hydration projects fuller completed content', () => {
+    useAgentRunProjectionStore.getState().setProjectionForNode('assistant-1', projectedMessage({
+      content: 'server preview plus hydrated terminal output',
+    }));
+
+    const { result } = renderHook(() => useGraphMessages('workspace-1', [baseMessage()]));
+
+    expect(result.current).toHaveLength(1);
+    expect(result.current[0].content).toBe('server preview plus hydrated terminal output');
+    expect(result.current[0].updatedAt).toBe('2026-05-08T00:00:01.000Z');
   });
 });

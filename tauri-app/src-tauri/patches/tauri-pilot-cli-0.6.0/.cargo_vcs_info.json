@@ -1,0 +1,6 @@
+{
+  "git": {
+    "sha1": "fd384bee2637815aba5542f56bb00af7bd94b447"
+  },
+  "path_in_vcs": "crates/tauri-pilot-cli"
+}

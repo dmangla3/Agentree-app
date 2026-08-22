@@ -94,7 +94,17 @@ export function NodeContextMenu({
       if (!commitSha) return null;
       const commit = projection.commitBySha.get(commitSha);
       const ownerNodeId = commit?.producedByNodeId ?? commit?.visualOwnerNodeId ?? null;
-      return getThreadRootIdForMessageId(ownerNodeId);
+      const ownerThreadRootId = getThreadRootIdForMessageId(ownerNodeId);
+      if (ownerThreadRootId) return ownerThreadRootId;
+
+      for (const entity of projection.entitiesByMessageId.values()) {
+        if (entity.kind !== 'commit_message') continue;
+        if (getMessageOutputCommitSha(entity.message) !== commitSha) continue;
+        const entityThreadRootId = entity.threadRootId ?? getThreadRootIdForMessageId(entity.messageId);
+        if (entityThreadRootId) return entityThreadRootId;
+      }
+
+      return null;
     };
 
     const addMergeableCommitId = (messageId: string | null | undefined) => {

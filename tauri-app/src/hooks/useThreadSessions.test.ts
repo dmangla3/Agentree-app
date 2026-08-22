@@ -6,7 +6,7 @@ import {
 } from './useThreadSessions';
 
 describe('mergeThreadSessionIntoCache', () => {
-  it('upserts and sorts active sessions by newest activity first', () => {
+  it('upserts and sorts active sessions by newest creation time first', () => {
     const merged = mergeThreadSessionIntoCache([
       {
         id: 'old-thread',

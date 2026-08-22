@@ -22,9 +22,17 @@ import { Badge } from '../../../@/components/ui/badge';
 import { Input } from '../../../@/components/ui/input';
 import { cn } from '../../lib/utils';
 import { useCreateWorkspace, RepoPrepareActionRequiredError } from '../../hooks/useWorkspaces';
-import { agentClient, type CliToolStatus, type LocalEnvironmentStatus, type RuntimeReadiness } from '../../lib/agentClient';
+import { agentClient, type CliToolStatus, type LocalEnvironmentStatus, type LoginImportCandidate } from '../../lib/agentClient';
 import { getErrorMessage } from '../../lib/api';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { useLoginProfilesStore } from '../../stores/loginProfilesStore';
+import {
+  getLoginProfileAuthTypeLabel,
+  getLoginProfileProviderLabel,
+  isLoginProfileActive,
+  isLoginProfileCompatibleWithProvider,
+  type LoginProfileSummary,
+} from '../../lib/loginProfiles';
 import { finalizeCreatedWorkspace } from '../../lib/finalizeCreatedWorkspace';
 import { useToast } from '../Toast';
 import { ChangedFilesSummary } from '../ChangedFilesSummary';
@@ -153,14 +161,17 @@ function toolDetail(label: string, tool: CliToolStatus | null, missingMessage: s
   return tool.error || missingMessage;
 }
 
-function runtimeReadinessDetail(readiness: RuntimeReadiness | null, label: string): string {
-  if (!readiness) return `${label} app access has not been checked yet.`;
-  if (readiness.status === 'ready') {
-    const plan = readiness.planType ? ` ${readiness.planType}` : '';
-    const mode = readiness.authMode ? ` via ${readiness.authMode}` : '';
-    return `Agentree can use ${label}${mode}${plan ? ` (${plan})` : ''}.`;
-  }
-  return readiness.message;
+function activeProfileForProvider(profiles: LoginProfileSummary[], provider: 'codex' | 'claude') {
+  const compatible = profiles.filter((profile) => isLoginProfileCompatibleWithProvider(profile, provider));
+  return compatible.find((profile) => profile.isDefault) ?? compatible[0] ?? null;
+}
+
+function loginProfileDetail(profile: LoginProfileSummary | null, provider: 'codex' | 'claude'): string {
+  const label = getLoginProfileProviderLabel(provider);
+  if (!profile) return `No active ${label} login profile has been added yet.`;
+  const authLabel = getLoginProfileAuthTypeLabel(profile.authType);
+  if (isLoginProfileActive(profile)) return `${profile.displayName} is ready via ${authLabel}.`;
+  return profile.statusMessage || `${profile.displayName} is ${profile.status}.`;
 }
 
 export function FirstRunExperience({
@@ -172,8 +183,9 @@ export function FirstRunExperience({
   const [currentStep, setCurrentStep] = useState<StepId>('environment');
   const [activeTipIndex, setActiveTipIndex] = useState(0);
   const [environment, setEnvironment] = useState<LocalEnvironmentStatus | null>(null);
-  const [runtimeReadiness, setRuntimeReadiness] = useState<Record<string, RuntimeReadiness>>({});
   const [isCheckingEnvironment, setIsCheckingEnvironment] = useState(false);
+  const [importCandidates, setImportCandidates] = useState<LoginImportCandidate[]>([]);
+  const [importingCandidateId, setImportingCandidateId] = useState<string | null>(null);
   const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
   const [checkpointMessage, setCheckpointMessage] = useState('WIP: pre-agentree checkpoint');
   const [setupRequirement, setSetupRequirement] = useState<RepoPrepareActionRequiredError['requirement'] | null>(null);
@@ -181,6 +193,11 @@ export function FirstRunExperience({
   const createWorkspace = useCreateWorkspace();
   const queryClient = useQueryClient();
   const dispatchFocus = useWorkspaceStore((state) => state.dispatchFocus);
+  const loginProfiles = useLoginProfilesStore((state) => state.profiles);
+  const refreshLoginProfiles = useLoginProfilesStore((state) => state.refresh);
+  const checkAllLoginProfiles = useLoginProfilesStore((state) => state.checkAllProfiles);
+  const discoverImportCandidates = useLoginProfilesStore((state) => state.discoverImportCandidates);
+  const importCandidate = useLoginProfilesStore((state) => state.importCandidate);
   const { addToast } = useToast();
 
   const selectedFolderName = useMemo(() => {
@@ -188,9 +205,11 @@ export function FirstRunExperience({
     return selectedFolderPath.split(/[/\\]/).pop() || selectedFolderPath;
   }, [selectedFolderPath]);
 
-  const codexReadiness = runtimeReadiness.codex ?? null;
-  const claudeReadiness = runtimeReadiness.claude ?? null;
-  const hasReadyAgentRuntime = codexReadiness?.status === 'ready' || claudeReadiness?.status === 'ready';
+  const codexProfile = activeProfileForProvider(loginProfiles, 'codex');
+  const claudeProfile = activeProfileForProvider(loginProfiles, 'claude');
+  const hasReadyAgentRuntime =
+    Boolean(codexProfile && isLoginProfileActive(codexProfile)) ||
+    Boolean(claudeProfile && isLoginProfileActive(claudeProfile));
 
   const environmentReady = Boolean(
     environment?.git.installed &&
@@ -212,19 +231,19 @@ export function FirstRunExperience({
         status: getStatus(environment?.git),
       },
       {
-        label: 'Codex app access',
-        command: codexReadiness?.recommendedCommand || 'Agentree Codex app-server readiness check',
-        detail: runtimeReadinessDetail(codexReadiness, 'Codex'),
-        status: isCheckingEnvironment ? 'checking' : codexReadiness ? (codexReadiness.status === 'ready' ? 'ready' : 'missing') : 'pending',
+        label: 'Codex login',
+        command: codexProfile ? getLoginProfileAuthTypeLabel(codexProfile.authType) : 'Import or add a Codex login profile',
+        detail: loginProfileDetail(codexProfile, 'codex'),
+        status: isCheckingEnvironment ? 'checking' : codexProfile ? (isLoginProfileActive(codexProfile) ? 'ready' : 'missing') : 'pending',
       },
       {
-        label: 'Claude Code app access',
-        command: claudeReadiness?.recommendedCommand || 'Agentree Claude Code readiness check',
-        detail: runtimeReadinessDetail(claudeReadiness, 'Claude Code'),
-        status: isCheckingEnvironment ? 'checking' : claudeReadiness ? (claudeReadiness.status === 'ready' ? 'ready' : 'missing') : 'pending',
+        label: 'Claude login',
+        command: claudeProfile ? getLoginProfileAuthTypeLabel(claudeProfile.authType) : 'Import or add a Claude login profile',
+        detail: loginProfileDetail(claudeProfile, 'claude'),
+        status: isCheckingEnvironment ? 'checking' : claudeProfile ? (isLoginProfileActive(claudeProfile) ? 'ready' : 'missing') : 'pending',
       },
     ];
-  }, [claudeReadiness, codexReadiness, environment, isCheckingEnvironment]);
+  }, [claudeProfile, codexProfile, environment, isCheckingEnvironment]);
 
   const completedEnvironmentChecks = environmentChecks.filter((check) => check.status === 'ready').length;
 
@@ -260,22 +279,19 @@ export function FirstRunExperience({
   const refreshEnvironment = async () => {
     setIsCheckingEnvironment(true);
     try {
-      const [localEnvironment, runtimeReadinessList] = await Promise.all([
+      const [localEnvironment] = await Promise.all([
         agentClient.checkLocalEnvironment(),
-        agentClient.checkAllRuntimeReadiness(),
+        checkAllLoginProfiles().catch(() => refreshLoginProfiles()),
       ]);
-      const readinessByProvider = Object.fromEntries(
-        runtimeReadinessList.map((readiness) => [readiness.provider, readiness])
-      );
+      const candidates = await discoverImportCandidates();
       setEnvironment(localEnvironment);
-      setRuntimeReadiness(readinessByProvider);
+      setImportCandidates(candidates.filter((candidate) => candidate.importable));
       track('Onboarding Environment Checked', {
         git_installed: localEnvironment.git.installed,
-        codex_authenticated: readinessByProvider.codex?.status === 'ready',
-        codex_readiness_status: readinessByProvider.codex?.status ?? 'unknown',
-        codex_auth_file: readinessByProvider.codex?.hasAuthFile ?? null,
-        claude_authenticated: readinessByProvider.claude?.status === 'ready',
-        claude_readiness_status: readinessByProvider.claude?.status ?? 'unknown',
+        codex_authenticated: Boolean(codexProfile && isLoginProfileActive(codexProfile)),
+        codex_readiness_status: codexProfile?.status ?? 'missing_profile',
+        claude_authenticated: Boolean(claudeProfile && isLoginProfileActive(claudeProfile)),
+        claude_readiness_status: claudeProfile?.status ?? 'missing_profile',
       });
     } catch (error) {
       track('Onboarding Environment Check Failed');
@@ -286,6 +302,28 @@ export function FirstRunExperience({
       });
     } finally {
       setIsCheckingEnvironment(false);
+    }
+  };
+
+  const importDetectedLogin = async (candidate: LoginImportCandidate) => {
+    setImportingCandidateId(candidate.id);
+    try {
+      await importCandidate({
+        candidateId: candidate.id,
+        displayName: candidate.displayName,
+        makeDefault: true,
+      });
+      await checkAllLoginProfiles();
+      const candidates = await discoverImportCandidates();
+      setImportCandidates(candidates.filter((item) => item.importable));
+    } catch (error) {
+      addToast({
+        title: 'Unable to import login',
+        description: getErrorMessage(error),
+        variant: 'error',
+      });
+    } finally {
+      setImportingCandidateId(null);
     }
   };
 
@@ -478,7 +516,7 @@ export function FirstRunExperience({
                     </Badge>
                     <CardTitle className="text-3xl text-balance">Checking requirements</CardTitle>
                     <CardDescription className="text-base leading-7 text-pretty">
-                      {userName ? `${userName}, ` : ''}Agentree checks Git locally, then verifies app access and authentication readiness for Codex and Claude Code before the first run. You can continue once Git is ready and at least one runtime is available.
+                      {userName ? `${userName}, ` : ''}Agentree checks Git locally, then verifies active login profiles for Codex and Claude before the first run. You can continue once Git is ready and at least one provider login is ready.
                     </CardDescription>
                   </CardHeader>
 
@@ -491,7 +529,7 @@ export function FirstRunExperience({
                             {isCheckingEnvironment
                               ? 'Agentree is checking each local requirement now.'
                               : environmentReady
-                                ? 'Git is ready and at least one agent runtime is available.'
+                                ? 'Git is ready and at least one active login profile is available.'
                                 : 'Agentree needs Git plus at least one available agent runtime before continuing.'}
                           </p>
                         </div>
@@ -521,19 +559,60 @@ export function FirstRunExperience({
                       </div>
                     </div>
 
+                    {!environmentReady && importCandidates.length > 0 ? (
+                      <div className="rounded-2xl border border-border/60 bg-background/74 p-4 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
+                        <div className="text-sm font-medium text-foreground">Detected logins</div>
+                        <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                          Import one of these after reviewing it. Secret values stay hidden.
+                        </p>
+                        <div className="mt-3 grid gap-2">
+                          {importCandidates.map((candidate) => (
+                            <div
+                              key={candidate.id}
+                              className="flex flex-col gap-3 rounded-lg bg-card/80 p-3 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.7)] sm:flex-row sm:items-center sm:justify-between"
+                            >
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-sm font-semibold text-foreground">{candidate.displayName}</span>
+                                  <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px] uppercase tracking-[0.08em]">
+                                    {candidate.provider}
+                                  </Badge>
+                                  <Badge variant="secondary" className="rounded-md px-1.5 py-0 text-[10px]">
+                                    {candidate.sourceKind}
+                                  </Badge>
+                                </div>
+                                <div className="mt-1 truncate text-xs text-muted-foreground">
+                                  {candidate.sourceLabel}
+                                  {candidate.redactedHint ? ` · ${candidate.redactedHint}` : ''}
+                                </div>
+                              </div>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="rounded-lg"
+                                onClick={() => void importDetectedLogin(candidate)}
+                                disabled={Boolean(importingCandidateId)}
+                              >
+                                {importingCandidateId === candidate.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : null}
+                                Import
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
                     {!environmentReady && (
                       <Alert className="border-amber-200 bg-amber-50/80 text-amber-950 dark:border-amber-500/30 dark:bg-amber-950/35 dark:text-amber-100">
                         <Terminal className="h-4 w-4" />
-                        <AlertTitle>Finish the local setup</AlertTitle>
+                        <AlertTitle>Finish login setup</AlertTitle>
                         <AlertDescription className="text-amber-900 dark:text-amber-100/85">
-                          <p>Run the missing checks above. Agentree requires Git plus at least one authenticated runtime: Codex or Claude Code.</p>
+                          <p>Agentree requires Git plus one ready active login profile for Codex or Claude.</p>
                           <p className="font-mono text-xs text-amber-900/90 dark:text-amber-100/80">git --version</p>
-                          <p className="break-all font-mono text-xs text-amber-900/90 dark:text-amber-100/80">
-                            {codexReadiness?.recommendedCommand || 'CODEX_HOME=~/.codex codex -c \'cli_auth_credentials_store="file"\' login --device-auth'}
-                          </p>
-                          <p className="break-all font-mono text-xs text-amber-900/90 dark:text-amber-100/80">
-                            {claudeReadiness?.recommendedCommand || 'claude auth login'}
-                          </p>
+                          <p className="break-all font-mono text-xs text-amber-900/90 dark:text-amber-100/80">OPENAI_API_KEY / ANTHROPIC_API_KEY, Codex auth.json, or Claude CLI login</p>
                         </AlertDescription>
                       </Alert>
                     )}

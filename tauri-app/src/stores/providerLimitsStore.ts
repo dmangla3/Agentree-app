@@ -47,6 +47,10 @@ export interface ClaudeProviderLimits {
 }
 
 export type ProviderLimitsSnapshot = CodexProviderLimits | ClaudeProviderLimits;
+export type ProviderLimitKey = RuntimeProvider | `${RuntimeProvider}:${string}`;
+
+export const providerLimitKey = (provider: RuntimeProvider, profileId?: string | null): ProviderLimitKey =>
+  profileId ? `${provider}:${profileId}` : provider;
 
 export interface ProviderLimitDisplayWindow {
   id: string;
@@ -59,10 +63,10 @@ export interface ProviderLimitDisplayWindow {
 }
 
 interface ProviderLimitsState {
-  byProvider: Partial<Record<RuntimeProvider, ProviderLimitsSnapshot>>;
+  byProvider: Partial<Record<ProviderLimitKey, ProviderLimitsSnapshot>>;
   clearAll: () => void;
   refreshIfStale: (provider: RuntimeProvider, now?: number) => boolean;
-  upsertFromMeta: (provider: RuntimeProvider, meta: Record<string, any>) => void;
+  upsertFromMeta: (provider: RuntimeProvider, meta: Record<string, any>, profileId?: string | null) => void;
 }
 
 const PROVIDER_LIMITS_REFRESH_STALE_MS = 2 * 60 * 1000;
@@ -343,16 +347,18 @@ export const useProviderLimitsStore = create<ProviderLimitsState>()(
           });
         return true;
       },
-      upsertFromMeta: (provider, meta) => set((state) => {
+      upsertFromMeta: (provider, meta, profileId = null) => set((state) => {
         const limits = meta?.provider_limits;
         if (!limits || typeof limits !== 'object') return state;
-        const previous = state.byProvider[provider];
+        const key = providerLimitKey(provider, profileId);
+        const previous = state.byProvider[key] ?? state.byProvider[provider];
         const next = mapProviderLimits(provider, limits, previous);
         if (!next) return state;
         return {
           byProvider: {
             ...state.byProvider,
-            [provider]: next,
+            [key]: next,
+            ...(profileId ? { [provider]: state.byProvider[provider] ?? next } : null),
           },
         };
       }),

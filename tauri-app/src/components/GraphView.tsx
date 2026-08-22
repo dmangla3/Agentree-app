@@ -38,7 +38,7 @@ import { useTagFilter } from '../hooks/graph/useTagFilter';
 import { useNodeSelection } from '../hooks/graph/useNodeSelection';
 import { useGraphLayout, LayoutMode, LaneStrategy } from '../hooks/graph/useGraphLayout';
 import { useWorkspaceProjection } from '../hooks/useWorkspaceProjection';
-import { clearCachedGraphSnapshot, graphSnapshotToSummaries, useGraphSnapshot } from '../hooks/useGraphSnapshot';
+import { graphSnapshotToSummaries, useGraphSnapshot } from '../hooks/useGraphSnapshot';
 // Utils
 import { LlmNodeData, getLlmLegend } from '../lib/graphUtils';
 import { mapLocalCommitToCommitEntity } from '../lib/localCommitGraphProjection';
@@ -50,6 +50,7 @@ import {
     filterSummariesForThreadScope,
     getInactiveThreadRootIds,
     getThreadScopeKey,
+    resolveDoneThreadsReopenedByUserMessages,
     resolveActiveThreadAfterDoneChange,
     resolveInitialActiveThreadRootId,
     resolveThreadGraphScope,
@@ -161,7 +162,7 @@ const edgeTypes = {
 
 const EMPTY_MEASURED_NODE_HEIGHTS = new Map<string, number>();
 const FOCUS_READING_MIN_ZOOM = 0.72;
-const FOCUS_READING_MAX_ZOOM = 1.05;
+const FOCUS_READING_MAX_ZOOM = 1.0;
 const FOCUS_VIEWPORT_BAND_X = 0.44;
 const FOCUS_VIEWPORT_BAND_Y = 0.42;
 const FOCUS_MIN_ANIMATION_MS = 160;
@@ -189,6 +190,7 @@ export const shouldTreatGraphMoveAsViewportInteraction = ({
     eventTargetIsNode: boolean;
     programmaticFocusCenterActive: boolean;
 }) => {
+    if (!eventType) return false;
     if (eventType !== 'wheel' && eventTargetIsNode) return false;
     if (programmaticFocusCenterActive && eventType !== 'wheel' && eventType !== 'touchstart') return false;
     return true;
@@ -241,6 +243,52 @@ export const shouldSkipActiveGraphClickCentering = ({
     activeSendFlowWorkspaceId,
     selectedWorkspaceId,
 });
+
+export const resolveReactFlowNodeClickFocusMessageId = ({
+    nodeType,
+    entity,
+    nodeId,
+}: {
+    nodeType: string | undefined;
+    entity: { focusMessageId?: string | null; messageId?: string | null } | null | undefined;
+    nodeId: string;
+}): string | null => {
+    if (nodeType === 'user_message') {
+        return entity?.focusMessageId ?? null;
+    }
+    if (nodeType === 'assistant_message' || nodeType === 'commit_message') {
+        return entity?.focusMessageId ?? entity?.messageId ?? nodeId;
+    }
+    if (nodeType === 'summary_block') {
+        return entity?.focusMessageId ?? null;
+    }
+    return null;
+};
+
+export const resolveReactFlowNodeClickFocusTarget = ({
+    nodeType,
+    entity,
+    nodeId,
+}: {
+    nodeType: string | undefined;
+    entity: { focusMessageId?: string | null; messageId?: string | null } | null | undefined;
+    nodeId: string;
+}): { messageId: string | null; centerMessageId: string | null; redirectedFromMessageId: string | null } => {
+    const messageId = resolveReactFlowNodeClickFocusMessageId({ nodeType, entity, nodeId });
+    if (nodeType === 'user_message' && messageId) {
+        const clickedMessageId = entity?.messageId ?? nodeId;
+        return {
+            messageId,
+            centerMessageId: clickedMessageId,
+            redirectedFromMessageId: clickedMessageId,
+        };
+    }
+    return {
+        messageId,
+        centerMessageId: messageId,
+        redirectedFromMessageId: null,
+    };
+};
 
 export const resolveThreadDropdownSelection = ({
     threadRootId,
@@ -710,65 +758,11 @@ interface GraphViewInternalProps {
     threadNavigationOrientation?: 'horizontal' | 'vertical';
 }
 
-const REF_SYNC_INTERVAL_MS = 60_000;
-const GRAPH_DATA_INTERVAL_MS = 10 * 60_000;
-const SUMMARIES_INTERVAL_MS = 10 * 60_000;
-const CONVERSATIONS_INTERVAL_MS = 3 * 60 * 60_000;
-const REPO_REF_SYNC_ENABLED = true;
-const AUTO_REFRESH_ENABLED = false;
-
-type AutoRefreshKey = 'repo' | 'graph' | 'summaries' | 'workspaces';
-
-const AUTO_REFRESH_INTERVALS: Record<AutoRefreshKey, number> = {
-    repo: REF_SYNC_INTERVAL_MS,
-    graph: GRAPH_DATA_INTERVAL_MS,
-    summaries: SUMMARIES_INTERVAL_MS,
-    workspaces: CONVERSATIONS_INTERVAL_MS,
-};
-
-const AUTO_REFRESH_LABELS: Record<AutoRefreshKey, string> = {
-    repo: 'Repo refs',
-    graph: 'Messages and branches',
-    summaries: 'Summaries',
-    workspaces: 'Workspaces',
-};
-
-const AUTO_REFRESH_SOURCES: Record<AutoRefreshKey, string> = {
-    repo: 'Source: local git repo',
-    graph: 'Source: server graph data',
-    summaries: 'Source: server summaries',
-    workspaces: 'Source: server workspace list',
-};
-
-const AUTO_REFRESH_DETAILS: Record<AutoRefreshKey, string> = {
-    repo: 'Checks tracked git refs in the attached repo for new commits.',
-    graph: 'Reloads graph messages, tracked refs, and branch pointers. Also runs immediately after repo changes are detected.',
-    summaries: 'Reloads summary overlays and also catches up immediately after graph changes.',
-    workspaces: 'Refreshes project metadata like names, timestamps, and repo attachment info.',
-};
-
-const formatCountdownLabel = (msRemaining: number | null) => {
-    if (msRemaining === null) return 'Paused';
-    if (msRemaining <= 0) return 'Now';
-    const totalSeconds = Math.ceil(msRemaining / 1000);
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    if (minutes <= 0) return `${seconds}s`;
-    return `${minutes}m ${seconds}s`;
-};
-
-const formatCadenceLabel = (intervalMs: number) => {
-    const totalSeconds = Math.round(intervalMs / 1000);
-    if (totalSeconds < 60) return `Every ${totalSeconds}s`;
-    const minutes = Math.round(totalSeconds / 60);
-    return `Every ${minutes}m`;
-};
-
 const GRAPH_DIAGNOSTIC_MAX_OVERLAPS = 200;
 const GRAPH_DIAGNOSTIC_MAX_MEASURE_EVENTS = 160;
 const GRAPH_DIAGNOSTIC_STALE_HEIGHT_EPSILON = 4;
 export const GRAPH_MIN_ZOOM = 0.2;
-const GRAPH_MAX_ZOOM = 2.5;
+const GRAPH_MAX_ZOOM = 1.0;
 
 export const clampGraphZoom = (zoom: number): number => (
     Math.min(GRAPH_MAX_ZOOM, Math.max(GRAPH_MIN_ZOOM, zoom))
@@ -911,7 +905,7 @@ function GraphViewInternal({
             ...(activeSendFlowMessageIdKey ? activeSendFlowMessageIdKey.split('|') : []),
         ].filter(Boolean))).sort().join('|')
     ), [activeRunStatusNodeIds, activeSendFlowMessageIdKey]);
-    const [graphResetNonce, setGraphResetNonce] = useState(0);
+    const graphResetNonce = 0;
     const [subgraphRootNodeId, setSubgraphRootNodeId] = useState<string | null>(null);
     const initialThreadState = useMemo(() => readGraphThreadState(selectedWorkspaceId), [selectedWorkspaceId]);
     const [activeThreadRootId, setActiveThreadRootId] = useState<string | null>(initialThreadState.activeThreadRootId);
@@ -925,6 +919,7 @@ function GraphViewInternal({
     const [convertedSubgraphThreadRootIds, setConvertedSubgraphThreadRootIds] = useState<Set<string>>(
         () => readConvertedSubgraphThreadRootIds(selectedWorkspaceId)
     );
+    const previousUserMessageCountsByThreadRootIdRef = useRef<Map<string, number> | null>(null);
 
     useEffect(() => {
         const state = readGraphThreadState(selectedWorkspaceId);
@@ -936,6 +931,7 @@ function GraphViewInternal({
         setHiddenSubgraphRootIds(new Set());
         setConvertedSubgraphThreadRootIds(readConvertedSubgraphThreadRootIds(selectedWorkspaceId));
         setSubgraphRootNodeId(null);
+        previousUserMessageCountsByThreadRootIdRef.current = null;
     }, [selectedWorkspaceId]);
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1141,6 +1137,51 @@ function GraphViewInternal({
         syntheticThreadRootIds: syntheticThreadRoots.map((root) => root.threadRootId),
         threadSessions,
     }), [emptyThreadRoot?.threadRootId, graphMessages, syntheticThreadRoots, threadSessions]);
+    const userMessageCountsByThreadRootId = useMemo(() => {
+        const counts = new Map<string, number>();
+        for (const message of graphMessages as Message[]) {
+            if (message.role !== 'user') continue;
+            const threadRootId = threadRootIndex.threadRootIdByMessageId.get(message.id);
+            if (!threadRootId) continue;
+            counts.set(threadRootId, (counts.get(threadRootId) ?? 0) + 1);
+        }
+        return counts;
+    }, [graphMessages, threadRootIndex]);
+    useEffect(() => {
+        const previousCounts = previousUserMessageCountsByThreadRootIdRef.current;
+        previousUserMessageCountsByThreadRootIdRef.current = userMessageCountsByThreadRootId;
+        if (!previousCounts || doneThreadRootIds.size === 0) return;
+
+        const reopenedThreadRootIds = resolveDoneThreadsReopenedByUserMessages({
+            doneThreadRootIds,
+            previousUserMessageCountsByThreadRootId: previousCounts,
+            currentUserMessageCountsByThreadRootId: userMessageCountsByThreadRootId,
+        });
+        if (reopenedThreadRootIds.length === 0) return;
+
+        const nextDoneThreadRootIds = new Set(doneThreadRootIds);
+        for (const threadRootId of reopenedThreadRootIds) {
+            nextDoneThreadRootIds.delete(threadRootId);
+        }
+        const nextActiveThreadRootId = reopenedThreadRootIds[0] ?? activeThreadRootId;
+        setDoneThreadRootIds(nextDoneThreadRootIds);
+        setActiveThreadRootId(nextActiveThreadRootId);
+        rememberGraphThreadState(selectedWorkspaceId, {
+            activeThreadRootId: nextActiveThreadRootId,
+            doneThreadRootIds: nextDoneThreadRootIds,
+            doneThreadsCollapsed,
+            threadBarCollapsed,
+            lastVisitedAtByThreadRootId,
+        });
+    }, [
+        activeThreadRootId,
+        doneThreadRootIds,
+        doneThreadsCollapsed,
+        lastVisitedAtByThreadRootId,
+        selectedWorkspaceId,
+        threadBarCollapsed,
+        userMessageCountsByThreadRootId,
+    ]);
     const blockingEmptyThreadRootId = useMemo(() => resolveBlockingEmptyThreadRootId({
         threadRootIds: threadRootIndex.threadRootIds,
         messageIdsByThreadRootId: threadRootIndex.messageIdsByThreadRootId,
@@ -1212,6 +1253,7 @@ function GraphViewInternal({
             const label = rootMessage
                 ? cleanNodePreview(rootMessage.content || '') || rootMessage.aiLabel || 'Untitled thread'
                 : 'New thread';
+            const done = doneThreadRootIds.has(threadRootId);
             return {
                 threadRootId,
                 label: label.length > 56 ? `${label.slice(0, 56)}...` : label,
@@ -1221,14 +1263,14 @@ function GraphViewInternal({
                 updatedLabel: formatThreadUpdatedLabel(lastUpdatedAt || now, now),
                 runningCount: runningThreadCount,
                 hidden: false,
-                done: doneThreadRootIds.has(threadRootId),
+                done,
                 current: activeThreadRootId === threadRootId,
                 lastUpdatedAt: lastUpdatedAt || now,
-                unreadCompletedLeafCount: activeThreadRootId === threadRootId ? 0 : awareness.unreadCompletedLeafCount,
+                unreadCompletedLeafCount: activeThreadRootId === threadRootId || done ? 0 : awareness.unreadCompletedLeafCount,
                 initialPreviewNodeId: awareness.initialPreviewNodeId,
                 previewNodeIds: awareness.previewNodeIds,
             };
-        }).sort((left, right) => right.lastUpdatedAt - left.lastUpdatedAt || left.threadRootId.localeCompare(right.threadRootId));
+        });
     }, [activeRunStatusNodeIds, activeThreadRootId, doneThreadRootIds, graphMessages, lastVisitedAtByThreadRootId, selectedWorkspace?.base_commit_sha, threadRootIndex]);
     const markThreadVisited = useCallback((threadRootId: string, visitedAt = Date.now()) => {
         setLastVisitedAtByThreadRootId((current) => {
@@ -1677,28 +1719,9 @@ function GraphViewInternal({
         .map((ref) => `${ref.git_ref}:${trackedRefTipByRef.get(ref.git_ref) ?? ''}`)
         .sort()
         .join('|'), [trackedRefsNeedingSync, trackedRefTipByRef]);
-    const [isWindowActive, setIsWindowActive] = useState(() => {
-        if (typeof document === 'undefined') return true;
-        return document.visibilityState === 'visible' && document.hasFocus();
-    });
-    const [autoRefreshTargets, setAutoRefreshTargets] = useState<Record<AutoRefreshKey, number | null>>({
-        repo: null,
-        graph: null,
-        summaries: null,
-        workspaces: null,
-    });
-    const [manualRefreshingKeys, setManualRefreshingKeys] = useState<Record<AutoRefreshKey, boolean>>({
-        repo: false,
-        graph: false,
-        summaries: false,
-        workspaces: false,
-    });
-    const [isFullRefreshing, setIsFullRefreshing] = useState(false);
-    const autoRefreshInFlightRef = useRef(false);
-    const lastAutoSyncSnapshotKeyRef = useRef<string | null>(null);
-    const refreshControlsEnabled = viewMode === 'branch' && !!selectedWorkspaceId && !!repoPath && isWindowActive;
-    const repoAutoRefreshEligible = REPO_REF_SYNC_ENABLED && refreshControlsEnabled;
-    const autoRefreshEligible = repoAutoRefreshEligible || (AUTO_REFRESH_ENABLED && refreshControlsEnabled);
+    const trackedRefSyncInFlightRef = useRef(false);
+    const lastTrackedRefSyncSnapshotKeyRef = useRef<string | null>(null);
+    const trackedRefSyncEligible = viewMode === 'branch' && !!selectedWorkspaceId && !!repoPath;
 
     // ─────────────────────────────────────────────────────────────────────────
     // REFS
@@ -3039,6 +3062,7 @@ function GraphViewInternal({
         triggerMetrics?: FocusTriggerMetrics & {
             interactionId?: string | null;
             allowDuringActiveRun?: boolean;
+            focusMessageId?: string | null;
         }
     ) => {
         if (viewMode !== 'branch') return null;
@@ -3128,11 +3152,14 @@ function GraphViewInternal({
             ? null
             : Number((centerStartedAt - triggerMetrics.pointerDownAt).toFixed(2));
 
+        const focusedMessageIdForEvent = triggerMetrics?.focusMessageId ?? messageId;
+
         centeredFocusIdRef.current = `${messageId}:${targetNode.id}`;
         clearFocusCenterTimers();
         recordPerfEvent('graph.focus-center.start', {
             interactionId: triggerMetrics?.interactionId ?? null,
-            focusedMessageId: messageId,
+            focusedMessageId: focusedMessageIdForEvent,
+            centerMessageId: messageId,
             targetNodeId: targetNode.id,
             targetX: targetNode.position.x,
             targetY: targetNode.position.y,
@@ -3156,7 +3183,8 @@ function GraphViewInternal({
             const now = performance.now();
             recordPerfEvent('graph.focus-center.first-frame', {
                 interactionId: triggerMetrics?.interactionId ?? null,
-                focusedMessageId: messageId,
+                focusedMessageId: focusedMessageIdForEvent,
+                centerMessageId: messageId,
                 targetNodeId: targetNode.id,
                 clickToFirstFrameMs: triggerMetrics?.clickAt == null
                     ? null
@@ -3170,7 +3198,8 @@ function GraphViewInternal({
         focusCenterEndTimeoutRef.current = window.setTimeout(() => {
             programmaticFocusCenterActiveRef.current = false;
             recordPerfEvent('graph.focus-center.end', {
-                focusedMessageId: messageId,
+                focusedMessageId: focusedMessageIdForEvent,
+                centerMessageId: messageId,
                 targetNodeId: targetNode.id,
                 zoom: reactFlowInstance.getZoom(),
                 x: Number(reactFlowInstance.getViewport().x.toFixed(2)),
@@ -3278,7 +3307,8 @@ function GraphViewInternal({
         selectedWorkspaceId,
     ]);
 
-    const handleFocusImpl = useCallback((id: string, triggerMetrics?: FocusTriggerMetrics) => {
+    const handleFocusImpl = useCallback((id: string, triggerMetrics?: FocusTriggerMetrics & { centerMessageId?: string | null }) => {
+        const centerMessageId = triggerMetrics?.centerMessageId ?? id;
         const message = graphComputationMessagesRef.current.find((candidate) => candidate.id === id) ?? null;
         const interaction = startFocusInteraction({
             source: message?.role === 'assistant'
@@ -3304,6 +3334,7 @@ function GraphViewInternal({
         recordPerfEvent('graph.focus.click', {
             interactionId: interaction.id,
             focusedMessageId: id,
+            centerMessageId,
             pointerDownAt: triggerMetrics?.pointerDownAt ?? null,
             clickAt: triggerMetrics?.clickAt ?? null,
             pointerToClickMs: triggerMetrics?.pointerDownAt == null
@@ -3327,10 +3358,11 @@ function GraphViewInternal({
         });
         const centerResult = skipCentering
             ? null
-            : centerFocusedNode(id, {
+            : centerFocusedNode(centerMessageId, {
                 ...triggerMetrics,
                 interactionId: interaction.id,
                 allowDuringActiveRun: true,
+                focusMessageId: id,
             });
         if (skipCentering) {
             recordPerfEvent('graph.focus-center.skipped', {
@@ -4110,6 +4142,8 @@ function GraphViewInternal({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const handleNodeClick = useCallback((...args: any[]) => {
         let messageId: string | null = null;
+        let centerMessageId: string | null = null;
+        let redirectedFromMessageId: string | null = null;
         let eventOrNull: React.MouseEvent | null = null;
         let nodeOrMessageId: Node<LlmNodeData | object> | string | undefined;
 
@@ -4117,6 +4151,7 @@ function GraphViewInternal({
             // Timeline click
             nodeOrMessageId = args[0];
             messageId = args[0];
+            centerMessageId = args[0];
         } else if (args.length === 2 && typeof args[1] === 'object' && args[1]?.id) {
             // React Flow click
             eventOrNull = args[0] as React.MouseEvent;
@@ -4126,14 +4161,33 @@ function GraphViewInternal({
                 nodeLayoutDiagnosticRef.current(node.id, 'node-click');
             }
             const nodeData = node.data as any;
-            if (node.type === 'user_message' || node.type === 'assistant_message' || node.type === 'commit_message') {
-                messageId = nodeData?.entity?.messageId ?? node.id;
+            if (node.type === 'user_message' || node.type === 'assistant_message' || node.type === 'commit_message' || node.type === 'summary_block') {
+                const focusTarget = resolveReactFlowNodeClickFocusTarget({
+                    nodeType: node.type,
+                    entity: nodeData?.entity,
+                    nodeId: node.id,
+                });
+                messageId = focusTarget.messageId;
+                centerMessageId = focusTarget.centerMessageId;
+                redirectedFromMessageId = focusTarget.redirectedFromMessageId;
+            } else if (node.type === 'thread_origin') {
+                const threadRootId = nodeData?.entity?.threadRootId ?? null;
+                if (threadRootId && selectedWorkspaceId) {
+                    setActiveThreadRootId(threadRootId);
+                    markThreadVisited(threadRootId);
+                    dispatchGraphComposerDockExpand();
+                    setThreadComposerTarget({
+                        workspaceId: selectedWorkspaceId,
+                        threadId: threadRootId,
+                        reason: 'thread-origin',
+                        nonce: Date.now(),
+                    });
+                }
+                return;
             } else if (node.type === 'thread_link') {
                 const threadRootId = nodeData?.entity?.threadLinkRootId ?? nodeData?.entity?.threadRootId ?? null;
                 if (threadRootId) handleFocusThread(threadRootId);
                 return;
-            } else if (node.type === 'summary_block') {
-                messageId = nodeData?.entity?.focusMessageId ?? null;
             } else {
                 return;
             }
@@ -4160,7 +4214,11 @@ function GraphViewInternal({
                     handleFocus(messageId, {
                         pointerDownAt: null,
                         clickAt: performance.now(),
-                        metadata: { via: 'react-flow-node-click' },
+                        centerMessageId,
+                        metadata: {
+                            via: 'react-flow-node-click',
+                            ...(redirectedFromMessageId ? { redirectedFromMessageId } : {}),
+                        },
                     });
                 }
             }
@@ -4169,7 +4227,10 @@ function GraphViewInternal({
         dispatchFocus,
         handleFocus,
         handleFocusThread,
+        markThreadVisited,
         onNodeClickOverride,
+        selectedWorkspaceId,
+        setThreadComposerTarget,
         viewMode,
     ]);
 
@@ -4295,22 +4356,6 @@ function GraphViewInternal({
         applyViewportWheelFallback(event);
     }, [applyViewportWheelFallback]);
 
-    const scheduleAutoRefresh = useCallback((key: AutoRefreshKey, fromTime = Date.now()) => {
-        setAutoRefreshTargets((current) => ({
-            ...current,
-            [key]: fromTime + AUTO_REFRESH_INTERVALS[key],
-        }));
-    }, []);
-
-    const resetAutoRefreshSchedule = useCallback((fromTime = Date.now()) => {
-        setAutoRefreshTargets({
-            repo: REPO_REF_SYNC_ENABLED ? fromTime + REF_SYNC_INTERVAL_MS : null,
-            graph: AUTO_REFRESH_ENABLED ? fromTime + GRAPH_DATA_INTERVAL_MS : null,
-            summaries: AUTO_REFRESH_ENABLED && !agentClient.hasRuntime() ? fromTime + SUMMARIES_INTERVAL_MS : null,
-            workspaces: AUTO_REFRESH_ENABLED ? fromTime + CONVERSATIONS_INTERVAL_MS : null,
-        });
-    }, []);
-
     const refetchGraphData = useCallback(async () => {
         if (!selectedWorkspaceId) return;
 
@@ -4341,159 +4386,6 @@ function GraphViewInternal({
         await queryClient.refetchQueries({ queryKey: ['summaries', selectedWorkspaceId], type: 'active' });
     }, [queryClient, selectedWorkspaceId]);
 
-    const refetchWorkspaces = useCallback(async () => {
-        await queryClient.invalidateQueries({ queryKey: ['workspaces'] });
-        await queryClient.refetchQueries({ queryKey: ['workspaces'], type: 'active' });
-    }, [queryClient]);
-
-    const runFullRefresh = useCallback(async () => {
-        if (viewMode !== 'branch' || !selectedWorkspaceId) return;
-
-        setIsFullRefreshing(true);
-        try {
-            try {
-                await runSync();
-            } catch (error) {
-                console.error('[GraphView] Tracked branch sync failed during refresh:', error);
-                toast.error(
-                    'Sync failed',
-                    error instanceof Error ? error.message : 'Unable to sync tracked git refs.'
-                );
-            }
-
-            await Promise.all([
-                refetchGraphData(),
-                refetchSummaries(),
-                refetchWorkspaces(),
-            ]);
-        } finally {
-            setIsFullRefreshing(false);
-        }
-    }, [refetchWorkspaces, refetchGraphData, refetchSummaries, runSync, selectedWorkspaceId, toast, viewMode]);
-
-    const handleRefreshSyncItem = useCallback(async (key: string) => {
-        if (!refreshControlsEnabled) return;
-
-        const refreshKey = key as AutoRefreshKey;
-        setManualRefreshingKeys((current) => ({ ...current, [refreshKey]: true }));
-
-        try {
-            if (refreshKey === 'repo') {
-                const syncResult = await runSync();
-                scheduleAutoRefresh('repo');
-
-                if (syncResult?.didSync) {
-                    await refetchGraphData();
-                    if (AUTO_REFRESH_ENABLED) {
-                        scheduleAutoRefresh('graph');
-                    }
-                    await refetchSummaries();
-                    if (AUTO_REFRESH_ENABLED) {
-                        scheduleAutoRefresh('summaries');
-                    }
-                }
-                return;
-            }
-
-            if (refreshKey === 'graph') {
-                await refetchGraphData();
-                scheduleAutoRefresh('graph');
-                return;
-            }
-
-            if (refreshKey === 'summaries') {
-                await refetchSummaries();
-                scheduleAutoRefresh('summaries');
-                return;
-            }
-
-            if (refreshKey === 'workspaces') {
-                await refetchWorkspaces();
-                scheduleAutoRefresh('workspaces');
-            }
-        } catch (error) {
-            console.error(`[GraphView] Manual refresh failed for ${refreshKey}:`, error);
-            toast.error(
-                'Refresh failed',
-                error instanceof Error ? error.message : `Unable to refresh ${refreshKey}.`
-            );
-        } finally {
-            setManualRefreshingKeys((current) => ({ ...current, [refreshKey]: false }));
-        }
-    }, [
-        refreshControlsEnabled,
-        refetchWorkspaces,
-        refetchGraphData,
-        refetchSummaries,
-        runSync,
-        scheduleAutoRefresh,
-        toast,
-    ]);
-
-    const handleResetLayout = useCallback(async () => {
-        if (!selectedWorkspaceId) return;
-
-        setMeasuredNodeHeights(EMPTY_MEASURED_NODE_HEIGHTS);
-        measuredNodeHeightsRef.current = EMPTY_MEASURED_NODE_HEIGHTS;
-        pendingNodeHeightMeasuresRef.current.clear();
-        if (heightMeasureFlushTimeoutRef.current !== null) {
-            window.clearTimeout(heightMeasureFlushTimeoutRef.current);
-            heightMeasureFlushTimeoutRef.current = null;
-        }
-        heightMeasureEventsRef.current = [];
-        setControlsHeight(0);
-        setNodeContextMenu(null);
-        nodeSelection.clearSelection();
-        selectionAnchorIdRef.current = null;
-        centeredFocusIdRef.current = null;
-        imperativeCenteredMessageIdRef.current = null;
-        pendingGraphFocusRef.current = null;
-        graphDataReadyLoggedRef.current = null;
-        graphContentRenderedLoggedRef.current = null;
-        clearFocusCenterTimers();
-        if (deferredGraphFocusFrameRef.current !== null) {
-            window.cancelAnimationFrame(deferredGraphFocusFrameRef.current);
-            deferredGraphFocusFrameRef.current = null;
-        }
-
-        await clearCachedGraphSnapshot(selectedWorkspaceId);
-        queryClient.removeQueries({ queryKey: ['graph-snapshot', selectedWorkspaceId] });
-        queryClient.removeQueries({ queryKey: ['local-commit-graph', selectedWorkspaceId] });
-        queryClient.removeQueries({ queryKey: ['messages', selectedWorkspaceId] });
-        queryClient.removeQueries({ queryKey: ['summaries', selectedWorkspaceId] });
-        queryClient.removeQueries({ queryKey: trackedRefKeys.workspace(selectedWorkspaceId) });
-        queryClient.removeQueries({ queryKey: branchKeys.workspace(selectedWorkspaceId) });
-        setGraphResetNonce((value) => value + 1);
-
-        await runFullRefresh();
-        resetAutoRefreshSchedule();
-
-        window.requestAnimationFrame(() => {
-            if (controlsRef.current) {
-                setControlsHeight(controlsRef.current.offsetHeight);
-            }
-            if (focusedMessageId) {
-                queueFocusedNodeCenter(
-                    focusedMessageId,
-                    `reset-layout:${selectedWorkspaceId}:${graphResetNonce + 1}:${focusedMessageId}`
-                );
-                return;
-            }
-            reactFlowInstance.fitView({ padding: 0.28, duration: 300 });
-        });
-    }, [
-        clearFocusCenterTimers,
-        focusedMessageId,
-        graphResetNonce,
-        nodeSelection,
-        queueFocusedNodeCenter,
-        queryClient,
-        reactFlowInstance,
-        resetAutoRefreshSchedule,
-        runFullRefresh,
-        selectedWorkspaceId,
-    ]);
-
     const handlePreviewEdgeType = useCallback((edgeTypeId: GraphEdgeLegendId) => {
         setPreviewEdgeType(edgeTypeId);
         if (previewEdgeTimeoutRef.current !== null) {
@@ -4519,176 +4411,44 @@ function GraphViewInternal({
     }, []);
 
     useEffect(() => {
-        const updateWindowActive = () => {
-            setIsWindowActive(document.visibilityState === 'visible' && document.hasFocus());
-        };
-
-        updateWindowActive();
-        window.addEventListener('focus', updateWindowActive);
-        window.addEventListener('blur', updateWindowActive);
-        document.addEventListener('visibilitychange', updateWindowActive);
-
-        return () => {
-            window.removeEventListener('focus', updateWindowActive);
-            window.removeEventListener('blur', updateWindowActive);
-            document.removeEventListener('visibilitychange', updateWindowActive);
-        };
-    }, []);
-
-    useEffect(() => {
-        if (!autoRefreshEligible) {
-            setAutoRefreshTargets({
-                repo: null,
-                graph: null,
-                summaries: null,
-                workspaces: null,
-            });
-            return;
-        }
-
-        resetAutoRefreshSchedule();
-    }, [autoRefreshEligible, resetAutoRefreshSchedule, selectedWorkspaceId, repoPath]);
-
-    useEffect(() => {
-        lastAutoSyncSnapshotKeyRef.current = null;
+        lastTrackedRefSyncSnapshotKeyRef.current = null;
     }, [selectedWorkspaceId, repoPath]);
 
     useEffect(() => {
-        if (!autoRefreshEligible || isSyncing || autoRefreshInFlightRef.current) return;
+        if (!trackedRefSyncEligible || isSyncing || trackedRefSyncInFlightRef.current) return;
         if (!pendingTrackedRefSyncKey) return;
-        if (lastAutoSyncSnapshotKeyRef.current === pendingTrackedRefSyncKey) return;
+        if (lastTrackedRefSyncSnapshotKeyRef.current === pendingTrackedRefSyncKey) return;
 
-        autoRefreshInFlightRef.current = true;
+        trackedRefSyncInFlightRef.current = true;
 
         const runChangedRefSync = async () => {
-            const refreshStartedAt = Date.now();
             try {
                 let syncResult = null;
                 try {
                     syncResult = await runSync();
                 } catch (error) {
-                    console.error('[GraphView] Auto tracked ref sync failed:', error);
+                    console.error('[GraphView] Tracked ref sync failed:', error);
                     return;
                 }
 
-                lastAutoSyncSnapshotKeyRef.current = pendingTrackedRefSyncKey;
-                scheduleAutoRefresh('repo', refreshStartedAt);
+                lastTrackedRefSyncSnapshotKeyRef.current = pendingTrackedRefSyncKey;
                 if (!syncResult?.didSync) return;
 
                 await refetchGraphData();
                 await refetchSummaries();
-                if (AUTO_REFRESH_ENABLED) {
-                    scheduleAutoRefresh('graph', refreshStartedAt);
-                    scheduleAutoRefresh('summaries', refreshStartedAt);
-                }
             } finally {
-                autoRefreshInFlightRef.current = false;
+                trackedRefSyncInFlightRef.current = false;
             }
         };
 
         void runChangedRefSync();
     }, [
-        autoRefreshEligible,
+        trackedRefSyncEligible,
         isSyncing,
         pendingTrackedRefSyncKey,
         refetchGraphData,
         refetchSummaries,
         runSync,
-        scheduleAutoRefresh,
-    ]);
-
-    useEffect(() => {
-        if (!autoRefreshEligible || isSyncing || autoRefreshInFlightRef.current) return;
-
-        const now = Date.now();
-        const dueKeys = (Object.entries(autoRefreshTargets) as Array<[AutoRefreshKey, number | null]>)
-            .filter(([, dueAt]) => dueAt !== null && dueAt <= now)
-            .map(([key]) => key);
-
-        if (dueKeys.length > 0) {
-            autoRefreshInFlightRef.current = true;
-
-            const runDueRefreshes = async () => {
-                const refreshStartedAt = Date.now();
-                let graphHandled = false;
-                let summariesHandled = false;
-
-                try {
-                    if (dueKeys.includes('repo')) {
-                        let syncResult = null;
-                        const shouldRunRepoSync = !gitRefSnapshot || Boolean(pendingTrackedRefSyncKey);
-                        if (shouldRunRepoSync) {
-                            try {
-                                syncResult = await runSync();
-                                if (pendingTrackedRefSyncKey) {
-                                    lastAutoSyncSnapshotKeyRef.current = pendingTrackedRefSyncKey;
-                                }
-                            } catch (error) {
-                                console.error('[GraphView] Auto repo sync failed:', error);
-                            }
-                        }
-                        scheduleAutoRefresh('repo', refreshStartedAt);
-
-                        const repoChanged = Boolean(syncResult?.didSync);
-                        if (repoChanged) {
-                            await refetchGraphData();
-                            if (AUTO_REFRESH_ENABLED) {
-                                scheduleAutoRefresh('graph', refreshStartedAt);
-                            }
-                            graphHandled = true;
-                            await refetchSummaries();
-                            if (AUTO_REFRESH_ENABLED) {
-                                scheduleAutoRefresh('summaries', refreshStartedAt);
-                            }
-                            summariesHandled = true;
-                        }
-                    }
-
-                    if (dueKeys.includes('graph') && !graphHandled) {
-                        await refetchGraphData();
-                        scheduleAutoRefresh('graph', refreshStartedAt);
-                    }
-
-                    if (dueKeys.includes('summaries') && !summariesHandled) {
-                        await refetchSummaries();
-                        scheduleAutoRefresh('summaries', refreshStartedAt);
-                    }
-
-                    if (dueKeys.includes('workspaces')) {
-                        await refetchWorkspaces();
-                        scheduleAutoRefresh('workspaces', refreshStartedAt);
-                    }
-                } finally {
-                    autoRefreshInFlightRef.current = false;
-                }
-            };
-
-            void runDueRefreshes();
-            return;
-        }
-
-        const nextDueAt = Object.values(autoRefreshTargets)
-            .filter((value): value is number => value !== null)
-            .sort((a, b) => a - b)[0];
-
-        if (!nextDueAt) return;
-
-        const timerId = window.setTimeout(() => {
-            setAutoRefreshTargets((current) => ({ ...current }));
-        }, Math.max(0, nextDueAt - now));
-
-        return () => window.clearTimeout(timerId);
-    }, [
-        autoRefreshEligible,
-        autoRefreshTargets,
-        isSyncing,
-        refetchWorkspaces,
-        refetchGraphData,
-        refetchSummaries,
-        gitRefSnapshot,
-        pendingTrackedRefSyncKey,
-        runSync,
-        scheduleAutoRefresh,
     ]);
 
     const handleNavigateToMessage = useCallback((messageId: string, workspaceId: string) => {
@@ -4839,21 +4599,6 @@ function GraphViewInternal({
     const selectedMessageNodeIds = useMemo(() => (
         Array.from(nodeSelection.selectedNodeIds).filter((selectedId) => messageMap.has(selectedId))
     ), [messageMap, nodeSelection.selectedNodeIds]);
-    const syncStatusItems = useMemo(() => {
-        return (Object.keys(AUTO_REFRESH_INTERVALS) as AutoRefreshKey[]).map((key) => {
-            return {
-                key,
-                label: AUTO_REFRESH_LABELS[key],
-                source: AUTO_REFRESH_SOURCES[key],
-                cadenceLabel: formatCadenceLabel(AUTO_REFRESH_INTERVALS[key]),
-                dueAt: autoRefreshTargets[key],
-                detail: AUTO_REFRESH_DETAILS[key],
-                enabled: key === 'repo' ? REPO_REF_SYNC_ENABLED : AUTO_REFRESH_ENABLED,
-                isRefreshing: key === 'repo' ? (isSyncing || manualRefreshingKeys[key]) : manualRefreshingKeys[key],
-            };
-        });
-    }, [autoRefreshTargets, isSyncing, manualRefreshingKeys]);
-
     const backgroundClass = hideBackground
         ? 'bg-transparent dark:bg-transparent'
         : cn(
@@ -5911,11 +5656,6 @@ function GraphViewInternal({
                                 <GraphMergePanel onClose={onClose} />
                             </React.Suspense>
                         )}
-                        onResetLayout={handleResetLayout}
-                        isRefreshingGraph={isSyncing || isFullRefreshing}
-                        autoRefreshEligible={autoRefreshEligible}
-                        syncStatusItems={syncStatusItems}
-                        onRefreshSyncItem={handleRefreshSyncItem}
                     />
                     <TrackedBranchesPanel
                         workspaceId={selectedWorkspaceId}

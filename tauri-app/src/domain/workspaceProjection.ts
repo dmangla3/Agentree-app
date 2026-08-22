@@ -7,6 +7,7 @@ import { buildThreadRootIndex, getThreadOriginNodeId, type ThreadRootIndex } fro
 import type { ThreadSession } from '../lib/threadSessions';
 import { getSubgraphThreadLinkTargetId } from '../lib/graphSubgraphThreads';
 import { resolveNodeState } from '../lib/runStateResolver';
+import { getNodeFailureReason } from '../lib/nodeFailureReason';
 import { buildFocusRoute, isImportedGitMessage, type FocusRoute } from './focusRoute';
 import {
   CanonicalNodeEntity,
@@ -206,10 +207,12 @@ const getMessageFingerprint = (message: Message): string => {
   const branchPointers = Array.isArray(message.branchPointers)
     ? message.branchPointers.map((pointer) => pointer.id).join(',')
     : '';
+  const executionData = message.execution_data as Record<string, unknown> | null | undefined;
   const meta = ((message.execution_data as any)?.meta || {}) as Record<string, unknown>;
   const syncSource = typeof meta.sync_source === 'string' ? meta.sync_source : '';
   const importedFromRef = typeof meta.imported_from_ref === 'string' ? meta.imported_from_ref : '';
   const commitCount = typeof meta.commit_count === 'number' ? meta.commit_count : '';
+  const failureReason = getNodeFailureReason(executionData, meta.provider_error_message);
   const content = message.content ?? '';
 
   return [
@@ -229,6 +232,8 @@ const getMessageFingerprint = (message: Message): string => {
     content.length,
     content.slice(0, 24),
     content.slice(-24),
+    failureReason ?? '',
+    typeof executionData?.last_terminal_status === 'string' ? executionData.last_terminal_status : '',
     syncSource,
     importedFromRef,
     commitCount,
@@ -454,6 +459,7 @@ const getProjectedMessageEntity = (
   messageMap: Map<string, Message>,
   threadRootIdByMessageId: Map<string, string>,
   rootMessageIdByThreadRootId: Map<string, string>,
+  assistantMessagesByGraphParentId: Map<string, Message[]>,
 ): ProjectedNodeEntity => {
   const kind = classifyMessageNodeKind(message, messageMap);
   const graphParentId = getGraphParentId(message, messageMap);
@@ -467,7 +473,10 @@ const getProjectedMessageEntity = (
     ? (shortSha || 'Commit')
     : kind === 'thread_link'
       ? 'Thread'
-    : (message.aiLabel?.trim() || (message.llmModel?.split('/').pop() || (message.role === 'user' ? 'Prompt' : 'Assistant')));
+      : (message.aiLabel?.trim() || (message.llmModel?.split('/').pop() || (message.role === 'user' ? 'Prompt' : 'Assistant')));
+  const focusMessageId = kind === 'user_message'
+    ? assistantMessagesByGraphParentId.get(message.id)?.[0]?.id ?? null
+    : message.id;
   const threadRootId = threadRootIdByMessageId.get(message.id) ?? null;
   const threadLinkRootId = kind === 'thread_link' ? getSubgraphThreadLinkTargetId(message) : null;
 
@@ -475,7 +484,7 @@ const getProjectedMessageEntity = (
     entityId: getMessageEntityId(message, messageMap),
     kind,
     messageId: message.id,
-    focusMessageId: message.id,
+    focusMessageId,
     parentEntityId: graphParent ? getMessageEntityId(graphParent, messageMap) : undefined,
     turnGroupId: kind === 'thread_link' ? undefined : getTurnGroupIdForMessage(message, messageMap),
     sortTs: new Date(message.createdAt).getTime(),
@@ -1209,7 +1218,8 @@ function getStableWorkspaceProjectionBase(
       sortedMessages,
       messageMap,
       threadRootIndex.threadRootIdByMessageId,
-      threadRootIndex.rootMessageIdByThreadRootId
+      threadRootIndex.rootMessageIdByThreadRootId,
+      assistantMessagesByGraphParentId
     ));
   const threadOriginEntities = threadRootIndex.threadRootIds
     .map((threadRootId) => {

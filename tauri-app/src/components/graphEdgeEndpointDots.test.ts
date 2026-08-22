@@ -13,14 +13,18 @@ describe('graph edge endpoint dots', () => {
       sourceRadius: 6,
       targetRadius: 7,
     });
+    expect(getEdgeEndpointDotVisuals('commit-parent')).not.toHaveProperty('haloRadius');
+    expect(getEdgeEndpointDotVisuals('commit-parent')).not.toHaveProperty('haloColor');
   });
 
-  it('uses prominent colored visuals for convergence endpoint dots', () => {
+  it('uses compact colored visuals for convergence endpoint dots', () => {
     expect(getEdgeEndpointDotVisuals('convergence')).toMatchObject({
       color: '#6366f1',
-      sourceRadius: 6,
-      targetRadius: 7,
+      sourceRadius: 4,
+      targetRadius: 5,
     });
+    expect(getEdgeEndpointDotVisuals('convergence')).not.toHaveProperty('haloRadius');
+    expect(getEdgeEndpointDotVisuals('convergence')).not.toHaveProperty('haloColor');
   });
 
   it('uses muted colored visuals for conversation endpoint dots', () => {
@@ -29,6 +33,8 @@ describe('graph edge endpoint dots', () => {
       sourceRadius: 5,
       targetRadius: 6,
     });
+    expect(getEdgeEndpointDotVisuals('conversation')).not.toHaveProperty('haloRadius');
+    expect(getEdgeEndpointDotVisuals('conversation')).not.toHaveProperty('haloColor');
   });
 
   it('shows commit-parent dots only for inter-turn commit-parent edges', () => {

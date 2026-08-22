@@ -13,12 +13,23 @@ import {
     type ProviderLimitsSnapshot,
     useProviderLimitsStore,
 } from '../stores/providerLimitsStore';
+import { useLoginProfilesStore } from '../stores/loginProfilesStore';
+import {
+    hasActiveLoginProfileForProvider,
+    isLoginProfileActive,
+    isLoginProfileCompatibleWithProvider,
+} from '../lib/loginProfiles';
+import type { RuntimeReadiness } from '../lib/agentClient';
+import { LoginProfileSelector } from './logins/LoginProfileSelector';
 
 interface UnifiedAgentModelSelectorProps {
     onSelectAgent: (agentId: string) => void;
     selectedAgentId: string | null;
     agentRunCounts?: Record<string, number>;
     onAgentRunCountChange?: (agentId: string, count: number) => void;
+    selectedLoginProfileIdByProvider?: Record<string, string | null>;
+    onSelectLoginProfile?: (provider: string, profileId: string | null) => void;
+    externalRuntimeReadinessByProvider?: Record<string, RuntimeReadiness | null>;
 }
 
 type AgentModelConfig = {
@@ -203,10 +214,14 @@ export function UnifiedAgentModelSelector({
     selectedAgentId,
     agentRunCounts,
     onAgentRunCountChange,
+    selectedLoginProfileIdByProvider,
+    onSelectLoginProfile,
+    externalRuntimeReadinessByProvider,
 }: UnifiedAgentModelSelectorProps) {
     const { data: agentsData } = useAgents();
     const agents = useMemo(() => agentsData ?? [], [agentsData]);
     const providerLimits = useProviderLimitsStore((state) => state.byProvider);
+    const loginProfiles = useLoginProfilesStore((state) => state.profiles);
     const [hoveredFamilyKey, setHoveredFamilyKey] = useState<string | null>(null);
     const supportsMultiRun = Boolean(onAgentRunCountChange);
     const totalSelectedRuns = useMemo(() => (
@@ -218,6 +233,26 @@ export function UnifiedAgentModelSelector({
     const updateAgentRunCount = (agentId: string, count: number) => {
         onSelectAgent(agentId);
         onAgentRunCountChange?.(agentId, count);
+    };
+
+    const getSelectedLoginProfileForProvider = (provider: string) => {
+        const compatible = loginProfiles.filter((profile) => isLoginProfileCompatibleWithProvider(profile, provider));
+        const selectedProfileId = selectedLoginProfileIdByProvider?.[provider] ?? null;
+        return compatible.find((profile) => profile.id === selectedProfileId)
+            ?? compatible.find((profile) => profile.isDefault)
+            ?? compatible[0]
+            ?? null;
+    };
+
+    const isProviderSelectable = (provider: string) => {
+        const compatible = loginProfiles.filter((profile) => isLoginProfileCompatibleWithProvider(profile, provider));
+        const selectedProfile = getSelectedLoginProfileForProvider(provider);
+        if (selectedProfile) return isLoginProfileActive(selectedProfile);
+        if (hasActiveLoginProfileForProvider(loginProfiles, provider)) return true;
+        const fallbackReadiness = externalRuntimeReadinessByProvider?.[provider] ?? null;
+        const diagnostics = fallbackReadiness?.diagnostics as Record<string, unknown> | undefined;
+        const externallyReady = fallbackReadiness?.status === 'ready' && !diagnostics?.managedByAgentree;
+        return compatible.length === 0 && externallyReady;
     };
 
     const activateFamily = (familyKey: string) => {
@@ -353,6 +388,7 @@ export function UnifiedAgentModelSelector({
                             {groupedAgents.map(({ provider, families }) => {
                                 const meta = providerMeta(provider);
                                 const accent = providerAccentClasses(provider);
+                                const providerSelectable = isProviderSelectable(provider);
                                 const limitsSnapshot = provider === 'claude' || provider === 'codex'
                                     ? providerLimits[provider]
                                     : null;
@@ -363,7 +399,11 @@ export function UnifiedAgentModelSelector({
                                 return (
                                     <section
                                         key={provider}
-                                        className="rounded-lg bg-background/72 p-2 shadow-[0_12px_34px_-30px_rgba(15,23,42,0.45),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]"
+                                        data-login-provider-active={providerSelectable ? 'true' : 'false'}
+                                        className={cn(
+                                            "rounded-lg bg-background/72 p-2 shadow-[0_12px_34px_-30px_rgba(15,23,42,0.45),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]",
+                                            !providerSelectable && "opacity-45 grayscale"
+                                        )}
                                     >
                                         <div className="mb-2 flex items-center justify-between gap-3 px-1">
                                             <div className="flex min-w-0 items-center gap-2.5">
@@ -378,12 +418,24 @@ export function UnifiedAgentModelSelector({
                                                     <div className="flex items-center gap-2">
                                                         <span className="text-[13px] font-semibold text-foreground">{meta.title}</span>
                                                         <span className="text-[10.5px] text-muted-foreground">{meta.badge}</span>
+                                                        {!providerSelectable ? (
+                                                            <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.16)] dark:bg-amber-950/35 dark:text-amber-300">
+                                                                Login inactive
+                                                            </span>
+                                                        ) : null}
                                                     </div>
                                                     <div className="mt-0.5 text-[10.5px] text-muted-foreground">
                                                         {families.length} {families.length === 1 ? 'family' : 'families'} available
                                                     </div>
                                                 </div>
                                             </div>
+                                            {onSelectLoginProfile ? (
+                                                <LoginProfileSelector
+                                                    provider={provider}
+                                                    value={selectedLoginProfileIdByProvider?.[provider] ?? null}
+                                                    onChange={(profileId) => onSelectLoginProfile(provider, profileId)}
+                                                />
+                                            ) : null}
                                             {displayedLimitWindows.length > 0 ? (
                                                 <div className="grid shrink-0 gap-1" aria-label={`${meta.title} usage availability`}>
                                                     {displayedLimitWindows.map((window) => {
@@ -417,12 +469,24 @@ export function UnifiedAgentModelSelector({
                                                     <button
                                                         key={family.key}
                                                         type="button"
-                                                        onPointerEnter={() => activateFamily(family.key)}
-                                                        onPointerOver={() => activateFamily(family.key)}
-                                                        onPointerMove={() => activateFamily(family.key)}
-                                                        onMouseEnter={() => activateFamily(family.key)}
-                                                        onFocus={() => activateFamily(family.key)}
-                                                        onClick={() => activateFamily(family.key)}
+                                                        onPointerEnter={() => {
+                                                            if (providerSelectable) activateFamily(family.key);
+                                                        }}
+                                                        onPointerOver={() => {
+                                                            if (providerSelectable) activateFamily(family.key);
+                                                        }}
+                                                        onPointerMove={() => {
+                                                            if (providerSelectable) activateFamily(family.key);
+                                                        }}
+                                                        onMouseEnter={() => {
+                                                            if (providerSelectable) activateFamily(family.key);
+                                                        }}
+                                                        onFocus={() => {
+                                                            if (providerSelectable) activateFamily(family.key);
+                                                        }}
+                                                        onClick={() => {
+                                                            if (providerSelectable) activateFamily(family.key);
+                                                        }}
                                                         className={cn(
                                                             "group relative flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-2.5 text-left outline-none transition-[background-color,box-shadow,transform] duration-150 ease-out",
                                                             "focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1 focus-visible:ring-offset-background active:scale-[0.96]",
@@ -431,6 +495,7 @@ export function UnifiedAgentModelSelector({
                                                             isSelected && "shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.4)]"
                                                         )}
                                                         aria-pressed={isActive}
+                                                        aria-disabled={!providerSelectable}
                                                     >
                                                         <span
                                                             className={cn(
@@ -508,6 +573,7 @@ export function UnifiedAgentModelSelector({
                                                     role="button"
                                                     tabIndex={0}
                                                     onClick={() => {
+                                                        if (!isProviderSelectable(agent.type)) return;
                                                         if (supportsMultiRun) {
                                                             if (!isSelected) {
                                                                 updateAgentRunCount(agent.id, 1);
@@ -521,6 +587,7 @@ export function UnifiedAgentModelSelector({
                                                     onKeyDown={(event) => {
                                                         if (event.key !== 'Enter' && event.key !== ' ') return;
                                                         event.preventDefault();
+                                                        if (!isProviderSelectable(agent.type)) return;
                                                         if (supportsMultiRun) {
                                                             updateAgentRunCount(agent.id, isSelected ? Math.max(1, count) : 1);
                                                             return;
@@ -532,6 +599,7 @@ export function UnifiedAgentModelSelector({
                                                         "hover:bg-[hsl(var(--app-bg-elevated))] focus-visible:bg-[hsl(var(--app-bg-elevated))] focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1 focus-visible:ring-offset-background active:scale-[0.96]",
                                                         isSelected ? "bg-[hsl(var(--app-bg-elevated))] shadow-[0_10px_24px_-22px_rgba(15,23,42,0.7),inset_0_0_0_1px_hsl(var(--app-border)/0.8)]" : "bg-transparent"
                                                     )}
+                                                    aria-disabled={!isProviderSelectable(agent.type)}
                                                 >
                                                     <div className="flex min-w-0 flex-1 gap-2.5 pr-1">
                                                         {supportsMultiRun ? (

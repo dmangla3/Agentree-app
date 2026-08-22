@@ -3,6 +3,7 @@ import { Target, GitBranch, GitMerge, X, ArrowRight, Loader2, Check, Bot, Chevro
 import { useQueryClient } from '@tanstack/react-query';
 import { useIntegrationStore } from '../../stores/integrationStore';
 import { useWorkspaceStore, type Message } from '../../stores/workspaceStore';
+import { useLoginProfilesStore } from '../../stores/loginProfilesStore';
 import { useAgents, findDefaultCodexAgentId } from '../../hooks/useAgents';
 import { filterCommitsReachableFrom, useCommits, CommitWithRef } from '../../hooks/useCommits';
 import { useWorkspaces } from '../../hooks/useWorkspaces';
@@ -11,6 +12,7 @@ import { agentClient, GitMergePreview } from '../../lib/agentClient';
 import { api } from '../../lib/api';
 import { getAccessToken } from '../../lib/authSession';
 import { cn } from '../../lib/utils';
+import { isLoginProfileActive } from '../../lib/loginProfiles';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../../lib/graphInteractionGate';
 import { buildMergeAgentArgs, buildMergeAgentPrompt, buildMergeAgentUserContent } from '../../lib/mergeAgentNode';
 import { persistMergeCommitGraph } from '../../lib/mergeCommitGraph';
@@ -400,12 +402,19 @@ export function SetupStage() {
   const [isCheckingConflicts, setIsCheckingConflicts] = useState(false);
   const [isStartingAiMerge, setIsStartingAiMerge] = useState(false);
   const [isAgentPopoverOpen, setIsAgentPopoverOpen] = useState(false);
+  const [selectedLoginProfileIdByProvider, setSelectedLoginProfileIdByProvider] = useState<Record<string, string | null>>({});
   const previewRequestIdRef = useRef(0);
   const previewReadyKeyRef = useRef<string | null>(null);
   const { data: agents = [] } = useAgents();
   const { data: workspacesData } = useWorkspaces();
+  const loginProfiles = useLoginProfilesStore((state) => state.profiles);
+  const refreshLoginProfiles = useLoginProfilesStore((state) => state.refresh);
   const { selectedWorkspaceId, selectedAgentId, setSelectedAgentId, dispatchFocus } = useWorkspaceStore();
   const queryClient = useQueryClient();
+
+  useEffect(() => {
+    void refreshLoginProfiles();
+  }, [refreshLoginProfiles]);
   
   const selectedWorkspace = useMemo(() => {
     if (!workspacesData || !session) return null;
@@ -672,11 +681,21 @@ export function SetupStage() {
       };
 
       const authToken = await getAccessToken();
-      const readiness = await agentClient.checkRuntimeReadiness(selectedAgent.type);
-      if (readiness.status !== 'ready') {
-        throw new Error(readiness.recommendedCommand
-          ? `${readiness.message} Run: ${readiness.recommendedCommand}`
-          : readiness.message);
+      const selectedProvider = selectedAgent.type === 'codex' || selectedAgent.type === 'claude'
+        ? selectedAgent.type
+        : null;
+      const compatibleLoginProfiles = selectedProvider
+        ? loginProfiles.filter((profile) => profile.provider === selectedProvider)
+        : [];
+      const selectedLoginProfileId = selectedProvider
+        ? selectedLoginProfileIdByProvider[selectedProvider]
+          ?? compatibleLoginProfiles.find((profile) => profile.isDefault)?.id
+          ?? compatibleLoginProfiles[0]?.id
+          ?? null
+        : null;
+      const selectedLoginProfile = compatibleLoginProfiles.find((profile) => profile.id === selectedLoginProfileId) ?? null;
+      if (selectedProvider && (!selectedLoginProfile || !isLoginProfileActive(selectedLoginProfile))) {
+        throw new Error(`${selectedAgent.name} needs a ready active login profile before it can run.`);
       }
       await Promise.all([
         agentClient.setMcpAuthToken(authToken),
@@ -723,6 +742,7 @@ export function SetupStage() {
         args: buildMergeAgentArgs(selectedAgent.cliArgs, selectedAgent.promptFlag, prompt),
         authToken,
         traceId: null,
+        loginProfileId: selectedLoginProfile?.id ?? null,
         runContext: {
           runId,
           executionData,
@@ -1060,6 +1080,10 @@ export function SetupStage() {
                 <UnifiedAgentModelSelector
                   onSelectAgent={(id) => { setSelectedAgentId(id); setIsAgentPopoverOpen(false); }}
                   selectedAgentId={selectedAgentId}
+                  selectedLoginProfileIdByProvider={selectedLoginProfileIdByProvider}
+                  onSelectLoginProfile={(provider, profileId) => {
+                    setSelectedLoginProfileIdByProvider((current) => ({ ...current, [provider]: profileId }));
+                  }}
                 />
               </PopoverContent>
             </Popover>

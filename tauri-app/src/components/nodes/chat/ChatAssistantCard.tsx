@@ -208,34 +208,37 @@ const LiveComposerCue = memo(function LiveComposerCue({
 
   if (!isStreaming) return null;
 
+  const label = isActivelyStreaming ? 'Writing response' : 'Agent running';
+
   return (
     <div
       aria-hidden="true"
-      className="pointer-events-none relative mt-3 overflow-hidden rounded-xl border border-sky-200/55 bg-gradient-to-r from-sky-50/90 via-white/75 to-cyan-50/80 px-3 py-2 shadow-[0_10px_30px_rgba(14,165,233,0.08)] dark:border-sky-900/60 dark:from-sky-950/30 dark:via-slate-950/10 dark:to-cyan-950/20"
+      className="pointer-events-none relative mt-3 overflow-hidden rounded-[1rem] border border-zinc-200/70 bg-white/75 px-3 py-2 shadow-[0_14px_34px_-22px_rgba(24,24,27,0.42)] backdrop-blur-xl dark:border-white/10 dark:bg-zinc-950/38 dark:shadow-[0_18px_42px_-24px_rgba(0,0,0,0.72)]"
     >
-      <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-sky-300/80 to-transparent dark:via-sky-500/50" />
-      <div className="absolute inset-y-0 left-0 w-24 bg-gradient-to-r from-white/55 via-white/25 to-transparent dark:from-white/5 dark:via-white/0 dark:to-transparent animate-pulse" />
-      <div className="flex items-center gap-2.5">
-        <div className="flex items-center gap-1.5">
-          <span className="h-1.5 w-1.5 rounded-full bg-sky-500/80 shadow-[0_0_10px_rgba(14,165,233,0.45)] animate-pulse" />
-          {isActivelyStreaming ? (
-            <span className="inline-flex h-4 items-end">
-              <span className="h-4 w-[3px] rounded-full bg-sky-600/80 shadow-[0_0_10px_rgba(14,165,233,0.35)] animate-pulse dark:bg-sky-300/80" />
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1">
-              {[0, 1, 2].map((dot) => (
-                <span
-                  key={dot}
-                  className="h-1.5 w-1.5 rounded-full bg-sky-500/75 animate-pulse dark:bg-sky-300/75"
-                  style={{ animationDelay: `${dot * 160}ms` }}
-                />
-              ))}
-            </span>
-          )}
+      <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-zinc-300/80 to-transparent dark:via-white/20" />
+      <div className="absolute -left-10 top-0 h-full w-24 -skew-x-12 bg-gradient-to-r from-transparent via-emerald-300/18 to-transparent animate-pulse dark:via-emerald-300/10" />
+      <div className="relative flex items-center gap-2.5">
+        <div className="relative flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-emerald-500/20 bg-emerald-500/8 dark:border-emerald-300/20 dark:bg-emerald-300/10">
+          <span className="absolute h-2.5 w-2.5 rounded-full bg-emerald-500/25 animate-ping dark:bg-emerald-300/25" />
+          <span className="relative h-1.5 w-1.5 rounded-full bg-emerald-600 shadow-[0_0_12px_rgba(5,150,105,0.45)] dark:bg-emerald-300" />
         </div>
-        <div className="text-[11px] font-medium tracking-[0.01em] text-sky-900/70 dark:text-sky-100/70">
-          {isActivelyStreaming ? 'Writing response' : 'working'}
+        <div className="min-w-0 flex-1">
+          <div className="text-[11px] font-semibold leading-none tracking-[0.01em] text-zinc-700 dark:text-zinc-200">
+            {label}
+          </div>
+          <div className="mt-1 flex items-end gap-0.5" aria-hidden="true">
+            {[0, 1, 2, 3].map((bar) => (
+              <span
+                key={bar}
+                className="w-1 rounded-full bg-zinc-400/60 animate-pulse dark:bg-zinc-500/70"
+                style={{
+                  height: `${bar % 2 === 0 ? 5 : 8}px`,
+                  animationDelay: `${bar * 120}ms`,
+                  animationDuration: '900ms',
+                }}
+              />
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -376,7 +379,7 @@ function WorkLogsPanel({ rows }: { rows: TimelineRow[] }) {
   if (rows.length === 0) return null;
 
   return (
-    <div className="relative z-10 mt-4 min-w-0 max-w-full rounded-xl border border-border/50 bg-muted/20">
+    <div className="relative z-10 mt-2 mb-4 min-w-0 max-w-full rounded-xl border border-border/50 bg-muted/20">
       <button
         type="button"
         onClick={(event) => {
@@ -465,17 +468,26 @@ function WorkLogsPanel({ rows }: { rows: TimelineRow[] }) {
 }
 
 // Status indicator following the segmented pill style
-const StatusBadge = ({ status }: { status: AgentStatus | null | undefined }) => {
+const StatusBadge = ({
+  status,
+  failureReason,
+}: {
+  status: AgentStatus | null | undefined;
+  failureReason?: string | null;
+}) => {
   if (!status) return null;
 
   const config = getAgentVisualState(status);
   const Icon = config.icon;
+  const title = isNodeFailureStatus(status) && failureReason
+    ? `Agent ${config.label}: ${failureReason}`
+    : undefined;
 
   return (
     <span className={cn(
       "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium",
       config.badgeContainerClass
-    )}>
+    )} title={title}>
       <Icon size={10} className={cn(config.animate && "animate-spin")} strokeWidth={2.5} />
       {config.label}
     </span>
@@ -628,7 +640,7 @@ export const ChatAssistantCard = memo(({
                   llmModel={message?.llmModel}
                   llmProvider={message?.llmProvider}
                 />
-                <StatusBadge status={displayStatus as any} />
+                <StatusBadge status={displayStatus as any} failureReason={failureReason} />
                 {entity.toolCallCount ? (
                   <span className="inline-flex items-center gap-1 rounded-full border border-amber-200/70 bg-amber-50/80 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
                     <Wrench size={9} strokeWidth={2.5} />
@@ -770,17 +782,7 @@ export const ChatAssistantCard = memo(({
         </div>
       )}
 
-      {failureReason && (
-        <div className="relative z-10 mb-4 flex min-w-0 max-w-full items-start gap-2 rounded-md border border-red-200/75 bg-red-50/80 px-3 py-2 text-sm text-red-950 dark:border-red-900/75 dark:bg-red-950/25 dark:text-red-100">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
-          <div className="min-w-0">
-            <div className="font-medium">Failure reason</div>
-            <div className="mt-0.5 break-words text-red-900/90 dark:text-red-100/85">
-              {failureReason}
-            </div>
-          </div>
-        </div>
-      )}
+      {showCompletedFinalOnly ? <WorkLogsPanel rows={transcriptRows} /> : null}
 
       {/* Content */}
       <div className="relative z-10 min-w-0 max-w-full">
@@ -867,8 +869,6 @@ export const ChatAssistantCard = memo(({
         )}
         <LiveComposerCue isStreaming={shouldRevealStream} text={streamingTailText} />
       </div>
-
-      {showCompletedFinalOnly ? <WorkLogsPanel rows={transcriptRows} /> : null}
 
       {/* Tool Calls Section */}
       {!hasInterleavedTranscript && !showCompletedFinalOnly && toolRows.length > 0 && (

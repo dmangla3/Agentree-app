@@ -4,12 +4,11 @@ import type { ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspa
 import { NodePreviewRenderer } from './NodePreviewRenderer';
 import { Button } from '../../@/components/ui/button';
 import { Input } from '../../@/components/ui/input';
-import { AlertTriangle, Loader2, Reply } from 'lucide-react';
+import { Loader2, Reply } from 'lucide-react';
 import { useHeadlessQuickReply } from '../hooks/useHeadlessQuickReply';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { getHoverReplyMode, stopQuickReplyControlEvent } from '../lib/quickReply';
 import { cn } from '../lib/utils';
-import { getNodeFailureReason, isNodeFailureStatus } from '../lib/nodeFailureReason';
 import { isActiveAgentRunStatus } from '../lib/agentRunSteering';
 
 interface NodeHoverCardContentProps {
@@ -58,10 +57,6 @@ export function NodeHoverCardContent({ entity, projection, headerAccessory }: No
   const replyMode = getHoverReplyMode(entity, replyRunStatus);
   const showReplyAction = Boolean(replyMode && replyParentId);
   const canSendQuickReply = quickReplyPrompt.trim().length > 0 && !isSending;
-  const executionData = entity.message?.execution_data as any;
-  const failureReason = isNodeFailureStatus(entity.status ?? entity.message?.status)
-    ? getNodeFailureReason(executionData)
-    : null;
   const isSteeringReply = replyMode === 'steer';
   const inputLabel = isSteeringReply ? 'Steering prompt' : 'Quick reply prompt';
   const actionLabel = isSteeringReply ? 'Steer' : 'Quick Reply';
@@ -107,17 +102,6 @@ export function NodeHoverCardContent({ entity, projection, headerAccessory }: No
       className="flex w-[min(920px,var(--radix-hover-card-content-available-width),calc(100vw-2rem))] max-w-[min(920px,var(--radix-hover-card-content-available-width),calc(100vw-2rem))] flex-col overflow-hidden rounded-[24px] border border-[hsl(var(--app-border)/0.76)] bg-[hsl(var(--app-panel)/0.96)] p-3 text-foreground shadow-[0_24px_64px_-40px_hsl(var(--foreground)/0.58),0_10px_24px_-20px_hsl(var(--foreground)/0.32),inset_0_1px_0_hsl(var(--background)/0.22)]"
     >
       {headerAccessory}
-      {failureReason && (
-        <div className="mb-3 flex min-w-0 items-start gap-2 rounded-[12px] border border-red-200/75 bg-red-50/80 px-3 py-2 text-sm text-red-950 dark:border-red-900/75 dark:bg-red-950/25 dark:text-red-100">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
-          <div className="min-w-0">
-            <div className="font-medium">Failure reason</div>
-            <div className="mt-0.5 break-words text-red-900/90 dark:text-red-100/85">
-              {failureReason}
-            </div>
-          </div>
-        </div>
-      )}
       <div
         ref={previewScrollRef}
         className="max-h-[calc(min(70vh,720px)-1.5rem)] w-full overflow-y-auto overscroll-contain"

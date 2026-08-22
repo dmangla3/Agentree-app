@@ -9,6 +9,7 @@ import { configureAuthSession } from './lib/authSession';
 import { isDesktopBrowserAuthenticated, shouldUseDesktopBrowserAuth } from './lib/kindeDesktopAuth';
 import { TooltipProvider } from '../@/components/ui/tooltip';
 import { UpdateManager } from './components/updates/UpdateManager';
+import { DevLocalSyncAlert } from './components/DevLocalSyncAlert';
 import { identifyUser, trackScreenViewed } from './lib/analytics';
 import { devLogLazy } from './lib/appLogger';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from './lib/perfRecorder';
@@ -286,6 +287,7 @@ function App() {
           <UpdateManager>
             <DiffProvider>
               <AppContent />
+              <DevLocalSyncAlert />
               {/* Merge UI Components */}
               <MergeSelectionOverlay />
               <Suspense fallback={null}>

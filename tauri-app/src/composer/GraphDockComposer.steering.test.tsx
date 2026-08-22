@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '../test/setup';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GraphDockComposer } from './GraphDockComposer';
@@ -160,8 +160,27 @@ describe('GraphDockComposer steering behavior', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     useRunStatusStore.getState().clearAllRunStatus();
     useWorkspaceStore.getState().clearSelectedWorkspace();
+  });
+
+  it('debounces workspace draft writes while keeping textarea input immediate', async () => {
+    vi.useFakeTimers();
+    renderComposer([]);
+
+    const composer = screen.getByPlaceholderText('Ask anything...') as HTMLTextAreaElement;
+
+    fireEvent.change(composer, { target: { value: 'Local draft' } });
+
+    expect(composer.value).toBe('Local draft');
+    expect(useWorkspaceStore.getState().composerDraftByWorkspace['workspace-1']).toBeUndefined();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+
+    expect(useWorkspaceStore.getState().composerDraftByWorkspace['workspace-1']).toBe('Local draft');
   });
 
   it('routes live-running assistant submissions through steering even when persisted status is stale', async () => {
@@ -203,6 +222,50 @@ describe('GraphDockComposer steering behavior', () => {
     expect((composer as HTMLTextAreaElement).value).toBe('');
   });
 
+  it('sends the graph dock composer message on Enter', async () => {
+    const user = userEvent.setup();
+    renderComposer([
+      message({
+        id: 'assistant-live',
+        role: 'assistant',
+        content: 'Previous assistant reply',
+        status: 'completed' as any,
+        output_commit_sha: 'parent-output',
+      }),
+    ]);
+
+    const composer = screen.getByPlaceholderText('Ask anything...');
+    await user.type(composer, 'Send from keyboard');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(hookMocks.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        prompt: 'Send from keyboard',
+      }));
+    });
+  });
+
+  it('keeps Shift+Enter as a newline in the graph dock composer', async () => {
+    const user = userEvent.setup();
+    renderComposer([
+      message({
+        id: 'assistant-live',
+        role: 'assistant',
+        content: 'Previous assistant reply',
+        status: 'completed' as any,
+        output_commit_sha: 'parent-output',
+      }),
+    ]);
+
+    const composer = screen.getByPlaceholderText('Ask anything...') as HTMLTextAreaElement;
+    await user.type(composer, 'Line one');
+    await user.keyboard('{Shift>}{Enter}{/Shift}');
+    await user.type(composer, 'Line two');
+
+    expect(hookMocks.sendMessage).not.toHaveBeenCalled();
+    expect(composer.value).toBe('Line one\nLine two');
+  });
+
   it('switches the graph dock composer to a fresh root target when the graph selects a thread target', async () => {
     const user = userEvent.setup();
     renderComposer([
@@ -225,7 +288,7 @@ describe('GraphDockComposer steering behavior', () => {
     });
 
     expect(await screen.findByText('New thread')).toBeTruthy();
-    expect(screen.getByText('Workspace root')).toBeTruthy();
+    expect(screen.getByText('Thread root')).toBeTruthy();
 
     const composer = screen.getByPlaceholderText('Ask anything...');
     await user.type(composer, 'Start a separate approach');
@@ -280,6 +343,56 @@ describe('GraphDockComposer steering behavior', () => {
     await waitFor(() => {
       expect(screen.getByText('Reply to')).toBeTruthy();
       expect(screen.queryByText('New thread')).toBeNull();
+    });
+  });
+
+  it('loads edited user messages into the graph composer and sends from the original parent', async () => {
+    const user = userEvent.setup();
+    renderComposer([
+      message({
+        id: 'assistant-parent',
+        role: 'assistant',
+        content: 'Prior assistant reply',
+        output_commit_sha: 'parent-output',
+      }),
+      message({
+        id: 'user-original',
+        role: 'user',
+        parentId: 'assistant-parent',
+        content: 'Original prompt to revise',
+      }),
+      message({
+        id: 'assistant-current',
+        role: 'assistant',
+        parentId: 'user-original',
+        content: 'Current branch focus',
+      }),
+    ]);
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('editUserMessage', {
+        detail: { message: message({
+          id: 'user-original',
+          role: 'user',
+          parentId: 'assistant-parent',
+          content: 'Original prompt to revise',
+        }) },
+      }));
+    });
+
+    const composer = await screen.findByPlaceholderText('Ask anything...');
+    expect((composer as HTMLTextAreaElement).value).toBe('Original prompt to revise');
+    expect(screen.getByText('Editing')).toBeTruthy();
+
+    await user.clear(composer);
+    await user.type(composer, 'Revised graph prompt');
+    await user.click(screen.getByRole('button', { name: 'Send graph composer message' }));
+
+    await waitFor(() => {
+      expect(hookMocks.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        parentId: 'assistant-parent',
+        prompt: 'Revised graph prompt',
+      }));
     });
   });
 

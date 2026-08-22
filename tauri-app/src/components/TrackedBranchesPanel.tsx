@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { GitCommitHorizontal, Compass, X, Loader2 } from 'lucide-react';
+import { GitCommitHorizontal, Compass, X, Loader2, ChevronDown, GitBranch, Clock3 } from 'lucide-react';
 import { agentClient } from '../lib/agentClient';
 import { useCreateTrackedRef, useDeleteTrackedRef, useTrackedRefs, trackedRefKeys } from '../hooks/useTrackedRefs';
 import { branchKeys, useBranches } from '../hooks/useBranches';
@@ -10,9 +10,11 @@ import { shouldShowWorkspaceFeatures } from '../hooks/useTauriWorkspace';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { Button } from '../../@/components/ui/button';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../@/components/ui/hover-card';
+import { Popover, PopoverContent, PopoverTrigger } from '../../@/components/ui/popover';
 import { cn } from '../lib/utils';
 import { useToast } from './Toast';
 import { getBranchPointerCommitSha, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
+import { sortTrackableRefsByRecentCommit } from '../domain/trackableRefs';
 
 interface TrackedBranchesPanelProps {
   workspaceId: string | null;
@@ -20,8 +22,28 @@ interface TrackedBranchesPanelProps {
   className?: string;
 }
 
+const shortCommitSha = (commitSha: string): string => commitSha.slice(0, 8);
+
+const formatCommitAge = (committedAt: string | null | undefined): string => {
+  if (!committedAt) return 'unknown';
+  const time = new Date(committedAt).getTime();
+  if (!Number.isFinite(time)) return 'unknown';
+  const diffMs = Date.now() - time;
+  if (diffMs < 60_000) return 'just now';
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.floor(months / 12)}y ago`;
+};
+
 export function TrackedBranchesPanel({ workspaceId, repoPath, className }: TrackedBranchesPanelProps) {
   const [selectedRef, setSelectedRef] = useState<string>('');
+  const [isTrackBranchPickerOpen, setIsTrackBranchPickerOpen] = useState(false);
   const { data: trackedRefs = [] } = useTrackedRefs(workspaceId);
   const { data: branches = [] } = useBranches(workspaceId);
   const { data: currentHeadSha } = useCurrentHead(repoPath);
@@ -68,7 +90,7 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
 
   const trackableRefs = useMemo(() => {
     const trackedSet = new Set(trackedRefs.map((ref) => ref.git_ref));
-    return localRefs.filter((ref) => !trackedSet.has(ref.git_ref));
+    return sortTrackableRefsByRecentCommit(localRefs.filter((ref) => !trackedSet.has(ref.git_ref)));
   }, [localRefs, trackedRefs]);
 
   const branchPointerByRef = useMemo(() => {
@@ -272,6 +294,23 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
     });
   };
 
+  const trackRef = useCallback((gitRef: string) => {
+    if (!gitRef || !workspaceId) {
+      setSelectedRef('');
+      return;
+    }
+    setSelectedRef(gitRef);
+    createTrackedRef.mutate({
+      workspaceId,
+      gitRef,
+      displayName: gitRef.replace('refs/heads/', '').replace('refs/agentree/pointers/', ''),
+      enabled: true,
+    }, {
+      onSuccess: () => setIsTrackBranchPickerOpen(false),
+      onSettled: () => setSelectedRef(''),
+    });
+  }, [createTrackedRef, workspaceId]);
+
   if (!workspaceId || !repoPath || !shouldShowWorkspaceFeatures()) {
     return null;
   }
@@ -367,33 +406,69 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
 
         {/* Track New Branch Selector */}
         <div className="flex shrink-0 items-center gap-1 ml-1 border-l border-border/40 pl-2">
-          <select
-            className="h-5 flex-1 cursor-pointer rounded border border-border/40 bg-muted/30 px-1 text-[10px] font-medium text-muted-foreground outline-none transition-colors [color-scheme:light] hover:bg-muted/45 hover:text-foreground focus:border-primary/40 dark:bg-slate-900/80 dark:text-slate-300 dark:[color-scheme:dark] dark:hover:bg-slate-800/90 dark:hover:text-slate-50 w-auto"
-            value={selectedRef}
-            onChange={(event) => {
-              const val = event.target.value;
-              if (!val || !workspaceId) {
-                setSelectedRef('');
-                return;
-              }
-              setSelectedRef(val);
-              createTrackedRef.mutate({
-                workspaceId,
-                gitRef: val,
-                displayName: val.replace('refs/heads/', '').replace('refs/agentree/pointers/', ''),
-                enabled: true,
-              }, {
-                onSuccess: () => setSelectedRef(''),
-              });
-            }}
-          >
-            <option value="" className="bg-popover text-popover-foreground">+ Track Branch</option>
-            {trackableRefs.map((ref) => (
-              <option key={ref.git_ref} value={ref.git_ref} className="bg-popover text-popover-foreground">
-                {ref.short_name}
-              </option>
-            ))}
-          </select>
+          <Popover open={isTrackBranchPickerOpen} onOpenChange={setIsTrackBranchPickerOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 min-w-[8.5rem] justify-between gap-2 rounded-md border border-border/50 bg-muted/35 px-2 text-[10.5px] font-semibold text-muted-foreground shadow-[0_1px_0_rgba(255,255,255,0.7)_inset] transition-[background-color,border-color,color,transform] hover:border-border hover:bg-muted/55 hover:text-foreground active:scale-[0.96] dark:bg-slate-900/80 dark:shadow-none dark:hover:bg-slate-800/90"
+                disabled={createTrackedRef.isPending || trackableRefs.length === 0}
+                title={trackableRefs.length === 0 ? 'No untracked branches available' : 'Track a branch'}
+              >
+                <span className="inline-flex min-w-0 items-center gap-1.5">
+                  {createTrackedRef.isPending ? (
+                    <Loader2 size={12} className="shrink-0 animate-spin" />
+                  ) : (
+                    <GitBranch size={12} className="shrink-0" />
+                  )}
+                  <span className="truncate">Track branch</span>
+                </span>
+                <ChevronDown size={12} className="shrink-0 opacity-65" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              sideOffset={6}
+              className="w-[min(22rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-border/70 bg-popover/95 p-1.5 shadow-xl backdrop-blur-xl"
+            >
+              <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                Newest branch tips
+              </div>
+              <div className="max-h-[18rem] overflow-y-auto overscroll-contain pr-0.5 custom-scrollbar">
+                {trackableRefs.map((ref) => {
+                  const isPending = selectedRef === ref.git_ref && createTrackedRef.isPending;
+                  return (
+                    <button
+                      key={ref.git_ref}
+                      type="button"
+                      className="flex min-h-11 w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-[background-color,color] hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground disabled:pointer-events-none disabled:opacity-50"
+                      disabled={createTrackedRef.isPending}
+                      onClick={() => trackRef(ref.git_ref)}
+                    >
+                      {isPending ? (
+                        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+                      ) : (
+                        <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      )}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[12px] font-semibold text-foreground">
+                          {ref.short_name}
+                        </span>
+                        <span className="mt-0.5 flex min-w-0 items-center gap-2 text-[10px] text-muted-foreground">
+                          <span className="font-mono tabular-nums">{shortCommitSha(ref.commit_sha)}</span>
+                          <span className="inline-flex min-w-0 items-center gap-1">
+                            <Clock3 size={10} className="shrink-0" />
+                            <span className="truncate">{formatCommitAge(ref.committed_at)}</span>
+                          </span>
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
       </div>
     </div>

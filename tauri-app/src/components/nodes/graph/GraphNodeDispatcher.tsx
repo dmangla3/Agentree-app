@@ -76,11 +76,16 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
   const { isSelectionGestureActive, isViewportInteracting } = useGraphInteractionContext();
   const selectedWorkspaceId = useWorkspaceStore(state => state.selectedWorkspaceId);
   const setComposerBaseCommitOverride = useWorkspaceStore(state => state.setComposerBaseCommitOverride);
+  const setThreadComposerTarget = useWorkspaceStore(state => state.setThreadComposerTarget);
   const isSelected = data.isSelected || isSelectedInFlow;
   const isFocused = !!data.isFocused;
   const isComposerBaseCommit = !!data.isComposerBaseCommit;
   const detailLevel = data.detailLevel ?? 'full';
-  const enableHoverCard = data.entity?.kind !== 'thread_link' && shouldEnableGraphNodeHover({
+  const isRedirectedUserNode = data.entity?.kind === 'user_message'
+    && !!data.entity.focusMessageId
+    && data.entity.focusMessageId !== data.entity.messageId;
+  const isThreadNode = data.entity?.kind === 'thread_origin' || data.entity?.kind === 'thread_link';
+  const enableHoverCard = !isThreadNode && shouldEnableGraphNodeHover({
     detailLevel,
     isFocused,
     isSelected,
@@ -88,6 +93,19 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
   });
 
   const handleFocus = useCallback((metrics?: FocusTriggerMetrics) => {
+    if (data.entity?.kind === 'thread_origin') {
+      const threadRootId = data.entity.threadRootId ?? null;
+      if (threadRootId && selectedWorkspaceId) {
+        dispatchGraphComposerDockExpand();
+        setThreadComposerTarget({
+          workspaceId: selectedWorkspaceId,
+          threadId: threadRootId,
+          reason: 'thread-origin',
+          nonce: Date.now(),
+        });
+      }
+      return;
+    }
     if (data.entity?.focusMessageId) {
       if (data.entity.kind === 'thread_link') {
         const threadRootId = data.entity.threadLinkRootId ?? data.entity.threadRootId ?? null;
@@ -108,7 +126,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
         },
       });
     }
-  }, [data]);
+  }, [data, selectedWorkspaceId, setThreadComposerTarget]);
 
   const handleSelect = useCallback((multi: boolean) => {
     const id = data.entity?.focusMessageId || data.entity?.messageId || data.entity?.summary?.id;
@@ -123,7 +141,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
       : null;
     const id = commitSha
       ? `commit:${commitSha}`
-      : data.entity?.focusMessageId || data.entity?.messageId || data.entity?.summary?.id;
+      : data.entity?.messageId || data.entity?.focusMessageId || data.entity?.summary?.id;
     if (id) {
       data.onContextMenu(id, e);
     }
@@ -162,6 +180,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
     isFocused,
     isSelected,
     isComposerBaseCommit,
+    focusFeedbackEnabled: !isRedirectedUserNode,
     detailLevel,
     layout: 'graph' as const,
     heightKey: data.heightKey,

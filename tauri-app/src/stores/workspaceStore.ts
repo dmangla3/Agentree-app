@@ -222,7 +222,7 @@ export interface ComposerBaseCommitOverrideState {
 export interface ThreadComposerTargetState {
   workspaceId: string;
   threadId: string;
-  reason: 'create-thread' | 'empty-thread';
+  reason: 'create-thread' | 'empty-thread' | 'thread-origin';
   nonce: number;
 }
 

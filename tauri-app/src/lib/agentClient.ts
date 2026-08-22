@@ -1,10 +1,25 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { commands as tauriCommands } from '../generated/tauri-bindings';
+import {
+    reportLocalSyncFailure,
+    reportLocalSyncSuccess,
+    shouldSkipLocalSync,
+} from './localSyncDiagnostics';
+import { useAuthStore } from '../stores/authStore';
 
 const hasTauriRuntime = () =>
     typeof window !== 'undefined' &&
     Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__);
+
+const currentAuthUserId = (): string => {
+    const userId = useAuthStore.getState().user?.id;
+    if (userId) return userId;
+    if (import.meta.env.VITE_DEV_AUTH_BYPASS === 'true') {
+        return import.meta.env.VITE_DEV_AUTH_USER_ID || '11111111-1111-1111-1111-111111111111';
+    }
+    throw new Error('Cannot use local sync without an authenticated user id.');
+};
 
 export interface AgentRuntimeEventEnvelope {
     nodeId: string;
@@ -84,6 +99,7 @@ export interface AgentRunContext {
     parentCommit?: string | null;
     authorName?: string | null;
     promptFallback?: string | null;
+    authUserId?: string | null;
 }
 
 export interface TelemetryEventRow {
@@ -134,6 +150,7 @@ export interface LocalNodeRecord {
 export interface LocalSyncEventRecord {
     id: string;
     workspaceId?: string | null;
+    userId?: string | null;
     entityType: string;
     entityId: string;
     eventType: string;
@@ -214,8 +231,64 @@ export interface StartAgentRunIntent {
     agentType: string;
     args: string[];
     authToken: string;
+    currentUserId?: string | null;
     traceId?: string | null;
     runContext: AgentRunContext;
+    loginProfileId?: string | null;
+}
+
+export interface LoginProfile {
+    id: string;
+    provider: string;
+    displayName: string;
+    authType: string;
+    redactedHint?: string | null;
+    config?: Record<string, any> | null;
+    status: string;
+    statusMessage?: string | null;
+    planType?: string | null;
+    isDefault: boolean;
+    createdAt?: number;
+    updatedAt?: number;
+    lastCheckedAt?: number | null;
+}
+
+export interface UpsertLoginProfileRequest {
+    id?: string | null;
+    provider: string;
+    displayName: string;
+    authType: string;
+    secret?: string | null;
+    config?: Record<string, any> | null;
+    makeDefault?: boolean | null;
+}
+
+export interface LoginImportCandidate {
+    id: string;
+    provider: string;
+    displayName: string;
+    authType: string;
+    sourceKind: string;
+    sourceLabel: string;
+    redactedHint?: string | null;
+    importable: boolean;
+}
+
+export interface ImportLoginCandidateRequest {
+    candidateId: string;
+    displayName?: string | null;
+    makeDefault?: boolean | null;
+}
+
+export interface ActiveLoginProfileRun {
+    loginProfileId: string;
+    runId: string;
+    assistantNodeId: string;
+    workspaceId?: string | null;
+    agentType?: string | null;
+    status: string;
+    phase: string;
+    updatedAt: number;
 }
 
 export interface StartAgentRunResponse {
@@ -340,6 +413,7 @@ export interface GitLocalRefInfo {
     git_ref: string;
     short_name: string;
     commit_sha: string;
+    committed_at?: string | null;
 }
 
 export interface GitRefTipInfo {
@@ -614,17 +688,18 @@ export const agentClient = {
         if (!hasTauriRuntime()) return null;
         return await tauriCommands.enqueueLocalCommitGraphSync(
             workspaceId,
+            currentAuthUserId(),
             JSON.stringify(payload),
             mutationId ?? null
         ) as LocalSyncEventRecord;
     },
     localFirstDeleteBranch: async (workspaceId: string, rootNodeId: string): Promise<LocalSyncEventRecord | null> => {
         if (!hasTauriRuntime()) return null;
-        return await tauriCommands.localFirstDeleteBranch(workspaceId, rootNodeId) as LocalSyncEventRecord;
+        return await tauriCommands.localFirstDeleteBranch(workspaceId, currentAuthUserId(), rootNodeId) as LocalSyncEventRecord;
     },
     localFirstDeleteWorkspace: async (workspaceId: string): Promise<LocalSyncEventRecord | null> => {
         if (!hasTauriRuntime()) return null;
-        return await tauriCommands.localFirstDeleteWorkspace(workspaceId) as LocalSyncEventRecord;
+        return await tauriCommands.localFirstDeleteWorkspace(workspaceId, currentAuthUserId()) as LocalSyncEventRecord;
     },
     listLocalDeletedNodeRoots: async (workspaceId: string): Promise<LocalDeletedNodeRootRecord[]> => {
         if (!hasTauriRuntime()) return [];
@@ -636,13 +711,62 @@ export const agentClient = {
     },
     processLocalSyncEvents: async (authToken: string, limit = 25): Promise<number> => {
         if (!hasTauriRuntime()) return 0;
-        return await tauriCommands.processLocalSyncEvents(authToken, limit);
+        if (shouldSkipLocalSync()) return 0;
+        try {
+            const synced = await tauriCommands.processLocalSyncEvents(authToken, currentAuthUserId(), limit);
+            reportLocalSyncSuccess();
+            return synced;
+        } catch (error) {
+            reportLocalSyncFailure(error);
+            throw error;
+        }
     },
     startAgentRun: async (intent: StartAgentRunIntent): Promise<StartAgentRunResponse> => {
+        const currentUserId = intent.currentUserId ?? currentAuthUserId();
         return await tauriCommands.startAgentRun({
             ...intent,
+            currentUserId,
             workspaceId: intent.workspaceId ?? null,
+            runContext: {
+                ...intent.runContext,
+                authUserId: intent.runContext.authUserId ?? currentUserId,
+            },
+            loginProfileId: intent.loginProfileId ?? null,
         } as any);
+    },
+    listLoginProfiles: async (): Promise<LoginProfile[]> => {
+        if (!hasTauriRuntime()) return [];
+        return await (tauriCommands as any).listLoginProfiles() as LoginProfile[];
+    },
+    upsertLoginProfile: async (request: UpsertLoginProfileRequest): Promise<LoginProfile> => {
+        return await (tauriCommands as any).upsertLoginProfile(request) as LoginProfile;
+    },
+    deleteLoginProfile: async (profileId: string): Promise<void> => {
+        await (tauriCommands as any).deleteLoginProfile(profileId);
+    },
+    setDefaultLoginProfile: async (provider: string, profileId: string | null): Promise<LoginProfile[]> => {
+        return await (tauriCommands as any).setDefaultLoginProfile(provider, profileId) as LoginProfile[];
+    },
+    checkLoginProfileReadiness: async (profileId: string): Promise<LoginProfile> => {
+        return await (tauriCommands as any).checkLoginProfileReadiness(profileId) as LoginProfile;
+    },
+    checkAllLoginProfileReadiness: async (): Promise<LoginProfile[]> => {
+        if (!hasTauriRuntime()) return [];
+        return await (tauriCommands as any).checkAllLoginProfileReadiness() as LoginProfile[];
+    },
+    listActiveLoginProfileRuns: async (): Promise<ActiveLoginProfileRun[]> => {
+        if (!hasTauriRuntime()) return [];
+        return await (tauriCommands as any).listActiveLoginProfileRuns() as ActiveLoginProfileRun[];
+    },
+    importExistingRuntimeLogin: async (provider: string, displayName: string): Promise<LoginProfile> => {
+        return await (tauriCommands as any).importExistingRuntimeLogin(provider, displayName) as LoginProfile;
+    },
+    discoverLoginImportCandidates: async (): Promise<LoginImportCandidate[]> => {
+        if (!hasTauriRuntime()) return [];
+        return await (tauriCommands as any).discoverLoginImportCandidates() as LoginImportCandidate[];
+    },
+    importDiscoveredLoginProfile: async (request: ImportLoginCandidateRequest): Promise<LoginProfile> => {
+        return await (tauriCommands as any).importDiscoveredLoginProfile(request) as LoginProfile;
     },
 
     onEvent: async (callback: (event: AgentRuntimeEventEnvelope) => void): Promise<UnlistenFn> => {
@@ -681,9 +805,6 @@ export const agentClient = {
     },
     checkAllRuntimeReadiness: async (): Promise<RuntimeReadiness[]> => {
         return await tauriCommands.checkAllRuntimeReadiness() as RuntimeReadiness[];
-    },
-    checkCodexReadiness: async (): Promise<CodexReadiness> => {
-        return await tauriCommands.checkRuntimeReadiness('codex') as CodexReadiness;
     },
     attachWorkspace: async (path: string): Promise<WorkspaceInfo> => {
         return await tauriCommands.attachWorkspace(path);

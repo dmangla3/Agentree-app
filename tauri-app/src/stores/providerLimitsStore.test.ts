@@ -1,6 +1,6 @@
-// @vitest-environment jsdom
-
 import { invoke } from '@tauri-apps/api/core';
+// @ts-expect-error jsdom ships without a project-local declaration in this workspace.
+import { JSDOM } from 'jsdom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { useProviderLimitsStore as ProviderLimitsStore } from './providerLimitsStore';
 
@@ -30,6 +30,9 @@ const installMemoryLocalStorage = () => {
 
 describe('providerLimitsStore background refresh', () => {
   beforeEach(async () => {
+    const dom = new JSDOM('<!doctype html><html><body></body></html>');
+    vi.stubGlobal('window', dom.window);
+    vi.stubGlobal('document', dom.window.document);
     vi.useRealTimers();
     vi.resetModules();
     installMemoryLocalStorage();

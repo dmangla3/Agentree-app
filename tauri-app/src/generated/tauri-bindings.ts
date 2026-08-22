@@ -49,6 +49,7 @@ export const commands = {
 	failureReason: string | null,
 	needsUserActionReason: string | null,
 	cleanupCompleted: boolean,
+	loginProfileId: string | null,
 } | null>("get_agent_run_ledger", { assistantNodeId }),
 	replayAgentRunEvents: (runId: string, afterSeq: number | null) => __TAURI_INVOKE<AgentRunJournalEvent[]>("replay_agent_run_events", { runId, afterSeq }),
 	listLocalNodes: (workspaceId: string) => __TAURI_INVOKE<LocalNodeRow[]>("list_local_nodes", { workspaceId }),
@@ -61,19 +62,28 @@ export const commands = {
 	importLocalCommits: (workspaceId: string, commits: LocalCommitImport[], gitRef: string | null, repoPath: string | null) => __TAURI_INVOKE<number>("import_local_commits", { workspaceId, commits, gitRef, repoPath }),
 	listLocalCommitGraph: (workspaceId: string) => __TAURI_INVOKE<LocalCommitGraphSnapshot>("list_local_commit_graph", { workspaceId }),
 	repairLocalCommitGraph: (workspaceId: string, repoPath: string, gitRef: string | null) => __TAURI_INVOKE<number>("repair_local_commit_graph", { workspaceId, repoPath, gitRef }),
-	enqueueLocalCommitGraphSync: (workspaceId: string, payloadJson: string, mutationId: string | null) => __TAURI_INVOKE<LocalSyncEventRow>("enqueue_local_commit_graph_sync", { workspaceId, payloadJson, mutationId }),
-	localFirstDeleteBranch: (workspaceId: string, rootNodeId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_delete_branch", { workspaceId, rootNodeId }),
-	localFirstDeleteWorkspace: (workspaceId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_delete_workspace", { workspaceId }),
+	enqueueLocalCommitGraphSync: (workspaceId: string, currentUserId: string, payloadJson: string, mutationId: string | null) => __TAURI_INVOKE<LocalSyncEventRow>("enqueue_local_commit_graph_sync", { workspaceId, currentUserId, payloadJson, mutationId }),
+	localFirstDeleteBranch: (workspaceId: string, currentUserId: string, rootNodeId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_delete_branch", { workspaceId, currentUserId, rootNodeId }),
+	localFirstDeleteWorkspace: (workspaceId: string, currentUserId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_delete_workspace", { workspaceId, currentUserId }),
 	listLocalDeletedNodeRoots: (workspaceId: string) => __TAURI_INVOKE<LocalDeletedNodeRoot[]>("list_local_deleted_node_roots", { workspaceId }),
 	listLocalDeletedWorkspaceIds: () => __TAURI_INVOKE<string[]>("list_local_deleted_workspace_ids"),
-	processLocalSyncEvents: (authToken: string, limit: number | null) => __TAURI_INVOKE<number>("process_local_sync_events", { authToken, limit }),
+	processLocalSyncEvents: (authToken: string, currentUserId: string, limit: number | null) => __TAURI_INVOKE<number>("process_local_sync_events", { authToken, currentUserId, limit }),
 	startAgentRun: (intent: StartAgentRunIntent) => __TAURI_INVOKE<StartAgentRunResponse>("start_agent_run", { intent }),
 	stopAgent: (sessionId: string) => __TAURI_INVOKE<null>("stop_agent", { sessionId }),
 	steerAgentRun: (assistantNodeId: string, content: string, idempotencyKey: string) => __TAURI_INVOKE<null>("steer_agent_run", { assistantNodeId, content, idempotencyKey }),
 	getAgentRunState: (assistantNodeId: string) => __TAURI_INVOKE<AgentRunStateResponse>("get_agent_run_state", { assistantNodeId }),
+	listLoginProfiles: () => __TAURI_INVOKE<LoginProfile[]>("list_login_profiles"),
+	upsertLoginProfile: (request: UpsertLoginProfileRequest) => __TAURI_INVOKE<LoginProfile>("upsert_login_profile", { request }),
+	deleteLoginProfile: (profileId: string) => __TAURI_INVOKE<null>("delete_login_profile", { profileId }),
+	setDefaultLoginProfile: (provider: string, profileId: string | null) => __TAURI_INVOKE<LoginProfile[]>("set_default_login_profile", { provider, profileId }),
+	listActiveLoginProfileRuns: () => __TAURI_INVOKE<ActiveLoginProfileRun[]>("list_active_login_profile_runs"),
+	checkLoginProfileReadiness: (profileId: string) => __TAURI_INVOKE<LoginProfile>("check_login_profile_readiness", { profileId }),
+	checkAllLoginProfileReadiness: () => __TAURI_INVOKE<LoginProfile[]>("check_all_login_profile_readiness"),
+	discoverLoginImportCandidates: () => __TAURI_INVOKE<LoginImportCandidate[]>("discover_login_import_candidates"),
+	importDiscoveredLoginProfile: (request: ImportLoginCandidateRequest) => __TAURI_INVOKE<LoginProfile>("import_discovered_login_profile", { request }),
+	importExistingRuntimeLogin: (provider: string, displayName: string) => __TAURI_INVOKE<LoginProfile>("import_existing_runtime_login", { provider, displayName }),
 	checkRuntimeReadiness: (provider: string) => __TAURI_INVOKE<RuntimeReadiness>("check_runtime_readiness", { provider }),
 	checkAllRuntimeReadiness: () => __TAURI_INVOKE<RuntimeReadiness[]>("check_all_runtime_readiness"),
-	checkCodexReadiness: () => __TAURI_INVOKE<RuntimeReadiness>("check_codex_readiness"),
 	refreshProviderLimits: (provider: string) => __TAURI_INVOKE<string>("refresh_provider_limits", { provider }),
 	checkLocalEnvironment: () => __TAURI_INVOKE<LocalEnvironmentStatus>("check_local_environment"),
 	attachWorkspace: (path: string) => __TAURI_INVOKE<WorkspaceInfo>("attach_workspace", { path }),
@@ -125,6 +135,17 @@ export const commands = {
 };
 
 /* Types */
+export type ActiveLoginProfileRun = {
+	loginProfileId: string,
+	runId: string,
+	assistantNodeId: string,
+	workspaceId: string | null,
+	agentType: string | null,
+	status: string,
+	phase: string,
+	updatedAt: number,
+};
+
 export type AddableCommitCandidate = {
 	sha: string,
 	parents: string[],
@@ -148,6 +169,7 @@ export type AgentRunContext = {
 	parentCommit?: string | null,
 	authorName?: string | null,
 	promptFallback?: string | null,
+	authUserId?: string | null,
 };
 
 export type AgentRunJournalEvent = {
@@ -186,6 +208,7 @@ export type AgentRunLedgerRow = {
 	failureReason: string | null,
 	needsUserActionReason: string | null,
 	cleanupCompleted: boolean,
+	loginProfileId: string | null,
 };
 
 export type AgentRunStateResponse = {
@@ -329,6 +352,7 @@ export type GitLocalRefInfo = {
 	git_ref: string,
 	short_name: string,
 	commit_sha: string,
+	committed_at: string | null,
 };
 
 export type GitMergePreview = {
@@ -357,6 +381,12 @@ export type GitRefTipInfo = {
 	git_ref: string,
 	commit_sha: string | null,
 	error: string | null,
+};
+
+export type ImportLoginCandidateRequest = {
+	candidateId: string,
+	displayName: string | null,
+	makeDefault: boolean | null,
 };
 
 export type LocalCommitGraphSnapshot = {
@@ -438,6 +468,7 @@ export type LocalNodeRow = {
 export type LocalSyncEventRow = {
 	id: string,
 	workspaceId: string | null,
+	userId: string | null,
 	entityType: string,
 	entityId: string,
 	eventType: string,
@@ -455,6 +486,33 @@ export type LogPaths = {
 	log_dir: string,
 	frontend_log: string,
 	backend_log: string,
+};
+
+export type LoginImportCandidate = {
+	id: string,
+	provider: string,
+	displayName: string,
+	authType: string,
+	sourceKind: string,
+	sourceLabel: string,
+	redactedHint: string | null,
+	importable: boolean,
+};
+
+export type LoginProfile = {
+	id: string,
+	provider: string,
+	displayName: string,
+	authType: string,
+	redactedHint: string | null,
+	config: unknown,
+	status: string,
+	statusMessage: string | null,
+	planType: string | null,
+	isDefault: boolean,
+	createdAt: number,
+	updatedAt: number,
+	lastCheckedAt: number | null,
 };
 
 export type MergeReviewFileInput = {
@@ -549,8 +607,10 @@ export type StartAgentRunIntent = {
 	agentType: string,
 	args: string[],
 	authToken: string,
+	currentUserId: string,
 	traceId: string | null,
 	runContext: AgentRunContext,
+	loginProfileId?: string | null,
 };
 
 export type StartAgentRunResponse = {
@@ -633,6 +693,16 @@ export type ThreadSessionPayload = {
 	baseCommitSha: string | null,
 	firstMessageId: string | null,
 	source: string,
+};
+
+export type UpsertLoginProfileRequest = {
+	id: string | null,
+	provider: string,
+	displayName: string,
+	authType: string,
+	secret: string | null,
+	config: unknown,
+	makeDefault: boolean | null,
 };
 
 export type WorkspaceInfo = {

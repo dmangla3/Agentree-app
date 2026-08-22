@@ -10,6 +10,8 @@ import {
   resolveThreadDeletePlan,
   resolveThreadScopedDefaultFocus,
   resolveThreadDropdownSelection,
+  resolveReactFlowNodeClickFocusMessageId,
+  resolveReactFlowNodeClickFocusTarget,
   shouldDispatchGraphFocusSynchronously,
   shouldClampViewportDuringMove,
   shouldRestoreViewportAfterGraphNodeCountChange,
@@ -73,6 +75,14 @@ describe('shouldTreatGraphMoveAsViewportInteraction', () => {
       eventTargetIsNode: false,
       programmaticFocusCenterActive: true,
     })).toBe(true);
+  });
+
+  it('ignores programmatic viewport movement without a browser event', () => {
+    expect(shouldTreatGraphMoveAsViewportInteraction({
+      eventType: undefined,
+      eventTargetIsNode: false,
+      programmaticFocusCenterActive: false,
+    })).toBe(false);
   });
 });
 
@@ -262,6 +272,54 @@ describe('clampGraphViewportToNodeBounds', () => {
 });
 
 describe('GraphView canvas running status', () => {
+  it('uses projected focus targets for React Flow user node clicks', () => {
+    expect(resolveReactFlowNodeClickFocusMessageId({
+      nodeType: 'user_message',
+      nodeId: 'user-a',
+      entity: {
+        messageId: 'user-a',
+        focusMessageId: 'assistant-a',
+      },
+    })).toBe('assistant-a');
+
+    expect(resolveReactFlowNodeClickFocusMessageId({
+      nodeType: 'user_message',
+      nodeId: 'user-a',
+      entity: {
+        messageId: 'user-a',
+        focusMessageId: null,
+      },
+    })).toBeNull();
+  });
+
+  it('centers the clicked user node when its focus redirects to an assistant', () => {
+    expect(resolveReactFlowNodeClickFocusTarget({
+      nodeType: 'user_message',
+      nodeId: 'user-a',
+      entity: {
+        messageId: 'user-a',
+        focusMessageId: 'assistant-a',
+      },
+    })).toEqual({
+      messageId: 'assistant-a',
+      centerMessageId: 'user-a',
+      redirectedFromMessageId: 'user-a',
+    });
+
+    expect(resolveReactFlowNodeClickFocusTarget({
+      nodeType: 'assistant_message',
+      nodeId: 'assistant-a',
+      entity: {
+        messageId: 'assistant-a',
+        focusMessageId: 'assistant-a',
+      },
+    })).toEqual({
+      messageId: 'assistant-a',
+      centerMessageId: 'assistant-a',
+      redirectedFromMessageId: null,
+    });
+  });
+
   it('does not render a graph-canvas running count shortcut to timeline view', () => {
     const source = readFileSync(join(process.cwd(), 'src/components/GraphView.tsx'), 'utf8');
 

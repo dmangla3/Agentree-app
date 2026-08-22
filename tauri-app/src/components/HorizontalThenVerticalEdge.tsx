@@ -26,12 +26,6 @@ export const EdgeEndpointDots = ({
   return (
     <g pointerEvents="none" aria-hidden="true">
       <circle
-        cx={sourceX}
-        cy={sourceY}
-        r={visuals.haloRadius}
-        fill={visuals.haloColor}
-      />
-      <circle
         data-testid={`${edgeId}-source-endpoint-dot`}
         cx={sourceX}
         cy={sourceY}
@@ -39,12 +33,6 @@ export const EdgeEndpointDots = ({
         fill="hsl(var(--background))"
         stroke={visuals.color}
         strokeWidth={3}
-      />
-      <circle
-        cx={targetX}
-        cy={targetY}
-        r={visuals.haloRadius}
-        fill={visuals.haloColor}
       />
       <circle
         data-testid={`${edgeId}-target-endpoint-dot`}

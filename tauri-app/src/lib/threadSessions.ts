@@ -81,7 +81,7 @@ export const getLegacyThreadIdForMessage = (
 
 export const threadSessionSortKey = (thread: ThreadSession) => ({
   statusRank: thread.status === 'active' ? 0 : thread.status === 'done' ? 1 : 2,
-  updatedAtMs: Number.isFinite(Date.parse(thread.updatedAt)) ? Date.parse(thread.updatedAt) : 0,
+  createdAtMs: Number.isFinite(Date.parse(thread.createdAt)) ? Date.parse(thread.createdAt) : 0,
   id: thread.id,
 });
 
@@ -94,7 +94,7 @@ const compareThreadSessions = (left: ThreadSession, right: ThreadSession): numbe
   const leftKey = threadSessionSortKey(left);
   const rightKey = threadSessionSortKey(right);
   if (leftKey.statusRank !== rightKey.statusRank) return leftKey.statusRank - rightKey.statusRank;
-  if (leftKey.updatedAtMs !== rightKey.updatedAtMs) return rightKey.updatedAtMs - leftKey.updatedAtMs;
+  if (leftKey.createdAtMs !== rightKey.createdAtMs) return rightKey.createdAtMs - leftKey.createdAtMs;
   return leftKey.id.localeCompare(rightKey.id);
 };
 

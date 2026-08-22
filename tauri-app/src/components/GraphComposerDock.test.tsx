@@ -82,6 +82,19 @@ describe('GraphComposerDock', () => {
     expect(composerSource).not.toContain('useWorkspaceMessages');
   });
 
+  it('uses a bounded autosizing textarea for long graph composer prompts', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const composerSource = readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
+
+    expect(composerSource).toContain("import TextareaAutosize from 'react-textarea-autosize';");
+    expect(composerSource).toContain('<TextareaAutosize');
+    expect(composerSource).toContain('minRows={2}');
+    expect(composerSource).toContain('maxRows={10}');
+    expect(composerSource).toContain('overflow-y-auto');
+    expect(composerSource).not.toContain('<textarea');
+  });
+
   it('keeps the graph composer control surface for flow, model, code base, and context', async () => {
     const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');

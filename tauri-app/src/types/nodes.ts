@@ -16,6 +16,7 @@ export interface SharedNodeProps {
   isFocused: boolean;
   isSelected: boolean;
   isComposerBaseCommit?: boolean;
+  focusFeedbackEnabled?: boolean;
   detailLevel?: GraphNodeDetailLevel;
   disableHoverCard?: boolean;
   showSelectionControl?: boolean;

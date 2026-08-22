@@ -77,7 +77,9 @@ describe('ChatAssistantCard identity', () => {
     expect(screen.getByText('Generated AI topic label')).toBeTruthy();
   });
 
-  it('shows the persisted failure reason for failed assistant nodes', () => {
+  it('puts the persisted failure reason on the failed status tooltip only', () => {
+    const reason = "ImportError: cannot import name 'ParamSpec' from 'typing'";
+
     render(
       <ChatAssistantCard
         entity={makeAssistantEntity({
@@ -85,7 +87,7 @@ describe('ChatAssistantCard identity', () => {
           message: {
             status: 'failed' as any,
             execution_data: {
-              failure_reason: "ImportError: cannot import name 'ParamSpec' from 'typing'",
+              failure_reason: reason,
             },
           } as any,
         })}
@@ -98,8 +100,9 @@ describe('ChatAssistantCard identity', () => {
       />
     );
 
-    expect(screen.getByText('Failure reason')).toBeTruthy();
-    expect(screen.getByText("ImportError: cannot import name 'ParamSpec' from 'typing'")).toBeTruthy();
+    expect(screen.getByTitle(`Agent Failed: ${reason}`)).toBeTruthy();
+    expect(screen.queryByText('Failure reason')).toBeNull();
+    expect(screen.queryByText(reason)).toBeNull();
   });
 
   it('shows only final output for completed structured runs and keeps work details in collapsed logs', () => {
@@ -139,7 +142,13 @@ describe('ChatAssistantCard identity', () => {
     expect(screen.queryByText('Interim progress update.')).toBeNull();
     expect(screen.queryByText('Checking implementation details.')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: /work logs/i }));
+    const workLogsButton = screen.getByRole('button', { name: /work logs/i });
+    const finalOutput = screen.getByText('Final answer only.');
+    expect(
+      Boolean(workLogsButton.compareDocumentPosition(finalOutput) & Node.DOCUMENT_POSITION_FOLLOWING)
+    ).toBe(true);
+
+    fireEvent.click(workLogsButton);
 
     expect(screen.getByText('Interim progress update.')).toBeTruthy();
     expect(screen.getByText('Checking implementation details.')).toBeTruthy();
@@ -180,6 +189,29 @@ describe('ChatAssistantCard identity', () => {
     expect(screen.getByText('Live progress update.')).toBeTruthy();
     expect(screen.getByText('npm test')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /work logs/i })).toBeNull();
+  });
+
+  it('shows a refined running cue instead of the generic working label', () => {
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          status: 'running' as any,
+          message: {
+            status: 'running' as any,
+            content: '',
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByText('Agent running')).toBeTruthy();
+    expect(screen.queryByText(/^working$/i)).toBeNull();
   });
 
   it('shows user steering messages in the active chat assistant card', () => {

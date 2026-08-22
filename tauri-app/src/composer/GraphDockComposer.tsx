@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, Check, ChevronDown, CornerDownRight, GitBranchIcon, GitCommitHorizontal, History, Loader2, Minus, Plus, RotateCcw, Search, Send, Workflow, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
+import TextareaAutosize from 'react-textarea-autosize';
+import { Bot, Check, ChevronDown, CornerDownRight, FileText, GitBranchIcon, GitCommitHorizontal, History, Loader2, Minus, Pencil, Plus, Puzzle, RotateCcw, Search, Send, Workflow, X } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useShallow } from 'zustand/react/shallow';
 import { useWorkspaceStore, type Message, type Workspace } from '../stores/workspaceStore';
 import { useRunStatusStore } from '../stores/runStatusStore';
+import { useLoginProfilesStore } from '../stores/loginProfilesStore';
+import { isLoginProfileActive } from '../lib/loginProfiles';
 import { applyLocalNodeMessages } from '../hooks/useLiveMessages';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from '../hooks/useLocalNodes';
 import { useAgents, type Agent } from '../hooks/useAgents';
@@ -14,7 +17,7 @@ import { useAgentFlowRunner } from '../hooks/useAgentFlowRunner';
 import { getEnabledTrackedGitRefs, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
 import { useTrackedRefs } from '../hooks/useTrackedRefs';
 import { agentRunManager } from '../agent-runs/agentRunManager';
-import { agentClient, type GitCommitMetadata } from '../lib/agentClient';
+import { agentClient, type GitCommitMetadata, type SkillSummary } from '../lib/agentClient';
 import { getAccessToken } from '../lib/authSession';
 import { createSendFlowId, recordSendFlowEvent } from '../perf/sendFlow';
 import {
@@ -30,6 +33,7 @@ import { getMergeVisualParentEntries, isMergeResultNode } from '../lib/graph/lin
 import { isFirstClassCommitMessage } from '../lib/graph/turnUtils';
 import { hasFreshContextBoundary } from '../lib/messageContext';
 import { isSteerableAssistantNode } from '../lib/agentRunSteering';
+import { dispatchGraphComposerDockExpand } from '../lib/graphComposerDockEvents';
 import { cn } from '../lib/utils';
 import {
   buildComposerAgentRuns,
@@ -37,6 +41,20 @@ import {
   updateComposerAgentRunCount,
   type ComposerAgentRunCounts,
 } from '../lib/composerAgentRuns';
+import {
+  buildRepoMentionSearchIndex,
+  extractRepoMentionPaths,
+  getMentionedRepoPathSet,
+  getRepoMentionMatches,
+  type RepoMentionFile,
+} from '../lib/composerRepoMentions';
+import {
+  getActiveSkillMention,
+  getSkillMentionNames,
+  getSkillMentionSuggestions,
+  insertSkillMention,
+  type ActiveSkillMention,
+} from '../lib/composerSkillMentions';
 import { UnifiedAgentModelSelector } from '../components/UnifiedAgentModelSelector';
 import {
   DropdownMenu,
@@ -55,14 +73,22 @@ import {
   resolveGraphDockComposerEffectiveAgentId,
   resolveGraphDockComposerRunCountsForEffectiveAgent,
   resolveGraphDockComposerTarget,
+  shouldSubmitGraphDockComposerKey,
 } from './graphDockComposerLogic';
 
 const FLOW_NONE_ID = '__none__';
 const FLOW_PARALLEL_MIN_COUNT = 2;
 const FLOW_PARALLEL_MAX_COUNT = 8;
+const GRAPH_DOCK_PROMPT_DRAFT_DEBOUNCE_MS = 300;
 
 type ContextPolicy = 'continue' | 'fresh';
 type ComposerTargetMode = 'reply' | 'new-thread';
+type EditUserMessageEventDetail = { message?: Message };
+interface ActiveFileMention {
+  start: number;
+  end: number;
+  query: string;
+}
 
 interface SelectedGraphBaseCommit {
   sha: string;
@@ -177,9 +203,101 @@ const areAgentRunCountsEqual = (left: ComposerAgentRunCounts, right: ComposerAge
   return leftKeys.every((key) => left[key] === right[key]);
 };
 
+const getActiveFileMention = (
+  value: string,
+  cursorPosition: number | null | undefined
+): ActiveFileMention | null => {
+  if (cursorPosition == null) return null;
+  const beforeCursor = value.slice(0, cursorPosition);
+  const mentionMatch = beforeCursor.match(/(^|\s)@([^\s@]*)$/);
+  if (!mentionMatch) return null;
+
+  const query = mentionMatch[2] ?? '';
+  return {
+    start: beforeCursor.length - query.length - 1,
+    end: cursorPosition,
+    query,
+  };
+};
+
+function GraphDockPromptTextarea({
+  textareaRef,
+  initialValue,
+  resetVersion,
+  disabled,
+  onPromptChange,
+  onDraftChange,
+  onSelectionChange,
+  onPromptKeyDown,
+  onSubmit,
+}: {
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
+  initialValue: string;
+  resetVersion: number;
+  disabled: boolean;
+  onPromptChange: (value: string) => void;
+  onDraftChange: (value: string) => void;
+  onSelectionChange: (value: string, cursorPosition: number | null | undefined) => void;
+  onPromptKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  onSubmit: () => void;
+}) {
+  const [localPrompt, setLocalPrompt] = useState(initialValue);
+  const draftSaveTimeoutRef = useRef<number | null>(null);
+
+  const clearPendingDraftSave = useCallback(() => {
+    if (draftSaveTimeoutRef.current === null) return;
+    window.clearTimeout(draftSaveTimeoutRef.current);
+    draftSaveTimeoutRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    clearPendingDraftSave();
+    setLocalPrompt(initialValue);
+    onPromptChange(initialValue);
+  }, [clearPendingDraftSave, initialValue, onPromptChange, resetVersion]);
+
+  useEffect(() => clearPendingDraftSave, [clearPendingDraftSave]);
+
+  const handlePromptChange = useCallback((value: string) => {
+    setLocalPrompt(value);
+    onPromptChange(value);
+    clearPendingDraftSave();
+    draftSaveTimeoutRef.current = window.setTimeout(() => onDraftChange(value), GRAPH_DOCK_PROMPT_DRAFT_DEBOUNCE_MS);
+  }, [clearPendingDraftSave, onDraftChange, onPromptChange]);
+
+  return (
+    <TextareaAutosize
+      ref={textareaRef}
+      data-testid="chat-composer-textarea"
+      aria-label="Graph composer prompt"
+      value={localPrompt}
+      onChange={(event) => {
+        handlePromptChange(event.target.value);
+        onSelectionChange(event.currentTarget.value, event.currentTarget.selectionStart);
+      }}
+      onSelect={(event) => onSelectionChange(event.currentTarget.value, event.currentTarget.selectionStart)}
+      onKeyDown={(event) => {
+        onPromptKeyDown(event);
+        if (event.defaultPrevented) return;
+        if (shouldSubmitGraphDockComposerKey(event)) {
+          event.preventDefault();
+          onSubmit();
+        }
+      }}
+      placeholder="Ask anything... Type @ for files or $ for skills"
+      className="max-h-[216px] min-h-[58px] w-full resize-none overflow-y-auto rounded-lg bg-[hsl(var(--background)/0.44)] px-2.5 py-2 text-[13px] leading-5 text-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.54)] outline-none transition-[background-color,box-shadow] duration-150 placeholder:text-muted-foreground/68 focus:bg-[hsl(var(--background)/0.64)] focus:shadow-[inset_0_0_0_1px_hsl(var(--app-focus)/0.48),0_0_0_3px_hsl(var(--app-focus)/0.08)]"
+      disabled={disabled}
+      minRows={2}
+      maxRows={10}
+      cacheMeasurements
+    />
+  );
+}
+
 export function GraphDockComposer() {
   const queryClient = useQueryClient();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const promptRef = useRef('');
   const assistantNodeIdRef = useRef<string | null>(null);
   const [composerTargetMode, setComposerTargetMode] = useState<ComposerTargetMode>('reply');
   const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
@@ -191,8 +309,18 @@ export function GraphDockComposer() {
   const [selectedMergeContextParentId, setSelectedMergeContextParentId] = useState<string | null>(null);
   const [selectedContextStartId, setSelectedContextStartId] = useState<string | null>(null);
   const [selectedAgentRunCounts, setSelectedAgentRunCounts] = useState<ComposerAgentRunCounts>({});
+  const [selectedLoginProfileIdByProvider, setSelectedLoginProfileIdByProvider] = useState<Record<string, string | null>>({});
   const [flowParallelCount, setFlowParallelCount] = useState(3);
-  const [prompt, setPrompt] = useState('');
+  const [promptSeed, setPromptSeed] = useState('');
+  const [promptResetVersion, setPromptResetVersion] = useState(0);
+  const [promptHasContent, setPromptHasContent] = useState(false);
+  const [editDraftSource, setEditDraftSource] = useState<Message | null>(null);
+  const [repoMentionFiles, setRepoMentionFiles] = useState<RepoMentionFile[]>([]);
+  const [repoMentionCommit, setRepoMentionCommit] = useState<string | null>(null);
+  const [activeFileMention, setActiveFileMention] = useState<ActiveFileMention | null>(null);
+  const [activeFileMentionIndex, setActiveFileMentionIndex] = useState(0);
+  const [activeSkillMention, setActiveSkillMention] = useState<ActiveSkillMention | null>(null);
+  const [activeSkillMentionIndex, setActiveSkillMentionIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [isSteering, setIsSteering] = useState(false);
   const {
@@ -236,6 +364,13 @@ export function GraphDockComposer() {
     () => selectedWorkspace?.git_repo_path?.trim() || selectedWorkspace?.folderPath?.trim() || null,
     [selectedWorkspace?.folderPath, selectedWorkspace?.git_repo_path]
   );
+  const installedSkillsQuery = useQuery({
+    queryKey: ['skills', 'installed'],
+    queryFn: () => agentClient.listInstalledSkills('graph-composer-skills-installed'),
+    enabled: Boolean(selectedWorkspaceId) && agentClient.hasRuntime(),
+    staleTime: 30_000,
+  });
+  const installedSkills = useMemo(() => installedSkillsQuery.data ?? [], [installedSkillsQuery.data]);
   const localRefsQuery = useQuery({
     queryKey: ['git-refs', selectedWorkspaceRepoPath, selectedWorkspaceId],
     queryFn: async () => {
@@ -296,7 +431,13 @@ export function GraphDockComposer() {
     lastFocusSource,
     lastFocusMetadata,
   });
-  const target = composerTargetMode === 'new-thread'
+  const target = editDraftSource
+    ? {
+      parentMessageId: editDraftSource.parentId ?? null,
+      selectedNodeId: editDraftSource.parentId ?? null,
+      focusedCommitSha: null,
+    }
+    : composerTargetMode === 'new-thread'
     ? {
       parentMessageId: null,
       selectedNodeId: rawTarget.selectedNodeId,
@@ -508,12 +649,13 @@ export function GraphDockComposer() {
   const isSending = sendMessageMutation.isPending;
   const isPrimaryActionBusy = isSending || isSteering;
   const isComposerConfigurationDisabled = isPrimaryActionBusy || isSteeringRunningAssistant;
-  const canSend = Boolean(selectedWorkspaceId && prompt.trim() && !isPrimaryActionBusy && (
+  const canSend = Boolean(selectedWorkspaceId && promptHasContent && !isPrimaryActionBusy && (
     isSteeringRunningAssistant
       ? target.parentMessageId
       : effectiveBase && (isFlowSelected ? agent : selectedAgentRunItems.length > 0)
   ));
-  const targetLabel = previewText(parentMessage, target.parentMessageId ? 'Selected node' : 'Workspace root');
+  const rootTargetLabel = composerTargetMode === 'new-thread' ? 'Thread root' : 'Workspace root';
+  const targetLabel = previewText(parentMessage, target.parentMessageId ? 'Selected node' : rootTargetLabel);
   const baseCommitPickerCommits = useMemo<ComposerCommitPickerCommit[]>(() => {
     const commitsBySha = new Map<string, ComposerCommitPickerCommit>();
     const upsert = (commit: Partial<ComposerCommitPickerCommit> & { sha?: string | null }) => {
@@ -634,6 +776,30 @@ export function GraphDockComposer() {
     ?? basePickerItems.find((item) => item.sha === effectiveBase?.commitSha)?.primaryLabel
     ?? baseSourceLabel(effectiveBase?.source)
     ?? (effectiveBase ? shortCommitSha(effectiveBase.commitSha) : 'No base');
+  const repoMentionSearchIndex = useMemo(
+    () => buildRepoMentionSearchIndex(repoMentionFiles),
+    [repoMentionFiles]
+  );
+  const repoMentionFilePathSet = useMemo(
+    () => new Set(repoMentionFiles.map((file) => file.path)),
+    [repoMentionFiles]
+  );
+  const repoMentionPathSet = useMemo(
+    () => getMentionedRepoPathSet(promptRef.current, repoMentionFilePathSet),
+    [promptHasContent, repoMentionFilePathSet]
+  );
+  const skillMentionNameSet = useMemo(
+    () => new Set(getSkillMentionNames(promptRef.current).filter((name) => installedSkills.some((skill: SkillSummary) => skill.name === name))),
+    [installedSkills, promptHasContent]
+  );
+  const activeMentionFiles = useMemo(
+    () => activeFileMention ? getRepoMentionMatches(repoMentionSearchIndex, activeFileMention.query, 8) : [],
+    [activeFileMention, repoMentionSearchIndex]
+  );
+  const activeMentionSkills = useMemo(
+    () => activeSkillMention ? getSkillMentionSuggestions(installedSkills, activeSkillMention.query, 8) : [],
+    [activeSkillMention, installedSkills]
+  );
   const isBaseChoicesLoading = localRefsQuery.isLoading || trackedRefsQuery.isLoading || gitRefSnapshotQuery.isLoading || lazyCommitsQuery.isLoading || baseCommitCandidatesQuery.isLoading || baseCommitAncestorsQuery.isLoading;
   const modelSelectorLabel = !isFlowSelected && selectedRunTotal > 1
     ? `${selectedRunTotal} runs`
@@ -651,8 +817,39 @@ export function GraphDockComposer() {
 
   useEffect(() => {
     const saved = getComposerDraft(selectedWorkspaceId);
-    setPrompt(saved);
+    promptRef.current = saved;
+    setPromptSeed(saved);
+    setPromptHasContent(saved.trim().length > 0);
+    setPromptResetVersion((version) => version + 1);
   }, [getComposerDraft, selectedWorkspaceId]);
+
+  useEffect(() => {
+    const handleEditUserMessage = (event: CustomEvent<EditUserMessageEventDetail>) => {
+      const sourceMessage = event.detail?.message;
+      if (!sourceMessage || sourceMessage.role !== 'user') return;
+      if (sourceMessage.workspaceId !== selectedWorkspaceId) return;
+
+      setEditDraftSource(sourceMessage);
+      promptRef.current = sourceMessage.content || '';
+      setPromptSeed(sourceMessage.content || '');
+      setPromptHasContent(Boolean(sourceMessage.content?.trim()));
+      setPromptResetVersion((version) => version + 1);
+      setComposerDraft(selectedWorkspaceId, sourceMessage.content || '');
+      setComposerTargetMode('reply');
+      setPendingThreadId(null);
+      setContextPolicy(sourceMessage.parentId ? 'continue' : 'fresh');
+      setSelectedContextStartId(null);
+      setSelectedMergeContextParentId(null);
+      dispatchGraphComposerDockExpand();
+      window.setTimeout(() => textareaRef.current?.focus(), 0);
+    };
+
+    window.addEventListener('editUserMessage', handleEditUserMessage as EventListener);
+
+    return () => {
+      window.removeEventListener('editUserMessage', handleEditUserMessage as EventListener);
+    };
+  }, [selectedWorkspaceId, setComposerDraft]);
 
   useEffect(() => {
     const normalized = normalizeComposerAgentRunCounts(
@@ -678,6 +875,52 @@ export function GraphDockComposer() {
   }, [effectiveSelectedAgentId, isFlowSelected, normalizedSelectedAgentRunCounts]);
 
   useEffect(() => {
+    let cancelled = false;
+    const commit = effectiveBase?.commitSha?.trim() || null;
+    if (!selectedWorkspaceRepoPath || !commit) {
+      setRepoMentionFiles([]);
+      setRepoMentionCommit(null);
+      return;
+    }
+
+    const loadRepoMentionFiles = async () => {
+      try {
+        const repoPaths = await agentClient.listFilesAtCommit(selectedWorkspaceRepoPath, commit);
+        if (cancelled) return;
+        setRepoMentionCommit(commit);
+        setRepoMentionFiles(repoPaths.map((path) => ({
+          path,
+          name: path.split('/').pop() || path,
+        })));
+      } catch (caught) {
+        if (cancelled) return;
+        console.warn('[GraphDockComposer] Failed to load repo mention files:', caught);
+        setRepoMentionFiles([]);
+        setRepoMentionCommit(null);
+      }
+    };
+
+    void loadRepoMentionFiles();
+    return () => {
+      cancelled = true;
+    };
+  }, [effectiveBase?.commitSha, selectedWorkspaceRepoPath]);
+
+  useEffect(() => {
+    setActiveFileMentionIndex(0);
+  }, [activeFileMention?.query]);
+
+  useEffect(() => {
+    setActiveSkillMentionIndex(0);
+  }, [activeSkillMention?.query]);
+
+  useEffect(() => {
+    if (selectedWorkspaceId) return;
+    setActiveFileMention(null);
+    setActiveSkillMention(null);
+  }, [selectedWorkspaceId]);
+
+  useEffect(() => {
     setSelectedBaseCommit(null);
     setBaseCommitSearch('');
   }, [base?.commitSha, selectedWorkspaceId, target.parentMessageId]);
@@ -698,9 +941,10 @@ export function GraphDockComposer() {
 
   useEffect(() => {
     if (!rawTarget.parentMessageId && !rawTarget.focusedCommitSha) return;
+    if (editDraftSource) return;
     setComposerTargetMode('reply');
     setPendingThreadId(null);
-  }, [rawTarget.parentMessageId, rawTarget.focusedCommitSha]);
+  }, [editDraftSource, rawTarget.parentMessageId, rawTarget.focusedCommitSha]);
 
   useEffect(() => {
     if (mergeContextOptions.length === 0) {
@@ -739,9 +983,38 @@ export function GraphDockComposer() {
   ]);
 
   const updatePrompt = useCallback((value: string) => {
-    setPrompt(value);
+    promptRef.current = value;
+    const nextHasContent = value.trim().length > 0;
+    setPromptHasContent((current) => (current === nextHasContent ? current : nextHasContent));
+  }, []);
+
+  const savePromptDraft = useCallback((value: string) => {
     setComposerDraft(selectedWorkspaceId, value);
   }, [selectedWorkspaceId, setComposerDraft]);
+
+  const setPromptValue = useCallback((value: string) => {
+    promptRef.current = value;
+    setPromptSeed(value);
+    setPromptHasContent(value.trim().length > 0);
+    setPromptResetVersion((version) => version + 1);
+    setComposerDraft(selectedWorkspaceId, value);
+  }, [selectedWorkspaceId, setComposerDraft]);
+
+  const clearPrompt = useCallback(() => {
+    promptRef.current = '';
+    setPromptSeed('');
+    setPromptHasContent(false);
+    setPromptResetVersion((version) => version + 1);
+    setActiveFileMention(null);
+    setActiveSkillMention(null);
+  }, []);
+
+  const handleCancelEditDraft = useCallback(() => {
+    setEditDraftSource(null);
+    clearPrompt();
+    clearComposerDraft(selectedWorkspaceId);
+    window.setTimeout(() => textareaRef.current?.focus(), 0);
+  }, [clearComposerDraft, clearPrompt, selectedWorkspaceId]);
 
   const handleAgentSelect = useCallback((agentId: string) => {
     if (isFlowSelected) {
@@ -760,6 +1033,13 @@ export function GraphDockComposer() {
     setSelectedAgentRunCounts(normalized);
     setSelectedAgentId(nextSelectedAgentId);
   }, [agents, normalizedSelectedAgentRunCounts, setSelectedAgentId]);
+
+  const handleLoginProfileSelect = useCallback((provider: string, profileId: string | null) => {
+    setSelectedLoginProfileIdByProvider((current) => ({
+      ...current,
+      [provider]: profileId,
+    }));
+  }, []);
 
   const handleBaseSelect = useCallback((item: typeof filteredBasePickerItems[number]) => {
     if (item.isDefault) {
@@ -786,8 +1066,131 @@ export function GraphDockComposer() {
     setFlowParallelCount(clampFlowParallelCount(value));
   }, []);
 
+  const syncActiveMentions = useCallback((value: string, cursorPosition: number | null | undefined) => {
+    if (!selectedWorkspaceId || cursorPosition == null) {
+      setActiveFileMention(null);
+      setActiveSkillMention(null);
+      return;
+    }
+
+    const nextFileMention = getActiveFileMention(value, cursorPosition);
+    const nextSkillMention = nextFileMention ? null : getActiveSkillMention(value, cursorPosition);
+    setActiveFileMention(nextFileMention);
+    setActiveSkillMention(nextSkillMention);
+  }, [selectedWorkspaceId]);
+
+  const handleFileMentionSelect = useCallback((file: RepoMentionFile) => {
+    if (!activeFileMention) return;
+
+    const currentPrompt = promptRef.current;
+    const nextPrompt = `${currentPrompt.slice(0, activeFileMention.start)}@${file.path} ${currentPrompt.slice(activeFileMention.end)}`;
+    const nextCursor = activeFileMention.start + file.path.length + 2;
+
+    setPromptValue(nextPrompt);
+    setActiveFileMention(null);
+    window.setTimeout(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+    }, 80);
+  }, [activeFileMention, setPromptValue]);
+
+  const handleSkillMentionSelect = useCallback((skill: SkillSummary) => {
+    if (!activeSkillMention) return;
+
+    const replacement = insertSkillMention(promptRef.current, activeSkillMention, skill.name);
+    setPromptValue(replacement.value);
+    setActiveSkillMention(null);
+    window.setTimeout(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(replacement.cursor, replacement.cursor);
+    }, 80);
+  }, [activeSkillMention, setPromptValue]);
+
+  const handlePromptKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (activeFileMention) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        if (activeMentionFiles.length > 0) {
+          setActiveFileMentionIndex((current) => (current + 1) % activeMentionFiles.length);
+        }
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (activeMentionFiles.length > 0) {
+          setActiveFileMentionIndex((current) => (current - 1 + activeMentionFiles.length) % activeMentionFiles.length);
+        }
+        return;
+      }
+      if ((event.key === 'Enter' || event.key === 'Tab') && !event.shiftKey) {
+        event.preventDefault();
+        const selectedFile = activeMentionFiles[activeFileMentionIndex] ?? null;
+        if (selectedFile) handleFileMentionSelect(selectedFile);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setActiveFileMention(null);
+        return;
+      }
+    }
+
+    if (activeSkillMention) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        if (activeMentionSkills.length > 0) {
+          setActiveSkillMentionIndex((current) => (current + 1) % activeMentionSkills.length);
+        }
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (activeMentionSkills.length > 0) {
+          setActiveSkillMentionIndex((current) => (current - 1 + activeMentionSkills.length) % activeMentionSkills.length);
+        }
+        return;
+      }
+      if ((event.key === 'Enter' || event.key === 'Tab') && !event.shiftKey) {
+        event.preventDefault();
+        const selectedSkill = activeMentionSkills[activeSkillMentionIndex] ?? null;
+        if (selectedSkill) handleSkillMentionSelect(selectedSkill);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setActiveSkillMention(null);
+      }
+    }
+  }, [
+    activeFileMention,
+    activeFileMentionIndex,
+    activeMentionFiles,
+    activeMentionSkills,
+    activeSkillMention,
+    activeSkillMentionIndex,
+    handleFileMentionSelect,
+    handleSkillMentionSelect,
+  ]);
+
+  const expandRepoMentionContext = useCallback(async (rawPrompt: string) => {
+    if (!selectedWorkspaceRepoPath || !repoMentionCommit) return rawPrompt;
+    const mentionedPaths = Array.from(new Set(
+      extractRepoMentionPaths(rawPrompt).filter((path) => repoMentionFilePathSet.has(path))
+    ));
+    if (mentionedPaths.length === 0) return rawPrompt;
+
+    const fileBlocks = await Promise.all(mentionedPaths.slice(0, 8).map(async (filePath) => {
+      const content = await agentClient.showFileAtCommit(selectedWorkspaceRepoPath, repoMentionCommit, filePath);
+      return `Path: ${filePath}\n\`\`\`\n${content}\n\`\`\``;
+    }));
+
+    return `${rawPrompt}\n\n[REPO FILE CONTEXT]\n${fileBlocks.join('\n\n')}`.trim();
+  }, [repoMentionCommit, repoMentionFilePathSet, selectedWorkspaceRepoPath]);
+
   const handleSend = useCallback(async () => {
-    const trimmedPrompt = prompt.trim();
+    const trimmedPrompt = promptRef.current.trim();
     if (!selectedWorkspaceId || !trimmedPrompt || isPrimaryActionBusy) {
       recordSendFlowEvent('graph-dock.blocked', {
         workspaceId: selectedWorkspaceId,
@@ -803,7 +1206,7 @@ export function GraphDockComposer() {
       try {
         await agentClient.steerAgentRun(target.parentMessageId, trimmedPrompt, crypto.randomUUID());
         clearComposerDraft(selectedWorkspaceId);
-        setPrompt('');
+        clearPrompt();
         window.setTimeout(() => textareaRef.current?.focus(), 0);
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : 'Failed to steer running agent.';
@@ -845,11 +1248,18 @@ export function GraphDockComposer() {
       return;
     }
 
+    let promptForAgent = trimmedPrompt;
+    try {
+      promptForAgent = await expandRepoMentionContext(trimmedPrompt);
+    } catch (caught) {
+      console.warn('[GraphDockComposer] Failed to expand repo mention context:', caught);
+    }
+
     setError(null);
     assistantNodeIdRef.current = null;
     recordSendFlowEvent('graph-dock.submit', {
       workspaceId: selectedWorkspaceId,
-      promptLength: trimmedPrompt.length,
+      promptLength: promptForAgent.length,
       parentMessageId: target.parentMessageId,
       selectedFlowId: selectedFlow?.id ?? null,
       runCount: selectedFlow ? flowParallelCount : runsToSend.length,
@@ -858,9 +1268,10 @@ export function GraphDockComposer() {
     }, { source: 'GraphDockComposer' });
     try {
       if (selectedFlow) {
-        await flowRunner.runFlow({ input: trimmedPrompt, count: flowParallelCount });
+        await flowRunner.runFlow({ input: promptForAgent, count: flowParallelCount });
         clearComposerDraft(selectedWorkspaceId);
-        setPrompt('');
+        setEditDraftSource(null);
+        clearPrompt();
         resetComposerTargetAfterSuccessfulSend();
         return;
       }
@@ -876,6 +1287,18 @@ export function GraphDockComposer() {
         setPendingThreadId(thread.id);
       }
       for (const run of runsToSend) {
+        const compatibleLoginProfiles = useLoginProfilesStore.getState().profiles
+          .filter((profile) => profile.provider === run.agent.type);
+        const selectedLoginProfileId =
+          selectedLoginProfileIdByProvider[run.agent.type]
+          ?? compatibleLoginProfiles.find((profile) => profile.isDefault)?.id
+          ?? compatibleLoginProfiles[0]?.id
+          ?? null;
+        const selectedLoginProfile = compatibleLoginProfiles.find((profile) => profile.id === selectedLoginProfileId) ?? null;
+        if (compatibleLoginProfiles.length > 0 && (!selectedLoginProfile || !isLoginProfileActive(selectedLoginProfile))) {
+          setError(`${run.agent.name ?? run.agent.type} needs a ready login profile before it can run.`);
+          return;
+        }
         const flowId = createSendFlowId();
         await sendHeadlessComposerMessage({
           workspaceId: selectedWorkspaceId,
@@ -883,7 +1306,7 @@ export function GraphDockComposer() {
           contextParentId: effectiveContextParentId,
           contextPolicy: effectiveContextPolicy,
           contextStartId: effectiveContextStartId,
-          prompt: trimmedPrompt,
+          prompt: promptForAgent,
           messages,
           agent: run.agent,
           base: {
@@ -920,6 +1343,7 @@ export function GraphDockComposer() {
           perfFlowId: flowId,
           perfSource: 'GraphDockComposer',
           setupProgress: 'Starting graph composer run...',
+          selectedLoginProfileId: selectedLoginProfile?.id ?? null,
           threadId,
           threadOriginId: threadId,
           meta: {
@@ -931,7 +1355,8 @@ export function GraphDockComposer() {
         });
       }
       clearComposerDraft(selectedWorkspaceId);
-      setPrompt('');
+      setEditDraftSource(null);
+      clearPrompt();
       resetComposerTargetAfterSuccessfulSend();
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : 'Failed to send message.';
@@ -953,22 +1378,24 @@ export function GraphDockComposer() {
   }, [
     agent,
     clearComposerDraft,
+    clearPrompt,
     createThreadSession,
     effectiveBase,
     effectiveContextParentId,
     effectiveContextPolicy,
     effectiveContextStartId,
+    expandRepoMentionContext,
     flowParallelCount,
     flowRunner,
     isPrimaryActionBusy,
     isSteeringRunningAssistant,
     messages,
     pendingThreadId,
-    prompt,
     queryClient,
     resetComposerTargetAfterSuccessfulSend,
     selectedWorkspaceId,
     selectedAgentRunItems,
+    selectedLoginProfileIdByProvider,
     selectedFlow,
     sendMessageMutation,
     target.parentMessageId,
@@ -976,14 +1403,14 @@ export function GraphDockComposer() {
   ]);
 
   const targetModeLabel = composerTargetMode === 'new-thread' ? 'New thread' : 'Reply to';
-  const sendButtonLabel = isSteeringRunningAssistant ? 'Steer' : selectedFlow ? 'Run Flow' : 'Send';
+  const sendButtonLabel = isSteeringRunningAssistant ? 'Steer' : editDraftSource ? 'Edit and run' : selectedFlow ? 'Run Flow' : 'Send';
   const sendButtonBusyLabel = isSteeringRunningAssistant ? 'Steering' : 'Sending';
 
   return (
     <div
       data-testid="graph-dock-composer"
       className={cn(
-        'pointer-events-auto mx-auto w-[min(50rem,calc(100vw-1rem))] max-w-4xl overflow-hidden rounded-xl sm:w-[min(50rem,calc(100vw-7rem))]',
+        'pointer-events-auto mx-auto w-[min(50rem,calc(100vw-1rem))] max-w-4xl overflow-visible rounded-xl sm:w-[min(50rem,calc(100vw-7rem))]',
         'border border-[hsl(var(--app-border)/0.86)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-panel)/0.95))]',
         'shadow-[0_22px_70px_-40px_hsl(34_28%_18%/0.72),0_1px_0_hsl(44_80%_99%/0.72)_inset,0_-1px_0_hsl(var(--app-border)/0.26)_inset] backdrop-blur-xl'
       )}
@@ -1003,22 +1430,165 @@ export function GraphDockComposer() {
         </span>
       </div>
       <div className="p-2">
-        <textarea
-          ref={textareaRef}
-          data-testid="chat-composer-textarea"
-          aria-label="Graph composer prompt"
-          value={prompt}
-          onChange={(event) => updatePrompt(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault();
-              void handleSend();
-            }
-          }}
-          placeholder="Ask anything..."
-          className="max-h-[128px] min-h-[58px] w-full resize-none rounded-lg bg-[hsl(var(--background)/0.44)] px-2.5 py-2 text-[13px] leading-5 text-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.54)] outline-none transition-[background-color,box-shadow] duration-150 placeholder:text-muted-foreground/68 focus:bg-[hsl(var(--background)/0.64)] focus:shadow-[inset_0_0_0_1px_hsl(var(--app-focus)/0.48),0_0_0_3px_hsl(var(--app-focus)/0.08)]"
-          disabled={isPrimaryActionBusy}
-        />
+        {editDraftSource ? (
+          <div className="mb-1.5 flex items-center justify-between gap-2 rounded-lg border border-[hsl(var(--app-warning)/0.28)] bg-[hsl(var(--app-warning)/0.08)] px-2.5 py-1.5 text-[11px] text-foreground">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <Pencil className="h-3 w-3 shrink-0 text-[hsl(var(--app-warning))]" />
+              <span className="shrink-0 font-semibold">Editing</span>
+              <span className="truncate text-muted-foreground">{trimToWholeWords(editDraftSource.content || '', 80)}</span>
+            </div>
+            <button
+              type="button"
+              onClick={handleCancelEditDraft}
+              className="flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[10.5px] font-medium text-muted-foreground transition-colors hover:bg-[hsl(var(--app-warning)/0.12)] hover:text-foreground"
+            >
+              <X className="h-3 w-3" />
+              Cancel
+            </button>
+          </div>
+        ) : null}
+        <div className="relative">
+          {activeFileMention ? (
+            <div className="absolute inset-x-0 bottom-[calc(100%+8px)] z-50 overflow-hidden rounded-xl border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong)/0.98)] shadow-[0_20px_60px_-28px_rgba(15,23,42,0.45)] backdrop-blur-xl">
+              <div className="flex items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 text-[11px] font-semibold text-foreground">
+                    <span className="flex h-5 w-5 items-center justify-center rounded-md bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))]">
+                      <FileText className="h-3 w-3" />
+                    </span>
+                    Reference files
+                  </div>
+                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                    Search by file name or path. Enter to attach, Esc to dismiss.
+                  </p>
+                </div>
+                {activeFileMention.query ? (
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                    {activeFileMention.query}
+                  </span>
+                ) : null}
+              </div>
+              <div className="max-h-72 overflow-y-auto p-2">
+                {activeMentionFiles.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-border/70 px-3 py-6 text-center text-[12px] text-muted-foreground">
+                    No files match this query.
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    {activeMentionFiles.map((file, index) => {
+                      const isHighlighted = index === activeFileMentionIndex;
+                      const isSelected = repoMentionPathSet.has(file.path);
+                      return (
+                        <button
+                          key={file.path}
+                          type="button"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => handleFileMentionSelect(file)}
+                          className={cn(
+                            'flex w-full items-start justify-between gap-3 rounded-xl px-3 py-2 text-left transition-colors',
+                            isHighlighted ? 'bg-[hsl(var(--app-accent-soft))] text-foreground shadow-sm' : 'hover:bg-muted/60'
+                          )}
+                        >
+                          <span className="min-w-0">
+                            <span className="flex items-center gap-2 text-sm font-medium">
+                              <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[hsl(var(--app-accent))]" />
+                              <span className="truncate">{file.name}</span>
+                            </span>
+                            <span className="mt-1 block truncate pl-6 text-[11px] text-muted-foreground">{file.path}</span>
+                          </span>
+                          <span className="shrink-0 rounded-full border border-border/70 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                            {isSelected ? 'Added' : 'Enter'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+          {activeSkillMention ? (
+            <div className="absolute inset-x-0 bottom-[calc(100%+8px)] z-50 overflow-hidden rounded-xl border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong)/0.98)] shadow-[0_20px_60px_-28px_rgba(15,23,42,0.45)] backdrop-blur-xl">
+              <div className="flex items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 text-[11px] font-semibold text-foreground">
+                    <span className="flex h-5 w-5 items-center justify-center rounded-md bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))]">
+                      <Puzzle className="h-3 w-3" />
+                    </span>
+                    Reference skills
+                  </div>
+                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                    Search installed skills. Enter to insert, Esc to dismiss.
+                  </p>
+                </div>
+                {activeSkillMention.query ? (
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                    {activeSkillMention.query}
+                  </span>
+                ) : null}
+              </div>
+              <div className="max-h-72 overflow-y-auto p-2">
+                {installedSkillsQuery.isLoading ? (
+                  <div className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-border/70 px-3 py-6 text-[12px] text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Loading skills...
+                  </div>
+                ) : installedSkillsQuery.error ? (
+                  <div className="rounded-xl border border-dashed border-destructive/40 px-3 py-6 text-center text-[12px] text-destructive">
+                    Skills could not be loaded.
+                  </div>
+                ) : activeMentionSkills.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-border/70 px-3 py-6 text-center text-[12px] text-muted-foreground">
+                    No installed skills match this query.
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    {activeMentionSkills.map((skill, index) => {
+                      const isHighlighted = index === activeSkillMentionIndex;
+                      const isSelected = skillMentionNameSet.has(skill.name);
+                      return (
+                        <button
+                          key={skill.id}
+                          type="button"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => handleSkillMentionSelect(skill)}
+                          className={cn(
+                            'flex w-full items-start justify-between gap-3 rounded-xl px-3 py-2 text-left transition-colors',
+                            isHighlighted ? 'bg-[hsl(var(--app-accent-soft))] text-foreground shadow-sm' : 'hover:bg-muted/60'
+                          )}
+                        >
+                          <span className="min-w-0">
+                            <span className="flex items-center gap-2 text-sm font-medium">
+                              <Puzzle className="mt-0.5 h-4 w-4 shrink-0 text-[hsl(var(--app-accent))]" />
+                              <span className="truncate">{skill.name}</span>
+                            </span>
+                            <span className="mt-1 block truncate pl-6 text-[11px] text-muted-foreground">
+                              {skill.description || skill.id}
+                            </span>
+                          </span>
+                          <span className="shrink-0 rounded-full border border-border/70 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                            {isSelected ? 'Added' : 'Enter'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+          <GraphDockPromptTextarea
+            textareaRef={textareaRef}
+            initialValue={promptSeed}
+            resetVersion={promptResetVersion}
+            disabled={isPrimaryActionBusy}
+            onPromptChange={updatePrompt}
+            onDraftChange={savePromptDraft}
+            onSelectionChange={syncActiveMentions}
+            onPromptKeyDown={handlePromptKeyDown}
+            onSubmit={() => void handleSend()}
+          />
+        </div>
         <div data-testid="graph-dock-control-row" className="mt-1.5 grid min-w-0 grid-cols-2 gap-1.5 border-t border-[hsl(var(--app-border)/0.52)] px-0.5 pt-1.5 md:grid-cols-4">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -1102,6 +1672,8 @@ export function GraphDockComposer() {
                 selectedAgentId={agent?.id ?? selectedAgentId}
                 agentRunCounts={!isFlowSelected ? normalizedSelectedAgentRunCounts : undefined}
                 onAgentRunCountChange={!isFlowSelected ? handleAgentRunCountChange : undefined}
+                selectedLoginProfileIdByProvider={selectedLoginProfileIdByProvider}
+                onSelectLoginProfile={handleLoginProfileSelect}
               />
             </PopoverContent>
           </Popover>

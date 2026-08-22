@@ -109,21 +109,23 @@ describe('NodeHoverCardContent', () => {
     expect(screen.getByText('Quick Reply')).toBeTruthy();
   });
 
-  it('shows persisted failure reason in the hover card', () => {
+  it('does not show a standalone persisted failure reason banner in the hover card', () => {
+    const reason = "ImportError: cannot import name 'ParamSpec' from 'typing'";
     const entity = makeEntity('assistant_message');
     entity.status = 'failed' as any;
     entity.message = {
       ...entity.message!,
       status: 'failed' as any,
       execution_data: {
-        failure_reason: "ImportError: cannot import name 'ParamSpec' from 'typing'",
+        failure_reason: reason,
       },
     };
 
     render(<NodeHoverCardContent entity={entity} projection={makeProjection([entity.message])} />);
 
-    expect(screen.getByText('Failure reason')).toBeTruthy();
-    expect(screen.getByText("ImportError: cannot import name 'ParamSpec' from 'typing'")).toBeTruthy();
+    expect(screen.getByText('hover body: assistant_message preview')).toBeTruthy();
+    expect(screen.queryByText('Failure reason')).toBeNull();
+    expect(screen.queryByText(reason)).toBeNull();
   });
 
   it('uses app theme surfaces for the hovercard shell', () => {

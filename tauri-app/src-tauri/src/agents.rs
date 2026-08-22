@@ -31,6 +31,8 @@ pub struct AgentRunContext {
     pub author_name: Option<String>,
     #[serde(default)]
     pub prompt_fallback: Option<String>,
+    #[serde(default)]
+    pub auth_user_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -54,6 +56,7 @@ struct AgentRunSnapshot {
     repo_path: Option<String>,
     parent_commit: Option<String>,
     author_name: Option<String>,
+    auth_user_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -85,8 +88,11 @@ pub struct StartAgentRunIntent {
     pub agent_type: String,
     pub args: Vec<String>,
     pub auth_token: String,
+    pub current_user_id: String,
     pub trace_id: Option<String>,
     pub run_context: AgentRunContext,
+    #[serde(rename = "loginProfileId", default)]
+    pub login_profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -303,6 +309,7 @@ fn upsert_run_ledger_for_context(
         agent_type: agent_type.map(|value| value.to_string()),
         status: status.to_string(),
         phase: phase.to_string(),
+        login_profile_id: string_from_execution_meta(&context.execution_data, "login_profile_id"),
     };
     if let Err(err) = telemetry.upsert_agent_run_ledger(&run) {
         crate::app_log!(
@@ -1222,6 +1229,7 @@ fn build_finalize_snapshot(
         repo_path: run_state.context.repo_path.clone(),
         parent_commit: run_state.context.parent_commit.clone(),
         author_name: run_state.context.author_name.clone(),
+        auth_user_id: run_state.context.auth_user_id.clone(),
     })
 }
 
@@ -1879,8 +1887,9 @@ fn finalize_run_snapshot(
     });
     let payload_json = serde_json::to_string(&sync_payload).unwrap_or_else(|_| "{}".to_string());
     telemetry
-        .enqueue_local_sync_event(
+        .enqueue_local_sync_event_for_user(
             Some(workspace_id.as_str()),
+            snapshot.auth_user_id.as_deref(),
             "node",
             &snapshot.node_id,
             "node.update_terminal",
@@ -1916,6 +1925,7 @@ fn spawn_agent_internal(
     session_id: String,
     auth_token: String,
     trace_id: Option<String>,
+    login_profile_id: Option<String>,
     run_context: Option<AgentRunContext>,
 ) -> Result<u32, String> {
     crate::app_log!(
@@ -2024,7 +2034,28 @@ fn spawn_agent_internal(
         Path::new(&cwd),
     )?;
 
-    if agent_type.as_str() == "codex" {
+    if let Some(profile_id) = login_profile_id.as_deref() {
+        let telemetry = app.state::<crate::db::TelemetryDb>();
+        let cache_dir = app
+            .path()
+            .app_cache_dir()
+            .map_err(|error| format!("Could not resolve app cache dir: {}", error))?;
+        let materialized = crate::login_profiles::resolve_runtime_credentials(
+            &telemetry,
+            &crate::login_profiles::KeyringCredentialVault,
+            profile_id,
+            cache_dir,
+        )?;
+        if materialized.provider != agent_type {
+            return Err(format!(
+                "Login profile {} is for {}, not {}",
+                profile_id, materialized.provider, agent_type
+            ));
+        }
+        for (key, value) in materialized.env {
+            command.env(key, value);
+        }
+    } else if agent_type.as_str() == "codex" {
         if let Some(codex_home) = resolve_codex_home() {
             command.env("CODEX_HOME", codex_home);
         }
@@ -2393,6 +2424,7 @@ pub async fn start_agent_run(
     _state: State<'_, AgentState>,
     intent: StartAgentRunIntent,
 ) -> Result<StartAgentRunResponse, String> {
+    let mut intent = intent;
     let telemetry = app.state::<crate::db::TelemetryDb>();
     let preview = crate::git_workspace::preview_agent_worktree(
         intent.repo_path.clone(),
@@ -2400,6 +2432,19 @@ pub async fn start_agent_run(
         intent.parent_commit.clone(),
     )
     .await?;
+    if let Some(profile_id) = intent.login_profile_id.as_deref() {
+        let profile = telemetry.get_login_profile(profile_id)?;
+        if profile.provider != intent.agent_type {
+            return Err(format!(
+                "Login profile {} is for {}, not {}",
+                profile_id, profile.provider, intent.agent_type
+            ));
+        }
+        intent.run_context.execution_data = crate::login_profiles::metadata_with_login_profile(
+            intent.run_context.execution_data,
+            &profile,
+        );
+    }
     let initial_run = crate::db::AgentRunLedgerUpsert {
         run_id: intent.run_id.clone(),
         user_node_id: run_ledger_user_node_id_from_context(&intent.run_context),
@@ -2413,6 +2458,7 @@ pub async fn start_agent_run(
         agent_type: Some(intent.agent_type.clone()),
         status: "accepted".to_string(),
         phase: "accepted".to_string(),
+        login_profile_id: intent.login_profile_id.clone(),
     };
     telemetry.upsert_agent_run_ledger(&initial_run)?;
     telemetry.append_agent_run_event(
@@ -2486,6 +2532,7 @@ fn run_agent_lifecycle_background(
     run_context.repo_path = Some(intent.repo_path.clone());
     run_context.parent_commit = Some(intent.parent_commit.clone());
     run_context.git_branch_name = Some(worktree.branch_name.clone());
+    run_context.auth_user_id = Some(intent.current_user_id.clone());
     if let Some(object) = run_context.execution_data.as_object_mut() {
         object.insert(
             "workspace_id".to_string(),
@@ -2520,6 +2567,7 @@ fn run_agent_lifecycle_background(
         intent.assistant_node_id.clone(),
         intent.auth_token.clone(),
         intent.trace_id.clone(),
+        intent.login_profile_id.clone(),
         Some(run_context),
     ) {
         Ok(_) => Ok(()),
@@ -2796,6 +2844,7 @@ mod tests {
             parent_commit: None,
             author_name: None,
             prompt_fallback: None,
+            auth_user_id: None,
         })
     }
 
@@ -2814,6 +2863,7 @@ mod tests {
             repo_path: None,
             parent_commit: None,
             author_name: None,
+            auth_user_id: None,
         }
     }
 
@@ -2873,6 +2923,7 @@ mod tests {
             parent_commit: None,
             author_name: None,
             prompt_fallback: None,
+            auth_user_id: None,
         });
 
         update_run_state_from_event(
@@ -2913,6 +2964,7 @@ mod tests {
             parent_commit: None,
             author_name: None,
             prompt_fallback: None,
+            auth_user_id: None,
         };
 
         assert_eq!(

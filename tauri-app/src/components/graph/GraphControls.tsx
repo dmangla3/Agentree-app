@@ -33,7 +33,6 @@ import {
 import { ScrollArea } from '../../../@/components/ui/scroll-area';
 
 import {
-    RefreshCw,
     X,
     Filter,
     GitBranch,
@@ -48,7 +47,6 @@ import {
     LayoutGrid,
     SlidersHorizontal,
     Zap,
-    RotateCcw,
     User,
     Leaf,
     Eye,
@@ -65,6 +63,9 @@ import { LayoutMode, LaneStrategy } from '../../hooks/graph/useGraphLayout';
 import { AgentOperator, GroupOperator, MessageNodeType, TagOperator, TimePreset } from '../../hooks/graph/useTagFilter';
 import { NodeHoverCardContent } from '../NodeHoverCardContent';
 import { useWorkspaceProjection } from '../../hooks/useWorkspaceProjection';
+import { useAgentRunHoverHydration } from '../../hooks/useAgentRunHoverHydration';
+import { shouldHydrateAgentRunHover } from '../../lib/agentRunHoverHydrationPolicy';
+import { useRunStatusStore } from '../../stores/runStatusStore';
 
 interface ThreadHoverProjectionInput {
     messages: Message[];
@@ -128,16 +129,6 @@ function SimpleMergeIcon({ size = 15, strokeWidth = 2 }: { size?: number; stroke
 // ═══════════════════════════════════════════════════════════════════════════
 
 export type ViewMode = 'branch' | 'timeline';
-export interface GraphSyncStatusItem {
-    key: string;
-    label: string;
-    source: string;
-    cadenceLabel: string;
-    dueAt: number | null;
-    detail: string;
-    enabled: boolean;
-    isRefreshing?: boolean;
-}
 
 export interface LeafNodeNavigationItem {
     id: string;
@@ -239,27 +230,11 @@ export interface GraphControlsProps {
     mergeRunIndicator: MergeTabRunIndicator;
     mergeAttentionNonce: number;
     renderMergePanel?: (onClose: () => void) => ReactNode;
-    onResetLayout: () => void;
-    isRefreshingGraph: boolean;
-    autoRefreshEligible: boolean;
-    syncStatusItems: GraphSyncStatusItem[];
-    onRefreshSyncItem: (key: string) => void;
 }
 
-const formatCountdownLabel = (msRemaining: number | null) => {
-    if (msRemaining === null) return 'Idle';
-    if (msRemaining <= 0) return 'Due now';
-
-    const totalSeconds = Math.ceil(msRemaining / 1000);
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-
-    if (minutes > 0) {
-        return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-    }
-
-    return `${seconds}s`;
-};
+export const getThreadUnreadBadgeCount = (
+    thread: Pick<ThreadNavigationItem, 'done' | 'unreadCompletedLeafCount'>,
+): number => (thread.done ? 0 : thread.unreadCompletedLeafCount ?? 0);
 
 const stopNestedScrollPropagation = (event: WheelEvent | TouchEvent) => {
     event.stopPropagation();
@@ -267,18 +242,6 @@ const stopNestedScrollPropagation = (event: WheelEvent | TouchEvent) => {
 
 const formatThreadMetadata = (thread: ThreadNavigationItem) => (
     `${thread.turnCount} ${thread.turnCount === 1 ? 'turn' : 'turns'} · ${thread.commitCount} ${thread.commitCount === 1 ? 'commit' : 'commits'} · ${thread.updatedLabel}`
-);
-
-const sortThreadsByRunningThenRecent = (left: ThreadNavigationItem, right: ThreadNavigationItem) => (
-    Number(right.runningCount > 0) - Number(left.runningCount > 0) ||
-    right.runningCount - left.runningCount ||
-    (right.lastUpdatedAt ?? 0) - (left.lastUpdatedAt ?? 0) ||
-    left.threadRootId.localeCompare(right.threadRootId)
-);
-
-const sortThreadsByRecent = (left: ThreadNavigationItem, right: ThreadNavigationItem) => (
-    (right.lastUpdatedAt ?? 0) - (left.lastUpdatedAt ?? 0) ||
-    left.threadRootId.localeCompare(right.threadRootId)
 );
 
 const stopThreadHoverCardControlEvent = (event: SyntheticEvent) => {
@@ -363,6 +326,8 @@ function ThreadNodeHoverCardContent({
     const clampedPreviewIndex = Math.min(Math.max(previewIndex, 0), previewNodeIds.length - 1);
     const previewNodeId = previewNodeIds[clampedPreviewIndex] ?? null;
     const previewEntity = previewNodeId ? projection.entitiesByMessageId.get(previewNodeId) : null;
+    const previewRunStatus = useRunStatusStore(state => previewNodeId ? state.byNodeId[previewNodeId]?.status ?? null : null);
+    useAgentRunHoverHydration(previewNodeId, shouldHydrateAgentRunHover(previewEntity, previewRunStatus));
     const canShowPrevious = clampedPreviewIndex > 0;
     const canShowNext = clampedPreviewIndex < previewNodeIds.length - 1;
     const canNavigate = previewNodeIds.length > 1;
@@ -453,6 +418,40 @@ function ThreadNodeHoverCard({
         setPreviewIndex((current) => Math.min(Math.max(current, 0), previewNodeIds.length - 1));
     }, [previewNodeIds.length]);
 
+    const closeHoverCard = () => {
+        pointerInsideHoverContentRef.current = false;
+        setHoverOpen(false);
+    };
+
+    const closeHoverCardUnlessFocusRemainsInside = () => {
+        const hoverContent = hoverContentRef.current;
+        if (hoverContent && hoverContent.contains(document.activeElement)) return;
+        closeHoverCard();
+    };
+
+    useEffect(() => {
+        if (!hoverOpen) return;
+        window.addEventListener('agentree:graph-viewport-interaction-start', closeHoverCard);
+        return () => {
+            window.removeEventListener('agentree:graph-viewport-interaction-start', closeHoverCard);
+        };
+    }, [hoverOpen]);
+
+    useEffect(() => {
+        if (!hoverOpen) return;
+        const closeHoverCardForHiddenDocument = () => {
+            if (document.visibilityState === 'hidden') {
+                closeHoverCard();
+            }
+        };
+        document.addEventListener('visibilitychange', closeHoverCardForHiddenDocument);
+        window.addEventListener('blur', closeHoverCard);
+        return () => {
+            document.removeEventListener('visibilitychange', closeHoverCardForHiddenDocument);
+            window.removeEventListener('blur', closeHoverCard);
+        };
+    }, [hoverOpen]);
+
     if (!projectionInput || previewNodeIds.length === 0) {
         return <>{children}</>;
     }
@@ -488,7 +487,7 @@ function ThreadNodeHoverCard({
                     pointerInsideHoverContentRef.current = true;
                 }}
                 onPointerLeave={() => {
-                    pointerInsideHoverContentRef.current = false;
+                    closeHoverCardUnlessFocusRemainsInside();
                 }}
                 onPointerDownCapture={(event) => event.stopPropagation()}
                 onMouseDownCapture={(event) => event.stopPropagation()}
@@ -496,12 +495,11 @@ function ThreadNodeHoverCard({
                     const nextFocus = event.relatedTarget as Node | null;
                     if (nextFocus && event.currentTarget.contains(nextFocus)) return;
                     if (pointerInsideHoverContentRef.current) return;
-                    setHoverOpen(false);
+                    closeHoverCard();
                 }}
                 onKeyDownCapture={(event) => {
                     if (event.key !== 'Escape') return;
-                    pointerInsideHoverContentRef.current = false;
-                    setHoverOpen(false);
+                    closeHoverCard();
                 }}
             >
                 {hoverOpen ? (
@@ -611,20 +609,20 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
     const activeThreadItems = useMemo(() => (
         threadItems
             .filter((thread) => !thread.done || thread.runningCount > 0)
-            .sort(sortThreadsByRunningThenRecent)
     ), [threadItems]);
     const doneThreadItems = useMemo(() => (
         threadItems
             .filter((thread) => thread.done && thread.runningCount === 0)
-            .sort(sortThreadsByRecent)
     ), [threadItems]);
-    const threadTabItems = activeThreadItems;
+    const threadTabItems = useMemo(() => [...activeThreadItems].reverse(), [activeThreadItems]);
+    const doneThreadTabItems = useMemo(() => [...doneThreadItems].reverse(), [doneThreadItems]);
     const threadOrderKey = useMemo(
         () => [
             ...threadTabItems.map((thread) => `${thread.threadRootId}:${thread.done ? 'd' : 'a'}`),
-            `done:${doneThreadItems.length}:${doneThreadsCollapsed ? 'collapsed' : 'open'}`,
+            ...doneThreadTabItems.map((thread) => `done:${thread.threadRootId}`),
+            `done:${doneThreadTabItems.length}:${doneThreadsCollapsed ? 'collapsed' : 'open'}`,
         ].join('|'),
-        [doneThreadItems.length, doneThreadsCollapsed, threadTabItems]
+        [doneThreadTabItems, doneThreadsCollapsed, threadTabItems]
     );
     const totalRunningAgents = useMemo(
         () => threadItems.reduce((total, thread) => total + thread.runningCount, 0),
@@ -638,9 +636,9 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
         const tabList = tabListRef.current;
         if (!tabList) return;
         if (isVertical) {
-            tabList.scrollTop = tabList.scrollHeight;
+            tabList.scrollTop = 0;
         } else {
-            tabList.scrollLeft = tabList.scrollWidth;
+            tabList.scrollLeft = 0;
         }
     }, [isVertical, threadOrderKey]);
 
@@ -719,7 +717,7 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
         const activityLabel = `${thread.runningCount} running`;
         const baseCommitLabel = thread.baseCommitSha ? thread.baseCommitSha.slice(0, 8) : 'unknown base';
         const doneActionLabel = thread.done ? `Reopen thread ${thread.label}` : `Mark done ${thread.label}`;
-        const unreadCompletedLeafCount = thread.unreadCompletedLeafCount ?? 0;
+        const unreadCompletedLeafCount = getThreadUnreadBadgeCount(thread);
 
         const tab = (
             <div
@@ -890,7 +888,7 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
                     aria-orientation={orientation}
                 >
                     {threadTabItems.map((thread) => renderThreadTab(thread))}
-                    {isVertical && doneThreadItems.length > 0 ? (
+                    {isVertical && doneThreadTabItems.length > 0 ? (
                         <div className="mt-2 border-t border-[hsl(var(--app-border)/0.48)] pt-2">
                             <button
                                 type="button"
@@ -899,11 +897,11 @@ export const GraphThreadTabs = memo(function GraphThreadTabs({
                                 className="flex w-full items-center justify-between rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground transition-colors hover:bg-[hsl(var(--app-panel)/0.7)] hover:text-foreground"
                             >
                                 <span>Done threads</span>
-                                <span className="font-mono tracking-normal">{doneThreadItems.length}</span>
+                                <span className="font-mono tracking-normal">{doneThreadTabItems.length}</span>
                             </button>
                             {!doneThreadsCollapsed ? (
                                 <div className="mt-1 flex flex-col gap-1">
-                                    {doneThreadItems.map((thread) => renderThreadTab(thread))}
+                                    {doneThreadTabItems.map((thread) => renderThreadTab(thread))}
                                 </div>
                             ) : null}
                         </div>
@@ -986,11 +984,6 @@ export function GraphControls({
     mergeRunIndicator,
     mergeAttentionNonce,
     renderMergePanel,
-    onResetLayout,
-    isRefreshingGraph,
-    autoRefreshEligible,
-    syncStatusItems,
-    onRefreshSyncItem,
 }: GraphControlsProps) {
     const insightsCount = insights.length;
     const [agentSearch, setAgentSearch] = useState('');
@@ -1008,7 +1001,6 @@ export function GraphControls({
     useEffect(() => {
         if (mergeAttentionNonce <= 0 || mergeAttentionNonce === lastMergeAttentionNonceRef.current) return;
         lastMergeAttentionNonceRef.current = mergeAttentionNonce;
-        setMergeDropdownOpen(true);
         setMergeAttentionActive(true);
         const timeoutId = window.setTimeout(() => setMergeAttentionActive(false), 1600);
         return () => window.clearTimeout(timeoutId);
@@ -1030,42 +1022,13 @@ export function GraphControls({
         if (!q) return uniqueTags;
         return uniqueTags.filter((tag) => tag.toLowerCase().includes(q));
     }, [tagSearch, uniqueTags]);
-    const [clockNow, setClockNow] = useState(() => Date.now());
-    useEffect(() => {
-        const intervalId = window.setInterval(() => {
-            setClockNow(Date.now());
-        }, 1000);
-        return () => window.clearInterval(intervalId);
-    }, []);
-    const computedSyncStatusItems = useMemo(() => {
-        return syncStatusItems.map((item) => {
-            const remainingMs = item.dueAt === null ? null : item.dueAt - clockNow;
-            return {
-                ...item,
-                countdownLabel: formatCountdownLabel(remainingMs),
-                tone: item.enabled && remainingMs !== null ? 'active' as const : 'muted' as const,
-            };
-        });
-    }, [clockNow, syncStatusItems]);
-    const nextRefreshLabel = useMemo(() => {
-        if (!autoRefreshEligible) return null;
-        const nextDueAt = syncStatusItems
-            .map((item) => item.dueAt)
-            .filter((value): value is number => value !== null)
-            .sort((a, b) => a - b)[0];
-
-        if (!nextDueAt) return null;
-        return formatCountdownLabel(nextDueAt - clockNow);
-    }, [autoRefreshEligible, clockNow, syncStatusItems]);
     const openThreadItems = useMemo(() => (
         threadItems
             .filter((thread) => !thread.done || thread.runningCount > 0)
-            .sort(sortThreadsByRunningThenRecent)
     ), [threadItems]);
     const doneThreadItems = useMemo(() => (
         threadItems
             .filter((thread) => thread.done && thread.runningCount === 0)
-            .sort(sortThreadsByRecent)
     ), [threadItems]);
     const activeThreadCount = openThreadItems.length;
     const doneThreadCount = doneThreadItems.length;
@@ -1730,7 +1693,7 @@ export function GraphControls({
                                         const metadata = formatThreadMetadata(thread);
                                         const activityLabel = thread.runningCount > 1 ? `${thread.runningCount} running` : 'Active';
                                         const actionLabel = thread.done ? `Reopen thread ${thread.label}` : `Mark done ${thread.label}`;
-                                        const unreadCompletedLeafCount = thread.unreadCompletedLeafCount ?? 0;
+                                        const unreadCompletedLeafCount = getThreadUnreadBadgeCount(thread);
 
                                         return (
                                             <div
@@ -1816,7 +1779,7 @@ export function GraphControls({
                                                 <div className="mt-0.5 space-y-0.5">
                                                     {filteredDoneThreadItems.map((thread) => {
                                                         const metadata = formatThreadMetadata(thread);
-                                                        const unreadCompletedLeafCount = thread.unreadCompletedLeafCount ?? 0;
+                                                        const unreadCompletedLeafCount = getThreadUnreadBadgeCount(thread);
 
                                                         return (
                                                             <div
@@ -2119,115 +2082,6 @@ export function GraphControls({
                         </DropdownMenuContent>
                     </DropdownMenu>
 
-                    <span className={toolbarDividerClass} aria-hidden="true" />
-
-                    {/* Graph reset */}
-                    <HoverCard openDelay={500} closeDelay={80}>
-                        <HoverCardTrigger asChild>
-                            <div className="flex items-center gap-1.5">
-                                <button
-                                    type="button"
-                                    onClick={onResetLayout}
-                                    className={cn(
-                                        iconButtonBase,
-                                        iconButtonGhost,
-                                        "relative overflow-hidden",
-                                        viewMode !== 'branch' && "cursor-not-allowed opacity-40",
-                                        isRefreshingGraph && "border-[hsl(var(--app-accent)/0.35)] bg-[hsl(var(--app-accent-soft)/0.72)] text-[hsl(var(--app-accent))]"
-                                    )}
-                                    disabled={viewMode !== 'branch' || isRefreshingGraph}
-                                    aria-label="Reset graph"
-                                >
-                                    <span className={iconGlow} />
-                                    <span className={cn(
-                                        iconContainer,
-                                        isRefreshingGraph && "animate-spin"
-                                    )}>
-                                        <RotateCcw 
-                                            size={15} 
-                                            strokeWidth={2} 
-                                            className={cn(
-                                                "transition-all duration-200",
-                                                isRefreshingGraph && "drop-shadow-sm"
-                                            )} 
-                                        />
-                                    </span>
-                                </button>
-                                {nextRefreshLabel ? (
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <span className="inline-flex">
-                                                <span
-                                                    className="inline-flex h-5 min-w-10 cursor-help items-center justify-center rounded-md border border-[hsl(var(--app-accent)/0.2)] bg-[hsl(var(--app-accent-soft)/0.54)] px-2 text-[10px] font-semibold text-[hsl(var(--app-accent))] [font-variant-numeric:tabular-nums]"
-                                                >
-                                                    {nextRefreshLabel}
-                                                </span>
-                                            </span>
-                                        </TooltipTrigger>
-                                        <TooltipContent side="bottom" align="end">
-                                            Next automatic graph sync is due soon. Reset now to reload repo state and remount the graph canvas.
-                                        </TooltipContent>
-                                    </Tooltip>
-                                ) : null}
-                            </div>
-                        </HoverCardTrigger>
-                        <HoverCardContent
-                            side="bottom"
-                            align="end"
-                            className="w-[360px] rounded-xl border-border/50 bg-background/95 p-0 shadow-2xl backdrop-blur-md"
-                        >
-                            <div className="space-y-3 p-3">
-                                <div className="space-y-1">
-                                    <div className="text-sm font-semibold text-foreground">Reset Graph</div>
-                                    <div className="text-xs leading-relaxed text-muted-foreground [text-wrap:pretty]">
-                                        Clears cached graph measurements, remounts the canvas, checks your local repo, and reloads graph data.
-                                    </div>
-                                </div>
-                                <div className="space-y-2">
-                                    {computedSyncStatusItems.map((item) => (
-                                        <div
-                                            key={item.key}
-                                            className="rounded-lg border border-border/40 bg-muted/20 px-2.5 py-2 shadow-sm"
-                                        >
-                                            <div className="flex items-start justify-between gap-3">
-                                                <div className="min-w-0 space-y-0.5">
-                                                    <div className="text-xs font-medium text-foreground">{item.label}</div>
-                                                    <div className="text-[11px] text-muted-foreground">{item.source}</div>
-                                                </div>
-                                                <div className="flex shrink-0 items-center gap-1">
-                                                    <span
-                                                        className={cn(
-                                                            "inline-flex h-5 items-center rounded-md border px-1.5 text-[10px] font-medium [font-variant-numeric:tabular-nums]",
-                                                            item.tone === 'muted'
-                                                                ? "border-border/50 bg-muted/40 text-muted-foreground"
-                                                                : "border-[hsl(var(--app-accent)/0.2)] bg-[hsl(var(--app-accent-soft)/0.46)] text-[hsl(var(--app-accent))]"
-                                                        )}
-                                                    >
-                                                        {item.countdownLabel}
-                                                    </span>
-                                                    <Button
-                                                        type="button"
-                                                        variant="ghost"
-                                                        size="icon"
-                                                        onClick={() => onRefreshSyncItem(item.key)}
-                                                        disabled={Boolean(item.isRefreshing)}
-                                                        className="h-6 w-6 rounded-full text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                                                        aria-label={`Refresh ${item.label}`}
-                                                    >
-                                                        <RefreshCw size={11} className={cn(item.isRefreshing && 'animate-spin')} />
-                                                    </Button>
-                                                </div>
-                                            </div>
-                                            <div className="mt-1 text-[11px] text-muted-foreground">{item.cadenceLabel}</div>
-                                            <div className="mt-1 text-[11px] leading-relaxed text-foreground/80 [text-wrap:pretty]">
-                                                {item.detail}
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        </HoverCardContent>
-                    </HoverCard>
                 </div>
             </div>
         </div>

@@ -5,8 +5,7 @@ import { cn } from '../../../lib/utils';
 import { CARD_TOKENS } from '../../../lib/visualTokens';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../../@/components/ui/hover-card';
 import type { FocusTriggerMetrics } from '../../../types/nodes';
-import { agentRunManager } from '../../../agent-runs/agentRunManager';
-import { ensureAgentRunHydrated } from '../../../agent-runs/agentRunHydration';
+import { useAgentRunHoverHydration } from '../../../hooks/useAgentRunHoverHydration';
 
 interface GraphNodeWrapperProps {
   nodeId?: string;
@@ -14,10 +13,12 @@ interface GraphNodeWrapperProps {
   isFocused: boolean;
   isSelected: boolean;
   isComposerBaseCommit?: boolean;
+  focusFeedbackEnabled?: boolean;
   disableHoverCard?: boolean;
   className?: string;
   bodyClassName?: string;
   hoverOpenDelay?: number;
+  hoverHydrationEnabled?: boolean;
   style?: CSSProperties;
   heightKey?: string;
   onMeasureHeight?: (id: string, height: number) => void;
@@ -33,6 +34,7 @@ export const GraphNodeWrapper = memo(({
   isFocused,
   isSelected,
   isComposerBaseCommit = false,
+  focusFeedbackEnabled = true,
   disableHoverCard,
   className,
   bodyClassName,
@@ -41,6 +43,7 @@ export const GraphNodeWrapper = memo(({
   heightKey,
   onMeasureHeight,
   hoverCardContent,
+  hoverHydrationEnabled = false,
   onFocus,
   onSelect,
   onContextMenu
@@ -133,7 +136,9 @@ export const GraphNodeWrapper = memo(({
         if (e.button !== 0) return;
         pointerDownAtRef.current = performance.now();
         setSuppressFocusedHoverUntilLeave(true);
-        setIsFocusFeedbackActive(true);
+        if (focusFeedbackEnabled) {
+          setIsFocusFeedbackActive(true);
+        }
       }}
       onPointerLeave={() => {
         setSuppressFocusedHoverUntilLeave(false);
@@ -222,31 +227,47 @@ export const GraphNodeWrapper = memo(({
 
   const shouldDisableHoverCard = Boolean(disableHoverCard || (isFocused && suppressFocusedHoverUntilLeave));
 
+  const closeHoverCard = () => {
+    pointerInsideHoverContentRef.current = false;
+    setHoverOpen(false);
+  };
+
+  const closeHoverCardUnlessFocusRemainsInside = () => {
+    const hoverContent = hoverContentRef.current;
+    if (hoverContent && hoverContent.contains(document.activeElement)) return;
+    closeHoverCard();
+  };
+
   useEffect(() => {
     if (shouldDisableHoverCard) {
-      setHoverOpen(false);
+      closeHoverCard();
     }
   }, [shouldDisableHoverCard]);
 
   useEffect(() => {
     if (!hoverCardContent || !hoverOpen) return;
-    const closeHoverCardForViewportMove = () => {
-      setHoverOpen(false);
-    };
-    window.addEventListener('agentree:graph-viewport-interaction-start', closeHoverCardForViewportMove);
+    window.addEventListener('agentree:graph-viewport-interaction-start', closeHoverCard);
     return () => {
-      window.removeEventListener('agentree:graph-viewport-interaction-start', closeHoverCardForViewportMove);
+      window.removeEventListener('agentree:graph-viewport-interaction-start', closeHoverCard);
     };
   }, [hoverCardContent, hoverOpen]);
 
   useEffect(() => {
-    if (!nodeId || !hoverOpen || shouldDisableHoverCard) return;
-    agentRunManager.watch(nodeId, 'hover');
-    void ensureAgentRunHydrated(nodeId, 'hover');
-    return () => {
-      agentRunManager.unwatch(nodeId, 'hover');
+    if (!hoverCardContent || !hoverOpen) return;
+    const closeHoverCardForHiddenDocument = () => {
+      if (document.visibilityState === 'hidden') {
+        closeHoverCard();
+      }
     };
-  }, [hoverOpen, nodeId, shouldDisableHoverCard]);
+    document.addEventListener('visibilitychange', closeHoverCardForHiddenDocument);
+    window.addEventListener('blur', closeHoverCard);
+    return () => {
+      document.removeEventListener('visibilitychange', closeHoverCardForHiddenDocument);
+      window.removeEventListener('blur', closeHoverCard);
+    };
+  }, [hoverCardContent, hoverOpen]);
+
+  useAgentRunHoverHydration(nodeId, hoverOpen && !shouldDisableHoverCard && hoverHydrationEnabled);
 
   if (!hoverCardContent) {
     return nodeBody;
@@ -257,7 +278,7 @@ export const GraphNodeWrapper = memo(({
       open={shouldDisableHoverCard ? false : hoverOpen}
       onOpenChange={(open) => {
         if (shouldDisableHoverCard) {
-          setHoverOpen(false);
+          closeHoverCard();
           return;
         }
         if (open) {
@@ -286,18 +307,17 @@ export const GraphNodeWrapper = memo(({
           pointerInsideHoverContentRef.current = true;
         }}
         onPointerLeave={() => {
-          pointerInsideHoverContentRef.current = false;
+          closeHoverCardUnlessFocusRemainsInside();
         }}
         onBlurCapture={(event) => {
           const nextFocus = event.relatedTarget as Node | null;
           if (nextFocus && event.currentTarget.contains(nextFocus)) return;
           if (pointerInsideHoverContentRef.current) return;
-          setHoverOpen(false);
+          closeHoverCard();
         }}
         onKeyDownCapture={(event) => {
           if (event.key !== 'Escape') return;
-          pointerInsideHoverContentRef.current = false;
-          setHoverOpen(false);
+          closeHoverCard();
         }}
       >
         {hoverOpen ? hoverCardContent : null}

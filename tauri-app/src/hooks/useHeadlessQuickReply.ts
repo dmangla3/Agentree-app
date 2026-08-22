@@ -1,5 +1,7 @@
 import { useCallback, useState } from 'react';
 import { AGENT_STATUS } from '@shared/agentStatus';
+import type { QueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { agentRunManager } from '../agent-runs/agentRunManager';
 import { agentClient } from '../lib/agentClient';
 import { getAccessToken } from '../lib/authSession';
@@ -7,12 +9,38 @@ import { resolveQuickReplyAgent, resolveQuickReplyBase } from '../lib/quickReply
 import type { Message, Workspace } from '../stores/workspaceStore';
 import { sendHeadlessComposerReply } from '../composer/headlessComposerSend';
 import { useAgents } from './useAgents';
+import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from './useLocalNodes';
 import { useSendMessage } from './useMessages';
 import { useWorkspaces } from './useWorkspaces';
 
 type QuickReplyStatus = 'idle' | 'sending' | 'error';
 
+export const materializeHeadlessQuickReplyMessages = (
+  queryClient: QueryClient,
+  workspaceId: string,
+  createdMessages: Message[],
+  options: { finalizedAt?: number } = {},
+): void => {
+  if (!workspaceId || createdMessages.length === 0) return;
+
+  queryClient.setQueryData<Message[]>(['messages', workspaceId], (current) => {
+    const existing = current ?? [];
+    const ids = new Set(createdMessages.map((message) => message.id));
+    return [...existing.filter((message) => !ids.has(message.id)), ...createdMessages]
+      .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+  });
+  queryClient.setQueryData<LocalNodeMessage[]>(
+    localNodeKeys.workspace(workspaceId),
+    (current) => upsertMessagesIntoLocalNodeCache(current, workspaceId, createdMessages, {
+      syncStatus: 'local_only',
+      finalizedAt: options.finalizedAt ?? Math.floor(Date.now() / 1000),
+    })
+  );
+  void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(workspaceId) });
+};
+
 export function useHeadlessQuickReply() {
+  const queryClient = useQueryClient();
   const { data: agents = [] } = useAgents();
   const { data: workspaces = [] } = useWorkspaces();
   const sendMessageMutation = useSendMessage();
@@ -91,6 +119,10 @@ export function useHeadlessQuickReply() {
         getAccessToken,
         seedAgentRun: (message) => agentRunManager.seed(message),
         dispatchAgentRun: (nodeId, event) => agentRunManager.dispatch(nodeId, event as any),
+        persistLocalNode: (workspaceId, nodeId, message) => agentClient.upsertLocalNode(workspaceId, nodeId, message),
+        onMessagesCreated: (createdMessages) => {
+          materializeHeadlessQuickReplyMessages(queryClient, input.workspaceId, createdMessages);
+        },
         onAssistantMessageCreated: (message) => {
           assistantNodeId = message.id;
         },
@@ -111,7 +143,7 @@ export function useHeadlessQuickReply() {
       setError(message);
       throw caught;
     }
-  }, [agents, sendMessageMutation, workspaces]);
+  }, [agents, queryClient, sendMessageMutation, workspaces]);
 
   return {
     sendQuickReply,

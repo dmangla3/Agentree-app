@@ -32,7 +32,7 @@ const makeGeneratedCommit = (): ProjectedCommitEntity => ({
   } as ProjectedCommitEntity['commit'],
 });
 
-const makeProjection = (commit: ProjectedCommitEntity, entities: ProjectedNodeEntity[] = []): WorkspaceProjection => ({
+const makeProjection = (commit: ProjectedCommitEntity | null, entities: ProjectedNodeEntity[] = []): WorkspaceProjection => ({
   messages: [],
   summaries: [],
   messageMap: new Map(),
@@ -43,7 +43,7 @@ const makeProjection = (commit: ProjectedCommitEntity, entities: ProjectedNodeEn
   entitiesBySummaryId: new Map(),
   childEntityIdsByParentEntityId: new Map(),
   commitEntityIdsByAssistantEntityId: new Map(),
-  commitBySha: new Map([[commit.sha, commit]]),
+  commitBySha: new Map(commit ? [[commit.sha, commit]] : []),
   commitLaneRows: [],
   layoutDerivedCommitGroups: [],
   groupIdByCommitSha: new Map(),
@@ -157,6 +157,49 @@ describe('NodeContextMenu', () => {
 
     expect(onAddCommitShasToMergePanel).toHaveBeenCalledWith([commit.sha]);
     expect(onMarkThreadDone).not.toHaveBeenCalled();
+  });
+
+  it('marks the visible commit-message thread done when the commit row is missing', () => {
+    const onAddCommitShasToMergePanel = vi.fn();
+    const onMarkThreadDone = vi.fn();
+    const commitSha = '4b1a8a1ce0a05626fbe975b6de73770dcb9755a4';
+    const commitEntity: ProjectedNodeEntity = {
+      entityId: 'commit_message:assistant-commit',
+      kind: 'commit_message',
+      messageId: 'assistant-commit',
+      focusMessageId: 'assistant-commit',
+      sortTs: 0,
+      message: {
+        id: 'assistant-commit',
+        role: 'assistant',
+        content: 'Generated commit',
+        parentId: 'user-root',
+        output_commit_sha: commitSha,
+        createdAt: '2026-05-31T00:00:00.000Z',
+        updatedAt: '2026-05-31T00:00:00.000Z',
+      } as ProjectedNodeEntity['message'],
+      preview: 'Generated commit',
+      shortLabel: 'Commit',
+      threadRootId: 'user-root',
+      isThreadRoot: false,
+    };
+
+    render(
+      <NodeContextMenu
+        contextMenu={{ x: 20, y: 30, targetIds: [`commit:${commitSha}`] }}
+        projection={makeProjection(null, [commitEntity])}
+        onClose={() => {}}
+        onAddCommitShasToMergePanel={onAddCommitShasToMergePanel}
+        onMarkThreadDone={onMarkThreadDone}
+      />
+    );
+
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Mark thread done' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add to merge panel' }));
+
+    expect(onAddCommitShasToMergePanel).toHaveBeenCalledWith([commitSha]);
+    expect(onMarkThreadDone).toHaveBeenCalledWith('user-root');
   });
 
   it('does not show add-to-merge for conversation nodes', () => {

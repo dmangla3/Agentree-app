@@ -34,16 +34,22 @@ vi.mock('./GraphCanonicalCommitNode', () => ({
 vi.mock('./GraphUserNode', () => ({
   GraphUserNode: ({
     detailLevel,
+    focusFeedbackEnabled,
     hoverCardContent,
     onFocus,
+    onContextMenu,
   }: {
     detailLevel?: string;
+    focusFeedbackEnabled?: boolean;
     hoverCardContent?: React.ReactNode;
     onFocus?: (metrics?: FocusTriggerMetrics) => void;
+    onContextMenu?: (event: React.MouseEvent) => void;
   }) => (
     <div>
       <div data-testid="user-detail">{detailLevel ?? 'none'}</div>
+      <div data-testid="user-focus-feedback">{String(focusFeedbackEnabled ?? true)}</div>
       <button type="button" onClick={() => onFocus?.({ clickAt: 12, pointerDownAt: 8 })}>user node</button>
+      <button type="button" onContextMenu={(event) => onContextMenu?.(event)}>user menu target</button>
       {hoverCardContent}
     </div>
   ),
@@ -55,6 +61,18 @@ vi.mock('./GraphAssistantNode', () => ({
     onFocus?: (metrics?: FocusTriggerMetrics) => void;
   }) => (
     <button type="button" onClick={() => onFocus?.({ clickAt: 14, pointerDownAt: 9 })}>assistant node</button>
+  ),
+}));
+vi.mock('./GraphThreadOriginNode', () => ({
+  GraphThreadOriginNode: ({
+    hoverCardContent,
+  }: {
+    hoverCardContent?: React.ReactNode;
+  }) => (
+    <div>
+      <div>thread origin node</div>
+      {hoverCardContent}
+    </div>
   ),
 }));
 vi.mock('./GraphCommitNode', () => ({
@@ -335,6 +353,52 @@ describe('GraphNodeDispatcher', () => {
     expect(onContextMenu.mock.calls[0][0]).toBe('commit:feedface12345678');
   });
 
+  it('opens redirected user-node context menus by concrete message id, not focus target', () => {
+    const onContextMenu = vi.fn();
+    const props = {
+      id: 'user-1',
+      type: 'user_message',
+      selected: false,
+      isConnectable: false,
+      dragging: false,
+      zIndex: 0,
+      xPos: 0,
+      yPos: 0,
+      data: {
+        entity: {
+          entityId: 'user_message:user-1',
+          kind: 'user_message',
+          messageId: 'user-1',
+          focusMessageId: 'assistant-1',
+          sortTs: 0,
+          message: {
+            id: 'user-1',
+            role: 'user',
+            content: 'Continue',
+            parentId: 'assistant-parent',
+            createdAt: '2026-05-19T00:00:00.000Z',
+            updatedAt: '2026-05-19T00:00:00.000Z',
+          },
+          preview: 'Continue',
+          shortLabel: 'User',
+        },
+        isSelected: false,
+        onFocus: () => {},
+        onSelect: () => {},
+        onContextMenu,
+      },
+    };
+
+    render(
+      React.createElement(GraphNodeDispatcher as any, props)
+    );
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'user menu target' }));
+
+    expect(onContextMenu).toHaveBeenCalledTimes(1);
+    expect(onContextMenu.mock.calls[0][0]).toBe('user-1');
+  });
+
   it('selects a clicked derived commit group row as composer base without changing graph focus', () => {
     const onFocus = vi.fn();
     const props = {
@@ -411,6 +475,47 @@ describe('GraphNodeDispatcher', () => {
 
     expect(screen.getByTestId('user-detail').textContent).toBe('minimal');
     expect(screen.getByText('hover entity kind: user_message')).toBeTruthy();
+  });
+
+  it('does not show local focus feedback on user nodes that redirect focus to an assistant', () => {
+    const props = {
+      id: 'user-1',
+      type: 'user_message',
+      selected: false,
+      isConnectable: false,
+      dragging: false,
+      zIndex: 0,
+      xPos: 0,
+      yPos: 0,
+      data: {
+        entity: {
+          entityId: 'message:user-1',
+          kind: 'user_message',
+          messageId: 'user-1',
+          focusMessageId: 'assistant-1',
+          sortTs: 0,
+          message: {
+            id: 'user-1',
+            role: 'user',
+            content: 'Create a dense graph',
+            createdAt: '2026-05-19T00:00:00.000Z',
+            updatedAt: '2026-05-19T00:00:00.000Z',
+          },
+          preview: 'Create a dense graph',
+          shortLabel: 'User',
+        },
+        isSelected: false,
+        onFocus: () => {},
+        onSelect: () => {},
+        onContextMenu: () => {},
+      },
+    };
+
+    render(
+      React.createElement(GraphNodeDispatcher as any, props)
+    );
+
+    expect(screen.getByTestId('user-focus-feedback').textContent).toBe('false');
   });
 
   it('expands the graph composer dock when user and assistant message cards receive focus', () => {
@@ -508,6 +613,50 @@ describe('GraphNodeDispatcher', () => {
 
     expect(onOpenThread).toHaveBeenCalledWith('user-2');
     expect(onFocus).not.toHaveBeenCalled();
+  });
+
+  it('does not provide graph hover content for thread origin nodes', () => {
+    const props = {
+      id: 'thread-origin:user-2',
+      type: 'thread_origin',
+      selected: false,
+      isConnectable: false,
+      dragging: false,
+      zIndex: 0,
+      xPos: 0,
+      yPos: 0,
+      data: {
+        entity: {
+          entityId: 'thread_origin:user-2',
+          kind: 'thread_origin',
+          messageId: 'user-2',
+          focusMessageId: 'user-2',
+          sortTs: 0,
+          message: {
+            id: 'user-2',
+            role: 'user',
+            content: 'Nested follow-up',
+            parentId: 'assistant-1',
+            createdAt: '2026-05-19T00:00:00.000Z',
+            updatedAt: '2026-05-19T00:00:00.000Z',
+          },
+          preview: 'Nested follow-up',
+          shortLabel: 'Thread',
+          threadRootId: 'user-2',
+        },
+        isSelected: false,
+        onFocus: () => {},
+        onSelect: () => {},
+        onContextMenu: () => {},
+      },
+    };
+
+    render(
+      React.createElement(GraphNodeDispatcher as any, props)
+    );
+
+    expect(screen.getByText('thread origin node')).toBeTruthy();
+    expect(screen.queryByText('hover entity kind: thread_origin')).toBeNull();
   });
 
   it('keeps hover content for focused low-detail nodes', () => {

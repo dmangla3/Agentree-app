@@ -73,11 +73,6 @@ const makeProps = (overrides: Partial<GraphControlsProps> = {}): GraphControlsPr
       <button type="button" onClick={onClose}>Close embedded merge panel</button>
     </div>
   ),
-  onResetLayout: vi.fn(),
-  isRefreshingGraph: false,
-  autoRefreshEligible: false,
-  syncStatusItems: [],
-  onRefreshSyncItem: vi.fn(),
   threadItems: [],
   onThreadFocus: vi.fn(),
   onThreadDoneChange: vi.fn(),
@@ -110,6 +105,18 @@ describe('GraphControls', () => {
     const source = readFileSync(join(process.cwd(), 'src/components/graph/GraphControls.tsx'), 'utf8');
 
     expect(source).not.toContain('bg-gradient-');
+  });
+
+  it('does not render the debug reset graph or auto-refresh controls', () => {
+    render(
+      <TooltipProvider>
+        <GraphControls {...makeProps()} />
+      </TooltipProvider>
+    );
+
+    expect(screen.queryByRole('button', { name: /reset graph/i })).toBeNull();
+    expect(screen.queryByText(/repo refs/i)).toBeNull();
+    expect(screen.queryByText(/automatic graph sync/i)).toBeNull();
   });
 
   it('shows a workspace execution timeline popover from any view mode', () => {
@@ -179,6 +186,98 @@ describe('GraphControls', () => {
 
     expect(onCreateThread).toHaveBeenCalledTimes(1);
     expect(onThreadFocus).not.toHaveBeenCalled();
+  });
+
+  it('orders active thread tabs with the newest incoming thread first', () => {
+    render(
+      <TooltipProvider>
+        <GraphThreadTabs
+          threadItems={[
+            {
+              threadRootId: 'thread-old',
+              label: 'Older thread',
+              turnCount: 2,
+              commitCount: 0,
+              updatedLabel: '1h ago',
+              runningCount: 0,
+              hidden: false,
+              done: false,
+              current: false,
+              lastUpdatedAt: 1,
+            },
+            {
+              threadRootId: 'thread-newer',
+              label: 'Newer but recently updated thread',
+              turnCount: 4,
+              commitCount: 1,
+              updatedLabel: 'now',
+              runningCount: 0,
+              hidden: false,
+              done: false,
+              current: false,
+              lastUpdatedAt: 100,
+            },
+          ]}
+          onThreadFocus={vi.fn()}
+          onThreadDoneChange={vi.fn()}
+          doneThreadsCollapsed={true}
+          onDoneThreadsCollapsedChange={vi.fn()}
+          onCreateThread={vi.fn()}
+        />
+      </TooltipProvider>
+    );
+
+    const tabs = screen.getAllByRole('tab');
+    expect(tabs.map((tab) => tab.getAttribute('aria-label'))).toEqual([
+      'Open thread Newer but recently updated thread',
+      'Open thread Older thread',
+    ]);
+  });
+
+  it('orders active thread tabs with the newest incoming thread first even when it is running', () => {
+    render(
+      <TooltipProvider>
+        <GraphThreadTabs
+          threadItems={[
+            {
+              threadRootId: 'thread-old',
+              label: 'Older idle thread',
+              turnCount: 2,
+              commitCount: 0,
+              updatedLabel: '1h ago',
+              runningCount: 0,
+              hidden: false,
+              done: false,
+              current: false,
+              lastUpdatedAt: 1,
+            },
+            {
+              threadRootId: 'thread-newer',
+              label: 'Newer running thread',
+              turnCount: 4,
+              commitCount: 1,
+              updatedLabel: 'now',
+              runningCount: 1,
+              hidden: false,
+              done: false,
+              current: false,
+              lastUpdatedAt: 100,
+            },
+          ]}
+          onThreadFocus={vi.fn()}
+          onThreadDoneChange={vi.fn()}
+          doneThreadsCollapsed={true}
+          onDoneThreadsCollapsedChange={vi.fn()}
+          onCreateThread={vi.fn()}
+        />
+      </TooltipProvider>
+    );
+
+    const tabs = screen.getAllByRole('tab');
+    expect(tabs.map((tab) => tab.getAttribute('aria-label'))).toEqual([
+      'Open thread Newer running thread',
+      'Open thread Older idle thread',
+    ]);
   });
 
   it('disables create-thread action while an empty thread already exists', () => {
@@ -296,6 +395,38 @@ describe('GraphControls', () => {
     );
 
     expect(screen.getByLabelText('3 completed leaf nodes since last visit').textContent).toBe('3');
+  });
+
+  it('hides unread completed leaf counts on done thread tabs', () => {
+    render(
+      <TooltipProvider>
+        <GraphThreadTabs
+          threadItems={[
+            {
+              threadRootId: 'thread-done-unread',
+              label: 'Archived implementation thread',
+              turnCount: 5,
+              commitCount: 2,
+              updatedLabel: 'now',
+              runningCount: 0,
+              hidden: false,
+              done: true,
+              current: false,
+              unreadCompletedLeafCount: 3,
+            },
+          ]}
+          onThreadFocus={vi.fn()}
+          onThreadDoneChange={vi.fn()}
+          doneThreadsCollapsed={false}
+          onDoneThreadsCollapsedChange={vi.fn()}
+          onCreateThread={vi.fn()}
+          orientation="vertical"
+        />
+      </TooltipProvider>
+    );
+
+    expect(screen.getByRole('tab', { name: 'Open thread Archived implementation thread' })).toBeTruthy();
+    expect(screen.queryByLabelText('3 completed leaf nodes since last visit')).toBeNull();
   });
 
   it('switches leaf nodes between all threads and this thread', () => {
@@ -571,7 +702,7 @@ describe('GraphControls', () => {
     });
   });
 
-  it('opens the merge workflow when merge sources are added', async () => {
+  it('keeps the merge workflow closed when merge sources are added', async () => {
     const { rerender } = render(
       <TooltipProvider>
         <GraphControls
@@ -596,7 +727,9 @@ describe('GraphControls', () => {
       </TooltipProvider>
     );
 
-    expect(await screen.findByText('Embedded merge panel')).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.queryByText('Embedded merge panel')).toBeNull();
+    });
     expect(screen.getByRole('button', { name: 'Merge panel (1 source)' })).toBeTruthy();
   });
 

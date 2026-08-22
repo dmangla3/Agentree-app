@@ -128,7 +128,7 @@ describe('threadSessions', () => {
     ]);
   });
 
-  it('sorts empty user-created thread sessions after message-backed active threads with newer activity', () => {
+  it('sorts thread sessions by creation time for stable tab position', () => {
     const empty: ThreadSession = {
       id: 'empty-thread',
       workspaceId: 'workspace-1',
@@ -142,7 +142,7 @@ describe('threadSessions', () => {
     };
     expect(threadSessionSortKey(empty)).toEqual({
       statusRank: 0,
-      updatedAtMs: Date.parse('2026-05-28T00:00:00.000Z'),
+      createdAtMs: Date.parse('2026-05-28T00:00:00.000Z'),
       id: 'empty-thread',
     });
   });

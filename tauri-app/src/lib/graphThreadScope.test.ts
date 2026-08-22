@@ -5,6 +5,7 @@ import {
   filterCommitContextForThreadScope,
   filterSummariesForThreadScope,
   getThreadScopeKey,
+  resolveDoneThreadsReopenedByUserMessages,
   resolveActiveThreadAfterDoneChange,
   resolveInitialActiveThreadRootId,
   resolveThreadGraphScope,
@@ -91,6 +92,20 @@ describe('graph thread scope', () => {
         { threadRootId: 'thread-b', lastUpdatedAt: 5, done: true, runningCount: 0 },
       ],
     })).toBe('thread-a');
+  });
+
+  it('reopens a done thread when a user sends another message in it', () => {
+    expect(resolveDoneThreadsReopenedByUserMessages({
+      doneThreadRootIds: new Set(['thread-a', 'thread-b']),
+      previousUserMessageCountsByThreadRootId: new Map([
+        ['thread-a', 1],
+        ['thread-b', 1],
+      ]),
+      currentUserMessageCountsByThreadRootId: new Map([
+        ['thread-a', 2],
+        ['thread-b', 1],
+      ]),
+    })).toEqual(['thread-a']);
   });
 
   it('keeps an empty active thread scoped so its origin remains visible', () => {

@@ -2,12 +2,19 @@
 import '../../../test/setup';
 import type { ReactNode } from 'react';
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GraphAssistantNode } from './GraphAssistantNode';
 import type { ProjectedNodeEntity } from '../../../domain/workspaceProjection';
+import { useRunStatusStore } from '../../../stores/runStatusStore';
 
 vi.mock('./GraphNodeWrapper', () => ({
-  GraphNodeWrapper: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  GraphNodeWrapper: ({
+    children,
+    hoverHydrationEnabled,
+  }: {
+    children: ReactNode;
+    hoverHydrationEnabled?: boolean;
+  }) => <div data-hover-hydration-enabled={String(Boolean(hoverHydrationEnabled))}>{children}</div>,
 }));
 
 const makeAssistantEntity = (overrides: Partial<ProjectedNodeEntity> = {}): ProjectedNodeEntity => {
@@ -42,6 +49,10 @@ const makeAssistantEntity = (overrides: Partial<ProjectedNodeEntity> = {}): Proj
 };
 
 describe('GraphAssistantNode identity', () => {
+  afterEach(() => {
+    useRunStatusStore.getState().clearAllRunStatus();
+  });
+
   it('uses the model identity as the assistant node header and keeps the AI label separate', () => {
     render(
       <GraphAssistantNode
@@ -82,5 +93,33 @@ describe('GraphAssistantNode identity', () => {
     );
 
     expect(screen.getByTitle(`Agent Failed: ${reason}`)).toBeTruthy();
+  });
+
+  it('enables hover hydration from live run status when persisted status is completed', () => {
+    useRunStatusStore.getState().setRunStatus('assistant-1', {
+      workspaceId: 'workspace-1',
+      role: 'assistant',
+      status: 'running',
+    });
+
+    const { container } = render(
+      <GraphAssistantNode
+        nodeId="assistant-1"
+        entity={makeAssistantEntity({
+          status: 'completed',
+          message: {
+            status: 'completed',
+          },
+        } as any)}
+        isFocused={false}
+        isSelected={false}
+        layout="graph"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(container.firstElementChild?.getAttribute('data-hover-hydration-enabled')).toBe('true');
   });
 });

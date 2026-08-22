@@ -4,7 +4,7 @@ use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
 
 const LOCAL_COMMIT_PARENT_CLOSURE_LIMIT: usize = 5_000;
@@ -185,6 +185,27 @@ pub struct TelemetryDb {
     db_path: PathBuf,
 }
 
+fn login_profile_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<crate::login_profiles::LoginProfile> {
+    let config_text: String = row.get(5)?;
+    Ok(crate::login_profiles::LoginProfile {
+        id: row.get(0)?,
+        provider: row.get(1)?,
+        display_name: row.get(2)?,
+        auth_type: row.get(3)?,
+        redacted_hint: row.get(4)?,
+        config: serde_json::from_str(&config_text).unwrap_or_else(|_| serde_json::json!({})),
+        status: row.get(6)?,
+        status_message: row.get(7)?,
+        plan_type: row.get(8)?,
+        is_default: row.get::<_, i64>(9)? != 0,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+        last_checked_at: row.get(12)?,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRunLedgerUpsert {
@@ -200,6 +221,7 @@ pub struct AgentRunLedgerUpsert {
     pub agent_type: Option<String>,
     pub status: String,
     pub phase: String,
+    pub login_profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -229,6 +251,7 @@ pub struct AgentRunLedgerRow {
     pub failure_reason: Option<String>,
     pub needs_user_action_reason: Option<String>,
     pub cleanup_completed: bool,
+    pub login_profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -285,6 +308,7 @@ pub struct ThreadSessionPayload {
 pub struct LocalSyncEventRow {
     pub id: String,
     pub workspace_id: Option<String>,
+    pub user_id: Option<String>,
     pub entity_type: String,
     pub entity_id: String,
     pub event_type: String,
@@ -476,11 +500,31 @@ impl TelemetryDb {
                 output_commit_sha TEXT,
                 failure_reason TEXT,
                 needs_user_action_reason TEXT,
-                cleanup_completed INTEGER NOT NULL DEFAULT 0
+                cleanup_completed INTEGER NOT NULL DEFAULT 0,
+                login_profile_id TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_agent_run_ledger_assistant ON agent_run_ledger(assistant_node_id);
             CREATE INDEX IF NOT EXISTS idx_agent_run_ledger_status ON agent_run_ledger(status);
             CREATE INDEX IF NOT EXISTS idx_agent_run_ledger_repo ON agent_run_ledger(repo_path);
+
+            CREATE TABLE IF NOT EXISTS login_profiles (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                auth_type TEXT NOT NULL,
+                secret_ref TEXT,
+                redacted_hint TEXT,
+                config_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'unchecked',
+                status_message TEXT,
+                plan_type TEXT,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_checked_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_login_profiles_provider
+                ON login_profiles(provider, is_default, updated_at);
 
             CREATE TABLE IF NOT EXISTS agent_run_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -581,6 +625,7 @@ impl TelemetryDb {
             CREATE TABLE IF NOT EXISTS local_sync_events (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT,
+                user_id TEXT,
                 entity_type TEXT NOT NULL,
                 entity_id TEXT NOT NULL,
                 event_type TEXT NOT NULL,
@@ -647,8 +692,21 @@ impl TelemetryDb {
         )
         .map_err(|e| e.to_string())?;
         let _ = conn.execute("ALTER TABLE local_nodes ADD COLUMN payload_json TEXT", []);
+        let _ = conn.execute("ALTER TABLE local_sync_events ADD COLUMN user_id TEXT", []);
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_local_sync_events_due_user ON local_sync_events(user_id, status, next_attempt_at, created_at)",
+            [],
+        );
         let _ = conn.execute(
             "ALTER TABLE agent_run_ledger ADD COLUMN output_commit_sha TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE agent_run_ledger ADD COLUMN login_profile_id TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_run_ledger_login_profile ON agent_run_ledger(login_profile_id, status, updated_at)",
             [],
         );
         let _ = conn.execute(
@@ -944,9 +1002,9 @@ impl TelemetryDb {
             INSERT INTO agent_run_ledger (
                 run_id, user_node_id, assistant_node_id, workspace_id, repo_path,
                 worktree_path, branch_name, parent_commit, pid, agent_type,
-                status, phase, started_at, updated_at
+                status, phase, started_at, updated_at, login_profile_id
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?14)
             ON CONFLICT(run_id) DO UPDATE SET
                 user_node_id = COALESCE(excluded.user_node_id, agent_run_ledger.user_node_id),
                 assistant_node_id = excluded.assistant_node_id,
@@ -959,6 +1017,7 @@ impl TelemetryDb {
                 agent_type = COALESCE(excluded.agent_type, agent_run_ledger.agent_type),
                 status = excluded.status,
                 phase = excluded.phase,
+                login_profile_id = COALESCE(excluded.login_profile_id, agent_run_ledger.login_profile_id),
                 updated_at = excluded.updated_at
             "#,
             params![
@@ -975,10 +1034,228 @@ impl TelemetryDb {
                 run.status,
                 run.phase,
                 now,
+                run.login_profile_id,
             ],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    pub fn list_login_profiles(&self) -> Result<Vec<crate::login_profiles::LoginProfile>, String> {
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT id, provider, display_name, auth_type, redacted_hint, config_json,
+                       status, status_message, plan_type, is_default, created_at, updated_at, last_checked_at
+                FROM login_profiles
+                ORDER BY provider, is_default DESC, updated_at DESC
+                "#,
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map([], login_profile_from_row)
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn get_login_profile(
+        &self,
+        profile_id: &str,
+    ) -> Result<crate::login_profiles::LoginProfile, String> {
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        conn.query_row(
+            r#"
+            SELECT id, provider, display_name, auth_type, redacted_hint, config_json,
+                   status, status_message, plan_type, is_default, created_at, updated_at, last_checked_at
+            FROM login_profiles
+            WHERE id = ?1
+            "#,
+            params![profile_id],
+            login_profile_from_row,
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("login profile not found: {}", profile_id))
+    }
+
+    pub fn upsert_login_profile_metadata(
+        &self,
+        profile: &crate::login_profiles::LoginProfile,
+        secret_ref: Option<&str>,
+    ) -> Result<crate::login_profiles::LoginProfile, String> {
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|error| error.to_string())?;
+        if profile.is_default {
+            tx.execute(
+                "UPDATE login_profiles SET is_default = 0, updated_at = ?2 WHERE provider = ?1",
+                params![profile.provider, unix_timestamp()],
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        let config_json =
+            serde_json::to_string(&profile.config).map_err(|error| error.to_string())?;
+        tx.execute(
+            r#"
+            INSERT INTO login_profiles (
+                id, provider, display_name, auth_type, secret_ref, redacted_hint, config_json,
+                status, status_message, plan_type, is_default, created_at, updated_at, last_checked_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            ON CONFLICT(id) DO UPDATE SET
+                display_name = excluded.display_name,
+                auth_type = excluded.auth_type,
+                secret_ref = COALESCE(excluded.secret_ref, login_profiles.secret_ref),
+                redacted_hint = COALESCE(excluded.redacted_hint, login_profiles.redacted_hint),
+                config_json = excluded.config_json,
+                status = excluded.status,
+                status_message = excluded.status_message,
+                plan_type = excluded.plan_type,
+                is_default = excluded.is_default,
+                updated_at = excluded.updated_at,
+                last_checked_at = excluded.last_checked_at
+            "#,
+            params![
+                profile.id,
+                profile.provider,
+                profile.display_name,
+                profile.auth_type,
+                secret_ref,
+                profile.redacted_hint,
+                config_json,
+                profile.status,
+                profile.status_message,
+                profile.plan_type,
+                if profile.is_default { 1 } else { 0 },
+                profile.created_at,
+                profile.updated_at,
+                profile.last_checked_at,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())?;
+        drop(conn);
+        self.get_login_profile(&profile.id)
+    }
+
+    pub fn delete_login_profile_metadata(&self, profile_id: &str) -> Result<(), String> {
+        let active_runs = self
+            .list_active_login_profile_runs()?
+            .into_iter()
+            .filter(|run| run.login_profile_id == profile_id)
+            .collect::<Vec<_>>();
+        if !active_runs.is_empty() {
+            return Err(format!(
+                "cannot delete login profile while {} active run(s) use it",
+                active_runs.len()
+            ));
+        }
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        conn.execute(
+            "DELETE FROM login_profiles WHERE id = ?1",
+            params![profile_id],
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub fn set_default_login_profile(
+        &self,
+        provider: &str,
+        profile_id: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|error| error.to_string())?;
+        tx.execute(
+            "UPDATE login_profiles SET is_default = 0, updated_at = ?2 WHERE provider = ?1",
+            params![provider, unix_timestamp()],
+        )
+        .map_err(|error| error.to_string())?;
+        if let Some(profile_id) = profile_id {
+            let updated = tx
+                .execute(
+                    "UPDATE login_profiles SET is_default = 1, updated_at = ?3 WHERE provider = ?1 AND id = ?2",
+                    params![provider, profile_id, unix_timestamp()],
+                )
+                .map_err(|error| error.to_string())?;
+            if updated == 0 {
+                return Err(format!(
+                    "login profile {} does not belong to provider {}",
+                    profile_id, provider
+                ));
+            }
+        }
+        tx.commit().map_err(|error| error.to_string())
+    }
+
+    pub fn mark_login_profile_status(
+        &self,
+        profile_id: &str,
+        status: &str,
+        status_message: Option<&str>,
+        plan_type: Option<&str>,
+        checked_at: i64,
+    ) -> Result<crate::login_profiles::LoginProfile, String> {
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        conn.execute(
+            r#"
+            UPDATE login_profiles
+            SET status = ?2,
+                status_message = ?3,
+                plan_type = ?4,
+                last_checked_at = ?5,
+                updated_at = ?5
+            WHERE id = ?1
+            "#,
+            params![profile_id, status, status_message, plan_type, checked_at],
+        )
+        .map_err(|error| error.to_string())?;
+        drop(conn);
+        self.get_login_profile(profile_id)
+    }
+
+    pub fn list_active_login_profile_runs(
+        &self,
+    ) -> Result<Vec<crate::login_profiles::ActiveLoginProfileRun>, String> {
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT login_profile_id, run_id, assistant_node_id, workspace_id, agent_type,
+                       status, phase, updated_at
+                FROM agent_run_ledger
+                WHERE login_profile_id IS NOT NULL
+                  AND cleanup_completed = 0
+                  AND terminal_status IS NULL
+                  AND status NOT IN (
+                    'completed', 'cancelled', 'failed', 'error', 'failed_setup',
+                    'failed_spawn', 'failed_finalization'
+                  )
+                ORDER BY updated_at DESC
+                "#,
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(crate::login_profiles::ActiveLoginProfileRun {
+                    login_profile_id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    assistant_node_id: row.get(2)?,
+                    workspace_id: row.get(3)?,
+                    agent_type: row.get(4)?,
+                    status: row.get(5)?,
+                    phase: row.get(6)?,
+                    updated_at: row.get(7)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
     }
 
     pub fn update_agent_run_phase(
@@ -1295,7 +1572,7 @@ impl TelemetryDb {
                 status, phase, last_seq, started_at, updated_at, terminal_status,
                 finalize_attempt_count, cleanup_attempt_count, server_start_persisted,
                 server_final_persisted, output_commit_sha, failure_reason,
-                needs_user_action_reason, cleanup_completed
+                needs_user_action_reason, cleanup_completed, login_profile_id
             FROM agent_run_ledger
             WHERE assistant_node_id = ?1
             "#,
@@ -1326,6 +1603,7 @@ impl TelemetryDb {
                     failure_reason: row.get(21)?,
                     needs_user_action_reason: row.get(22)?,
                     cleanup_completed: row.get::<_, i64>(23)? != 0,
+                    login_profile_id: row.get(24)?,
                 })
             },
         )
@@ -2637,9 +2915,31 @@ impl TelemetryDb {
         Ok(device_id)
     }
 
+    #[cfg(test)]
     pub fn enqueue_local_sync_event(
         &self,
         workspace_id: Option<&str>,
+        entity_type: &str,
+        entity_id: &str,
+        event_type: &str,
+        payload_json: &str,
+        mutation_id: Option<&str>,
+    ) -> Result<LocalSyncEventRow, String> {
+        self.enqueue_local_sync_event_for_user(
+            workspace_id,
+            None,
+            entity_type,
+            entity_id,
+            event_type,
+            payload_json,
+            mutation_id,
+        )
+    }
+
+    pub fn enqueue_local_sync_event_for_user(
+        &self,
+        workspace_id: Option<&str>,
+        user_id: Option<&str>,
         entity_type: &str,
         entity_id: &str,
         event_type: &str,
@@ -2657,12 +2957,13 @@ impl TelemetryDb {
         conn.execute(
             r#"
             INSERT INTO local_sync_events (
-                id, workspace_id, entity_type, entity_id, event_type, payload_json,
+                id, workspace_id, user_id, entity_type, entity_id, event_type, payload_json,
                 idempotency_key, status, attempt_count, next_attempt_at, created_at, updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', 0, ?8, ?8, ?8)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', 0, ?9, ?9, ?9)
             ON CONFLICT(idempotency_key) DO UPDATE SET
                 workspace_id = excluded.workspace_id,
+                user_id = COALESCE(excluded.user_id, local_sync_events.user_id),
                 payload_json = excluded.payload_json,
                 status = CASE
                     WHEN local_sync_events.status = 'synced' THEN 'synced'
@@ -2670,13 +2971,14 @@ impl TelemetryDb {
                 END,
                 next_attempt_at = CASE
                     WHEN local_sync_events.status = 'synced' THEN local_sync_events.next_attempt_at
-                    ELSE ?8
+                    ELSE ?9
                 END,
-                updated_at = ?8
+                updated_at = ?9
             "#,
             params![
                 id,
                 workspace_id,
+                user_id,
                 entity_type,
                 entity_id,
                 event_type,
@@ -2694,11 +2996,13 @@ impl TelemetryDb {
     pub fn enqueue_local_commit_graph_sync(
         &self,
         workspace_id: &str,
+        user_id: Option<&str>,
         payload_json: &str,
         mutation_id: Option<&str>,
     ) -> Result<LocalSyncEventRow, String> {
-        self.enqueue_local_sync_event(
+        self.enqueue_local_sync_event_for_user(
             Some(workspace_id),
+            user_id,
             "commit_graph",
             workspace_id,
             "commit_graph.git_sync_ingest",
@@ -2741,7 +3045,7 @@ impl TelemetryDb {
     ) -> Result<Option<LocalSyncEventRow>, String> {
         conn.query_row(
             r#"
-            SELECT id, workspace_id, entity_type, entity_id, event_type, payload_json,
+            SELECT id, workspace_id, user_id, entity_type, entity_id, event_type, payload_json,
                    idempotency_key, status, attempt_count, next_attempt_at, last_error,
                    created_at, updated_at
             FROM local_sync_events
@@ -2752,17 +3056,18 @@ impl TelemetryDb {
                 Ok(LocalSyncEventRow {
                     id: row.get(0)?,
                     workspace_id: row.get(1)?,
-                    entity_type: row.get(2)?,
-                    entity_id: row.get(3)?,
-                    event_type: row.get(4)?,
-                    payload_json: row.get(5)?,
-                    idempotency_key: row.get(6)?,
-                    status: row.get(7)?,
-                    attempt_count: row.get(8)?,
-                    next_attempt_at: row.get(9)?,
-                    last_error: row.get(10)?,
-                    created_at: row.get(11)?,
-                    updated_at: row.get(12)?,
+                    user_id: row.get(2)?,
+                    entity_type: row.get(3)?,
+                    entity_id: row.get(4)?,
+                    event_type: row.get(5)?,
+                    payload_json: row.get(6)?,
+                    idempotency_key: row.get(7)?,
+                    status: row.get(8)?,
+                    attempt_count: row.get(9)?,
+                    next_attempt_at: row.get(10)?,
+                    last_error: row.get(11)?,
+                    created_at: row.get(12)?,
+                    updated_at: row.get(13)?,
                 })
             },
         )
@@ -2777,7 +3082,7 @@ impl TelemetryDb {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.query_row(
             r#"
-            SELECT id, workspace_id, entity_type, entity_id, event_type, payload_json,
+            SELECT id, workspace_id, user_id, entity_type, entity_id, event_type, payload_json,
                    idempotency_key, status, attempt_count, next_attempt_at, last_error,
                    created_at, updated_at
             FROM local_sync_events
@@ -2788,17 +3093,18 @@ impl TelemetryDb {
                 Ok(LocalSyncEventRow {
                     id: row.get(0)?,
                     workspace_id: row.get(1)?,
-                    entity_type: row.get(2)?,
-                    entity_id: row.get(3)?,
-                    event_type: row.get(4)?,
-                    payload_json: row.get(5)?,
-                    idempotency_key: row.get(6)?,
-                    status: row.get(7)?,
-                    attempt_count: row.get(8)?,
-                    next_attempt_at: row.get(9)?,
-                    last_error: row.get(10)?,
-                    created_at: row.get(11)?,
-                    updated_at: row.get(12)?,
+                    user_id: row.get(2)?,
+                    entity_type: row.get(3)?,
+                    entity_id: row.get(4)?,
+                    event_type: row.get(5)?,
+                    payload_json: row.get(6)?,
+                    idempotency_key: row.get(7)?,
+                    status: row.get(8)?,
+                    attempt_count: row.get(9)?,
+                    next_attempt_at: row.get(10)?,
+                    last_error: row.get(11)?,
+                    created_at: row.get(12)?,
+                    updated_at: row.get(13)?,
                 })
             },
         )
@@ -2806,39 +3112,45 @@ impl TelemetryDb {
         .map_err(|e| e.to_string())
     }
 
-    pub fn list_due_local_sync_events(&self, limit: i64) -> Result<Vec<LocalSyncEventRow>, String> {
+    pub fn list_due_local_sync_events_for_user(
+        &self,
+        user_id: &str,
+        limit: i64,
+    ) -> Result<Vec<LocalSyncEventRow>, String> {
         let now = unix_timestamp();
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
                 r#"
-                SELECT id, workspace_id, entity_type, entity_id, event_type, payload_json,
+                SELECT id, workspace_id, user_id, entity_type, entity_id, event_type, payload_json,
                        idempotency_key, status, attempt_count, next_attempt_at, last_error,
                        created_at, updated_at
                 FROM local_sync_events
                 WHERE status = 'pending'
+                  AND user_id = ?2
                   AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
                 ORDER BY created_at ASC
-                LIMIT ?2
+                LIMIT ?3
                 "#,
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![now, limit], |row| {
+            .query_map(params![now, user_id, limit], |row| {
                 Ok(LocalSyncEventRow {
                     id: row.get(0)?,
                     workspace_id: row.get(1)?,
-                    entity_type: row.get(2)?,
-                    entity_id: row.get(3)?,
-                    event_type: row.get(4)?,
-                    payload_json: row.get(5)?,
-                    idempotency_key: row.get(6)?,
-                    status: row.get(7)?,
-                    attempt_count: row.get(8)?,
-                    next_attempt_at: row.get(9)?,
-                    last_error: row.get(10)?,
-                    created_at: row.get(11)?,
-                    updated_at: row.get(12)?,
+                    user_id: row.get(2)?,
+                    entity_type: row.get(3)?,
+                    entity_id: row.get(4)?,
+                    event_type: row.get(5)?,
+                    payload_json: row.get(6)?,
+                    idempotency_key: row.get(7)?,
+                    status: row.get(8)?,
+                    attempt_count: row.get(9)?,
+                    next_attempt_at: row.get(10)?,
+                    last_error: row.get(11)?,
+                    created_at: row.get(12)?,
+                    updated_at: row.get(13)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -2861,6 +3173,72 @@ impl TelemetryDb {
             )
             .map_err(|e| e.to_string())?;
         Ok(changed > 0)
+    }
+
+    fn requeue_blocking_terminal_parent_if_needed(
+        &self,
+        event: &LocalSyncEventRow,
+    ) -> Result<Option<String>, String> {
+        if event.entity_type != "node" || event.event_type != "node.update_terminal" {
+            return Ok(None);
+        }
+
+        let payload =
+            serde_json::from_str::<JsonValue>(&event.payload_json).unwrap_or(JsonValue::Null);
+        let Some(parent_id) = payload
+            .get("userMessage")
+            .and_then(|value| value.get("parentId"))
+            .and_then(|value| value.as_str())
+        else {
+            return Ok(None);
+        };
+
+        let now = unix_timestamp();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let parent_status: Option<String> = conn
+            .query_row(
+                r#"
+                SELECT status
+                FROM local_sync_events
+                WHERE entity_type = 'node'
+                  AND entity_id = ?1
+                  AND (
+                    (user_id = ?2)
+                    OR (user_id IS NULL AND ?2 IS NULL)
+                  )
+                  AND event_type = 'node.update_terminal'
+                  AND status IN ('pending', 'in_flight', 'dead')
+                ORDER BY created_at ASC
+                LIMIT 1
+                "#,
+                params![parent_id, event.user_id.as_deref()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        if parent_status.as_deref() == Some("dead") {
+            conn.execute(
+                r#"
+                UPDATE local_sync_events
+                SET status = 'pending',
+                    next_attempt_at = ?2,
+                    updated_at = ?2
+                WHERE entity_type = 'node'
+                  AND entity_id = ?1
+                  AND (
+                    (user_id = ?3)
+                    OR (user_id IS NULL AND ?3 IS NULL)
+                  )
+                  AND event_type = 'node.update_terminal'
+                  AND status = 'dead'
+                "#,
+                params![parent_id, now, event.user_id.as_deref()],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        Ok(parent_status.map(|_| parent_id.to_string()))
     }
 
     pub fn mark_local_sync_event_synced(&self, id: &str) -> Result<(), String> {
@@ -2927,6 +3305,7 @@ impl TelemetryDb {
     pub fn local_first_delete_branch(
         &self,
         workspace_id: &str,
+        user_id: Option<&str>,
         root_node_id: &str,
     ) -> Result<LocalSyncEventRow, String> {
         let now = unix_timestamp();
@@ -2972,8 +3351,9 @@ impl TelemetryDb {
             "delete_mode": "branch",
             "deleted_at": deleted_at,
         });
-        self.enqueue_local_sync_event(
+        self.enqueue_local_sync_event_for_user(
             Some(workspace_id),
+            user_id,
             "node",
             root_node_id,
             "node.delete",
@@ -2985,6 +3365,7 @@ impl TelemetryDb {
     pub fn local_first_delete_workspace(
         &self,
         workspace_id: &str,
+        user_id: Option<&str>,
     ) -> Result<LocalSyncEventRow, String> {
         let now = unix_timestamp();
         let deleted_at = chrono_like_now();
@@ -3016,8 +3397,9 @@ impl TelemetryDb {
             "workspace_id": workspace_id,
             "deleted_at": deleted_at,
         });
-        self.enqueue_local_sync_event(
+        self.enqueue_local_sync_event_for_user(
             Some(workspace_id),
+            user_id,
             "workspace",
             workspace_id,
             "workspace.delete",
@@ -3303,10 +3685,16 @@ pub fn repair_local_commit_graph(
 pub fn enqueue_local_commit_graph_sync(
     telemetry: State<TelemetryDb>,
     workspace_id: String,
+    current_user_id: String,
     payload_json: String,
     mutation_id: Option<String>,
 ) -> Result<LocalSyncEventRow, String> {
-    telemetry.enqueue_local_commit_graph_sync(&workspace_id, &payload_json, mutation_id.as_deref())
+    telemetry.enqueue_local_commit_graph_sync(
+        &workspace_id,
+        Some(current_user_id.as_str()),
+        &payload_json,
+        mutation_id.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -3314,9 +3702,14 @@ pub fn enqueue_local_commit_graph_sync(
 pub fn local_first_delete_branch(
     telemetry: State<TelemetryDb>,
     workspace_id: String,
+    current_user_id: String,
     root_node_id: String,
 ) -> Result<LocalSyncEventRow, String> {
-    telemetry.local_first_delete_branch(&workspace_id, &root_node_id)
+    telemetry.local_first_delete_branch(
+        &workspace_id,
+        Some(current_user_id.as_str()),
+        &root_node_id,
+    )
 }
 
 #[tauri::command]
@@ -3324,8 +3717,9 @@ pub fn local_first_delete_branch(
 pub fn local_first_delete_workspace(
     telemetry: State<TelemetryDb>,
     workspace_id: String,
+    current_user_id: String,
 ) -> Result<LocalSyncEventRow, String> {
-    telemetry.local_first_delete_workspace(&workspace_id)
+    telemetry.local_first_delete_workspace(&workspace_id, Some(current_user_id.as_str()))
 }
 
 #[tauri::command]
@@ -3372,11 +3766,7 @@ fn sync_event(
                 Err(_) => Ok(None),
             };
         }
-        return Err(format!(
-            "{} failed with status {}",
-            event.event_type,
-            response.status()
-        ));
+        return Err(local_sync_response_error(&event.event_type, response));
     }
 
     let url = match (event.entity_type.as_str(), event.event_type.as_str()) {
@@ -3402,11 +3792,7 @@ fn sync_event(
             if response.status().is_success() {
                 return Ok(None);
             }
-            return Err(format!(
-                "{} failed with status {}",
-                event.event_type,
-                response.status()
-            ));
+            return Err(local_sync_response_error(&event.event_type, response));
         }
         ("node", "node.delete") => format!(
             "{}/messages/{}/branch",
@@ -3436,100 +3822,154 @@ fn sync_event(
     if response.status().is_success() || response.status().as_u16() == 404 {
         Ok(None)
     } else {
-        Err(format!(
-            "{} failed with status {}",
-            event.event_type,
-            response.status()
-        ))
+        Err(local_sync_response_error(&event.event_type, response))
     }
+}
+
+fn local_sync_response_error(event_type: &str, response: reqwest::blocking::Response) -> String {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+    let body = body.trim();
+    if body.is_empty() {
+        return format!("{} failed with status {}", event_type, status);
+    }
+    let snippet: String = body.chars().take(500).collect();
+    format!("{} failed with status {}: {}", event_type, status, snippet)
 }
 
 fn is_permanent_local_sync_error(error: &str) -> bool {
     error.starts_with("node.update_terminal failed with status 404 Not Found")
+        || error.starts_with("commit_graph.git_sync_ingest failed with status 404 Not Found")
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn process_local_sync_events(
-    telemetry: State<TelemetryDb>,
+pub async fn process_local_sync_events(
+    app: tauri::AppHandle,
     auth_token: String,
+    current_user_id: String,
     limit: Option<i64>,
 ) -> Result<usize, String> {
-    let events = telemetry.list_due_local_sync_events(limit.unwrap_or(25).clamp(1, 100))?;
-    let client = reqwest::blocking::Client::new();
-    let mut synced = 0usize;
+    if current_user_id.trim().is_empty() {
+        return Err("Cannot process local sync events without a current user id.".to_string());
+    }
+    let telemetry = app.state::<TelemetryDb>();
+    let events = telemetry.list_due_local_sync_events_for_user(
+        current_user_id.trim(),
+        limit.unwrap_or(25).clamp(1, 100),
+    )?;
+    // Pre-compute all in-flight marks while we still have access to the telemetry State.
+    let mut flyable_events = Vec::new();
     for event in events {
-        if !telemetry.mark_local_sync_event_in_flight(&event.id)? {
+        if let Some(parent_id) = telemetry.requeue_blocking_terminal_parent_if_needed(&event)? {
+            crate::app_log!(
+                "[LOCAL_SYNC] event={} entity_type={} entity_id={} status=deferred_for_parent parent_id={}",
+                event.event_type,
+                event.entity_type,
+                event.entity_id,
+                parent_id
+            );
             continue;
         }
-        let result = sync_event(&client, &auth_token, &event);
-        match result {
-            Ok(response_body) => {
-                if event.entity_type == "node" && event.event_type == "node.update_terminal" {
-                    let _ = telemetry.mark_local_node_persisted(&event.entity_id);
-                    if let Ok(payload) = serde_json::from_str::<JsonValue>(&event.payload_json) {
-                        if let Some(user_node_id) = payload
-                            .get("userMessage")
-                            .and_then(|value| value.get("id"))
-                            .and_then(|value| value.as_str())
-                        {
-                            let _ = telemetry.mark_local_node_persisted(user_node_id);
-                        }
-                        let finalize_payload = payload.get("finalize").unwrap_or(&payload);
-                        let status = finalize_payload
-                            .get("status")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or("completed");
-                        let payload_output_commit_sha = finalize_payload
-                            .get("outputCommitSha")
-                            .or_else(|| finalize_payload.get("output_commit_sha"))
-                            .and_then(|value| value.as_str());
-                        let response_output_commit_sha = response_body.as_ref().and_then(|body| {
-                            body.get("outputCommitSha")
-                                .or_else(|| body.get("output_commit_sha"))
-                                .and_then(|value| value.as_str())
-                        });
-                        let output_commit_sha =
-                            response_output_commit_sha.or(payload_output_commit_sha);
-                        let _ = telemetry.mark_agent_run_finalized(
-                            &event.entity_id,
-                            status,
-                            true,
-                            output_commit_sha,
-                        );
-                    }
-                }
-                telemetry.mark_local_sync_event_synced(&event.id)?;
-                synced += 1;
-                crate::app_log!(
-                    "[LOCAL_SYNC] event={} entity_type={} entity_id={} status=synced",
-                    event.event_type,
-                    event.entity_type,
-                    event.entity_id
-                );
-            }
-            Err(err) => {
-                if err.starts_with("No sync handler") || is_permanent_local_sync_error(&err) {
-                    let _ = telemetry.mark_local_sync_event_dead(&event.id, &err);
-                } else {
-                    let _ = telemetry.mark_local_sync_event_retry(&event.id, &err);
-                }
-                crate::app_log!(
-                    "[LOCAL_SYNC] event={} entity_type={} entity_id={} status={} err={}",
-                    event.event_type,
-                    event.entity_type,
-                    event.entity_id,
-                    if is_permanent_local_sync_error(&err) {
-                        "dead"
-                    } else {
-                        "retry"
-                    },
-                    err
-                );
-            }
+        if telemetry.mark_local_sync_event_in_flight(&event.id)? {
+            flyable_events.push(event);
         }
     }
-    Ok(synced)
+    if flyable_events.is_empty() {
+        return Ok(0);
+    }
+
+    // Move the blocking HTTP work onto an OS thread so that the
+    // reqwest::blocking::Client (which owns an internal tokio runtime)
+    // is created and dropped outside of the async context.
+    tauri::async_runtime::spawn_blocking(move || {
+        let telemetry = app.state::<TelemetryDb>();
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .map_err(|err| err.to_string())?;
+        let mut synced = 0usize;
+        let mut first_retry_error: Option<String> = None;
+        for event in flyable_events {
+            let result = sync_event(&client, &auth_token, &event);
+            match result {
+                Ok(response_body) => {
+                    if event.entity_type == "node" && event.event_type == "node.update_terminal" {
+                        let _ = telemetry.mark_local_node_persisted(&event.entity_id);
+                        if let Ok(payload) = serde_json::from_str::<JsonValue>(&event.payload_json)
+                        {
+                            if let Some(user_node_id) = payload
+                                .get("userMessage")
+                                .and_then(|value| value.get("id"))
+                                .and_then(|value| value.as_str())
+                            {
+                                let _ = telemetry.mark_local_node_persisted(user_node_id);
+                            }
+                            let finalize_payload = payload.get("finalize").unwrap_or(&payload);
+                            let status = finalize_payload
+                                .get("status")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("completed");
+                            let payload_output_commit_sha = finalize_payload
+                                .get("outputCommitSha")
+                                .or_else(|| finalize_payload.get("output_commit_sha"))
+                                .and_then(|value| value.as_str());
+                            let response_output_commit_sha =
+                                response_body.as_ref().and_then(|body| {
+                                    body.get("outputCommitSha")
+                                        .or_else(|| body.get("output_commit_sha"))
+                                        .and_then(|value| value.as_str())
+                                });
+                            let output_commit_sha =
+                                response_output_commit_sha.or(payload_output_commit_sha);
+                            let _ = telemetry.mark_agent_run_finalized(
+                                &event.entity_id,
+                                status,
+                                true,
+                                output_commit_sha,
+                            );
+                        }
+                    }
+                    telemetry.mark_local_sync_event_synced(&event.id)?;
+                    synced += 1;
+                    crate::app_log!(
+                        "[LOCAL_SYNC] event={} entity_type={} entity_id={} status=synced",
+                        event.event_type,
+                        event.entity_type,
+                        event.entity_id
+                    );
+                }
+                Err(err) => {
+                    if err.starts_with("No sync handler") || is_permanent_local_sync_error(&err) {
+                        let _ = telemetry.mark_local_sync_event_dead(&event.id, &err);
+                    } else {
+                        let _ = telemetry.mark_local_sync_event_retry(&event.id, &err);
+                        if first_retry_error.is_none() {
+                            first_retry_error = Some(err.clone());
+                        }
+                    }
+                    crate::app_log!(
+                        "[LOCAL_SYNC] event={} entity_type={} entity_id={} status={} err={}",
+                        event.event_type,
+                        event.entity_type,
+                        event.entity_id,
+                        if is_permanent_local_sync_error(&err) {
+                            "dead"
+                        } else {
+                            "retry"
+                        },
+                        err
+                    );
+                }
+            }
+        }
+        if let Some(err) = first_retry_error {
+            return Err(err);
+        }
+        Ok(synced)
+    })
+    .await
+    .map_err(|e| format!("Local sync task failed: {}", e))?
 }
 
 #[cfg(test)]
@@ -3592,6 +4032,60 @@ mod tests {
             .expect("index count");
         assert!(has_thread_id);
         assert_eq!(has_thread_index, 1);
+    }
+
+    #[test]
+    fn opening_existing_agent_run_ledger_without_login_profile_id_migrates_schema() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("telemetry.db");
+        {
+            let conn = Connection::open(&db_path).expect("create legacy db");
+            conn.execute_batch(
+                r#"
+                CREATE TABLE agent_run_ledger (
+                    run_id TEXT PRIMARY KEY,
+                    user_node_id TEXT,
+                    assistant_node_id TEXT NOT NULL UNIQUE,
+                    workspace_id TEXT,
+                    repo_path TEXT,
+                    worktree_path TEXT,
+                    branch_name TEXT,
+                    parent_commit TEXT,
+                    pid INTEGER,
+                    agent_type TEXT,
+                    status TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    last_seq INTEGER NOT NULL DEFAULT 0,
+                    started_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    terminal_status TEXT,
+                    finalize_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    cleanup_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    server_start_persisted INTEGER NOT NULL DEFAULT 0,
+                    server_final_persisted INTEGER NOT NULL DEFAULT 0,
+                    output_commit_sha TEXT,
+                    failure_reason TEXT,
+                    needs_user_action_reason TEXT,
+                    cleanup_completed INTEGER NOT NULL DEFAULT 0
+                );
+                "#,
+            )
+            .expect("legacy agent_run_ledger schema");
+        }
+
+        let db = TelemetryDb::open(dir.path()).expect("migrate existing db");
+        let conn = db.conn.lock().expect("lock db");
+        assert!(conn
+            .prepare("SELECT login_profile_id FROM agent_run_ledger LIMIT 0")
+            .is_ok());
+        let has_login_profile_index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_run_ledger_login_profile'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("index count");
+        assert_eq!(has_login_profile_index, 1);
     }
 
     #[test]
@@ -3695,6 +4189,7 @@ mod tests {
             agent_type: Some("codex".to_string()),
             status: status.to_string(),
             phase: phase.to_string(),
+            login_profile_id: None,
         })
         .expect("upsert run");
     }
@@ -4717,9 +5212,133 @@ mod tests {
     }
 
     #[test]
+    fn due_local_sync_events_are_scoped_to_current_user() {
+        let (_dir, db) = open_test_db();
+        db.enqueue_local_sync_event_for_user(
+            Some("workspace-1"),
+            Some("user-a"),
+            "node",
+            "node-a",
+            "node.update_terminal",
+            r#"{"status":"completed"}"#,
+            Some("run-a"),
+        )
+        .expect("enqueue user a");
+        db.enqueue_local_sync_event_for_user(
+            Some("workspace-1"),
+            Some("user-b"),
+            "node",
+            "node-b",
+            "node.update_terminal",
+            r#"{"status":"completed"}"#,
+            Some("run-b"),
+        )
+        .expect("enqueue user b");
+        db.enqueue_local_sync_event(
+            Some("workspace-1"),
+            "node",
+            "legacy-node",
+            "node.update_terminal",
+            r#"{"status":"completed"}"#,
+            Some("legacy-run"),
+        )
+        .expect("enqueue legacy");
+
+        let user_a_events = db
+            .list_due_local_sync_events_for_user("user-a", 25)
+            .expect("list user a");
+        assert_eq!(user_a_events.len(), 1);
+        assert_eq!(user_a_events[0].entity_id, "node-a");
+        assert_eq!(user_a_events[0].user_id.as_deref(), Some("user-a"));
+
+        let user_b_events = db
+            .list_due_local_sync_events_for_user("user-b", 25)
+            .expect("list user b");
+        assert_eq!(user_b_events.len(), 1);
+        assert_eq!(user_b_events[0].entity_id, "node-b");
+    }
+
+    #[test]
+    fn child_terminal_sync_requeues_dead_parent_terminal_sync() {
+        let (_dir, db) = open_test_db();
+        let parent = db
+            .enqueue_local_sync_event(
+                Some("workspace-1"),
+                "node",
+                "parent-assistant",
+                "node.update_terminal",
+                r#"{"workspaceId":"workspace-1","userMessage":{"id":"parent-user"},"assistantMessage":{"id":"parent-assistant"},"finalize":{"runId":"parent-run","status":"completed"}}"#,
+                Some("parent-run"),
+            )
+            .expect("enqueue parent");
+        db.mark_local_sync_event_dead(
+            &parent.id,
+            "node.update_terminal failed with status 404 Not Found",
+        )
+        .expect("dead parent");
+        let child = db
+            .enqueue_local_sync_event(
+                Some("workspace-1"),
+                "node",
+                "child-assistant",
+                "node.update_terminal",
+                r#"{"workspaceId":"workspace-1","userMessage":{"id":"child-user","parentId":"parent-assistant"},"assistantMessage":{"id":"child-assistant"},"finalize":{"runId":"child-run","status":"completed"}}"#,
+                Some("child-run"),
+            )
+            .expect("enqueue child");
+
+        let blocking_parent = db
+            .requeue_blocking_terminal_parent_if_needed(&child)
+            .expect("requeue parent");
+
+        assert_eq!(blocking_parent.as_deref(), Some("parent-assistant"));
+        let parent = db
+            .get_local_sync_event(&parent.id)
+            .expect("read parent")
+            .expect("parent event");
+        assert_eq!(parent.status, "pending");
+        assert!(parent.next_attempt_at.is_some());
+        let child = db
+            .get_local_sync_event(&child.id)
+            .expect("read child")
+            .expect("child event");
+        assert_eq!(child.status, "pending");
+    }
+
+    #[test]
+    fn child_terminal_sync_defers_while_parent_terminal_sync_is_pending() {
+        let (_dir, db) = open_test_db();
+        db.enqueue_local_sync_event(
+            Some("workspace-1"),
+            "node",
+            "parent-assistant",
+            "node.update_terminal",
+            r#"{"workspaceId":"workspace-1","userMessage":{"id":"parent-user"},"assistantMessage":{"id":"parent-assistant"},"finalize":{"runId":"parent-run","status":"completed"}}"#,
+            Some("parent-run"),
+        )
+        .expect("enqueue parent");
+        let child = db
+            .enqueue_local_sync_event(
+                Some("workspace-1"),
+                "node",
+                "child-assistant",
+                "node.update_terminal",
+                r#"{"workspaceId":"workspace-1","userMessage":{"id":"child-user","parentId":"parent-assistant"},"assistantMessage":{"id":"child-assistant"},"finalize":{"runId":"child-run","status":"completed"}}"#,
+                Some("child-run"),
+            )
+            .expect("enqueue child");
+
+        let blocking_parent = db
+            .requeue_blocking_terminal_parent_if_needed(&child)
+            .expect("detect parent");
+
+        assert_eq!(blocking_parent.as_deref(), Some("parent-assistant"));
+    }
+
+    #[test]
     fn local_node_upsert_does_not_clear_tombstone() {
         let (_dir, db) = open_test_db();
-        db.local_first_delete_branch("workspace-1", "node-1")
+        db.local_first_delete_branch("workspace-1", None, "node-1")
             .expect("delete");
         db.upsert_local_node(
             "node-1",
@@ -4738,7 +5357,7 @@ mod tests {
     fn local_first_delete_branch_tombstones_and_enqueues() {
         let (_dir, db) = open_test_db();
         let event = db
-            .local_first_delete_branch("workspace-1", "node-1")
+            .local_first_delete_branch("workspace-1", None, "node-1")
             .expect("delete branch");
         assert_eq!(event.entity_type, "node");
         assert_eq!(event.event_type, "node.delete");
@@ -4755,7 +5374,7 @@ mod tests {
     fn local_first_delete_workspace_tombstones_and_enqueues() {
         let (_dir, db) = open_test_db();
         let event = db
-            .local_first_delete_workspace("workspace-1")
+            .local_first_delete_workspace("workspace-1", None)
             .expect("delete workspace");
         assert_eq!(event.entity_type, "workspace");
         assert_eq!(event.event_type, "workspace.delete");
@@ -4771,6 +5390,13 @@ mod tests {
     fn terminal_sync_workspace_not_found_is_permanent() {
         assert!(is_permanent_local_sync_error(
             "node.update_terminal failed with status 404 Not Found"
+        ));
+    }
+
+    #[test]
+    fn commit_graph_sync_workspace_not_found_is_permanent() {
+        assert!(is_permanent_local_sync_error(
+            "commit_graph.git_sync_ingest failed with status 404 Not Found: {\"error\":\"Workspace not found\"}"
         ));
     }
 

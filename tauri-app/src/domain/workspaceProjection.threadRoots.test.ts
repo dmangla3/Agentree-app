@@ -23,6 +23,78 @@ const makeMessage = (
 });
 
 describe('workspace projection thread roots', () => {
+  it('redirects user message focus to the first assistant in the same turn', () => {
+    const projection = buildWorkspaceProjection({
+      messages: [
+        makeMessage('user-a', 'user', null, '2026-05-28T00:00:00.000Z'),
+        makeMessage('assistant-a', 'assistant', 'user-a', '2026-05-28T00:01:00.000Z'),
+      ],
+      summaries: [],
+      focusedMessageId: 'assistant-a',
+    });
+
+    expect(projection.entitiesByMessageId.get('user-a')).toEqual(expect.objectContaining({
+      kind: 'user_message',
+      focusMessageId: 'assistant-a',
+    }));
+  });
+
+  it('leaves user message focus empty until the turn has an assistant response', () => {
+    const projection = buildWorkspaceProjection({
+      messages: [
+        makeMessage('user-a', 'user', null, '2026-05-28T00:00:00.000Z'),
+      ],
+      summaries: [],
+      focusedMessageId: null,
+    });
+
+    expect(projection.entitiesByMessageId.get('user-a')).toEqual(expect.objectContaining({
+      kind: 'user_message',
+      focusMessageId: null,
+    }));
+  });
+
+  it('refreshes assistant execution data when only the persisted failure reason changes', () => {
+    const failedAssistant = makeMessage(
+      'assistant-a',
+      'assistant',
+      'user-a',
+      '2026-05-28T00:01:00.000Z',
+      {
+        status: 'failed' as any,
+        content: 'Assistant failed.',
+        execution_data: { last_terminal_status: 'failed' },
+      },
+    );
+
+    buildWorkspaceProjection({
+      messages: [
+        makeMessage('user-a', 'user', null, '2026-05-28T00:00:00.000Z'),
+        failedAssistant,
+      ],
+      summaries: [],
+      focusedMessageId: 'assistant-a',
+    });
+
+    const projection = buildWorkspaceProjection({
+      messages: [
+        makeMessage('user-a', 'user', null, '2026-05-28T00:00:00.000Z'),
+        {
+          ...failedAssistant,
+          execution_data: {
+            last_terminal_status: 'failed',
+            failure_reason: "ImportError: cannot import name 'ParamSpec' from 'typing'",
+          },
+        },
+      ],
+      summaries: [],
+      focusedMessageId: 'assistant-a',
+    });
+
+    expect((projection.entitiesByMessageId.get('assistant-a')?.message?.execution_data as any)?.failure_reason)
+      .toBe("ImportError: cannot import name 'ParamSpec' from 'typing'");
+  });
+
   it('projects an empty workspace thread origin when there are no messages', () => {
     const projection = buildWorkspaceProjection({
       messages: [],

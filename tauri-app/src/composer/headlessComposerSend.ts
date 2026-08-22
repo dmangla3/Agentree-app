@@ -47,6 +47,7 @@ export interface HeadlessComposerMessageInput extends Omit<HeadlessComposerReply
   perfSource?: string;
   setupProgress?: string;
   meta?: Record<string, unknown>;
+  selectedLoginProfileId?: string | null;
   threadId?: string | null;
   threadOriginId?: string | null;
 }
@@ -361,6 +362,7 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
         provider: input.agent.type,
         llmModel: input.agent.model_config?.model ?? null,
         provider_model: input.agent.model_config?.model ?? null,
+        login_profile_id: input.selectedLoginProfileId ?? null,
       },
     };
 
@@ -387,6 +389,7 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
         args: buildHeadlessComposerAgentArgs(input.agent, effectivePrompt),
         authToken,
         traceId: null,
+        loginProfileId: input.selectedLoginProfileId ?? null,
         runContext: {
           runId,
           executionData,

@@ -100,6 +100,28 @@ export const resolveActiveThreadAfterDoneChange = ({
   return nextActiveThreadRootId ?? (available.has(changedThreadRootId) ? changedThreadRootId : null);
 };
 
+export const resolveDoneThreadsReopenedByUserMessages = ({
+  doneThreadRootIds,
+  previousUserMessageCountsByThreadRootId,
+  currentUserMessageCountsByThreadRootId,
+}: {
+  doneThreadRootIds: Set<string>;
+  previousUserMessageCountsByThreadRootId: Map<string, number>;
+  currentUserMessageCountsByThreadRootId: Map<string, number>;
+}): string[] => {
+  const reopenedThreadRootIds: string[] = [];
+
+  for (const threadRootId of doneThreadRootIds) {
+    const previousCount = previousUserMessageCountsByThreadRootId.get(threadRootId);
+    const currentCount = currentUserMessageCountsByThreadRootId.get(threadRootId) ?? 0;
+    if (previousCount !== undefined && currentCount > previousCount) {
+      reopenedThreadRootIds.push(threadRootId);
+    }
+  }
+
+  return reopenedThreadRootIds;
+};
+
 export const resolveThreadGraphScope = ({
   messages,
   threadRootIndex,

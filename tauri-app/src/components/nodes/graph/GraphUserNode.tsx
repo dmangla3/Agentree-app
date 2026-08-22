@@ -9,6 +9,7 @@ export const GraphUserNode = memo(({
   entity,
   isFocused,
   isSelected,
+  focusFeedbackEnabled,
   disableHoverCard,
   detailLevel = 'full',
   heightKey,
@@ -25,6 +26,7 @@ export const GraphUserNode = memo(({
       nodeId={nodeId}
       isFocused={isFocused}
       isSelected={isSelected}
+      focusFeedbackEnabled={focusFeedbackEnabled}
       disableHoverCard={disableHoverCard}
       heightKey={heightKey}
       className={cn(

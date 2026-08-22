@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import '../../test/setup';
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GraphThreadTabs, type ThreadNavigationItem } from './GraphControls';
 import type { Message } from '../../stores/workspaceStore';
+import { useRunStatusStore } from '../../stores/runStatusStore';
 
 vi.mock('../../../@/components/ui/hover-card', () => ({
   HoverCard: ({
@@ -42,6 +43,17 @@ vi.mock('../NodeHoverCardContent', () => ({
   NodeHoverCardContent: ({ entity }: { entity?: { messageId?: string | null } }) => (
     <button type="button">thread hover content {entity?.messageId}</button>
   ),
+}));
+
+vi.mock('../../agent-runs/agentRunManager', () => ({
+  agentRunManager: {
+    watch: vi.fn(),
+    unwatch: vi.fn(),
+  },
+}));
+
+vi.mock('../../agent-runs/agentRunHydration', () => ({
+  ensureAgentRunHydrated: vi.fn(() => Promise.resolve({ status: 'hydrated' })),
 }));
 
 const makeThread = (overrides: Partial<ThreadNavigationItem> & Pick<ThreadNavigationItem, 'threadRootId' | 'label'>): ThreadNavigationItem => ({
@@ -91,6 +103,11 @@ const renderTabs = (threadItems: ThreadNavigationItem[], messages: Message[] = [
 );
 
 describe('GraphThreadTabs hover cards', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    useRunStatusStore.getState().clearAllRunStatus();
+  });
+
   it('does not wrap the current thread tab in a hover card', () => {
     renderTabs([
       makeThread({
@@ -132,5 +149,138 @@ describe('GraphThreadTabs hover cards', () => {
     fireEvent.click(screen.getByText('close thread hover'));
 
     expect(screen.queryByText('thread hover content node-other')).toBeNull();
+  });
+
+  it('closes a thread hover card when the pointer leaves content without retained focus', () => {
+    renderTabs([
+      makeThread({
+        threadRootId: 'thread-other',
+        label: 'Other thread',
+        previewNodeIds: ['node-other'],
+      }),
+    ], [makeMessage('node-other')]);
+
+    fireEvent.click(screen.getByText('open thread hover'));
+    const content = screen.getByTestId('thread-hover-content');
+    fireEvent.pointerEnter(content);
+    fireEvent.click(screen.getByText('close thread hover'));
+
+    expect(screen.getByText('thread hover content node-other')).toBeTruthy();
+
+    fireEvent.pointerLeave(content);
+
+    expect(screen.queryByText('thread hover content node-other')).toBeNull();
+  });
+
+  it('closes a thread hover card for graph viewport interaction', () => {
+    renderTabs([
+      makeThread({
+        threadRootId: 'thread-other',
+        label: 'Other thread',
+        previewNodeIds: ['node-other'],
+      }),
+    ], [makeMessage('node-other')]);
+
+    fireEvent.click(screen.getByText('open thread hover'));
+    expect(screen.getByText('thread hover content node-other')).toBeTruthy();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('agentree:graph-viewport-interaction-start'));
+    });
+
+    expect(screen.queryByText('thread hover content node-other')).toBeNull();
+  });
+
+  it('closes a thread hover card when the document is hidden', () => {
+    renderTabs([
+      makeThread({
+        threadRootId: 'thread-other',
+        label: 'Other thread',
+        previewNodeIds: ['node-other'],
+      }),
+    ], [makeMessage('node-other')]);
+
+    fireEvent.click(screen.getByText('open thread hover'));
+    expect(screen.getByText('thread hover content node-other')).toBeTruthy();
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'hidden',
+    });
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    expect(screen.queryByText('thread hover content node-other')).toBeNull();
+  });
+
+  it('hydrates the active preview node only while the thread hover card is open', async () => {
+    const { agentRunManager } = await import('../../agent-runs/agentRunManager');
+    const { ensureAgentRunHydrated } = await import('../../agent-runs/agentRunHydration');
+
+    renderTabs([
+      makeThread({
+        threadRootId: 'thread-other',
+        label: 'Other thread',
+        previewNodeIds: ['node-other'],
+      }),
+    ], [{ ...makeMessage('node-other'), status: 'running' }]);
+
+    fireEvent.click(screen.getByText('open thread hover'));
+
+    await waitFor(() => {
+      expect(agentRunManager.watch).toHaveBeenCalledWith('node-other', 'hover');
+    });
+    expect(ensureAgentRunHydrated).toHaveBeenCalledWith('node-other', 'hover');
+
+    fireEvent.click(screen.getByText('close thread hover'));
+
+    await waitFor(() => {
+      expect(agentRunManager.unwatch).toHaveBeenCalledWith('node-other', 'hover');
+    });
+  });
+
+  it('does not hydrate a persisted completed preview node', async () => {
+    const { agentRunManager } = await import('../../agent-runs/agentRunManager');
+    const { ensureAgentRunHydrated } = await import('../../agent-runs/agentRunHydration');
+
+    renderTabs([
+      makeThread({
+        threadRootId: 'thread-other',
+        label: 'Other thread',
+        previewNodeIds: ['node-other'],
+      }),
+    ], [{ ...makeMessage('node-other'), status: 'completed' }]);
+
+    fireEvent.click(screen.getByText('open thread hover'));
+
+    expect(screen.getByText('thread hover content node-other')).toBeTruthy();
+    expect(agentRunManager.watch).not.toHaveBeenCalled();
+    expect(ensureAgentRunHydrated).not.toHaveBeenCalled();
+  });
+
+  it('hydrates a completed preview node when live run status is active', async () => {
+    const { agentRunManager } = await import('../../agent-runs/agentRunManager');
+    const { ensureAgentRunHydrated } = await import('../../agent-runs/agentRunHydration');
+    useRunStatusStore.getState().setRunStatus('node-other', {
+      workspaceId: 'workspace-1',
+      role: 'assistant',
+      status: 'running',
+    });
+
+    renderTabs([
+      makeThread({
+        threadRootId: 'thread-other',
+        label: 'Other thread',
+        previewNodeIds: ['node-other'],
+      }),
+    ], [{ ...makeMessage('node-other'), status: 'completed' }]);
+
+    fireEvent.click(screen.getByText('open thread hover'));
+
+    await waitFor(() => {
+      expect(agentRunManager.watch).toHaveBeenCalledWith('node-other', 'hover');
+    });
+    expect(ensureAgentRunHydrated).toHaveBeenCalledWith('node-other', 'hover');
   });
 });

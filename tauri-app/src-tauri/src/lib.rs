@@ -25,6 +25,7 @@ mod editors;
 mod git_workspace;
 mod graph_snapshot_cache;
 mod logging;
+mod login_profiles;
 mod mcp;
 mod merge_review;
 mod metric_kit;
@@ -140,9 +141,18 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             agents::stop_agent,
             agents::steer_agent_run,
             agents::get_agent_run_state,
+            login_profiles::list_login_profiles,
+            login_profiles::upsert_login_profile,
+            login_profiles::delete_login_profile,
+            login_profiles::set_default_login_profile,
+            login_profiles::list_active_login_profile_runs,
+            login_profiles::check_login_profile_readiness,
+            login_profiles::check_all_login_profile_readiness,
+            login_profiles::discover_login_import_candidates,
+            login_profiles::import_discovered_login_profile,
+            login_profiles::import_existing_runtime_login,
             runtime_readiness::check_runtime_readiness,
             runtime_readiness::check_all_runtime_readiness,
-            runtime_readiness::check_codex_readiness,
             runtime_readiness::refresh_provider_limits,
             git_workspace::check_local_environment,
             git_workspace::attach_workspace,

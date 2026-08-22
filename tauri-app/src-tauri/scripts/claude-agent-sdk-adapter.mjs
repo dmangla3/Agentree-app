@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import readline from 'node:readline';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
@@ -50,6 +51,21 @@ function hasEnvValue(name) {
   return Boolean((process.env[name] ?? '').trim());
 }
 
+export function hasAgentreeManagedClaudeCredential() {
+  return Boolean(
+    hasEnvValue('ANTHROPIC_API_KEY')
+    || hasEnvValue('ANTHROPIC_AUTH_TOKEN')
+    || hasEnvValue('ANTHROPIC_BASE_URL')
+    || hasEnvValue('ANTHROPIC_BEDROCK_BASE_URL')
+    || hasEnvValue('ANTHROPIC_VERTEX_BASE_URL')
+    || hasEnvValue('ANTHROPIC_FOUNDRY_BASE_URL')
+    || hasEnvValue('CLAUDE_CODE_USE_BEDROCK')
+    || hasEnvValue('CLAUDE_CODE_USE_VERTEX')
+    || hasEnvValue('CLAUDE_CODE_USE_FOUNDRY')
+    || hasEnvValue('CLAUDE_CODE_USE_ANTHROPIC_AWS')
+  );
+}
+
 function parseClaudeAuthStatus(stdout) {
   try {
     const parsed = JSON.parse(stdout);
@@ -60,7 +76,24 @@ function parseClaudeAuthStatus(stdout) {
   return null;
 }
 
-function probeClaudeAuth() {
+export function probeClaudeAuth() {
+  if (hasAgentreeManagedClaudeCredential()) {
+    emitTrace('claude_environment', {
+      auth_method: 'agentree_managed',
+      has_ANTHROPIC_API_KEY: hasEnvValue('ANTHROPIC_API_KEY'),
+      has_ANTHROPIC_AUTH_TOKEN: hasEnvValue('ANTHROPIC_AUTH_TOKEN'),
+      has_ANTHROPIC_BASE_URL: hasEnvValue('ANTHROPIC_BASE_URL'),
+      has_ANTHROPIC_BEDROCK_BASE_URL: hasEnvValue('ANTHROPIC_BEDROCK_BASE_URL'),
+      has_ANTHROPIC_VERTEX_BASE_URL: hasEnvValue('ANTHROPIC_VERTEX_BASE_URL'),
+      has_ANTHROPIC_FOUNDRY_BASE_URL: hasEnvValue('ANTHROPIC_FOUNDRY_BASE_URL'),
+      has_CLAUDE_CODE_USE_BEDROCK: hasEnvValue('CLAUDE_CODE_USE_BEDROCK'),
+      has_CLAUDE_CODE_USE_VERTEX: hasEnvValue('CLAUDE_CODE_USE_VERTEX'),
+      has_CLAUDE_CODE_USE_FOUNDRY: hasEnvValue('CLAUDE_CODE_USE_FOUNDRY'),
+      has_CLAUDE_CODE_USE_ANTHROPIC_AWS: hasEnvValue('CLAUDE_CODE_USE_ANTHROPIC_AWS'),
+    });
+    return null;
+  }
+
   const result = spawnSync('claude', ['auth', 'status'], {
     encoding: 'utf8',
     env: process.env,
@@ -899,5 +932,7 @@ async function main() {
   }
 }
 
-const exitCode = await main();
-process.exit(exitCode);
+if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+  const exitCode = await main();
+  process.exit(exitCode);
+}

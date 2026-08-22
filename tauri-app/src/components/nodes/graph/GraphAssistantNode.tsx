@@ -8,6 +8,7 @@ import { getAgentVisualState } from '../../../lib/agentStateUI';
 import { useRunStatusStore } from '../../../stores/runStatusStore';
 import { getAssistantIdentityLabel } from '../../../lib/assistantIdentity';
 import { getNodeFailureReason, isNodeFailureStatus } from '../../../lib/nodeFailureReason';
+import { shouldHydrateAgentRunHover } from '../../../lib/agentRunHoverHydrationPolicy';
 
 // Compact status icon only - no text
 
@@ -39,6 +40,7 @@ export const GraphAssistantNode = memo(({
   entity,
   isFocused,
   isSelected,
+  focusFeedbackEnabled,
   disableHoverCard,
   detailLevel = 'full',
   heightKey,
@@ -50,6 +52,7 @@ export const GraphAssistantNode = memo(({
 }: SharedNodeProps) => {
   const runStatus = useRunStatusStore(state => nodeId ? state.byNodeId[nodeId]?.status ?? null : null);
   const displayStatus = runStatus ?? entity.status;
+  const resolvedHoverHydrationEnabled = shouldHydrateAgentRunHover(entity, runStatus);
   const isFullDetail = detailLevel === 'full';
   const isMinimalDetail = detailLevel === 'minimal';
   const assistantIdentityLabel = getAssistantIdentityLabel({
@@ -65,6 +68,7 @@ export const GraphAssistantNode = memo(({
       nodeId={nodeId}
       isFocused={isFocused}
       isSelected={isSelected}
+      focusFeedbackEnabled={focusFeedbackEnabled}
       disableHoverCard={disableHoverCard}
       heightKey={heightKey}
       className={cn(
@@ -77,6 +81,7 @@ export const GraphAssistantNode = memo(({
       }}
       onMeasureHeight={onMeasureHeight}
       hoverCardContent={hoverCardContent}
+      hoverHydrationEnabled={resolvedHoverHydrationEnabled}
       onFocus={onFocus}
       onSelect={onSelect}
       onContextMenu={onContextMenu}

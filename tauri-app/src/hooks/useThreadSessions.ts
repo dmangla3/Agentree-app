@@ -22,7 +22,7 @@ export const mergeThreadSessionIntoCache = (
     const leftKey = threadSessionSortKey(left);
     const rightKey = threadSessionSortKey(right);
     if (leftKey.statusRank !== rightKey.statusRank) return leftKey.statusRank - rightKey.statusRank;
-    if (leftKey.updatedAtMs !== rightKey.updatedAtMs) return rightKey.updatedAtMs - leftKey.updatedAtMs;
+    if (leftKey.createdAtMs !== rightKey.createdAtMs) return rightKey.createdAtMs - leftKey.createdAtMs;
     return leftKey.id.localeCompare(rightKey.id);
   });
 };

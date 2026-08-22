@@ -160,6 +160,7 @@ const createMessagesFingerprint = (messages: Message[]): string => {
         m.parentId || '',
         m.role,
         m.collapsed || false,
+        getMessageOutputCommitSha(m) || '',
     ].join('|')).join(';');
 };
 

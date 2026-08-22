@@ -152,6 +152,46 @@ describe('sendHeadlessComposerReply', () => {
     expect(executionDataEvent?.[1].patch.meta.base_commit_sha).toBe('workspace-base');
   });
 
+  it('passes selected login profile id into native agent run intent', async () => {
+    const startAgentRun = vi.fn().mockResolvedValue(undefined);
+    const result = await sendHeadlessComposerMessage({
+      workspaceId: 'workspace-1',
+      parentMessageId: null,
+      contextParentId: null,
+      contextPolicy: 'fresh',
+      prompt: 'Ship it',
+      messages: [],
+      agent: {
+        id: 'codex:gpt-5.5:high',
+        type: 'codex',
+        name: 'Codex',
+        cliArgs: '--model gpt-5.5',
+        promptFlag: null,
+        model_config: { model: 'gpt-5.5' },
+      },
+      base: {
+        commitSha: 'workspace-base',
+        selectedFromNodeId: null,
+      },
+      workspaces: [{ id: 'workspace-1', git_repo_path: '/repo' } as Workspace],
+      sendMessage: vi.fn().mockResolvedValue({}),
+      hasRuntime: () => true,
+      startAgentRun,
+      getAccessToken: vi.fn().mockResolvedValue('token-1'),
+      seedAgentRun: vi.fn(),
+      dispatchAgentRun: vi.fn(),
+      selectedLoginProfileId: 'profile-codex-work',
+      createRunId: () => 'run-login-profile',
+      nowIso: () => '2026-05-27T01:02:03.000Z',
+    } as any);
+
+    expect(result).toBeDefined();
+    expect(startAgentRun).toHaveBeenCalledTimes(1);
+    const intent = startAgentRun.mock.calls[0][0];
+    expect(intent.loginProfileId).toBe('profile-codex-work');
+    expect(intent.runContext.executionData.meta.login_profile_id).toBe('profile-codex-work');
+  });
+
   it('sends the first-class thread id and legacy thread origin for new graph threads', async () => {
     const sendMessage = vi.fn().mockResolvedValue({
       userMessage: message({ id: 'user-root', role: 'user', parentId: null }),

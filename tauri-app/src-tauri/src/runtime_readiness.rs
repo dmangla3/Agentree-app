@@ -1,21 +1,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::AppHandle;
+use tauri::{AppHandle, State};
+
+use crate::db::TelemetryDb;
 
 const PROVIDER_LIMITS_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
-
-#[derive(Debug, Serialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-struct CommandProbe {
-    ok: bool,
-    exit_code: Option<i32>,
-    output_excerpt: Option<String>,
-    error_type: Option<String>,
-}
 
 #[derive(Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -36,19 +28,6 @@ pub struct RuntimeReadiness {
 
 fn build_probe_path() -> String {
     crate::cli_path::build_tool_path()
-}
-
-fn command_excerpt(output: &Output) -> String {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = if stdout.trim().is_empty() {
-        stderr.trim().to_string()
-    } else if stderr.trim().is_empty() {
-        stdout.trim().to_string()
-    } else {
-        format!("{} {}", stdout.trim(), stderr.trim())
-    };
-    combined.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn command_output_with_timeout(
@@ -94,169 +73,73 @@ fn command_output_with_timeout(
     }
 }
 
-fn run_probe(command: &str, args: &[&str]) -> CommandProbe {
-    match Command::new(command)
-        .args(args)
-        .env("PATH", build_probe_path())
-        .output()
-    {
-        Ok(output) => CommandProbe {
-            ok: output.status.success(),
-            exit_code: output.status.code(),
-            output_excerpt: Some(command_excerpt(&output)),
-            error_type: None,
-        },
-        Err(error) => CommandProbe {
-            ok: false,
-            exit_code: None,
-            output_excerpt: Some(error.to_string()),
-            error_type: Some(format!("{:?}", error.kind())),
-        },
-    }
-}
-
-fn find_cli(command: &str) -> Option<String> {
-    crate::cli_path::find_on_tool_path(command)
-}
-
-fn home_dir_path(name: &str) -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(name))
-}
-
-fn json_value<T: Serialize>(value: T) -> JsonValue {
-    serde_json::to_value(value).unwrap_or_else(|_| JsonValue::Object(JsonMap::new()))
-}
-
-fn normalize_codex_payload(mut payload: JsonValue) -> JsonValue {
-    if let Some(object) = payload.as_object_mut() {
-        object.insert(
-            "provider".to_string(),
-            JsonValue::String("codex".to_string()),
-        );
-        if let Some(value) = object.remove("codexBin") {
-            object.insert("cliPath".to_string(), value);
-        }
-        if let Some(value) = object.remove("codexVersion") {
-            object.insert("cliVersion".to_string(), value);
-        }
-        if let Some(value) = object.remove("codexHome") {
-            object.insert("homeDir".to_string(), value);
-        }
-        if let Some(value) = object.remove("hasAuthJson") {
-            object.insert("hasAuthFile".to_string(), value);
-        }
-
-        let diagnostics = object
-            .get("diagnostics")
-            .cloned()
-            .unwrap_or_else(|| JsonValue::Object(JsonMap::new()));
-        if !object.contains_key("diagnostics") {
-            object.insert("diagnostics".to_string(), diagnostics);
-        }
-    }
-    payload
-}
-
-fn check_codex(app: &AppHandle) -> Result<RuntimeReadiness, String> {
-    let script_path =
-        crate::runtime_scripts::runtime_script_path(app, "codex-app-server-adapter.py")?;
-    let output = Command::new(crate::runtime_scripts::runtime_python_command(app))
-        .arg(script_path)
-        .arg("--readiness-check")
-        .env("PATH", build_probe_path())
-        .output()
-        .map_err(|error| format!("Failed to run Codex readiness check: {}", error))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-
-    if stdout.is_empty() {
-        return Err(format!(
-            "Codex readiness check produced no output. exit={} stderr={}",
-            output
-                .status
-                .code()
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "unknown".to_string()),
-            stderr
-        ));
-    }
-
-    let parsed = serde_json::from_str::<JsonValue>(&stdout).map_err(|error| {
-        format!(
-            "Failed to parse Codex readiness check output: {}. output={}",
-            error, stdout
-        )
-    })?;
-    serde_json::from_value(normalize_codex_payload(parsed))
-        .map_err(|error| format!("Failed to decode Codex readiness payload: {}", error))
-}
-
-fn check_claude() -> RuntimeReadiness {
-    let cli_path = find_cli("claude");
-    let version_probe = run_probe("claude", &["--version"]);
-    let auth_probe = run_probe("claude", &["auth", "status"]);
-    let home_dir = home_dir_path(".claude");
-    let has_auth_file = home_dir.as_ref().map(|home| {
-        ["auth.json", ".credentials.json", "credentials.json"]
-            .iter()
-            .any(|file| Path::new(home).join(file).exists())
-    });
-
+fn readiness_from_managed_profile(
+    profile: &crate::login_profiles::LoginProfile,
+) -> RuntimeReadiness {
     let mut diagnostics = JsonMap::new();
-    diagnostics.insert("versionProbe".to_string(), json_value(&version_probe));
-    diagnostics.insert("authProbe".to_string(), json_value(&auth_probe));
-
-    if !version_probe.ok {
-        return RuntimeReadiness {
-            provider: "claude".to_string(),
-            status: if cli_path.is_some() {
-                "cli_not_executable".to_string()
-            } else {
-                "cli_missing".to_string()
-            },
-            cli_path,
-            cli_version: None,
-            home_dir: home_dir.map(|path| path.to_string_lossy().into_owned()),
-            auth_mode: None,
-            plan_type: None,
-            has_auth_file,
-            recommended_command: Some(
-                "Install Claude Code, then run `claude auth login`.".to_string(),
-            ),
-            message: "Claude Code is not available to Agentree.".to_string(),
-            diagnostics: JsonValue::Object(diagnostics),
-        };
-    }
-
-    if !auth_probe.ok {
-        return RuntimeReadiness {
-            provider: "claude".to_string(),
-            status: "auth_missing".to_string(),
-            cli_path,
-            cli_version: version_probe.output_excerpt.clone(),
-            home_dir: home_dir.map(|path| path.to_string_lossy().into_owned()),
-            auth_mode: None,
-            plan_type: None,
-            has_auth_file,
-            recommended_command: Some("claude auth login".to_string()),
-            message: "Claude Code is installed, but Agentree cannot verify Claude authentication."
-                .to_string(),
-            diagnostics: JsonValue::Object(diagnostics),
-        };
-    }
+    diagnostics.insert(
+        "managedProfileId".to_string(),
+        JsonValue::String(profile.id.clone()),
+    );
+    diagnostics.insert(
+        "managedProfileAuthType".to_string(),
+        JsonValue::String(profile.auth_type.clone()),
+    );
+    diagnostics.insert("managedByAgentree".to_string(), JsonValue::Bool(true));
 
     RuntimeReadiness {
-        provider: "claude".to_string(),
-        status: "ready".to_string(),
-        cli_path,
-        cli_version: version_probe.output_excerpt.clone(),
-        home_dir: home_dir.map(|path| path.to_string_lossy().into_owned()),
-        auth_mode: Some("cli".to_string()),
-        plan_type: None,
-        has_auth_file,
+        provider: profile.provider.clone(),
+        status: profile.status.clone(),
+        cli_path: None,
+        cli_version: None,
+        home_dir: None,
+        auth_mode: Some(profile.auth_type.clone()),
+        plan_type: profile.plan_type.clone(),
+        has_auth_file: Some(profile.auth_type == "codex_chatgpt_session"),
         recommended_command: None,
-        message: "Claude Code is ready for Agentree.".to_string(),
+        message: profile.status_message.clone().unwrap_or_else(|| {
+            format!(
+                "{} managed login profile is {}.",
+                profile.provider, profile.status
+            )
+        }),
+        diagnostics: JsonValue::Object(diagnostics),
+    }
+}
+
+fn default_managed_profile_for_provider(
+    db: &TelemetryDb,
+    provider: &str,
+) -> Option<crate::login_profiles::LoginProfile> {
+    let mut profiles = db.list_login_profiles().ok()?;
+    profiles.retain(|profile| profile.provider == provider);
+    profiles
+        .iter()
+        .find(|profile| profile.is_default)
+        .cloned()
+        .or_else(|| profiles.into_iter().next())
+}
+
+fn missing_login_profile_readiness(provider: &str) -> RuntimeReadiness {
+    let label = if provider == "codex" {
+        "Codex"
+    } else {
+        "Claude"
+    };
+    let mut diagnostics = JsonMap::new();
+    diagnostics.insert("loginProfilesRequired".to_string(), JsonValue::Bool(true));
+    diagnostics.insert("managedByAgentree".to_string(), JsonValue::Bool(true));
+    RuntimeReadiness {
+        provider: provider.to_string(),
+        status: "auth_missing".to_string(),
+        cli_path: None,
+        cli_version: None,
+        home_dir: None,
+        auth_mode: None,
+        plan_type: None,
+        has_auth_file: None,
+        recommended_command: None,
+        message: format!("No active {} login profile is ready.", label),
         diagnostics: JsonValue::Object(diagnostics),
     }
 }
@@ -264,12 +147,22 @@ fn check_claude() -> RuntimeReadiness {
 #[tauri::command]
 #[specta::specta]
 pub fn check_runtime_readiness(
-    app: AppHandle,
+    db: State<TelemetryDb>,
     provider: String,
 ) -> Result<RuntimeReadiness, String> {
     match provider.trim().to_lowercase().as_str() {
-        "codex" => check_codex(&app),
-        "claude" => Ok(check_claude()),
+        "codex" => {
+            if let Some(profile) = default_managed_profile_for_provider(&db, "codex") {
+                return Ok(readiness_from_managed_profile(&profile));
+            }
+            Ok(missing_login_profile_readiness("codex"))
+        }
+        "claude" => {
+            if let Some(profile) = default_managed_profile_for_provider(&db, "claude") {
+                return Ok(readiness_from_managed_profile(&profile));
+            }
+            Ok(missing_login_profile_readiness("claude"))
+        }
         other => Ok(RuntimeReadiness {
             provider: other.to_string(),
             status: "unknown_error".to_string(),
@@ -291,16 +184,20 @@ pub fn check_runtime_readiness(
 
 #[tauri::command]
 #[specta::specta]
-pub fn check_all_runtime_readiness(app: AppHandle) -> Result<Vec<RuntimeReadiness>, String> {
-    let codex = check_codex(&app)?;
-    let claude = check_claude();
+pub fn check_all_runtime_readiness(
+    db: State<TelemetryDb>,
+) -> Result<Vec<RuntimeReadiness>, String> {
+    let codex = if let Some(profile) = default_managed_profile_for_provider(&db, "codex") {
+        readiness_from_managed_profile(&profile)
+    } else {
+        missing_login_profile_readiness("codex")
+    };
+    let claude = if let Some(profile) = default_managed_profile_for_provider(&db, "claude") {
+        readiness_from_managed_profile(&profile)
+    } else {
+        missing_login_profile_readiness("claude")
+    };
     Ok(vec![codex, claude])
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn check_codex_readiness(app: AppHandle) -> Result<RuntimeReadiness, String> {
-    check_codex(&app)
 }
 
 fn read_codex_provider_limits(app: &AppHandle) -> Result<String, String> {

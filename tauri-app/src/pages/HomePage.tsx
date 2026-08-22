@@ -28,6 +28,7 @@ const FlowsPanel = lazy(() => import('../components/flows/FlowsPanel').then((mod
 const GraphComposerDock = lazy(() => import('../components/GraphComposerDock').then((module) => ({ default: module.GraphComposerDock })));
 const GraphView = lazy(() => import('../components/GraphView').then((module) => ({ default: module.GraphView })));
 const KnowledgeBase = lazy(() => import('../components/KnowledgeBase/KnowledgeBase').then((module) => ({ default: module.KnowledgeBase })));
+const LoginProfilesPanel = lazy(() => import('../components/logins/LoginProfilesPanel').then((module) => ({ default: module.LoginProfilesPanel })));
 const SkillsPanel = lazy(() => import('../components/SkillsPanel').then((module) => ({ default: module.SkillsPanel })));
 const TrackingDashboard = lazy(() => import('../components/TrackingDashboard').then((module) => ({ default: module.TrackingDashboard })));
 
@@ -60,7 +61,7 @@ export function HomePage() {
   const messageId = searchParams.get('messageId');
 
   const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
-  const [activeView, setActiveView] = useState<'chat' | 'flows' | 'tracking' | 'knowledge' | 'skills'>('chat');
+  const [activeView, setActiveView] = useState<'chat' | 'flows' | 'tracking' | 'knowledge' | 'skills' | 'logins'>('chat');
   const [isWorkspaceSelectorOpen, setIsWorkspaceSelectorOpen] = useState(false);
   const [isChatCollapsed, setIsChatCollapsed] = useState(true);
   const shellReadyLoggedRef = useRef(false);
@@ -363,6 +364,10 @@ export function HomePage() {
                 <TrackingDashboard workspace={selectedWorkspace} />
               </Suspense>
             </div>
+          ) : activeView === 'logins' ? (
+            <Suspense fallback={<PanelLoading />}>
+              <LoginProfilesPanel />
+            </Suspense>
           ) : activeView === 'skills' ? (
             <div className="app-view-surface h-full w-full overflow-auto p-5">
               <div className="app-view-frame mx-auto flex h-full w-full max-w-5xl flex-col">

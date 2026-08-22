@@ -7,6 +7,7 @@ import {
   resolveGraphDockComposerEffectiveAgentId,
   resolveGraphDockComposerRunCountsForEffectiveAgent,
   resolveGraphDockComposerTarget,
+  shouldSubmitGraphDockComposerKey,
 } from './graphDockComposerLogic';
 
 const message = (input: Partial<Message> & Pick<Message, 'id'>): Message => ({
@@ -224,5 +225,23 @@ describe('graph dock composer logic', () => {
       effectiveSelectedAgentId: 'codex:gpt-5.5:high',
       currentCounts: { 'claude-sonnet': 1, 'codex:gpt-5.5:high': 1 },
     })).toEqual({ 'claude-sonnet': 1, 'codex:gpt-5.5:high': 1 });
+  });
+
+  it('submits graph dock composer text on Enter without modifiers', () => {
+    expect(shouldSubmitGraphDockComposerKey({
+      key: 'Enter',
+      shiftKey: false,
+      metaKey: false,
+      ctrlKey: false,
+    })).toBe(true);
+  });
+
+  it('keeps Shift+Enter available for graph dock composer newlines', () => {
+    expect(shouldSubmitGraphDockComposerKey({
+      key: 'Enter',
+      shiftKey: true,
+      metaKey: false,
+      ctrlKey: false,
+    })).toBe(false);
   });
 });

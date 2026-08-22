@@ -6,6 +6,8 @@ import { Send, X, Reply, FileText, FileTextIcon, GitBranchIcon, Loader2, Chevron
 import { useWorkspaceStore, AttachmentMetadata, Message, Workspace, CommitEntity } from '../stores/workspaceStore';
 import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 import { useProviderLimitsStore } from '../stores/providerLimitsStore';
+import { useLoginProfilesStore } from '../stores/loginProfilesStore';
+import { isLoginProfileActive } from '../lib/loginProfiles';
 import { useQueryClient } from '@tanstack/react-query';
 import { UnifiedAgentModelSelector } from './UnifiedAgentModelSelector';
 import { AttachmentPreview } from './AttachmentPreview';
@@ -461,22 +463,6 @@ const ContextBadge = React.memo(function ContextBadge({ fileId, fileName, onRemo
     );
 });
 
-const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> => {
-    let timeoutId: number | null = null;
-    try {
-        return await Promise.race([
-            promise,
-            new Promise<T>((_, reject) => {
-                timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs);
-            }),
-        ]);
-    } finally {
-        if (timeoutId !== null) {
-            window.clearTimeout(timeoutId);
-        }
-    }
-};
-
 const areAgentRunCountsEqual = (left: ComposerAgentRunCounts, right: ComposerAgentRunCounts) => {
     const leftKeys = Object.keys(left);
     const rightKeys = Object.keys(right);
@@ -510,6 +496,7 @@ export function ChatInput({
     const [activeFileMentionIndex, setActiveFileMentionIndex] = useState(0);
     const [contextFetchError, _setContextFetchError] = useState<string | null>(null);
     const contextMode: ContextMode = 'active';
+    const refreshLoginProfiles = useLoginProfilesStore((state) => state.refresh);
 
     const {
         selectedWorkspaceId,
@@ -552,6 +539,10 @@ export function ChatInput({
             clearComposerDraft: state.clearComposerDraft,
         }))
     );
+
+    useEffect(() => {
+        void refreshLoginProfiles();
+    }, [refreshLoginProfiles]);
     const surfaceClasses = getChatInputSurfaceClasses(surface);
     const surfaceLabel = getChatInputSurfaceLabel(surface);
     // Optimistic send setup creates projected-message inputs, but lifecycle
@@ -654,6 +645,7 @@ export function ChatInput({
         [agents, selectedAgentId, selectedAgentRunCounts]
     );
     const selectedAgent = agents.find(a => a.id === selectedAgentId);
+    const [selectedLoginProfileIdByProvider, setSelectedLoginProfileIdByProvider] = useState<Record<string, string | null>>({});
     const selectedFlowLlmModel = useMemo(
         () => (selectedAgent as any)?.model_config?.model || parseCliArgs(selectedAgent?.cliArgs).model || null,
         [selectedAgent]
@@ -3210,6 +3202,13 @@ export function ChatInput({
         setSelectedAgentId(nextSelectedAgentId);
     }, [agents, normalizedSelectedAgentRunCounts, setSelectedAgentId]);
 
+    const handleLoginProfileSelect = useCallback((provider: string, profileId: string | null) => {
+        setSelectedLoginProfileIdByProvider((current) => ({
+            ...current,
+            [provider]: profileId,
+        }));
+    }, []);
+
     const updateFlowParallelCount = useCallback((nextCount: number) => {
         setFlowParallelCount(clampFlowParallelCount(nextCount));
     }, []);
@@ -3373,6 +3372,8 @@ export function ChatInput({
                             selectedAgentId={selectedAgentId}
                             agentRunCounts={supportsMultiRun ? normalizedSelectedAgentRunCounts : undefined}
                             onAgentRunCountChange={supportsMultiRun ? handleAgentRunCountChange : undefined}
+                            selectedLoginProfileIdByProvider={selectedLoginProfileIdByProvider}
+                            onSelectLoginProfile={handleLoginProfileSelect}
                         />
                     </div>
                 </PopoverContent>
@@ -3668,17 +3669,24 @@ export function ChatInput({
                 .map((run) => run.agent.type)
                 .filter((type): type is 'codex' | 'claude' => type === 'codex' || type === 'claude')
         ));
-        const runtimeReadinessPromise = hasLocalAgentRuntime && agentTypesForReadiness.length > 0
-            ? withTimeout(
-                Promise.all(agentTypesForReadiness.map((agentType) => (
-                    Promise.resolve()
-                        .then(() => agentClient.checkRuntimeReadiness(agentType))
-                        .then((readiness) => ({ agentType, readiness }))
-                ))),
-                2000,
-                'Agent runtime readiness check timed out.'
-            )
-            : null;
+        const loginProfilesAtSend = useLoginProfilesStore.getState().profiles;
+        const loginReadinessFailures = hasLocalAgentRuntime
+            ? agentTypesForReadiness.map((agentType) => {
+                const compatibleProfiles = loginProfilesAtSend.filter((profile) => profile.provider === agentType);
+                const selectedProfileId = selectedLoginProfileIdByProvider[agentType]
+                    ?? compatibleProfiles.find((profile) => profile.isDefault)?.id
+                    ?? compatibleProfiles[0]?.id
+                    ?? null;
+                const selectedProfile = compatibleProfiles.find((profile) => profile.id === selectedProfileId) ?? null;
+                if (selectedProfile && isLoginProfileActive(selectedProfile)) return null;
+                const label = agentType === 'codex' ? 'Codex' : 'Claude';
+                return {
+                    agentType,
+                    status: selectedProfile?.status ?? 'auth_missing',
+                    message: selectedProfile?.statusMessage || `${label} needs a ready active login profile before it can run.`,
+                };
+            }).filter((failure): failure is { agentType: 'codex' | 'claude'; status: string; message: string } => failure != null)
+            : [];
 
         // --- 2. PREPARE DATA ---
         const structuredAttachments: AttachmentMetadata[] = attachments
@@ -4074,74 +4082,35 @@ export function ChatInput({
                 allowedCurrentFocusIds: [focusStateAtSendStart.focusedMessageId, sendParentMessageId],
             });
 
-            if (runtimeReadinessPromise) {
-                try {
-                    const readinessResults = await runtimeReadinessPromise;
-                    const blockedReadiness = readinessResults.find((result) => result.readiness.status !== 'ready') ?? null;
-                    if (blockedReadiness) {
-                        console.warn('[SEND_FLOW] BLOCKED at readiness guard (not ready)');
-                        const label = blockedReadiness.agentType === 'codex' ? 'Codex' : 'Claude Code';
-                        addToast({
-                            title: blockedReadiness.readiness.status === 'keychain_unavailable' ? `${label} login unavailable to Agentree` : `${label} setup required`,
-                            description: blockedReadiness.readiness.recommendedCommand
-                                ? `${blockedReadiness.readiness.message} Run: ${blockedReadiness.readiness.recommendedCommand}`
-                                : blockedReadiness.readiness.message,
-                            variant: 'error',
-                            persistent: true,
-                        });
-                        markNodeFailed(optimisticPair.userMessageId, blockedReadiness.readiness.message);
-                        optimisticUserMessageIds
-                            .filter((userMessageId) => userMessageId !== optimisticPair.userMessageId)
-                            .forEach((userMessageId) => markNodeFailed(userMessageId, blockedReadiness.readiness.message));
-                        optimisticAssistantMessageIds.forEach((assistantMessageId) => {
-                            markNodeFailed(assistantMessageId, blockedReadiness.readiness.message);
-                        });
-                        recordSendFlowEvent('lifecycle.failed', {
-                            flowId,
-                            workspaceId: selectedWorkspaceId,
-                            operationKey,
-                            errorType: 'RUNTIME_NOT_READY',
-                            errorMessage: blockedReadiness.readiness.message,
-                        }, { source: 'ChatInput' });
-                        endSendFlowFocus(flowId);
-                        commitFocusHandledByFlowRef.current.delete(flowId);
-                        latencyTraceRef.current.delete(operationKey);
-                        cleanupOptimisticPair(3000, 'runtime-not-ready');
-                        return;
-                    }
-                } catch (error) {
-                    if (!agentClient.hasRuntime()) {
-                        console.warn('[SEND_FLOW] Skipping local runtime readiness check in browser preview:', error);
-                    } else if (error instanceof Error && error.message.includes('readiness check timed out')) {
-                        console.warn('[SEND_FLOW] Runtime readiness check timed out; continuing with send:', error);
-                    } else {
-                        addToast({
-                            title: 'Agent setup check failed',
-                            description: error instanceof Error ? error.message : `Agentree could not verify selected models before sending.`,
-                            variant: 'error',
-                        });
-                        const errorMessage = error instanceof Error ? error.message : 'Agent setup check failed';
-                        markNodeFailed(optimisticPair.userMessageId, errorMessage);
-                        optimisticUserMessageIds
-                            .filter((userMessageId) => userMessageId !== optimisticPair.userMessageId)
-                            .forEach((userMessageId) => markNodeFailed(userMessageId, errorMessage));
-                        optimisticAssistantMessageIds.forEach((assistantMessageId) => {
-                            markNodeFailed(assistantMessageId, errorMessage);
-                        });
-                        recordSendFlowEvent('lifecycle.failed', {
-                            flowId,
-                            workspaceId: selectedWorkspaceId,
-                            operationKey,
-                            errorType: 'RUNTIME_READINESS_FAILED',
-                            errorMessage,
-                        }, { source: 'ChatInput' });
-                        endSendFlowFocus(flowId);
-                        commitFocusHandledByFlowRef.current.delete(flowId);
-                        latencyTraceRef.current.delete(operationKey);
-                        cleanupOptimisticPair(3000, 'runtime-readiness-failed');
-                        return;
-                    }
-                }
+            if (loginReadinessFailures.length > 0) {
+                const blockedReadiness = loginReadinessFailures[0];
+                console.warn('[SEND_FLOW] BLOCKED at login profile guard (not ready)');
+                const label = blockedReadiness.agentType === 'codex' ? 'Codex' : 'Claude';
+                addToast({
+                    title: blockedReadiness.status === 'keychain_unavailable' ? `${label} login unavailable to Agentree` : `${label} login setup required`,
+                    description: blockedReadiness.message,
+                    variant: 'error',
+                    persistent: true,
+                });
+                markNodeFailed(optimisticPair.userMessageId, blockedReadiness.message);
+                optimisticUserMessageIds
+                    .filter((userMessageId) => userMessageId !== optimisticPair.userMessageId)
+                    .forEach((userMessageId) => markNodeFailed(userMessageId, blockedReadiness.message));
+                optimisticAssistantMessageIds.forEach((assistantMessageId) => {
+                    markNodeFailed(assistantMessageId, blockedReadiness.message);
+                });
+                recordSendFlowEvent('lifecycle.failed', {
+                    flowId,
+                    workspaceId: selectedWorkspaceId,
+                    operationKey,
+                    errorType: 'LOGIN_PROFILE_NOT_READY',
+                    errorMessage: blockedReadiness.message,
+                }, { source: 'ChatInput' });
+                endSendFlowFocus(flowId);
+                commitFocusHandledByFlowRef.current.delete(flowId);
+                latencyTraceRef.current.delete(operationKey);
+                cleanupOptimisticPair(3000, 'login-profile-not-ready');
+                return;
             }
 
             if (hasLocalAgentRuntime && optimisticAssistantMessageIds.length > 0) {
@@ -4592,6 +4561,7 @@ export function ChatInput({
         selectedAgentId,
         selectedAgent,
         selectedAgentRunItems,
+        selectedLoginProfileIdByProvider,
         isNewThreadTarget,
         isSteeringRunningAssistant,
         selectedNodeId,
@@ -4870,6 +4840,24 @@ export function ChatInput({
             const selectedProvider = selectedAgent?.type === 'claude' || selectedAgent?.type === 'codex'
                 ? selectedAgent.type as RuntimeProvider
                 : null;
+            const compatibleLoginProfiles = selectedProvider
+                ? useLoginProfilesStore.getState().profiles.filter((profile) => profile.provider === selectedProvider)
+                : [];
+            const selectedLoginProfileId = selectedProvider
+                ? selectedLoginProfileIdByProvider[selectedProvider]
+                    ?? compatibleLoginProfiles.find((profile) => profile.isDefault)?.id
+                    ?? compatibleLoginProfiles[0]?.id
+                    ?? null
+                : null;
+            const selectedLoginProfile = compatibleLoginProfiles.find((profile) => profile.id === selectedLoginProfileId) ?? null;
+            if (selectedProvider && (!selectedLoginProfile || !isLoginProfileActive(selectedLoginProfile))) {
+                addToast({
+                    title: 'Login profile inactive',
+                    description: `${selectedAgent?.name ?? selectedProvider} needs a ready login profile before it can run.`,
+                    variant: 'error',
+                });
+                return;
+            }
             const parentHasChildren = hasConversationChild(providerParentMessage?.id ?? baseMessageId, messageLookupMessages, messageById);
             const isBranchFromInterior = !!parentHasChildren;
             const providerContinuation = selectedProvider
@@ -5063,6 +5051,11 @@ export function ChatInput({
                         llmModel: resolvedModel,
                         provider_run_mode: resolvedRunMode,
                         provider_model: resolvedModel,
+                        login_profile_id: selectedLoginProfile?.id ?? null,
+                        login_profile_name: selectedLoginProfile?.displayName ?? null,
+                        login_profile_provider: selectedLoginProfile?.provider ?? null,
+                        login_profile_auth_type: selectedLoginProfile?.authType ?? null,
+                        login_profile_redacted_hint: selectedLoginProfile?.redactedHint ?? null,
                     }
                     : {}),
             };
@@ -5086,6 +5079,7 @@ export function ChatInput({
                 args: spawnArgs,
                 authToken,
                 traceId,
+                loginProfileId: selectedLoginProfile?.id ?? null,
                 runContext: {
                     runId,
                     executionData: startExecutionData,

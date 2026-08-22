@@ -21,29 +21,23 @@ export const getEdgeEndpointDotVisuals = (variant: EdgeEndpointDotVariant) => {
   if (variant === 'commit-parent') {
     return {
       color: '#10b981',
-      haloColor: 'rgba(16,185,129,0.22)',
       sourceRadius: 6,
       targetRadius: 7,
-      haloRadius: 11,
     };
   }
 
   if (variant === 'conversation') {
     return {
       color: '#64748b',
-      haloColor: 'rgba(100,116,139,0.18)',
       sourceRadius: 5,
       targetRadius: 6,
-      haloRadius: 10,
     };
   }
 
   return {
     color: '#6366f1',
-    haloColor: 'rgba(99,102,241,0.24)',
-    sourceRadius: 6,
-    targetRadius: 7,
-    haloRadius: 11,
+    sourceRadius: 4,
+    targetRadius: 5,
   };
 };
 
