@@ -291,6 +291,11 @@ export interface ActiveLoginProfileRun {
     updatedAt: number;
 }
 
+export interface LoginProfilesChangedEvent {
+    profileId: string;
+    status: string;
+}
+
 export interface StartAgentRunResponse {
     runId: string;
     assistantNodeId: string;
@@ -771,6 +776,12 @@ export const agentClient = {
 
     onEvent: async (callback: (event: AgentRuntimeEventEnvelope) => void): Promise<UnlistenFn> => {
         return await listen<AgentRuntimeEventEnvelope>('agent:event', (event) => {
+            callback(event.payload);
+        });
+    },
+    onLoginProfilesChanged: async (callback: (event: LoginProfilesChangedEvent) => void): Promise<UnlistenFn> => {
+        if (!hasTauriRuntime()) return () => {};
+        return await listen<LoginProfilesChangedEvent>('login-profiles:changed', (event) => {
             callback(event.payload);
         });
     },

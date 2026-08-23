@@ -8,7 +8,8 @@ describe('GraphDockComposer structure', () => {
 
     expect(source).not.toContain('TooltipTrigger asChild');
     expect(source).toContain('<DropdownMenuTrigger asChild>');
-    expect(source).toContain('<PopoverTrigger asChild>');
+    expect(source).not.toContain('<PopoverTrigger asChild>');
+    expect(source).toContain('<PopoverTrigger');
   });
 
   it('keeps prompt text in an isolated autosizing textarea and debounces draft persistence', () => {

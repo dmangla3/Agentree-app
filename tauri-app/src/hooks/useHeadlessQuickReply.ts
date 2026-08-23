@@ -10,7 +10,6 @@ import type { Message, Workspace } from '../stores/workspaceStore';
 import { sendHeadlessComposerReply } from '../composer/headlessComposerSend';
 import { useAgents } from './useAgents';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from './useLocalNodes';
-import { useSendMessage } from './useMessages';
 import { useWorkspaces } from './useWorkspaces';
 
 type QuickReplyStatus = 'idle' | 'sending' | 'error';
@@ -43,7 +42,6 @@ export function useHeadlessQuickReply() {
   const queryClient = useQueryClient();
   const { data: agents = [] } = useAgents();
   const { data: workspaces = [] } = useWorkspaces();
-  const sendMessageMutation = useSendMessage();
   const [status, setStatus] = useState<QuickReplyStatus>('idle');
   const [error, setError] = useState<string | null>(null);
 
@@ -113,7 +111,6 @@ export function useHeadlessQuickReply() {
         agent,
         base,
         workspaces: workspaces as Workspace[],
-        sendMessage: (payload) => sendMessageMutation.mutateAsync(payload as any),
         hasRuntime: () => agentClient.hasRuntime(),
         startAgentRun: (payload) => agentClient.startAgentRun(payload as any),
         getAccessToken,
@@ -143,7 +140,7 @@ export function useHeadlessQuickReply() {
       setError(message);
       throw caught;
     }
-  }, [agents, queryClient, sendMessageMutation, workspaces]);
+  }, [agents, queryClient, workspaces]);
 
   return {
     sendQuickReply,

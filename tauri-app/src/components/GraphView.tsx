@@ -1207,8 +1207,10 @@ function GraphViewInternal({
     ), [focusedMessageId, focusedThreadRootLookup]);
     const threadIndexItems = useMemo<ThreadNavigationItem[]>(() => {
         const messageById = new Map((graphMessages as Message[]).map((message) => [message.id, message]));
+        const threadSessionById = new Map(threadSessions.map((thread) => [thread.id, thread]));
         const now = Date.now();
         return threadRootIndex.threadRootIds.map((threadRootId) => {
+            const threadSession = threadSessionById.get(threadRootId) ?? null;
             const rootMessageId = threadRootIndex.rootMessageIdByThreadRootId.get(threadRootId) ?? threadRootId;
             const rootMessage = messageById.get(rootMessageId) ?? null;
             const threadMessageIds = Array.from(threadRootIndex.messageIdsByThreadRootId.get(threadRootId) ?? new Set<string>());
@@ -1250,9 +1252,9 @@ function GraphViewInternal({
                 ?? selectedWorkspace?.base_commit_sha
                 ?? null;
             const commitCount = commitShas.size;
-            const label = rootMessage
+            const label = threadSession?.title?.trim() || (rootMessage
                 ? cleanNodePreview(rootMessage.content || '') || rootMessage.aiLabel || 'Untitled thread'
-                : 'New thread';
+                : 'New thread');
             const done = doneThreadRootIds.has(threadRootId);
             return {
                 threadRootId,
@@ -1271,7 +1273,7 @@ function GraphViewInternal({
                 previewNodeIds: awareness.previewNodeIds,
             };
         });
-    }, [activeRunStatusNodeIds, activeThreadRootId, doneThreadRootIds, graphMessages, lastVisitedAtByThreadRootId, selectedWorkspace?.base_commit_sha, threadRootIndex]);
+    }, [activeRunStatusNodeIds, activeThreadRootId, doneThreadRootIds, graphMessages, lastVisitedAtByThreadRootId, selectedWorkspace?.base_commit_sha, threadRootIndex, threadSessions]);
     const markThreadVisited = useCallback((threadRootId: string, visitedAt = Date.now()) => {
         setLastVisitedAtByThreadRootId((current) => {
             const currentVisitedAt = current.get(threadRootId) ?? 0;

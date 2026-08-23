@@ -8,7 +8,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 const FINAL_RESULT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['final_response', 'commit_subject', 'ai_label'],
+  required: ['final_response', 'commit_subject', 'ai_label', 'thread_title'],
   properties: {
     final_response: {
       type: 'string',
@@ -21,6 +21,10 @@ const FINAL_RESULT_SCHEMA = {
     ai_label: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
       description: 'Concise 5-10 word graph label for this assistant message. Describe the outcome, not the full response. No trailing period.',
+    },
+    thread_title: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+      description: 'Concise 3-7 word title for the Agentree thread, based only on the first user request. Use null unless Agentree explicitly says this is the first user message in a new thread.',
     },
   },
 };
@@ -342,6 +346,18 @@ function normalizeStructuredAiLabel(value) {
   return normalized.slice(0, 80).trim() || null;
 }
 
+function normalizeStructuredThreadTitle(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value
+    .replace(/`+/g, '')
+    .replace(/[\n\r\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^["'`\-\s]+|["'`\s.]+$/g, '');
+  if (!normalized) return null;
+  return normalized.slice(0, 80).trim() || null;
+}
+
 function normalizeStructuredFinalResponse(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -355,11 +371,13 @@ function structuredFinalOutputFromInput(input) {
   const finalResponse = normalizeStructuredFinalResponse(input.final_response);
   const commitSubject = normalizeStructuredCommitSubject(input.commit_subject);
   const aiLabel = normalizeStructuredAiLabel(input.ai_label);
-  if (!finalResponse && !commitSubject && !aiLabel) return null;
+  const threadTitle = normalizeStructuredThreadTitle(input.thread_title);
+  if (!finalResponse && !commitSubject && !aiLabel && !threadTitle) return null;
   return {
     finalResponse,
     commitSubject,
     aiLabel,
+    threadTitle,
   };
 }
 
@@ -369,6 +387,7 @@ function mergeStructuredFinalOutput(current, next) {
     finalResponse: next.finalResponse ?? current?.finalResponse ?? null,
     commitSubject: next.commitSubject ?? current?.commitSubject ?? null,
     aiLabel: next.aiLabel ?? current?.aiLabel ?? null,
+    threadTitle: next.threadTitle ?? current?.threadTitle ?? null,
   };
 }
 
@@ -828,6 +847,9 @@ async function main() {
         }
         if (structuredFinalOutput?.aiLabel) {
           structuredMeta.ai_label = structuredFinalOutput.aiLabel;
+        }
+        if (structuredFinalOutput?.threadTitle) {
+          structuredMeta.thread_title = structuredFinalOutput.threadTitle;
         }
         if (Object.keys(structuredMeta).length > 0) {
           emit({

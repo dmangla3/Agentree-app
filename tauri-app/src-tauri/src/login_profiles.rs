@@ -4,14 +4,16 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{Manager, State};
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::db::TelemetryDb;
 
 const KEYCHAIN_SERVICE: &str = "com.agentree.agentree.login-profiles";
+const LIVE_CHECK_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +79,13 @@ pub struct ActiveLoginProfileRun {
     pub status: String,
     pub phase: String,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginProfilesChangedEvent {
+    pub profile_id: String,
+    pub status: String,
 }
 
 #[derive(Debug, Clone)]
@@ -742,52 +751,249 @@ fn write_restricted_file(path: &Path, contents: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn status_from_probe_success(
-    provider: &str,
-    auth_type: &str,
-    probe_ok: bool,
-) -> (&'static str, String) {
-    if probe_ok {
-        return ("ready", format!("{} login profile is ready.", provider));
-    }
-    match auth_type {
-        "codex_chatgpt_session" => (
-            "invalid",
-            "Stored Codex session could not be loaded for Agentree runs. Re-import this profile."
-                .to_string(),
-        ),
-        "codex_api_key" | "claude_api_key" | "claude_auth_token" | "claude_azure_foundry" => (
-            "invalid",
-            "Stored credential could not be loaded for Agentree runs.".to_string(),
-        ),
-        _ => (
-            "unknown_error",
-            "Login profile readiness check failed.".to_string(),
-        ),
+fn command_output_with_timeout(command: &mut Command, timeout: Duration) -> Result<Output, String> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to start live check: {}", error))?;
+    let started_at = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|error| format!("failed to collect live check output: {}", error));
+            }
+            Ok(None) => {
+                if started_at.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(
+                        "Live check timed out before receiving a provider response.".to_string()
+                    );
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                return Err(format!("failed while waiting for live check: {}", error));
+            }
+        }
     }
 }
 
-fn external_cli_status_from_auth_probe(provider: &str, auth_ok: bool) -> (&'static str, String) {
-    if auth_ok {
-        return (
-            "ready",
-            format!("{} external CLI login is ready.", provider),
-        );
+fn live_check_model(profile: &LoginProfile) -> String {
+    profile
+        .config
+        .get("live_check_model")
+        .or_else(|| profile.config.get("model"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            if profile.provider == "claude" {
+                "claude-sonnet-4-6".to_string()
+            } else {
+                "gpt-5.5".to_string()
+            }
+        })
+}
+
+fn concise_live_check_error(raw: &str) -> String {
+    let mut message = raw
+        .lines()
+        .rev()
+        .find_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            serde_json::from_str::<JsonValue>(trimmed)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("content")
+                        .or_else(|| value.get("final_content"))
+                        .and_then(|field| field.as_str())
+                        .map(ToOwned::to_owned)
+                })
+                .or_else(|| Some(trimmed.to_string()))
+        })
+        .unwrap_or_else(|| "Live check failed without provider output.".to_string());
+    if message.len() > 500 {
+        message.truncate(500);
+        message.push('…');
     }
-    match provider {
-        "claude" => (
-            "auth_missing",
-            "Claude CLI authentication could not be verified. Run `claude auth login`.".to_string(),
-        ),
-        "codex" => (
-            "auth_missing",
-            "Codex CLI authentication could not be verified.".to_string(),
-        ),
-        _ => (
-            "unknown_error",
-            "External CLI login readiness check failed.".to_string(),
-        ),
+    message
+}
+
+fn status_from_live_check_error(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("auth")
+        || lower.contains("unauthorized")
+        || lower.contains("401")
+        || lower.contains("login")
+        || lower.contains("api key")
+    {
+        "auth_missing"
+    } else if lower.contains("rate limit")
+        || lower.contains("usage limit")
+        || lower.contains("usage_limit")
+        || lower.contains("quota")
+        || lower.contains("insufficient_quota")
+    {
+        "usage_limited"
+    } else if lower.contains("invalid")
+        || lower.contains("not found")
+        || lower.contains("model")
+        || lower.contains("forbidden")
+        || lower.contains("403")
+    {
+        "invalid"
+    } else {
+        "unknown_error"
     }
+}
+
+fn parse_live_check_success(output: &str) -> Option<String> {
+    let mut completed = false;
+    let mut final_content = None;
+    let mut message_completed = None;
+    for line in output.lines() {
+        let Ok(value) = serde_json::from_str::<JsonValue>(line.trim()) else {
+            continue;
+        };
+        match value.get("type").and_then(|field| field.as_str()) {
+            Some("message_completed") => {
+                message_completed = value
+                    .get("content")
+                    .and_then(|field| field.as_str())
+                    .map(ToOwned::to_owned);
+            }
+            Some("provider_stop") => {
+                completed = value
+                    .get("provider_status")
+                    .and_then(|field| field.as_str())
+                    == Some("completed");
+                final_content = value
+                    .get("final_content")
+                    .and_then(|field| field.as_str())
+                    .map(ToOwned::to_owned);
+            }
+            _ => {}
+        }
+    }
+    if !completed {
+        return None;
+    }
+    final_content
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| message_completed.filter(|value| !value.trim().is_empty()))
+}
+
+fn run_codex_live_check(
+    app: &tauri::AppHandle,
+    profile: &LoginProfile,
+    materialized: &MaterializedRuntimeCredentials,
+) -> Result<String, String> {
+    let script = crate::runtime_scripts::runtime_script_path(app, "codex-app-server-adapter.py")?;
+    let mut command = Command::new(crate::runtime_scripts::runtime_python_command(app));
+    command
+        .arg(script)
+        .arg("--model")
+        .arg(live_check_model(profile))
+        .arg("--cwd")
+        .arg(std::env::temp_dir())
+        .arg("hi")
+        .env("PATH", crate::cli_path::build_tool_path());
+    for (key, value) in &materialized.env {
+        command.env(key, value);
+    }
+    let output = command_output_with_timeout(&mut command, LIVE_CHECK_TIMEOUT)?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if output.status.success() {
+        if let Some(response) = parse_live_check_success(&stdout) {
+            return Ok(response);
+        }
+    }
+    Err(concise_live_check_error(&format!("{}\n{}", stdout, stderr)))
+}
+
+fn run_claude_live_check(
+    app: &tauri::AppHandle,
+    profile: &LoginProfile,
+    materialized: Option<&MaterializedRuntimeCredentials>,
+) -> Result<String, String> {
+    let script = crate::runtime_scripts::runtime_script_path(app, "claude-agent-sdk-adapter.mjs")?;
+    let node = crate::cli_path::find_on_tool_path("node").unwrap_or_else(|| "node".to_string());
+    let mut command = Command::new(node);
+    command
+        .arg(script)
+        .arg("--model")
+        .arg(live_check_model(profile))
+        .arg("--permission-mode")
+        .arg("bypassPermissions")
+        .arg("hi")
+        .current_dir(std::env::temp_dir())
+        .env("PATH", crate::cli_path::build_tool_path());
+    if let Some(materialized) = materialized {
+        for (key, value) in &materialized.env {
+            command.env(key, value);
+        }
+    }
+    let output = command_output_with_timeout(&mut command, LIVE_CHECK_TIMEOUT)?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if output.status.success() {
+        if let Some(response) = parse_live_check_success(&stdout) {
+            return Ok(response);
+        }
+    }
+    Err(concise_live_check_error(&format!("{}\n{}", stdout, stderr)))
+}
+
+fn run_login_profile_live_check(
+    app: &tauri::AppHandle,
+    db: &TelemetryDb,
+    vault: &dyn CredentialVault,
+    profile: &LoginProfile,
+    cache_dir: PathBuf,
+) -> Result<String, String> {
+    match (profile.provider.as_str(), profile.auth_type.as_str()) {
+        ("claude", "external_cli") => run_claude_live_check(app, profile, None),
+        ("codex", _) | ("claude", _) => {
+            let materialized = resolve_runtime_credentials(db, vault, &profile.id, cache_dir)?;
+            if materialized.provider != profile.provider {
+                return Err(format!(
+                    "Login profile is for {}, not {}.",
+                    materialized.provider, profile.provider
+                ));
+            }
+            match profile.provider.as_str() {
+                "codex" => run_codex_live_check(app, profile, &materialized),
+                "claude" => run_claude_live_check(app, profile, Some(&materialized)),
+                _ => Err(format!("Unsupported login provider: {}", profile.provider)),
+            }
+        }
+        _ => Err(format!(
+            "Unsupported login profile auth type: {}",
+            profile.auth_type
+        )),
+    }
+}
+
+fn emit_login_profiles_changed(app: &tauri::AppHandle, profile: &LoginProfile) {
+    let _ = app.emit(
+        "login-profiles:changed",
+        LoginProfilesChangedEvent {
+            profile_id: profile.id.clone(),
+            status: profile.status.clone(),
+        },
+    );
 }
 
 pub fn check_login_profile_readiness_with_vault(
@@ -797,30 +1003,68 @@ pub fn check_login_profile_readiness_with_vault(
     profile_id: &str,
 ) -> Result<LoginProfile, String> {
     let profile = db.get_login_profile(profile_id)?;
-    if profile.auth_type == "external_cli" {
-        let auth_ok = match profile.provider.as_str() {
-            "claude" => claude_cli_auth_available(),
-            "codex" => false,
-            _ => false,
-        };
-        let (status, message) = external_cli_status_from_auth_probe(&profile.provider, auth_ok);
-        return db.mark_login_profile_status(
-            profile_id,
-            status,
-            Some(&message),
-            None,
-            unix_timestamp(),
-        );
-    }
-
     let cache_dir = app
         .path()
         .app_cache_dir()
         .map_err(|error| format!("Could not resolve app cache dir: {}", error))?;
-    let probe_result = resolve_runtime_credentials(db, vault, profile_id, cache_dir);
-    let (status, message) =
-        status_from_probe_success(&profile.provider, &profile.auth_type, probe_result.is_ok());
+    let live_result = run_login_profile_live_check(app, db, vault, &profile, cache_dir);
+    let (status, message) = match live_result {
+        Ok(response) => (
+            "ready",
+            format!(
+                "Live check succeeded. Received response: {}",
+                response.trim()
+            ),
+        ),
+        Err(error) => (
+            status_from_live_check_error(&error),
+            format!("Live check failed: {}", error),
+        ),
+    };
     db.mark_login_profile_status(profile_id, status, Some(&message), None, unix_timestamp())
+}
+
+fn spawn_login_profile_live_check(app: tauri::AppHandle, profile_id: String) {
+    thread::spawn(move || {
+        let db = app.state::<TelemetryDb>();
+        let result = check_login_profile_readiness_with_vault(
+            &app,
+            &db,
+            &KeyringCredentialVault,
+            &profile_id,
+        );
+        match result {
+            Ok(profile) => emit_login_profiles_changed(&app, &profile),
+            Err(error) => {
+                if let Ok(profile) = db.mark_login_profile_status(
+                    &profile_id,
+                    "unknown_error",
+                    Some(&format!("Live check failed: {}", error)),
+                    None,
+                    unix_timestamp(),
+                ) {
+                    emit_login_profiles_changed(&app, &profile);
+                }
+            }
+        }
+    });
+}
+
+fn enqueue_login_profile_live_check(
+    app: tauri::AppHandle,
+    db: &TelemetryDb,
+    profile_id: &str,
+) -> Result<LoginProfile, String> {
+    let profile = db.mark_login_profile_status(
+        profile_id,
+        "checking",
+        Some("Running a live check with a tiny `hi` prompt. The result will appear here shortly."),
+        None,
+        unix_timestamp(),
+    )?;
+    emit_login_profiles_changed(&app, &profile);
+    spawn_login_profile_live_check(app, profile_id.to_string());
+    Ok(profile)
 }
 
 #[tauri::command]
@@ -870,7 +1114,7 @@ pub fn check_login_profile_readiness(
     db: State<TelemetryDb>,
     profile_id: String,
 ) -> Result<LoginProfile, String> {
-    check_login_profile_readiness_with_vault(&app, &db, &KeyringCredentialVault, &profile_id)
+    enqueue_login_profile_live_check(app, &db, &profile_id)
 }
 
 #[tauri::command]
@@ -881,12 +1125,7 @@ pub fn check_all_login_profile_readiness(
 ) -> Result<Vec<LoginProfile>, String> {
     let profiles = db.list_login_profiles()?;
     for profile in profiles {
-        let _ = check_login_profile_readiness_with_vault(
-            &app,
-            &db,
-            &KeyringCredentialVault,
-            &profile.id,
-        );
+        let _ = enqueue_login_profile_live_check(app.clone(), &db, &profile.id);
     }
     db.list_login_profiles()
 }
@@ -1770,22 +2009,30 @@ mod tests {
     }
 
     #[test]
-    fn external_cli_status_reflects_cli_auth_probe_without_materializing_secret() {
-        let (status, message) = external_cli_status_from_auth_probe("claude", true);
-        assert_eq!(status, "ready");
-        assert!(message.contains("external CLI login is ready"));
-
-        let (status, message) = external_cli_status_from_auth_probe("claude", false);
-        assert_eq!(status, "auth_missing");
-        assert!(message.contains("claude auth login"));
+    fn live_check_error_status_classifies_auth_and_usage_failures() {
+        assert_eq!(
+            status_from_live_check_error("Unauthorized: invalid API key"),
+            "auth_missing"
+        );
+        assert_eq!(
+            status_from_live_check_error("usageLimitExceeded: rate limit reached"),
+            "usage_limited"
+        );
+        assert_eq!(status_from_live_check_error("model not found"), "invalid");
     }
 
     #[test]
-    fn managed_codex_check_failure_describes_local_materialization_not_cli_auth() {
-        let (status, message) = status_from_probe_success("codex", "codex_chatgpt_session", false);
-        assert_eq!(status, "invalid");
-        assert!(message.contains("could not be loaded"));
-        assert!(!message.contains("expired"));
+    fn live_check_success_requires_completed_provider_response() {
+        let output = r#"
+{"type":"message_completed","content":"Hello!"}
+{"type":"provider_stop","provider_status":"completed","final_content":"Hello!"}
+"#;
+        assert_eq!(parse_live_check_success(output).as_deref(), Some("Hello!"));
+
+        let failed_output = r#"
+{"type":"provider_stop","provider_status":"failed","final_content":"Nope"}
+"#;
+        assert_eq!(parse_live_check_success(failed_output), None);
     }
 
     #[test]

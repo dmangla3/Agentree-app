@@ -478,6 +478,7 @@ const DEPENDENCY_DIR_NAMES: &[&str] = &[
 
 const SCAFFOLDING_EXCLUDE_START: &str = "# agentree-managed-scaffolding:start";
 const SCAFFOLDING_EXCLUDE_END: &str = "# agentree-managed-scaffolding:end";
+const RUNTIME_SKILL_DIRS: &[&str] = &[".agents/skills", ".claude/skills"];
 
 #[cfg(unix)]
 fn symlink_dependency_dir(source: &Path, target: &Path) -> Result<(), String> {
@@ -648,6 +649,63 @@ fn collect_worktree_scaffolding_paths(
         let expected_target = repo_root.join(&relative_dir);
         if link_target == expected_target {
             paths.insert(relative_path_to_git_path(&relative_dir));
+        }
+    }
+
+    paths.extend(collect_runtime_skill_scaffolding_paths(worktree_path)?);
+
+    Ok(paths)
+}
+
+fn collect_runtime_skill_scaffolding_paths(worktree_path: &str) -> Result<HashSet<String>, String> {
+    let worktree_root = Path::new(worktree_path);
+    let store_root = dirs::home_dir()
+        .map(|home| home.join(".agentree").join("skills"))
+        .ok_or_else(|| "Failed to resolve home directory".to_string())?;
+    let mut paths = HashSet::new();
+
+    for relative_dir in RUNTIME_SKILL_DIRS {
+        let runtime_dir = worktree_root.join(relative_dir);
+        let Ok(entries) = fs::read_dir(&runtime_dir) else {
+            continue;
+        };
+
+        for entry in entries {
+            let entry = entry.map_err(|e| {
+                format!(
+                    "Failed to read runtime skill entry in {}: {}",
+                    runtime_dir.display(),
+                    e
+                )
+            })?;
+            let path = entry.path();
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if !metadata.file_type().is_symlink() {
+                continue;
+            }
+            let Ok(link_target) = fs::read_link(&path) else {
+                continue;
+            };
+            let resolved_target = if link_target.is_absolute() {
+                link_target
+            } else {
+                path.parent()
+                    .map(|parent| parent.join(link_target))
+                    .unwrap_or_else(|| PathBuf::from(""))
+            };
+            if !resolved_target.starts_with(&store_root) {
+                continue;
+            }
+            let relative = path.strip_prefix(worktree_root).map_err(|e| {
+                format!(
+                    "Failed to relativize runtime skill path {}: {}",
+                    path.display(),
+                    e
+                )
+            })?;
+            paths.insert(relative_path_to_git_path(relative));
         }
     }
 
@@ -1892,7 +1950,7 @@ mod tests {
     use super::{
         agent_worktree_head_commit_if_advanced, finalize_agent_merge_worktree,
         finalize_agent_worktree, is_env_file, link_dependencies, read_commit_metadata_range_sync,
-        worktree_root,
+        symlink_dependency_dir, worktree_root,
     };
     use std::fs;
     use std::path::Path;
@@ -1936,6 +1994,25 @@ mod tests {
         )
         .expect("write client dependency marker");
         fs::write(repo_path.join("server/venv/pyvenv.cfg"), "venv\n").expect("write venv marker");
+    }
+
+    fn add_runtime_skill_symlink(worktree_path: &Path, runtime_dir: &str) -> tempfile::TempDir {
+        let store_root = dirs::home_dir()
+            .expect("home directory")
+            .join(".agentree")
+            .join("skills");
+        fs::create_dir_all(&store_root).expect("create skill store root");
+        let skill_dir = tempfile::Builder::new()
+            .prefix("agentree-test-runtime-skill-")
+            .tempdir_in(&store_root)
+            .expect("create test skill");
+        fs::write(skill_dir.path().join("SKILL.md"), "# Test skill\n").expect("write skill doc");
+
+        let runtime_path = worktree_path.join(runtime_dir);
+        fs::create_dir_all(&runtime_path).expect("create runtime skill dir");
+        let target = runtime_path.join(skill_dir.path().file_name().expect("skill dirname"));
+        symlink_dependency_dir(skill_dir.path(), &target).expect("link runtime skill");
+        skill_dir
     }
 
     fn create_test_agent_worktree(
@@ -2146,6 +2223,55 @@ mod tests {
     }
 
     #[test]
+    fn finalize_agent_worktree_skips_runtime_skill_symlink_only_changes() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-noop-with-runtime-skills";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        let skill_dir = add_runtime_skill_symlink(&worktree_path, ".agents/skills");
+
+        let runtime_skill_path = format!(
+            ".agents/skills/{}",
+            skill_dir
+                .path()
+                .file_name()
+                .expect("skill dirname")
+                .to_string_lossy()
+        );
+        assert!(
+            !run_test_git(
+                &worktree_path,
+                &[
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all",
+                    "--",
+                    &runtime_skill_path,
+                ],
+            )
+            .is_empty(),
+            "raw git status should see runtime skill symlinks without an exclude rule"
+        );
+
+        let result = tauri::async_runtime::block_on(finalize_agent_worktree(
+            repo_path,
+            node_id.to_string(),
+            "No-op agent turn".to_string(),
+            Some("Agentree Test".to_string()),
+        ))
+        .expect("finalize agent worktree");
+
+        assert!(!result.commit_created);
+        assert_eq!(result.commit_sha, None);
+        assert_eq!(
+            run_test_git(&worktree_path, &["rev-parse", "HEAD"]),
+            parent_commit
+        );
+    }
+
+    #[test]
     fn finalize_agent_worktree_commits_real_changes_without_scaffolding_symlinks() {
         let dir = init_test_repo();
         add_source_dependency_dirs(dir.path());
@@ -2183,6 +2309,45 @@ mod tests {
         assert!(tree_files.lines().any(|path| path == "assistant.txt"));
         assert!(!tree_files.lines().any(|path| path == "client/node_modules"));
         assert!(!tree_files.lines().any(|path| path == "server/venv"));
+    }
+
+    #[test]
+    fn finalize_agent_worktree_commits_real_changes_without_runtime_skill_symlinks() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-real-change-with-runtime-skills";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        add_runtime_skill_symlink(&worktree_path, ".agents/skills");
+        add_runtime_skill_symlink(&worktree_path, ".claude/skills");
+        fs::write(worktree_path.join("assistant.txt"), "assistant output\n")
+            .expect("write assistant output");
+
+        let result = tauri::async_runtime::block_on(finalize_agent_worktree(
+            repo_path,
+            node_id.to_string(),
+            "Assistant output".to_string(),
+            Some("Agentree Test".to_string()),
+        ))
+        .expect("finalize agent worktree");
+        let commit_sha = result.commit_sha.expect("commit sha");
+
+        assert!(result.commit_created);
+        assert_eq!(
+            run_test_git(
+                &worktree_path,
+                &["show", &format!("{commit_sha}:assistant.txt")]
+            ),
+            "assistant output"
+        );
+        let tree_files = run_test_git(
+            &worktree_path,
+            &["ls-tree", "-r", "--name-only", &commit_sha],
+        );
+        assert!(tree_files.lines().any(|path| path == "assistant.txt"));
+        assert!(!tree_files.lines().any(|path| path.starts_with(".agents/")));
+        assert!(!tree_files.lines().any(|path| path.starts_with(".claude/")));
     }
 
     #[test]

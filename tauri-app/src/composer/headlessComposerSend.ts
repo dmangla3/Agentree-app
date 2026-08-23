@@ -25,7 +25,6 @@ export interface HeadlessComposerReplyInput {
   agent: Agent;
   base: HeadlessComposerBase;
   workspaces: Workspace[];
-  sendMessage: (input: Record<string, unknown>) => Promise<HeadlessComposerReplyResponse>;
   hasRuntime: () => boolean;
   startAgentRun: (input: Record<string, unknown>) => Promise<unknown>;
   getAccessToken: () => Promise<string | null>;
@@ -173,7 +172,6 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
   const prompt = input.prompt.trim();
   const flowId = input.perfFlowId ?? createSendFlowId();
   const perfSource = input.perfSource ?? 'HeadlessComposer';
-  const startedAt = performance.now();
   const messageMap = new Map(input.messages.map((message) => [message.id, message]));
   const parentMessage = input.parentMessageId ? messageMap.get(input.parentMessageId) : null;
   const effectiveThreadId = input.threadId
@@ -195,61 +193,16 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
   }, { source: perfSource });
 
   let response: HeadlessComposerReplyResponse = {};
-  let localFallbackReason = 'api-response-missing-agent-messages';
-  try {
-    recordSendFlowEvent('api.request-start', {
-      flowId,
-      workspaceId: input.workspaceId,
-      useAgent: true,
-    }, { source: perfSource });
-    response = await input.sendMessage({
-      workspaceId: input.workspaceId,
-      prompt,
-      parentId: input.parentMessageId,
-      attachments: [],
-      contextIds: [],
-      contextMode: 'active',
-      contextPolicy: input.contextPolicy ?? 'continue',
-      contextParentId: input.contextParentId ?? input.parentMessageId,
-      useAgent: true,
-      agentId: input.agent.id,
-      agentProvider: input.agent.type,
-      llmModel: input.agent.model_config?.model ?? null,
-      baseCommitSha: input.base.commitSha,
-      baseSelectedFromNodeId: input.base.selectedFromNodeId,
-      threadId: effectiveThreadId ?? undefined,
-      threadOriginId: effectiveThreadOriginId ?? undefined,
-    });
-    recordSendFlowEvent('api.response-received', {
-      flowId,
-      workspaceId: input.workspaceId,
-      userMessageId: response?.userMessage?.id ?? null,
-      assistantMessageId: response?.assistantMessages?.[0]?.id ?? null,
-    }, {
-      source: perfSource,
-      durationMs: Number((performance.now() - startedAt).toFixed(2)),
-    });
-  } catch (error) {
-    if (!runtimeAvailable) {
-      recordSendFlowEvent('lifecycle.failed', {
-        flowId,
-        workspaceId: input.workspaceId,
-        errorType: 'HEADLESS_MESSAGE_CREATE_FAILED',
-        errorMessage: error instanceof Error ? error.message : String(error),
-      }, { source: perfSource });
-      throw error;
-    }
-    localFallbackReason = 'api-request-failed';
-    recordSendFlowEvent('api.request-failed-local-fallback', {
-      flowId,
-      workspaceId: input.workspaceId,
-      errorMessage: error instanceof Error ? error.message : String(error),
-    }, { source: perfSource });
-  }
+  const localFallbackReason = 'local-runtime';
+  recordSendFlowEvent('api.skipped-local-runtime', {
+    flowId,
+    workspaceId: input.workspaceId,
+    useAgent: true,
+  }, { source: perfSource });
 
   let userMessage = response?.userMessage;
   let assistantMessage = response?.assistantMessages?.[0];
-  if ((!userMessage || !assistantMessage) && runtimeAvailable) {
+  if (!userMessage || !assistantMessage) {
     const nowIso = input.nowIso?.() ?? new Date().toISOString();
     const localPair = createLocalHeadlessMessages({
       workspaceId: input.workspaceId,
@@ -348,6 +301,7 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
       mode: 'agentree_context',
       userPrompt: prompt,
       contextManifest,
+      threadTitleMode: !input.parentMessageId && effectiveThreadId ? 'first_thread_message' : 'none',
     }).prompt;
     const executionData = {
       ...(assistantMessage.execution_data ?? {}),

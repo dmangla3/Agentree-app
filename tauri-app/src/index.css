@@ -625,6 +625,33 @@
   color: hsl(var(--foreground));
 }
 
+@layer utilities {
+  .text-\[9px\] {
+    font-size: 10px;
+  }
+
+  .text-\[9\.5px\] {
+    font-size: 10.5px;
+  }
+
+  .text-\[10px\] {
+    font-size: 11px;
+  }
+
+  .text-\[10\.5px\] {
+    font-size: 11.5px;
+  }
+
+  .text-\[11px\] {
+    font-size: 12px;
+  }
+
+  .text-xs,
+  .text-\[12px\] {
+    font-size: 12.5px;
+  }
+}
+
 /* Dimming effect for elements not in focus path */
 .react-flow__node.opacity-30,
 /* Ensure this class is applied correctly in JS */

@@ -67,7 +67,11 @@ const detailFromReadiness = (readiness?: ReadinessPayload | null): string | null
 };
 
 const classifyFailure = (errorText: string, readiness?: ReadinessPayload | null): LocalSyncPauseReason => {
-    const normalized = errorText.toLowerCase();
+    const readinessError = readiness?.database?.error ?? '';
+    const normalized = `${errorText} ${readinessError}`.toLowerCase();
+    if (normalized.includes('timed out') || normalized.includes('timeout') || normalized.includes('operation timed out')) {
+        return 'server_timeout';
+    }
     if (
         readiness?.status === 'not_ready' ||
         (readiness?.missingMigrations?.length ?? 0) > 0 ||
@@ -78,9 +82,6 @@ const classifyFailure = (errorText: string, readiness?: ReadinessPayload | null)
         normalized.includes('migration')
     ) {
         return 'server_schema_not_ready';
-    }
-    if (normalized.includes('timed out') || normalized.includes('timeout') || normalized.includes('operation timed out')) {
-        return 'server_timeout';
     }
     if (
         normalized.includes('failed to fetch') ||
@@ -111,6 +112,12 @@ const messageForReason = (reason: LocalSyncPauseReason): string => {
     }
 };
 
+const isRetryablePauseReason = (reason: LocalSyncPauseReason) => (
+    reason === 'server_timeout' ||
+    reason === 'server_unavailable' ||
+    reason === 'server_error'
+);
+
 export const getLocalSyncPauseState = (): LocalSyncPauseState => ({ ...pauseState });
 
 export const subscribeToLocalSyncPause = (listener: (state: LocalSyncPauseState) => void) => {
@@ -129,13 +136,18 @@ export const reportLocalSyncFailure = (
     const errorText = stringifyError(error);
     const readinessDetail = detailFromReadiness(metadata.readiness);
     const reason = classifyFailure(errorText, metadata.readiness);
+    const failureCount = pauseState.failureCount + 1;
+    const shouldPause = pauseState.paused ||
+        Boolean(metadata.readiness) ||
+        !isRetryablePauseReason(reason) ||
+        failureCount > 1;
     pauseState = {
-        paused: true,
+        paused: shouldPause,
         reason,
-        message: messageForReason(reason),
+        message: shouldPause ? messageForReason(reason) : null,
         detail: readinessDetail || errorText,
-        failureCount: pauseState.failureCount + 1,
-        pausedAt: new Date().toISOString(),
+        failureCount,
+        pausedAt: shouldPause ? new Date().toISOString() : null,
         serverUrl: API_URL,
     };
     emit();
@@ -144,10 +156,7 @@ export const reportLocalSyncFailure = (
 export const reportLocalSyncSuccess = () => {
     if (pauseState.paused) return;
     if (pauseState.failureCount === 0) return;
-    pauseState = {
-        ...pauseState,
-        failureCount: 0,
-    };
+    pauseState = initialState();
     emit();
 };
 

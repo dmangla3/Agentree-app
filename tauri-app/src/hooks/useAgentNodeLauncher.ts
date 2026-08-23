@@ -192,6 +192,7 @@ export function useAgentNodeLauncher(options: UseAgentNodeLauncherOptions = {}) 
       mode: 'flow',
       userPrompt: input.prompt,
       contextManifest: input.contextManifest ?? undefined,
+      threadTitleMode: 'none',
     }).prompt;
     const runId = crypto.randomUUID();
     const executionData = {

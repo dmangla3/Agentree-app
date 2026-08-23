@@ -36,7 +36,7 @@ from codex_app_server import AppServerClient, AppServerConfig, TextInput, Thread
 FINAL_RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["final_response", "commit_subject", "ai_label"],
+    "required": ["final_response", "commit_subject", "ai_label", "thread_title"],
     "properties": {
         "final_response": {
             "type": "string",
@@ -54,6 +54,13 @@ FINAL_RESULT_SCHEMA: dict[str, Any] = {
             "description": (
                 "Concise 5-10 word graph label for this assistant message. "
                 "Describe the outcome, not the full response. No trailing period."
+            ),
+        },
+        "thread_title": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "description": (
+                "Concise 3-7 word title for the Agentree thread, based only on the first user request. "
+                "Use null unless Agentree explicitly says this is the first user message in a new thread."
             ),
         },
     },
@@ -260,6 +267,18 @@ def _normalize_ai_label(value: Any) -> str | None:
     return normalized[:80].strip() or None
 
 
+def _normalize_thread_title(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = re.sub(r"`+", "", value)
+    normalized = re.sub(r"[\n\r\t]+", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = normalized.strip("\"'`- .")
+    if not normalized:
+        return None
+    return normalized[:80].strip() or None
+
+
 def _normalize_final_response(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -279,12 +298,14 @@ def _structured_final_output_from_text(value: Any) -> dict[str, str | None] | No
     final_response = _normalize_final_response(parsed.get("final_response"))
     commit_subject = _normalize_commit_subject(parsed.get("commit_subject"))
     ai_label = _normalize_ai_label(parsed.get("ai_label"))
-    if final_response is None and commit_subject is None and ai_label is None:
+    thread_title = _normalize_thread_title(parsed.get("thread_title"))
+    if final_response is None and commit_subject is None and ai_label is None and thread_title is None:
         return None
     return {
         "final_response": final_response,
         "commit_subject": commit_subject,
         "ai_label": ai_label,
+        "thread_title": thread_title,
     }
 
 
@@ -298,6 +319,7 @@ def _merge_structured_final_output(
         "final_response": next_value.get("final_response") or (current or {}).get("final_response"),
         "commit_subject": next_value.get("commit_subject") or (current or {}).get("commit_subject"),
         "ai_label": next_value.get("ai_label") or (current or {}).get("ai_label"),
+        "thread_title": next_value.get("thread_title") or (current or {}).get("thread_title"),
     }
 
 
@@ -1636,11 +1658,18 @@ def main() -> int:
                         if structured_final_output
                         else None
                     )
+                    thread_title = (
+                        structured_final_output.get("thread_title")
+                        if structured_final_output
+                        else None
+                    )
                     structured_meta = {}
                     if commit_subject:
                         structured_meta["commit_subject"] = commit_subject
                     if ai_label:
                         structured_meta["ai_label"] = ai_label
+                    if thread_title:
+                        structured_meta["thread_title"] = thread_title
                     if structured_meta:
                         _emit(
                             {

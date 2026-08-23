@@ -51,6 +51,23 @@ describe('agent run prompts', () => {
     expect(result.agentreeContextInjected).toBe(false);
   });
 
+  it('asks for a thread title only on the first thread message', () => {
+    const firstThreadPrompt = buildAgentRunPrompt({
+      mode: 'agentree_context',
+      userPrompt: 'Fix the graph zoom bug.',
+      threadTitleMode: 'first_thread_message',
+    });
+    const laterThreadPrompt = buildAgentRunPrompt({
+      mode: 'agentree_context',
+      userPrompt: 'Also add tests.',
+      threadTitleMode: 'none',
+    });
+
+    expect(firstThreadPrompt.prompt).toContain('set thread_title to a concise 3-7 word title');
+    expect(firstThreadPrompt.prompt).toContain('based only on the latest user request');
+    expect(laterThreadPrompt.prompt).toContain('set thread_title to null');
+  });
+
   it('wraps selected Agentree context for flow prompts when provided', () => {
     const result = buildAgentRunPrompt({
       mode: 'flow',

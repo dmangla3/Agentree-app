@@ -32,9 +32,6 @@ const authTypesByProvider = {
   claude: [
     ['claude_api_key', 'Anthropic API key'],
     ['claude_auth_token', 'Anthropic auth token'],
-    ['claude_bedrock', 'Bedrock advanced JSON'],
-    ['claude_vertex', 'Vertex advanced JSON'],
-    ['claude_azure_foundry', 'Azure Foundry advanced JSON'],
   ],
 } as const;
 

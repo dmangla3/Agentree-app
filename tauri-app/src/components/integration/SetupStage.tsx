@@ -402,7 +402,6 @@ export function SetupStage() {
   const [isCheckingConflicts, setIsCheckingConflicts] = useState(false);
   const [isStartingAiMerge, setIsStartingAiMerge] = useState(false);
   const [isAgentPopoverOpen, setIsAgentPopoverOpen] = useState(false);
-  const [selectedLoginProfileIdByProvider, setSelectedLoginProfileIdByProvider] = useState<Record<string, string | null>>({});
   const previewRequestIdRef = useRef(0);
   const previewReadyKeyRef = useRef<string | null>(null);
   const { data: agents = [] } = useAgents();
@@ -688,8 +687,7 @@ export function SetupStage() {
         ? loginProfiles.filter((profile) => profile.provider === selectedProvider)
         : [];
       const selectedLoginProfileId = selectedProvider
-        ? selectedLoginProfileIdByProvider[selectedProvider]
-          ?? compatibleLoginProfiles.find((profile) => profile.isDefault)?.id
+        ? compatibleLoginProfiles.find((profile) => profile.isDefault)?.id
           ?? compatibleLoginProfiles[0]?.id
           ?? null
         : null;
@@ -1080,10 +1078,6 @@ export function SetupStage() {
                 <UnifiedAgentModelSelector
                   onSelectAgent={(id) => { setSelectedAgentId(id); setIsAgentPopoverOpen(false); }}
                   selectedAgentId={selectedAgentId}
-                  selectedLoginProfileIdByProvider={selectedLoginProfileIdByProvider}
-                  onSelectLoginProfile={(provider, profileId) => {
-                    setSelectedLoginProfileIdByProvider((current) => ({ ...current, [provider]: profileId }));
-                  }}
                 />
               </PopoverContent>
             </Popover>

@@ -22,6 +22,7 @@ export interface BuildAgentRunPromptInput {
   userPrompt: string;
   contextManifest?: ComposerContextManifest;
   dependencyGuard?: string;
+  threadTitleMode?: 'first_thread_message' | 'none';
 }
 
 export interface BuildAgentRunPromptResult {
@@ -43,6 +44,22 @@ const buildAgentreeContextPrompt = (contextText: string, userPrompt: string): st
   'Follow the latest user request. If prior context conflicts with it, prioritize the latest request and briefly mention the conflict if it matters.',
 ].join('\n');
 
+const threadTitleInstruction = (mode: BuildAgentRunPromptInput['threadTitleMode']): string | null => {
+  if (mode === 'first_thread_message') {
+    return [
+      '[Agentree Thread Title]',
+      'This is the first user message in a new Agentree thread. In structured output, set thread_title to a concise 3-7 word title based only on the latest user request.',
+    ].join('\n');
+  }
+  if (mode === 'none') {
+    return [
+      '[Agentree Thread Title]',
+      'This is not the first user message in a new Agentree thread. In structured output, set thread_title to null.',
+    ].join('\n');
+  }
+  return null;
+};
+
 export function buildAgentRunPrompt(input: BuildAgentRunPromptInput): BuildAgentRunPromptResult {
   const dependencyGuard = input.dependencyGuard ?? DEPENDENCY_GUARD_INSTRUCTION;
   const manifest = input.contextManifest ?? EMPTY_COMPOSER_CONTEXT_MANIFEST;
@@ -53,6 +70,10 @@ export function buildAgentRunPrompt(input: BuildAgentRunPromptInput): BuildAgent
   if ((input.mode === 'agentree_context' || input.mode === 'cross_provider' || input.mode === 'flow') && contextText.length > 0) {
     body = buildAgentreeContextPrompt(contextText, input.userPrompt);
     agentreeContextInjected = true;
+  }
+  const titleInstruction = threadTitleInstruction(input.threadTitleMode);
+  if (titleInstruction) {
+    body = `${body}\n\n${titleInstruction}`;
   }
 
   return {

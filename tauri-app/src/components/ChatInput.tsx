@@ -645,7 +645,6 @@ export function ChatInput({
         [agents, selectedAgentId, selectedAgentRunCounts]
     );
     const selectedAgent = agents.find(a => a.id === selectedAgentId);
-    const [selectedLoginProfileIdByProvider, setSelectedLoginProfileIdByProvider] = useState<Record<string, string | null>>({});
     const selectedFlowLlmModel = useMemo(
         () => (selectedAgent as any)?.model_config?.model || parseCliArgs(selectedAgent?.cliArgs).model || null,
         [selectedAgent]
@@ -3202,13 +3201,6 @@ export function ChatInput({
         setSelectedAgentId(nextSelectedAgentId);
     }, [agents, normalizedSelectedAgentRunCounts, setSelectedAgentId]);
 
-    const handleLoginProfileSelect = useCallback((provider: string, profileId: string | null) => {
-        setSelectedLoginProfileIdByProvider((current) => ({
-            ...current,
-            [provider]: profileId,
-        }));
-    }, []);
-
     const updateFlowParallelCount = useCallback((nextCount: number) => {
         setFlowParallelCount(clampFlowParallelCount(nextCount));
     }, []);
@@ -3372,8 +3364,6 @@ export function ChatInput({
                             selectedAgentId={selectedAgentId}
                             agentRunCounts={supportsMultiRun ? normalizedSelectedAgentRunCounts : undefined}
                             onAgentRunCountChange={supportsMultiRun ? handleAgentRunCountChange : undefined}
-                            selectedLoginProfileIdByProvider={selectedLoginProfileIdByProvider}
-                            onSelectLoginProfile={handleLoginProfileSelect}
                         />
                     </div>
                 </PopoverContent>
@@ -3673,8 +3663,7 @@ export function ChatInput({
         const loginReadinessFailures = hasLocalAgentRuntime
             ? agentTypesForReadiness.map((agentType) => {
                 const compatibleProfiles = loginProfilesAtSend.filter((profile) => profile.provider === agentType);
-                const selectedProfileId = selectedLoginProfileIdByProvider[agentType]
-                    ?? compatibleProfiles.find((profile) => profile.isDefault)?.id
+                const selectedProfileId = compatibleProfiles.find((profile) => profile.isDefault)?.id
                     ?? compatibleProfiles[0]?.id
                     ?? null;
                 const selectedProfile = compatibleProfiles.find((profile) => profile.id === selectedProfileId) ?? null;
@@ -4215,6 +4204,7 @@ export function ChatInput({
                         contextPolicy: sendContextPolicy,
                         parentMessageId: run.userMessageId,
                         baseMessageId: sendParentMessageId,
+                        threadId: sendThreadId,
                         contextParentMessageId: sendContextParentId,
                         contextStartMessageId: sendContextStartId,
                     }).catch(err => {
@@ -4427,6 +4417,7 @@ export function ChatInput({
                         contextPolicy: sendContextPolicy,
                         parentMessageId: response.userMessage!.id,
                         baseMessageId: sendParentMessageId,
+                        threadId: sendThreadId,
                         contextParentMessageId: sendContextParentId,
                         contextStartMessageId: sendContextStartId,
                     }).catch(err => {
@@ -4561,7 +4552,6 @@ export function ChatInput({
         selectedAgentId,
         selectedAgent,
         selectedAgentRunItems,
-        selectedLoginProfileIdByProvider,
         isNewThreadTarget,
         isSteeringRunningAssistant,
         selectedNodeId,
@@ -4692,12 +4682,13 @@ export function ChatInput({
         contextPolicy: ContextPolicy;
         parentMessageId: string;
         baseMessageId: string | null;
+        threadId: string | null;
         contextParentMessageId: string | null;
         contextStartMessageId: string | null;
     }
 
     const runAgentSetupInBackground = async (params: AgentSetupParams): Promise<void> => {
-        const { nodeId, assistantMsg, prompt, authToken, autoCheckout, contextPolicy, baseMessageId, contextParentMessageId, contextStartMessageId } = params;
+        const { nodeId, assistantMsg, prompt, authToken, autoCheckout, contextPolicy, baseMessageId, threadId, contextParentMessageId, contextStartMessageId } = params;
         const isCodexAgent = selectedAgent?.type === 'codex';
         const runId = crypto.randomUUID();
 
@@ -4844,8 +4835,7 @@ export function ChatInput({
                 ? useLoginProfilesStore.getState().profiles.filter((profile) => profile.provider === selectedProvider)
                 : [];
             const selectedLoginProfileId = selectedProvider
-                ? selectedLoginProfileIdByProvider[selectedProvider]
-                    ?? compatibleLoginProfiles.find((profile) => profile.isDefault)?.id
+                ? compatibleLoginProfiles.find((profile) => profile.isDefault)?.id
                     ?? compatibleLoginProfiles[0]?.id
                     ?? null
                 : null;
@@ -4917,6 +4907,7 @@ export function ChatInput({
                 mode: promptMode,
                 userPrompt: prompt,
                 contextManifest: selectedComposerContextManifest,
+                threadTitleMode: !baseMessageId && threadId ? 'first_thread_message' : 'none',
             });
             const shouldInjectAgentreeContext = agentRunPrompt.agentreeContextInjected;
             const effectivePrompt = agentRunPrompt.prompt;

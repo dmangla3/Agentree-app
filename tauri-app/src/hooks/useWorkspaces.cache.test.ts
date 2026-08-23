@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../stores/workspaceStore';
-import { mergeWorkspaceIntoCachedWorkspaces } from './useWorkspaces';
+import { mergeWorkspaceIntoCachedWorkspaces, workspaceKeys } from './useWorkspaces';
 
 const workspace = (id: string, name = id): Workspace => ({
   id,
@@ -23,5 +23,12 @@ describe('mergeWorkspaceIntoCachedWorkspaces', () => {
     const updated = workspace('workspace-1', 'Updated name');
 
     expect(mergeWorkspaceIntoCachedWorkspaces([existing], updated)).toEqual([updated]);
+  });
+});
+
+describe('workspaceKeys', () => {
+  it('scopes the workspace list cache by user id', () => {
+    expect(workspaceKeys.list('user-1')).toEqual(['workspaces', 'user-1']);
+    expect(workspaceKeys.list('user-2')).toEqual(['workspaces', 'user-2']);
   });
 });

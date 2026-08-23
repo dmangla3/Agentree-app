@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from '../../../@/components/ui/dialog';
 import { useLoginProfilesStore } from '../../stores/loginProfilesStore';
-import type { LoginImportCandidate } from '../../lib/agentClient';
+import { agentClient, type LoginImportCandidate } from '../../lib/agentClient';
 import type { LoginProfileSummary } from '../../lib/loginProfiles';
 import { cn } from '../../lib/utils';
 import { LoginProfileEditor } from './LoginProfileEditor';
@@ -54,6 +54,24 @@ export function LoginProfilesPanel() {
 
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void agentClient.onLoginProfilesChanged(() => {
+      void refresh();
+    }).then((cleanup) => {
+      if (cancelled) {
+        cleanup();
+      } else {
+        unlisten = cleanup;
+      }
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, [refresh]);
 
   const filteredProfiles = useMemo(() => {

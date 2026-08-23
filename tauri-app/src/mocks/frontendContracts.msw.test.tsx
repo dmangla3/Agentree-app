@@ -15,6 +15,31 @@ import { server } from './node';
 import { createQueryWrapper } from '../test/queryTestUtils';
 import { messages, sendResponse, workspaceId } from './scenarios/frontendContracts';
 
+const authStoreMock = vi.hoisted(() => ({
+  state: {
+    user: {
+      id: 'contract-user',
+      email: 'contract@example.com',
+      name: 'Contract User',
+    },
+    desktopSession: null,
+    authErrorReason: null,
+  },
+}));
+
+vi.mock('../stores/authStore', () => ({
+  useAuthStore: Object.assign(
+    (selector?: (state: typeof authStoreMock.state) => unknown) =>
+      selector ? selector(authStoreMock.state) : authStoreMock.state,
+    {
+      getState: () => authStoreMock.state,
+      setState: (next: Partial<typeof authStoreMock.state>) => {
+        authStoreMock.state = { ...authStoreMock.state, ...next };
+      },
+    }
+  ),
+}));
+
 vi.mock('../lib/agentClient', () => ({
   agentClient: {
     hasRuntime: vi.fn(() => false),

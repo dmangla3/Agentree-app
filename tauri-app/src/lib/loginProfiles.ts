@@ -2,6 +2,7 @@ export type LoginProvider = 'codex' | 'claude' | string;
 
 export type LoginProfileStatus =
   | 'unchecked'
+  | 'checking'
   | 'ready'
   | 'auth_missing'
   | 'invalid'
@@ -45,7 +46,7 @@ export const getLoginProfileAuthTypeLabel = (authType: string) => {
 
 export const getLoginProfileStatusTone = (status: LoginProfileStatus) => {
   if (status === 'ready') return 'success' as const;
-  if (status === 'usage_limited' || status === 'unchecked') return 'warning' as const;
+  if (status === 'usage_limited' || status === 'unchecked' || status === 'checking') return 'warning' as const;
   if (status === 'expired' || status === 'invalid' || status === 'auth_missing') return 'danger' as const;
   return 'muted' as const;
 };

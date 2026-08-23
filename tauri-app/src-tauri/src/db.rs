@@ -16,10 +16,53 @@ fn unix_timestamp() -> i64 {
         .as_secs() as i64
 }
 
+fn normalize_thread_title(value: &str) -> Option<String> {
+    let normalized = value
+        .replace(['\n', '\r', '\t'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .trim_matches(|ch| ch == '"' || ch == '\'' || ch == '`' || ch == '-' || ch == '.')
+        .to_string();
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(
+        normalized
+            .chars()
+            .take(80)
+            .collect::<String>()
+            .trim()
+            .to_string(),
+    )
+}
+
+fn thread_title_from_payload(payload: &JsonValue) -> Option<String> {
+    payload
+        .get("execution_data")
+        .or_else(|| payload.get("executionData"))
+        .and_then(|value| value.get("meta"))
+        .and_then(|meta| {
+            meta.get("thread_title")
+                .or_else(|| meta.get("threadTitle"))
+                .or_else(|| meta.get("agent_thread_title"))
+                .or_else(|| meta.get("runtime_thread_title"))
+        })
+        .and_then(|value| value.as_str())
+        .and_then(normalize_thread_title)
+}
+
 fn is_structured_timeline_event_type(event_type: &str) -> bool {
     matches!(
         event_type,
-        "tool_use" | "tool_result" | "tool_output_delta" | "thinking" | "error" | "stderr"
+        "tool_use"
+            | "tool_result"
+            | "tool_output_delta"
+            | "thinking"
+            | "error"
+            | "stderr"
+            | "user_steer_requested"
     )
 }
 
@@ -100,6 +143,14 @@ fn normalize_journal_timeline_event(event: &JsonValue) -> Option<JsonValue> {
             "timestamp": timestamp,
             "content": event.get("thinking").cloned()
                 .or_else(|| event.get("content").cloned())
+                .unwrap_or(JsonValue::Null),
+        })),
+        "user_steer_requested" => Some(serde_json::json!({
+            "type": "user_steer_requested",
+            "timestamp": timestamp,
+            "content": event.get("content").cloned().unwrap_or(JsonValue::Null),
+            "idempotency_key": event.get("idempotency_key").cloned()
+                .or_else(|| event.get("idempotencyKey").cloned())
                 .unwrap_or(JsonValue::Null),
         })),
         "tool_use" => Some(serde_json::json!({
@@ -1734,7 +1785,7 @@ impl TelemetryDb {
                 SELECT event_type, payload
                 FROM agent_run_events
                 WHERE assistant_node_id = ?1
-                  AND event_type IN ('thinking', 'tool_use', 'tool_result', 'tool_output_delta', 'error', 'stderr')
+                  AND event_type IN ('thinking', 'tool_use', 'tool_result', 'tool_output_delta', 'error', 'stderr', 'user_steer_requested')
                 ORDER BY seq ASC
                 "#,
             )
@@ -1894,7 +1945,7 @@ impl TelemetryDb {
                 role = excluded.role,
                 content = excluded.content,
                 status = excluded.status,
-                thread_id = excluded.thread_id,
+                thread_id = COALESCE(excluded.thread_id, local_nodes.thread_id),
                 execution_data_json = excluded.execution_data_json,
                 payload_json = excluded.payload_json,
                 prompt_tokens = excluded.prompt_tokens,
@@ -1931,6 +1982,75 @@ impl TelemetryDb {
             ],
         )
         .map_err(|e| e.to_string())?;
+        let effective_thread_id = match thread_id {
+            Some(value) => Some(value.to_string()),
+            None => conn
+                .query_row(
+                    "SELECT thread_id FROM local_nodes WHERE id = ?1 AND workspace_id = ?2 AND deleted_at IS NULL",
+                    params![node_id, workspace_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+                .flatten(),
+        };
+        if let Some(thread_id) = effective_thread_id.as_deref() {
+            if role == "user" {
+                conn.execute(
+                    r#"
+                    UPDATE thread_sessions
+                    SET
+                        first_message_id = COALESCE(first_message_id, ?1),
+                        updated_at = CASE WHEN first_message_id IS NULL THEN ?4 ELSE updated_at END,
+                        local_updated_at = CASE WHEN first_message_id IS NULL THEN ?5 ELSE local_updated_at END
+                    WHERE id = ?2
+                      AND workspace_id = ?3
+                      AND deleted_at IS NULL
+                    "#,
+                    params![node_id, thread_id, workspace_id, updated_at, now],
+                )
+                .map_err(|e| e.to_string())?;
+            } else if role == "assistant" {
+                if let (Some(parent_id), Some(thread_title)) =
+                    (parent_id, thread_title_from_payload(&payload_value))
+                {
+                    conn.execute(
+                        r#"
+                        UPDATE thread_sessions
+                        SET title = ?1,
+                            updated_at = ?6,
+                            local_updated_at = ?7
+                        WHERE id = ?2
+                          AND workspace_id = ?3
+                          AND deleted_at IS NULL
+                          AND (title IS NULL OR trim(title) = '')
+                          AND first_message_id = ?4
+                          AND ?5 = (
+                              SELECT first_assistant.id
+                              FROM local_nodes AS first_assistant
+                              WHERE first_assistant.workspace_id = ?3
+                                AND first_assistant.thread_id = ?2
+                                AND first_assistant.parent_id = ?4
+                                AND first_assistant.role = 'assistant'
+                                AND first_assistant.deleted_at IS NULL
+                              ORDER BY datetime(first_assistant.created_at) ASC, first_assistant.created_at ASC, first_assistant.id ASC
+                              LIMIT 1
+                          )
+                        "#,
+                        params![
+                            thread_title,
+                            thread_id,
+                            workspace_id,
+                            parent_id,
+                            node_id,
+                            updated_at,
+                            now
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -2138,9 +2258,13 @@ impl TelemetryDb {
                                 'updatedAt', n.updated_at
                             )),
                             '$.output_commit_sha',
-                            n.output_commit_sha
+                            n.output_commit_sha,
+                            '$.threadId',
+                            n.thread_id,
+                            '$.thread_id',
+                            n.thread_id
                         )
-                        ELSE COALESCE(n.payload_json, json_object(
+                        ELSE json_set(COALESCE(n.payload_json, json_object(
                         'id', n.id,
                         'role', n.role,
                         'workspaceId', n.workspace_id,
@@ -2162,7 +2286,12 @@ impl TelemetryDb {
                         'git_branch_name', n.git_branch_name,
                         'createdAt', n.created_at,
                         'updatedAt', n.updated_at
-                        ))
+                        )),
+                            '$.threadId',
+                            n.thread_id,
+                            '$.thread_id',
+                            n.thread_id
+                        )
                     END AS payload,
                     CASE
                         WHEN EXISTS (
@@ -2389,7 +2518,11 @@ impl TelemetryDb {
         Ok(rows)
     }
 
-    pub fn archive_thread_session(&self, workspace_id: &str, thread_id: &str) -> Result<(), String> {
+    pub fn archive_thread_session(
+        &self,
+        workspace_id: &str,
+        thread_id: &str,
+    ) -> Result<(), String> {
         let workspace_id = workspace_id.trim();
         let thread_id = thread_id.trim();
         if workspace_id.is_empty() {
@@ -4140,6 +4273,108 @@ mod tests {
         assert!(sessions.is_empty());
     }
 
+    #[test]
+    fn first_assistant_thread_title_names_thread_session() {
+        let (_dir, db) = open_test_db();
+        db.upsert_thread_session(ThreadSessionPayload {
+            id: "thread-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+            title: None,
+            status: "active".to_string(),
+            created_at: Some("2026-05-31T00:00:00.000Z".to_string()),
+            updated_at: Some("2026-05-31T00:00:00.000Z".to_string()),
+            base_commit_sha: None,
+            first_message_id: None,
+            source: "user".to_string(),
+        })
+        .expect("thread session");
+
+        db.upsert_local_node(
+            "user-1",
+            "workspace-1",
+            r#"{"id":"user-1","workspaceId":"workspace-1","role":"user","content":"Please fix thread names","threadId":"thread-1","thread_id":"thread-1","createdAt":"2026-05-31T00:00:01.000Z","updatedAt":"2026-05-31T00:00:01.000Z"}"#,
+        )
+        .expect("user node");
+        db.upsert_local_node(
+            "assistant-1",
+            "workspace-1",
+            r#"{"id":"assistant-1","workspaceId":"workspace-1","role":"assistant","parentId":"user-1","content":"Done","threadId":"thread-1","thread_id":"thread-1","aiLabel":"Implemented persistence fix","execution_data":{"meta":{"ai_label":"Implemented persistence fix","thread_title":"Thread Naming Bug"}},"createdAt":"2026-05-31T00:00:02.000Z","updatedAt":"2026-05-31T00:00:02.000Z"}"#,
+        )
+        .expect("assistant node");
+
+        let sessions = db
+            .list_thread_sessions_for_workspace("workspace-1")
+            .expect("thread sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].first_message_id.as_deref(), Some("user-1"));
+        assert_eq!(sessions[0].title.as_deref(), Some("Thread Naming Bug"));
+    }
+
+    #[test]
+    fn final_assistant_snapshot_without_thread_id_preserves_thread_and_names_session() {
+        let (_dir, db) = open_test_db();
+        db.upsert_thread_session(ThreadSessionPayload {
+            id: "thread-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+            title: None,
+            status: "active".to_string(),
+            created_at: Some("2026-05-31T00:00:00.000Z".to_string()),
+            updated_at: Some("2026-05-31T00:00:00.000Z".to_string()),
+            base_commit_sha: None,
+            first_message_id: None,
+            source: "user".to_string(),
+        })
+        .expect("thread session");
+
+        db.upsert_local_node(
+            "user-1",
+            "workspace-1",
+            r#"{"id":"user-1","workspaceId":"workspace-1","role":"user","content":"Please fix thread names","threadId":"thread-1","createdAt":"2026-05-31T00:00:01.000Z","updatedAt":"2026-05-31T00:00:01.000Z"}"#,
+        )
+        .expect("user node");
+        db.upsert_local_node(
+            "assistant-1",
+            "workspace-1",
+            r#"{"id":"assistant-1","workspaceId":"workspace-1","role":"assistant","parentId":"user-1","content":"","status":"pending","threadId":"thread-1","createdAt":"2026-05-31T00:00:02.000Z","updatedAt":"2026-05-31T00:00:02.000Z"}"#,
+        )
+        .expect("assistant placeholder");
+        db.upsert_local_node(
+            "assistant-1",
+            "workspace-1",
+            r#"{"id":"assistant-1","workspaceId":"workspace-1","role":"assistant","parentId":"user-1","content":"Done","status":"completed","execution_data":{"meta":{"thread_title":"Thread Naming Bug"}},"updatedAt":"2026-05-31T00:00:03.000Z"}"#,
+        )
+        .expect("assistant final snapshot");
+
+        let sessions = db
+            .list_thread_sessions_for_workspace("workspace-1")
+            .expect("thread sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].first_message_id.as_deref(), Some("user-1"));
+        assert_eq!(sessions[0].title.as_deref(), Some("Thread Naming Bug"));
+
+        let payload = db
+            .get_local_node_payload("assistant-1")
+            .expect("payload read")
+            .expect("assistant payload");
+        let value: serde_json::Value = serde_json::from_str(&payload).expect("payload json");
+        assert_eq!(value.get("threadId").and_then(|value| value.as_str()), None);
+        let rows = db
+            .list_local_nodes_for_workspace("workspace-1")
+            .expect("local nodes");
+        let assistant = rows
+            .iter()
+            .find(|row| row.node_id == "assistant-1")
+            .expect("assistant row");
+        let assistant_message: serde_json::Value =
+            serde_json::from_str(&assistant.payload).expect("assistant payload json");
+        assert_eq!(
+            assistant_message
+                .get("threadId")
+                .and_then(|value| value.as_str()),
+            Some("thread-1")
+        );
+    }
+
     fn run_test_git(repo_path: &std::path::Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
             .args(args)
@@ -4911,6 +5146,15 @@ mod tests {
         db.append_agent_run_event(
             "run-assistant-journal",
             "assistant-journal",
+            "user_steer_requested",
+            None,
+            None,
+            r#"{"type":"user_steer_requested","content":"please keep going","idempotency_key":"steer-1","timestamp":1778917767500}"#,
+        )
+        .expect("user steer");
+        db.append_agent_run_event(
+            "run-assistant-journal",
+            "assistant-journal",
             "tool_use",
             None,
             None,
@@ -4951,13 +5195,40 @@ mod tests {
         let timeline = payload["execution_data"]["timeline"]
             .as_array()
             .expect("timeline");
-        assert_eq!(timeline.len(), 3);
+        assert_eq!(timeline.len(), 4);
         assert_eq!(timeline[0]["type"], "message");
-        assert_eq!(timeline[1]["type"], "tool_use");
-        assert_eq!(timeline[1]["toolName"], "commandExecution");
-        assert_eq!(timeline[1]["toolOutput"], "partial ");
-        assert_eq!(timeline[2]["type"], "tool_result");
-        assert_eq!(timeline[2]["toolOutput"], "{\"name\":\"agentree\"}");
+        assert_eq!(timeline[1]["type"], "user_steer_requested");
+        assert_eq!(timeline[1]["content"], "please keep going");
+        assert_eq!(timeline[1]["idempotency_key"], "steer-1");
+        assert_eq!(timeline[2]["type"], "tool_use");
+        assert_eq!(timeline[2]["toolName"], "commandExecution");
+        assert_eq!(timeline[2]["toolOutput"], "partial ");
+        assert_eq!(timeline[3]["type"], "tool_result");
+        assert_eq!(timeline[3]["toolOutput"], "{\"name\":\"agentree\"}");
+    }
+
+    #[test]
+    fn local_node_upsert_preserves_existing_steer_only_timeline() {
+        let (_dir, db) = open_test_db();
+        db.upsert_local_node(
+            "assistant-steer-only",
+            "workspace-1",
+            r#"{"id":"assistant-steer-only","workspaceId":"workspace-1","role":"assistant","content":"done","status":"completed","execution_data":{"timeline":[{"type":"message","content":"before steer"},{"type":"user_steer_requested","content":"please adjust","idempotency_key":"steer-only-1"},{"type":"message","content":"done"}]}}"#,
+        )
+        .expect("steer local upsert");
+
+        let rows = db
+            .list_local_nodes_for_workspace("workspace-1")
+            .expect("local nodes");
+        let payload: serde_json::Value =
+            serde_json::from_str(&rows[0].payload).expect("payload json");
+        let timeline = payload["execution_data"]["timeline"]
+            .as_array()
+            .expect("timeline");
+        assert_eq!(timeline.len(), 3);
+        assert_eq!(timeline[1]["type"], "user_steer_requested");
+        assert_eq!(timeline[1]["content"], "please adjust");
+        assert_eq!(timeline[1]["idempotency_key"], "steer-only-1");
     }
 
     #[test]

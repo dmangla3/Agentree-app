@@ -20,15 +20,12 @@ import {
     isLoginProfileCompatibleWithProvider,
 } from '../lib/loginProfiles';
 import type { RuntimeReadiness } from '../lib/agentClient';
-import { LoginProfileSelector } from './logins/LoginProfileSelector';
 
 interface UnifiedAgentModelSelectorProps {
     onSelectAgent: (agentId: string) => void;
     selectedAgentId: string | null;
     agentRunCounts?: Record<string, number>;
     onAgentRunCountChange?: (agentId: string, count: number) => void;
-    selectedLoginProfileIdByProvider?: Record<string, string | null>;
-    onSelectLoginProfile?: (provider: string, profileId: string | null) => void;
     externalRuntimeReadinessByProvider?: Record<string, RuntimeReadiness | null>;
 }
 
@@ -214,8 +211,6 @@ export function UnifiedAgentModelSelector({
     selectedAgentId,
     agentRunCounts,
     onAgentRunCountChange,
-    selectedLoginProfileIdByProvider,
-    onSelectLoginProfile,
     externalRuntimeReadinessByProvider,
 }: UnifiedAgentModelSelectorProps) {
     const { data: agentsData } = useAgents();
@@ -237,9 +232,7 @@ export function UnifiedAgentModelSelector({
 
     const getSelectedLoginProfileForProvider = (provider: string) => {
         const compatible = loginProfiles.filter((profile) => isLoginProfileCompatibleWithProvider(profile, provider));
-        const selectedProfileId = selectedLoginProfileIdByProvider?.[provider] ?? null;
-        return compatible.find((profile) => profile.id === selectedProfileId)
-            ?? compatible.find((profile) => profile.isDefault)
+        return compatible.find((profile) => profile.isDefault)
             ?? compatible[0]
             ?? null;
     };
@@ -405,59 +398,56 @@ export function UnifiedAgentModelSelector({
                                             !providerSelectable && "opacity-45 grayscale"
                                         )}
                                     >
-                                        <div className="mb-2 flex items-center justify-between gap-3 px-1">
-                                            <div className="flex min-w-0 items-center gap-2.5">
-                                                <div className={cn("flex h-8 w-8 items-center justify-center rounded-md", accent.iconSurface)}>
-                                                    {provider === 'claude' ? (
-                                                        <AnthropicMark className={cn("h-4 w-4", accent.iconText)} />
-                                                    ) : (
-                                                        <OpenAiMark className={cn("h-4 w-4", accent.iconText)} />
-                                                    )}
-                                                </div>
-                                                <div className="min-w-0">
-                                                    <div className="flex items-center gap-2">
-                                                        <span className="text-[13px] font-semibold text-foreground">{meta.title}</span>
-                                                        <span className="text-[10.5px] text-muted-foreground">{meta.badge}</span>
-                                                        {!providerSelectable ? (
-                                                            <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.16)] dark:bg-amber-950/35 dark:text-amber-300">
-                                                                Login inactive
-                                                            </span>
-                                                        ) : null}
+                                        <div className="mb-2 space-y-2 px-1">
+                                            <div className="flex min-w-0 items-center justify-between gap-2">
+                                                <div className="flex min-w-0 items-center gap-2.5">
+                                                    <div className={cn("flex h-8 w-8 items-center justify-center rounded-md", accent.iconSurface)}>
+                                                        {provider === 'claude' ? (
+                                                            <AnthropicMark className={cn("h-4 w-4", accent.iconText)} />
+                                                        ) : (
+                                                            <OpenAiMark className={cn("h-4 w-4", accent.iconText)} />
+                                                        )}
                                                     </div>
-                                                    <div className="mt-0.5 text-[10.5px] text-muted-foreground">
-                                                        {families.length} {families.length === 1 ? 'family' : 'families'} available
+                                                    <div className="min-w-0">
+                                                        <div className="flex min-w-0 items-center gap-2">
+                                                            <span className="text-[13px] font-semibold text-foreground">{meta.title}</span>
+                                                            <span className="text-[10.5px] text-muted-foreground">{meta.badge}</span>
+                                                        </div>
+                                                        <div className="mt-0.5 text-[10.5px] text-muted-foreground">
+                                                            {families.length} {families.length === 1 ? 'family' : 'families'} available
+                                                        </div>
                                                     </div>
                                                 </div>
+                                                {!providerSelectable ? (
+                                                    <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.16)] dark:bg-amber-950/35 dark:text-amber-300">
+                                                        Login inactive
+                                                    </span>
+                                                ) : null}
                                             </div>
-                                            {onSelectLoginProfile ? (
-                                                <LoginProfileSelector
-                                                    provider={provider}
-                                                    value={selectedLoginProfileIdByProvider?.[provider] ?? null}
-                                                    onChange={(profileId) => onSelectLoginProfile(provider, profileId)}
-                                                />
-                                            ) : null}
                                             {displayedLimitWindows.length > 0 ? (
-                                                <div className="grid shrink-0 gap-1" aria-label={`${meta.title} usage availability`}>
-                                                    {displayedLimitWindows.map((window) => {
-                                                        const rowStyle = usageRowClasses(window.severity);
-                                                        return (
-                                                            <div
-                                                                key={window.id}
-                                                                className={cn(
-                                                                    "flex h-5 min-w-[74px] items-center justify-between gap-2 rounded px-1.5 text-[10px] font-semibold tabular-nums",
-                                                                    rowStyle.row
-                                                                )}
-                                                            >
-                                                                <span className="flex min-w-0 items-center gap-1.5">
-                                                                    <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", rowStyle.dot)} aria-hidden="true" />
-                                                                    <span className="truncate">{window.shortLabel}</span>
-                                                                </span>
-                                                                <span className="text-foreground/82 dark:text-current">
-                                                                    {window.percent != null ? `${window.percent}%` : 'n/a'}
-                                                                </span>
-                                                            </div>
-                                                        );
-                                                    })}
+                                                <div className="flex justify-end">
+                                                    <div className="grid shrink-0 gap-1" aria-label={`${meta.title} usage availability`}>
+                                                        {displayedLimitWindows.map((window) => {
+                                                            const rowStyle = usageRowClasses(window.severity);
+                                                            return (
+                                                                <div
+                                                                    key={window.id}
+                                                                    className={cn(
+                                                                        "flex h-5 min-w-[74px] items-center justify-between gap-2 rounded px-1.5 text-[10px] font-semibold tabular-nums",
+                                                                        rowStyle.row
+                                                                    )}
+                                                                >
+                                                                    <span className="flex min-w-0 items-center gap-1.5">
+                                                                        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", rowStyle.dot)} aria-hidden="true" />
+                                                                        <span className="truncate">{window.shortLabel}</span>
+                                                                    </span>
+                                                                    <span className="text-foreground/82 dark:text-current">
+                                                                        {window.percent != null ? `${window.percent}%` : 'n/a'}
+                                                                    </span>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
                                                 </div>
                                             ) : null}
                                         </div>

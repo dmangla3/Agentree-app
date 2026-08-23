@@ -7,6 +7,7 @@ import type { AgentRunSnapshot } from './agentRun.types';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
 import { localNodeKeys, type LocalNodeMessage } from '../hooks/useLocalNodes';
+import { threadSessionKeys } from '../hooks/useThreadSessions';
 import type { GraphSnapshot } from '../hooks/useGraphSnapshot';
 import type { Message } from '../stores/workspaceStore';
 
@@ -75,9 +76,19 @@ const readTerminalPatch = (snapshot: AgentRunSnapshot) => {
   };
 };
 
+const readGeneratedThreadTitle = (snapshot: AgentRunSnapshot): string | null => {
+  const executionData = (snapshot.executionData ?? {}) as Record<string, any>;
+  const meta = ((executionData.meta ?? {}) as Record<string, any>);
+  return cleanString(meta.thread_title)
+    ?? cleanString(meta.threadTitle)
+    ?? cleanString(meta.agent_thread_title)
+    ?? cleanString(meta.runtime_thread_title);
+};
+
 const finalizeEffectKey = (snapshot: AgentRunSnapshot) => {
   const patch = readTerminalPatch(snapshot);
   if (!patch) return null;
+  const generatedThreadTitle = readGeneratedThreadTitle(snapshot);
   return JSON.stringify({
     nodeId: patch.nodeId,
     workspaceId: snapshot.workspaceId,
@@ -87,6 +98,7 @@ const finalizeEffectKey = (snapshot: AgentRunSnapshot) => {
     gitBranchName: patch.gitBranchName,
     persisted: patch.persisted,
     serverAckAt: patch.serverAckAt,
+    generatedThreadTitle,
   });
 };
 
@@ -119,6 +131,12 @@ export const applyAgentRunFinalizeSnapshotEffects = (
     includeCommitGraph: Boolean(cachePatch.outputCommitSha),
     catchUpHotDeltas: Boolean(cachePatch.outputCommitSha),
   });
+  if (readGeneratedThreadTitle(snapshot)) {
+    void queryClient.invalidateQueries({
+      queryKey: threadSessionKeys.workspace(snapshot.workspaceId),
+      refetchType: 'active',
+    });
+  }
 };
 
 export const clearAgentRunEffectsForNode = (nodeId: string) => {

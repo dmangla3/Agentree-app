@@ -1,4 +1,4 @@
-import { CheckCircle2, Clock3, KeyRound, MoreHorizontal, ShieldAlert, Trash2 } from 'lucide-react';
+import { CheckCircle2, Clock3, KeyRound, Loader2, MoreHorizontal, ShieldAlert, Trash2 } from 'lucide-react';
 import type { ActiveLoginProfileRun } from '../../lib/agentClient';
 import {
   getLoginProfileAuthTypeLabel,
@@ -27,6 +27,7 @@ const statusClasses = {
 
 const StatusIcon = ({ status }: { status: string }) => {
   if (status === 'ready') return <CheckCircle2 className="h-3.5 w-3.5" />;
+  if (status === 'checking') return <Loader2 className="h-3.5 w-3.5 animate-spin" />;
   if (status === 'unchecked') return <Clock3 className="h-3.5 w-3.5" />;
   return <ShieldAlert className="h-3.5 w-3.5" />;
 };
@@ -45,7 +46,7 @@ export function LoginProfileRows({
       {profiles.map((profile) => {
         const tone = getLoginProfileStatusTone(profile.status);
         const activeRuns = activeRunsByProfile[profile.id] ?? [];
-        const isPending = pendingProfileId === profile.id;
+        const isPending = pendingProfileId === profile.id || profile.status === 'checking';
         return (
           <article
             key={profile.id}
@@ -82,7 +83,11 @@ export function LoginProfileRows({
                   ) : null}
                 </div>
                 {profile.statusMessage ? (
-                  <p className="mt-2 max-w-2xl text-[12px] leading-5 text-muted-foreground">
+                  <p className={cn(
+                    'mt-2 max-w-2xl text-[12px] leading-5 text-muted-foreground',
+                    profile.status === 'checking' && 'inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-2 py-1 text-foreground'
+                  )}>
+                    {profile.status === 'checking' ? <Loader2 className="h-3 w-3 animate-spin text-[hsl(var(--app-accent))]" /> : null}
                     {profile.statusMessage}
                   </p>
                 ) : null}
@@ -94,7 +99,12 @@ export function LoginProfileRows({
                   disabled={isPending}
                   className="h-8 rounded-md bg-muted px-2.5 text-[11px] font-semibold text-foreground transition-[background-color,transform,opacity] hover:bg-muted/80 active:scale-[0.96] disabled:opacity-50"
                 >
-                  Check
+                  {profile.status === 'checking' ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Checking
+                    </span>
+                  ) : 'Run live check'}
                 </button>
                 <button
                   type="button"

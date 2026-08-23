@@ -398,11 +398,16 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       dispatchFocus: ({ messageId, source, metadata }) =>
         set((state) => {
           const fallbackReason = typeof metadata?.reason === 'string' ? metadata.reason : null;
+          const isSystemFallbackFocus =
+            source === 'system' &&
+            (fallbackReason === 'default-workspace-focus' || fallbackReason === 'restore-workspace-focus');
+          if (isSystemFallbackFocus && state.focusedMessageId === messageId) {
+            return state;
+          }
           const activeSendFlowFocus = state.activeSendFlowFocus;
           const shouldBlockFallbackFocus =
-            source === 'system' &&
+            isSystemFallbackFocus &&
             activeSendFlowFocus?.workspaceId === state.selectedWorkspaceId &&
-            (fallbackReason === 'default-workspace-focus' || fallbackReason === 'restore-workspace-focus') &&
             (!!messageId && !activeSendFlowFocus.guardedMessageIds.includes(messageId));
 
           if (shouldBlockFallbackFocus) {

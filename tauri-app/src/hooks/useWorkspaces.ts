@@ -10,6 +10,7 @@ import { localNodeKeys } from './useLocalNodes';
 import { trackWorkspaceCreated } from '../lib/analytics';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 import { getAccessToken } from '../lib/authSession';
+import { useAuthStore } from '../stores/authStore';
 
 export type RepoPrepareRequirementType = 'git_init' | 'commit_checkpoint';
 export type RepoDirtyStrategy = 'last-commit' | 'checkpoint';
@@ -51,6 +52,11 @@ export function mergeWorkspaceIntoCachedWorkspaces(
     ...existing.filter((candidate) => candidate.id !== workspace.id),
   ];
 }
+
+export const workspaceKeys = {
+  all: ['workspaces'] as const,
+  list: (userId: string | null | undefined) => ['workspaces', userId ?? 'anonymous'] as const,
+};
 
 async function prepareRepoForWorkspace(
   folderPath: string,
@@ -136,8 +142,10 @@ async function prepareRepoForWorkspace(
 
 export const useWorkspaces = (): UseQueryResult<Workspace[], Error> => {
   const syncInFlightRef = useRef(false);
+  const userId = useAuthStore((state) => state.user?.id ?? null);
   const query = useQuery<Workspace[]>({
-    queryKey: ['workspaces'],
+    queryKey: workspaceKeys.list(userId),
+    enabled: Boolean(userId),
     queryFn: async () => {
       const startedAt = performance.now();
       const [response, deletedWorkspaceIds] = await Promise.all([
@@ -162,6 +170,7 @@ export const useWorkspaces = (): UseQueryResult<Workspace[], Error> => {
   });
 
   useEffect(() => {
+    if (!userId) return;
     if (syncInFlightRef.current) return;
     syncInFlightRef.current = true;
     void getAccessToken()
@@ -170,7 +179,7 @@ export const useWorkspaces = (): UseQueryResult<Workspace[], Error> => {
       .finally(() => {
         syncInFlightRef.current = false;
       });
-  }, []);
+  }, [userId]);
 
   return query;
 };
@@ -178,6 +187,7 @@ export const useWorkspaces = (): UseQueryResult<Workspace[], Error> => {
 export const useCreateWorkspace = () => {
   const queryClient = useQueryClient();
   const { addToast } = useToast();
+  const userId = useAuthStore((state) => state.user?.id ?? null);
 
   return useMutation({
     mutationFn: async ({
@@ -210,11 +220,11 @@ export const useCreateWorkspace = () => {
         dirty_strategy: variables.dirtyStrategy ?? null,
       });
       if (workspace?.id) {
-        queryClient.setQueryData<Workspace[]>(['workspaces'], (current) =>
+        queryClient.setQueryData<Workspace[]>(workspaceKeys.list(userId), (current) =>
           mergeWorkspaceIntoCachedWorkspaces(current, workspace as Workspace)
         );
       }
-      queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.all });
     },
     onError: (error: unknown) => {
       if (error instanceof RepoPrepareActionRequiredError) return;
@@ -233,7 +243,7 @@ export const useRenameWorkspace = () => {
       return response.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.all });
     },
     onError: (error: unknown) => {
       const message = error instanceof Error ? error.message : 'Failed to rename workspace';
@@ -264,7 +274,7 @@ export const useDeleteWorkspace = () => {
       queryClient.removeQueries({ queryKey: trackedRefKeys.workspace(deletedWorkspaceId) });
       queryClient.removeQueries({ queryKey: localNodeKeys.workspace(deletedWorkspaceId) });
       queryClient.removeQueries({ queryKey: ['branches', deletedWorkspaceId] });
-      queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.all });
     },
   });
 };
@@ -287,7 +297,7 @@ export const useDeleteMultipleWorkspaces = () => {
         queryClient.removeQueries({ queryKey: localNodeKeys.workspace(deletedWorkspaceId) });
         queryClient.removeQueries({ queryKey: ['branches', deletedWorkspaceId] });
       }
-      queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.all });
     },
   });
 };
@@ -319,7 +329,7 @@ export const useConnectRepo = () => {
       return response.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.all });
       addToast({ title: 'Repo connected', description: 'The repo has been connected.', variant: 'success' });
     },
     onError: (error: unknown) => {

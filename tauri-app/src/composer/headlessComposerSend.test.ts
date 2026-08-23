@@ -18,12 +18,7 @@ const message = (input: Partial<Message> & Pick<Message, 'id'>): Message => ({
 
 describe('sendHeadlessComposerReply', () => {
   it('creates a reply message and starts the runtime from the supplied base commit', async () => {
-    const userMessage = message({ id: 'user-1', role: 'user', parentId: 'parent-1' });
-    const assistantMessage = message({ id: 'assistant-1', role: 'assistant', parentId: 'user-1' });
-    const sendMessage = vi.fn().mockResolvedValue({
-      userMessage,
-      assistantMessages: [assistantMessage],
-    });
+    const sendMessage = vi.fn();
     const seedAgentRun = vi.fn();
     const dispatchAgentRun = vi.fn();
     const onAssistantMessageCreated = vi.fn();
@@ -50,7 +45,6 @@ describe('sendHeadlessComposerReply', () => {
         selectedFromNodeId: 'root',
       },
       workspaces: [{ id: 'workspace-1', git_repo_path: '/repo' } as Workspace],
-      sendMessage,
       hasRuntime: () => true,
       startAgentRun,
       getAccessToken: vi.fn().mockResolvedValue('token-1'),
@@ -61,54 +55,51 @@ describe('sendHeadlessComposerReply', () => {
       nowIso: () => '2026-05-27T01:02:03.000Z',
     });
 
-    expect(response).toEqual({ userMessage, assistantMessages: [assistantMessage] });
-    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
-      workspaceId: 'workspace-1',
-      prompt: 'Ship it',
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(response.userMessage).toEqual(expect.objectContaining({
+      role: 'user',
+      content: 'Ship it',
       parentId: 'parent-1',
-      contextPolicy: 'continue',
-      contextParentId: 'parent-1',
-      agentId: 'codex-agent',
-      agentProvider: 'codex',
-      llmModel: 'gpt-5.5',
-      baseCommitSha: 'root-output',
-      baseSelectedFromNodeId: 'root',
     }));
-    expect(seedAgentRun).toHaveBeenCalledWith(userMessage);
-    expect(seedAgentRun).toHaveBeenCalledWith(assistantMessage);
-    expect(onAssistantMessageCreated).toHaveBeenCalledWith(assistantMessage);
+    expect(response.assistantMessages?.[0]).toEqual(expect.objectContaining({
+      role: 'assistant',
+      parentId: response.userMessage?.id,
+      base_commit_sha: 'root-output',
+      base_selected_from_node_id: 'root',
+    }));
+    const localUserMessage = response.userMessage!;
+    const localAssistantMessage = response.assistantMessages![0];
+    expect(seedAgentRun).toHaveBeenCalledWith(localUserMessage);
+    expect(seedAgentRun).toHaveBeenCalledWith(localAssistantMessage);
+    expect(onAssistantMessageCreated).toHaveBeenCalledWith(localAssistantMessage);
     expect(startAgentRun).toHaveBeenCalledWith(expect.objectContaining({
       runId: 'run-1',
-      assistantNodeId: 'assistant-1',
+      assistantNodeId: localAssistantMessage.id,
       workspaceId: 'workspace-1',
       repoPath: '/repo',
       parentCommit: 'root-output',
       agentType: 'codex',
       authToken: 'token-1',
       runContext: expect.objectContaining({
-        gitBranchName: 'agentree/assistant-1',
+        gitBranchName: `agentree/${localAssistantMessage.id}`,
         parentCommit: 'root-output',
         promptFallback: 'Ship it',
       }),
     }));
     expect(startAgentRun.mock.calls[0][0].args[0]).toBe('--model');
     expect(startAgentRun.mock.calls[0][0].args.at(-1)).toContain('Ship it');
-    expect(dispatchAgentRun).toHaveBeenCalledWith('assistant-1', {
+    expect(dispatchAgentRun).toHaveBeenCalledWith(localAssistantMessage.id, {
       type: 'status',
       status: 'running',
     });
   });
 
   it('supports fresh root sends without quick-reply metadata', async () => {
-    const assistantMessage = message({ id: 'assistant-root', role: 'assistant', parentId: 'user-root' });
-    const sendMessage = vi.fn().mockResolvedValue({
-      userMessage: message({ id: 'user-root', role: 'user', parentId: null }),
-      assistantMessages: [assistantMessage],
-    });
+    const sendMessage = vi.fn();
     const startAgentRun = vi.fn().mockResolvedValue(undefined);
     const dispatchAgentRun = vi.fn();
 
-    await sendHeadlessComposerMessage({
+    const response = await sendHeadlessComposerMessage({
       workspaceId: 'workspace-1',
       parentMessageId: null,
       contextParentId: null,
@@ -128,7 +119,6 @@ describe('sendHeadlessComposerReply', () => {
         selectedFromNodeId: null,
       },
       workspaces: [{ id: 'workspace-1', git_repo_path: '/repo' } as Workspace],
-      sendMessage,
       hasRuntime: () => true,
       startAgentRun,
       getAccessToken: vi.fn().mockResolvedValue('token-1'),
@@ -138,15 +128,23 @@ describe('sendHeadlessComposerReply', () => {
       nowIso: () => '2026-05-27T01:02:03.000Z',
     });
 
-    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(response.userMessage).toEqual(expect.objectContaining({
       parentId: null,
-      contextPolicy: 'fresh',
-      contextParentId: null,
-      baseSelectedFromNodeId: null,
-      threadOriginId: undefined,
+      content: 'Start a new direction',
+    }));
+    expect(response.assistantMessages?.[0]).toEqual(expect.objectContaining({
+      parentId: response.userMessage?.id,
+      base_selected_from_node_id: null,
+    }));
+    expect(response.assistantMessages?.[0]?.execution_data?.meta?.quick_reply).toBeUndefined();
+    expect(response.assistantMessages?.[0]?.execution_data?.meta?.base_commit_sha).toBe('workspace-base');
+    expect(response.assistantMessages?.[0]?.execution_data?.context_profile).toEqual(expect.objectContaining({
+      base_node_id: null,
+      context_parent_node_id: null,
     }));
     const executionDataEvent = dispatchAgentRun.mock.calls.find(([nodeId, event]) => (
-      nodeId === 'assistant-root' && event.type === 'execution_data'
+      nodeId === response.assistantMessages?.[0]?.id && event.type === 'execution_data'
     ));
     expect(executionDataEvent?.[1].patch.meta.quick_reply).toBeUndefined();
     expect(executionDataEvent?.[1].patch.meta.base_commit_sha).toBe('workspace-base');
@@ -174,7 +172,6 @@ describe('sendHeadlessComposerReply', () => {
         selectedFromNodeId: null,
       },
       workspaces: [{ id: 'workspace-1', git_repo_path: '/repo' } as Workspace],
-      sendMessage: vi.fn().mockResolvedValue({}),
       hasRuntime: () => true,
       startAgentRun,
       getAccessToken: vi.fn().mockResolvedValue('token-1'),
@@ -193,12 +190,9 @@ describe('sendHeadlessComposerReply', () => {
   });
 
   it('sends the first-class thread id and legacy thread origin for new graph threads', async () => {
-    const sendMessage = vi.fn().mockResolvedValue({
-      userMessage: message({ id: 'user-root', role: 'user', parentId: null }),
-      assistantMessages: [message({ id: 'assistant-root', role: 'assistant', parentId: 'user-root' })],
-    });
+    const sendMessage = vi.fn();
 
-    await sendHeadlessComposerMessage({
+    const response = await sendHeadlessComposerMessage({
       workspaceId: 'workspace-1',
       parentMessageId: null,
       contextParentId: null,
@@ -218,7 +212,6 @@ describe('sendHeadlessComposerReply', () => {
         selectedFromNodeId: null,
       },
       workspaces: [{ id: 'workspace-1', git_repo_path: '/repo' } as Workspace],
-      sendMessage,
       hasRuntime: () => true,
       startAgentRun: vi.fn().mockResolvedValue(undefined),
       getAccessToken: vi.fn().mockResolvedValue('token-1'),
@@ -229,19 +222,16 @@ describe('sendHeadlessComposerReply', () => {
       createRunId: () => 'run-thread',
     });
 
-    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
-      threadId: 'thread-session-1',
-      threadOriginId: 'thread-session-1',
-    }));
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(response.userMessage?.threadId).toBe('thread-session-1');
+    expect(response.assistantMessages?.[0]?.threadId).toBe('thread-session-1');
+    expect(response.userMessage?.execution_data?.meta?.thread_origin_id).toBe('thread-session-1');
   });
 
   it('inherits first-class thread ids for replies', async () => {
-    const sendMessage = vi.fn().mockResolvedValue({
-      userMessage: message({ id: 'user-child', role: 'user', parentId: 'parent-1' }),
-      assistantMessages: [message({ id: 'assistant-child', role: 'assistant', parentId: 'user-child' })],
-    });
+    const sendMessage = vi.fn();
 
-    await sendHeadlessComposerMessage({
+    const response = await sendHeadlessComposerMessage({
       workspaceId: 'workspace-1',
       parentMessageId: 'parent-1',
       contextParentId: 'parent-1',
@@ -261,7 +251,6 @@ describe('sendHeadlessComposerReply', () => {
         selectedFromNodeId: 'parent-1',
       },
       workspaces: [{ id: 'workspace-1', git_repo_path: '/repo' } as Workspace],
-      sendMessage,
       hasRuntime: () => true,
       startAgentRun: vi.fn().mockResolvedValue(undefined),
       getAccessToken: vi.fn().mockResolvedValue('token-1'),
@@ -270,10 +259,9 @@ describe('sendHeadlessComposerReply', () => {
       createRunId: () => 'run-thread-reply',
     });
 
-    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
-      threadId: 'thread-session-1',
-      threadOriginId: 'thread-session-1',
-    }));
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(response.userMessage?.threadId).toBe('thread-session-1');
+    expect(response.assistantMessages?.[0]?.threadId).toBe('thread-session-1');
   });
 
   it('creates local runtime nodes when the message API returns no agent messages', async () => {
@@ -303,7 +291,6 @@ describe('sendHeadlessComposerReply', () => {
         selectedFromNodeId: 'parent-1',
       },
       workspaces: [{ id: 'workspace-1', git_repo_path: '/repo' } as Workspace],
-      sendMessage: vi.fn().mockResolvedValue({ userMessage: null, assistantMessages: [] }),
       hasRuntime: () => true,
       startAgentRun,
       getAccessToken: vi.fn().mockResolvedValue('token-1'),
@@ -338,6 +325,49 @@ describe('sendHeadlessComposerReply', () => {
     });
   });
 
+  it('skips the remote message API when local runtime is available', async () => {
+    const sendMessage = vi.fn().mockRejectedValue(new Error('should not call remote API'));
+    const startAgentRun = vi.fn().mockResolvedValue(undefined);
+    const persistLocalNode = vi.fn().mockResolvedValue(undefined);
+
+    await sendHeadlessComposerMessage({
+      workspaceId: 'workspace-1',
+      parentMessageId: null,
+      contextParentId: null,
+      contextPolicy: 'fresh',
+      prompt: 'Start locally',
+      messages: [],
+      agent: {
+        id: 'codex-agent',
+        type: 'codex',
+        name: 'Codex',
+        cliArgs: '',
+        promptFlag: null,
+        model_config: { model: 'gpt-5.5' },
+      },
+      base: {
+        commitSha: 'base-sha',
+        selectedFromNodeId: null,
+      },
+      workspaces: [{ id: 'workspace-1', git_repo_path: '/repo' } as Workspace],
+      hasRuntime: () => true,
+      startAgentRun,
+      getAccessToken: vi.fn().mockResolvedValue('token-1'),
+      seedAgentRun: vi.fn(),
+      dispatchAgentRun: vi.fn(),
+      persistLocalNode,
+      createRunId: () => 'run-local-preferred',
+      nowIso: () => '2026-05-27T01:02:03.000Z',
+    });
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(persistLocalNode).toHaveBeenCalledTimes(2);
+    expect(startAgentRun).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run-local-preferred',
+      parentCommit: 'base-sha',
+    }));
+  });
+
   it('creates local runtime nodes when the message API rejects for a new thread send', async () => {
     const startAgentRun = vi.fn().mockResolvedValue(undefined);
     const persistLocalNode = vi.fn().mockResolvedValue(undefined);
@@ -363,7 +393,6 @@ describe('sendHeadlessComposerReply', () => {
         selectedFromNodeId: null,
       },
       workspaces: [{ id: 'workspace-1', git_repo_path: '/repo' } as Workspace],
-      sendMessage: vi.fn().mockRejectedValue(new Error('server unavailable')),
       hasRuntime: () => true,
       startAgentRun,
       getAccessToken: vi.fn().mockResolvedValue('token-1'),
@@ -394,7 +423,6 @@ describe('sendHeadlessComposerReply', () => {
   });
 
   it('uses the selected context start when building the runtime prompt', async () => {
-    const assistantMessage = message({ id: 'assistant-new', role: 'assistant', parentId: 'user-new' });
     const startAgentRun = vi.fn().mockResolvedValue(undefined);
 
     await sendHeadlessComposerMessage({
@@ -423,10 +451,6 @@ describe('sendHeadlessComposerReply', () => {
         selectedFromNodeId: null,
       },
       workspaces: [{ id: 'workspace-1', git_repo_path: '/repo' } as Workspace],
-      sendMessage: vi.fn().mockResolvedValue({
-        userMessage: message({ id: 'user-new', role: 'user', parentId: 'assistant-2' }),
-        assistantMessages: [assistantMessage],
-      }),
       hasRuntime: () => true,
       startAgentRun,
       getAccessToken: vi.fn().mockResolvedValue('token-1'),

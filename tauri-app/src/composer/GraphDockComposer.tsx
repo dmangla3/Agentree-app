@@ -11,7 +11,7 @@ import { applyLocalNodeMessages } from '../hooks/useLiveMessages';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from '../hooks/useLocalNodes';
 import { useAgents, type Agent } from '../hooks/useAgents';
 import { useWorkspaces } from '../hooks/useWorkspaces';
-import { useCommitAncestors, useCommitDescendants, useSendMessage } from '../hooks/useMessages';
+import { useCommitAncestors, useCommitDescendants } from '../hooks/useMessages';
 import { useCreateThreadSession } from '../hooks/useThreadSessions';
 import { useAgentFlowRunner } from '../hooks/useAgentFlowRunner';
 import { getEnabledTrackedGitRefs, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
@@ -309,7 +309,6 @@ export function GraphDockComposer() {
   const [selectedMergeContextParentId, setSelectedMergeContextParentId] = useState<string | null>(null);
   const [selectedContextStartId, setSelectedContextStartId] = useState<string | null>(null);
   const [selectedAgentRunCounts, setSelectedAgentRunCounts] = useState<ComposerAgentRunCounts>({});
-  const [selectedLoginProfileIdByProvider, setSelectedLoginProfileIdByProvider] = useState<Record<string, string | null>>({});
   const [flowParallelCount, setFlowParallelCount] = useState(3);
   const [promptSeed, setPromptSeed] = useState('');
   const [promptResetVersion, setPromptResetVersion] = useState(0);
@@ -322,6 +321,7 @@ export function GraphDockComposer() {
   const [activeSkillMention, setActiveSkillMention] = useState<ActiveSkillMention | null>(null);
   const [activeSkillMentionIndex, setActiveSkillMentionIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [isSending, setIsSending] = useState(false);
   const [isSteering, setIsSteering] = useState(false);
   const {
     selectedWorkspaceId,
@@ -354,7 +354,6 @@ export function GraphDockComposer() {
   })));
   const { data: agents = [] } = useAgents();
   const { data: workspaces = [] } = useWorkspaces();
-  const sendMessageMutation = useSendMessage();
   const createThreadSession = useCreateThreadSession();
   const selectedWorkspace = useMemo(
     () => (workspaces as Workspace[]).find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
@@ -646,7 +645,6 @@ export function GraphDockComposer() {
     [flowRunner.flows, flowRunner.selectedFlowId]
   );
   const isFlowSelected = Boolean(selectedFlow);
-  const isSending = sendMessageMutation.isPending;
   const isPrimaryActionBusy = isSending || isSteering;
   const isComposerConfigurationDisabled = isPrimaryActionBusy || isSteeringRunningAssistant;
   const canSend = Boolean(selectedWorkspaceId && promptHasContent && !isPrimaryActionBusy && (
@@ -1034,13 +1032,6 @@ export function GraphDockComposer() {
     setSelectedAgentId(nextSelectedAgentId);
   }, [agents, normalizedSelectedAgentRunCounts, setSelectedAgentId]);
 
-  const handleLoginProfileSelect = useCallback((provider: string, profileId: string | null) => {
-    setSelectedLoginProfileIdByProvider((current) => ({
-      ...current,
-      [provider]: profileId,
-    }));
-  }, []);
-
   const handleBaseSelect = useCallback((item: typeof filteredBasePickerItems[number]) => {
     if (item.isDefault) {
       setSelectedBaseCommit(null);
@@ -1256,6 +1247,7 @@ export function GraphDockComposer() {
     }
 
     setError(null);
+    setIsSending(true);
     assistantNodeIdRef.current = null;
     recordSendFlowEvent('graph-dock.submit', {
       workspaceId: selectedWorkspaceId,
@@ -1290,8 +1282,7 @@ export function GraphDockComposer() {
         const compatibleLoginProfiles = useLoginProfilesStore.getState().profiles
           .filter((profile) => profile.provider === run.agent.type);
         const selectedLoginProfileId =
-          selectedLoginProfileIdByProvider[run.agent.type]
-          ?? compatibleLoginProfiles.find((profile) => profile.isDefault)?.id
+          compatibleLoginProfiles.find((profile) => profile.isDefault)?.id
           ?? compatibleLoginProfiles[0]?.id
           ?? null;
         const selectedLoginProfile = compatibleLoginProfiles.find((profile) => profile.id === selectedLoginProfileId) ?? null;
@@ -1314,7 +1305,6 @@ export function GraphDockComposer() {
             selectedFromNodeId: effectiveBase.selectedFromNodeId,
           },
           workspaces: workspaces as Workspace[],
-          sendMessage: (payload) => sendMessageMutation.mutateAsync(payload as any),
           hasRuntime: () => agentClient.hasRuntime(),
           startAgentRun: (payload) => agentClient.startAgentRun(payload as any),
           getAccessToken,
@@ -1374,6 +1364,8 @@ export function GraphDockComposer() {
         });
       }
       setError(message);
+    } finally {
+      setIsSending(false);
     }
   }, [
     agent,
@@ -1395,9 +1387,7 @@ export function GraphDockComposer() {
     resetComposerTargetAfterSuccessfulSend,
     selectedWorkspaceId,
     selectedAgentRunItems,
-    selectedLoginProfileIdByProvider,
     selectedFlow,
-    sendMessageMutation,
     target.parentMessageId,
     workspaces,
   ]);
@@ -1648,23 +1638,21 @@ export function GraphDockComposer() {
           </DropdownMenu>
 
           <Popover open={isAgentPickerOpen} onOpenChange={setIsAgentPickerOpen}>
-            <PopoverTrigger asChild>
-              <button
-                type="button"
-                aria-label="Select model"
-                title="Select one or more models to run."
-                disabled={isComposerConfigurationDisabled || !selectedWorkspaceId}
-                className={cn(
-                  dockControlButtonClass,
-                  'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
-                  'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
-                  'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]'
-                )}
-              >
-                <Bot className="h-3 w-3 shrink-0 text-muted-foreground" />
-                <span className="truncate">{modelSelectorLabel}</span>
-                <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-              </button>
+            <PopoverTrigger
+              type="button"
+              aria-label="Select model"
+              title="Select one or more models to run."
+              disabled={isComposerConfigurationDisabled || !selectedWorkspaceId}
+              className={cn(
+                dockControlButtonClass,
+                'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
+                'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
+                'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]'
+              )}
+            >
+              <Bot className="h-3 w-3 shrink-0 text-muted-foreground" />
+              <span className="truncate">{modelSelectorLabel}</span>
+              <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
             </PopoverTrigger>
             <PopoverContent disableAnimation className="h-[390px] w-[620px] p-0" side="top" align="start" sideOffset={8}>
               <UnifiedAgentModelSelector
@@ -1672,8 +1660,6 @@ export function GraphDockComposer() {
                 selectedAgentId={agent?.id ?? selectedAgentId}
                 agentRunCounts={!isFlowSelected ? normalizedSelectedAgentRunCounts : undefined}
                 onAgentRunCountChange={!isFlowSelected ? handleAgentRunCountChange : undefined}
-                selectedLoginProfileIdByProvider={selectedLoginProfileIdByProvider}
-                onSelectLoginProfile={handleLoginProfileSelect}
               />
             </PopoverContent>
           </Popover>

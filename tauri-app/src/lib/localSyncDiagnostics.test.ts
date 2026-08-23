@@ -45,4 +45,34 @@ describe('localSyncDiagnostics', () => {
     clearLocalSyncPause();
     expect(shouldSkipLocalSync()).toBe(false);
   });
+
+  it('does not pause local sync after a single retryable timeout', () => {
+    reportLocalSyncFailure(new Error('node.update_terminal transport error: operation timed out'));
+
+    expect(getLocalSyncPauseState()).toEqual(expect.objectContaining({
+      paused: false,
+      reason: 'server_timeout',
+      failureCount: 1,
+    }));
+    expect(shouldSkipLocalSync()).toBe(false);
+  });
+
+  it('classifies readiness query timeouts as server timeouts, not missing schema', () => {
+    reportLocalSyncFailure(new Error('Server readiness check failed with status 503'), {
+      readiness: {
+        status: 'not_ready',
+        database: { ok: false, error: 'readiness query timed out after 2000ms' },
+        missingMigrations: [],
+        missingTables: [],
+        missingColumns: [],
+      },
+    });
+
+    expect(getLocalSyncPauseState()).toEqual(expect.objectContaining({
+      paused: true,
+      reason: 'server_timeout',
+      message: 'Local sync is paused because backend requests are timing out.',
+      detail: 'database: readiness query timed out after 2000ms',
+    }));
+  });
 });

@@ -26,6 +26,7 @@ type TokenResponse = {
 const DEFAULT_AUTH_CALLBACK_URL = 'http://127.0.0.1:34117/kinde/callback';
 const DESKTOP_AUTH_PENDING_KEY = 'agentree.desktop-auth.pending';
 const DESKTOP_AUTH_MAX_AGE_MS = 10 * 60 * 1000;
+const UPSTREAM_ACCOUNT_SELECTION_PROMPT = 'select_account' as PromptTypes;
 
 let kindeRedirectUriCache = import.meta.env.VITE_KINDE_REDIRECT_URI || DEFAULT_AUTH_CALLBACK_URL;
 let deepLinkListenerInitialized = false;
@@ -387,7 +388,7 @@ export const openKindeAuthInSystemBrowser = async (intent: AuthIntent) => {
       redirectURL,
       state,
       supportsReauth: true,
-      ...(intent === 'register' ? { prompt: PromptTypes.create } : {}),
+      prompt: intent === 'register' ? PromptTypes.create : UPSTREAM_ACCOUNT_SELECTION_PROMPT,
     },
   );
 
