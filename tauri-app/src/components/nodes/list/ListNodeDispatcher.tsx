@@ -1,13 +1,13 @@
 import { memo, useCallback } from 'react';
-import { TimelineUserRow } from './TimelineUserRow';
-import { TimelineAssistantRow } from './TimelineAssistantRow';
-import { TimelineCommitRow } from './TimelineCommitRow';
-import { TimelineSummaryRow } from './TimelineSummaryRow';
+import { ListUserRow } from './ListUserRow';
+import { ListAssistantRow } from './ListAssistantRow';
+import { ListCommitRow } from './ListCommitRow';
+import { ListSummaryRow } from './ListSummaryRow';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { NodeHoverCardContent } from '../../NodeHoverCardContent';
 
 
-interface TimelineNodeDispatcherProps {
+interface ListNodeDispatcherProps {
   entityId?: string;
   rowId?: string;
   projection: any; // workspace projection
@@ -18,7 +18,7 @@ interface TimelineNodeDispatcherProps {
   onContextMenu: (id: string, e: React.MouseEvent) => void;
 }
 
-export const TimelineNodeDispatcher = memo(({
+export const ListNodeDispatcher = memo(({
   entityId,
   rowId,
   projection,
@@ -27,7 +27,7 @@ export const TimelineNodeDispatcher = memo(({
   onFocus,
   onSelect,
   onContextMenu
-}: TimelineNodeDispatcherProps) => {
+}: ListNodeDispatcherProps) => {
   const { focusedMessageId } = useWorkspaceStore();
 
   const entity = entityId ? projection.entitiesById.get(entityId) : null;
@@ -56,7 +56,7 @@ export const TimelineNodeDispatcher = memo(({
   const sharedProps = {
     isFocused: entity?.focusMessageId === focusedMessageId,
     isSelected,
-    layout: 'timeline' as const,
+    layout: 'list' as const,
     hoverCardContent: <NodeHoverCardContent entity={hoverEntity} projection={projection} />,
     onFocus: handleFocus,
     onSelect: handleSelect,
@@ -67,16 +67,16 @@ export const TimelineNodeDispatcher = memo(({
 
   switch (entity.kind) {
     case 'user_message':
-      return <TimelineUserRow {...sharedProps} nodeId={rowId} entity={entity} showSelectionControl={showSelectionControl} />;
+      return <ListUserRow {...sharedProps} nodeId={rowId} entity={entity} showSelectionControl={showSelectionControl} />;
     case 'assistant_message':
-      return <TimelineAssistantRow {...sharedProps} nodeId={rowId} entity={entity} showSelectionControl={showSelectionControl} />;
+      return <ListAssistantRow {...sharedProps} nodeId={rowId} entity={entity} showSelectionControl={showSelectionControl} />;
     case 'commit_message':
-      return <TimelineCommitRow {...sharedProps} nodeId={rowId} entity={entity} showSelectionControl={showSelectionControl} />;
+      return <ListCommitRow {...sharedProps} nodeId={rowId} entity={entity} showSelectionControl={showSelectionControl} />;
     case 'summary_block':
-      return <TimelineSummaryRow {...sharedProps} nodeId={rowId} entity={entity} showSelectionControl={showSelectionControl} />;
+      return <ListSummaryRow {...sharedProps} nodeId={rowId} entity={entity} showSelectionControl={showSelectionControl} />;
     default:
       return null;
   }
 });
 
-TimelineNodeDispatcher.displayName = 'TimelineNodeDispatcher';
+ListNodeDispatcher.displayName = 'ListNodeDispatcher';

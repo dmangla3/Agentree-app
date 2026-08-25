@@ -7,6 +7,7 @@ import {
 } from './agentRunEffects';
 import { flushAgentWorkspaceRefreshesForTest } from './agentRunWorkspaceRefresh';
 import { localNodeKeys } from '../hooks/useLocalNodes';
+import { threadSessionKeys } from '../hooks/useThreadSessions';
 
 vi.mock('../lib/graphInteractionGate', () => ({
   isGraphInteractionGateIdle: vi.fn(() => true),
@@ -238,6 +239,64 @@ describe('agentRun finalize effects', () => {
 
     expect(queryClient.getQueryData<any[]>(['messages', 'workspace-1'])?.[0].status).toBe('completed');
     expect(queryClient.getQueryData<any[]>(localNodeKeys.workspace('workspace-1'))?.[0].message.status).toBe('completed');
+  });
+
+  it('applies generated first-message thread titles to rendered thread session caches', () => {
+    queryClient.setQueryData(threadSessionKeys.workspace('workspace-1'), [{
+      id: 'thread-1',
+      workspaceId: 'workspace-1',
+      title: null,
+      status: 'active',
+      createdAt: '2026-05-19T09:58:00.000Z',
+      updatedAt: '2026-05-19T09:58:00.000Z',
+      baseCommitSha: null,
+      firstMessageId: 'user-1',
+      source: 'user',
+    }]);
+    queryClient.setQueryData(['graph-snapshot', 'workspace-1'], {
+      version: 2,
+      workspaceId: 'workspace-1',
+      generatedAt: '2026-05-19T09:59:00.000Z',
+      messages: [message({ threadId: 'thread-1' })],
+      summaries: [],
+      commits: [],
+      commitParents: [],
+      commitObservations: [],
+      threadSessions: [{
+        id: 'thread-1',
+        workspaceId: 'workspace-1',
+        title: null,
+        status: 'active',
+        createdAt: '2026-05-19T09:58:00.000Z',
+        updatedAt: '2026-05-19T09:58:00.000Z',
+        baseCommitSha: null,
+        firstMessageId: 'user-1',
+        source: 'user',
+      }],
+    });
+
+    agentRunManager.dispatch('assistant-1', {
+      type: 'terminal',
+      status: 'completed',
+      content: 'final',
+      reason: 'completed',
+      holdMs: 100,
+    }, {
+      workspaceId: 'workspace-1',
+      parentId: 'user-1',
+      role: 'assistant',
+      content: 'final',
+      executionData: {
+        meta: {
+          thread_title: 'Thread Naming Bug',
+        },
+      },
+    });
+
+    expect(queryClient.getQueryData<any[]>(threadSessionKeys.workspace('workspace-1'))?.[0].title)
+      .toBe('Thread Naming Bug');
+    expect(queryClient.getQueryData<any>(['graph-snapshot', 'workspace-1'])?.threadSessions?.[0].title)
+      .toBe('Thread Naming Bug');
   });
 
   it('deduplicates repeated finalize effects and only refreshes commit graph when a commit sha exists', () => {

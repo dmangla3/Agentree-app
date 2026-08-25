@@ -54,24 +54,26 @@ export const getThreadAwarenessSummary = ({
   }
 
   const sortedMessages = [...messages].sort(byRecency);
+  const assistantPreviewMessages = sortedMessages.filter((message) => message.role === 'assistant');
   const leaves = sortedMessages.filter((message) => !parentIds.has(message.id));
+  const assistantLeaves = leaves.filter((message) => message.role === 'assistant');
   const unreadCompletedLeaves = leaves.filter((message) => (
     message.role === 'assistant' &&
     message.status === 'completed' &&
     getThreadAwarenessTimestamp(message) > lastVisitedAt
   ));
-  const activeMessages = sortedMessages.filter((message) => ACTIVE_STATUSES.has(message.status || ''));
-  const failedLeaves = leaves.filter((message) => FAILED_STATUSES.has(message.status || ''));
+  const activeMessages = assistantPreviewMessages.filter((message) => ACTIVE_STATUSES.has(message.status || ''));
+  const failedLeaves = assistantLeaves.filter((message) => FAILED_STATUSES.has(message.status || ''));
 
   const initialPreviewNodeId = getLatestMessageId(unreadCompletedLeaves) ??
     getLatestMessageId(activeMessages) ??
     getLatestMessageId(failedLeaves) ??
-    getLatestMessageId(leaves) ??
-    getLatestMessageId(sortedMessages);
+    getLatestMessageId(assistantLeaves) ??
+    getLatestMessageId(assistantPreviewMessages);
 
   return {
     unreadCompletedLeafCount: unreadCompletedLeaves.length,
     initialPreviewNodeId,
-    previewNodeIds: sortedMessages.map((message) => message.id),
+    previewNodeIds: assistantPreviewMessages.map((message) => message.id),
   };
 };

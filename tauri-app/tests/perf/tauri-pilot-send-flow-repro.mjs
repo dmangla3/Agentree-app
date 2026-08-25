@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CHAT_HOT_PATH_HELPERS_SOURCE } from './tauri-pilot-chat-hot-path-lib.mjs';
+import { writeCompactPilotReport } from './tauri-pilot-report-lib.mjs';
 
 const OUT_DIR = process.env.AGENTREE_TAURI_PILOT_OUT_DIR ?? 'runtime-logs/tauri-pilot-diagnostics';
 const LABEL = process.env.AGENTREE_TAURI_PILOT_LABEL ?? `tauri-pilot-send-flow-${Date.now()}`;
@@ -329,10 +329,12 @@ const finish = async (report) => {
   } catch (error) {
     report.finishError = error.message;
   }
-  mkdirSync(OUT_DIR, { recursive: true });
   const reportPath = join(OUT_DIR, `${LABEL}.json`);
-  writeFileSync(reportPath, JSON.stringify(report, null, 2));
-  return reportPath;
+  const written = writeCompactPilotReport({ reportPath, report });
+  return {
+    reportPath,
+    artifactDir: written.artifacts.length > 0 ? written.artifactDir : null,
+  };
 };
 
 const main = async () => {
@@ -373,13 +375,15 @@ const main = async () => {
     report.errors.push({ at: new Date().toISOString(), message: error.message, stack: error.stack });
   }
 
-  const reportPath = await finish(report);
+  const written = await finish(report);
+  const reportPath = written.reportPath;
   const maxEvalRoundTripMs = Math.max(0, ...report.samples.map((sample) => sample.evalRoundTripMs ?? 0));
   const maxRafGapMs = report.finalProbe?.probe?.maxRafGapMs ?? null;
   const maxIntervalGapMs = report.finalProbe?.probe?.maxIntervalGapMs ?? null;
   const exportPath = report.finalProbe?.exportStatus?.exportPath ?? null;
   console.log(JSON.stringify({
     reportPath,
+    artifactDir: written.artifactDir,
     exportPath,
     sendsAttempted: report.sends.length,
     waitResults: report.waitResults.map(({ sendIndex, ready, last }) => ({

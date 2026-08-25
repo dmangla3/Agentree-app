@@ -37,7 +37,8 @@ describe('thread awareness summary', () => {
     });
 
     expect(result.unreadCompletedLeafCount).toBe(0);
-    expect(result.initialPreviewNodeId).toBe('follow-up-user');
+    expect(result.initialPreviewNodeId).toBe('assistant-parent');
+    expect(result.previewNodeIds).toEqual(['assistant-parent']);
   });
 
   it('prefers unread leaves, then active nodes, then failed leaves for the initial preview', () => {
@@ -70,5 +71,18 @@ describe('thread awareness summary', () => {
     });
 
     expect(result.previewNodeIds).toEqual(['newer', 'older']);
+  });
+
+  it('limits thread hover previews to assistant messages', () => {
+    const result = getThreadAwarenessSummary({
+      lastVisitedAt: 0,
+      messages: [
+        message({ id: 'older-assistant', role: 'assistant', createdAt: '2026-05-27T00:01:00.000Z' }),
+        message({ id: 'newer-user', role: 'user', status: null, createdAt: '2026-05-27T00:02:00.000Z' }),
+      ],
+    });
+
+    expect(result.initialPreviewNodeId).toBe('older-assistant');
+    expect(result.previewNodeIds).toEqual(['older-assistant']);
   });
 });

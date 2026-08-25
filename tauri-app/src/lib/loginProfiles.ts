@@ -35,8 +35,8 @@ export const getLoginProfileProviderLabel = (provider: LoginProvider) => {
 export const getLoginProfileAuthTypeLabel = (authType: string) => {
   if (authType === 'codex_chatgpt_session') return 'ChatGPT session';
   if (authType === 'codex_api_key') return 'OpenAI API key';
+  if (authType === 'claude_oauth') return 'Claude subscription';
   if (authType === 'claude_api_key') return 'Anthropic API key';
-  if (authType === 'claude_auth_token') return 'Anthropic auth token';
   if (authType === 'claude_bedrock') return 'Bedrock';
   if (authType === 'claude_vertex') return 'Vertex AI';
   if (authType === 'claude_azure_foundry') return 'Azure Foundry';

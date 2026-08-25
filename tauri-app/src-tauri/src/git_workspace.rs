@@ -354,11 +354,72 @@ fn resolve_git_common_dir(repo_path: &str) -> Result<PathBuf, String> {
     }
 }
 
-fn worktree_root(repo_path: &str) -> Result<PathBuf, String> {
+fn stable_repo_key(repo_path: &str) -> Result<String, String> {
+    let common_dir = resolve_git_common_dir(repo_path)?;
+    let canonical = fs::canonicalize(&common_dir).unwrap_or(common_dir);
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in canonical.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    Ok(format!("{hash:016x}"))
+}
+
+fn managed_worktree_base() -> Result<PathBuf, String> {
+    if let Ok(override_root) = std::env::var("AGENTREE_WORKTREE_ROOT") {
+        let trimmed = override_root.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+    #[cfg(test)]
+    {
+        return Ok(std::env::temp_dir().join("agentree-test-worktrees"));
+    }
+    #[cfg(not(test))]
+    {
+        let home =
+            dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+        Ok(home.join(".agentree").join("worktrees"))
+    }
+}
+
+fn legacy_worktree_root(repo_path: &str) -> Result<PathBuf, String> {
     let git_dir = resolve_git_dir(repo_path)?;
     let root = git_dir.join("agentree").join("worktrees");
     ensure_directory(&root)?;
     Ok(root)
+}
+
+fn worktree_root(repo_path: &str) -> Result<PathBuf, String> {
+    let root = managed_worktree_base()?
+        .join(stable_repo_key(repo_path)?)
+        .join("nodes");
+    ensure_directory(&root)?;
+    Ok(root)
+}
+
+fn resolve_agent_worktree_path(repo_path: &str, node_id: &str) -> Result<PathBuf, String> {
+    let current = worktree_root(repo_path)?.join(node_id);
+    if current.exists() {
+        return Ok(current);
+    }
+    let legacy = legacy_worktree_root(repo_path)?.join(node_id);
+    if legacy.exists() {
+        return Ok(legacy);
+    }
+    Ok(current)
+}
+
+pub fn is_agent_worktree_path_for_node(
+    repo_path: &str,
+    node_id: &str,
+    worktree_path: &str,
+) -> Result<bool, String> {
+    let path = Path::new(worktree_path);
+    let current = worktree_root(repo_path)?.join(node_id);
+    let legacy = legacy_worktree_root(repo_path)?.join(node_id);
+    Ok(path == current || path == legacy)
 }
 
 fn list_worktrees_for_branch(repo_path: &str, branch_name: &str) -> Result<Vec<String>, String> {
@@ -1559,7 +1620,7 @@ pub async fn agent_worktree_has_changes(
     repo_path: String,
     node_id: String,
 ) -> Result<bool, String> {
-    let worktree_path = worktree_root(&repo_path)?.join(&node_id);
+    let worktree_path = resolve_agent_worktree_path(&repo_path, &node_id)?;
     let worktree_path_string = worktree_path.to_string_lossy().to_string();
     log_agent_worktree_lifecycle(
         "has_changes.start",
@@ -1605,7 +1666,7 @@ pub fn agent_worktree_head_commit_if_advanced(
         return Ok(None);
     }
 
-    let worktree_path = worktree_root(repo_path)?.join(node_id);
+    let worktree_path = resolve_agent_worktree_path(repo_path, node_id)?;
     let worktree_path_string = worktree_path.to_string_lossy().to_string();
     let normalized_parent = run_git(
         &worktree_path_string,
@@ -1646,7 +1707,7 @@ pub async fn finalize_agent_worktree(
     commit_message: String,
     author_name: Option<String>,
 ) -> Result<FinalizeAgentWorktreeResult, String> {
-    let worktree_path = worktree_root(&repo_path)?.join(&node_id);
+    let worktree_path = resolve_agent_worktree_path(&repo_path, &node_id)?;
     let worktree_path_string = worktree_path.to_string_lossy().to_string();
     log_agent_worktree_lifecycle(
         "finalize.start",
@@ -1822,7 +1883,7 @@ pub fn finalize_agent_merge_worktree(
         return Err("AI merge finalization requires at least one source commit.".to_string());
     }
 
-    let worktree_path = worktree_root(repo_path)?.join(node_id);
+    let worktree_path = resolve_agent_worktree_path(repo_path, node_id)?;
     let worktree_path_string = worktree_path.to_string_lossy().to_string();
     log_agent_worktree_lifecycle(
         "finalize_merge.start",
@@ -1949,7 +2010,8 @@ pub async fn cleanup_worktree_owned(
 mod tests {
     use super::{
         agent_worktree_head_commit_if_advanced, finalize_agent_merge_worktree,
-        finalize_agent_worktree, is_env_file, link_dependencies, read_commit_metadata_range_sync,
+        finalize_agent_worktree, is_agent_worktree_path_for_node, is_env_file,
+        legacy_worktree_root, link_dependencies, read_commit_metadata_range_sync, resolve_git_dir,
         symlink_dependency_dir, worktree_root,
     };
     use std::fs;
@@ -2058,6 +2120,49 @@ mod tests {
         assert!(is_env_file(Path::new("nested/.env.production")));
         assert!(!is_env_file(Path::new("README.md")));
         assert!(!is_env_file(Path::new(".gitignore")));
+    }
+
+    #[test]
+    fn agent_worktree_root_lives_outside_git_directory() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+
+        let git_dir = resolve_git_dir(&repo_path).expect("git dir");
+        let root = worktree_root(&repo_path).expect("worktree root");
+
+        assert!(
+            !root.starts_with(&git_dir),
+            "agent worktree root must not live under .git: root={:?} git_dir={:?}",
+            root,
+            git_dir
+        );
+        assert!(root.ends_with("nodes"));
+    }
+
+    #[test]
+    fn agent_worktree_path_validation_accepts_legacy_git_directory_paths() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let node_id = "assistant-node-1";
+        let current = worktree_root(&repo_path)
+            .expect("worktree root")
+            .join(node_id)
+            .to_string_lossy()
+            .to_string();
+        let legacy = legacy_worktree_root(&repo_path)
+            .expect("legacy worktree root")
+            .join(node_id)
+            .to_string_lossy()
+            .to_string();
+
+        assert!(
+            is_agent_worktree_path_for_node(&repo_path, node_id, &current)
+                .expect("current path validation")
+        );
+        assert!(
+            is_agent_worktree_path_for_node(&repo_path, node_id, &legacy)
+                .expect("legacy path validation")
+        );
     }
 
     #[test]

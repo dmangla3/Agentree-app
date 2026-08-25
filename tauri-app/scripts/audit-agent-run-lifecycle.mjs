@@ -116,10 +116,10 @@ const fallbackRegistry = [
     ],
   },
   {
-    name: 'cache-repair: timeline active status server refresh',
+    name: 'cache-repair: list active status server refresh',
     patterns: [
-      { file: 'src/components/nodes/timeline/TimelineAssistantRow.tsx', pattern: /\bCACHE_REPAIR_TIMELINE_ACTIVE_STATUS_REFRESH_COOLDOWN_MS\b/ },
-      { file: 'src/components/nodes/timeline/TimelineAssistantRow.tsx', pattern: /\bcacheRepairTimelineRefreshInFlightByMessageId\b/ },
+      { file: 'src/components/nodes/list/ListAssistantRow.tsx', pattern: /\bCACHE_REPAIR_LIST_ACTIVE_STATUS_REFRESH_COOLDOWN_MS\b/ },
+      { file: 'src/components/nodes/list/ListAssistantRow.tsx', pattern: /\bcacheRepairListRefreshInFlightByMessageId\b/ },
     ],
   },
   {

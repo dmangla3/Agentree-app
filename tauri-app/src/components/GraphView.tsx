@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
     ReactFlow,
     Controls,
+    ControlButton,
     Node,
     ReactFlowProvider,
     useReactFlow,
@@ -44,7 +45,7 @@ import { LlmNodeData, getLlmLegend } from '../lib/graphUtils';
 import { mapLocalCommitToCommitEntity } from '../lib/localCommitGraphProjection';
 import { createSubgraphFilterState, getSubgraphMessageIds, shouldClearSubgraphForFocus } from '../lib/graphSubgraphFilter';
 import { buildThreadRootIndex, getEmptyWorkspaceThreadRootId, getHiddenConversationMessageIds, getLatestThreadMessageId } from '../lib/graphThreadRoots';
-import { deriveBackfilledThreadSessions, threadSessionSortKey } from '../lib/threadSessions';
+import { deriveBackfilledThreadSessions, mergeThreadSessionsWithBackfills, threadSessionSortKey } from '../lib/threadSessions';
 import {
     filterCommitContextForThreadScope,
     filterSummariesForThreadScope,
@@ -67,6 +68,7 @@ import {
 import { buildThreadBands, getThreadDividerRectsFromNodes, type ThreadBand } from '../lib/graphThreadDividers';
 import { buildComposerContextPathIds } from '../lib/composerContext';
 import { resolveComposerDefaultBaseCommit } from '../lib/composerBaseCommit';
+import { buildLiveGitRefs, getComposerBaseSnapshotGitRefs } from '../lib/liveGitRefs';
 import { collectDeleteBranchMessageIds, getDeleteBranchPreview, getTopLevelDeleteBranchIds } from '../domain/deleteBranchPreview';
 import { getBranchPointerCommitSha, getMessageBaseCommitSha, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { shouldRefreshHeldGraphMessagesForStructuralChange } from '../lib/graph/graphComputationHold';
@@ -85,6 +87,7 @@ import { useDiff } from '../contexts/DiffContext';
 import { useToastHelpers } from './Toast';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { agentRunManager } from '../agent-runs/agentRunManager';
+import { useGraphViewHotkeys, type GraphNavigationDirection } from '../hotkeys/graphHotkeys';
 
 // Components - Nodes/Edges
 import SummaryEdge from './SummaryEdge';
@@ -103,7 +106,7 @@ import { FloatingSelectionMenu } from './graph/FloatingSelectionMenu';
 
 // Components - Dialogs/Panels
 import { SummaryCreationDialog } from './SummaryCreationDialog';
-import { TimelineView } from './TimelineView';
+import { ListView } from './ListView';
 import { ExecutionTimelineDock } from './timeline/ExecutionTimelineDock';
 import AdvancedSearchPanel from './AdvancedSearchPanel';
 import { NodeContextMenu, type NodeContextMenuState } from './NodeContextMenu';
@@ -111,14 +114,20 @@ import { AddCommitDialog } from './AddCommitDialog';
 import { DeleteBranchDialog, type DeleteBranchDialogPhase } from './DeleteBranchDialog';
 import { classifyMessageNodeKind } from '../domain/nodes';
 
-import { GitBranch, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronsRight, GitBranch, X } from 'lucide-react';
 import { agentClient } from '../lib/agentClient';
 import { createProfilerOnRender, startFocusInteraction } from '../lib/interactionProfiler';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 import { recordFundamentalCounter } from '../perf/fundamentalCounters';
 import { createGraphDiagnosticCapture, registerGraphDiagnosticProvider } from '../lib/graphDiagnostics';
 import { markGraphInteractionEnd, markGraphInteractionStart, scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
-import { dispatchGraphComposerDockCollapse, dispatchGraphComposerDockExpand } from '../lib/graphComposerDockEvents';
+import {
+    GRAPH_COMPOSER_DOCK_STATE_EVENT,
+    dispatchGraphComposerDockCollapse,
+    dispatchGraphComposerDockExpand,
+    getGraphComposerDockState,
+    type GraphComposerDockState,
+} from '../lib/graphComposerDockEvents';
 import {
     getGraphNodeDetailDensityCount,
     getGraphNodeDetailEffectiveZoom,
@@ -539,6 +548,120 @@ const toLeafNodeNavigationItem = (
         statusTone: statusMeta.statusTone,
         timestampLabel: formatLeafTimestamp(message),
     };
+};
+
+const getGraphNodeNavigationTime = (message: Message): number => {
+    const timestamp = message.last_event_at || message.updatedAt || message.createdAt;
+    const parsed = Date.parse(timestamp || '');
+    return Number.isFinite(parsed) ? parsed : 0;
+};
+
+export const getGraphNodeNavigationIds = (messages: readonly Message[]): string[] => (
+    [...messages]
+        .filter((message) => message.role === 'assistant')
+        .sort((left, right) => (
+            getGraphNodeNavigationTime(left) - getGraphNodeNavigationTime(right) ||
+            left.id.localeCompare(right.id)
+        ))
+        .map((message) => message.id)
+);
+
+type DirectionalGraphNavigationNode = {
+    id: string;
+    type?: string;
+    data?: any;
+    position?: { x?: number; y?: number };
+    width?: number;
+    height?: number;
+    style?: { width?: number | string; height?: number | string };
+};
+
+const parseGraphNodeDimension = (value: unknown): number | null => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+        const parsed = Number.parseFloat(value);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+};
+
+export const resolveDirectionalGraphNavigationTarget = ({
+    direction,
+    nodes,
+    focusedMessageId,
+    fallbackPoint,
+}: {
+    direction: GraphNavigationDirection;
+    nodes: readonly DirectionalGraphNavigationNode[];
+    focusedMessageId: string | null;
+    fallbackPoint: { x: number; y: number };
+}): { messageId: string; centerMessageId: string; nodeId: string } | null => {
+    const candidates = nodes
+        .map((node) => {
+            const target = resolveReactFlowNodeClickFocusTarget({
+                nodeType: node.type,
+                entity: node.data?.entity,
+                nodeId: node.id,
+            });
+            if (!target.messageId || !target.centerMessageId) return null;
+            const width = parseGraphNodeDimension(node.width)
+                ?? parseGraphNodeDimension(node.style?.width)
+                ?? ACTIVE_GRAPH_WINDOW_FALLBACK_NODE_WIDTH;
+            const height = parseGraphNodeDimension(node.height)
+                ?? parseGraphNodeDimension(node.style?.height)
+                ?? ACTIVE_GRAPH_WINDOW_FALLBACK_NODE_HEIGHT;
+            const left = Number(node.position?.x ?? 0);
+            const top = Number(node.position?.y ?? 0);
+            return {
+                nodeId: node.id,
+                messageId: target.messageId,
+                centerMessageId: target.centerMessageId,
+                centerX: left + width / 2,
+                centerY: top + height / 2,
+            };
+        })
+        .filter((candidate): candidate is {
+            nodeId: string;
+            messageId: string;
+            centerMessageId: string;
+            centerX: number;
+            centerY: number;
+        } => Boolean(candidate));
+
+    if (candidates.length === 0) return null;
+
+    const current = focusedMessageId
+        ? candidates.find((candidate) => candidate.messageId === focusedMessageId || candidate.centerMessageId === focusedMessageId) ?? null
+        : null;
+    const anchor = current
+        ? { x: current.centerX, y: current.centerY, nodeId: current.nodeId }
+        : { ...fallbackPoint, nodeId: null };
+
+    let best: (typeof candidates)[number] | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (const candidate of candidates) {
+        if (candidate.nodeId === anchor.nodeId) continue;
+        const dx = candidate.centerX - anchor.x;
+        const dy = candidate.centerY - anchor.y;
+        const primary = direction === 'left'
+            ? -dx
+            : direction === 'right'
+                ? dx
+                : direction === 'up'
+                    ? -dy
+                    : dy;
+        if (primary <= 8) continue;
+        const cross = direction === 'left' || direction === 'right' ? Math.abs(dy) : Math.abs(dx);
+        const score = primary + cross * 1.75;
+        if (score < bestScore) {
+            best = candidate;
+            bestScore = score;
+        }
+    }
+
+    return best
+        ? { messageId: best.messageId, centerMessageId: best.centerMessageId, nodeId: best.nodeId }
+        : null;
 };
 
 type SendFlowGraphDiagnosticFlags = {
@@ -1016,7 +1139,7 @@ function GraphViewInternal({
     }, []);
 
     const graphFocusedMessageIdRef = useRef<string | null>(storeFocusedMessageId);
-    const isUserFocusSource = lastFocusSource === 'graph' || lastFocusSource === 'chat' || lastFocusSource === 'timeline';
+    const isUserFocusSource = lastFocusSource === 'graph' || lastFocusSource === 'chat' || lastFocusSource === 'list';
     const focusFlowId = typeof lastFocusMetadata?.flowId === 'string' ? lastFocusMetadata.flowId : null;
     const isComposerSendFlowFocusSource =
         lastFocusSource === 'composer' &&
@@ -1109,13 +1232,11 @@ function GraphViewInternal({
         return Array.from(byId.values());
     }, [graphSnapshotQuery.data?.threadSessions, threadSessionsQuery.data]);
     const threadSessions = useMemo(() => {
-        const byId = new Map(
-            deriveBackfilledThreadSessions(graphMessages as Message[], selectedWorkspaceId).map((thread) => [thread.id, thread])
+        const merged = mergeThreadSessionsWithBackfills(
+            deriveBackfilledThreadSessions(graphMessages as Message[], selectedWorkspaceId),
+            persistedThreadSessions,
         );
-        for (const thread of persistedThreadSessions) {
-            byId.set(thread.id, thread);
-        }
-        return Array.from(byId.values()).sort((left, right) => {
+        return merged.sort((left, right) => {
             const leftKey = threadSessionSortKey(left);
             const rightKey = threadSessionSortKey(right);
             if (leftKey.statusRank !== rightKey.statusRank) return leftKey.statusRank - rightKey.statusRank;
@@ -1372,6 +1493,10 @@ function GraphViewInternal({
         getLeafMessagesByRecency(graphMessages as Message[])
             .map((message) => toLeafNodeNavigationItem(message, agentLabelsById))
     ), [agentLabelsById, graphMessages]);
+    const graphNodeNavigationIds = useMemo(
+        () => getGraphNodeNavigationIds(visibleGraphMessages as Message[]),
+        [visibleGraphMessages],
+    );
     const activeGraphComputationHold = runningCount > 0 || activeSendFlowFocus?.workspaceId === selectedWorkspaceId;
     const graphComputationMessagesRef = useRef<Message[]>(visibleGraphMessages as Message[]);
     const graphComputationMessages = useMemo(() => {
@@ -1621,10 +1746,23 @@ function GraphViewInternal({
     const [nodeContextMenu, setNodeContextMenu] = useState<NodeContextMenuState | null>(null);
     const [addCommitTargetId, setAddCommitTargetId] = useState<string | null>(null);
     const [graphRenderHoldUntil, setGraphRenderHoldUntil] = useState(0);
+    const [graphComposerDockState, setGraphComposerDockStateLocal] = useState<GraphComposerDockState>(() => getGraphComposerDockState());
 
     useEffect(() => {
         setDeletedGraphCommitShas(readDeletedGraphCommitShas(selectedWorkspaceId));
     }, [selectedWorkspaceId]);
+
+    useEffect(() => {
+        const handleDockState = (event: Event) => {
+            setGraphComposerDockStateLocal(
+                event instanceof CustomEvent
+                    ? event.detail
+                    : getGraphComposerDockState()
+            );
+        };
+        window.addEventListener(GRAPH_COMPOSER_DOCK_STATE_EVENT, handleDockState);
+        return () => window.removeEventListener(GRAPH_COMPOSER_DOCK_STATE_EVENT, handleDockState);
+    }, []);
     const visibleSnapshotCommits = useMemo(
         () => snapshotCommits.filter((commit) => !deletedGraphCommitShas.has(commit.sha)),
         [deletedGraphCommitShas, snapshotCommits]
@@ -1667,17 +1805,16 @@ function GraphViewInternal({
         () => getEnabledTrackedGitRefs(trackedRefs),
         [trackedRefs]
     );
-    const { data: gitRefSnapshot } = useGitRefSnapshot(repoPath, enabledTrackedGitRefs);
+    const composerBaseSnapshotGitRefs = useMemo(
+        () => getComposerBaseSnapshotGitRefs(enabledTrackedGitRefs),
+        [enabledTrackedGitRefs]
+    );
+    const { data: gitRefSnapshot } = useGitRefSnapshot(repoPath, composerBaseSnapshotGitRefs);
     const trackedRefsNeedingSync = useMemo(
         () => getTrackedRefsNeedingSync(trackedRefs, gitRefSnapshot),
         [trackedRefs, gitRefSnapshot]
     );
-    const trackedRefTipByRef = useMemo(() => new Map(
-        (gitRefSnapshot?.refs ?? [])
-            .filter((ref) => Boolean(ref.commit_sha))
-            .map((ref) => [ref.git_ref, ref.commit_sha])
-    ), [gitRefSnapshot]);
-    const newThreadBaseRefs = useMemo(() => (
+    const newThreadLocalRefs = useMemo(() => (
         branchPointers
             .map((pointer) => {
                 const commitSha = getBranchPointerCommitSha(pointer)?.trim();
@@ -1690,37 +1827,39 @@ function GraphViewInternal({
                     commit_sha: commitSha,
                 };
             })
-            .filter(Boolean)
+            .filter((ref): ref is { git_ref: string; short_name: string; commit_sha: string } => Boolean(ref))
     ), [branchPointers]);
-    const newThreadTrackedRefs = useMemo(() => trackedRefs.map((ref) => ({
-        ...ref,
-        last_seen_commit_sha: trackedRefTipByRef.get(ref.git_ref)?.trim() || ref.last_seen_commit_sha || null,
-    })), [trackedRefTipByRef, trackedRefs]);
+    const newThreadLiveRefs = useMemo(() => buildLiveGitRefs({
+        refs: newThreadLocalRefs,
+        trackedRefs,
+        snapshot: gitRefSnapshot,
+        includeHead: false,
+    }), [gitRefSnapshot, newThreadLocalRefs, trackedRefs]);
     const defaultNewThreadBaseCommitSha = useMemo(() => resolveComposerDefaultBaseCommit({
         targetMode: 'new-thread',
         replyParentMessageId: null,
         selectedNodeId: null,
         messages: [],
-        refs: newThreadBaseRefs,
-        trackedRefs: newThreadTrackedRefs,
+        refs: newThreadLiveRefs.refs,
+        trackedRefs: newThreadLiveRefs.trackedRefs,
         workspaceBaseCommitSha: selectedWorkspace?.base_commit_sha ?? null,
-    }).sha, [newThreadBaseRefs, newThreadTrackedRefs, selectedWorkspace?.base_commit_sha]);
+    }).sha, [newThreadLiveRefs.refs, newThreadLiveRefs.trackedRefs, selectedWorkspace?.base_commit_sha]);
     const pinnedCommitShas = useMemo(() => {
         const shas = new Set<string>();
         for (const pointer of branchPointers) {
             const commitSha = getBranchPointerCommitSha(pointer)?.trim();
             if (commitSha) shas.add(commitSha);
         }
-        for (const commitSha of trackedRefTipByRef.values()) {
+        for (const commitSha of newThreadLiveRefs.tipByRef.values()) {
             const normalized = commitSha?.trim();
             if (normalized) shas.add(normalized);
         }
         return shas;
-    }, [branchPointers, trackedRefTipByRef]);
+    }, [branchPointers, newThreadLiveRefs.tipByRef]);
     const pendingTrackedRefSyncKey = useMemo(() => trackedRefsNeedingSync
-        .map((ref) => `${ref.git_ref}:${trackedRefTipByRef.get(ref.git_ref) ?? ''}`)
+        .map((ref) => `${ref.git_ref}:${newThreadLiveRefs.tipByRef.get(ref.git_ref) ?? ''}`)
         .sort()
-        .join('|'), [trackedRefsNeedingSync, trackedRefTipByRef]);
+        .join('|'), [trackedRefsNeedingSync, newThreadLiveRefs.tipByRef]);
     const trackedRefSyncInFlightRef = useRef(false);
     const lastTrackedRefSyncSnapshotKeyRef = useRef<string | null>(null);
     const trackedRefSyncEligible = viewMode === 'branch' && !!selectedWorkspaceId && !!repoPath;
@@ -3225,7 +3364,7 @@ function GraphViewInternal({
     const queueFocusedNodeCenter = useCallback((messageId: string, centerKey: string, options?: { respectImperativeCenter?: boolean }) => {
         if (viewMode !== 'branch') return;
         if (centeredFocusIdRef.current === centerKey) return;
-        const isUserFocusSource = lastFocusSource === 'graph' || lastFocusSource === 'chat' || lastFocusSource === 'timeline';
+        const isUserFocusSource = lastFocusSource === 'graph' || lastFocusSource === 'chat' || lastFocusSource === 'list';
         const focusFlowId = typeof lastFocusMetadata?.flowId === 'string' ? lastFocusMetadata.flowId : null;
         const isActiveGraphNodeClick =
             runningCount > 0 &&
@@ -3424,6 +3563,50 @@ function GraphViewInternal({
         });
     }, [activeSendFlowFocus?.workspaceId, centerFocusedNode, dispatchFocus, nodeSelection.clearSelection, selectedWorkspaceId]);
     const handleFocus = useStableGraphCallback(handleFocusImpl);
+    const graphNodeNavigationIndex = focusedMessageId ? graphNodeNavigationIds.indexOf(focusedMessageId) : -1;
+    const previousGraphNodeId = graphNodeNavigationIndex > 0 ? graphNodeNavigationIds[graphNodeNavigationIndex - 1] : null;
+    const nextGraphNodeId = graphNodeNavigationIndex >= 0 && graphNodeNavigationIndex < graphNodeNavigationIds.length - 1
+        ? graphNodeNavigationIds[graphNodeNavigationIndex + 1]
+        : null;
+    const latestGraphNodeId = graphNodeNavigationIds[graphNodeNavigationIds.length - 1] ?? null;
+    const canFocusLatestGraphNode = Boolean(latestGraphNodeId && latestGraphNodeId !== focusedMessageId);
+    const handleFocusGraphNavigationNode = useCallback((messageId: string, action: 'previous-node' | 'next-node' | 'latest-node') => {
+        handleFocus(messageId, {
+            pointerDownAt: null,
+            clickAt: performance.now(),
+            metadata: {
+                via: 'viewport-controls',
+                action,
+            },
+        });
+    }, [handleFocus]);
+    const handleDirectionalGraphNavigation = useCallback((direction: GraphNavigationDirection) => {
+        if (viewMode !== 'branch') return;
+        const canvas = branchCanvasRef.current;
+        const fallbackPoint = canvas
+            ? reactFlowInstance.screenToFlowPosition({
+                x: canvas.getBoundingClientRect().left + canvas.clientWidth / 2,
+                y: canvas.getBoundingClientRect().top + canvas.clientHeight / 2,
+            })
+            : { x: 0, y: 0 };
+        const target = resolveDirectionalGraphNavigationTarget({
+            direction,
+            nodes: layoutNodesRef.current,
+            focusedMessageId,
+            fallbackPoint,
+        });
+        if (!target) return;
+        handleFocus(target.messageId, {
+            centerMessageId: target.centerMessageId,
+            pointerDownAt: null,
+            clickAt: performance.now(),
+            metadata: {
+                via: 'keyboard',
+                action: `navigate-${direction}`,
+                targetNodeId: target.nodeId,
+            },
+        });
+    }, [focusedMessageId, handleFocus, reactFlowInstance, viewMode]);
 
     const handleViewSubgraph = useCallback((messageId: string) => {
         setSubgraphRootNodeId(messageId);
@@ -4106,36 +4289,54 @@ function GraphViewInternal({
         () => collectCommitShasForDelete(bulkDeleteIds, bulkDeleteExplicitCommitShas),
         [bulkDeleteExplicitCommitShas, bulkDeleteIds, collectCommitShasForDelete]
     );
+    const bulkDeleteThreadLabel = useMemo(() => {
+        if (!bulkDeleteThreadRootId) return null;
+        return threadIndexItems.find((item) => item.threadRootId === bulkDeleteThreadRootId)?.label ?? null;
+    }, [bulkDeleteThreadRootId, threadIndexItems]);
     const bulkDeletePreview = useMemo(
         () => getDeleteBranchPreview(
             bulkDeleteIds,
             messageMap,
-            removeCommitsFromGraph ? bulkDeleteAvailableCommitShas.length : 0
+            removeCommitsFromGraph ? bulkDeleteAvailableCommitShas.length : 0,
+            {
+                threadLabel: bulkDeleteThreadLabel,
+                extraCommitLabels: removeCommitsFromGraph
+                    ? bulkDeleteAvailableCommitShas.map((sha) => sha.slice(0, 12))
+                    : [],
+            }
         ),
-        [bulkDeleteAvailableCommitShas.length, bulkDeleteIds, messageMap, removeCommitsFromGraph]
+        [bulkDeleteAvailableCommitShas, bulkDeleteIds, bulkDeleteThreadLabel, messageMap, removeCommitsFromGraph]
     );
 
-    // Keyboard shortcuts
-    useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') {
-                if (nodeSelection.selectedNodeIds.size > 0) {
-                    e.preventDefault();
-                    setNodeContextMenu(null);
-                    nodeSelection.clearSelection();
-                    selectionAnchorIdRef.current = null;
-                }
-                return;
+    useGraphViewHotkeys({
+        hasSelection: nodeSelection.selectedNodeIds.size > 0,
+        isComposerOpen: graphComposerDockState.isVisible && !graphComposerDockState.isCollapsed,
+        closeComposer: dispatchGraphComposerDockCollapse,
+        clearSelection: () => {
+            setNodeContextMenu(null);
+            nodeSelection.clearSelection();
+            selectionAnchorIdRef.current = null;
+        },
+        navigate: handleDirectionalGraphNavigation,
+        focusPrevious: () => {
+            if (previousGraphNodeId) {
+                handleFocusGraphNavigationNode(previousGraphNodeId, 'previous-node');
             }
-
-            if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-                e.preventDefault();
-                setIsSearchPanelOpen(true);
+        },
+        focusNext: () => {
+            if (nextGraphNodeId) {
+                handleFocusGraphNavigationNode(nextGraphNodeId, 'next-node');
             }
-        };
-        document.addEventListener('keydown', handleKeyDown);
-        return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [nodeSelection]);
+        },
+        focusLatest: () => {
+            if (latestGraphNodeId) {
+                handleFocusGraphNavigationNode(latestGraphNodeId, 'latest-node');
+            }
+        },
+        openSearch: () => {
+            setIsSearchPanelOpen(true);
+        },
+    });
 
     // ─────────────────────────────────────────────────────────────────────────
     // HANDLERS
@@ -4150,7 +4351,7 @@ function GraphViewInternal({
         let nodeOrMessageId: Node<LlmNodeData | object> | string | undefined;
 
         if (args.length === 1 && typeof args[0] === 'string') {
-            // Timeline click
+            // List click
             nodeOrMessageId = args[0];
             messageId = args[0];
             centerMessageId = args[0];
@@ -4208,9 +4409,9 @@ function GraphViewInternal({
                     onNodeClickOverride(eventOrNull!, nodeOrMessageId as Node);
                 }
             } else {
-                if (viewMode === 'timeline') {
+                if (viewMode === 'list') {
                     startTransition(() => {
-                        dispatchFocus({ messageId, source: 'timeline' });
+                        dispatchFocus({ messageId, source: 'list' });
                     });
                 } else {
                     handleFocus(messageId, {
@@ -4475,7 +4676,7 @@ function GraphViewInternal({
             });
             await scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'stop-agent' });
         } catch (error) {
-            console.error('[GraphView] Failed to stop agent from timeline:', error);
+            console.error('[GraphView] Failed to stop agent from list:', error);
             toast.error('Unable to stop agent', 'The stop request did not complete.');
         }
     }, [queryClient, selectedWorkspaceId, toast]);
@@ -5887,6 +6088,10 @@ function GraphViewInternal({
                                             onlyRenderVisibleElements={graphRenderElements.mode !== 'hold-visible' && !sendFlowGraphDiagFlags.disableOnlyRenderVisibleElements && shouldLetReactFlowCullVisibleElements}
                                             nodesDraggable={false}
                                             nodesConnectable={false}
+                                            nodesFocusable={false}
+                                            edgesFocusable={false}
+                                            disableKeyboardA11y
+                                            autoPanOnNodeFocus={false}
                                             elementsSelectable={false}
                                             selectionOnDrag={false}
                                             selectionKeyCode="Shift"
@@ -5907,7 +6112,47 @@ function GraphViewInternal({
                                                 currentThreadRootId={currentThreadRootId}
                                                 threadItems={threadIndexItems}
                                             />
-                                            <Controls showInteractive={false} />
+                                            <Controls showInteractive={false}>
+                                                <ControlButton
+                                                    className="agentree-graph-node-nav-control"
+                                                    aria-label="Previous node"
+                                                    title="Previous node"
+                                                    disabled={!previousGraphNodeId}
+                                                    onClick={() => {
+                                                        if (previousGraphNodeId) {
+                                                            handleFocusGraphNavigationNode(previousGraphNodeId, 'previous-node');
+                                                        }
+                                                    }}
+                                                >
+                                                    <ChevronLeft size={14} strokeWidth={2.25} />
+                                                </ControlButton>
+                                                <ControlButton
+                                                    className="agentree-graph-node-nav-control"
+                                                    aria-label="Next node"
+                                                    title="Next node"
+                                                    disabled={!nextGraphNodeId}
+                                                    onClick={() => {
+                                                        if (nextGraphNodeId) {
+                                                            handleFocusGraphNavigationNode(nextGraphNodeId, 'next-node');
+                                                        }
+                                                    }}
+                                                >
+                                                    <ChevronRight size={14} strokeWidth={2.25} />
+                                                </ControlButton>
+                                                <ControlButton
+                                                    className="agentree-graph-node-nav-control"
+                                                    aria-label="Latest node"
+                                                    title="Latest node"
+                                                    disabled={!canFocusLatestGraphNode}
+                                                    onClick={() => {
+                                                        if (latestGraphNodeId) {
+                                                            handleFocusGraphNavigationNode(latestGraphNodeId, 'latest-node');
+                                                        }
+                                                    }}
+                                                >
+                                                    <ChevronsRight size={14} strokeWidth={2.25} />
+                                                </ControlButton>
+                                            </Controls>
                                         </ReactFlow>
                                     </Profiler>
                                 )}
@@ -5963,7 +6208,7 @@ function GraphViewInternal({
                     </div>
                 ) : (
                     <div className="h-full w-full bg-[hsl(var(--app-bg))]">
-                        <TimelineView
+                        <ListView
                             projection={workspaceProjection}
                             focusedMessageId={focusedMessageId}
                             onNodeClick={handleNodeClick}

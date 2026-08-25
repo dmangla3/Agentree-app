@@ -109,7 +109,7 @@ export interface ProjectedCommitGroup {
   expanded: boolean;
 }
 
-export type ProjectedTimelineItem = { type: 'entity'; entityId: string; sortTs: number };
+export type ProjectedListItem = { type: 'entity'; entityId: string; sortTs: number };
 
 export type ProjectedChatItem =
   | {
@@ -148,7 +148,7 @@ export interface WorkspaceProjection {
   originMessageId: string | null;
   branchPathMessageIds: Set<string>;
   focusRoute: FocusRoute;
-  timelineItems: ProjectedTimelineItem[];
+  listItems: ProjectedListItem[];
   chatItems: ProjectedChatItem[];
 }
 
@@ -193,7 +193,7 @@ interface StableWorkspaceProjectionBase {
   turnGroupById: Map<string, ProjectedTurnGroup>;
   originMessage: Message | null;
   originMessageId: string | null;
-  timelineItems: ProjectedTimelineItem[];
+  listItems: ProjectedListItem[];
   agentCommitShas: Set<string>;
 }
 
@@ -942,7 +942,7 @@ export function buildWorkspaceProjection({
     turnGroupById,
     originMessage,
     originMessageId,
-    timelineItems,
+    listItems,
     agentCommitShas,
   } = base;
 
@@ -1127,7 +1127,7 @@ export function buildWorkspaceProjection({
     originMessageId,
     branchPathMessageIds,
     focusRoute,
-    timelineItems,
+    listItems,
     chatItems,
   };
 }
@@ -1304,15 +1304,15 @@ function getStableWorkspaceProjectionBase(
   const turnGroups = Array.from(turnGroupMap.values()).sort((left, right) => left.sortTs - right.sortTs);
   const turnGroupById = new Map(turnGroups.map((group) => [group.turnGroupId, group]));
 
-  const timelineItems: ProjectedTimelineItem[] = [];
+  const listItems: ProjectedListItem[] = [];
   for (const entity of messageEntities) {
     if (!entity.messageId) continue;
-    timelineItems.push({ type: 'entity', entityId: entity.entityId, sortTs: entity.sortTs });
+    listItems.push({ type: 'entity', entityId: entity.entityId, sortTs: entity.sortTs });
   }
   for (const entity of summaryEntities) {
-    timelineItems.push({ type: 'entity', entityId: entity.entityId, sortTs: entity.sortTs });
+    listItems.push({ type: 'entity', entityId: entity.entityId, sortTs: entity.sortTs });
   }
-  timelineItems.sort((left, right) => left.sortTs - right.sortTs);
+  listItems.sort((left, right) => left.sortTs - right.sortTs);
 
   const base: StableWorkspaceProjectionBase = {
     sortedMessages,
@@ -1336,7 +1336,7 @@ function getStableWorkspaceProjectionBase(
     turnGroupById,
     originMessage,
     originMessageId,
-    timelineItems,
+    listItems,
     agentCommitShas,
   };
   rememberStableBase(cacheKey, base);

@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import '../test/setup';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ReactElement } from 'react';
 import { NodeHoverCardContent } from './NodeHoverCardContent';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspaceProjection';
 import type { Message } from '../stores/workspaceStore';
@@ -12,6 +14,12 @@ import { join } from 'node:path';
 const quickReplyMocks = vi.hoisted(() => ({
   sendQuickReply: vi.fn(),
   sendSteeringReply: vi.fn(),
+  error: null as string | null,
+}));
+const cancelMocks = vi.hoisted(() => ({
+  stopAgent: vi.fn(),
+  dispatchAgentRun: vi.fn(),
+  scheduleRefresh: vi.fn(),
 }));
 
 vi.mock('./NodePreviewRenderer', () => ({
@@ -25,9 +33,40 @@ vi.mock('../hooks/useHeadlessQuickReply', () => ({
     sendQuickReply: quickReplyMocks.sendQuickReply,
     sendSteeringReply: quickReplyMocks.sendSteeringReply,
     isSending: false,
-    error: null,
+    error: quickReplyMocks.error,
   }),
 }));
+
+vi.mock('../lib/agentClient', () => ({
+  agentClient: {
+    stopAgent: cancelMocks.stopAgent,
+  },
+}));
+
+vi.mock('../agent-runs/agentRunManager', () => ({
+  agentRunManager: {
+    dispatch: cancelMocks.dispatchAgentRun,
+  },
+}));
+
+vi.mock('../lib/graphInteractionGate', () => ({
+  scheduleMessagesRefreshWhenGraphIdle: cancelMocks.scheduleRefresh,
+}));
+
+const render = (ui: ReactElement) => {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  });
+
+  return rtlRender(
+    <QueryClientProvider client={queryClient}>
+      {ui}
+    </QueryClientProvider>
+  );
+};
 
 const makeMessage = (input: Partial<Message> & Pick<Message, 'id'>): Message => ({
   id: input.id,
@@ -36,6 +75,8 @@ const makeMessage = (input: Partial<Message> & Pick<Message, 'id'>): Message => 
   parentId: input.parentId ?? null,
   workspaceId: input.workspaceId ?? 'workspace-1',
   status: input.status ?? null,
+  agent_id: input.agent_id ?? null,
+  execution_data: input.execution_data ?? null,
   output_commit_sha: input.output_commit_sha ?? null,
   base_commit_sha: input.base_commit_sha ?? null,
   createdAt: input.createdAt ?? '2026-05-16T00:00:00.000Z',
@@ -66,7 +107,7 @@ const makeProjection = (messages: Message[] = []): WorkspaceProjection => ({
   originMessageId: null,
   branchPathMessageIds: new Set(),
   focusRoute: { baseNodeId: null, messageIds: [], edges: [] },
-  timelineItems: [],
+  listItems: [],
   chatItems: [],
 });
 
@@ -93,6 +134,12 @@ describe('NodeHoverCardContent', () => {
     quickReplyMocks.sendSteeringReply.mockReset();
     quickReplyMocks.sendQuickReply.mockResolvedValue({});
     quickReplyMocks.sendSteeringReply.mockResolvedValue(undefined);
+    quickReplyMocks.error = null;
+    cancelMocks.stopAgent.mockReset();
+    cancelMocks.stopAgent.mockResolvedValue(undefined);
+    cancelMocks.dispatchAgentRun.mockReset();
+    cancelMocks.scheduleRefresh.mockReset();
+    cancelMocks.scheduleRefresh.mockResolvedValue(undefined);
   });
 
   it('does not show Reply for commit hover cards', () => {
@@ -216,6 +263,48 @@ describe('NodeHoverCardContent', () => {
       prompt: 'Focus on tests',
     });
     expect(quickReplyMocks.sendQuickReply).not.toHaveBeenCalled();
+  });
+
+  it('shows a cancel button for running assistant hover cards', async () => {
+    const user = userEvent.setup();
+    const runningAssistant = makeMessage({
+      id: 'assistant-running',
+      role: 'assistant',
+      status: 'running' as any,
+      parentId: 'user-parent',
+      agent_id: 'codex:test',
+      execution_data: { current_run_id: 'run-1' },
+    });
+    render(
+      <NodeHoverCardContent
+        entity={makeEntity('assistant_message', {
+          status: 'running' as any,
+          message: runningAssistant,
+          messageId: runningAssistant.id,
+          focusMessageId: runningAssistant.id,
+        })}
+        projection={makeProjection([runningAssistant])}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Cancel running agent' }));
+
+    expect(cancelMocks.stopAgent).toHaveBeenCalledWith('assistant-running');
+    expect(cancelMocks.dispatchAgentRun).toHaveBeenCalledWith(
+      'assistant-running',
+      { type: 'cancel', reason: 'cancelled' },
+      expect.objectContaining({
+        workspaceId: 'workspace-1',
+        parentId: 'user-parent',
+        role: 'assistant',
+        agentId: 'codex:test',
+      })
+    );
+    expect(cancelMocks.scheduleRefresh).toHaveBeenCalledWith(
+      expect.anything(),
+      'workspace-1',
+      { reason: 'cancel-agent' }
+    );
   });
 
   it('defaults running agent hover cards to the bottom of the preview', () => {
@@ -351,6 +440,16 @@ describe('NodeHoverCardContent', () => {
       expect(input.value).toBe('');
       expect(document.activeElement).toBe(input);
     });
+  });
+
+  it('shows quick reply errors visibly in the hover card', () => {
+    quickReplyMocks.error = 'The parent does not have a model Agentree can reuse.';
+
+    render(<NodeHoverCardContent entity={makeEntity('assistant_message')} projection={makeProjection()} />);
+
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toContain('The parent does not have a model Agentree can reuse.');
+    expect(alert.className).not.toContain('sr-only');
   });
 
   it('uses the neutral node preview renderer instead of importing chat rendering directly', () => {

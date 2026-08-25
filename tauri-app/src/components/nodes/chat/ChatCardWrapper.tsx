@@ -44,7 +44,12 @@ export const ChatCardWrapper = memo(({
         onContextMenu(e);
       }}
       style={{
-        ...style
+        ...style,
+        borderColor: isFocused
+          ? '#6366f1'
+          : isSelected
+            ? '#3b82f6'
+            : style?.borderColor,
       }}
       className={cn(
         // Base styles
@@ -59,14 +64,12 @@ export const ChatCardWrapper = memo(({
 
         // Focused state
         isFocused && [
-          "border-primary/50",
-          "ring-2 ring-primary/20",
+          "ring-2 ring-indigo-500",
           "shadow-md"
         ],
 
         // Selected state
         isSelected && !isFocused && [
-          "border-blue-400/50",
           "ring-2 ring-blue-500/20",
           "shadow-md"
         ],

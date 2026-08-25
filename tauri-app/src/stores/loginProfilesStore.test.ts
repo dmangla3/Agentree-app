@@ -8,8 +8,10 @@ vi.mock('../lib/agentClient', () => ({
     deleteLoginProfile: vi.fn(),
     setDefaultLoginProfile: vi.fn(),
     checkLoginProfileReadiness: vi.fn(),
+    checkAllLoginProfileReadiness: vi.fn(),
     discoverLoginImportCandidates: vi.fn(),
     importDiscoveredLoginProfile: vi.fn(),
+    onLoginProfilesChanged: vi.fn(),
   },
 }));
 
@@ -77,5 +79,33 @@ describe('loginProfilesStore', () => {
       makeDefault: true,
     });
     expect(agentClient.listLoginProfiles).toHaveBeenCalledOnce();
+  });
+
+  it('refreshes when the native login profile change event fires', async () => {
+    const { agentClient } = await import('../lib/agentClient');
+    const listener: { emit?: () => void } = {};
+    const cleanup = vi.fn();
+    vi.mocked(agentClient.onLoginProfilesChanged).mockImplementation(async (callback) => {
+      listener.emit = () => callback({ profileId: 'p1', status: 'ready' });
+      return cleanup;
+    });
+    vi.mocked(agentClient.listActiveLoginProfileRuns).mockResolvedValue([]);
+    vi.mocked(agentClient.listLoginProfiles)
+      .mockResolvedValueOnce([
+        { id: 'p1', provider: 'codex', displayName: 'Work', status: 'checking', authType: 'codex_api_key', isDefault: true } as any,
+      ])
+      .mockResolvedValueOnce([
+        { id: 'p1', provider: 'codex', displayName: 'Work', status: 'ready', authType: 'codex_api_key', isDefault: true } as any,
+      ]);
+
+    const { useLoginProfilesStore } = await import('./loginProfilesStore');
+    const stopSync = useLoginProfilesStore.getState().startSync();
+    await vi.waitFor(() => expect(agentClient.listLoginProfiles).toHaveBeenCalledTimes(1));
+
+    listener.emit?.();
+    await vi.waitFor(() => expect(useLoginProfilesStore.getState().profiles[0]?.status).toBe('ready'));
+
+    stopSync();
+    expect(cleanup).toHaveBeenCalledOnce();
   });
 });

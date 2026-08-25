@@ -67,6 +67,16 @@ describe('quick reply helpers', () => {
       status: 'running' as any,
       message: message({ id: 'user-running', role: 'user', status: 'running' as any }),
     }))).toBe(false);
+    expect(canShowHoverQuickReply(entity({
+      kind: 'user_message',
+      status: 'completed' as any,
+      message: message({ id: 'user-completed', role: 'user', status: 'completed' as any }),
+    }))).toBe(false);
+    expect(getHoverReplyMode(entity({
+      kind: 'user_message',
+      status: 'completed' as any,
+      message: message({ id: 'user-completed', role: 'user', status: 'completed' as any }),
+    }))).toBeNull();
     expect(canShowHoverQuickReply(entity({ status: 'completed' as any }))).toBe(true);
     expect(getHoverReplyMode(entity({ status: 'completed' as any }))).toBe('reply');
   });
@@ -152,6 +162,21 @@ describe('quick reply helpers', () => {
     expect(resolveQuickReplyBase({ replyParentId: 'child', messageMap })).toEqual({
       commitSha: 'parent-output',
       selectedFromNodeId: 'parent',
+    });
+  });
+
+  it('falls back to the reply parent base and workspace base when no output commit exists', () => {
+    const parent = message({ id: 'parent', base_commit_sha: 'parent-base' });
+    const child = message({ id: 'child', role: 'user', parentId: 'parent' });
+    const messageMap = new Map([parent, child].map((entry) => [entry.id, entry]));
+
+    expect(resolveQuickReplyBase({ replyParentId: 'parent', messageMap, workspaceBaseCommitSha: 'workspace-base' })).toEqual({
+      commitSha: 'parent-base',
+      selectedFromNodeId: 'parent',
+    });
+    expect(resolveQuickReplyBase({ replyParentId: 'missing', messageMap, workspaceBaseCommitSha: 'workspace-base' })).toEqual({
+      commitSha: 'workspace-base',
+      selectedFromNodeId: null,
     });
   });
 });

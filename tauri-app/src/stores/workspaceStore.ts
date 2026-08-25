@@ -229,7 +229,7 @@ export interface ThreadComposerTargetState {
 interface WorkspaceState {
   selectedWorkspaceId: string | null;
   focusedMessageId: string | null;
-  lastFocusSource: 'chat' | 'graph' | 'timeline' | 'system' | 'composer' | null;
+  lastFocusSource: 'chat' | 'graph' | 'list' | 'system' | 'composer' | null;
   lastFocusMetadata: Record<string, unknown> | null;
   selectedMessageIds: string[];
   focusNonce: number;
@@ -263,7 +263,7 @@ interface WorkspaceState {
   endSendFlowFocus: (flowId: string) => void;
   dispatchFocus: (input: {
     messageId: string | null;
-    source: 'chat' | 'graph' | 'timeline' | 'system' | 'composer';
+    source: 'chat' | 'graph' | 'list' | 'system' | 'composer';
     entityId?: string;
     metadata?: Record<string, unknown>;
   }) => void;

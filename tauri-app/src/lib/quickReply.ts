@@ -53,11 +53,13 @@ export const getHoverReplyMode = (
   if (entity.kind === 'commit_message') return null;
   const replyParentId = entity.focusMessageId || entity.messageId;
   if (!replyParentId) return null;
+  const role = entity.message?.role ?? (entity.kind === 'assistant_message' ? 'assistant' : null);
+  if (role !== 'assistant') return null;
   const status = clean(runStatus ?? entity.status ?? entity.message?.status)?.toLowerCase();
 
   if (isSteerableAssistantNode({
     nodeId: replyParentId,
-    role: entity.message?.role ?? (entity.kind === 'assistant_message' ? 'assistant' : null),
+    role,
     status,
   })) {
     return 'steer';
@@ -111,14 +113,32 @@ export const resolveQuickReplyAgent = <TAgent extends QuickReplyAgent>(input: {
 export const resolveQuickReplyBase = (input: {
   replyParentId: string | null | undefined;
   messageMap: Map<string, Message>;
-}): { commitSha: string; selectedFromNodeId: string } | null => {
-  let cursorId = input.replyParentId ?? null;
+  workspaceBaseCommitSha?: string | null | undefined;
+}): { commitSha: string; selectedFromNodeId: string | null } | null => {
+  const replyParent = input.replyParentId ? input.messageMap.get(input.replyParentId) ?? null : null;
+  const replyParentOutput = clean(replyParent?.output_commit_sha);
+  if (replyParentOutput && replyParent) {
+    return {
+      commitSha: replyParentOutput,
+      selectedFromNodeId: replyParent.id,
+    };
+  }
+
+  const replyParentBase = clean(replyParent?.base_commit_sha);
+  if (replyParentBase && replyParent) {
+    return {
+      commitSha: replyParentBase,
+      selectedFromNodeId: replyParent.id,
+    };
+  }
+
+  let cursorId = replyParent?.parentId ?? input.replyParentId ?? null;
   const visited = new Set<string>();
 
   while (cursorId && !visited.has(cursorId)) {
     visited.add(cursorId);
     const message = input.messageMap.get(cursorId);
-    if (!message) return null;
+    if (!message) break;
 
     const outputCommitSha = clean(message.output_commit_sha);
     if (outputCommitSha) {
@@ -131,5 +151,8 @@ export const resolveQuickReplyBase = (input: {
     cursorId = message.parentId ?? null;
   }
 
-  return null;
+  const workspaceBase = clean(input.workspaceBaseCommitSha);
+  return workspaceBase
+    ? { commitSha: workspaceBase, selectedFromNodeId: null }
+    : null;
 };

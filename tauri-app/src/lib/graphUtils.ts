@@ -1098,7 +1098,7 @@ const curatedLlmColorMap: Record<string, string> = {
   'gpt-5.5': 'bg-gradient-to-br from-emerald-400 to-teal-500',
   'gpt-5.2-codex': 'bg-gradient-to-br from-emerald-400 to-teal-500',
   'claude-sonnet-4-6': 'bg-gradient-to-br from-amber-400 to-yellow-500',
-  'claude-opus-4-6': 'bg-gradient-to-br from-orange-500 to-amber-600',
+  'claude-opus-4-8': 'bg-gradient-to-br from-orange-500 to-amber-600',
   'claude-haiku-4-5-20251001': 'bg-gradient-to-br from-yellow-300 to-amber-400',
 };
 

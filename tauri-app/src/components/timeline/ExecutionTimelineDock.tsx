@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { PointerEvent as ReactPointerEvent } from 'react';
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { Bot, ChevronDown, GitCommitHorizontal, User, X } from 'lucide-react';
 import type { WorkspaceProjection } from '../../domain/workspaceProjection';
 import {
@@ -52,6 +52,7 @@ const BAR_HEIGHT = 28;
 const MARKER_SIZE = 24;
 const DETAIL_PADDING_X = 14;
 const MIN_BAR_WIDTH_PX = 28;
+const MINIMAP_BRUSH_MIN_WIDTH_PX = 40;
 const VIEWPORT_OVERSCAN_RATIO = 0.25;
 const MAX_VIEWPORT_DISPLAY_FRACTION = 0.3;
 const DEFAULT_VIEWPORT_DISPLAY_FRACTION = 0.2;
@@ -369,6 +370,7 @@ export const ExecutionTimelineDock = memo(({
   const brushLeftPct = clamp(getTimelineDisplayFraction(viewport.startMs, displayScale) * 100, 0, 100);
   const brushRightPct = clamp(getTimelineDisplayFraction(viewport.endMs, displayScale) * 100, brushLeftPct, 100);
   const brushSpanPct = Math.max(0, brushRightPct - brushLeftPct);
+  const brushCenterPct = (brushLeftPct + brushRightPct) / 2;
   const preferredRulerTicks = useMemo<ExecutionTimelinePreferredRulerTick[]>(() => [
     ...visibleModel.bars.map((bar) => ({
       timeMs: bar.startMs,
@@ -814,18 +816,21 @@ export const ExecutionTimelineDock = memo(({
               data-display-start-pct={brushLeftPct.toFixed(4)}
               data-display-end-pct={brushRightPct.toFixed(4)}
               data-display-span-pct={brushSpanPct.toFixed(4)}
-              className="absolute top-1 h-12 cursor-grab rounded-md border border-indigo-400/80 bg-indigo-500/10 shadow-[0_0_0_1px_rgba(99,102,241,0.14)_inset] transition-[border-color,background-color,box-shadow] hover:border-indigo-300 hover:bg-indigo-500/15 hover:shadow-[0_0_0_1px_rgba(99,102,241,0.22)_inset,0_10px_22px_-18px_rgba(79,70,229,0.72)] active:cursor-grabbing"
-              style={{ left: `${brushLeftPct}%`, right: `${100 - brushRightPct}%` }}
+              className="absolute left-[var(--execution-timeline-brush-left)] top-1 h-12 w-[var(--execution-timeline-brush-width)] -translate-x-1/2 cursor-grab rounded-md border border-indigo-400/80 bg-indigo-500/10 shadow-[0_0_0_1px_rgba(99,102,241,0.14)_inset] transition-[border-color,background-color,box-shadow] hover:border-indigo-300 hover:bg-indigo-500/15 hover:shadow-[0_0_0_1px_rgba(99,102,241,0.22)_inset,0_10px_22px_-18px_rgba(79,70,229,0.72)] active:cursor-grabbing"
+              style={{
+                '--execution-timeline-brush-left': `clamp(${MINIMAP_BRUSH_MIN_WIDTH_PX / 2}px, ${brushCenterPct}%, calc(100% - ${MINIMAP_BRUSH_MIN_WIDTH_PX / 2}px))`,
+                '--execution-timeline-brush-width': `max(${MINIMAP_BRUSH_MIN_WIDTH_PX}px, ${brushSpanPct}%)`,
+              } as CSSProperties}
               onPointerDown={(event) => startBrushDrag(event, 'brush-pan')}
             >
               <span
                 data-testid="execution-timeline-brush-left-handle"
-                className="absolute inset-y-0 left-0 z-10 w-3 cursor-ew-resize rounded-l-md border-l-2 border-indigo-300/95 bg-indigo-500/25 shadow-[6px_0_12px_-10px_rgba(79,70,229,0.95)] transition-[background-color,border-color] hover:border-indigo-200 hover:bg-indigo-500/35"
+                className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize rounded-l-md border-l-2 border-indigo-300/95 bg-indigo-500/25 shadow-[6px_0_12px_-10px_rgba(79,70,229,0.95)] transition-[background-color,border-color] hover:border-indigo-200 hover:bg-indigo-500/35"
                 onPointerDown={(event) => startBrushDrag(event, 'brush-left')}
               />
               <span
                 data-testid="execution-timeline-brush-right-handle"
-                className="absolute inset-y-0 right-0 z-10 w-3 cursor-ew-resize rounded-r-md border-r-2 border-indigo-300/95 bg-indigo-500/25 shadow-[-6px_0_12px_-10px_rgba(79,70,229,0.95)] transition-[background-color,border-color] hover:border-indigo-200 hover:bg-indigo-500/35"
+                className="absolute inset-y-0 right-0 z-10 w-1.5 cursor-ew-resize rounded-r-md border-r-2 border-indigo-300/95 bg-indigo-500/25 shadow-[-6px_0_12px_-10px_rgba(79,70,229,0.95)] transition-[background-color,border-color] hover:border-indigo-200 hover:bg-indigo-500/35"
                 onPointerDown={(event) => startBrushDrag(event, 'brush-right')}
               />
             </div>

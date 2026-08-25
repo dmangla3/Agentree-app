@@ -85,6 +85,7 @@ export function useHeadlessQuickReply() {
     const base = resolveQuickReplyBase({
       replyParentId: input.replyParentId,
       messageMap,
+      workspaceBaseCommitSha: workspaces.find((workspace) => workspace.id === input.workspaceId)?.base_commit_sha ?? null,
     });
 
     if (!agent) {
@@ -111,7 +112,6 @@ export function useHeadlessQuickReply() {
         agent,
         base,
         workspaces: workspaces as Workspace[],
-        hasRuntime: () => agentClient.hasRuntime(),
         startAgentRun: (payload) => agentClient.startAgentRun(payload as any),
         getAccessToken,
         seedAgentRun: (message) => agentRunManager.seed(message),

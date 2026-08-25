@@ -3,7 +3,7 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::db::TelemetryDb;
 
@@ -200,14 +200,40 @@ pub fn check_all_runtime_readiness(
     Ok(vec![codex, claude])
 }
 
-fn read_codex_provider_limits(app: &AppHandle) -> Result<String, String> {
-    let script_path =
-        crate::runtime_scripts::runtime_script_path(app, "codex-app-server-adapter.py")?;
-    let mut command = Command::new(crate::runtime_scripts::runtime_python_command(app));
+fn read_codex_provider_limits(app: &AppHandle, profile_id: Option<&str>) -> Result<String, String> {
+    let command_plan = crate::runtime_scripts::codex_adapter_command(app)?;
+    let mut command = Command::new(&command_plan.program);
     command
-        .arg(script_path)
+        .args(command_plan.args_prefix)
         .arg("--rate-limits-read")
         .env("PATH", build_probe_path());
+    let materialized = if let Some(profile_id) = profile_id {
+        let telemetry = app.state::<TelemetryDb>();
+        let cache_dir = app
+            .path()
+            .app_cache_dir()
+            .map_err(|error| format!("Could not resolve app cache dir: {}", error))?;
+        let materialized = crate::login_profiles::resolve_runtime_credentials(
+            &telemetry,
+            &crate::login_profiles::KeyringCredentialVault,
+            profile_id,
+            cache_dir,
+        )?;
+        if materialized.provider != "codex" {
+            return Err(format!(
+                "Login profile {} is for {}, not codex",
+                profile_id, materialized.provider
+            ));
+        }
+        Some(materialized)
+    } else {
+        None
+    };
+    if let Some(materialized) = materialized.as_ref() {
+        for (key, value) in &materialized.env {
+            command.env(key, value);
+        }
+    }
     let output = command_output_with_timeout(
         &mut command,
         PROVIDER_LIMITS_REFRESH_TIMEOUT,
@@ -241,14 +267,33 @@ fn read_codex_provider_limits(app: &AppHandle) -> Result<String, String> {
             error, stdout
         )
     })?;
+    if let Some(materialized) = materialized.as_ref() {
+        if materialized.auth_type == "codex_chatgpt_session" {
+            if let (Some(profile_id), Some(codex_home)) =
+                (profile_id, materialized.codex_home.as_deref())
+            {
+                let telemetry = app.state::<TelemetryDb>();
+                crate::login_profiles::persist_codex_auth_state(
+                    &telemetry,
+                    &crate::login_profiles::KeyringCredentialVault,
+                    profile_id,
+                    codex_home,
+                )?;
+            }
+        }
+    }
     Ok(stdout)
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn refresh_provider_limits(app: AppHandle, provider: String) -> Result<String, String> {
+pub fn refresh_provider_limits(
+    app: AppHandle,
+    provider: String,
+    profile_id: Option<String>,
+) -> Result<String, String> {
     match provider.trim().to_lowercase().as_str() {
-        "codex" => read_codex_provider_limits(&app),
+        "codex" => read_codex_provider_limits(&app, profile_id.as_deref()),
         other => Err(format!("Unsupported provider for usage refresh: {}", other)),
     }
 }

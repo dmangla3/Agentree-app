@@ -39,6 +39,7 @@ vi.mock('../stores/providerLimitsStore', () => ({
   useProviderLimitsStore: (selector: any) => selector({ byProvider: {} }),
   getProviderLimitSeverity: () => 'normal',
   getProviderLimitWindows: () => [],
+  providerLimitKey: (provider: string, profileId?: string | null) => profileId ? `${provider}:${profileId}` : provider,
 }));
 
 const profileState = {

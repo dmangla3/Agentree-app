@@ -6,6 +6,8 @@ import { useGitSync } from './useGitSync';
 import { trackedRefKeys } from './useTrackedRefs';
 import { createQueryWrapper } from '../test/queryTestUtils';
 import { agentClient } from '../lib/agentClient';
+import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
+import { api } from '../lib/api';
 
 vi.mock('../lib/api', () => ({
   api: {
@@ -28,6 +30,10 @@ vi.mock('../lib/agentClient', () => ({
     processLocalSyncEvents: vi.fn(),
     resolveRefTip: vi.fn(),
   },
+}));
+
+vi.mock('../lib/localSyncScheduler', () => ({
+  queueLocalSyncFlush: vi.fn(),
 }));
 
 const mockedAgentClient = vi.mocked(agentClient);
@@ -92,7 +98,9 @@ describe('useGitSync', () => {
       '/repo'
     );
     expect(mockedAgentClient.enqueueLocalCommitGraphSync).toHaveBeenCalled();
-    expect(mockedAgentClient.processLocalSyncEvents).toHaveBeenCalledWith('mock-token');
+    expect(mockedAgentClient.processLocalSyncEvents).not.toHaveBeenCalled();
+    expect(queueLocalSyncFlush).toHaveBeenCalledWith({ reason: 'git-sync-commit-graph' });
+    expect(api.get).not.toHaveBeenCalledWith('/workspaces/workspace-1/tracked-refs');
     expect(syncResult?.didSync).toBe(true);
     expect(syncResult?.importedCount).toBe(1);
   });

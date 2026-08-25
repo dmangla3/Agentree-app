@@ -8,6 +8,7 @@ import {
 import { useIntegrationStore } from '../../stores/integrationStore';
 import { Separator } from '../../../@/components/ui/separator';
 import { ScrollArea } from '../../../@/components/ui/scroll-area';
+import { useEmbeddedIntegrationHotkeys, useIntegrationWorkspaceHotkeys } from '../../hotkeys/integrationHotkeys';
 
 // Stage Components
 import { SetupStage } from './SetupStage';
@@ -149,17 +150,10 @@ export function EmbeddedIntegrationWorkspace({ onClose }: EmbeddedIntegrationWor
     closeMergeSession();
   }, [closeMergeSession, onClose]);
   
-  // Handle escape key to close
-  React.useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !isApplying) {
-        handleEmbeddedClose();
-      }
-    };
-    
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [handleEmbeddedClose, isApplying]);
+  useEmbeddedIntegrationHotkeys({
+    isApplying,
+    close: handleEmbeddedClose,
+  });
   
   if (!session) return null;
   
@@ -197,19 +191,11 @@ export function IntegrationWorkspace() {
   const { isMergeOpen, session, closeMergeSession, isApplying } = useIntegrationStore();
   const { renderStage } = useStageRenderer();
   
-  // Handle escape key
-  React.useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !isApplying) {
-        closeMergeSession();
-      }
-    };
-    
-    if (isMergeOpen) {
-      document.addEventListener('keydown', handleKeyDown);
-      return () => document.removeEventListener('keydown', handleKeyDown);
-    }
-  }, [isMergeOpen, isApplying, closeMergeSession]);
+  useIntegrationWorkspaceHotkeys({
+    isOpen: isMergeOpen,
+    isApplying,
+    close: closeMergeSession,
+  });
   
   if (!isMergeOpen || !session) return null;
   

@@ -1,7 +1,7 @@
 import { memo, useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Wrench, Layers, Zap } from 'lucide-react';
-import { TimelineRowWrapper } from './TimelineRowWrapper';
+import { ListRowWrapper } from './ListRowWrapper';
 import { SharedNodeProps } from '../../../types/nodes';
 import { cn } from '../../../lib/utils';
 import { ROLE_COLORS } from '../../../lib/visualTokens';
@@ -21,9 +21,9 @@ import type { GraphSnapshot } from '../../../hooks/useGraphSnapshot';
 import { getAssistantIdentityLabel } from '../../../lib/assistantIdentity';
 
 const ACTIVE_STATUSES = new Set(['pending', 'creating', 'initializing', 'running', 'streaming']);
-const CACHE_REPAIR_TIMELINE_ACTIVE_STATUS_REFRESH_COOLDOWN_MS = 15_000;
-const cacheRepairTimelineRefreshAtByMessageId = new Map<string, number>();
-const cacheRepairTimelineRefreshInFlightByMessageId = new Set<string>();
+const CACHE_REPAIR_LIST_ACTIVE_STATUS_REFRESH_COOLDOWN_MS = 15_000;
+const cacheRepairListRefreshAtByMessageId = new Map<string, number>();
+const cacheRepairListRefreshInFlightByMessageId = new Set<string>();
 
 const terminalStatusFromMessage = (message: Message): AgentStatus | null => {
   const executionData = (message.execution_data ?? {}) as Record<string, any>;
@@ -95,7 +95,7 @@ const AiLabelChip = ({ aiLabel }: { aiLabel?: string | null }) => {
   );
 };
 
-export const TimelineAssistantRow = memo(({
+export const ListAssistantRow = memo(({
   nodeId,
   entity,
   isFocused,
@@ -124,14 +124,14 @@ export const TimelineAssistantRow = memo(({
     if (!displayStatus || !ACTIVE_STATUSES.has(String(displayStatus))) return;
 
     const now = Date.now();
-    const lastRefreshAt = cacheRepairTimelineRefreshAtByMessageId.get(messageId) ?? 0;
-    if (now - lastRefreshAt < CACHE_REPAIR_TIMELINE_ACTIVE_STATUS_REFRESH_COOLDOWN_MS) return;
-    cacheRepairTimelineRefreshAtByMessageId.set(messageId, now);
+    const lastRefreshAt = cacheRepairListRefreshAtByMessageId.get(messageId) ?? 0;
+    if (now - lastRefreshAt < CACHE_REPAIR_LIST_ACTIVE_STATUS_REFRESH_COOLDOWN_MS) return;
+    cacheRepairListRefreshAtByMessageId.set(messageId, now);
 
     void queryClient.invalidateQueries({ queryKey: ['messages', workspaceId], refetchType: 'active' });
     void queryClient.invalidateQueries({ queryKey: ['graph-snapshot', workspaceId], refetchType: 'active' });
-    if (cacheRepairTimelineRefreshInFlightByMessageId.has(messageId)) return;
-    cacheRepairTimelineRefreshInFlightByMessageId.add(messageId);
+    if (cacheRepairListRefreshInFlightByMessageId.has(messageId)) return;
+    cacheRepairListRefreshInFlightByMessageId.add(messageId);
     void api.get<Message[]>(`/workspaces/${workspaceId}/messages`)
       .then((response) => {
         const serverMessage = Array.isArray(response.data)
@@ -166,7 +166,7 @@ export const TimelineAssistantRow = memo(({
         });
       })
       .finally(() => {
-        cacheRepairTimelineRefreshInFlightByMessageId.delete(messageId);
+        cacheRepairListRefreshInFlightByMessageId.delete(messageId);
       });
   }, [displayStatus, liveMessage, messageId, queryClient, workspaceId]);
 
@@ -175,7 +175,7 @@ export const TimelineAssistantRow = memo(({
     : '--:--';
 
   return (
-    <TimelineRowWrapper
+    <ListRowWrapper
       rowId={nodeId}
       messageId={messageId}
       isFocused={isFocused}
@@ -233,8 +233,8 @@ export const TimelineAssistantRow = memo(({
           {timestamp}
         </div>
       </div>
-    </TimelineRowWrapper>
+    </ListRowWrapper>
   );
 });
 
-TimelineAssistantRow.displayName = 'TimelineAssistantRow';
+ListAssistantRow.displayName = 'ListAssistantRow';

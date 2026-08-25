@@ -130,6 +130,17 @@ const extractUsageObject = (message: Message): Record<string, unknown> => {
   return usage && typeof usage === 'object' ? usage as Record<string, unknown> : {};
 };
 
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'error']);
+
+const extractTerminalStatus = (message: Message): Message['status'] | null => {
+  const executionData = message.execution_data;
+  if (!executionData || typeof executionData !== 'object') return null;
+  const status = (executionData as Record<string, unknown>).last_terminal_status;
+  if (typeof status !== 'string') return null;
+  const normalized = status.trim();
+  return TERMINAL_STATUSES.has(normalized) ? normalized as Message['status'] : null;
+};
+
 const extractTokenUsage = (message: Message): TokenUsage => {
   const usage = extractUsageObject(message);
   const promptTokens =
@@ -326,7 +337,7 @@ export const buildTrackingDashboardMetrics = ({
     return {
       nodeId: message.id,
       label: previewLabel(message),
-      status: message.status ?? null,
+      status: extractTerminalStatus(message) ?? message.status ?? null,
       createdAt: message.createdAt,
       commitCount: runCommits.size,
       locAdded,

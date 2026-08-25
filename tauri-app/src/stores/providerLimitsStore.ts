@@ -65,14 +65,14 @@ export interface ProviderLimitDisplayWindow {
 interface ProviderLimitsState {
   byProvider: Partial<Record<ProviderLimitKey, ProviderLimitsSnapshot>>;
   clearAll: () => void;
-  refreshIfStale: (provider: RuntimeProvider, now?: number) => boolean;
+  refreshIfStale: (provider: RuntimeProvider, now?: number, profileId?: string | null) => boolean;
   upsertFromMeta: (provider: RuntimeProvider, meta: Record<string, any>, profileId?: string | null) => void;
 }
 
 const PROVIDER_LIMITS_REFRESH_STALE_MS = 2 * 60 * 1000;
 const PROVIDER_LIMITS_REFRESH_TIMEOUT_MS = 10 * 1000;
-const refreshInFlight: Partial<Record<RuntimeProvider, Promise<void>>> = {};
-const refreshAttemptedAt: Partial<Record<RuntimeProvider, number>> = {};
+const refreshInFlight: Partial<Record<ProviderLimitKey, Promise<void>>> = {};
+const refreshAttemptedAt: Partial<Record<ProviderLimitKey, number>> = {};
 const isProviderLimitsRefreshTimeout = (error: unknown) => (
   error instanceof Error && error.message.includes('Provider limits refresh timed out')
 );
@@ -97,6 +97,12 @@ const normalizePercent = (value: unknown) => {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   if (value >= 0 && value <= 1) return Math.round(value * 100);
   return Math.round(value);
+};
+
+const normalizeRemainingPercent = (usedValue: unknown) => {
+  if (typeof usedValue !== 'number' || !Number.isFinite(usedValue)) return null;
+  const usedPercent = usedValue >= 0 && usedValue <= 1 ? usedValue * 100 : usedValue;
+  return Math.round(Math.max(0, Math.min(100, 100 - usedPercent)));
 };
 
 const statusSeverity = (status: ClaudeRateLimitStatus | null | undefined): ProviderLimitSeverity => {
@@ -200,10 +206,11 @@ const mapProviderLimits = (
 
 const canRefreshProviderLimits = (provider: RuntimeProvider) => provider === 'codex';
 
-const refreshProviderLimits = async (provider: RuntimeProvider) => {
+const refreshProviderLimits = async (provider: RuntimeProvider, profileId?: string | null) => {
   if (!canRefreshProviderLimits(provider)) return;
+  const args = profileId ? { provider, profileId } : { provider };
   const rawLimits = await Promise.race([
-    invoke<string | Record<string, any> | null>('refresh_provider_limits', { provider }),
+    invoke<string | Record<string, any> | null>('refresh_provider_limits', args),
     new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error(`Provider limits refresh timed out after ${PROVIDER_LIMITS_REFRESH_TIMEOUT_MS}ms`)), PROVIDER_LIMITS_REFRESH_TIMEOUT_MS);
     }),
@@ -212,7 +219,7 @@ const refreshProviderLimits = async (provider: RuntimeProvider) => {
   if (!limits || typeof limits !== 'object') return;
   useProviderLimitsStore.getState().upsertFromMeta(provider, {
     provider_limits: limits,
-  });
+  }, profileId);
 };
 
 export const getProviderLimitWindows = (snapshot: ProviderLimitsSnapshot | null | undefined): ProviderLimitDisplayWindow[] => {
@@ -223,7 +230,7 @@ export const getProviderLimitWindows = (snapshot: ProviderLimitsSnapshot | null 
     [snapshot.primary, snapshot.secondary].forEach((window, index) => {
       if (!window) return;
       const shortLabel = formatWindowShortLabel(window.windowDurationMins) || (index === 0 ? 'Primary' : 'Secondary');
-      const percent = normalizePercent(window.usedPercent);
+      const percent = normalizeRemainingPercent(window.usedPercent);
       windows.push({
         id: index === 0 ? 'primary' : 'secondary',
         label: `${shortLabel} window`,
@@ -241,7 +248,7 @@ export const getProviderLimitWindows = (snapshot: ProviderLimitsSnapshot | null 
   CLAUDE_BUCKET_ORDER.forEach((type) => {
     const bucket = snapshot.buckets[type] ?? null;
     if (!bucket?.rateLimitType) return;
-    const percent = normalizePercent(bucket.utilization);
+    const percent = normalizeRemainingPercent(bucket.utilization);
     let label = 'Usage';
     let shortLabel = 'Usage';
     if (bucket.rateLimitType === 'five_hour') {
@@ -327,23 +334,24 @@ export const useProviderLimitsStore = create<ProviderLimitsState>()(
     (set) => ({
       byProvider: {},
       clearAll: () => set({ byProvider: {} }),
-      refreshIfStale: (provider, now = Date.now()) => {
+      refreshIfStale: (provider, now = Date.now(), profileId = null) => {
         if (!canRefreshProviderLimits(provider)) return false;
-        const snapshot = useProviderLimitsStore.getState().byProvider[provider];
+        const key = providerLimitKey(provider, profileId);
+        const snapshot = useProviderLimitsStore.getState().byProvider[key];
         const isStale = !snapshot || now - snapshot.receivedAt >= PROVIDER_LIMITS_REFRESH_STALE_MS;
-        const lastAttemptedAt = refreshAttemptedAt[provider] ?? 0;
+        const lastAttemptedAt = refreshAttemptedAt[key] ?? 0;
         const canAttempt = lastAttemptedAt === 0 || now - lastAttemptedAt >= PROVIDER_LIMITS_REFRESH_STALE_MS;
-        if (!isStale || !canAttempt || refreshInFlight[provider]) return false;
-        refreshAttemptedAt[provider] = now;
-        refreshInFlight[provider] = refreshProviderLimits(provider)
+        if (!isStale || !canAttempt || refreshInFlight[key]) return false;
+        refreshAttemptedAt[key] = now;
+        refreshInFlight[key] = refreshProviderLimits(provider, profileId)
           .catch((error) => {
             if (isProviderLimitsRefreshTimeout(error)) {
-              delete refreshAttemptedAt[provider];
+              delete refreshAttemptedAt[key];
             }
-            console.debug('[providerLimitsStore] Provider limits refresh failed', { provider, error });
+            console.debug('[providerLimitsStore] Provider limits refresh failed', { provider, profileId, error });
           })
           .finally(() => {
-            delete refreshInFlight[provider];
+            delete refreshInFlight[key];
           });
         return true;
       },
@@ -358,7 +366,6 @@ export const useProviderLimitsStore = create<ProviderLimitsState>()(
           byProvider: {
             ...state.byProvider,
             [key]: next,
-            ...(profileId ? { [provider]: state.byProvider[provider] ?? next } : null),
           },
         };
       }),

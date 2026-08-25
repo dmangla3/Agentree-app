@@ -55,6 +55,14 @@ export const getMessageThreadSessionId = (message: Message | null | undefined): 
   trimOrNull(message?.threadId) ?? trimOrNull(message?.thread_id)
 );
 
+const getGeneratedThreadTitleFromMessage = (message: Message | null | undefined): string | null => {
+  const meta = (message?.execution_data as any)?.meta;
+  return trimOrNull(meta?.thread_title)
+    ?? trimOrNull(meta?.threadTitle)
+    ?? trimOrNull(meta?.agent_thread_title)
+    ?? trimOrNull(meta?.runtime_thread_title);
+};
+
 export const getLegacyThreadIdForMessage = (
   messageIdOrMessage: string | Message | null | undefined,
   messageMap: Map<string, Message>,
@@ -98,6 +106,23 @@ const compareThreadSessions = (left: ThreadSession, right: ThreadSession): numbe
   return leftKey.id.localeCompare(rightKey.id);
 };
 
+export const mergeThreadSessionsWithBackfills = (
+  backfilledThreadSessions: ThreadSession[],
+  persistedThreadSessions: ThreadSession[],
+): ThreadSession[] => {
+  const byId = new Map(backfilledThreadSessions.map((thread) => [thread.id, thread]));
+  for (const persisted of persistedThreadSessions) {
+    const backfilled = byId.get(persisted.id);
+    byId.set(persisted.id, {
+      ...persisted,
+      title: persisted.title ?? backfilled?.title ?? null,
+      firstMessageId: persisted.firstMessageId ?? backfilled?.firstMessageId ?? null,
+      baseCommitSha: persisted.baseCommitSha ?? backfilled?.baseCommitSha ?? null,
+    });
+  }
+  return Array.from(byId.values()).sort(compareThreadSessions);
+};
+
 export const deriveBackfilledThreadSessions = (
   messages: Message[],
   workspaceId?: string | null,
@@ -116,17 +141,18 @@ export const deriveBackfilledThreadSessions = (
     if (!resolvedWorkspaceId) continue;
     const createdAt = message.createdAt || message.updatedAt || new Date(0).toISOString();
     const updatedAt = message.updatedAt || createdAt;
+    const generatedThreadTitle = getGeneratedThreadTitleFromMessage(message);
     const existing = byThreadId.get(threadId);
     if (!existing) {
       byThreadId.set(threadId, {
         id: threadId,
         workspaceId: resolvedWorkspaceId,
-        title: message.role === 'user' ? trimOrNull(message.content) : null,
+        title: generatedThreadTitle ?? (message.role === 'user' ? trimOrNull(message.content) : null),
         status: 'active',
         createdAt,
         updatedAt,
         baseCommitSha: trimOrNull(message.base_commit_sha),
-        firstMessageId: message.role === 'user' ? message.id : null,
+        firstMessageId: message.role === 'user' ? message.id : (generatedThreadTitle ? trimOrNull(message.parentId) : null),
         source: 'legacy',
       });
       continue;
@@ -136,7 +162,7 @@ export const deriveBackfilledThreadSessions = (
       : existing.updatedAt;
     byThreadId.set(threadId, {
       ...existing,
-      title: existing.title ?? (message.role === 'user' ? trimOrNull(message.content) : null),
+      title: generatedThreadTitle ?? existing.title ?? (message.role === 'user' ? trimOrNull(message.content) : null),
       createdAt: messageTimeMs(createdAt) < messageTimeMs(existing.createdAt) ? createdAt : existing.createdAt,
       updatedAt: nextUpdatedAt,
       baseCommitSha: existing.baseCommitSha ?? trimOrNull(message.base_commit_sha),

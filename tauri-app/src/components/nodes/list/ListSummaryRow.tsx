@@ -1,11 +1,11 @@
 import { memo } from 'react';
 import { Layers } from 'lucide-react';
-import { TimelineRowWrapper } from './TimelineRowWrapper';
+import { ListRowWrapper } from './ListRowWrapper';
 import { SharedNodeProps } from '../../../types/nodes';
 import { cn } from '../../../lib/utils';
 import { ROLE_COLORS } from '../../../lib/visualTokens';
 
-export const TimelineSummaryRow = memo(({
+export const ListSummaryRow = memo(({
   nodeId,
   entity,
   isFocused,
@@ -22,7 +22,7 @@ export const TimelineSummaryRow = memo(({
     : '--:--';
 
   return (
-    <TimelineRowWrapper
+    <ListRowWrapper
       rowId={nodeId}
       isFocused={isFocused}
       isSelected={isSelected}
@@ -48,8 +48,8 @@ export const TimelineSummaryRow = memo(({
           </div>
         </div>
       </div>
-    </TimelineRowWrapper>
+    </ListRowWrapper>
   );
 });
 
-TimelineSummaryRow.displayName = 'TimelineSummaryRow';
+ListSummaryRow.displayName = 'ListSummaryRow';

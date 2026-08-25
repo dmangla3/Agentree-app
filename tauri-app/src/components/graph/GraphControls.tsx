@@ -128,7 +128,7 @@ function SimpleMergeIcon({ size = 15, strokeWidth = 2 }: { size?: number; stroke
 // TYPES
 // ═══════════════════════════════════════════════════════════════════════════
 
-export type ViewMode = 'branch' | 'timeline';
+export type ViewMode = 'branch' | 'list';
 
 export interface LeafNodeNavigationItem {
     id: string;
@@ -398,7 +398,16 @@ function ThreadNodeHoverCard({
     const hoverContentRef = useRef<HTMLDivElement | null>(null);
     const pointerInsideHoverContentRef = useRef(false);
     const [hoverOpen, setHoverOpen] = useState(false);
-    const previewNodeIds = thread.previewNodeIds ?? [];
+    const previewNodeIds = useMemo(() => {
+        const nodeIds = thread.previewNodeIds ?? [];
+        if (!projectionInput) return nodeIds;
+        const assistantMessageIds = new Set(
+            projectionInput.messages
+                .filter((message) => message.role === 'assistant')
+                .map((message) => message.id),
+        );
+        return nodeIds.filter((nodeId) => assistantMessageIds.has(nodeId));
+    }, [projectionInput, thread.previewNodeIds]);
     const initialPreviewIndex = useMemo(() => {
         if (previewNodeIds.length === 0) return 0;
         const preferredIndex = thread.initialPreviewNodeId
@@ -1555,17 +1564,17 @@ export function GraphControls({
                         </button>
                         <button
                             type="button"
-                            onClick={() => onViewModeChange('timeline')}
+                            onClick={() => onViewModeChange('list')}
                             className={cn(
                                 "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-[background-color,color,box-shadow] duration-150",
-                                viewMode === 'timeline'
+                                viewMode === 'list'
                                     ? "bg-[hsl(var(--app-panel))] text-[hsl(var(--app-accent))] shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72),0_1px_2px_hsl(var(--foreground)/0.05)]"
                                     : "text-muted-foreground hover:bg-[hsl(var(--app-panel)/0.58)] hover:text-foreground"
                             )}
-                            title="Timeline View"
+                            title="List View"
                         >
                             <CalendarDays className="h-3.5 w-3.5" />
-                            <span className="hidden sm:inline">Timeline</span>
+                            <span className="hidden sm:inline">List</span>
                         </button>
                     </div>
 

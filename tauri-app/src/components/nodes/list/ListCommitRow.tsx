@@ -1,6 +1,6 @@
 import { memo } from 'react';
 import { GitCommitHorizontal, User, Files, GitBranch } from 'lucide-react';
-import { TimelineRowWrapper } from './TimelineRowWrapper';
+import { ListRowWrapper } from './ListRowWrapper';
 import { SharedNodeProps } from '../../../types/nodes';
 import { cn } from '../../../lib/utils';
 import { Badge } from '../../../../@/components/ui/badge';
@@ -11,7 +11,7 @@ import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import { getRepoPathFromWorkspace } from '../../../lib/gitNodeUtils';
 import { getMessageOutputCommitSha } from '../../../lib/graph/commitAccessors';
 
-export const TimelineCommitRow = memo(({
+export const ListCommitRow = memo(({
   nodeId,
   entity,
   isFocused,
@@ -57,7 +57,7 @@ export const TimelineCommitRow = memo(({
   })();
 
   return (
-    <TimelineRowWrapper
+    <ListRowWrapper
       rowId={nodeId}
       isFocused={isFocused}
       isSelected={isSelected}
@@ -147,8 +147,8 @@ export const TimelineCommitRow = memo(({
         </div>
 
       </div>
-    </TimelineRowWrapper>
+    </ListRowWrapper>
   );
 });
 
-TimelineCommitRow.displayName = 'TimelineCommitRow';
+ListCommitRow.displayName = 'ListCommitRow';

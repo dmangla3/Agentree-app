@@ -96,10 +96,11 @@ const makeCodexModel = ({
 
 const claudeModelBases = [
   {
-    id: 'claude-opus-4-6',
-    modelId: 'claude-opus-4-6',
-    label: 'Claude Opus 4.6',
-    modelAlias: 'opus',
+    id: 'claude-opus-4-8',
+    modelId: 'claude-opus-4-8',
+    label: 'Claude Opus 4.8',
+    modelAlias: 'claude-opus-4-8',
+    description: 'Anthropic frontier model for complex reasoning and long-horizon agentic coding',
   },
   {
     id: 'claude-sonnet-4-6',
@@ -162,8 +163,8 @@ const claudeModels: RuntimeModel[] = [
   ...claudeModelBases.flatMap((model) => claudeEfforts.map((effort) => makeClaudeModel({ ...model, effort }))),
   makeClaudeModel({
     ...claudeModelBases[0],
-    effort: { id: 'max', label: 'Max', description: 'Maximum effort for Claude Opus 4.6' },
-    description: 'Maximum effort for Claude Opus 4.6',
+    effort: { id: 'max', label: 'Max', description: 'Maximum effort for Claude Opus 4.8' },
+    description: 'Maximum effort for Claude Opus 4.8',
   }),
 ];
 

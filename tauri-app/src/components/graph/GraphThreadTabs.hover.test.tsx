@@ -73,9 +73,9 @@ const makeThread = (overrides: Partial<ThreadNavigationItem> & Pick<ThreadNaviga
   previewNodeIds: overrides.previewNodeIds,
 });
 
-const makeMessage = (id: string): Message => ({
+const makeMessage = (id: string, role: Message['role'] = 'assistant'): Message => ({
   id,
-  role: 'assistant',
+  role,
   content: `${id} content`,
   parentId: null,
   workspaceId: 'workspace-1',
@@ -149,6 +149,26 @@ describe('GraphThreadTabs hover cards', () => {
     fireEvent.click(screen.getByText('close thread hover'));
 
     expect(screen.queryByText('thread hover content node-other')).toBeNull();
+  });
+
+  it('only shows assistant previews in thread hover cards', () => {
+    renderTabs([
+      makeThread({
+        threadRootId: 'thread-other',
+        label: 'Other thread',
+        initialPreviewNodeId: 'user-newer',
+        previewNodeIds: ['user-newer', 'assistant-older'],
+      }),
+    ], [
+      makeMessage('user-newer', 'user'),
+      makeMessage('assistant-older', 'assistant'),
+    ]);
+
+    fireEvent.click(screen.getByText('open thread hover'));
+
+    expect(screen.getByText('thread hover content assistant-older')).toBeTruthy();
+    expect(screen.queryByText('thread hover content user-newer')).toBeNull();
+    expect(screen.queryByText('1 / 2')).toBeNull();
   });
 
   it('closes a thread hover card when the pointer leaves content without retained focus', () => {

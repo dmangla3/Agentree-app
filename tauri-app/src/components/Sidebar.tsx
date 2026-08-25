@@ -1,4 +1,4 @@
-import { BarChart3, MessageSquare, Book, LogOut, Puzzle, Workflow, KeyRound } from 'lucide-react';
+import { BarChart3, MessageSquare, LogOut, Puzzle, Workflow, KeyRound } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from "../../@/components/ui/avatar";
 import { useAuthStore } from '../stores/authStore';
@@ -22,7 +22,6 @@ export function Sidebar({ activeView, onViewChange, selectedWorkspaceId, selecte
         { id: 'tracking' as const, label: 'Tracking', icon: BarChart3 },
         { id: 'logins' as const, label: 'Logins', icon: KeyRound },
         { id: 'skills' as const, label: 'Skills', icon: Puzzle },
-        { id: 'knowledge' as const, label: 'Knowledge', icon: Book },
     ];
 
     return (

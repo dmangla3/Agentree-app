@@ -5,6 +5,8 @@ import type { Message } from '../stores/workspaceStore';
 import {
   clampGraphZoom,
   GRAPH_MIN_ZOOM,
+  getGraphNodeNavigationIds,
+  resolveDirectionalGraphNavigationTarget,
   resolveFocusedThreadRootId,
   resolveBlockingEmptyThreadRootId,
   resolveThreadDeletePlan,
@@ -83,6 +85,73 @@ describe('shouldTreatGraphMoveAsViewportInteraction', () => {
       eventTargetIsNode: false,
       programmaticFocusCenterActive: false,
     })).toBe(false);
+  });
+});
+
+describe('getGraphNodeNavigationIds', () => {
+  it('returns assistant messages only in chronological order', () => {
+    const messages = [
+      makeMessage('user-root', 'user', null, '2026-05-19T00:00:00.000Z'),
+      makeMessage('assistant-b', 'assistant', 'user-followup', '2026-05-19T00:03:00.000Z'),
+      makeMessage('user-followup', 'user', 'assistant-a', '2026-05-19T00:02:00.000Z'),
+      makeMessage('assistant-a', 'assistant', 'user-root', '2026-05-19T00:01:00.000Z'),
+    ];
+
+    expect(getGraphNodeNavigationIds(messages)).toEqual(['assistant-a', 'assistant-b']);
+  });
+});
+
+describe('resolveDirectionalGraphNavigationTarget', () => {
+  const graphNode = (id: string, x: number, y: number) => ({
+    id,
+    type: 'assistant_message',
+    position: { x, y },
+    width: 100,
+    height: 80,
+    data: {
+      entity: {
+        kind: 'assistant_message',
+        messageId: id,
+        focusMessageId: id,
+      },
+    },
+  });
+
+  it('moves to the nearest node in the requested spatial direction', () => {
+    const nodes = [
+      graphNode('current', 100, 100),
+      graphNode('right-near', 260, 110),
+      graphNode('right-far', 620, 100),
+      graphNode('down', 100, 260),
+    ];
+
+    expect(resolveDirectionalGraphNavigationTarget({
+      direction: 'right',
+      nodes,
+      focusedMessageId: 'current',
+      fallbackPoint: { x: 0, y: 0 },
+    })?.messageId).toBe('right-near');
+
+    expect(resolveDirectionalGraphNavigationTarget({
+      direction: 'down',
+      nodes,
+      focusedMessageId: 'current',
+      fallbackPoint: { x: 0, y: 0 },
+    })?.messageId).toBe('down');
+  });
+
+  it('uses the viewport fallback point when no node is focused', () => {
+    const nodes = [
+      graphNode('left', 100, 100),
+      graphNode('right', 500, 100),
+    ];
+
+    expect(resolveDirectionalGraphNavigationTarget({
+      direction: 'right',
+      nodes,
+      focusedMessageId: null,
+      fallbackPoint: { x: 250, y: 140 },
+    })?.messageId).toBe('right');
   });
 });
 

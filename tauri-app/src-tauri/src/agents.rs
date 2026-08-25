@@ -490,14 +490,7 @@ fn cleanup_agent_run_worktree_internal(
         )?;
         return Err("Cleanup blocked without ledger branch name.".to_string());
     };
-    let expected_worktree_path = crate::git_workspace::preview_agent_worktree(
-        repo_path.to_string(),
-        node_id.to_string(),
-        ledger.parent_commit.clone().unwrap_or_default(),
-    );
-    let expected_worktree_path =
-        tauri::async_runtime::block_on(expected_worktree_path)?.worktree_path;
-    if worktree_path != expected_worktree_path {
+    if !crate::git_workspace::is_agent_worktree_path_for_node(repo_path, node_id, &worktree_path)? {
         telemetry.mark_agent_run_needs_user_action(
             node_id,
             "Cleanup worktree path did not match the native run ledger.",
@@ -1937,13 +1930,13 @@ fn spawn_agent_internal(
     );
     let skill_store = skills::ensure_runtime_skills(&agent_type, Path::new(&cwd))?;
     let mut args = args;
+    let mut program_override: Option<String> = None;
     if agent_type.as_str() == "codex" {
-        args.insert(
-            0,
-            crate::runtime_scripts::runtime_script_path(&app, "codex-app-server-adapter.py")?
-                .to_string_lossy()
-                .into_owned(),
-        );
+        let command = crate::runtime_scripts::codex_adapter_command(&app)?;
+        for arg in command.args_prefix.into_iter().rev() {
+            args.insert(0, arg);
+        }
+        program_override = Some(command.program);
     }
     if agent_type.as_str() == "claude" {
         args.insert(
@@ -1987,7 +1980,8 @@ fn spawn_agent_internal(
 
     let program = match agent_type.as_str() {
         "claude" => "node".to_string(),
-        "codex" => crate::runtime_scripts::runtime_python_command(&app),
+        "codex" => program_override
+            .ok_or_else(|| "Codex adapter command was not resolved.".to_string())?,
         "bash" => "node".to_string(),
         "echo" => "echo".to_string(),
         _ => return Err(format!("Unknown agent type: {}", agent_type)),
@@ -2002,13 +1996,7 @@ fn spawn_agent_internal(
         ),
     );
 
-    let mcp_bind = std::env::var("AGENTREE_MCP_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let mcp_port = std::env::var("AGENTREE_MCP_PORT")
-        .or_else(|_| std::env::var("MCP_PORT"))
-        .ok()
-        .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(61337);
-    let mcp_url = format!("http://{}:{}/mcp", mcp_bind, mcp_port);
+    let mcp_url = crate::mcp::mcp_server_url();
     let mut command = Command::new(&program);
     command
         .args(args)
@@ -2034,6 +2022,8 @@ fn spawn_agent_internal(
         Path::new(&cwd),
     )?;
 
+    let mut codex_auth_state_to_persist: Option<(String, std::path::PathBuf)> = None;
+    let mut claude_oauth_state_to_persist: Option<(String, std::path::PathBuf)> = None;
     if let Some(profile_id) = login_profile_id.as_deref() {
         let telemetry = app.state::<crate::db::TelemetryDb>();
         let cache_dir = app
@@ -2052,7 +2042,30 @@ fn spawn_agent_internal(
                 profile_id, materialized.provider, agent_type
             ));
         }
-        for (key, value) in materialized.env {
+        if agent_type.as_str() == "codex" && materialized.auth_type == "codex_chatgpt_session" {
+            if let Some(codex_home) = materialized.codex_home.clone() {
+                codex_auth_state_to_persist = Some((profile_id.to_string(), codex_home));
+            }
+        }
+        if agent_type.as_str() == "claude" && materialized.auth_type == "claude_oauth" {
+            if let Some(claude_config_dir) = materialized.claude_config_dir.clone() {
+                claude_oauth_state_to_persist =
+                    Some((profile_id.to_string(), claude_config_dir));
+            }
+            for key in [
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_BASE_URL",
+                "ANTHROPIC_MODEL",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+            ] {
+                command.env_remove(key);
+            }
+        }
+        for (key, value) in &materialized.env {
             command.env(key, value);
         }
     } else if agent_type.as_str() == "codex" {
@@ -2086,12 +2099,16 @@ fn spawn_agent_internal(
                 );
             }
             crate::app_log!(
-                "[AGENT_WORKTREE] event=spawn.command_error node_id={} agent_type={} cwd={} err={}",
+                "[AGENT_WORKTREE] event=spawn.command_error node_id={} agent_type={} cwd={} program={} err={}",
                 session_id,
                 agent_type,
                 cwd,
+                program,
                 err
             );
+            if let Some((profile_id, _)) = claude_oauth_state_to_persist.as_ref() {
+                crate::login_profiles::release_claude_oauth_activation(profile_id);
+            }
             return Err(err.to_string());
         }
     };
@@ -2331,6 +2348,8 @@ fn spawn_agent_internal(
     let auth_token_for_wait = auth_token.clone();
     let stdout_done_for_wait = Arc::clone(&stdout_done);
     let stderr_done_for_wait = Arc::clone(&stderr_done);
+    let codex_auth_state_to_persist_for_wait = codex_auth_state_to_persist.clone();
+    let claude_oauth_state_to_persist_for_wait = claude_oauth_state_to_persist.clone();
     thread::spawn(move || {
         loop {
             let mut exited = None;
@@ -2383,6 +2402,43 @@ fn spawn_agent_internal(
                         &auth_token_for_wait,
                     )
                 };
+                if let Some((profile_id, codex_home)) =
+                    codex_auth_state_to_persist_for_wait.as_ref()
+                {
+                    let telemetry = app_handle.state::<crate::db::TelemetryDb>();
+                    if let Err(error) = crate::login_profiles::persist_codex_auth_state(
+                        &telemetry,
+                        &crate::login_profiles::KeyringCredentialVault,
+                        profile_id,
+                        codex_home,
+                    ) {
+                        crate::app_log!(
+                            "[AGENT_WORKTREE] event=codex_auth_state_persist_failed node_id={} profile_id={} err={}",
+                            session_id_for_wait,
+                            profile_id,
+                            error
+                        );
+                    }
+                }
+                if let Some((profile_id, claude_config_dir)) =
+                    claude_oauth_state_to_persist_for_wait.as_ref()
+                {
+                    let telemetry = app_handle.state::<crate::db::TelemetryDb>();
+                    if let Err(error) = crate::login_profiles::persist_claude_oauth_state(
+                        &telemetry,
+                        &crate::login_profiles::KeyringCredentialVault,
+                        profile_id,
+                        claude_config_dir,
+                    ) {
+                        crate::app_log!(
+                            "[AGENT_WORKTREE] event=claude_oauth_state_persist_failed node_id={} profile_id={} err={}",
+                            session_id_for_wait,
+                            profile_id,
+                            error
+                        );
+                    }
+                    crate::login_profiles::release_claude_oauth_activation(profile_id);
+                }
 
                 {
                     let app_state = app_handle.state::<AgentState>();
@@ -2476,6 +2532,8 @@ pub async fn start_agent_run(
         })
         .to_string(),
     )?;
+
+    crate::mcp::set_mcp_current_context(&intent.auth_token, intent.workspace_id.as_deref())?;
 
     let app_for_run = app.clone();
     let run_id_for_response = intent.run_id.clone();

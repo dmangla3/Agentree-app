@@ -1,8 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { agentClient, type LocalNodeRecord } from '../lib/agentClient';
-import { getAccessToken } from '../lib/authSession';
 import type { Message } from '../stores/workspaceStore';
+import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
 
 export interface LocalNodeMessage {
   nodeId: string;
@@ -93,7 +93,6 @@ export const parseLocalNode = (row: LocalNodeRecord): LocalNodeMessage | null =>
 };
 
 export const useLocalNodes = (workspaceId: string | null | undefined) => {
-  const syncInFlightRef = useRef(false);
   const query = useQuery<LocalNodeMessage[]>({
     queryKey: localNodeKeys.workspace(workspaceId),
     queryFn: async () => {
@@ -116,26 +115,17 @@ export const useLocalNodes = (workspaceId: string | null | undefined) => {
     refetchOnReconnect: true,
   });
   const localNodes = query.data;
-  const refetchLocalNodes = query.refetch;
 
   useEffect(() => {
     if (!workspaceId || !agentClient.hasRuntime()) return;
-    if (syncInFlightRef.current) return;
     const hasRetryableLocalOnly = (localNodes ?? []).some((row) => {
       if (row.syncStatus !== 'local_only') return false;
       if (!row.nextRetryAt) return true;
       return row.nextRetryAt <= Math.floor(Date.now() / 1000);
     });
     if (!hasRetryableLocalOnly) return;
-    syncInFlightRef.current = true;
-    void getAccessToken()
-      .then((token) => agentClient.processLocalSyncEvents(token))
-      .then(() => refetchLocalNodes())
-      .catch(() => undefined)
-      .finally(() => {
-        syncInFlightRef.current = false;
-      });
-  }, [localNodes, refetchLocalNodes, workspaceId]);
+    queueLocalSyncFlush({ reason: 'local-node-retryable' });
+  }, [localNodes, workspaceId]);
 
   return query;
 };

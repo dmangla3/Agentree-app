@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { Bot, Check, ChevronDown, CornerDownRight, FileText, GitBranchIcon, GitCommitHorizontal, History, Loader2, Minus, Pencil, Plus, Puzzle, RotateCcw, Search, Send, Workflow, X } from 'lucide-react';
+import { Bot, Check, ChevronDown, CornerDownRight, FileText, GitBranchIcon, GitCommitHorizontal, History, Loader2, Minus, Pencil, Plus, Puzzle, RotateCcw, Search, Send, Square, Workflow, X } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useShallow } from 'zustand/react/shallow';
 import { useWorkspaceStore, type Message, type Workspace } from '../stores/workspaceStore';
@@ -27,6 +27,7 @@ import {
   shortCommitSha,
   type ComposerCommitPickerCommit,
 } from '../lib/composerBaseCommit';
+import { buildLiveGitRefs, getComposerBaseSnapshotGitRefs } from '../lib/liveGitRefs';
 import { buildComposerContextManifest, buildComposerContextSelection } from '../lib/composerContext';
 import { reconstructContext } from '../lib/contextUtils';
 import { getMergeVisualParentEntries, isMergeResultNode } from '../lib/graph/lineage';
@@ -34,6 +35,7 @@ import { isFirstClassCommitMessage } from '../lib/graph/turnUtils';
 import { hasFreshContextBoundary } from '../lib/messageContext';
 import { isSteerableAssistantNode } from '../lib/agentRunSteering';
 import { dispatchGraphComposerDockExpand } from '../lib/graphComposerDockEvents';
+import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
 import { cn } from '../lib/utils';
 import {
   buildComposerAgentRuns,
@@ -289,6 +291,10 @@ function GraphDockPromptTextarea({
       disabled={disabled}
       minRows={2}
       maxRows={10}
+      autoComplete="off"
+      autoCorrect="off"
+      autoCapitalize="off"
+      spellCheck={false}
       cacheMeasurements
     />
   );
@@ -323,6 +329,7 @@ export function GraphDockComposer() {
   const [error, setError] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [isSteering, setIsSteering] = useState(false);
+  const [isCancellingRun, setIsCancellingRun] = useState(false);
   const {
     selectedWorkspaceId,
     focusedMessageId,
@@ -389,19 +396,22 @@ export function GraphDockComposer() {
     () => getEnabledTrackedGitRefs(trackedRefsQuery.data ?? []),
     [trackedRefsQuery.data]
   );
-  const gitRefSnapshotQuery = useGitRefSnapshot(
-    isBasePickerOpen ? selectedWorkspaceRepoPath : null,
-    enabledTrackedGitRefs
+  const composerBaseSnapshotGitRefs = useMemo(
+    () => getComposerBaseSnapshotGitRefs(enabledTrackedGitRefs),
+    [enabledTrackedGitRefs]
   );
-  const currentHeadSha = gitRefSnapshotQuery.data?.head_sha?.trim() || null;
-  const commitPickerRefsWithHead = useMemo(() => {
-    const refs = localRefsQuery.data ?? [];
-    if (!currentHeadSha) return refs;
-    return [
-      { git_ref: 'HEAD', short_name: 'HEAD', commit_sha: currentHeadSha },
-      ...refs.filter((ref) => ref.git_ref !== 'HEAD'),
-    ];
-  }, [currentHeadSha, localRefsQuery.data]);
+  const gitRefSnapshotQuery = useGitRefSnapshot(
+    shouldLoadBaseRefs ? selectedWorkspaceRepoPath : null,
+    composerBaseSnapshotGitRefs
+  );
+  const liveGitRefs = useMemo(() => buildLiveGitRefs({
+    refs: localRefsQuery.data ?? [],
+    trackedRefs: trackedRefsQuery.data ?? [],
+    snapshot: gitRefSnapshotQuery.data,
+  }), [gitRefSnapshotQuery.data, localRefsQuery.data, trackedRefsQuery.data]);
+  const liveRefs = liveGitRefs.refs;
+  const liveTrackedRefs = liveGitRefs.trackedRefs;
+  const currentHeadSha = liveGitRefs.headSha;
   const lazyCommitsQuery = useQuery({
     queryKey: ['graph-dock-commit-choices', selectedWorkspaceRepoPath, selectedWorkspaceId],
     queryFn: async (): Promise<GitCommitMetadata[]> => {
@@ -528,8 +538,8 @@ export function GraphDockComposer() {
     selectedNodeId: target.selectedNodeId,
     focusedCommitSha: target.focusedCommitSha,
     messages,
-    refs: localRefsQuery.data ?? [],
-    trackedRefs: trackedRefsQuery.data ?? [],
+    refs: liveRefs,
+    trackedRefs: liveTrackedRefs,
     workspace: selectedWorkspace,
     override: composerBaseCommitOverride,
   });
@@ -645,7 +655,7 @@ export function GraphDockComposer() {
     [flowRunner.flows, flowRunner.selectedFlowId]
   );
   const isFlowSelected = Boolean(selectedFlow);
-  const isPrimaryActionBusy = isSending || isSteering;
+  const isPrimaryActionBusy = isSending || isSteering || isCancellingRun;
   const isComposerConfigurationDisabled = isPrimaryActionBusy || isSteeringRunningAssistant;
   const canSend = Boolean(selectedWorkspaceId && promptHasContent && !isPrimaryActionBusy && (
     isSteeringRunningAssistant
@@ -727,8 +737,8 @@ export function GraphDockComposer() {
     selectedBaseCommit,
   ]);
   const refPickerRefs = useMemo(() => (
-    commitPickerRefsWithHead.filter((ref) => Boolean(getVisibleRefName(ref)))
-  ), [commitPickerRefsWithHead]);
+    liveRefs.filter((ref) => Boolean(getVisibleRefName(ref)))
+  ), [liveRefs]);
   const laterCommitShas = useMemo(
     () => new Set((baseCommitCandidatesQuery.data?.commits ?? []).map((commit) => commit.sha)),
     [baseCommitCandidatesQuery.data?.commits]
@@ -742,7 +752,7 @@ export function GraphDockComposer() {
     effectiveSha: effectiveBase?.commitSha ?? null,
     commits: baseCommitPickerCommits,
     refs: refPickerRefs,
-    trackedRefs: trackedRefsQuery.data ?? [],
+    trackedRefs: liveTrackedRefs,
     laterCommitShas,
     earlierCommitShas,
   }), [
@@ -751,8 +761,8 @@ export function GraphDockComposer() {
     earlierCommitShas,
     effectiveBase?.commitSha,
     laterCommitShas,
+    liveTrackedRefs,
     refPickerRefs,
-    trackedRefsQuery.data,
   ]);
   const filteredBasePickerItems = useMemo(() => {
     const query = baseCommitSearch.trim().toLowerCase();
@@ -762,14 +772,14 @@ export function GraphDockComposer() {
   const baseChipItems = useMemo(() => buildComposerCommitPickerChipItems({
     items: basePickerItems,
     refs: refPickerRefs,
-    trackedRefs: trackedRefsQuery.data ?? [],
+    trackedRefs: liveTrackedRefs,
     headSha: currentHeadSha,
     commitRecencyBySha: new Map(baseCommitPickerCommits.map((commit) => {
       const timestamp = Date.parse(commit.committed_at || commit.authored_at || '');
       return [commit.sha, Number.isFinite(timestamp) ? timestamp : 0] as const;
     })),
     limit: 6,
-  }), [baseCommitPickerCommits, basePickerItems, currentHeadSha, refPickerRefs, trackedRefsQuery.data]);
+  }), [baseCommitPickerCommits, basePickerItems, currentHeadSha, liveTrackedRefs, refPickerRefs]);
   const effectiveBaseLabel = selectedBaseCommit?.label
     ?? basePickerItems.find((item) => item.sha === effectiveBase?.commitSha)?.primaryLabel
     ?? baseSourceLabel(effectiveBase?.source)
@@ -1247,27 +1257,37 @@ export function GraphDockComposer() {
     }
 
     setError(null);
-    setIsSending(true);
-    assistantNodeIdRef.current = null;
+    const selectedFlowIdForEvent = selectedFlow?.id ?? null;
     recordSendFlowEvent('graph-dock.submit', {
       workspaceId: selectedWorkspaceId,
       promptLength: promptForAgent.length,
       parentMessageId: target.parentMessageId,
-      selectedFlowId: selectedFlow?.id ?? null,
+      selectedFlowId: selectedFlowIdForEvent,
       runCount: selectedFlow ? flowParallelCount : runsToSend.length,
       agentId: agent?.id ?? null,
       baseCommitSha: effectiveBase.commitSha,
     }, { source: 'GraphDockComposer' });
-    try {
-      if (selectedFlow) {
-        await flowRunner.runFlow({ input: promptForAgent, count: flowParallelCount });
-        clearComposerDraft(selectedWorkspaceId);
-        setEditDraftSource(null);
-        clearPrompt();
-        resetComposerTargetAfterSuccessfulSend();
-        return;
-      }
+    if (selectedFlow) {
+      void flowRunner.runFlow({ input: promptForAgent, count: flowParallelCount }).catch((caught) => {
+        const message = caught instanceof Error ? caught.message : 'Failed to run flow.';
+        recordSendFlowEvent('graph-dock.error', {
+          workspaceId: selectedWorkspaceId,
+          parentMessageId: target.parentMessageId,
+          selectedFlowId: selectedFlowIdForEvent,
+          message,
+        }, { source: 'GraphDockComposer' });
+        setError(message);
+      });
+      clearComposerDraft(selectedWorkspaceId);
+      setEditDraftSource(null);
+      clearPrompt();
+      resetComposerTargetAfterSuccessfulSend();
+      return;
+    }
 
+    setIsSending(true);
+    assistantNodeIdRef.current = null;
+    try {
       let threadId = target.parentMessageId ? null : pendingThreadId;
       if (!target.parentMessageId && selectedWorkspaceId && (!threadId || threadId.startsWith('workspace-empty-thread:'))) {
         const thread = await createThreadSession.mutateAsync({
@@ -1305,7 +1325,6 @@ export function GraphDockComposer() {
             selectedFromNodeId: effectiveBase.selectedFromNodeId,
           },
           workspaces: workspaces as Workspace[],
-          hasRuntime: () => agentClient.hasRuntime(),
           startAgentRun: (payload) => agentClient.startAgentRun(payload as any),
           getAccessToken,
           seedAgentRun: (message) => agentRunManager.seed(message),
@@ -1353,7 +1372,7 @@ export function GraphDockComposer() {
       recordSendFlowEvent('graph-dock.error', {
         workspaceId: selectedWorkspaceId,
         parentMessageId: target.parentMessageId,
-        selectedFlowId: selectedFlow?.id ?? null,
+        selectedFlowId: selectedFlowIdForEvent,
         message,
       }, { source: 'GraphDockComposer' });
       if (assistantNodeIdRef.current) {
@@ -1392,9 +1411,37 @@ export function GraphDockComposer() {
     workspaces,
   ]);
 
+  const handleCancelRunningAgent = useCallback(async () => {
+    const nodeId = target.parentMessageId;
+    if (!nodeId || !selectedWorkspaceId || isCancellingRun) return;
+
+    setError(null);
+    setIsCancellingRun(true);
+    try {
+      await agentClient.stopAgent(nodeId);
+      agentRunManager.dispatch(nodeId, {
+        type: 'cancel',
+        reason: 'cancelled',
+      }, {
+        workspaceId: selectedWorkspaceId,
+        parentId: parentMessage?.parentId ?? null,
+        role: 'assistant',
+        agentId: parentMessage?.agent_id ?? null,
+        content: parentMessage?.content ?? '',
+        executionData: (parentMessage?.execution_data ?? {}) as Record<string, any>,
+      });
+      void scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'cancel-agent' });
+    } catch (caught) {
+      console.error('[GraphDockComposer] Failed to stop agent:', caught);
+      setError('Unable to cancel the running agent.');
+    } finally {
+      setIsCancellingRun(false);
+    }
+  }, [isCancellingRun, parentMessage, queryClient, selectedWorkspaceId, target.parentMessageId]);
+
   const targetModeLabel = composerTargetMode === 'new-thread' ? 'New thread' : 'Reply to';
   const sendButtonLabel = isSteeringRunningAssistant ? 'Steer' : editDraftSource ? 'Edit and run' : selectedFlow ? 'Run Flow' : 'Send';
-  const sendButtonBusyLabel = isSteeringRunningAssistant ? 'Steering' : 'Sending';
+  const sendButtonBusyLabel = isCancellingRun ? 'Cancelling' : isSteeringRunningAssistant ? 'Steering' : 'Sending';
 
   return (
     <div
@@ -1903,23 +1950,45 @@ export function GraphDockComposer() {
               </div>
             ) : null}
           </div>
-          <button
-            type="button"
-            data-testid="graph-dock-send-button"
-            disabled={!canSend}
-            onClick={() => void handleSend()}
-            className={cn(
-              'flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg px-3.5 text-xs font-semibold',
-              'transition-[background-color,box-shadow,opacity,transform,filter] duration-150 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]',
-              canSend
-                ? 'bg-[hsl(var(--app-accent))] text-white shadow-[0_16px_36px_-20px_hsl(var(--app-accent)/0.68),inset_0_1px_0_hsl(44_80%_99%/0.24)] hover:-translate-y-0.5 hover:brightness-105 active:translate-y-0'
-                : 'cursor-not-allowed bg-muted text-muted-foreground opacity-60'
-            )}
-            aria-label={isSteeringRunningAssistant ? "Steer running agent" : "Send graph composer message"}
-          >
-            {isPrimaryActionBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
-            <span>{isPrimaryActionBusy ? sendButtonBusyLabel : sendButtonLabel}</span>
-          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {isSteeringRunningAssistant ? (
+              <button
+                type="button"
+                data-testid="graph-dock-cancel-running-agent-button"
+                disabled={isCancellingRun}
+                onClick={() => void handleCancelRunningAgent()}
+                className={cn(
+                  'flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[hsl(var(--app-border)/0.78)] px-2.5 text-xs font-semibold text-muted-foreground',
+                  'bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-panel)/0.84))] shadow-[inset_0_1px_0_hsl(44_80%_99%/0.44)]',
+                  'transition-[background-color,border-color,color,box-shadow,transform,opacity] duration-150 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]',
+                  'hover:-translate-y-0.5 hover:border-destructive/35 hover:bg-destructive/10 hover:text-destructive active:translate-y-0',
+                  'disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:translate-y-0 disabled:hover:border-[hsl(var(--app-border)/0.78)] disabled:hover:text-muted-foreground'
+                )}
+                aria-label="Cancel running agent"
+                title="Cancel running agent"
+              >
+                {isCancellingRun ? <Loader2 className="h-3 w-3 animate-spin" /> : <Square className="h-2.5 w-2.5 fill-current" />}
+                <span className="hidden sm:inline">{isCancellingRun ? 'Stopping' : 'Cancel'}</span>
+              </button>
+            ) : null}
+            <button
+              type="button"
+              data-testid="graph-dock-send-button"
+              disabled={!canSend}
+              onClick={() => void handleSend()}
+              className={cn(
+                'flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg px-3.5 text-xs font-semibold',
+                'transition-[background-color,box-shadow,opacity,transform,filter] duration-150 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]',
+                canSend
+                  ? 'bg-[hsl(var(--app-accent))] text-white shadow-[0_16px_36px_-20px_hsl(var(--app-accent)/0.68),inset_0_1px_0_hsl(44_80%_99%/0.24)] hover:-translate-y-0.5 hover:brightness-105 active:translate-y-0'
+                  : 'cursor-not-allowed bg-muted text-muted-foreground opacity-60'
+              )}
+              aria-label={isSteeringRunningAssistant ? "Steer running agent" : "Send graph composer message"}
+            >
+              {isPrimaryActionBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+              <span>{isPrimaryActionBusy ? sendButtonBusyLabel : sendButtonLabel}</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

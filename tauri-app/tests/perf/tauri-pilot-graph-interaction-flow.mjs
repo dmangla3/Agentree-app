@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CHAT_HOT_PATH_HELPERS_SOURCE } from './tauri-pilot-chat-hot-path-lib.mjs';
+import { writeCompactPilotReport } from './tauri-pilot-report-lib.mjs';
 import {
   assertSingleDevAgentreeRuntime,
   assertVisibleFocusedWebviewSource,
@@ -994,11 +994,11 @@ const main = async () => {
     report.collect.maxRenderedGraphNodes = maxRenderedGraphNodes;
     report.collect.validationErrors = validationErrors;
   }
-  mkdirSync(OUT_DIR, { recursive: true });
   const reportPath = join(OUT_DIR, `${LABEL}.json`);
-  writeFileSync(reportPath, JSON.stringify(report, null, 2));
+  const written = writeCompactPilotReport({ reportPath, report });
   console.log(JSON.stringify({
     reportPath,
+    artifactDir: written.artifacts.length > 0 ? written.artifactDir : null,
     exportPath: report.collect?.exportStatus?.exportPath ?? null,
     sendsAttempted: report.collect?.probe?.sends?.length ?? 0,
     done: report.collect?.probe?.done ?? false,

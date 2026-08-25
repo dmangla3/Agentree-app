@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Wrench, ChevronDown, Terminal, Tag, X, Hash, Sigma, Sparkles, AlertTriangle, Copy, Check, CheckCircle2, GitCommitHorizontal, Zap, MessageSquarePlus } from 'lucide-react';
 import { ChatCardWrapper } from './ChatCardWrapper';
 import { ChatMarkdown } from './ChatMarkdown';
+import { CopyMessageContentButton } from './CopyMessageContentButton';
 import { SharedNodeProps } from '../../../types/nodes';
 import { cn } from '../../../lib/utils';
 import { ROLE_COLORS } from '../../../lib/visualTokens';
@@ -213,24 +214,24 @@ const LiveComposerCue = memo(function LiveComposerCue({
   return (
     <div
       aria-hidden="true"
-      className="pointer-events-none relative mt-3 overflow-hidden rounded-[1rem] border border-zinc-200/70 bg-white/75 px-3 py-2 shadow-[0_14px_34px_-22px_rgba(24,24,27,0.42)] backdrop-blur-xl dark:border-white/10 dark:bg-zinc-950/38 dark:shadow-[0_18px_42px_-24px_rgba(0,0,0,0.72)]"
+      className="pointer-events-none relative mt-3 overflow-hidden rounded-[1rem] border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel)/0.74)] px-3 py-2 shadow-[var(--app-shadow-soft)] backdrop-blur-xl"
     >
-      <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-zinc-300/80 to-transparent dark:via-white/20" />
-      <div className="absolute -left-10 top-0 h-full w-24 -skew-x-12 bg-gradient-to-r from-transparent via-emerald-300/18 to-transparent animate-pulse dark:via-emerald-300/10" />
+      <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[hsl(var(--foreground)/0.16)] to-transparent" />
+      <div className="absolute -left-10 top-0 h-full w-24 -skew-x-12 animate-pulse bg-gradient-to-r from-transparent via-[hsl(var(--app-success)/0.14)] to-transparent" />
       <div className="relative flex items-center gap-2.5">
-        <div className="relative flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-emerald-500/20 bg-emerald-500/8 dark:border-emerald-300/20 dark:bg-emerald-300/10">
-          <span className="absolute h-2.5 w-2.5 rounded-full bg-emerald-500/25 animate-ping dark:bg-emerald-300/25" />
-          <span className="relative h-1.5 w-1.5 rounded-full bg-emerald-600 shadow-[0_0_12px_rgba(5,150,105,0.45)] dark:bg-emerald-300" />
+        <div className="relative flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[hsl(var(--app-success)/0.24)] bg-[hsl(var(--app-success)/0.10)]">
+          <span className="absolute h-2.5 w-2.5 animate-ping rounded-full bg-[hsl(var(--app-success)/0.25)]" />
+          <span className="relative h-1.5 w-1.5 rounded-full bg-[hsl(var(--app-success))] shadow-[0_0_12px_hsl(var(--app-success)/0.45)]" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-semibold leading-none tracking-[0.01em] text-zinc-700 dark:text-zinc-200">
+          <div className="text-[11px] font-semibold leading-none tracking-[0.01em] text-foreground">
             {label}
           </div>
           <div className="mt-1 flex items-end gap-0.5" aria-hidden="true">
             {[0, 1, 2, 3].map((bar) => (
               <span
                 key={bar}
-                className="w-1 rounded-full bg-zinc-400/60 animate-pulse dark:bg-zinc-500/70"
+                className="w-1 animate-pulse rounded-full bg-[hsl(var(--app-text-soft)/0.62)]"
                 style={{
                   height: `${bar % 2 === 0 ? 5 : 8}px`,
                   animationDelay: `${bar * 120}ms`,
@@ -625,6 +626,7 @@ export const ChatAssistantCard = memo(({
       onSelect={onSelect}
       onContextMenu={onContextMenu}
       className={cn(
+        "group",
         ROLE_COLORS.assistant_message.bg,
         ROLE_COLORS.assistant_message.border
       )}
@@ -869,6 +871,16 @@ export const ChatAssistantCard = memo(({
         )}
         <LiveComposerCue isStreaming={shouldRevealStream} text={streamingTailText} />
       </div>
+
+      <CopyMessageContentButton
+        text={message?.content}
+        ariaLabel="Copy assistant response"
+        title="Copy response"
+        className={cn(
+          "absolute bottom-2 right-2 z-20 h-6 w-6 bg-background/70 opacity-0 backdrop-blur-sm",
+          "focus-visible:opacity-100 group-hover:opacity-100 dark:bg-slate-900/55"
+        )}
+      />
 
       {/* Tool Calls Section */}
       {!hasInterleavedTranscript && !showCompletedFinalOnly && toolRows.length > 0 && (

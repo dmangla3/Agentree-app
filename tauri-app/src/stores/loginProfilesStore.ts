@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import {
   agentClient,
   type ActiveLoginProfileRun,
+  type ClaudeOAuthLoginStart,
+  type CodexLoginStart,
   type ImportLoginCandidateRequest,
   type LoginImportCandidate,
   type UpsertLoginProfileRequest,
@@ -15,7 +17,12 @@ interface LoginProfilesState {
   isMutating: boolean;
   error: string | null;
   refresh: () => Promise<void>;
-  saveProfile: (request: UpsertLoginProfileRequest) => Promise<void>;
+  startSync: () => () => void;
+  saveProfile: (request: UpsertLoginProfileRequest) => Promise<LoginProfileSummary>;
+  connectCodexProfile: (profileId: string) => Promise<CodexLoginStart>;
+  connectClaudeOauthProfile: (profileId: string) => Promise<ClaudeOAuthLoginStart>;
+  pollClaudeOauthProfile: (profileId: string) => Promise<LoginProfileSummary>;
+  submitClaudeOauthCode: (profileId: string, code: string) => Promise<LoginProfileSummary>;
   deleteProfile: (profileId: string) => Promise<void>;
   setDefaultProfile: (provider: string, profileId: string | null) => Promise<void>;
   checkProfile: (profileId: string) => Promise<void>;
@@ -27,6 +34,10 @@ interface LoginProfilesState {
 const messageFromError = (error: unknown) => (
   error instanceof Error ? error.message : String(error)
 );
+
+let syncRefCount = 0;
+let syncUnlisten: (() => void) | null = null;
+let syncStarting = false;
 
 export const useLoginProfilesStore = create<LoginProfilesState>((set) => ({
   profiles: [],
@@ -54,11 +65,93 @@ export const useLoginProfilesStore = create<LoginProfilesState>((set) => ({
       set({ error: messageFromError(error), isLoading: false });
     }
   },
+  startSync: () => {
+    syncRefCount += 1;
+    void useLoginProfilesStore.getState().refresh();
+
+    if (!syncUnlisten && !syncStarting) {
+      syncStarting = true;
+      void agentClient.onLoginProfilesChanged(() => {
+        void useLoginProfilesStore.getState().refresh();
+      }).then((cleanup) => {
+        syncStarting = false;
+        if (syncRefCount <= 0) {
+          cleanup();
+          return;
+        }
+        syncUnlisten = cleanup;
+      }).catch((error) => {
+        syncStarting = false;
+        set({ error: messageFromError(error) });
+      });
+    }
+
+    let stopped = false;
+    return () => {
+      if (stopped) return;
+      stopped = true;
+      syncRefCount = Math.max(0, syncRefCount - 1);
+      if (syncRefCount === 0 && syncUnlisten) {
+        syncUnlisten();
+        syncUnlisten = null;
+      }
+    };
+  },
   saveProfile: async (request) => {
     set({ isMutating: true, error: null });
     try {
-      await agentClient.upsertLoginProfile(request);
+      const profile = await agentClient.upsertLoginProfile(request);
       await useLoginProfilesStore.getState().refresh();
+      return profile as LoginProfileSummary;
+    } catch (error) {
+      set({ error: messageFromError(error) });
+      throw error;
+    } finally {
+      set({ isMutating: false });
+    }
+  },
+  connectCodexProfile: async (profileId) => {
+    set({ isMutating: true, error: null });
+    try {
+      const started = await agentClient.connectCodexLoginProfile(profileId);
+      await useLoginProfilesStore.getState().refresh();
+      return started;
+    } catch (error) {
+      set({ error: messageFromError(error) });
+      throw error;
+    } finally {
+      set({ isMutating: false });
+    }
+  },
+  connectClaudeOauthProfile: async (profileId) => {
+    set({ isMutating: true, error: null });
+    try {
+      const started = await agentClient.connectClaudeOauthLoginProfile(profileId);
+      await useLoginProfilesStore.getState().refresh();
+      return started;
+    } catch (error) {
+      set({ error: messageFromError(error) });
+      throw error;
+    } finally {
+      set({ isMutating: false });
+    }
+  },
+  pollClaudeOauthProfile: async (profileId) => {
+    try {
+      const profile = await agentClient.pollClaudeOauthLoginProfile(profileId);
+      await useLoginProfilesStore.getState().refresh();
+      return profile as LoginProfileSummary;
+    } catch (error) {
+      set({ error: messageFromError(error) });
+      throw error;
+    }
+  },
+  submitClaudeOauthCode: async (profileId, code) => {
+    set({ isMutating: true, error: null });
+    try {
+      const profile = await agentClient.submitClaudeOauthLoginCode(profileId, code);
+      await useLoginProfilesStore.getState().refresh();
+      return profile as LoginProfileSummary;
     } catch (error) {
       set({ error: messageFromError(error) });
       throw error;

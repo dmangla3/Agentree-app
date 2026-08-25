@@ -296,6 +296,17 @@ export interface LoginProfilesChangedEvent {
     status: string;
 }
 
+export interface CodexLoginStart {
+    profileId: string;
+    deviceUrl: string;
+    deviceCode: string;
+}
+
+export interface ClaudeOAuthLoginStart {
+    profileId: string;
+    loginUrl: string;
+}
+
 export interface StartAgentRunResponse {
     runId: string;
     assistantNodeId: string;
@@ -597,6 +608,9 @@ export const agentClient = {
     setMcpWorkspaceId: async (workspaceId: string): Promise<void> => {
         await tauriCommands.setMcpWorkspaceId(workspaceId);
     },
+    getMcpServerUrl: async (): Promise<string> => {
+        return await tauriCommands.getMcpServerUrl();
+    },
     getSkillStorePath: async (): Promise<string> => {
         return await tauriCommands.getSkillStorePath();
     },
@@ -754,6 +768,18 @@ export const agentClient = {
     },
     checkLoginProfileReadiness: async (profileId: string): Promise<LoginProfile> => {
         return await (tauriCommands as any).checkLoginProfileReadiness(profileId) as LoginProfile;
+    },
+    connectCodexLoginProfile: async (profileId: string): Promise<CodexLoginStart> => {
+        return await (tauriCommands as any).connectCodexLoginProfile(profileId) as CodexLoginStart;
+    },
+    connectClaudeOauthLoginProfile: async (profileId: string): Promise<ClaudeOAuthLoginStart> => {
+        return await (tauriCommands as any).connectClaudeOauthLoginProfile(profileId) as ClaudeOAuthLoginStart;
+    },
+    pollClaudeOauthLoginProfile: async (profileId: string): Promise<LoginProfile> => {
+        return await (tauriCommands as any).pollClaudeOauthLoginProfile(profileId) as LoginProfile;
+    },
+    submitClaudeOauthLoginCode: async (profileId: string, code: string): Promise<LoginProfile> => {
+        return await (tauriCommands as any).submitClaudeOauthLoginCode(profileId, code) as LoginProfile;
     },
     checkAllLoginProfileReadiness: async (): Promise<LoginProfile[]> => {
         if (!hasTauriRuntime()) return [];

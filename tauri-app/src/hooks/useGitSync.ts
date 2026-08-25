@@ -2,11 +2,11 @@ import { useCallback } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { agentClient } from '../lib/agentClient';
-import { getAccessToken } from '../lib/authSession';
 import { trackedRefKeys } from './useTrackedRefs';
 import { branchKeys } from './useBranches';
 import type { TrackedGitRef } from '../stores/workspaceStore';
 import type { GraphSnapshot } from './useGraphSnapshot';
+import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
 
 type IgnoredSyncRef = {
   gitRef: string;
@@ -17,12 +17,7 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
   const queryClient = useQueryClient();
 
   const flushLocalCommitGraphSync = async () => {
-    try {
-      const token = await getAccessToken();
-      await agentClient.processLocalSyncEvents(token);
-    } catch (error) {
-      console.warn('[useGitSync] Queued commit graph sync will retry later:', error);
-    }
+    queueLocalSyncFlush({ reason: 'git-sync-commit-graph' });
   };
 
   const syncMutation = useMutation({
@@ -37,13 +32,15 @@ export const useGitSync = (workspaceId: string | null, repoPath: string | null) 
         };
       }
 
-      const trackedRefs = await queryClient.ensureQueryData<TrackedGitRef[]>({
-        queryKey: trackedRefKeys.workspace(workspaceId),
-        queryFn: async () => {
-          const response = await api.get(`/workspaces/${workspaceId}/tracked-refs`);
-          return response.data;
-        },
-      });
+      const trackedRefs = agentClient.hasRuntime()
+        ? queryClient.getQueryData<TrackedGitRef[]>(trackedRefKeys.workspace(workspaceId)) ?? []
+        : await queryClient.ensureQueryData<TrackedGitRef[]>({
+          queryKey: trackedRefKeys.workspace(workspaceId),
+          queryFn: async () => {
+            const response = await api.get(`/workspaces/${workspaceId}/tracked-refs`);
+            return response.data;
+          },
+        });
       const cachedGraphSnapshot = queryClient.getQueryData<GraphSnapshot>(['graph-snapshot', workspaceId]);
       const knownCommitShas = new Set((cachedGraphSnapshot?.commits ?? []).map((commit) => commit.sha));
       if (agentClient.hasRuntime()) {

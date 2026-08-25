@@ -140,7 +140,7 @@ describe('GraphControls', () => {
       <TooltipProvider>
         <GraphControls
           {...makeProps({
-            viewMode: 'timeline',
+            viewMode: 'list',
             executionTimelineOpen: true,
             onExecutionTimelineOpenChange,
             renderExecutionTimelinePanel: () => <div>Workspace execution timeline panel</div>,

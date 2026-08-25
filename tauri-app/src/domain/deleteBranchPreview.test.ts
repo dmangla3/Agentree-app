@@ -55,13 +55,54 @@ describe('delete branch preview', () => {
       message('assistant-1', 'assistant', 'user-1', 'commit-a'),
     ]);
 
-    const preview = getDeleteBranchPreview(['user-1'], messages, 1);
+    const preview = getDeleteBranchPreview(['user-1'], messages, 1, {
+      extraCommitLabels: ['abc123def456'],
+    });
 
     expect(preview.totalCount).toBe(3);
     expect(preview.userCount).toBe(1);
     expect(preview.assistantCount).toBe(1);
     expect(preview.commitCount).toBe(1);
     expect(preview.typeSummary).toBe('1 user node, 1 assistant node, 1 commit node');
+    expect(preview.groups.commit).toEqual([
+      { id: 'extra-commit-0', label: 'Commit abc123def456' },
+    ]);
+  });
+
+  it('includes thread and grouped node names in the delete preview', () => {
+    const messages = mapOf([
+      message('user-1', 'user', null),
+      { ...message('assistant-1', 'assistant', 'user-1'), aiLabel: 'Plan executor' },
+      message('user-2', 'user', 'assistant-1'),
+    ]);
+
+    const preview = getDeleteBranchPreview(['user-1'], messages, 0, {
+      threadLabel: 'Improve graph cleanup',
+    });
+
+    expect(preview.threadLabel).toBe('Improve graph cleanup');
+    expect(preview.groups.user).toEqual([
+      { id: 'user-1', label: 'user-1' },
+      { id: 'user-2', label: 'user-2' },
+    ]);
+    expect(preview.groups.assistant).toEqual([
+      { id: 'assistant-1', label: 'Plan executor' },
+    ]);
+  });
+
+  it('falls back to node ids and truncates long labels in delete details', () => {
+    const messages = mapOf([
+      {
+        ...message('assistant-1', 'assistant', null),
+        content: 'This assistant message has a very long generated title that should not take over the delete confirmation dialog.',
+      },
+    ]);
+
+    const preview = getDeleteBranchPreview(['assistant-1'], messages);
+
+    expect(preview.groups.assistant[0]?.id).toBe('assistant-1');
+    expect(preview.groups.assistant[0]?.label).toBe('This assistant message has a very long generated title that...');
+    expect(preview.groups.assistant[0]?.label.length).toBeLessThanOrEqual(68);
   });
 
   it('formats commit-only deletions without selected branch copy', () => {

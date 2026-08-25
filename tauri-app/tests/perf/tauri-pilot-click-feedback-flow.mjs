@@ -1,11 +1,11 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CHAT_HOT_PATH_HELPERS_SOURCE } from './tauri-pilot-chat-hot-path-lib.mjs';
 import {
   recordClickFeedbackMetricsFromSample,
   validateClickFeedbackReport,
 } from './tauri-pilot-click-feedback-lib.mjs';
+import { writeCompactPilotReport } from './tauri-pilot-report-lib.mjs';
 
 const OUT_DIR = process.env.AGENTREE_TAURI_PILOT_OUT_DIR ?? 'runtime-logs/tauri-pilot-diagnostics';
 const LABEL = process.env.AGENTREE_TAURI_PILOT_LABEL ?? `tauri-pilot-click-feedback-${Date.now()}`;
@@ -259,12 +259,12 @@ const main = async () => {
   const metrics = report.collect?.probe?.metrics ?? report.install?.metrics ?? {};
   report.validation = validateClickFeedbackReport(metrics, { thresholdMs: THRESHOLD_MS });
 
-  mkdirSync(OUT_DIR, { recursive: true });
   const reportPath = join(OUT_DIR, `${LABEL}.json`);
-  writeFileSync(reportPath, JSON.stringify(report, null, 2));
+  const written = writeCompactPilotReport({ reportPath, report });
 
   const output = {
     reportPath,
+    artifactDir: written.artifacts.length > 0 ? written.artifactDir : null,
     exportPath: report.collect?.exportStatus?.exportPath ?? null,
     thresholdMs: THRESHOLD_MS,
     metrics,

@@ -2,13 +2,14 @@ import { useEffect, useMemo, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Check, ChevronRight, CircleGauge, Minus, Plus, Sparkles, X } from 'lucide-react';
 import { useAgents, type Agent } from '../hooks/useAgents';
-import { runtimeModels } from '../lib/runtimeModels';
+import { runtimeModels, type RuntimeProvider } from '../lib/runtimeModels';
 import { ScrollArea } from "../../@/components/ui/scroll-area";
 import { Checkbox } from "../../@/components/ui/checkbox";
 import { cn } from '../lib/utils';
 import {
     getProviderLimitSeverity,
     getProviderLimitWindows,
+    providerLimitKey,
     type ProviderLimitDisplayWindow,
     type ProviderLimitsSnapshot,
     useProviderLimitsStore,
@@ -382,8 +383,9 @@ export function UnifiedAgentModelSelector({
                                 const meta = providerMeta(provider);
                                 const accent = providerAccentClasses(provider);
                                 const providerSelectable = isProviderSelectable(provider);
+                                const selectedLoginProfile = getSelectedLoginProfileForProvider(provider);
                                 const limitsSnapshot = provider === 'claude' || provider === 'codex'
-                                    ? providerLimits[provider]
+                                    ? providerLimits[providerLimitKey(provider as RuntimeProvider, selectedLoginProfile?.id)]
                                     : null;
                                 const limitWindows = getProviderLimitWindows(limitsSnapshot);
                                 const limitSeverity = getProviderLimitSeverity(limitsSnapshot);
@@ -433,7 +435,7 @@ export function UnifiedAgentModelSelector({
                                                                 <div
                                                                     key={window.id}
                                                                     className={cn(
-                                                                        "flex h-5 min-w-[74px] items-center justify-between gap-2 rounded px-1.5 text-[10px] font-semibold tabular-nums",
+                                                                        "flex h-5 min-w-[92px] items-center justify-between gap-2 rounded px-1.5 text-[10px] font-semibold tabular-nums",
                                                                         rowStyle.row
                                                                     )}
                                                                 >
@@ -442,7 +444,7 @@ export function UnifiedAgentModelSelector({
                                                                         <span className="truncate">{window.shortLabel}</span>
                                                                     </span>
                                                                     <span className="text-foreground/82 dark:text-current">
-                                                                        {window.percent != null ? `${window.percent}%` : 'n/a'}
+                                                                        {window.percent != null ? `${window.percent}% left` : 'n/a'}
                                                                     </span>
                                                                 </div>
                                                             );

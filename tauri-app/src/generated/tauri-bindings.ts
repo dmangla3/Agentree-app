@@ -78,13 +78,17 @@ export const commands = {
 	setDefaultLoginProfile: (provider: string, profileId: string | null) => __TAURI_INVOKE<LoginProfile[]>("set_default_login_profile", { provider, profileId }),
 	listActiveLoginProfileRuns: () => __TAURI_INVOKE<ActiveLoginProfileRun[]>("list_active_login_profile_runs"),
 	checkLoginProfileReadiness: (profileId: string) => __TAURI_INVOKE<LoginProfile>("check_login_profile_readiness", { profileId }),
+	connectCodexLoginProfile: (profileId: string) => __TAURI_INVOKE<CodexLoginStart>("connect_codex_login_profile", { profileId }),
+	connectClaudeOauthLoginProfile: (profileId: string) => __TAURI_INVOKE<ClaudeOAuthLoginStart>("connect_claude_oauth_login_profile", { profileId }),
+	pollClaudeOauthLoginProfile: (profileId: string) => __TAURI_INVOKE<LoginProfile>("poll_claude_oauth_login_profile", { profileId }),
+	submitClaudeOauthLoginCode: (profileId: string, code: string) => __TAURI_INVOKE<LoginProfile>("submit_claude_oauth_login_code", { profileId, code }),
 	checkAllLoginProfileReadiness: () => __TAURI_INVOKE<LoginProfile[]>("check_all_login_profile_readiness"),
 	discoverLoginImportCandidates: () => __TAURI_INVOKE<LoginImportCandidate[]>("discover_login_import_candidates"),
 	importDiscoveredLoginProfile: (request: ImportLoginCandidateRequest) => __TAURI_INVOKE<LoginProfile>("import_discovered_login_profile", { request }),
 	importExistingRuntimeLogin: (provider: string, displayName: string) => __TAURI_INVOKE<LoginProfile>("import_existing_runtime_login", { provider, displayName }),
 	checkRuntimeReadiness: (provider: string) => __TAURI_INVOKE<RuntimeReadiness>("check_runtime_readiness", { provider }),
 	checkAllRuntimeReadiness: () => __TAURI_INVOKE<RuntimeReadiness[]>("check_all_runtime_readiness"),
-	refreshProviderLimits: (provider: string) => __TAURI_INVOKE<string>("refresh_provider_limits", { provider }),
+	refreshProviderLimits: (provider: string, profileId: string | null) => __TAURI_INVOKE<string>("refresh_provider_limits", { provider, profileId }),
 	checkLocalEnvironment: () => __TAURI_INVOKE<LocalEnvironmentStatus>("check_local_environment"),
 	attachWorkspace: (path: string) => __TAURI_INVOKE<WorkspaceInfo>("attach_workspace", { path }),
 	initGitRepo: (repoPath: string) => __TAURI_INVOKE<string>("init_git_repo", { repoPath }),
@@ -127,6 +131,7 @@ export const commands = {
 	deleteInstalledSkill: (skillId: string, opId: string | null) => __TAURI_INVOKE<null>("delete_installed_skill", { skillId, opId }),
 	setMcpAuthToken: (token: string) => __TAURI_INVOKE<null>("set_mcp_auth_token", { token }),
 	setMcpWorkspaceId: (workspaceId: string) => __TAURI_INVOKE<null>("set_mcp_workspace_id", { workspaceId }),
+	getMcpServerUrl: () => __TAURI_INVOKE<string>("get_mcp_server_url"),
 	ensureAuthCallbackServerStarted: () => __TAURI_INVOKE<string>("ensure_auth_callback_server_started"),
 	getAuthCallbackBaseUrl: () => __TAURI_INVOKE<string>("get_auth_callback_base_url"),
 	readGraphSnapshotCache: (workspaceId: string) => __TAURI_INVOKE<string | null>("read_graph_snapshot_cache", { workspaceId }),
@@ -223,10 +228,21 @@ export type BranchPointerInfo = {
 	git_ref: string,
 };
 
+export type ClaudeOAuthLoginStart = {
+	profileId: string,
+	loginUrl: string,
+};
+
 export type CliToolStatus = {
 	installed: boolean,
 	version: string | null,
 	error: string | null,
+};
+
+export type CodexLoginStart = {
+	profileId: string,
+	deviceUrl: string,
+	deviceCode: string,
 };
 
 /**  User-provided resolution for a conflict. */

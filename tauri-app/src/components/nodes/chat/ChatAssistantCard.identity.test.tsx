@@ -3,6 +3,7 @@ import '../../../test/setup';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ChatAssistantCard } from './ChatAssistantCard';
+import { ChatUserCard } from './ChatUserCard';
 import type { ProjectedNodeEntity } from '../../../domain/workspaceProjection';
 
 vi.mock('../../../hooks/useAgents', () => ({
@@ -52,6 +53,33 @@ const makeAssistantEntity = (overrides: Partial<ProjectedNodeEntity> = {}): Proj
       llmModel: 'openai/gpt-5.5',
       llmProvider: 'openai',
       aiLabel: 'Generated AI topic label',
+      tags: [],
+      ...(messageOverrides ?? {}),
+    },
+    ...entityOverrides,
+  };
+};
+
+const makeUserEntity = (overrides: Partial<ProjectedNodeEntity> = {}): ProjectedNodeEntity => {
+  const { message: messageOverrides, ...entityOverrides } = overrides;
+  return {
+    entityId: 'message:user-1',
+    kind: 'user_message',
+    messageId: 'user-1',
+    focusMessageId: 'user-1',
+    turnGroupId: 'turn-1',
+    sortTs: 1,
+    preview: 'User content',
+    shortLabel: 'User content',
+    status: null,
+    message: {
+      id: 'user-1',
+      role: 'user',
+      content: 'User content',
+      parentId: null,
+      workspaceId: 'workspace-1',
+      createdAt: '2026-05-16T00:00:00.000Z',
+      updatedAt: '2026-05-16T00:00:00.000Z',
       tags: [],
       ...(messageOverrides ?? {}),
     },
@@ -155,6 +183,72 @@ describe('ChatAssistantCard identity', () => {
     expect(screen.getByText('npm test')).toBeTruthy();
   });
 
+  it('copies only the final assistant output for completed structured runs', () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          status: 'completed' as any,
+          message: {
+            status: 'completed' as any,
+            content: 'Final answer only.',
+            execution_data: {
+              timeline: [
+                { type: 'message', timestamp: 1, content: 'Interim progress update.' },
+                { type: 'thinking', timestamp: 2, content: 'Checking implementation details.' },
+              ],
+            },
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy assistant response' }));
+
+    expect(writeText).toHaveBeenCalledWith('Final answer only.');
+    expect(writeText).not.toHaveBeenCalledWith(expect.stringContaining('Interim progress update.'));
+    expect(writeText).not.toHaveBeenCalledWith(expect.stringContaining('Checking implementation details.'));
+  });
+
+  it('copies the user message content from a user chat card', () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    render(
+      <ChatUserCard
+        entity={makeUserEntity({
+          message: {
+            content: 'Run the formatter before testing.',
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy user message' }));
+
+    expect(writeText).toHaveBeenCalledWith('Run the formatter before testing.');
+  });
+
   it('keeps interleaved work visible while structured runs are active', () => {
     render(
       <ChatAssistantCard
@@ -212,6 +306,28 @@ describe('ChatAssistantCard identity', () => {
 
     expect(screen.getByText('Agent running')).toBeTruthy();
     expect(screen.queryByText(/^working$/i)).toBeNull();
+  });
+
+  it('uses theme foreground tokens for the running cue label', () => {
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          status: 'running' as any,
+          message: {
+            status: 'running' as any,
+            content: '',
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByText('Agent running').className).toContain('text-foreground');
   });
 
   it('shows user steering messages in the active chat assistant card', () => {

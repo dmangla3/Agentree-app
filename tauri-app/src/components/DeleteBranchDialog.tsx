@@ -32,6 +32,13 @@ const pluralize = (count: number, singular: string, plural = `${singular}s`) => 
   `${count} ${count === 1 ? singular : plural}`
 );
 
+const detailSections = [
+  ['User nodes', 'user'],
+  ['Assistant nodes', 'assistant'],
+  ['Commit nodes', 'commit'],
+  ['Other nodes', 'other'],
+] as const;
+
 export function DeleteBranchDialog({
   open,
   title,
@@ -51,10 +58,13 @@ export function DeleteBranchDialog({
     : isDeleting
       ? 'Deleting selected branches'
       : `${pluralize(preview.totalCount, 'node')} affected`;
+  const hasDetails = Boolean(preview.threadLabel)
+    || preview.rootLabels.length > 0
+    || detailSections.some(([, key]) => preview.groups[key].length > 0);
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent className="overflow-hidden sm:max-w-[460px]">
+      <AlertDialogContent className="overflow-hidden sm:max-w-[520px]">
         <AlertDialogHeader>
           <div className="mb-1 flex items-center gap-3">
             <div
@@ -124,6 +134,53 @@ export function DeleteBranchDialog({
             </div>
           ) : null}
         </div>
+
+        {hasDetails && !isSuccess ? (
+          <div className="max-h-64 overflow-y-auto rounded-lg border bg-background/70 p-3 text-sm">
+            {preview.threadLabel ? (
+              <div className="mb-3 min-w-0">
+                <div className="text-xs font-medium uppercase text-muted-foreground">Thread</div>
+                <div className="mt-1 truncate font-medium text-foreground" title={preview.threadLabel}>
+                  {preview.threadLabel}
+                </div>
+              </div>
+            ) : null}
+
+            {preview.rootLabels.length > 0 ? (
+              <div className="mb-3 min-w-0">
+                <div className="text-xs font-medium uppercase text-muted-foreground">Selected branches</div>
+                <ul className="mt-1 space-y-1">
+                  {preview.rootLabels.map((item) => (
+                    <li key={item.id} className="truncate text-foreground" title={item.label}>
+                      {item.label}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            <div className="grid gap-3">
+              {detailSections.map(([label, key]) => {
+                const items = preview.groups[key];
+                if (items.length === 0) return null;
+                return (
+                  <div key={key} className="min-w-0">
+                    <div className="text-xs font-medium uppercase text-muted-foreground">
+                      {label}
+                    </div>
+                    <ul className="mt-1 space-y-1">
+                      {items.map((item) => (
+                        <li key={item.id} className="truncate text-foreground" title={item.label}>
+                          {item.label}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
 
         {removableCommitCount > 0 && !isSuccess ? (
           <label className={cn(

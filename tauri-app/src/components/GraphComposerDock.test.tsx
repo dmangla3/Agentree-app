@@ -115,7 +115,9 @@ describe('GraphComposerDock', () => {
 
     expect(composerSource).toContain('useTrackedRefs');
     expect(composerSource).toContain('useGitRefSnapshot');
-    expect(composerSource).toContain('trackedRefs: trackedRefsQuery.data ?? []');
+    expect(composerSource).toContain('const liveGitRefs = useMemo(() => buildLiveGitRefs({');
+    expect(composerSource).toContain('refs: liveRefs');
+    expect(composerSource).toContain('trackedRefs: liveTrackedRefs');
     expect(composerSource).toContain('headSha: currentHeadSha');
     expect(composerSource).toContain('agentRunCounts=');
     expect(composerSource).toContain('onAgentRunCountChange=');

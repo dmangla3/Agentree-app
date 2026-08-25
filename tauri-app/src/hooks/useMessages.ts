@@ -8,8 +8,8 @@ import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGat
 import { agentClient } from '../lib/agentClient';
 import { localNodeKeys, parseLocalNode } from './useLocalNodes';
 import { applyLocalNodeMessages } from './useLiveMessages';
-import { getAccessToken } from '../lib/authSession';
 import { useRunStatusStore } from '../stores/runStatusStore';
+import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
 
 const patchMessageInCache = (
     queryClient: ReturnType<typeof useQueryClient>,
@@ -17,21 +17,25 @@ const patchMessageInCache = (
     messageId: string,
     patch: (message: Message) => Message
 ) => {
+    let patchedMessage: Message | null = null;
+    queryClient.setQueryData<Message[]>(['messages', workspaceId], (current) => {
+        if (!current) return current;
+        return current.map((message) => {
+            if (message.id !== messageId) return message;
+            patchedMessage = patch(message);
+            return patchedMessage;
+        });
+    });
+
+    if (!patchedMessage) return;
     if (agentClient.hasRuntime()) {
-        const current = queryClient
-            .getQueryData<Message[]>(['messages', workspaceId])
-            ?.find((message) => message.id === messageId);
-        if (!current) return;
-        const next = patch(current);
         void agentClient
-            .upsertLocalNode(workspaceId, messageId, next)
+            .upsertLocalNode(workspaceId, messageId, patchedMessage)
             .finally(() => {
                 queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(workspaceId) });
                 markMessagesStaleOnly(queryClient, workspaceId, 'local-message-patch');
             });
-        return;
     }
-    void patch;
 };
 
 const markMessagesStaleOnly = (
@@ -430,9 +434,7 @@ export const useDeleteMessageBranch = () => {
         mutationFn: async ({ workspaceId, messageId }: { workspaceId: string; messageId: string }) => {
             console.log(`[useDeleteMessageBranch] Deleting branch for message ${messageId} in workspace ${workspaceId}`);
             await agentClient.localFirstDeleteBranch(workspaceId, messageId);
-            void getAccessToken()
-                .then((token) => agentClient.processLocalSyncEvents(token))
-                .catch(() => undefined);
+            queueLocalSyncFlush({ reason: 'message-branch-deleted' });
         },
         onSuccess: (_, variables) => {
             queryClient.setQueryData<Message[]>(
@@ -487,18 +489,27 @@ export const useUpdateTags = () => {
         }) => {
             console.log(`${action === 'add' ? 'Adding' : 'Removing'} tags for message ${messageId} in workspace ${workspaceId}`);
             if (action === 'add') {
-                await api.post(`/messages/${messageId}/tags`, { tags });
+                const response = await api.post<Message>(`/messages/${messageId}/tags`, { tags });
+                return response.data;
             } else {
-                await api.delete(`/messages/${messageId}/tags`, { data: { tags } });
+                const responses = await Promise.all(tags.map((tag) =>
+                    api.delete<Message>(`/messages/${messageId}/tags/${encodeURIComponent(tag)}`)
+                ));
+                return responses.length > 0 ? responses[responses.length - 1].data : null;
             }
         },
-        onSuccess: (_, variables) => {
+        onSuccess: (updatedMessage, variables) => {
             patchMessageInCache(queryClient, variables.workspaceId, variables.messageId, (message) => {
                 const currentTags = Array.isArray(message.tags) ? message.tags : [];
                 const nextTags = variables.action === 'add'
                     ? Array.from(new Set([...currentTags, ...variables.tags]))
                     : currentTags.filter((tag) => !variables.tags.includes(tag));
-                return { ...message, tags: nextTags, updatedAt: new Date().toISOString() };
+                return {
+                    ...message,
+                    ...(updatedMessage ?? {}),
+                    tags: Array.isArray(updatedMessage?.tags) ? updatedMessage.tags : nextTags,
+                    updatedAt: updatedMessage?.updatedAt ?? new Date().toISOString(),
+                };
             });
             markMessagesStaleOnly(queryClient, variables.workspaceId, 'update-tags');
         },

@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useState, useMemo, useRef } fro
 import type { ImperativePanelHandle } from 'react-resizable-panels';
 import { useAuthStore } from '../stores/authStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
+import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ChatInput } from '../components/ChatInput';
 import {
@@ -19,6 +20,7 @@ import { devLogLazy } from '../lib/appLogger';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 import { DEFAULT_GRAPH_CHAT_SPLIT, getGraphChatRestoreSplit, readRememberedGraphChatSplit, rememberGraphChatSplit } from '../lib/graphChatSplitLayout';
 import { resolveWorkspaceRouteState } from '../lib/workspaceRouteState';
+import { useOpenSearchHotkey } from '../hotkeys/searchHotkeys';
 import { PanelRightClose, PanelRightOpen, X } from 'lucide-react';
 
 const AdvancedSearchPanel = lazy(() => import('../components/AdvancedSearchPanel').then((module) => ({ default: module.AdvancedSearchPanel })));
@@ -70,6 +72,7 @@ export function HomePage() {
   const rememberedGraphChatSplitRef = useRef(readRememberedGraphChatSplit() ?? DEFAULT_GRAPH_CHAT_SPLIT);
   const hasCompletedOnboarding = useOnboardingStore((state) => state.hasCompletedForUser(user?.id));
   const markCompletedOnboarding = useOnboardingStore((state) => state.markCompleted);
+  const startLoginProfilesSync = useLoginProfilesStore((state) => state.startSync);
   const workspaces = workspacesData ?? [];
   const navigateToWorkspace = useCallback((id: string, options?: { replace?: boolean; messageId?: string | null }) => {
     const search = options?.messageId ? `?messageId=${encodeURIComponent(options.messageId)}` : '';
@@ -140,18 +143,14 @@ export function HomePage() {
     markCompletedOnboarding(user.id, selectedWorkspaceId ?? workspaces[0]?.id ?? null);
   }, [hasCompletedOnboarding, markCompletedOnboarding, selectedWorkspaceId, user, workspaces]);
 
-  // Keyboard shortcuts for search
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault();
-        setIsSearchPanelOpen(true);
-      }
-    };
+    if (!user) return undefined;
+    return startLoginProfilesSync();
+  }, [startLoginProfilesSync, user]);
 
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  useOpenSearchHotkey(() => {
+    setIsSearchPanelOpen(true);
+  });
 
   // Handle navigation to message from search results
   const handleNavigateToMessage = (messageId: string, workspaceId: string) => {

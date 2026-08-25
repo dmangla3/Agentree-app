@@ -132,7 +132,7 @@ export function buildExecutionTimelineItems(
 ): ExecutionTimelineItem[] {
   const items: ExecutionTimelineItem[] = [];
 
-  for (const timelineItem of projection.timelineItems) {
+  for (const timelineItem of projection.listItems) {
     const entity = projection.entitiesById.get(timelineItem.entityId);
     if (!entity || entity.kind === 'summary_block' || !entity.messageId || !entity.message) continue;
 

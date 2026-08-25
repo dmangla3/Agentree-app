@@ -277,4 +277,24 @@ describe('buildTrackingDashboardMetrics', () => {
       totalTokens: 220,
     });
   });
+
+  it('uses terminal execution status for recent run rows when message status is stale', () => {
+    const metrics = buildTrackingDashboardMetrics({
+      now,
+      range: '7d',
+      commits: [],
+      messages: [
+        message({
+          id: 'assistant-1',
+          createdAt: '2026-05-23T08:00:00.000Z',
+          status: 'pending',
+          execution_data: {
+            last_terminal_status: 'completed',
+          },
+        }),
+      ],
+    });
+
+    expect(metrics.recentRuns[0].status).toBe('completed');
+  });
 });

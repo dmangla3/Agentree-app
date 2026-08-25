@@ -624,7 +624,7 @@ export function FirstRunExperience({
                         <AlertDescription className="text-amber-900 dark:text-amber-100/85">
                           <p>Agentree requires Git plus one ready active login profile for Codex or Claude.</p>
                           <p className="font-mono text-xs text-amber-900/90 dark:text-amber-100/80">git --version</p>
-                          <p className="break-all font-mono text-xs text-amber-900/90 dark:text-amber-100/80">OPENAI_API_KEY / ANTHROPIC_API_KEY, Codex auth.json, or Claude CLI login</p>
+                          <p className="break-all font-mono text-xs text-amber-900/90 dark:text-amber-100/80">OPENAI_API_KEY / ANTHROPIC_API_KEY, managed Codex session, or Claude subscription</p>
                         </AlertDescription>
                       </Alert>
                     )}

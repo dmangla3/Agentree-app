@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Download, KeyRound, Plus, RefreshCw } from 'lucide-react';
+import {
+  Activity,
+  CheckCircle2,
+  CircleGauge,
+  Download,
+  KeyRound,
+  Loader2,
+  Plus,
+  RefreshCw,
+  ShieldCheck,
+  Terminal,
+} from 'lucide-react';
 import { Badge } from '../../../@/components/ui/badge';
 import { Button } from '../../../@/components/ui/button';
 import { Checkbox } from '../../../@/components/ui/checkbox';
@@ -12,8 +23,20 @@ import {
   DialogTitle,
 } from '../../../@/components/ui/dialog';
 import { useLoginProfilesStore } from '../../stores/loginProfilesStore';
-import { agentClient, type LoginImportCandidate } from '../../lib/agentClient';
-import type { LoginProfileSummary } from '../../lib/loginProfiles';
+import {
+  getProviderLimitSeverity,
+  getProviderLimitSummary,
+  providerLimitKey,
+  useProviderLimitsStore,
+} from '../../stores/providerLimitsStore';
+import type { LoginImportCandidate } from '../../lib/agentClient';
+import {
+  getLoginProfileAuthTypeLabel,
+  getLoginProfileStatusTone,
+  isLoginProfileActive,
+  type LoginProfileSummary,
+} from '../../lib/loginProfiles';
+import type { RuntimeProvider } from '../../lib/runtimeModels';
 import { cn } from '../../lib/utils';
 import { LoginProfileEditor } from './LoginProfileEditor';
 import { LoginProfileRows } from './LoginProfileRows';
@@ -25,6 +48,46 @@ const providerFilters: Array<{ id: ProviderFilter; label: string }> = [
   { id: 'claude', label: 'Claude' },
 ];
 
+const panelCopy = {
+  codex: {
+    eyebrow: 'Managed accounts',
+    title: 'Codex accounts',
+    description: 'Each account runs in its own profile home, so usage limits and refreshed session state stay isolated.',
+    emptyTitle: 'No Codex accounts',
+    emptyBody: 'Add a managed Codex profile before selecting Codex models for runs.',
+    setupTitle: 'Managed Codex session',
+    setupBody: 'Use one Agentree profile per Codex account. Agentree keeps the profile auth state live and saves token rotation after checks and runs.',
+  },
+  claude: {
+    eyebrow: 'Managed accounts',
+    title: 'Claude accounts',
+    description: 'Use one Agentree profile per Claude account. Subscription accounts connect in the browser; API keys stay isolated per profile.',
+    emptyTitle: 'No Claude accounts',
+    emptyBody: 'Add a Claude account before selecting Claude models for runs.',
+    setupTitle: 'Managed Claude account',
+    setupBody: 'Switch between Claude accounts from Agentree after each account has been connected once.',
+  },
+} satisfies Record<ProviderFilter, Record<string, string>>;
+
+const statusPillClasses = {
+  success: 'bg-emerald-50 text-emerald-700 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.2)] dark:bg-emerald-950/35 dark:text-emerald-300',
+  warning: 'bg-amber-50 text-amber-800 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.18)] dark:bg-amber-950/35 dark:text-amber-300',
+  danger: 'bg-red-50 text-red-700 shadow-[inset_0_0_0_1px_rgba(220,38,38,0.18)] dark:bg-red-950/35 dark:text-red-300',
+  muted: 'bg-muted text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.68)]',
+};
+
+const formatStatus = (status: string) => status.replace(/_/g, ' ');
+
+const formatCheckedAt = (timestamp?: number | null) => {
+  if (!timestamp) return 'Not checked';
+  return new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+    month: 'short',
+    day: 'numeric',
+  }).format(new Date(timestamp * 1000));
+};
+
 export function LoginProfilesPanel() {
   const {
     profiles,
@@ -34,17 +97,25 @@ export function LoginProfilesPanel() {
     error,
     refresh,
     saveProfile,
+    connectCodexProfile,
+    connectClaudeOauthProfile,
+    pollClaudeOauthProfile,
+    submitClaudeOauthCode,
     deleteProfile,
     setDefaultProfile,
     checkProfile,
     discoverImportCandidates,
     importCandidate,
+    startSync,
   } = useLoginProfilesStore();
+  const providerLimits = useProviderLimitsStore((state) => state.byProvider);
+  const refreshLimitsIfStale = useProviderLimitsStore((state) => state.refreshIfStale);
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>('codex');
   const [editorProvider, setEditorProvider] = useState<'codex' | 'claude'>('codex');
   const [editingProfile, setEditingProfile] = useState<LoginProfileSummary | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [pendingProfileId, setPendingProfileId] = useState<string | null>(null);
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [discoveryOpen, setDiscoveryOpen] = useState(false);
   const [isDiscovering, setIsDiscovering] = useState(false);
   const [isImportingCandidates, setIsImportingCandidates] = useState(false);
@@ -52,34 +123,78 @@ export function LoginProfilesPanel() {
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(new Set());
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  useEffect(() => startSync(), [startSync]);
+
+  const filteredProfiles = useMemo(
+    () => profiles.filter((profile) => profile.provider === providerFilter),
+    [profiles, providerFilter]
+  );
+
+  const selectedProfile = useMemo(() => {
+    if (selectedProfileId) {
+      const selected = filteredProfiles.find((profile) => profile.id === selectedProfileId);
+      if (selected) return selected;
+    }
+    return filteredProfiles.find((profile) => profile.isDefault) ?? filteredProfiles[0] ?? null;
+  }, [filteredProfiles, selectedProfileId]);
 
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    let cancelled = false;
-    void agentClient.onLoginProfilesChanged(() => {
-      void refresh();
-    }).then((cleanup) => {
-      if (cancelled) {
-        cleanup();
-      } else {
-        unlisten = cleanup;
-      }
+    setSelectedProfileId((current) => {
+      if (current && filteredProfiles.some((profile) => profile.id === current)) return current;
+      return filteredProfiles.find((profile) => profile.isDefault)?.id ?? filteredProfiles[0]?.id ?? null;
     });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, [refresh]);
+  }, [filteredProfiles]);
 
-  const filteredProfiles = useMemo(() => {
-    return profiles.filter((profile) => profile.provider === providerFilter);
-  }, [profiles, providerFilter]);
+  useEffect(() => {
+    if (!editingProfile) return;
+    const latest = profiles.find((profile) => profile.id === editingProfile.id);
+    if (latest && latest !== editingProfile) {
+      setEditingProfile(latest);
+    }
+  }, [editingProfile, profiles]);
 
-  const readyCount = profiles.filter((profile) => profile.status === 'ready').length;
-  const activeRunCount = Object.values(activeRunsByProfile).reduce((total, runs) => total + runs.length, 0);
+  useEffect(() => {
+    filteredProfiles
+      .filter((profile) => profile.provider === 'codex' && isLoginProfileActive(profile))
+      .forEach((profile) => {
+        refreshLimitsIfStale('codex', Date.now(), profile.id);
+      });
+  }, [filteredProfiles, refreshLimitsIfStale]);
+
+  const readyCount = filteredProfiles.filter((profile) => profile.status === 'ready').length;
+  const activeRunCount = filteredProfiles.reduce(
+    (total, profile) => total + (activeRunsByProfile[profile.id]?.length ?? 0),
+    0
+  );
+  const limitedCount = filteredProfiles.filter((profile) => profile.status === 'usage_limited').length;
+
+  const limitSummaryByProfile = useMemo(() => {
+    return filteredProfiles.reduce<Record<string, string | null>>((acc, profile) => {
+      if (profile.provider !== 'codex' && profile.provider !== 'claude') {
+        acc[profile.id] = null;
+        return acc;
+      }
+      const snapshot = providerLimits[providerLimitKey(profile.provider as RuntimeProvider, profile.id)];
+      acc[profile.id] = getProviderLimitSummary(snapshot);
+      return acc;
+    }, {});
+  }, [filteredProfiles, providerLimits]);
+
+  const limitSeverityByProfile = useMemo(() => {
+    return filteredProfiles.reduce<Record<string, ReturnType<typeof getProviderLimitSeverity>>>((acc, profile) => {
+      if (profile.provider !== 'codex' && profile.provider !== 'claude') {
+        acc[profile.id] = 'normal';
+        return acc;
+      }
+      const snapshot = providerLimits[providerLimitKey(profile.provider as RuntimeProvider, profile.id)];
+      acc[profile.id] = getProviderLimitSeverity(snapshot);
+      return acc;
+    }, {});
+  }, [filteredProfiles, providerLimits]);
+
+  const activeProfileLimitSummary = selectedProfile ? limitSummaryByProfile[selectedProfile.id] ?? null : null;
+  const activeProfileRuns = selectedProfile ? activeRunsByProfile[selectedProfile.id] ?? [] : [];
+  const copy = panelCopy[providerFilter];
 
   const openNewEditor = (provider: 'codex' | 'claude') => {
     setEditorProvider(provider);
@@ -102,6 +217,14 @@ export function LoginProfilesPanel() {
     }
   };
 
+  const saveEditorProfile = async (request: Parameters<typeof saveProfile>[0]) => {
+    const saved = await saveProfile(request);
+    setEditingProfile(saved);
+    setSelectedProfileId(saved.id);
+    setEditorProvider(saved.provider === 'claude' ? 'claude' : 'codex');
+    return saved;
+  };
+
   const runDiscovery = async () => {
     setIsDiscovering(true);
     setDiscoveryError(null);
@@ -120,11 +243,8 @@ export function LoginProfilesPanel() {
   const toggleCandidate = (candidateId: string, checked: boolean) => {
     setSelectedCandidateIds((current) => {
       const next = new Set(current);
-      if (checked) {
-        next.add(candidateId);
-      } else {
-        next.delete(candidateId);
-      }
+      if (checked) next.add(candidateId);
+      else next.delete(candidateId);
       return next;
     });
   };
@@ -152,14 +272,12 @@ export function LoginProfilesPanel() {
 
   return (
     <div className="app-view-surface h-full w-full overflow-auto p-5">
-      <div className="app-view-frame mx-auto flex min-h-full w-full max-w-6xl flex-col">
-        <header className="app-view-header">
+      <div className="app-view-frame mx-auto flex min-h-full w-full max-w-7xl flex-col">
+        <header className="mb-5 flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[hsl(var(--app-accent))]">Runtime access</p>
-            <h1 className="mt-1 text-2xl font-semibold text-foreground">Logins</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Manage provider credentials and see which runs are using each login profile.
-            </p>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[hsl(var(--app-accent))]">{copy.eyebrow}</p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight text-foreground">{copy.title}</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">{copy.description}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={isLoading}>
@@ -170,41 +288,22 @@ export function LoginProfilesPanel() {
               <Download className={cn('h-4 w-4', isDiscovering && 'animate-pulse')} />
               Find existing
             </Button>
-            <Button size="sm" onClick={() => openNewEditor('codex')}>
+            <Button size="sm" onClick={() => openNewEditor(providerFilter)}>
               <Plus className="h-4 w-4" />
-              Codex
-            </Button>
-            <Button size="sm" onClick={() => openNewEditor('claude')}>
-              <Plus className="h-4 w-4" />
-              Claude
+              Add {providerFilter === 'codex' ? 'Codex' : 'Claude'}
             </Button>
           </div>
         </header>
 
-        <div className="mb-4 grid gap-2 sm:grid-cols-3">
-          <div className="rounded-lg bg-background/74 p-4 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
-            <div className="text-[11px] font-medium text-muted-foreground">Profiles</div>
-            <div className="mt-1 text-2xl font-semibold tabular-nums text-foreground">{profiles.length}</div>
-          </div>
-          <div className="rounded-lg bg-background/74 p-4 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
-            <div className="text-[11px] font-medium text-muted-foreground">Ready</div>
-            <div className="mt-1 text-2xl font-semibold tabular-nums text-foreground">{readyCount}</div>
-          </div>
-          <div className="rounded-lg bg-background/74 p-4 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
-            <div className="text-[11px] font-medium text-muted-foreground">Active Runs</div>
-            <div className="mt-1 text-2xl font-semibold tabular-nums text-foreground">{activeRunCount}</div>
-          </div>
-        </div>
-
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="inline-flex rounded-lg bg-background/78 p-1 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.7)]">
+          <div className="inline-flex rounded-lg bg-background/82 p-1 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.7)]">
             {providerFilters.map((filter) => (
               <button
                 key={filter.id}
                 type="button"
                 onClick={() => setProviderFilter(filter.id)}
                 className={cn(
-                  'h-8 rounded-md px-3 text-[12px] font-semibold transition-[background-color,color,box-shadow,transform] active:scale-[0.96]',
+                  'h-9 min-w-24 rounded-md px-3 text-[12px] font-semibold transition-[background-color,color,box-shadow,transform] active:scale-[0.96]',
                   providerFilter === filter.id
                     ? 'bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))] shadow-[inset_0_0_0_1px_hsl(var(--app-accent)/0.16)]'
                     : 'text-muted-foreground hover:bg-muted hover:text-foreground'
@@ -214,6 +313,20 @@ export function LoginProfilesPanel() {
               </button>
             ))}
           </div>
+          <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+            <span className="inline-flex h-7 items-center gap-1.5 rounded-md bg-background/82 px-2.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]">
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+              <span className="font-mono tabular-nums">{readyCount}</span> ready
+            </span>
+            <span className="inline-flex h-7 items-center gap-1.5 rounded-md bg-background/82 px-2.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]">
+              <Activity className="h-3.5 w-3.5" />
+              <span className="font-mono tabular-nums">{activeRunCount}</span> running
+            </span>
+            <span className="inline-flex h-7 items-center gap-1.5 rounded-md bg-background/82 px-2.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]">
+              <CircleGauge className="h-3.5 w-3.5" />
+              <span className="font-mono tabular-nums">{limitedCount}</span> limited
+            </span>
+          </div>
         </div>
 
         {error ? (
@@ -222,27 +335,124 @@ export function LoginProfilesPanel() {
           </div>
         ) : null}
 
-        {filteredProfiles.length > 0 ? (
-          <LoginProfileRows
-            profiles={filteredProfiles}
-            activeRunsByProfile={activeRunsByProfile}
-            pendingProfileId={pendingProfileId}
-            onEdit={openEdit}
-            onCheck={(profile) => void runProfileAction(profile, () => checkProfile(profile.id))}
-            onSetDefault={(profile) => void runProfileAction(profile, () => setDefaultProfile(profile.provider, profile.id))}
-            onDelete={(profile) => void runProfileAction(profile, () => deleteProfile(profile.id))}
-          />
-        ) : (
-          <div className="flex min-h-[300px] flex-col items-center justify-center rounded-lg bg-background/72 p-6 text-center shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
-            <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))]">
-              <KeyRound className="h-5 w-5" />
-            </div>
-            <div className="mt-3 text-sm font-semibold text-foreground">No login profiles</div>
-            <p className="mt-1 max-w-sm text-sm leading-6 text-muted-foreground">
-              Add a provider login to unlock model selection and credential-aware agent runs.
-            </p>
-          </div>
-        )}
+        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+          <section className="min-w-0">
+            {filteredProfiles.length > 0 ? (
+              <LoginProfileRows
+                profiles={filteredProfiles}
+                activeRunsByProfile={activeRunsByProfile}
+                limitSummaryByProfile={limitSummaryByProfile}
+                limitSeverityByProfile={limitSeverityByProfile}
+                pendingProfileId={pendingProfileId}
+                selectedProfileId={selectedProfile?.id ?? null}
+                onSelect={(profile) => setSelectedProfileId(profile.id)}
+                onEdit={openEdit}
+                onCheck={(profile) => void runProfileAction(profile, () => checkProfile(profile.id))}
+                onSetDefault={(profile) => void runProfileAction(profile, () => setDefaultProfile(profile.provider, profile.id))}
+                onDelete={(profile) => void runProfileAction(profile, () => deleteProfile(profile.id))}
+              />
+            ) : (
+              <div className="flex min-h-[360px] flex-col items-center justify-center rounded-xl bg-background/78 p-8 text-center shadow-[0_18px_52px_-44px_rgba(15,23,42,0.65),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))]">
+                  <KeyRound className="h-5 w-5" />
+                </div>
+                <div className="mt-4 text-sm font-semibold text-foreground">{copy.emptyTitle}</div>
+                <p className="mt-1 max-w-sm text-sm leading-6 text-muted-foreground">{copy.emptyBody}</p>
+                <Button className="mt-5" size="sm" onClick={() => openNewEditor(providerFilter)}>
+                  <Plus className="h-4 w-4" />
+                  Add account
+                </Button>
+              </div>
+            )}
+          </section>
+
+          <aside className="space-y-3">
+            <section className="rounded-xl bg-background/82 p-4 shadow-[0_18px_52px_-44px_rgba(15,23,42,0.65),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Selected</div>
+                  <h2 className="mt-1 text-[15px] font-semibold text-foreground">
+                    {selectedProfile?.displayName ?? 'No account selected'}
+                  </h2>
+                </div>
+                {selectedProfile ? (
+                  <span className={cn('inline-flex h-7 items-center rounded-md px-2 text-[11px] font-semibold capitalize', statusPillClasses[getLoginProfileStatusTone(selectedProfile.status)])}>
+                    {formatStatus(selectedProfile.status)}
+                  </span>
+                ) : null}
+              </div>
+
+              {selectedProfile ? (
+                <div className="mt-4 space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-lg bg-muted/38 p-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Auth</div>
+                      <div className="mt-1 text-[12px] font-semibold text-foreground">{getLoginProfileAuthTypeLabel(selectedProfile.authType)}</div>
+                    </div>
+                    <div className="rounded-lg bg-muted/38 p-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Limits</div>
+                      <div className="mt-1 text-[12px] font-semibold text-foreground tabular-nums">{activeProfileLimitSummary ?? 'No data'}</div>
+                    </div>
+                    <div className="rounded-lg bg-muted/38 p-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Runs</div>
+                      <div className="mt-1 text-[12px] font-semibold text-foreground tabular-nums">{activeProfileRuns.length} active</div>
+                    </div>
+                    <div className="rounded-lg bg-muted/38 p-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Checked</div>
+                      <div className="mt-1 text-[12px] font-semibold text-foreground">{formatCheckedAt(selectedProfile.lastCheckedAt)}</div>
+                    </div>
+                  </div>
+
+                  {selectedProfile.statusMessage ? (
+                    <p className="rounded-lg bg-muted/38 px-3 py-2 text-[12px] leading-5 text-muted-foreground">
+                      {selectedProfile.statusMessage}
+                    </p>
+                  ) : null}
+
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void runProfileAction(selectedProfile, () => checkProfile(selectedProfile.id))}
+                      disabled={pendingProfileId === selectedProfile.id || selectedProfile.status === 'checking'}
+                    >
+                      {selectedProfile.status === 'checking' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                      Live check
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => openEdit(selectedProfile)}>
+                      <KeyRound className="h-4 w-4" />
+                      Reconnect
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-3 text-sm leading-6 text-muted-foreground">Select an account to inspect readiness and limit state.</p>
+              )}
+            </section>
+
+            <section className="rounded-xl bg-background/82 p-4 shadow-[0_18px_52px_-44px_rgba(15,23,42,0.65),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
+              <div className="flex items-center gap-2 text-[13px] font-semibold text-foreground">
+                {providerFilter === 'codex' ? <ShieldCheck className="h-4 w-4 text-[hsl(var(--app-accent))]" /> : <Terminal className="h-4 w-4 text-[hsl(var(--app-accent))]" />}
+                {copy.setupTitle}
+              </div>
+              <p className="mt-2 text-[12px] leading-5 text-muted-foreground">{copy.setupBody}</p>
+              <div className="mt-3 space-y-2 text-[11px] text-muted-foreground">
+                <div className="flex items-start gap-2">
+                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(var(--app-accent))]" />
+                  <span>One profile per account.</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(var(--app-accent))]" />
+                  <span>Default profile is used by model selection.</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(var(--app-accent))]" />
+                  <span>Usage limits refresh per account.</span>
+                </div>
+              </div>
+            </section>
+          </aside>
+        </div>
       </div>
 
       <LoginProfileEditor
@@ -252,7 +462,11 @@ export function LoginProfilesPanel() {
         isSaving={isMutating}
         error={error}
         onOpenChange={setEditorOpen}
-        onSave={saveProfile}
+        onSave={saveEditorProfile}
+        onConnectCodex={connectCodexProfile}
+        onConnectClaudeOauth={connectClaudeOauthProfile}
+        onPollClaudeOauth={pollClaudeOauthProfile}
+        onSubmitClaudeOauthCode={submitClaudeOauthCode}
       />
 
       <Dialog open={discoveryOpen} onOpenChange={setDiscoveryOpen}>
@@ -306,7 +520,7 @@ export function LoginProfilesPanel() {
             <div className="rounded-lg border border-border/70 bg-background px-4 py-8 text-center">
               <div className="text-sm font-semibold text-foreground">No existing logins found</div>
               <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                Checked supported environment variables, Codex auth files, and Claude CLI status.
+                Checked supported environment variables.
               </p>
             </div>
           )}

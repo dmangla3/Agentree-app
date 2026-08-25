@@ -19,6 +19,30 @@ static MCP_STARTED: AtomicBool = AtomicBool::new(false);
 static MCP_AUTH_TOKEN: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 static MCP_WORKSPACE_ID: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 
+fn configured_mcp_bind_addr() -> String {
+    env::var("AGENTREE_MCP_BIND").unwrap_or_else(|_| "127.0.0.1".to_string())
+}
+
+fn configured_mcp_port_string() -> Option<String> {
+    env::var("AGENTREE_MCP_PORT")
+        .or_else(|_| env::var("MCP_PORT"))
+        .ok()
+}
+
+fn mcp_server_url_from_parts(bind_addr: Option<&str>, port: Option<&str>) -> String {
+    let bind_addr = bind_addr.unwrap_or("127.0.0.1");
+    let port = port
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(61337);
+    format!("http://{}:{}/mcp", bind_addr, port)
+}
+
+pub fn mcp_server_url() -> String {
+    let bind_addr = configured_mcp_bind_addr();
+    let port = configured_mcp_port_string();
+    mcp_server_url_from_parts(Some(bind_addr.as_str()), port.as_deref())
+}
+
 #[derive(Clone)]
 struct McpState {
     server_base_url: String,
@@ -56,10 +80,8 @@ pub fn start_mcp_server(_app_handle: AppHandle) {
         return;
     }
 
-    let bind_addr = env::var("AGENTREE_MCP_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port = env::var("AGENTREE_MCP_PORT")
-        .or_else(|_| env::var("MCP_PORT"))
-        .ok()
+    let bind_addr = configured_mcp_bind_addr();
+    let port = configured_mcp_port_string()
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(61337);
 
@@ -120,6 +142,34 @@ pub fn set_mcp_workspace_id(workspace_id: String) -> Result<(), String> {
         *guard = Some(workspace_id);
     }
     Ok(())
+}
+
+pub(crate) fn set_mcp_current_context(
+    auth_token: &str,
+    workspace_id: Option<&str>,
+) -> Result<(), String> {
+    let mut auth_guard = MCP_AUTH_TOKEN.lock().map_err(|e| e.to_string())?;
+    let mut workspace_guard = MCP_WORKSPACE_ID.lock().map_err(|e| e.to_string())?;
+
+    if auth_token.trim().is_empty() {
+        *auth_guard = None;
+    } else {
+        *auth_guard = Some(auth_token.to_string());
+    }
+
+    if let Some(workspace_id) = workspace_id.filter(|value| !value.trim().is_empty()) {
+        *workspace_guard = Some(workspace_id.to_string());
+    } else {
+        *workspace_guard = None;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_mcp_server_url() -> String {
+    mcp_server_url()
 }
 
 async fn handle_rpc(
@@ -230,7 +280,7 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
             "tools": [
                 {
                     "name": "get_graph_overview",
-                    "description": "Get a visual overview of the workspace graph as an ASCII tree with statistics. Shows all messages with full node IDs that can be used with other graph tools. The workspace_id is auto-detected from current context; do not pass it unless querying a different workspace.",
+                    "description": "Get a visual overview of the current workspace node graph with thread and branch statistics. The workspace_id is auto-detected from current context; do not pass it unless querying a different workspace.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -244,7 +294,7 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                 },
                 {
                     "name": "graph_locate",
-                    "description": "Get your current position in the node graph. Returns your node ID, depth, parent chain, siblings, and children.",
+                    "description": "Locate a node in the current graph. Returns depth, parent, path, siblings, children, agent, and status details.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -262,7 +312,7 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                 },
                 {
                     "name": "graph_query",
-                    "description": "Search and filter nodes in the workspace graph. The workspace_id is auto-detected from current context; do not pass it unless querying a different workspace.",
+                    "description": "Search and filter graph nodes. The workspace_id is auto-detected from current context; do not pass it unless querying a different workspace.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -279,7 +329,7 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                 },
                 {
                     "name": "graph_read_node",
-                    "description": "Read the full content of a specific node, including message content and tool calls.",
+                    "description": "Read a specific graph node, including content, run metadata, and tool calls.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -292,11 +342,10 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                 },
                 {
                     "name": "graph_blame",
-                    "description": "Get line-by-line attribution for a file at a node using the committed git state for that node. The project_id is auto-resolved from the node's workspace if not provided.",
+                    "description": "Get line-by-line attribution for a file at an assistant node's resolved git commit.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "project_id": { "type": "string", "description": "Optional. Auto-resolved from node's workspace if not provided." },
                             "node_id": { "type": "string", "description": "Must be an assistant node ID (not a user node)." },
                             "file_path": { "type": "string" },
                             "include_context": { "type": "boolean" },
@@ -307,17 +356,68 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                 },
                 {
                     "name": "graph_diff",
-                    "description": "Compare the committed git states for two nodes. The project_id is auto-resolved from the nodes' workspace if not provided.",
+                    "description": "Compare the committed git states for two assistant nodes.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "project_id": { "type": "string", "description": "Optional. Auto-resolved from node's workspace if not provided." },
                             "from_node_id": { "type": "string", "description": "Must be an assistant node ID." },
                             "to_node_id": { "type": "string", "description": "Must be an assistant node ID." },
                             "file_path": { "type": "string" },
                             "include_content": { "type": "boolean" }
                         },
                         "required": ["from_node_id", "to_node_id"]
+                    }
+                },
+                {
+                    "name": "list_thread_sessions",
+                    "description": "List active thread sessions in the current workspace, including status, source, base commit, first node, and node count. The workspace_id is auto-detected from current context; do not pass it unless querying a different workspace.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "workspace_id": {
+                                "type": "string",
+                                "description": "OPTIONAL: Auto-detected from context. Only pass if querying a different workspace."
+                            }
+                        },
+                        "required": []
+                    }
+                },
+                {
+                    "name": "read_thread",
+                    "description": "Read a thread session and its ordered graph nodes.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "workspace_id": {
+                                "type": "string",
+                                "description": "OPTIONAL: Auto-detected from context. Only pass if querying a different workspace."
+                            },
+                            "thread_id": { "type": "string" },
+                            "max_nodes": { "type": "number", "description": "Maximum nodes to include" }
+                        },
+                        "required": ["thread_id"]
+                    }
+                },
+                {
+                    "name": "query_commits",
+                    "description": "Search and filter the persisted workspace commit graph. The workspace_id is auto-detected from current context; do not pass it unless querying a different workspace.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "workspace_id": {
+                                "type": "string",
+                                "description": "OPTIONAL: Auto-detected from context. Only pass if querying a different workspace."
+                            },
+                            "filters": {
+                                "type": "object",
+                                "description": "Filter criteria like {source_kind: 'agent', produced_by_node_id: 'node-id', sha: 'abc123'}"
+                            },
+                            "limit": { "type": "number", "description": "Maximum commits to return" },
+                            "offset": { "type": "number", "description": "Pagination offset" },
+                            "include_parents": { "type": "boolean" },
+                            "include_observations": { "type": "boolean" }
+                        },
+                        "required": []
                     }
                 }
             ]
@@ -427,10 +527,6 @@ async fn handle_tools_call(
         }
         Some("graph_blame") => {
             let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
-            let project_id = args
-                .get("project_id")
-                .and_then(|value| value.as_str())
-                .map(|value| value.to_string());
             let node_id = args
                 .get("node_id")
                 .and_then(|value| value.as_str())
@@ -439,7 +535,6 @@ async fn handle_tools_call(
                 .get("file_path")
                 .and_then(|value| value.as_str())
                 .map(|value| value.to_string());
-            // project_id is now optional - will be auto-resolved from node's conversation
             if node_id.is_none() || file_path.is_none() {
                 return JsonRpcResponse {
                     jsonrpc: "2.0",
@@ -463,7 +558,6 @@ async fn handle_tools_call(
                 id,
                 headers,
                 state,
-                project_id, // Now Option<String>
                 node_id.unwrap(),
                 file_path.unwrap(),
                 include_context,
@@ -473,10 +567,6 @@ async fn handle_tools_call(
         }
         Some("graph_diff") => {
             let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
-            let project_id = args
-                .get("project_id")
-                .and_then(|value| value.as_str())
-                .map(|value| value.to_string());
             let from_node_id = args
                 .get("from_node_id")
                 .and_then(|value| value.as_str())
@@ -485,7 +575,6 @@ async fn handle_tools_call(
                 .get("to_node_id")
                 .and_then(|value| value.as_str())
                 .map(|value| value.to_string());
-            // project_id is now optional - will be auto-resolved from node's conversation
             if from_node_id.is_none() || to_node_id.is_none() {
                 return JsonRpcResponse {
                     jsonrpc: "2.0",
@@ -509,11 +598,85 @@ async fn handle_tools_call(
                 id,
                 headers,
                 state,
-                project_id, // Now Option<String>
                 from_node_id.unwrap(),
                 to_node_id.unwrap(),
                 file_path,
                 include_content,
+            )
+            .await
+        }
+        Some("list_thread_sessions") => {
+            let workspace_id = get_workspace_id(arguments);
+            if let Err(resp) = workspace_id {
+                return resp.with_id(id);
+            }
+            handle_list_thread_sessions(id, headers, state, workspace_id.unwrap()).await
+        }
+        Some("read_thread") => {
+            let workspace_id = get_workspace_id(arguments);
+            if let Err(resp) = workspace_id {
+                return resp.with_id(id);
+            }
+            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
+            let thread_id = args
+                .get("thread_id")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string());
+            if thread_id.is_none() {
+                return JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: "thread_id is required".to_string(),
+                    }),
+                };
+            }
+            let max_nodes = args
+                .get("max_nodes")
+                .and_then(|value| value.as_u64())
+                .map(|value| value as u32);
+            handle_read_thread(
+                id,
+                headers,
+                state,
+                workspace_id.unwrap(),
+                thread_id.unwrap(),
+                max_nodes,
+            )
+            .await
+        }
+        Some("query_commits") => {
+            let workspace_id = get_workspace_id(arguments);
+            if let Err(resp) = workspace_id {
+                return resp.with_id(id);
+            }
+            let filters = arguments.and_then(|args| args.get("filters")).cloned();
+            let limit = arguments
+                .and_then(|args| args.get("limit"))
+                .and_then(|value| value.as_u64())
+                .map(|value| value as u32);
+            let offset = arguments
+                .and_then(|args| args.get("offset"))
+                .and_then(|value| value.as_u64())
+                .map(|value| value as u32);
+            let include_parents = arguments
+                .and_then(|args| args.get("include_parents"))
+                .and_then(|value| value.as_bool());
+            let include_observations = arguments
+                .and_then(|args| args.get("include_observations"))
+                .and_then(|value| value.as_bool());
+            handle_query_commits(
+                id,
+                headers,
+                state,
+                workspace_id.unwrap(),
+                filters,
+                limit,
+                offset,
+                include_parents,
+                include_observations,
             )
             .await
         }
@@ -568,6 +731,64 @@ mod tests {
             result.is_err(),
             "binding an already occupied MCP address should return an error"
         );
+    }
+
+    #[test]
+    fn mcp_server_url_uses_default_bind_and_port() {
+        assert_eq!(
+            mcp_server_url_from_parts(None, None),
+            "http://127.0.0.1:61337/mcp"
+        );
+    }
+
+    #[test]
+    fn mcp_server_url_uses_configured_bind_and_port() {
+        assert_eq!(
+            mcp_server_url_from_parts(Some("0.0.0.0"), Some("61234")),
+            "http://0.0.0.0:61234/mcp"
+        );
+    }
+
+    #[test]
+    fn tools_list_exposes_current_graph_tools_without_project_id() {
+        let response = handle_tools_list(serde_json::json!(1));
+        let result = response.result.expect("tools/list should return result");
+        let tools = result
+            .get("tools")
+            .and_then(|value| value.as_array())
+            .expect("tools should be an array");
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(|name| name.as_str()))
+            .collect();
+
+        assert!(names.contains(&"list_thread_sessions"));
+        assert!(names.contains(&"read_thread"));
+        assert!(names.contains(&"query_commits"));
+
+        let serialized = serde_json::to_string(&result).expect("tools result should serialize");
+        assert!(!serialized.contains("project_id"));
+        assert!(!serialized.contains("messages"));
+        assert!(!serialized.contains("workspace tree"));
+    }
+
+    #[test]
+    fn set_mcp_current_context_seeds_fallback_workspace_and_auth() {
+        set_mcp_current_context("token-1", Some("workspace-1")).expect("context should set");
+
+        assert_eq!(
+            get_workspace_id(None).expect("workspace should come from fallback"),
+            "workspace-1"
+        );
+        assert_eq!(
+            get_auth_header(HeaderMap::new()).expect("auth should come from fallback"),
+            "Bearer token-1"
+        );
+
+        set_mcp_current_context("", Some("")).expect("blank context should clear");
+
+        assert!(get_workspace_id(None).is_err());
+        assert!(get_auth_header(HeaderMap::new()).is_err());
     }
 }
 
@@ -1024,6 +1245,217 @@ async fn handle_graph_read_node(
     }
 }
 
+async fn handle_list_thread_sessions(
+    id: serde_json::Value,
+    headers: HeaderMap,
+    state: Arc<McpState>,
+    workspace_id: String,
+) -> JsonRpcResponse {
+    let auth_header = match get_auth_header(headers) {
+        Ok(value) => value,
+        Err(err) => return err.with_id(id),
+    };
+
+    let mut url = match Url::parse(&format!(
+        "{}/api/graph/thread-sessions",
+        state.server_base_url
+    )) {
+        Ok(url) => url,
+        Err(err) => {
+            return JsonRpcResponse {
+                jsonrpc: "2.0",
+                id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32002,
+                    message: format!("Invalid server URL: {}", err),
+                }),
+            };
+        }
+    };
+    url.query_pairs_mut()
+        .append_pair("workspace_id", workspace_id.as_str());
+
+    let request = state.http.get(url).header("Authorization", auth_header);
+    text_output_response(id, request, "Thread session listing failed").await
+}
+
+async fn handle_read_thread(
+    id: serde_json::Value,
+    headers: HeaderMap,
+    state: Arc<McpState>,
+    workspace_id: String,
+    thread_id: String,
+    max_nodes: Option<u32>,
+) -> JsonRpcResponse {
+    let auth_header = match get_auth_header(headers) {
+        Ok(value) => value,
+        Err(err) => return err.with_id(id),
+    };
+
+    let mut url = match Url::parse(&format!("{}/api/graph/read-thread", state.server_base_url)) {
+        Ok(url) => url,
+        Err(err) => {
+            return JsonRpcResponse {
+                jsonrpc: "2.0",
+                id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32002,
+                    message: format!("Invalid server URL: {}", err),
+                }),
+            };
+        }
+    };
+    url.query_pairs_mut()
+        .append_pair("workspace_id", workspace_id.as_str())
+        .append_pair("thread_id", thread_id.as_str());
+    if let Some(max_nodes) = max_nodes {
+        url.query_pairs_mut()
+            .append_pair("max_nodes", &max_nodes.to_string());
+    }
+
+    let request = state.http.get(url).header("Authorization", auth_header);
+    text_output_response(id, request, "Thread read failed").await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_query_commits(
+    id: serde_json::Value,
+    headers: HeaderMap,
+    state: Arc<McpState>,
+    workspace_id: String,
+    filters: Option<serde_json::Value>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+    include_parents: Option<bool>,
+    include_observations: Option<bool>,
+) -> JsonRpcResponse {
+    let auth_header = match get_auth_header(headers) {
+        Ok(value) => value,
+        Err(err) => return err.with_id(id),
+    };
+
+    let url = match Url::parse(&format!(
+        "{}/api/graph/query-commits",
+        state.server_base_url
+    )) {
+        Ok(url) => url,
+        Err(err) => {
+            return JsonRpcResponse {
+                jsonrpc: "2.0",
+                id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32002,
+                    message: format!("Invalid server URL: {}", err),
+                }),
+            };
+        }
+    };
+
+    let mut body = serde_json::Map::new();
+    body.insert(
+        "workspace_id".to_string(),
+        serde_json::Value::String(workspace_id),
+    );
+    body.insert(
+        "filters".to_string(),
+        filters.unwrap_or_else(|| serde_json::json!({})),
+    );
+    if let Some(limit) = limit {
+        body.insert("limit".to_string(), serde_json::Value::Number(limit.into()));
+    }
+    if let Some(offset) = offset {
+        body.insert(
+            "offset".to_string(),
+            serde_json::Value::Number(offset.into()),
+        );
+    }
+    if let Some(include_parents) = include_parents {
+        body.insert(
+            "include_parents".to_string(),
+            serde_json::Value::Bool(include_parents),
+        );
+    }
+    if let Some(include_observations) = include_observations {
+        body.insert(
+            "include_observations".to_string(),
+            serde_json::Value::Bool(include_observations),
+        );
+    }
+
+    let request = state
+        .http
+        .post(url)
+        .header("Authorization", auth_header)
+        .json(&body);
+    text_output_response(id, request, "Commit query failed").await
+}
+
+async fn text_output_response(
+    id: serde_json::Value,
+    request: reqwest::RequestBuilder,
+    fallback_error: &str,
+) -> JsonRpcResponse {
+    match request.send().await {
+        Ok(response) => {
+            let status = response.status();
+            match response.json::<serde_json::Value>().await {
+                Ok(body) => {
+                    if !status.is_success() {
+                        let message = body
+                            .get("error")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or(fallback_error)
+                            .to_string();
+                        return JsonRpcResponse {
+                            jsonrpc: "2.0",
+                            id,
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32003,
+                                message,
+                            }),
+                        };
+                    }
+                    let output = body
+                        .get("output")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    JsonRpcResponse {
+                        jsonrpc: "2.0",
+                        id,
+                        result: Some(
+                            serde_json::json!({ "content": [ { "type": "text", "text": output } ] }),
+                        ),
+                        error: None,
+                    }
+                }
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32004,
+                        message: format!("Invalid response body: {}", err),
+                    }),
+                },
+            }
+        }
+        Err(err) => JsonRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32005,
+                message: format!("Request failed: {}", err),
+            }),
+        },
+    }
+}
+
 async fn fetch_graph_node_metadata(
     state: &Arc<McpState>,
     auth_header: &str,
@@ -1077,7 +1509,6 @@ async fn handle_graph_blame(
     id: serde_json::Value,
     headers: HeaderMap,
     state: Arc<McpState>,
-    _project_id: Option<String>,
     node_id: String,
     file_path: String,
     _include_context: bool,
@@ -1193,7 +1624,6 @@ async fn handle_graph_diff(
     id: serde_json::Value,
     headers: HeaderMap,
     state: Arc<McpState>,
-    _project_id: Option<String>,
     from_node_id: String,
     to_node_id: String,
     file_path: Option<String>,

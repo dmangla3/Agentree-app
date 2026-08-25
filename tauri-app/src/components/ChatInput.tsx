@@ -63,6 +63,7 @@ import {
     type ComposerBaseMessage,
     type ComposerCommitPickerCommit,
 } from '../lib/composerBaseCommit';
+import { buildLiveGitRefs, getComposerBaseSnapshotGitRefs } from '../lib/liveGitRefs';
 import {
     createComposerSendStartGate,
     finishComposerSendStart,
@@ -80,6 +81,7 @@ import {
 } from '../lib/composerRepoMentions';
 import { hasFreshContextBoundary } from '../lib/messageContext';
 import { getLegacyThreadIdForMessage, getMessageThreadSessionId } from '../lib/threadSessions';
+import { appendClaudeMcpConfigArgs, DEFAULT_MCP_SERVER_URL } from '../lib/mcpRuntime';
 import {
     scheduleMessagesRefreshWhenGraphIdle,
 } from '../lib/graphInteractionGate';
@@ -610,7 +612,11 @@ export function ChatInput({
         () => getEnabledTrackedGitRefs(trackedRefsQuery.data ?? []),
         [trackedRefsQuery.data]
     );
-    const gitRefSnapshotQuery = useGitRefSnapshot(selectedWorkspaceRepoPath, enabledTrackedGitRefs);
+    const composerBaseSnapshotGitRefs = useMemo(
+        () => getComposerBaseSnapshotGitRefs(enabledTrackedGitRefs),
+        [enabledTrackedGitRefs]
+    );
+    const gitRefSnapshotQuery = useGitRefSnapshot(selectedWorkspaceRepoPath, composerBaseSnapshotGitRefs);
     const [contextPolicy, setContextPolicy] = useState<ContextPolicy>('continue');
     const [composerTargetMode, setComposerTargetMode] = useState<ComposerTargetMode>('reply');
     const [sendPressFeedback, setSendPressFeedback] = useState(false);
@@ -847,7 +853,7 @@ export function ChatInput({
             ? focusState.lastFocusMetadata.flowId
             : null;
         const userMovedFocusAfterSendStarted =
-            (focusState.lastFocusSource === 'graph' || focusState.lastFocusSource === 'chat' || focusState.lastFocusSource === 'timeline') &&
+            (focusState.lastFocusSource === 'graph' || focusState.lastFocusSource === 'chat' || focusState.lastFocusSource === 'list') &&
             focusState.focusNonce !== activeFlow.ownerFocusNonce &&
             metadataFlowId !== flowId;
         if (userMovedFocusAfterSendStarted) {
@@ -1198,6 +1204,27 @@ export function ChatInput({
         };
         return { promise, reused: null };
     }, []);
+
+    useEffect(() => {
+        if (!selectedWorkspaceId || !agentClient.hasRuntime()) return;
+        let cancelled = false;
+
+        void (async () => {
+            try {
+                const token = await getAccessToken();
+                if (cancelled) return;
+                await ensureMcpSetup(token, selectedWorkspaceId);
+            } catch (error) {
+                if (!cancelled) {
+                    console.warn('[AgentSetup] Failed to sync MCP context:', error);
+                }
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [ensureMcpSetup, selectedWorkspaceId]);
 
     const notifyAutoCheckoutDidNotSucceed = useCallback((description: string, variant: 'warning' | 'error' = 'warning') => {
         addToast({
@@ -2295,7 +2322,13 @@ export function ChatInput({
     const handleAgentPickerOpenChange = useCallback((open: boolean) => {
         setIsAgentPickerOpen(open);
         if (!open) return;
-        refreshProviderLimitsIfStale('codex');
+        const codexProfiles = useLoginProfilesStore
+            .getState()
+            .profiles
+            .filter((profile) => profile.provider === 'codex' && isLoginProfileActive(profile));
+        codexProfiles.forEach((profile) => {
+            refreshProviderLimitsIfStale('codex', Date.now(), profile.id);
+        });
     }, [refreshProviderLimitsIfStale]);
 
     useEffect(() => {
@@ -2332,15 +2365,14 @@ export function ChatInput({
             base_commit_sha: message.base_commit_sha ?? null,
         }))
     ), [messageLookupMessages]);
-    const commitPickerRefs = localCommitChoicesQuery.refs;
-    const currentHeadSha = gitRefSnapshotQuery.data?.head_sha?.trim() || null;
-    const commitPickerRefsWithHead = useMemo(() => {
-        if (!currentHeadSha) return commitPickerRefs;
-        return [
-            { git_ref: 'HEAD', short_name: 'HEAD', commit_sha: currentHeadSha },
-            ...commitPickerRefs.filter((ref) => ref.git_ref !== 'HEAD'),
-        ];
-    }, [commitPickerRefs, currentHeadSha]);
+    const liveGitRefs = useMemo(() => buildLiveGitRefs({
+        refs: localCommitChoicesQuery.refs,
+        trackedRefs: trackedRefsQuery.data ?? [],
+        snapshot: gitRefSnapshotQuery.data,
+    }), [gitRefSnapshotQuery.data, localCommitChoicesQuery.refs, trackedRefsQuery.data]);
+    const commitPickerRefs = liveGitRefs.refs;
+    const liveTrackedRefs = liveGitRefs.trackedRefs;
+    const currentHeadSha = liveGitRefs.headSha;
     const defaultBaseResolution = useMemo(() => (
         focusedCommitSha
             ? {
@@ -2354,7 +2386,7 @@ export function ChatInput({
                 selectedNodeId,
                 messages: composerBaseMessages,
                 refs: commitPickerRefs,
-                trackedRefs: trackedRefsQuery.data ?? [],
+                trackedRefs: liveTrackedRefs,
                 workspaceBaseCommitSha: selectedWorkspace?.base_commit_sha ?? null,
             })
     ), [
@@ -2362,10 +2394,10 @@ export function ChatInput({
         commitPickerRefs,
         focusedCommitSha,
         isNewThreadTarget,
+        liveTrackedRefs,
         replyParentMessageId,
         selectedNodeId,
         selectedWorkspace?.base_commit_sha,
-        trackedRefsQuery.data,
     ]);
     const defaultBaseCommitSha = defaultBaseResolution.sha;
     const baseCommitCandidatesQuery = useCommitDescendants(selectedWorkspaceId, defaultBaseCommitSha, {
@@ -2507,18 +2539,18 @@ export function ChatInput({
         defaultSha: defaultBaseCommitSha,
         effectiveSha: effectiveBaseCommitSha,
         commits: baseCommitPickerCommits,
-        refs: commitPickerRefsWithHead,
-        trackedRefs: trackedRefsQuery.data ?? [],
+        refs: commitPickerRefs,
+        trackedRefs: liveTrackedRefs,
         laterCommitShas,
         earlierCommitShas,
     }), [
         baseCommitPickerCommits,
-        commitPickerRefsWithHead,
+        commitPickerRefs,
         defaultBaseCommitSha,
         earlierCommitShas,
         effectiveBaseCommitSha,
         laterCommitShas,
-        trackedRefsQuery.data,
+        liveTrackedRefs,
     ]);
     const baseCommitPickerItems = useMemo(() => {
         const query = baseCommitSearch.trim().toLowerCase();
@@ -2541,17 +2573,17 @@ export function ChatInput({
     }, [baseCommitPickerCommits]);
     const baseCommitChipItems = useMemo(() => buildComposerCommitPickerChipItems({
         items: baseCommitAllPickerItems,
-        refs: commitPickerRefsWithHead,
-        trackedRefs: trackedRefsQuery.data ?? [],
+        refs: commitPickerRefs,
+        trackedRefs: liveTrackedRefs,
         headSha: currentHeadSha,
         commitRecencyBySha,
         limit: 6,
     }), [
         baseCommitAllPickerItems,
-        commitPickerRefsWithHead,
+        commitPickerRefs,
         commitRecencyBySha,
         currentHeadSha,
-        trackedRefsQuery.data,
+        liveTrackedRefs,
     ]);
     const isBaseCommitChoicesLoading = localCommitChoicesQuery.isLoading || baseCommitCandidatesQuery.isLoading || baseCommitAncestorsQuery.isLoading;
     const handleBaseCommitSelect = useCallback((item: typeof baseCommitPickerItems[number]) => {
@@ -4810,17 +4842,10 @@ export function ChatInput({
                 if (!cliArgs.includes('--permission-mode')) {
                     cliArgs.push('--permission-mode', 'auto');
                 }
-                if (!cliArgs.includes('--mcp-config')) {
-                    const mcpConfig = JSON.stringify({
-                        mcpServers: {
-                            agentree: {
-                                type: 'http',
-                                url: 'http://127.0.0.1:61337/mcp',
-                            },
-                        },
-                    });
-                    cliArgs.push('--mcp-config', mcpConfig, '--strict-mcp-config');
-                }
+                const mcpServerUrl = agentClient.hasRuntime()
+                    ? await agentClient.getMcpServerUrl().catch(() => DEFAULT_MCP_SERVER_URL)
+                    : DEFAULT_MCP_SERVER_URL;
+                cliArgs = appendClaudeMcpConfigArgs(cliArgs, mcpServerUrl);
                 cliArgs.push('--session-id', agentSessionId);
                 cliArgs.push('--print', '--output-format', 'stream-json', '--verbose', '--no-session-persistence');
             }

@@ -1,13 +1,13 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ScrollArea } from '../../@/components/ui/scroll-area';
-import { TimelineNodeDispatcher } from './nodes/timeline/TimelineNodeDispatcher';
-import type { WorkspaceProjection, ProjectedTimelineItem } from '../domain/workspaceProjection';
+import { ListNodeDispatcher } from './nodes/list/ListNodeDispatcher';
+import type { WorkspaceProjection, ProjectedListItem } from '../domain/workspaceProjection';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { Clock } from 'lucide-react';
 import { format, isToday, isYesterday, parseISO } from 'date-fns';
 import { NodeContextMenu, type NodeContextMenuState } from './NodeContextMenu';
 
-interface TimelineViewProps {
+interface ListViewProps {
   projection: WorkspaceProjection;
   focusedMessageId: string | null;
   onNodeClick?: (messageId: string) => void;
@@ -31,20 +31,20 @@ const groupItemsByDay = (items: any[]) => {
   return grouped;
 };
 
-const getTimelineItemSelectionId = (projection: WorkspaceProjection, item: ProjectedTimelineItem): string | null => {
+const getListItemSelectionId = (projection: WorkspaceProjection, item: ProjectedListItem): string | null => {
   if (item.type !== 'entity') return null;
   const entity = projection.entitiesById.get(item.entityId);
   if (!entity) return null;
   return entity.messageId || entity.summary?.id || null;
 };
 
-type TimelineGroupedBlock =
-  | { key: string; turnGroupId: string; items: ProjectedTimelineItem[] }
-  | { key: string; turnGroupId: null; items: [ProjectedTimelineItem] };
+type ListGroupedBlock =
+  | { key: string; turnGroupId: string; items: ProjectedListItem[] }
+  | { key: string; turnGroupId: null; items: [ProjectedListItem] };
 
-const getTimelineItemTurnGroupId = (
+const getListItemTurnGroupId = (
   projection: WorkspaceProjection,
-  item: ProjectedTimelineItem
+  item: ProjectedListItem
 ): string | null => {
   if (item.type === 'entity') {
     const entity = projection.entitiesById.get(item.entityId);
@@ -54,14 +54,14 @@ const getTimelineItemTurnGroupId = (
   return null;
 };
 
-const groupTimelineItemsByTurn = (
+const groupListItemsByTurn = (
   projection: WorkspaceProjection,
-  items: ProjectedTimelineItem[]
-): TimelineGroupedBlock[] => {
-  const grouped: TimelineGroupedBlock[] = [];
+  items: ProjectedListItem[]
+): ListGroupedBlock[] => {
+  const grouped: ListGroupedBlock[] = [];
 
   items.forEach((item, index) => {
-    const turnGroupId = getTimelineItemTurnGroupId(projection, item);
+    const turnGroupId = getListItemTurnGroupId(projection, item);
     const lastGroup = grouped[grouped.length - 1];
 
     if (turnGroupId && lastGroup && lastGroup.turnGroupId === turnGroupId) {
@@ -72,15 +72,15 @@ const groupTimelineItemsByTurn = (
     grouped.push({
       key: turnGroupId ? `${turnGroupId}:${index}` : `standalone:${index}:${item.entityId}`,
       turnGroupId,
-      items: [item] as [ProjectedTimelineItem],
+      items: [item] as [ProjectedListItem],
     });
   });
 
   return grouped;
 };
 
-const getTimelineRowDomId = (item: ProjectedTimelineItem): string =>
-  `timeline-row-entity-${item.entityId}`;
+const getListRowDomId = (item: ProjectedListItem): string =>
+  `list-row-entity-${item.entityId}`;
 
 const BOTTOM_PIN_THRESHOLD_PX = 96;
 const USER_SCROLL_INTENT_WINDOW_MS = 1200;
@@ -89,7 +89,7 @@ const isViewportNearBottom = (viewport: HTMLDivElement): boolean => (
   viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= BOTTOM_PIN_THRESHOLD_PX
 );
 
-export const TimelineView = memo(({
+export const ListView = memo(({
   projection,
   focusedMessageId,
   filterActive,
@@ -98,7 +98,7 @@ export const TimelineView = memo(({
   onSelectionChange,
   onRequestDeleteMessages,
   onAddCommitsToMergePanel,
-}: TimelineViewProps) => {
+}: ListViewProps) => {
   const [contextMenu, setContextMenu] = useState<NodeContextMenuState | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -114,7 +114,7 @@ export const TimelineView = memo(({
     clearSelectedMessageIds();
     dispatchFocus({
       messageId: id,
-      source: 'timeline',
+      source: 'list',
       metadata,
     });
   }, [clearSelectedMessageIds, dispatchFocus]);
@@ -157,10 +157,10 @@ export const TimelineView = memo(({
     });
   }, [selectedNodeIds]);
 
-  const timelineItems = useMemo(() => {
-    if (!filterActive) return projection.timelineItems;
+  const listItems = useMemo(() => {
+    if (!filterActive) return projection.listItems;
 
-    return projection.timelineItems.filter((item) => {
+    return projection.listItems.filter((item) => {
       const entity = projection.entitiesById.get(item.entityId);
       if (!entity) return false;
       if (entity.messageId && matchingMessageIds.has(entity.messageId)) return true;
@@ -174,14 +174,14 @@ export const TimelineView = memo(({
     filterActive,
     matchingMessageIds,
     projection.entitiesById,
-    projection.timelineItems,
+    projection.listItems,
   ]);
 
-  const groupedByDay = groupItemsByDay(timelineItems);
+  const groupedByDay = groupItemsByDay(listItems);
   const sortedDays = Object.keys(groupedByDay).sort((a, b) => a.localeCompare(b));
-  const timelineScrollAnchorFingerprint = useMemo(() => (
-    timelineItems.map((item) => `entity:${item.entityId}:${item.sortTs}`).join('|')
-  ), [timelineItems]);
+  const listScrollAnchorFingerprint = useMemo(() => (
+    listItems.map((item) => `entity:${item.entityId}:${item.sortTs}`).join('|')
+  ), [listItems]);
 
   const markUserScrollIntent = useCallback(() => {
     userScrollIntentUntilRef.current = performance.now() + USER_SCROLL_INTENT_WINDOW_MS;
@@ -236,7 +236,7 @@ export const TimelineView = memo(({
     scrollToBottom();
     const rafId = window.requestAnimationFrame(scrollToBottom);
     return () => window.cancelAnimationFrame(rafId);
-  }, [timelineScrollAnchorFingerprint, selectedWorkspaceId]);
+  }, [listScrollAnchorFingerprint, selectedWorkspaceId]);
 
   useEffect(() => {
     if (!focusedMessageId) return;
@@ -244,7 +244,7 @@ export const TimelineView = memo(({
     const focusedEntity = projection.entitiesByMessageId.get(focusedMessageId);
     const targetDomId = (() => {
       if (focusedEntity) {
-        return getTimelineRowDomId({ type: 'entity', entityId: focusedEntity.entityId, sortTs: focusedEntity.sortTs });
+        return getListRowDomId({ type: 'entity', entityId: focusedEntity.entityId, sortTs: focusedEntity.sortTs });
       }
       return null;
     })();
@@ -260,7 +260,7 @@ export const TimelineView = memo(({
     });
 
     return () => window.cancelAnimationFrame(rafId);
-  }, [focusedMessageId, projection.entitiesByMessageId, timelineItems.length]);
+  }, [focusedMessageId, projection.entitiesByMessageId, listItems.length]);
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-[linear-gradient(180deg,hsl(var(--app-bg-elevated)/0.62),hsl(var(--app-bg))_22%,hsl(var(--app-bg-muted)/0.56)_100%)] dark:bg-[linear-gradient(180deg,hsl(var(--app-bg-elevated)/0.58),hsl(var(--app-bg))_34%,hsl(var(--background))_100%)]">
@@ -281,7 +281,7 @@ export const TimelineView = memo(({
                   <Clock size={16} strokeWidth={1.8} />
                 </div>
                 <div className="space-y-1">
-                  <p className="text-sm font-semibold text-foreground">No timeline items</p>
+                  <p className="text-sm font-semibold text-foreground">No list items</p>
                   <p className="text-xs leading-5 text-muted-foreground">Messages, agent activity, summaries, and commits will appear here as the workspace changes.</p>
                 </div>
               </div>
@@ -298,7 +298,7 @@ export const TimelineView = memo(({
               </div>
 
               <div className="ml-2 flex min-w-0 flex-col border-l border-[hsl(var(--app-border)/0.54)] pl-4 dark:border-white/[0.08]">
-                {groupTimelineItemsByTurn(projection, groupedByDay[dateKey]).map((group, groupIndex, groups) => (
+                {groupListItemsByTurn(projection, groupedByDay[dateKey]).map((group, groupIndex, groups) => (
                   <div
                     key={group.key}
                     className={group.turnGroupId ? "relative mb-4 flex min-w-0 flex-col gap-1.5" : "relative mb-4 flex min-w-0 flex-col"}
@@ -306,12 +306,12 @@ export const TimelineView = memo(({
                   >
                     <span className="absolute -left-[21px] top-3 h-2.5 w-2.5 rounded-full border border-[hsl(var(--app-bg))] bg-[hsl(var(--app-border))] shadow-[0_0_0_3px_hsl(var(--app-bg)/0.88)] dark:border-[hsl(var(--app-bg))] dark:bg-white/20 dark:shadow-[0_0_0_3px_hsl(var(--app-bg)/0.92)]" />
                     {group.items.map((item) => {
-                      const selectionId = getTimelineItemSelectionId(projection, item);
+                      const selectionId = getListItemSelectionId(projection, item);
                       const id = item.entityId;
                       return (
-                        <TimelineNodeDispatcher
+                        <ListNodeDispatcher
                           key={id}
-                          rowId={getTimelineRowDomId(item)}
+                          rowId={getListRowDomId(item)}
                           entityId={item.entityId}
                           projection={projection}
                           isSelected={selectionId ? selectedNodeIds.has(selectionId) : false}
@@ -340,4 +340,4 @@ export const TimelineView = memo(({
   );
 });
 
-TimelineView.displayName = 'TimelineView';
+ListView.displayName = 'ListView';

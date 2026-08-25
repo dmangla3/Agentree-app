@@ -13,6 +13,7 @@ import { useWorkspaceStore, Workspace, Message } from '../stores/workspaceStore'
 import { RuntimeCatalogModel } from '../stores/modelStore';
 import { api } from '../lib/api';
 import { cn } from '../lib/utils';
+import { useCloseSearchHotkey } from '../hotkeys/searchHotkeys';
 
 interface SearchResult {
   id: string;
@@ -198,17 +199,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
     }
   }, [isOpen]);
 
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isOpen) {
-        onClose();
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  useCloseSearchHotkey(isOpen, onClose);
 
   // Get search suggestions
   const getSuggestions = useCallback(async (searchQuery: string) => {

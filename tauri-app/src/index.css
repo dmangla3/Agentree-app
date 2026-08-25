@@ -609,6 +609,10 @@
   fill: currentColor;
 }
 
+.agentree-graph-canvas .agentree-react-flow-root .react-flow__controls-button.agentree-graph-node-nav-control svg {
+  fill: none;
+}
+
 .dark .agentree-graph-canvas .agentree-react-flow-root .react-flow__controls {
   border-color: hsl(var(--app-border) / 0.82);
   background: hsl(var(--app-panel) / 0.92);

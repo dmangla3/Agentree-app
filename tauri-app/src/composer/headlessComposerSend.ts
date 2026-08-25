@@ -25,7 +25,6 @@ export interface HeadlessComposerReplyInput {
   agent: Agent;
   base: HeadlessComposerBase;
   workspaces: Workspace[];
-  hasRuntime: () => boolean;
   startAgentRun: (input: Record<string, unknown>) => Promise<unknown>;
   getAccessToken: () => Promise<string | null>;
   seedAgentRun: (message: Message) => void;
@@ -178,8 +177,6 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
     ?? getMessageThreadSessionId(parentMessage)
     ?? (parentMessage ? getLegacyThreadIdForMessage(parentMessage, messageMap) : null);
   const effectiveThreadOriginId = input.threadOriginId ?? effectiveThreadId;
-  const runtimeAvailable = input.hasRuntime();
-
   recordSendFlowEvent('flow.started', {
     flowId,
     workspaceId: input.workspaceId,
@@ -192,47 +189,33 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
     optimisticAssistantMessageId: null,
   }, { source: perfSource });
 
-  let response: HeadlessComposerReplyResponse = {};
-  const localFallbackReason = 'local-runtime';
-  recordSendFlowEvent('api.skipped-local-runtime', {
+  const nowIso = input.nowIso?.() ?? new Date().toISOString();
+  const localPair = createLocalHeadlessMessages({
+    workspaceId: input.workspaceId,
+    parentMessageId: input.parentMessageId,
+    contextParentId: input.contextParentId,
+    contextPolicy: input.contextPolicy,
+    contextStartId: input.contextStartId,
+    prompt,
+    agent: input.agent,
+    base: input.base,
+    meta: input.meta,
+    threadId: effectiveThreadId,
+    threadOriginId: effectiveThreadOriginId,
+    nowIso,
+  });
+  const userMessage = localPair.userMessage;
+  const assistantMessage = localPair.assistantMessage;
+  const response: HeadlessComposerReplyResponse = {
+    userMessage,
+    assistantMessages: [assistantMessage],
+  };
+  recordSendFlowEvent('local-messages.created', {
     flowId,
     workspaceId: input.workspaceId,
-    useAgent: true,
+    userMessageId: userMessage.id,
+    assistantMessageId: assistantMessage.id,
   }, { source: perfSource });
-
-  let userMessage = response?.userMessage;
-  let assistantMessage = response?.assistantMessages?.[0];
-  if (!userMessage || !assistantMessage) {
-    const nowIso = input.nowIso?.() ?? new Date().toISOString();
-    const localPair = createLocalHeadlessMessages({
-      workspaceId: input.workspaceId,
-      parentMessageId: input.parentMessageId,
-      contextParentId: input.contextParentId,
-      contextPolicy: input.contextPolicy,
-      contextStartId: input.contextStartId,
-      prompt,
-      agent: input.agent,
-      base: input.base,
-      meta: input.meta,
-      threadId: effectiveThreadId,
-      threadOriginId: effectiveThreadOriginId,
-      nowIso,
-    });
-    userMessage = localPair.userMessage;
-    assistantMessage = localPair.assistantMessage;
-    response = {
-      ...response,
-      userMessage,
-      assistantMessages: [assistantMessage],
-    };
-    recordSendFlowEvent('local-fallback.created', {
-      flowId,
-      workspaceId: input.workspaceId,
-      userMessageId: userMessage.id,
-      assistantMessageId: assistantMessage.id,
-      reason: localFallbackReason,
-    }, { source: perfSource });
-  }
 
   const createdMessages = [userMessage, assistantMessage].filter((message): message is Message => Boolean(message));
   if (createdMessages.length > 0) {
@@ -275,7 +258,7 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
     }, { source: perfSource });
   }
 
-  if (runtimeAvailable && assistantMessage) {
+  if (assistantMessage) {
     const workspace = input.workspaces.find((candidate) => candidate.id === input.workspaceId) ?? null;
     const repoPath = resolveWorkspaceRepoPath(workspace);
     if (!repoPath) {

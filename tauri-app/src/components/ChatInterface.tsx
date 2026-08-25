@@ -168,7 +168,7 @@ export function ChatInterface() {
     })
   ), [branchPointersByNodeId, messages]);
   const activeSendFlowInWorkspace = activeSendFlowFocus?.workspaceId === selectedWorkspaceId;
-  const isDirectFocusSource = lastFocusSource === 'graph' || lastFocusSource === 'chat' || lastFocusSource === 'timeline';
+  const isDirectFocusSource = lastFocusSource === 'graph' || lastFocusSource === 'chat' || lastFocusSource === 'list';
   const activeSendProjectionFocusId = activeSendFlowInWorkspace && !isDirectFocusSource
     ? activeSendFlowFocus.preferredMessageId
     : null;
@@ -374,7 +374,7 @@ export function ChatInterface() {
     const flowId = typeof lastFocusMetadata?.flowId === 'string' ? lastFocusMetadata.flowId : null;
     const focusPhase = typeof lastFocusMetadata?.phase === 'string' ? lastFocusMetadata.phase : null;
     const isComposerSendFocus = lastFocusSource === 'composer' || Boolean(flowId);
-    const isDirectSelectionFocus = lastFocusSource === 'graph' || lastFocusSource === 'chat' || lastFocusSource === 'timeline';
+    const isDirectSelectionFocus = lastFocusSource === 'graph' || lastFocusSource === 'chat' || lastFocusSource === 'list';
     if (isComposerSendFocus && runningCount > 0) {
       recordPerfEvent('chat.focus-scroll.skipped', {
         focusedMessageId,

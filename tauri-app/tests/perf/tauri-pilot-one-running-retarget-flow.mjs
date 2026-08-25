@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { writeCompactPilotReport } from './tauri-pilot-report-lib.mjs';
 
 const OUT_DIR = process.env.AGENTREE_TAURI_PILOT_OUT_DIR ?? 'runtime-logs/tauri-pilot-diagnostics';
 const LABEL = process.env.AGENTREE_TAURI_PILOT_LABEL ?? `tauri-pilot-one-running-retarget-${Date.now()}`;
@@ -359,12 +359,12 @@ const main = async () => {
 
   report.validation = validateMetrics(report.metrics);
 
-  mkdirSync(OUT_DIR, { recursive: true });
   const reportPath = join(OUT_DIR, `${LABEL}.json`);
-  writeFileSync(reportPath, JSON.stringify(report, null, 2));
+  const written = writeCompactPilotReport({ reportPath, report });
 
   const output = {
     reportPath,
+    artifactDir: written.artifacts.length > 0 ? written.artifactDir : null,
     exportPath: report.exportStatus?.exportPath ?? null,
     thresholdMs: THRESHOLD_MS,
     metrics: report.metrics,

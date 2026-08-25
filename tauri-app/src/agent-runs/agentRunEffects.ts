@@ -9,6 +9,7 @@ import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
 import { localNodeKeys, type LocalNodeMessage } from '../hooks/useLocalNodes';
 import { threadSessionKeys } from '../hooks/useThreadSessions';
 import type { GraphSnapshot } from '../hooks/useGraphSnapshot';
+import type { ThreadSession } from '../lib/threadSessions';
 import type { Message } from '../stores/workspaceStore';
 
 const CLEANUP_DELAY_MS = 3000;
@@ -85,6 +86,54 @@ const readGeneratedThreadTitle = (snapshot: AgentRunSnapshot): string | null => 
     ?? cleanString(meta.runtime_thread_title);
 };
 
+const readSnapshotThreadId = (snapshot: AgentRunSnapshot): string | null => (
+  cleanString(snapshot.message?.threadId)
+    ?? cleanString(snapshot.message?.thread_id)
+);
+
+const shouldPatchThreadTitle = (
+  thread: Pick<ThreadSession, 'id' | 'title' | 'firstMessageId'>,
+  snapshot: AgentRunSnapshot,
+): boolean => {
+  if (cleanString(thread.title)) return false;
+  const snapshotThreadId = readSnapshotThreadId(snapshot);
+  if (snapshotThreadId && thread.id === snapshotThreadId) return true;
+  return Boolean(snapshot.parentId && thread.firstMessageId === snapshot.parentId);
+};
+
+const patchGeneratedThreadTitle = <T extends Pick<ThreadSession, 'id' | 'title' | 'firstMessageId' | 'updatedAt'>>(
+  current: T[] | undefined,
+  snapshot: AgentRunSnapshot,
+  generatedThreadTitle: string,
+): T[] | undefined => {
+  if (!current) return current;
+  let changed = false;
+  const next = current.map((thread) => {
+    if (!shouldPatchThreadTitle(thread, snapshot)) return thread;
+    changed = true;
+    return {
+      ...thread,
+      title: generatedThreadTitle,
+      updatedAt: snapshot.updatedAt || thread.updatedAt,
+    };
+  });
+  return changed ? next : current;
+};
+
+const patchGeneratedGraphSnapshotThreadTitle = (
+  current: GraphSnapshot | undefined,
+  snapshot: AgentRunSnapshot,
+  generatedThreadTitle: string,
+): GraphSnapshot | undefined => {
+  if (!current || !Array.isArray(current.threadSessions)) return current;
+  const threadSessions = patchGeneratedThreadTitle(current.threadSessions, snapshot, generatedThreadTitle);
+  if (threadSessions === current.threadSessions) return current;
+  return {
+    ...current,
+    threadSessions,
+  };
+};
+
 const finalizeEffectKey = (snapshot: AgentRunSnapshot) => {
   const patch = readTerminalPatch(snapshot);
   if (!patch) return null;
@@ -131,7 +180,16 @@ export const applyAgentRunFinalizeSnapshotEffects = (
     includeCommitGraph: Boolean(cachePatch.outputCommitSha),
     catchUpHotDeltas: Boolean(cachePatch.outputCommitSha),
   });
-  if (readGeneratedThreadTitle(snapshot)) {
+  const generatedThreadTitle = readGeneratedThreadTitle(snapshot);
+  if (generatedThreadTitle) {
+    queryClient.setQueryData<ThreadSession[]>(
+      threadSessionKeys.workspace(snapshot.workspaceId),
+      (current) => patchGeneratedThreadTitle(current, snapshot, generatedThreadTitle),
+    );
+    queryClient.setQueryData<GraphSnapshot>(
+      ['graph-snapshot', snapshot.workspaceId],
+      (current) => patchGeneratedGraphSnapshotThreadTitle(current, snapshot, generatedThreadTitle),
+    );
     void queryClient.invalidateQueries({
       queryKey: threadSessionKeys.workspace(snapshot.workspaceId),
       refetchType: 'active',

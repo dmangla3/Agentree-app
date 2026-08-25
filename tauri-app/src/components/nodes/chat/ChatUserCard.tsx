@@ -2,6 +2,7 @@ import { memo, type MouseEvent } from 'react';
 import { Sparkles, Clock, Pencil } from 'lucide-react';
 import { ChatCardWrapper } from './ChatCardWrapper';
 import { ChatMarkdown } from './ChatMarkdown';
+import { CopyMessageContentButton } from './CopyMessageContentButton';
 import { SharedNodeProps } from '../../../types/nodes';
 import { ROLE_COLORS } from '../../../lib/visualTokens';
 import { cn } from '../../../lib/utils';
@@ -50,12 +51,14 @@ export const ChatUserCard = memo(({
           </div>
         </div>
 
-        {timestamp && (
-          <div className="flex shrink-0 items-center gap-1 text-[10px] text-slate-500 dark:text-slate-400 tabular-nums">
-            <Clock size={10} className="opacity-70" />
-            {timestamp}
-          </div>
-        )}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {timestamp && (
+            <div className="flex items-center gap-1 text-[10px] text-slate-500 dark:text-slate-400 tabular-nums">
+              <Clock size={10} className="opacity-70" />
+              {timestamp}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Content */}
@@ -81,6 +84,16 @@ export const ChatUserCard = memo(({
       >
         <Pencil size={12} strokeWidth={2} />
       </button>
+
+      <CopyMessageContentButton
+        text={entity.message?.content}
+        ariaLabel="Copy user message"
+        title="Copy message"
+        className={cn(
+          "absolute bottom-2 right-9 z-20 h-6 w-6 bg-background/70 opacity-0 backdrop-blur-sm",
+          "focus-visible:opacity-100 group-hover:opacity-100 dark:bg-slate-900/55"
+        )}
+      />
     </ChatCardWrapper>
   );
 });

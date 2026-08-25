@@ -2,7 +2,7 @@ import { ChevronUp, Minimize2, MessageSquareText } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { GraphDockComposer } from '../composer/GraphDockComposer';
 import { cn } from '../lib/utils';
-import { GRAPH_COMPOSER_DOCK_COLLAPSE_EVENT, GRAPH_COMPOSER_DOCK_EXPAND_EVENT } from '../lib/graphComposerDockEvents';
+import { GRAPH_COMPOSER_DOCK_COLLAPSE_EVENT, GRAPH_COMPOSER_DOCK_EXPAND_EVENT, setGraphComposerDockState } from '../lib/graphComposerDockEvents';
 
 interface GraphComposerDockProps {
   isVisible: boolean;
@@ -16,6 +16,10 @@ export function GraphComposerDock({ isVisible }: GraphComposerDockProps) {
       setIsCollapsed(false);
     }
   }, [isVisible]);
+
+  useEffect(() => {
+    setGraphComposerDockState({ isVisible, isCollapsed });
+  }, [isCollapsed, isVisible]);
 
   useEffect(() => {
     const collapse = () => setIsCollapsed(true);

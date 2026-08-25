@@ -112,6 +112,15 @@ describe('HomePage graph/chat split layout', () => {
     expect(source).not.toContain('app-rail-button-label');
   });
 
+  it('hides knowledge from the primary sidebar while keeping skills visible', () => {
+    const source = readSidebarSource();
+
+    expect(source).toContain("label: 'Skills'");
+    expect(source).toContain("id: 'skills'");
+    expect(source).not.toContain("label: 'Knowledge'");
+    expect(source).not.toContain("id: 'knowledge', icon");
+  });
+
   it('mounts the graph composer dock only while the chat panel is collapsed', () => {
     const source = readHomePageSource();
 

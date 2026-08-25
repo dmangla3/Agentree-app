@@ -22,6 +22,15 @@ describe('GraphDockComposer structure', () => {
     expect(source).not.toContain('onChange={(event) => updatePrompt(event.target.value)}');
   });
 
+  it('disables native text suggestions on the graph composer textarea', () => {
+    const source = readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
+
+    expect(source).toContain('autoComplete="off"');
+    expect(source).toContain('autoCorrect="off"');
+    expect(source).toContain('autoCapitalize="off"');
+    expect(source).toContain('spellCheck={false}');
+  });
+
   it('keeps file and skill mention selectors wired through the isolated prompt textarea', () => {
     const source = readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
 
@@ -43,5 +52,12 @@ describe('GraphDockComposer structure', () => {
     expect(source).toContain('data-testid="graph-dock-composer"');
     expect(source).toContain('overflow-visible rounded-xl');
     expect(source).not.toContain('max-w-4xl overflow-hidden rounded-xl');
+  });
+
+  it('does not hold the graph dock send button for the whole selected flow run', () => {
+    const source = readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
+
+    expect(source).toContain('void flowRunner.runFlow({ input: promptForAgent, count: flowParallelCount }).catch');
+    expect(source).not.toContain('await flowRunner.runFlow({ input: promptForAgent, count: flowParallelCount })');
   });
 });

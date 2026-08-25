@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { api } from '../lib/api';
 import { Workspace, useWorkspaceStore } from '../stores/workspaceStore';
 import { isTauriEnvironment } from './useTauriWorkspace';
@@ -9,8 +9,8 @@ import { trackedRefKeys } from './useTrackedRefs';
 import { localNodeKeys } from './useLocalNodes';
 import { trackWorkspaceCreated } from '../lib/analytics';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
-import { getAccessToken } from '../lib/authSession';
 import { useAuthStore } from '../stores/authStore';
+import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
 
 export type RepoPrepareRequirementType = 'git_init' | 'commit_checkpoint';
 export type RepoDirtyStrategy = 'last-commit' | 'checkpoint';
@@ -141,7 +141,6 @@ async function prepareRepoForWorkspace(
 }
 
 export const useWorkspaces = (): UseQueryResult<Workspace[], Error> => {
-  const syncInFlightRef = useRef(false);
   const userId = useAuthStore((state) => state.user?.id ?? null);
   const query = useQuery<Workspace[]>({
     queryKey: workspaceKeys.list(userId),
@@ -171,14 +170,7 @@ export const useWorkspaces = (): UseQueryResult<Workspace[], Error> => {
 
   useEffect(() => {
     if (!userId) return;
-    if (syncInFlightRef.current) return;
-    syncInFlightRef.current = true;
-    void getAccessToken()
-      .then((token) => agentClient.processLocalSyncEvents(token))
-      .catch(() => undefined)
-      .finally(() => {
-        syncInFlightRef.current = false;
-      });
+    queueLocalSyncFlush({ reason: 'workspaces-mounted' });
   }, [userId]);
 
   return query;
@@ -260,9 +252,7 @@ export const useDeleteWorkspace = () => {
   return useMutation({
     mutationFn: async (id: string) => {
       await agentClient.localFirstDeleteWorkspace(id);
-      void getAccessToken()
-        .then((token) => agentClient.processLocalSyncEvents(token))
-        .catch(() => undefined);
+      queueLocalSyncFlush({ reason: 'workspace-deleted' });
       return id;
     },
     onSuccess: (deletedWorkspaceId) => {
@@ -284,9 +274,7 @@ export const useDeleteMultipleWorkspaces = () => {
   return useMutation({
     mutationFn: async (ids: string[]) => {
       await Promise.all(ids.map((id) => agentClient.localFirstDeleteWorkspace(id)));
-      void getAccessToken()
-        .then((token) => agentClient.processLocalSyncEvents(token, Math.max(25, ids.length)))
-        .catch(() => undefined);
+      queueLocalSyncFlush({ reason: 'workspaces-deleted', limit: Math.max(25, ids.length) });
       return ids;
     },
     onSuccess: (deletedWorkspaceIds) => {

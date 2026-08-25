@@ -4,6 +4,7 @@ import {
   deriveBackfilledThreadSessions,
   getLegacyThreadIdForMessage,
   getMessageThreadSessionId,
+  mergeThreadSessionsWithBackfills,
   normalizeThreadSession,
   threadSessionSortKey,
   type ThreadSession,
@@ -125,6 +126,62 @@ describe('threadSessions', () => {
       }),
     ])).toEqual([
       expect.objectContaining({ id: 'thread-1', firstMessageId: 'user-1' }),
+    ]);
+  });
+
+  it('uses generated assistant thread titles when deriving backfilled sessions', () => {
+    expect(deriveBackfilledThreadSessions([
+      message({
+        id: 'user-1',
+        role: 'user',
+        parentId: null,
+        threadId: 'thread-1',
+        content: 'hi',
+      }),
+      message({
+        id: 'assistant-1',
+        role: 'assistant',
+        parentId: 'user-1',
+        threadId: 'thread-1',
+        execution_data: { meta: { thread_title: 'Greeting' } },
+        createdAt: '2026-05-28T00:00:01.000Z',
+        updatedAt: '2026-05-28T00:00:02.000Z',
+      }),
+    ])).toEqual([
+      expect.objectContaining({
+        id: 'thread-1',
+        title: 'Greeting',
+        firstMessageId: 'user-1',
+      }),
+    ]);
+  });
+
+  it('keeps generated backfilled titles when persisted sessions have no title', () => {
+    const backfilled: ThreadSession = {
+      id: 'thread-1',
+      workspaceId: 'workspace-1',
+      title: 'Greeting',
+      status: 'active',
+      createdAt: '2026-05-28T00:00:00.000Z',
+      updatedAt: '2026-05-28T00:00:02.000Z',
+      baseCommitSha: null,
+      firstMessageId: 'user-1',
+      source: 'legacy',
+    };
+    const persisted: ThreadSession = {
+      ...backfilled,
+      title: null,
+      source: 'user',
+      updatedAt: '2026-05-28T00:00:03.000Z',
+    };
+
+    expect(mergeThreadSessionsWithBackfills([backfilled], [persisted])).toEqual([
+      expect.objectContaining({
+        id: 'thread-1',
+        title: 'Greeting',
+        source: 'user',
+        updatedAt: '2026-05-28T00:00:03.000Z',
+      }),
     ]);
   });
 

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { formatDistanceToNowStrict } from 'date-fns';
 import { Check, Copy, ExternalLink, Globe2, Share2, Trash2 } from 'lucide-react';
 import { Button } from '../../@/components/ui/button';
 import {
@@ -25,6 +26,19 @@ interface WorkspaceShareDialogProps {
 const getShareTitle = (share: WorkspacePublicShare) => (
   share.rootNode?.aiLabel || share.rootNode?.contentPreview || `Node ${share.rootNodeId.slice(0, 8)}`
 );
+
+const getShareCreatedAtDisplay = (share: WorkspacePublicShare) => {
+  const date = new Date(share.createdAt);
+  if (Number.isNaN(date.getTime())) return null;
+
+  return {
+    label: `Created ${formatDistanceToNowStrict(date, { addSuffix: true })}`,
+    title: date.toLocaleString(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }),
+  };
+};
 
 export function WorkspaceShareDialog({ workspaceId, workspaceName }: WorkspaceShareDialogProps) {
   const [open, setOpen] = useState(false);
@@ -102,27 +116,36 @@ export function WorkspaceShareDialog({ workspaceId, workspaceName }: WorkspaceSh
                 ) : shares.length === 0 ? (
                   <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">No active public node links.</div>
                 ) : (
-                  shares.map((share) => (
-                    <div key={share.id} className="flex max-w-full flex-col gap-2 rounded-lg border border-border/70 bg-background/80 p-3 shadow-sm sm:flex-row sm:items-center">
-                      <div className="min-w-0 flex-1 overflow-hidden">
-                        <div className="truncate text-sm font-medium leading-5" title={getShareTitle(share)}>{getShareTitle(share)}</div>
-                        <div className="mt-1 max-w-full truncate rounded-md bg-muted/45 px-2 py-1 font-mono text-[11px] leading-4 text-muted-foreground" title={getPublicShareUrl(share.publicId)}>
-                          {getPublicShareUrl(share.publicId)}
+                  shares.map((share) => {
+                    const createdAtDisplay = getShareCreatedAtDisplay(share);
+
+                    return (
+                      <div key={share.id} className="flex max-w-full flex-col gap-2 rounded-lg border border-border/70 bg-background/80 p-3 shadow-sm sm:flex-row sm:items-center">
+                        <div className="min-w-0 flex-1 overflow-hidden">
+                          <div className="truncate text-sm font-medium leading-5" title={getShareTitle(share)}>{getShareTitle(share)}</div>
+                          {createdAtDisplay ? (
+                            <div className="mt-0.5 truncate text-xs leading-4 text-muted-foreground" title={createdAtDisplay.title}>
+                              {createdAtDisplay.label}
+                            </div>
+                          ) : null}
+                          <div className="mt-1 max-w-full truncate rounded-md bg-muted/45 px-2 py-1 font-mono text-[11px] leading-4 text-muted-foreground" title={getPublicShareUrl(share.publicId)}>
+                            {getPublicShareUrl(share.publicId)}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5 self-end sm:self-auto">
+                          <Button type="button" variant="outline" size="sm" onClick={() => handleCopy(share)} className="h-8 w-8 p-0" title="Copy link">
+                            {copiedPublicId === share.publicId ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                          </Button>
+                          <Button type="button" variant="outline" size="sm" onClick={() => window.open(getPublicShareUrl(share.publicId), '_blank', 'noopener,noreferrer')} className="h-8 w-8 p-0" title="Open link">
+                            <ExternalLink className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button type="button" variant="outline" size="sm" onClick={() => handleRevoke(share)} disabled={revokeShare.isPending} className="h-8 w-8 p-0 text-destructive hover:text-destructive" title="Revoke link">
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
                         </div>
                       </div>
-                      <div className="flex shrink-0 items-center gap-1.5 self-end sm:self-auto">
-                        <Button type="button" variant="outline" size="sm" onClick={() => handleCopy(share)} className="h-8 w-8 p-0" title="Copy link">
-                          {copiedPublicId === share.publicId ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                        </Button>
-                        <Button type="button" variant="outline" size="sm" onClick={() => window.open(getPublicShareUrl(share.publicId), '_blank', 'noopener,noreferrer')} className="h-8 w-8 p-0" title="Open link">
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button type="button" variant="outline" size="sm" onClick={() => handleRevoke(share)} disabled={revokeShare.isPending} className="h-8 w-8 p-0 text-destructive hover:text-destructive" title="Revoke link">
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>
