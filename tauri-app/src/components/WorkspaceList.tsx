@@ -31,6 +31,7 @@ import {
 } from '../../@/components/ui/collapsible';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../../@/components/ui/tooltip';
 import { WorkspaceDeleteDialog } from './WorkspaceDeleteDialog';
+import { WorkspaceRenameDialog } from './WorkspaceRenameDialog';
 
 // Group workspaces by their repo path
 interface RepoGroup {
@@ -98,6 +99,7 @@ interface RepoItemProps {
   selectedWorkspaceId: string | null;
   onSelectWorkspace: (id: string) => void;
   onAddWorkspaceToRepo: (folderPath: string) => void;
+  onRequestRenameWorkspace: (workspace: Workspace) => void;
   onRequestDeleteWorkspace: (workspace: Workspace) => void;
   defaultExpanded?: boolean;
 }
@@ -107,6 +109,7 @@ function RepoItem({
   selectedWorkspaceId, 
   onSelectWorkspace, 
   onAddWorkspaceToRepo,
+  onRequestRenameWorkspace,
   onRequestDeleteWorkspace,
   defaultExpanded = false 
 }: RepoItemProps) {
@@ -226,6 +229,7 @@ function RepoItem({
                 workspace={workspace}
                 isSelected={selectedWorkspaceId === workspace.id}
                 onSelect={() => onSelectWorkspace(workspace.id)}
+                onRequestRename={onRequestRenameWorkspace}
                 onRequestDelete={onRequestDeleteWorkspace}
               />
             ))}
@@ -240,21 +244,14 @@ interface WorkspaceItemProps {
   workspace: Workspace;
   isSelected: boolean;
   onSelect: () => void;
+  onRequestRename: (workspace: Workspace) => void;
   onRequestDelete: (workspace: Workspace) => void;
 }
 
-function WorkspaceItem({ workspace, isSelected, onSelect, onRequestDelete }: WorkspaceItemProps) {
-  const renameWorkspace = useRenameWorkspace();
-  const [isRenaming, setIsRenaming] = useState(false);
-
+function WorkspaceItem({ workspace, isSelected, onSelect, onRequestRename, onRequestDelete }: WorkspaceItemProps) {
   const handleRename = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    setIsRenaming(true);
-    const nextName = window.prompt('Enter new workspace name:', workspace.name);
-    if (nextName && nextName.trim()) {
-      await renameWorkspace.mutateAsync({ id: workspace.id, name: nextName.trim() });
-    }
-    setIsRenaming(false);
+    onRequestRename(workspace);
   };
 
   const handleDelete = (e: React.MouseEvent) => {
@@ -295,24 +292,18 @@ function WorkspaceItem({ workspace, isSelected, onSelect, onRequestDelete }: Wor
                 : "opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground"
             )}
             onClick={(e) => e.stopPropagation()}
-            disabled={isRenaming}
           >
-            {isRenaming ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <MoreHorizontal className="h-3.5 w-3.5" />
-            )}
+            <MoreHorizontal className="h-3.5 w-3.5" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-40">
-          <DropdownMenuItem onClick={handleRename} disabled={isRenaming}>
+          <DropdownMenuItem onClick={handleRename}>
             <Pencil className="mr-2 h-4 w-4" />
             Rename
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem 
             onClick={handleDelete} 
-            disabled={isRenaming}
             className="text-destructive focus:text-destructive"
           >
             <Trash2 className="mr-2 h-4 w-4" />
@@ -329,8 +320,10 @@ export function WorkspaceList() {
   const { data: workspacesData, isLoading, error } = useWorkspaces();
   const workspaces = useMemo(() => workspacesData ?? [], [workspacesData]);
   const createWorkspace = useCreateWorkspace();
+  const renameWorkspace = useRenameWorkspace();
   const deleteWorkspace = useDeleteWorkspace();
   const [workspacePendingDelete, setWorkspacePendingDelete] = useState<Workspace | null>(null);
+  const [workspacePendingRename, setWorkspacePendingRename] = useState<Workspace | null>(null);
 
   const repoGroups = useMemo(() => groupWorkspacesByRepo(workspaces), [workspaces]);
 
@@ -358,6 +351,11 @@ export function WorkspaceList() {
     await deleteWorkspace.mutateAsync(workspacePendingDelete.id);
     setWorkspacePendingDelete(null);
   }, [deleteWorkspace, workspacePendingDelete]);
+
+  const handleConfirmRenameWorkspace = useCallback(async (workspace: Workspace, name: string) => {
+    await renameWorkspace.mutateAsync({ id: workspace.id, name });
+    setWorkspacePendingRename(null);
+  }, [renameWorkspace]);
 
   if (isLoading) {
     return (
@@ -457,6 +455,7 @@ export function WorkspaceList() {
                   selectedWorkspaceId={selectedWorkspaceId}
                   onSelectWorkspace={selectWorkspace}
                   onAddWorkspaceToRepo={handleAddWorkspaceToRepo}
+                  onRequestRenameWorkspace={setWorkspacePendingRename}
                   onRequestDeleteWorkspace={setWorkspacePendingDelete}
                   defaultExpanded={repo.id === 'unassigned' || repo.workspaces.some(w => w.id === selectedWorkspaceId)}
                 />
@@ -483,6 +482,16 @@ export function WorkspaceList() {
             }
           }}
           onConfirm={handleConfirmDeleteWorkspace}
+        />
+        <WorkspaceRenameDialog
+          workspace={workspacePendingRename}
+          isRenaming={renameWorkspace.isPending}
+          onOpenChange={(open) => {
+            if (!open && !renameWorkspace.isPending) {
+              setWorkspacePendingRename(null);
+            }
+          }}
+          onRename={handleConfirmRenameWorkspace}
         />
       </div>
     </TooltipProvider>

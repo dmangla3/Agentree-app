@@ -76,11 +76,6 @@ const MINIMAP_POSITIONS: Array<{ value: MinimapPosition; label: string; classNam
     { value: 'bottom-right', label: 'Bottom right', className: 'bottom-0 right-0' },
 ];
 
-const getNodeDimensions = (node: Node<any>) => ({
-    width: node.measured?.width ?? node.width ?? node.initialWidth ?? 0,
-    height: node.measured?.height ?? node.height ?? node.initialHeight ?? 0,
-});
-
 const readNumericPosition = (value: unknown): number => {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
     if (typeof value === 'string') {
@@ -89,6 +84,24 @@ const readNumericPosition = (value: unknown): number => {
     }
     return 0;
 };
+
+const readPositiveDimension = (value: unknown): number | undefined => {
+    const parsed = readNumericPosition(value);
+    return parsed > 0 ? parsed : undefined;
+};
+
+const getNodeDimensions = (node: Node<any>) => ({
+    width: readPositiveDimension(node.measured?.width) ??
+        readPositiveDimension(node.width) ??
+        readPositiveDimension(node.initialWidth) ??
+        readPositiveDimension(node.style?.width) ??
+        0,
+    height: readPositiveDimension(node.measured?.height) ??
+        readPositiveDimension(node.height) ??
+        readPositiveDimension(node.initialHeight) ??
+        readPositiveDimension(node.style?.height) ??
+        0,
+});
 
 const buildAbsolutePositionReader = (nodes: Node<any>[]) => {
     const nodeById = new Map(nodes.map((node) => [node.id, node]));

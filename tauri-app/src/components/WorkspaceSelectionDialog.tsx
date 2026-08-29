@@ -50,6 +50,7 @@ import { getErrorMessage } from '../lib/api';
 import { Alert, AlertDescription, AlertTitle } from '../../@/components/ui/alert';
 import { finalizeCreatedWorkspace } from '../lib/finalizeCreatedWorkspace';
 import { WorkspaceDeleteDialog } from './WorkspaceDeleteDialog';
+import { WorkspaceRenameDialog } from './WorkspaceRenameDialog';
 import { ChangedFilesSummary } from './ChangedFilesSummary';
 
 interface WorkspaceSelectionDialogProps {
@@ -372,6 +373,7 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
   const [isContentReady, setIsContentReady] = useState(false);
   const [pendingFolderPath, setPendingFolderPath] = useState<string | null>(null);
   const [workspacePendingDelete, setWorkspacePendingDelete] = useState<Workspace | null>(null);
+  const [workspacePendingRename, setWorkspacePendingRename] = useState<Workspace | null>(null);
   const [setupRequirement, setSetupRequirement] = useState<RepoPrepareActionRequiredError['requirement'] | null>(null);
   const [checkpointMessage, setCheckpointMessage] = useState('WIP: pre-agentree checkpoint');
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -561,10 +563,13 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
     await createWorkspaceForFolder(pendingFolderPath, options);
   }, [createWorkspaceForFolder, pendingFolderPath]);
 
-  const handleRenameWorkspace = async (workspace: Workspace) => {
-    const nextName = window.prompt('Enter new workspace name:', workspace.name);
-    if (!nextName || !nextName.trim()) return;
-    await renameWorkspace.mutateAsync({ id: workspace.id, name: nextName.trim() });
+  const handleRequestRenameWorkspace = (workspace: Workspace) => {
+    setWorkspacePendingRename(workspace);
+  };
+
+  const handleConfirmRenameWorkspace = async (workspace: Workspace, name: string) => {
+    await renameWorkspace.mutateAsync({ id: workspace.id, name });
+    setWorkspacePendingRename(null);
   };
 
   const handleRequestDeleteWorkspace = (workspace: Workspace) => {
@@ -779,7 +784,7 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
                     searchTerm={searchTerm}
                     onSelectWorkspace={openWorkspace}
                     onAddWorkspace={handleAddWorkspaceToRepo}
-                    onRenameWorkspace={handleRenameWorkspace}
+                    onRenameWorkspace={handleRequestRenameWorkspace}
                     onDeleteWorkspace={handleRequestDeleteWorkspace}
                     onClose={() => onOpenChange(false)}
                   />
@@ -809,6 +814,16 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
             }
           }}
           onConfirm={handleConfirmDeleteWorkspace}
+        />
+        <WorkspaceRenameDialog
+          workspace={workspacePendingRename}
+          isRenaming={renameWorkspace.isPending}
+          onOpenChange={(open) => {
+            if (!open && !renameWorkspace.isPending) {
+              setWorkspacePendingRename(null);
+            }
+          }}
+          onRename={handleConfirmRenameWorkspace}
         />
       </DialogContent>
     </Dialog>

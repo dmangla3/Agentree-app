@@ -27,6 +27,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../../../@/components/ui/dropdown-menu';
+import {
+  appSurfaceCapabilities,
+  type AgentreeSurfaceCapabilities,
+  type AgentreeSurfaceMode,
+} from '../graph/surfaceCapabilities';
 
 type TimelineWindow = { startMs: number; endMs: number };
 type PackedExecutionTimelineItem = ExecutionTimelineItem & { lane: number };
@@ -44,6 +49,8 @@ export type ExecutionTimelineDockProps = {
   onSelectMessage: (messageId: string, multi: boolean) => void;
   onContextMenuMessage: (messageId: string, event: React.MouseEvent) => void;
   onClose?: () => void;
+  surfaceMode?: AgentreeSurfaceMode;
+  capabilities?: AgentreeSurfaceCapabilities;
 };
 
 const LANE_HEIGHT = 34;
@@ -148,6 +155,8 @@ export const ExecutionTimelineDock = memo(({
   onSelectMessage,
   onContextMenuMessage,
   onClose,
+  surfaceMode = 'app',
+  capabilities = appSurfaceCapabilities,
 }: ExecutionTimelineDockProps) => {
   const detailRef = useRef<HTMLDivElement | null>(null);
   const minimapRef = useRef<HTMLDivElement | null>(null);
@@ -472,17 +481,19 @@ export const ExecutionTimelineDock = memo(({
   const handleItemClick = useCallback((item: ExecutionTimelineItem, event: React.MouseEvent) => {
     event.stopPropagation();
     if (event.metaKey || event.ctrlKey || event.shiftKey) {
+      if (!capabilities.canSelect) return;
       onSelectMessage(item.messageId, true);
       return;
     }
     onFocusMessage(item.messageId);
-  }, [onFocusMessage, onSelectMessage]);
+  }, [capabilities.canSelect, onFocusMessage, onSelectMessage]);
 
   const handleItemContextMenu = useCallback((item: ExecutionTimelineItem, event: React.MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
+    if (!capabilities.canOpenContextMenu) return;
     onContextMenuMessage(item.messageId, event);
-  }, [onContextMenuMessage]);
+  }, [capabilities.canOpenContextMenu, onContextMenuMessage]);
 
   return (
     <section
@@ -677,6 +688,8 @@ export const ExecutionTimelineDock = memo(({
                   projection={projection}
                   item={bar}
                   onHoverChange={setHoveredMessageId}
+                  surfaceMode={surfaceMode}
+                  capabilities={capabilities}
                 >
                   <button
                     type="button"
@@ -725,6 +738,8 @@ export const ExecutionTimelineDock = memo(({
                   projection={projection}
                   item={marker}
                   onHoverChange={setHoveredMessageId}
+                  surfaceMode={surfaceMode}
+                  capabilities={capabilities}
                 >
                   <button
                     type="button"

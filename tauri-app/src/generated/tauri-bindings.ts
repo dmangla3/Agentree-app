@@ -53,6 +53,9 @@ export const commands = {
 } | null>("get_agent_run_ledger", { assistantNodeId }),
 	replayAgentRunEvents: (runId: string, afterSeq: number | null) => __TAURI_INVOKE<AgentRunJournalEvent[]>("replay_agent_run_events", { runId, afterSeq }),
 	listLocalNodes: (workspaceId: string) => __TAURI_INVOKE<LocalNodeRow[]>("list_local_nodes", { workspaceId }),
+	listLocalInsights: (workspaceId: string) => __TAURI_INVOKE<LocalInsightRow[]>("list_local_insights", { workspaceId }),
+	upsertLocalInsight: (workspaceId: string, currentUserId: string, insightId: string, payloadJson: string, mutationId: string | null) => __TAURI_INVOKE<LocalSyncEventRow>("upsert_local_insight", { workspaceId, currentUserId, insightId, payloadJson, mutationId }),
+	localFirstDismissInsight: (workspaceId: string, currentUserId: string, insightId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_dismiss_insight", { workspaceId, currentUserId, insightId }),
 	hydrateLocalNodesFromServer: (workspaceId: string, payloads: string[]) => __TAURI_INVOKE<number>("hydrate_local_nodes_from_server", { workspaceId, payloads }),
 	createThreadSession: (payload: ThreadSessionPayload) => __TAURI_INVOKE<ThreadSessionPayload>("create_thread_session", { payload }),
 	upsertThreadSession: (payload: ThreadSessionPayload) => __TAURI_INVOKE<ThreadSessionPayload>("upsert_thread_session", { payload }),
@@ -467,6 +470,19 @@ export type LocalEnvironmentStatus = {
 	codex_auth: CliToolStatus,
 	claude: CliToolStatus,
 	claude_auth: CliToolStatus,
+};
+
+export type LocalInsightRow = {
+	insightId: string,
+	workspaceId: string,
+	payload: string,
+	syncStatus: string,
+	createdAt: string,
+	updatedAt: string,
+	serverAckAt: number | null,
+	retryAttempt: number,
+	nextRetryAt: number | null,
+	lastUploadError: string | null,
 };
 
 export type LocalNodeRow = {

@@ -11,6 +11,7 @@ import { trackWorkspaceCreated } from '../lib/analytics';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 import { useAuthStore } from '../stores/authStore';
 import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
+import type { LocalWorkspaceRecord } from '../lib/agentClient';
 
 export type RepoPrepareRequirementType = 'git_init' | 'commit_checkpoint';
 export type RepoDirtyStrategy = 'last-commit' | 'checkpoint';
@@ -42,6 +43,27 @@ const AGENTREE_GIT_COMMIT_PREFIX = 'git -c user.name=Agentree -c user.email=agen
 
 const quoteShellArg = (value: string) => `'${value.replace(/'/g, `'\"'\"'`)}'`;
 
+function workspaceFromLocalRecord(record: LocalWorkspaceRecord): Workspace {
+  const localRepoPath = record.localRepoPath ?? null;
+  return {
+    id: record.id,
+    name: record.name,
+    userId: record.userId,
+    folderPath: localRepoPath,
+    repo_path: localRepoPath,
+    git_repo_path: localRepoPath,
+    local_repo_path: localRepoPath,
+    localRepoPath,
+    connection_status: record.connectionStatus,
+    connectionStatus: record.connectionStatus,
+    sync_status: record.syncStatus,
+    syncStatus: record.syncStatus,
+    base_commit_sha: record.baseCommitSha ?? null,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
 export function mergeWorkspaceIntoCachedWorkspaces(
   current: Workspace[] | undefined,
   workspace: Workspace
@@ -51,6 +73,24 @@ export function mergeWorkspaceIntoCachedWorkspaces(
     workspace,
     ...existing.filter((candidate) => candidate.id !== workspace.id),
   ];
+}
+
+export function renameWorkspaceInCachedWorkspaces(
+  current: Workspace[] | undefined,
+  workspaceId: string,
+  name: string,
+  serverWorkspace?: Partial<Workspace> | null
+): Workspace[] | undefined {
+  if (!current) return current;
+  return current.map((candidate) => {
+    if (candidate.id !== workspaceId) return candidate;
+    return {
+      ...candidate,
+      ...(serverWorkspace ?? {}),
+      id: workspaceId,
+      name,
+    };
+  });
 }
 
 export const workspaceKeys = {
@@ -147,6 +187,27 @@ export const useWorkspaces = (): UseQueryResult<Workspace[], Error> => {
     enabled: Boolean(userId),
     queryFn: async () => {
       const startedAt = performance.now();
+      if (isTauriEnvironment()) {
+        const localWorkspaces = await agentClient.listLocalWorkspaces();
+        let mergedLocalWorkspaces = localWorkspaces;
+        try {
+          const response = await api.get('/workspaces');
+          if (Array.isArray(response.data)) {
+            mergedLocalWorkspaces = await agentClient.mergeServerWorkspaces(response.data);
+          }
+        } catch (error) {
+          console.warn('[useWorkspaces] Server workspace merge failed; using local workspaces.', error);
+        }
+        recordPerfEvent('query.workspaces.fetch', {
+          elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
+          workspaceCount: mergedLocalWorkspaces.length,
+          source: 'local-first',
+        }, {
+          source: 'useWorkspaces',
+          durationMs: Number((performance.now() - startedAt).toFixed(2)),
+        });
+        return mergedLocalWorkspaces.map(workspaceFromLocalRecord);
+      }
       const [response, deletedWorkspaceIds] = await Promise.all([
         api.get('/workspaces'),
         agentClient.listLocalDeletedWorkspaceIds(),
@@ -196,6 +257,18 @@ export const useCreateWorkspace = () => {
       dirtyStrategy?: RepoDirtyStrategy;
     }) => {
       const repo = await prepareRepoForWorkspace(folderPath, allowGitInit, commitMessage, dirtyStrategy);
+      if (isTauriEnvironment()) {
+        const workspaceId = crypto.randomUUID();
+        const localWorkspace = await agentClient.localFirstCreateWorkspace({
+          workspaceId,
+          name,
+          localRepoPath: repo.repo_path,
+          baseCommitSha: repo.base_commit,
+          repoFingerprint: repo.base_commit ? `base:${repo.base_commit}` : null,
+          mutationId: `workspace.create:${workspaceId}`,
+        });
+        return workspaceFromLocalRecord(localWorkspace);
+      }
       const response = await api.post('/workspaces', {
         name,
         folderPath,
@@ -216,6 +289,7 @@ export const useCreateWorkspace = () => {
           mergeWorkspaceIntoCachedWorkspaces(current, workspace as Workspace)
         );
       }
+      queueLocalSyncFlush({ reason: 'workspace-created' });
       queryClient.invalidateQueries({ queryKey: workspaceKeys.all });
     },
     onError: (error: unknown) => {
@@ -229,12 +303,25 @@ export const useCreateWorkspace = () => {
 export const useRenameWorkspace = () => {
   const queryClient = useQueryClient();
   const { addToast } = useToast();
+  const userId = useAuthStore((state) => state.user?.id ?? null);
   return useMutation({
     mutationFn: async ({ id, name }: { id: string; name: string }) => {
+      if (isTauriEnvironment()) {
+        return workspaceFromLocalRecord(await agentClient.localFirstRenameWorkspace(id, name));
+      }
       const response = await api.patch(`/workspaces/${id}`, { name });
       return response.data;
     },
-    onSuccess: () => {
+    onSuccess: (workspace, variables) => {
+      queryClient.setQueryData<Workspace[]>(workspaceKeys.list(userId), (current) =>
+        renameWorkspaceInCachedWorkspaces(
+          current,
+          variables.id,
+          variables.name,
+          workspace && typeof workspace === 'object' ? workspace : null
+        )
+      );
+      queueLocalSyncFlush({ reason: 'workspace-renamed' });
       queryClient.invalidateQueries({ queryKey: workspaceKeys.all });
     },
     onError: (error: unknown) => {
@@ -309,6 +396,15 @@ export const useConnectRepo = () => {
       dirtyStrategy?: RepoDirtyStrategy;
     }) => {
       const repo = await prepareRepoForWorkspace(folderPath, allowGitInit, commitMessage, dirtyStrategy);
+      if (isTauriEnvironment()) {
+        return workspaceFromLocalRecord(await agentClient.localFirstReconnectWorkspace({
+          workspaceId,
+          localRepoPath: repo.repo_path,
+          baseCommitSha: repo.base_commit,
+          repoFingerprint: repo.base_commit ? `base:${repo.base_commit}` : null,
+          mutationId: `workspace.reconnect:${workspaceId}:${Date.now()}`,
+        }));
+      }
       const response = await api.patch(`/workspaces/${workspaceId}`, {
         folderPath,
         repoPath: repo.repo_path,
@@ -317,6 +413,7 @@ export const useConnectRepo = () => {
       return response.data;
     },
     onSuccess: () => {
+      queueLocalSyncFlush({ reason: 'workspace-reconnected' });
       queryClient.invalidateQueries({ queryKey: workspaceKeys.all });
       addToast({ title: 'Repo connected', description: 'The repo has been connected.', variant: 'success' });
     },

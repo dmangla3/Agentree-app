@@ -6,8 +6,11 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactElement } from 'react';
 import { NodeHoverCardContent } from './NodeHoverCardContent';
+import { clearHoverQuickReplyDraftsForTest } from './HoverQuickReplyActions';
+import { ChatAssistantCard } from './nodes/chat/ChatAssistantCard';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspaceProjection';
 import type { Message } from '../stores/workspaceStore';
+import { AgentreeSurfaceProvider, publicShareCapabilities } from './graph/surfaceCapabilities';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -45,6 +48,9 @@ vi.mock('../lib/agentClient', () => ({
 
 vi.mock('../agent-runs/agentRunManager', () => ({
   agentRunManager: {
+    watch: vi.fn(),
+    unwatch: vi.fn(),
+    snapshot: vi.fn(() => null),
     dispatch: cancelMocks.dispatchAgentRun,
   },
 }));
@@ -74,6 +80,10 @@ const makeMessage = (input: Partial<Message> & Pick<Message, 'id'>): Message => 
   content: input.content ?? `${input.id} content`,
   parentId: input.parentId ?? null,
   workspaceId: input.workspaceId ?? 'workspace-1',
+  aiLabel: input.aiLabel ?? null,
+  llmProvider: input.llmProvider ?? null,
+  llmModel: input.llmModel ?? null,
+  tags: input.tags ?? [],
   status: input.status ?? null,
   agent_id: input.agent_id ?? null,
   execution_data: input.execution_data ?? null,
@@ -140,23 +150,158 @@ describe('NodeHoverCardContent', () => {
     cancelMocks.dispatchAgentRun.mockReset();
     cancelMocks.scheduleRefresh.mockReset();
     cancelMocks.scheduleRefresh.mockResolvedValue(undefined);
+    clearHoverQuickReplyDraftsForTest();
   });
 
-  it('does not show Reply for commit hover cards', () => {
+  it('does not show Reply for commit hover cards', async () => {
     render(<NodeHoverCardContent entity={makeEntity('commit_message')} projection={makeProjection()} />);
 
-    expect(screen.getByText('hover body: commit_message preview')).toBeTruthy();
+    expect(await screen.findByText('hover body: commit_message preview')).toBeTruthy();
     expect(screen.queryByText('Reply')).toBeNull();
   });
 
-  it('keeps Reply for non-commit hover cards', () => {
+  it('keeps Reply for non-commit hover cards', async () => {
     render(<NodeHoverCardContent entity={makeEntity('assistant_message')} projection={makeProjection()} />);
 
-    expect(screen.getByText('hover body: assistant_message preview')).toBeTruthy();
+    expect(await screen.findByText('hover body: assistant_message preview')).toBeTruthy();
     expect(screen.getByText('Quick Reply')).toBeTruthy();
   });
 
-  it('does not show a standalone persisted failure reason banner in the hover card', () => {
+  it('uses the shared preview renderer for public hover cards without app-only quick reply actions', () => {
+    const message = makeMessage({
+      id: 'assistant-public',
+      role: 'assistant',
+      content: 'Public assistant response',
+      aiLabel: 'Review agent',
+      llmProvider: 'openai',
+      llmModel: 'openai/gpt-5.5-high',
+      base_commit_sha: '1111111111111111111111111111111111111111',
+      output_commit_sha: '2222222222222222222222222222222222222222',
+      tags: ['review', 'public'],
+      execution_data: {
+        started_at: '2026-06-04T00:00:00.000Z',
+        ended_at: '2026-06-04T00:02:05.000Z',
+        usage: {
+          input_tokens: 1200,
+          output_tokens: 345,
+          total_tokens: 1545,
+        },
+        cache_usage: {
+          cached_input_tokens: 512,
+        },
+        meta: {
+          commit_count: 1,
+          files_changed_count: 2,
+          total_additions: 14,
+          total_deletions: 3,
+        },
+        work_logs: [
+          {
+            id: 'tool-1',
+            type: 'tool_use',
+            label: 'Bash',
+            status: 'started',
+            durationMs: 1200,
+          },
+        ],
+        files_changed: [
+          { path: 'secret/file.ts', status: 'modified', additions: 14, deletions: 3 },
+        ],
+        timeline: [
+          { type: 'tool_use', toolName: 'Bash', toolInput: { cmd: 'cat secret/file.ts' } },
+        ],
+      } as any,
+    });
+
+    render(
+      <NodeHoverCardContent
+        entity={makeEntity('assistant_message', {
+          message,
+          messageId: message.id,
+          focusMessageId: message.id,
+          status: 'completed' as any,
+        })}
+        projection={makeProjection([message])}
+        surfaceMode="public-share"
+        capabilities={publicShareCapabilities}
+      />
+    );
+
+    expect(screen.getByText('hover body: assistant_message preview')).toBeTruthy();
+    expect(screen.queryByText('Quick Reply')).toBeNull();
+  });
+
+  it('renders public assistant details through the shared chat card without tool-call expansion', () => {
+    const message = makeMessage({
+      id: 'assistant-public',
+      role: 'assistant',
+      content: 'Public assistant response with `inline code`',
+      aiLabel: 'Review agent',
+      llmProvider: 'openai',
+      llmModel: 'openai/gpt-5.5-high',
+      promptTokens: 1200,
+      completionTokens: 345,
+      totalTokens: 1545,
+      tags: ['review', 'public'],
+      status: 'completed' as any,
+      execution_data: {
+        usage: {
+          input_tokens: 1200,
+          output_tokens: 345,
+          total_tokens: 1545,
+          cached_input_tokens: 512,
+        },
+        work_logs: [
+          {
+            id: 'tool-1',
+            type: 'tool_use',
+            label: 'Bash',
+            status: 'completed',
+            durationMs: 1200,
+          },
+        ],
+        files_changed: [
+          { path: 'secret/file.ts', status: 'modified', additions: 14, deletions: 3 },
+        ],
+      } as any,
+    });
+    const entity = makeEntity('assistant_message', {
+      message,
+      messageId: message.id,
+      focusMessageId: message.id,
+      status: 'completed' as any,
+    });
+
+    render(
+      <AgentreeSurfaceProvider surfaceMode="public-share" capabilities={publicShareCapabilities}>
+        <ChatAssistantCard
+          entity={entity}
+          isFocused={false}
+          isSelected={false}
+          layout="chat"
+          onFocus={() => {}}
+          onSelect={() => {}}
+          onContextMenu={() => {}}
+        />
+      </AgentreeSurfaceProvider>
+    );
+
+    expect(screen.getByText('GPT 5.5 High')).toBeTruthy();
+    expect(screen.getByText(/Completed/)).toBeTruthy();
+    expect(screen.getByText('Public assistant response with')).toBeTruthy();
+    expect(screen.getByText('inline code')).toBeTruthy();
+    expect(screen.getByText('review')).toBeTruthy();
+    expect(screen.getByText('public')).toBeTruthy();
+    expect(screen.getByText('Work logs')).toBeTruthy();
+    expect(screen.getByText('Bash')).toBeTruthy();
+    expect(screen.getByText('1.2s')).toBeTruthy();
+    expect(screen.queryByText('secret/file.ts')).toBeNull();
+    expect(screen.queryByText('cat secret/file.ts')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Bash/i })).toBeNull();
+    expect(screen.queryByLabelText('Remove tag: review')).toBeNull();
+  });
+
+  it('does not show a standalone persisted failure reason banner in the hover card', async () => {
     const reason = "ImportError: cannot import name 'ParamSpec' from 'typing'";
     const entity = makeEntity('assistant_message');
     entity.status = 'failed' as any;
@@ -170,7 +315,7 @@ describe('NodeHoverCardContent', () => {
 
     render(<NodeHoverCardContent entity={entity} projection={makeProjection([entity.message])} />);
 
-    expect(screen.getByText('hover body: assistant_message preview')).toBeTruthy();
+    expect(await screen.findByText('hover body: assistant_message preview')).toBeTruthy();
     expect(screen.queryByText('Failure reason')).toBeNull();
     expect(screen.queryByText(reason)).toBeNull();
   });
@@ -203,6 +348,65 @@ describe('NodeHoverCardContent', () => {
     expect(button.className).not.toContain('dark:bg-[hsl(var(--app-bg-muted))]');
     expect(button.className).not.toContain('dark:bg-white');
     expect((button as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('uses an autosizing multiline textarea for quick replies', () => {
+    render(<NodeHoverCardContent entity={makeEntity('assistant_message')} projection={makeProjection()} />);
+
+    const input = screen.getByLabelText('Quick reply prompt');
+
+    expect(input.tagName).toBe('TEXTAREA');
+    expect(input.className).toContain('resize-none');
+    expect(input.className).toContain('max-h-[132px]');
+  });
+
+  it('restores an unsent quick reply draft when reopening the same message hover card', async () => {
+    const user = userEvent.setup();
+    const entity = makeEntity('assistant_message');
+    const projection = makeProjection([entity.message!]);
+    const { unmount } = render(<NodeHoverCardContent entity={entity} projection={projection} />);
+
+    await user.type(screen.getByLabelText('Quick reply prompt'), 'Keep this draft');
+    unmount();
+
+    render(<NodeHoverCardContent entity={entity} projection={projection} />);
+
+    expect((screen.getByLabelText('Quick reply prompt') as HTMLTextAreaElement).value).toBe('Keep this draft');
+  });
+
+  it('keeps hover card quick reply drafts scoped to the reply message', async () => {
+    const user = userEvent.setup();
+    const firstMessage = makeMessage({ id: 'message-1', role: 'assistant' });
+    const secondMessage = makeMessage({ id: 'message-2', role: 'assistant' });
+    const projection = makeProjection([firstMessage, secondMessage]);
+    const firstEntity = makeEntity('assistant_message', {
+      message: firstMessage,
+      messageId: firstMessage.id,
+      focusMessageId: firstMessage.id,
+    });
+    const secondEntity = makeEntity('assistant_message', {
+      message: secondMessage,
+      messageId: secondMessage.id,
+      focusMessageId: secondMessage.id,
+    });
+    const { rerender } = render(<NodeHoverCardContent entity={firstEntity} projection={projection} />);
+
+    await user.type(screen.getByLabelText('Quick reply prompt'), 'First message draft');
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <NodeHoverCardContent entity={secondEntity} projection={projection} />
+      </QueryClientProvider>
+    );
+
+    expect((screen.getByLabelText('Quick reply prompt') as HTMLTextAreaElement).value).toBe('');
+
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <NodeHoverCardContent entity={firstEntity} projection={projection} />
+      </QueryClientProvider>
+    );
+
+    expect((screen.getByLabelText('Quick reply prompt') as HTMLTextAreaElement).value).toBe('First message draft');
   });
 
   it('does not bubble quick reply input events into graph node focus handlers', () => {
@@ -426,7 +630,7 @@ describe('NodeHoverCardContent', () => {
     ];
     render(<NodeHoverCardContent entity={makeEntity('user_message')} projection={makeProjection(messages)} />);
 
-    const input = screen.getByLabelText('Quick reply prompt') as HTMLInputElement;
+    const input = screen.getByLabelText('Quick reply prompt') as HTMLTextAreaElement;
     await user.type(input, 'Ship it');
     await user.click(screen.getByRole('button', { name: 'Quick Reply' }));
 
@@ -453,7 +657,7 @@ describe('NodeHoverCardContent', () => {
   });
 
   it('uses the neutral node preview renderer instead of importing chat rendering directly', () => {
-    const source = readFileSync(join(process.cwd(), 'src/components/NodeHoverCardContent.tsx'), 'utf8');
+    const source = readFileSync(join(process.cwd(), 'src/components/AppNodeHoverPreview.tsx'), 'utf8');
 
     expect(source).toContain("import { NodePreviewRenderer } from './NodePreviewRenderer';");
     expect(source).not.toContain("import { ChatNodeDispatcher } from './nodes/chat/ChatNodeDispatcher';");

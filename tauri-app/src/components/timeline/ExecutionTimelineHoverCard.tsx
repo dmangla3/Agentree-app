@@ -4,12 +4,15 @@ import type { ExecutionTimelineItem } from '../../lib/executionTimelineModel';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../../domain/workspaceProjection';
 import { NodeHoverCardContent } from '../NodeHoverCardContent';
 import { createCommitHoverEntity } from '../nodes/graph/commitHoverEntity';
+import type { AgentreeSurfaceCapabilities, AgentreeSurfaceMode } from '../graph/surfaceCapabilities';
 
 interface ExecutionTimelineHoverCardProps {
   projection: WorkspaceProjection;
   item: ExecutionTimelineItem;
   children: ReactNode;
   onHoverChange?: (messageId: string | null) => void;
+  surfaceMode?: AgentreeSurfaceMode;
+  capabilities?: AgentreeSurfaceCapabilities;
 }
 
 export function resolveExecutionTimelineHoverEntity(
@@ -30,6 +33,8 @@ export function ExecutionTimelineHoverCard({
   item,
   children,
   onHoverChange,
+  surfaceMode,
+  capabilities,
 }: ExecutionTimelineHoverCardProps) {
   const entity = resolveExecutionTimelineHoverEntity(projection, item);
 
@@ -50,7 +55,12 @@ export function ExecutionTimelineHoverCard({
         sideOffset={10}
         className="z-50 w-auto border-none bg-transparent p-0 shadow-none"
       >
-        <NodeHoverCardContent entity={entity} projection={projection} />
+        <NodeHoverCardContent
+          entity={entity}
+          projection={projection}
+          surfaceMode={surfaceMode}
+          capabilities={capabilities}
+        />
       </HoverCardContent>
     </HoverCard>
   );

@@ -50,6 +50,7 @@ import { isFirstClassCommitMessage } from '../lib/graph/turnUtils';
 import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { getMergeVisualParentEntries, isMergeResultNode } from '../lib/graph/lineage';
 import { reconstructContext } from '../lib/contextUtils';
+import { resolveLocalWorkspaceRepoPath } from '../lib/workspaceRepoPath';
 import {
     resolveComposerTargetModeAfterSuccessfulSend,
     resolveSendParentMessageId,
@@ -599,8 +600,8 @@ export function ChatInput({
         [workspaces, selectedWorkspaceId]
     );
     const selectedWorkspaceRepoPath = useMemo(
-        () => selectedWorkspace?.git_repo_path?.trim() || selectedWorkspace?.folderPath?.trim() || null,
-        [selectedWorkspace?.folderPath, selectedWorkspace?.git_repo_path]
+        () => resolveLocalWorkspaceRepoPath(selectedWorkspace),
+        [selectedWorkspace]
     );
     const localCommitChoicesQuery = useCommits({
         repoPath: selectedWorkspaceRepoPath,
@@ -1371,7 +1372,7 @@ export function ChatInput({
         const workspaceId = selectedWorkspaceId;
         if (!workspaceId) return;
 
-        const repoPath = selectedWorkspace?.git_repo_path || selectedWorkspace?.folderPath || null;
+        const repoPath = resolveLocalWorkspaceRepoPath(selectedWorkspace);
         if (!repoPath) return;
 
         const candidates = persistedMessages.filter((message) =>
@@ -3478,8 +3479,7 @@ export function ChatInput({
     }, [repoMentionCommit, repoMentionFilePathSet, selectedWorkspaceRepoPath]);
 
     const resolveWorkspaceWorkspace = useCallback(async () => {
-        const attachedRepoPath = selectedWorkspace?.git_repo_path?.trim() || null;
-        const fallbackFolderPath = selectedWorkspace?.folderPath?.trim() || null;
+        const attachedRepoPath = resolveLocalWorkspaceRepoPath(selectedWorkspace);
         const workspaceBaseCommit = selectedWorkspace?.base_commit_sha?.trim() || null;
 
         if (attachedRepoPath) {
@@ -3489,25 +3489,8 @@ export function ChatInput({
             };
         }
 
-        if (!fallbackFolderPath) {
-            throw new Error('No project repository is attached to this workspace.');
-        }
-
-        const workspace = await agentClient.attachWorkspace(fallbackFolderPath);
-        if (workspace.needs_git_init) {
-            throw new Error('This workspace is attached to a folder that is not a Git repository. Reattach a Git repo before sending.');
-        }
-
-        const resolvedBaseCommit = workspaceBaseCommit || workspace.base_commit || null;
-        if (!resolvedBaseCommit) {
-            throw new Error('Workspace is missing a base commit. Reattach the repository.');
-        }
-
-        return {
-            repoPath: workspace.repo_path,
-            baseCommitSha: resolvedBaseCommit,
-        };
-    }, [selectedWorkspace?.base_commit_sha, selectedWorkspace?.folderPath, selectedWorkspace?.git_repo_path]);
+        throw new Error('This workspace is not connected to a local folder on this machine. Reconnect repository.');
+    }, [selectedWorkspace]);
 
     // ============================================================================
     // OPTIMISTIC MESSAGE SENDING WITH PARALLEL AGENT SETUP

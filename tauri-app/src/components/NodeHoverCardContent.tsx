@@ -1,34 +1,53 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useLayoutEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspaceProjection';
-import { agentRunManager } from '../agent-runs/agentRunManager';
-import { NodePreviewRenderer } from './NodePreviewRenderer';
-import { Button } from '../../@/components/ui/button';
-import { Input } from '../../@/components/ui/input';
-import { Loader2, Reply, Square } from 'lucide-react';
-import { useHeadlessQuickReply } from '../hooks/useHeadlessQuickReply';
 import { useRunStatusStore } from '../stores/runStatusStore';
-import { agentClient } from '../lib/agentClient';
-import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
-import { getHoverReplyMode, stopQuickReplyControlEvent } from '../lib/quickReply';
-import { cn } from '../lib/utils';
 import { isActiveAgentRunStatus } from '../lib/agentRunSteering';
+import {
+  AgentreeSurfaceProvider,
+  useAgentreeSurface,
+  type AgentreeSurfaceCapabilities,
+  type AgentreeSurfaceMode,
+} from './graph/surfaceCapabilities';
+
+let appNodeHoverPreviewPreload: Promise<{ default: typeof import('./AppNodeHoverPreview').AppNodeHoverPreview }> | null = null;
+
+const loadAppNodeHoverPreview = () => {
+  appNodeHoverPreviewPreload ??= import('./AppNodeHoverPreview').then((module) => ({
+    default: module.AppNodeHoverPreview,
+  }));
+  return appNodeHoverPreviewPreload;
+};
+
+export const preloadNodeHoverPreview = () => {
+  void loadAppNodeHoverPreview();
+};
+
+const AppNodeHoverPreview = lazy(loadAppNodeHoverPreview);
+
+const AppHoverQuickReplyActions = lazy(() => import('./HoverQuickReplyActions').then((module) => ({
+  default: module.HoverQuickReplyActions,
+})));
 
 interface NodeHoverCardContentProps {
   entity?: ProjectedNodeEntity;
   projection?: WorkspaceProjection;
   headerAccessory?: ReactNode;
+  surfaceMode?: AgentreeSurfaceMode;
+  capabilities?: AgentreeSurfaceCapabilities;
 }
 
-export function NodeHoverCardContent({ entity, projection, headerAccessory }: NodeHoverCardContentProps) {
-  const queryClient = useQueryClient();
-  const [quickReplyPrompt, setQuickReplyPrompt] = useState('');
-  const [isCancelling, setIsCancelling] = useState(false);
-  const [cancelError, setCancelError] = useState<string | null>(null);
-  const quickReplyInputRef = useRef<HTMLInputElement | null>(null);
+export function NodeHoverCardContent({
+  entity,
+  projection,
+  headerAccessory,
+  surfaceMode,
+  capabilities,
+}: NodeHoverCardContentProps) {
+  const surface = useAgentreeSurface();
+  const resolvedSurfaceMode = surfaceMode ?? surface.surfaceMode;
+  const resolvedCapabilities = capabilities ?? surface.capabilities;
   const previewScrollRef = useRef<HTMLDivElement | null>(null);
-  const { sendQuickReply, sendSteeringReply, isSending, error } = useHeadlessQuickReply();
   const replyParentId = entity?.focusMessageId || entity?.messageId || null;
   const replyRunStatus = useRunStatusStore((state) => (
     replyParentId ? state.byNodeId[replyParentId]?.status ?? null : null
@@ -61,78 +80,9 @@ export function NodeHoverCardContent({ entity, projection, headerAccessory }: No
   }, [replyParentId, shouldDefaultScrollPreviewToBottom]);
 
   if (!entity || !projection) return null;
-  const replyMode = getHoverReplyMode(entity, replyRunStatus);
-  const showReplyAction = Boolean(replyMode && replyParentId);
-  const canSendQuickReply = quickReplyPrompt.trim().length > 0 && !isSending && !isCancelling;
-  const isSteeringReply = replyMode === 'steer';
-  const canCancelRunningAgent = isSteeringReply && Boolean(replyParentId) && !isCancelling;
-  const inputLabel = isSteeringReply ? 'Steering prompt' : 'Quick reply prompt';
-  const actionLabel = isSteeringReply ? 'Steer' : 'Quick Reply';
-  const sendingLabel = isSteeringReply ? 'Steering' : 'Sending';
-  const focusQuickReplyInput = () => {
-    const input = quickReplyInputRef.current;
-    if (!input) return;
-    input.focus();
-    input.setSelectionRange(input.value.length, input.value.length);
-  };
-  const handleQuickReply = async () => {
-    const prompt = quickReplyPrompt.trim();
-    const workspaceId = entity.message?.workspaceId ?? projection.messageMap.get(replyParentId ?? '')?.workspaceId ?? null;
-    if (!replyParentId || !prompt || isSending || !replyMode) return;
-    try {
-      if (replyMode === 'steer') {
-        await sendSteeringReply({
-          assistantNodeId: replyParentId,
-          prompt,
-        });
-      } else {
-        if (!workspaceId) return;
-        await sendQuickReply({
-          workspaceId,
-          replyParentId,
-          prompt,
-          messages: projection.messages,
-        });
-      }
-      setQuickReplyPrompt('');
-      window.requestAnimationFrame(() => {
-        focusQuickReplyInput();
-      });
-    } catch {
-      // Error text is exposed through the hook state.
-      window.requestAnimationFrame(focusQuickReplyInput);
-    }
-  };
-  const handleCancelRunningAgent = async () => {
-    const workspaceId = entity.message?.workspaceId ?? projection.messageMap.get(replyParentId ?? '')?.workspaceId ?? null;
-    const assistantMessage = replyParentId ? projection.messageMap.get(replyParentId) ?? entity.message ?? null : null;
-    if (!replyParentId || !workspaceId || isCancelling) return;
-
-    setCancelError(null);
-    setIsCancelling(true);
-    try {
-      await agentClient.stopAgent(replyParentId);
-      agentRunManager.dispatch(replyParentId, {
-        type: 'cancel',
-        reason: 'cancelled',
-      }, {
-        workspaceId,
-        parentId: assistantMessage?.parentId ?? null,
-        role: 'assistant',
-        agentId: assistantMessage?.agent_id ?? null,
-        content: assistantMessage?.content ?? '',
-        executionData: (assistantMessage?.execution_data ?? {}) as Record<string, any>,
-      });
-      void scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, { reason: 'cancel-agent' });
-    } catch (caught) {
-      console.error('[NodeHoverCardContent] Failed to stop agent:', caught);
-      setCancelError('Unable to cancel this run.');
-    } finally {
-      setIsCancelling(false);
-    }
-  };
 
   return (
+    <AgentreeSurfaceProvider surfaceMode={resolvedSurfaceMode} capabilities={resolvedCapabilities}>
     <div
       data-agentree-node-hover-card="true"
       className="flex w-[min(920px,var(--radix-hover-card-content-available-width),calc(100vw-2rem))] max-w-[min(920px,var(--radix-hover-card-content-available-width),calc(100vw-2rem))] flex-col overflow-hidden rounded-[24px] border border-[hsl(var(--app-border)/0.76)] bg-[hsl(var(--app-panel)/0.96)] p-3 text-foreground shadow-[0_24px_64px_-40px_hsl(var(--foreground)/0.58),0_10px_24px_-20px_hsl(var(--foreground)/0.32),inset_0_1px_0_hsl(var(--background)/0.22)]"
@@ -147,102 +97,25 @@ export function NodeHoverCardContent({ entity, projection, headerAccessory }: No
       >
         <div className="min-w-0">
           <div className="min-w-0 rounded-[20px] border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.42)] p-1 shadow-[inset_0_1px_0_hsl(var(--background)/0.16)]">
-            <NodePreviewRenderer entity={entity} projection={projection} />
+            <Suspense fallback={null}>
+              <AppNodeHoverPreview entity={entity} projection={projection} />
+            </Suspense>
           </div>
         </div>
       </div>
-      {showReplyAction && replyParentId && (
-        <div
-          className="mt-3 flex items-center gap-2 border-t border-[hsl(var(--app-border)/0.62)] pt-3"
-          onPointerDown={stopQuickReplyControlEvent}
-          onMouseDown={stopQuickReplyControlEvent}
-          onPointerUp={stopQuickReplyControlEvent}
-          onMouseUp={stopQuickReplyControlEvent}
-          onClick={stopQuickReplyControlEvent}
-          onDoubleClick={stopQuickReplyControlEvent}
-          onFocus={stopQuickReplyControlEvent}
-        >
-          <Input
-            ref={quickReplyInputRef}
-            aria-label={inputLabel}
-            value={quickReplyPrompt}
-            onChange={(event) => setQuickReplyPrompt(event.target.value)}
-            onPointerDown={stopQuickReplyControlEvent}
-            onMouseDown={stopQuickReplyControlEvent}
-            onPointerUp={stopQuickReplyControlEvent}
-            onMouseUp={stopQuickReplyControlEvent}
-            onClick={stopQuickReplyControlEvent}
-            onFocus={stopQuickReplyControlEvent}
-            onKeyDown={(event) => {
-              stopQuickReplyControlEvent(event);
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                void handleQuickReply();
-              }
-            }}
-            placeholder={isSteeringReply ? 'Steer...' : 'Reply...'}
-            className="h-8 min-w-0 flex-1 rounded-lg border-[hsl(var(--app-border)/0.72)] bg-[hsl(var(--app-bg-muted)/0.54)] text-xs shadow-[inset_0_1px_0_hsl(var(--background)/0.12)] focus-visible:border-[hsl(var(--app-border-strong)/0.9)] focus-visible:ring-[hsl(var(--app-focus)/0.22)]"
-            disabled={isSending || isCancelling}
+      {(resolvedCapabilities.canReply || resolvedCapabilities.canSteer) && replyParentId ? (
+        <Suspense fallback={null}>
+          <AppHoverQuickReplyActions
+            entity={entity}
+            projection={projection}
+            replyParentId={replyParentId}
+            replyRunStatus={replyRunStatus}
+            canReply={resolvedCapabilities.canReply}
+            canSteer={resolvedCapabilities.canSteer}
           />
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            className={cn(
-              "h-8 shrink-0 gap-1.5 rounded-lg px-3 text-xs font-medium transition-[background-color,color,box-shadow,transform,opacity]",
-              canSendQuickReply && "border border-[hsl(var(--app-accent)/0.48)] bg-[hsl(var(--app-accent))] text-white shadow-[0_12px_28px_-20px_hsl(var(--app-accent)/0.72),inset_0_1px_0_rgba(255,255,255,0.16)] hover:brightness-105 dark:text-white"
-            )}
-            disabled={!canSendQuickReply}
-            onPointerDown={stopQuickReplyControlEvent}
-            onMouseDown={stopQuickReplyControlEvent}
-            onPointerUp={stopQuickReplyControlEvent}
-            onMouseUp={stopQuickReplyControlEvent}
-            onClick={(event) => {
-              event.preventDefault();
-              stopQuickReplyControlEvent(event);
-              void handleQuickReply();
-            }}
-          >
-            {isSending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Reply className="h-3.5 w-3.5" />}
-            {isSending ? sendingLabel : actionLabel}
-          </Button>
-          {isSteeringReply ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              className={cn(
-                "h-8 shrink-0 gap-1.5 rounded-lg border border-[hsl(var(--app-border)/0.76)] px-2.5 text-xs font-medium text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--background)/0.16)] transition-[background-color,border-color,color,box-shadow,transform,opacity]",
-                "hover:border-destructive/35 hover:bg-destructive/10 hover:text-destructive active:scale-[0.96]",
-                "focus-visible:ring-[hsl(var(--app-focus)/0.22)]",
-                "disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-background disabled:hover:text-muted-foreground"
-              )}
-              disabled={!canCancelRunningAgent}
-              onPointerDown={stopQuickReplyControlEvent}
-              onMouseDown={stopQuickReplyControlEvent}
-              onPointerUp={stopQuickReplyControlEvent}
-              onMouseUp={stopQuickReplyControlEvent}
-              onClick={(event) => {
-                event.preventDefault();
-                stopQuickReplyControlEvent(event);
-                void handleCancelRunningAgent();
-              }}
-              aria-label="Cancel running agent"
-            >
-              {isCancelling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3 w-3 fill-current" />}
-              {isCancelling ? 'Stopping' : 'Cancel'}
-            </Button>
-          ) : null}
-          {(error || cancelError) && (
-            <div
-              role="alert"
-              className="max-w-[18rem] rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1 text-[11px] leading-snug text-destructive"
-            >
-              {error || cancelError}
-            </div>
-          )}
-        </div>
-      )}
+        </Suspense>
+      ) : null}
     </div>
+    </AgentreeSurfaceProvider>
   );
 }

@@ -147,6 +147,19 @@ export interface LocalNodeRecord {
     lastUploadError?: string | null;
 }
 
+export interface LocalInsightRecord {
+    insightId: string;
+    workspaceId: string;
+    payload: string;
+    syncStatus: 'local_only' | 'persisted';
+    createdAt: string;
+    updatedAt: string;
+    serverAckAt?: number | null;
+    retryAttempt: number;
+    nextRetryAt?: number | null;
+    lastUploadError?: string | null;
+}
+
 export interface LocalSyncEventRecord {
     id: string;
     workspaceId?: string | null;
@@ -168,6 +181,36 @@ export interface LocalDeletedNodeRootRecord {
     workspaceId: string;
     nodeId: string;
     deletedAt: number;
+}
+
+export interface LocalWorkspaceRecord {
+    id: string;
+    name: string;
+    userId: string;
+    localRepoPath?: string | null;
+    folderPath?: string | null;
+    repoPath?: string | null;
+    baseCommitSha?: string | null;
+    connectionStatus: 'connected' | 'missing' | 'remote_unconnected' | 'path_mismatch' | string;
+    syncStatus: 'sync_pending' | 'synced' | 'sync_error' | 'local_only' | string;
+    createdAt: string;
+    updatedAt: string;
+    deletedAt?: string | null;
+    localUpdatedAt: number;
+    serverWorkspaceId?: string | null;
+    serverVersion?: string | null;
+    nameDirty: boolean;
+    metadataDirty: boolean;
+}
+
+export interface LocalWorkspaceMutationRequest {
+    workspaceId: string;
+    currentUserId: string;
+    name?: string | null;
+    localRepoPath?: string | null;
+    baseCommitSha?: string | null;
+    repoFingerprint?: string | null;
+    mutationId?: string | null;
 }
 
 export interface LocalCommitImport {
@@ -648,6 +691,24 @@ export const agentClient = {
         if (!hasTauriRuntime()) return [];
         return await tauriCommands.listLocalNodes(workspaceId) as LocalNodeRecord[];
     },
+    listLocalInsights: async (workspaceId: string): Promise<LocalInsightRecord[]> => {
+        if (!hasTauriRuntime()) return [];
+        return await (tauriCommands as any).listLocalInsights(workspaceId) as LocalInsightRecord[];
+    },
+    upsertLocalInsight: async (workspaceId: string, insightId: string, payload: unknown, mutationId?: string | null): Promise<LocalSyncEventRecord | null> => {
+        if (!hasTauriRuntime()) return null;
+        return await (tauriCommands as any).upsertLocalInsight(
+            workspaceId,
+            currentAuthUserId(),
+            insightId,
+            JSON.stringify(payload),
+            mutationId ?? null
+        ) as LocalSyncEventRecord;
+    },
+    localFirstDismissInsight: async (workspaceId: string, insightId: string): Promise<LocalSyncEventRecord | null> => {
+        if (!hasTauriRuntime()) return null;
+        return await (tauriCommands as any).localFirstDismissInsight(workspaceId, currentAuthUserId(), insightId) as LocalSyncEventRecord;
+    },
     hydrateLocalNodesFromServer: async (workspaceId: string, messages: unknown[]): Promise<number> => {
         if (!hasTauriRuntime()) return 0;
         const payloads = messages.map((message) => JSON.stringify(message));
@@ -719,6 +780,46 @@ export const agentClient = {
     localFirstDeleteWorkspace: async (workspaceId: string): Promise<LocalSyncEventRecord | null> => {
         if (!hasTauriRuntime()) return null;
         return await tauriCommands.localFirstDeleteWorkspace(workspaceId, currentAuthUserId()) as LocalSyncEventRecord;
+    },
+    listLocalWorkspaces: async (): Promise<LocalWorkspaceRecord[]> => {
+        if (!hasTauriRuntime()) return [];
+        return await invoke<LocalWorkspaceRecord[]>('list_local_workspaces', {
+            currentUserId: currentAuthUserId(),
+        });
+    },
+    mergeServerWorkspaces: async (workspaces: unknown[]): Promise<LocalWorkspaceRecord[]> => {
+        if (!hasTauriRuntime()) return [];
+        return await invoke<LocalWorkspaceRecord[]>('merge_server_workspaces', {
+            currentUserId: currentAuthUserId(),
+            payloads: workspaces.map((workspace) => JSON.stringify(workspace)),
+        });
+    },
+    localFirstCreateWorkspace: async (
+        request: Omit<LocalWorkspaceMutationRequest, 'currentUserId'>
+    ): Promise<LocalWorkspaceRecord> => {
+        return await invoke<LocalWorkspaceRecord>('local_first_create_workspace', {
+            request: {
+                ...request,
+                currentUserId: currentAuthUserId(),
+            },
+        });
+    },
+    localFirstRenameWorkspace: async (workspaceId: string, name: string): Promise<LocalWorkspaceRecord> => {
+        return await invoke<LocalWorkspaceRecord>('local_first_rename_workspace', {
+            workspaceId,
+            currentUserId: currentAuthUserId(),
+            name,
+        });
+    },
+    localFirstReconnectWorkspace: async (
+        request: Omit<LocalWorkspaceMutationRequest, 'currentUserId'>
+    ): Promise<LocalWorkspaceRecord> => {
+        return await invoke<LocalWorkspaceRecord>('local_first_reconnect_workspace', {
+            request: {
+                ...request,
+                currentUserId: currentAuthUserId(),
+            },
+        });
     },
     listLocalDeletedNodeRoots: async (workspaceId: string): Promise<LocalDeletedNodeRootRecord[]> => {
         if (!hasTauriRuntime()) return [];

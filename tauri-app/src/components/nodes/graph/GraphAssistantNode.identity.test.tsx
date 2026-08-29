@@ -122,4 +122,28 @@ describe('GraphAssistantNode identity', () => {
 
     expect(container.firstElementChild?.getAttribute('data-hover-hydration-enabled')).toBe('true');
   });
+
+  it('shows a polished hover-progress cue while the assistant is running', () => {
+    render(
+      <GraphAssistantNode
+        entity={makeAssistantEntity({
+          preview: 'Assistant message',
+          status: 'running',
+          message: {
+            status: 'running',
+          },
+        } as any)}
+        isFocused={false}
+        isSelected={false}
+        layout="graph"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByText('Assistant is working.')).toBeTruthy();
+    expect(screen.getByText('Please hover to check progress.')).toBeTruthy();
+    expect(screen.queryByText('Assistant message')).toBeNull();
+  });
 });

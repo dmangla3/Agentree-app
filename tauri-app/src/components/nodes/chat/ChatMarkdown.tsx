@@ -1,12 +1,15 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import { cn } from '../../../lib/utils';
+import { createMarkdownLinkClickHandler } from '../../../lib/linkActivation';
 
 const chatMarkdownPlugins = [remarkGfm, remarkBreaks];
 
-export const chatMarkdownComponents = {
+export const createChatMarkdownComponents = (repoPath?: string | null) => {
+  const handleLinkClick = createMarkdownLinkClickHandler(repoPath);
+  return {
   code: (props: any) => {
     const { inline, className: codeClassName, children, ...rest } = props;
     const match = /language-(\w+)/.exec(codeClassName || '');
@@ -47,6 +50,7 @@ export const chatMarkdownComponents = {
       rel="noopener noreferrer"
       className="break-all text-primary hover:underline"
       {...props}
+      onClick={handleLinkClick}
     />
   ),
   blockquote: (props: any) => (
@@ -66,11 +70,21 @@ export const chatMarkdownComponents = {
   td: (props: any) => <td className="min-w-0 break-words [overflow-wrap:anywhere] border border-border px-2 py-1" {...props} />,
   img: (props: any) => <img className="h-auto max-w-full" {...props} />,
   hr: (props: any) => <hr className="my-3 max-w-full border-border/70" {...props} />,
+  };
 };
 
-export const ChatMarkdown = memo(function ChatMarkdown({ children }: { children: string }) {
+export const chatMarkdownComponents = createChatMarkdownComponents();
+
+export const ChatMarkdown = memo(function ChatMarkdown({
+  children,
+  repoPath = null,
+}: {
+  children: string;
+  repoPath?: string | null;
+}) {
+  const components = useMemo(() => createChatMarkdownComponents(repoPath), [repoPath]);
   return (
-    <ReactMarkdown remarkPlugins={chatMarkdownPlugins} components={chatMarkdownComponents}>
+    <ReactMarkdown remarkPlugins={chatMarkdownPlugins} components={components}>
       {children}
     </ReactMarkdown>
   );

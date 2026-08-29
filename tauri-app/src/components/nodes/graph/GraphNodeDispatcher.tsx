@@ -1,4 +1,4 @@
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useEffect } from 'react';
 import type { Node, NodeProps } from '@xyflow/react';
 import { GraphUserNode } from './GraphUserNode';
 import { GraphAssistantNode } from './GraphAssistantNode';
@@ -9,7 +9,7 @@ import { GraphCanonicalCommitNode } from './GraphCanonicalCommitNode';
 import { GraphDerivedCommitGroupNode } from './GraphDerivedCommitGroupNode';
 import { GraphSummaryNode } from './GraphSummaryNode';
 import type { ProjectedCommitEntity, ProjectedCommitGroup, ProjectedNodeEntity, WorkspaceProjection } from '../../../domain/workspaceProjection';
-import { NodeHoverCardContent } from '../../NodeHoverCardContent';
+import { NodeHoverCardContent, preloadNodeHoverPreview } from '../../NodeHoverCardContent';
 import { useGraphInteractionContext } from '../../graph/GraphInteractionContext';
 import { useGraphHoverProjectionInput } from '../../graph/GraphHoverProjectionContext';
 import { useWorkspaceProjection } from '../../../hooks/useWorkspaceProjection';
@@ -19,6 +19,11 @@ import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { getMessageOutputCommitSha } from '../../../lib/graph/commitAccessors';
 import { shouldEnableGraphNodeHover, type GraphNodeDetailLevel } from '../../../lib/graphNodeDetailLevel';
 import { dispatchGraphComposerDockExpand } from '../../../lib/graphComposerDockEvents';
+import {
+  useAgentreeSurface,
+  type AgentreeSurfaceCapabilities,
+  type AgentreeSurfaceMode,
+} from '../../graph/surfaceCapabilities';
 
 
 export interface GraphNodeData {
@@ -41,13 +46,18 @@ export interface GraphNodeData {
 }
 
 type GraphNode = Node<GraphNodeData>;
+let hasScheduledAppHoverPreviewPreload = false;
 
 function GraphNodeHoverCardContent({
   entity,
   fallbackProjection,
+  surfaceMode,
+  capabilities,
 }: {
   entity?: ProjectedNodeEntity;
   fallbackProjection?: WorkspaceProjection;
+  surfaceMode?: AgentreeSurfaceMode;
+  capabilities?: AgentreeSurfaceCapabilities;
 }) {
   const hoverInput = useGraphHoverProjectionInput();
   const hoverProjection = useWorkspaceProjection(
@@ -67,6 +77,8 @@ function GraphNodeHoverCardContent({
     <NodeHoverCardContent
       entity={resolvedEntity}
       projection={resolvedEntity ? hoverProjection : fallbackProjection}
+      surfaceMode={surfaceMode}
+      capabilities={capabilities}
     />
   );
 }
@@ -74,10 +86,11 @@ function GraphNodeHoverCardContent({
 export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
   const { data, selected: isSelectedInFlow } = props;
   const { isSelectionGestureActive, isViewportInteracting } = useGraphInteractionContext();
+  const { surfaceMode, capabilities } = useAgentreeSurface();
   const selectedWorkspaceId = useWorkspaceStore(state => state.selectedWorkspaceId);
   const setComposerBaseCommitOverride = useWorkspaceStore(state => state.setComposerBaseCommitOverride);
   const setThreadComposerTarget = useWorkspaceStore(state => state.setThreadComposerTarget);
-  const isSelected = data.isSelected || isSelectedInFlow;
+  const isSelected = capabilities.canSelect && (data.isSelected || isSelectedInFlow);
   const isFocused = !!data.isFocused;
   const isComposerBaseCommit = !!data.isComposerBaseCommit;
   const detailLevel = data.detailLevel ?? 'full';
@@ -92,10 +105,24 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
     isComposerBaseCommit,
   });
 
+  useEffect(() => {
+    if (surfaceMode !== 'app') return;
+    if (hasScheduledAppHoverPreviewPreload) return;
+    hasScheduledAppHoverPreviewPreload = true;
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+    };
+    if (typeof idleWindow.requestIdleCallback === 'function') {
+      idleWindow.requestIdleCallback(preloadNodeHoverPreview, { timeout: 1200 });
+    } else {
+      window.setTimeout(preloadNodeHoverPreview, 250);
+    }
+  }, [surfaceMode]);
+
   const handleFocus = useCallback((metrics?: FocusTriggerMetrics) => {
     if (data.entity?.kind === 'thread_origin') {
       const threadRootId = data.entity.threadRootId ?? null;
-      if (threadRootId && selectedWorkspaceId) {
+      if (capabilities.canMutate && threadRootId && selectedWorkspaceId) {
         dispatchGraphComposerDockExpand();
         setThreadComposerTarget({
           workspaceId: selectedWorkspaceId,
@@ -114,7 +141,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
         }
         return;
       }
-      if (data.entity.kind === 'user_message' || data.entity.kind === 'assistant_message') {
+      if (capabilities.canReply && (data.entity.kind === 'user_message' || data.entity.kind === 'assistant_message')) {
         dispatchGraphComposerDockExpand();
       }
       data.onFocus(data.entity.focusMessageId, {
@@ -126,16 +153,18 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
         },
       });
     }
-  }, [data, selectedWorkspaceId, setThreadComposerTarget]);
+  }, [capabilities.canMutate, capabilities.canReply, data, selectedWorkspaceId, setThreadComposerTarget]);
 
   const handleSelect = useCallback((multi: boolean) => {
+    if (!capabilities.canSelect) return;
     const id = data.entity?.focusMessageId || data.entity?.messageId || data.entity?.summary?.id;
     if (id) {
       data.onSelect(id, multi);
     }
-  }, [data]);
+  }, [capabilities.canSelect, data]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    if (!capabilities.canOpenContextMenu) return;
     const commitSha = data.entity?.kind === 'commit_message'
       ? getMessageOutputCommitSha(data.entity.message)
       : null;
@@ -145,7 +174,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
     if (id) {
       data.onContextMenu(id, e);
     }
-  }, [data]);
+  }, [capabilities.canOpenContextMenu, data]);
   const handleCommitFocus = useCallback((commitSha: string, metrics?: FocusTriggerMetrics) => {
     data.onFocus(commitSha, {
       pointerDownAt: metrics?.pointerDownAt ?? null,
@@ -161,10 +190,12 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
     handleCommitFocus(data.commit.sha, metrics);
   }, [data.commit?.sha, handleCommitFocus]);
   const handleCanonicalCommitContextMenu = useCallback((e: React.MouseEvent) => {
+    if (!capabilities.canOpenContextMenu) return;
     if (!data.commit?.sha) return;
     data.onContextMenu(`commit:${data.commit.sha}`, e);
-  }, [data]);
+  }, [capabilities.canOpenContextMenu, data]);
   const handleCommitSelectBase = useCallback((commit: ProjectedCommitEntity) => {
+    if (!capabilities.canMutate) return;
     const workspaceId = commit.commit.workspace_id || selectedWorkspaceId;
     if (!workspaceId) return;
     setComposerBaseCommitOverride({
@@ -173,7 +204,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
       label: commit.subject || commit.shortSha || commit.sha,
       source: 'graph-header',
     });
-  }, [selectedWorkspaceId, setComposerBaseCommitOverride]);
+  }, [capabilities.canMutate, selectedWorkspaceId, setComposerBaseCommitOverride]);
 
   const sharedProps = {
     nodeId: props.id,
@@ -189,6 +220,8 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
       <GraphNodeHoverCardContent
         entity={data.entity}
         fallbackProjection={data.projection}
+        surfaceMode={surfaceMode}
+        capabilities={capabilities}
       />
     ) : undefined,
     disableHoverCard: !enableHoverCard || isSelectionGestureActive || isViewportInteracting,
@@ -206,7 +239,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
         isSelected={isSelected}
         isComposerBaseCommit={isComposerBaseCommit}
         detailLevel={detailLevel}
-        onCommitSelectBase={handleCommitSelectBase}
+        onCommitSelectBase={capabilities.canMutate ? handleCommitSelectBase : undefined}
       />
     );
   }
@@ -227,6 +260,8 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
           <GraphNodeHoverCardContent
             entity={hoverEntity}
             fallbackProjection={data.projection}
+            surfaceMode={surfaceMode}
+            capabilities={capabilities}
           />
         ) : undefined}
       />

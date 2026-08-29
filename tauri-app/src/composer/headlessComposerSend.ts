@@ -5,6 +5,7 @@ import type { Message, Workspace } from '../stores/workspaceStore';
 import type { Agent } from '../hooks/useAgents';
 import { createSendFlowId, recordSendFlowEvent } from '../perf/sendFlow';
 import { getLegacyThreadIdForMessage, getMessageThreadSessionId } from '../lib/threadSessions';
+import { resolveLocalWorkspaceRepoPath } from '../lib/workspaceRepoPath';
 
 export interface HeadlessComposerBase {
   commitSha: string;
@@ -153,7 +154,7 @@ export const buildHeadlessComposerAgentArgs = (agent: Agent, prompt: string): st
 };
 
 export const resolveWorkspaceRepoPath = (workspace: Workspace | null | undefined): string | null => (
-  workspace?.git_repo_path?.trim() || workspace?.folderPath?.trim() || null
+  resolveLocalWorkspaceRepoPath(workspace)
 );
 
 export async function sendHeadlessComposerReply(input: HeadlessComposerReplyInput): Promise<HeadlessComposerReplyResponse> {

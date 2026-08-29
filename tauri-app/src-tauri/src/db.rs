@@ -340,6 +340,21 @@ pub struct LocalNodeRow {
     pub last_upload_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalInsightRow {
+    pub insight_id: String,
+    pub workspace_id: String,
+    pub payload: String,
+    pub sync_status: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub server_ack_at: Option<i64>,
+    pub retry_attempt: i64,
+    pub next_retry_at: Option<i64>,
+    pub last_upload_error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSessionPayload {
@@ -379,6 +394,40 @@ pub struct LocalDeletedNodeRoot {
     pub workspace_id: String,
     pub node_id: String,
     pub deleted_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalWorkspaceRow {
+    pub id: String,
+    pub name: String,
+    pub user_id: String,
+    pub local_repo_path: Option<String>,
+    pub folder_path: Option<String>,
+    pub repo_path: Option<String>,
+    pub base_commit_sha: Option<String>,
+    pub connection_status: String,
+    pub sync_status: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
+    pub local_updated_at: i64,
+    pub server_workspace_id: Option<String>,
+    pub server_version: Option<String>,
+    pub name_dirty: bool,
+    pub metadata_dirty: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalWorkspaceMutationRequest {
+    pub workspace_id: String,
+    pub current_user_id: String,
+    pub name: Option<String>,
+    pub local_repo_path: Option<String>,
+    pub base_commit_sha: Option<String>,
+    pub repo_fingerprint: Option<String>,
+    pub mutation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -661,17 +710,28 @@ impl TelemetryDb {
 
             CREATE TABLE IF NOT EXISTS local_workspaces (
                 id TEXT PRIMARY KEY,
+                user_id TEXT,
                 name TEXT NOT NULL,
                 folder_path TEXT,
                 repo_path TEXT,
+                local_repo_path TEXT,
+                repo_fingerprint TEXT,
                 base_commit_sha TEXT,
+                connection_status TEXT NOT NULL DEFAULT 'remote_unconnected',
+                sync_status TEXT NOT NULL DEFAULT 'synced',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 deleted_at TEXT,
                 local_updated_at INTEGER NOT NULL,
+                last_local_change_id TEXT,
+                server_workspace_id TEXT,
                 server_ack_at TEXT,
-                server_version TEXT
+                server_version TEXT,
+                name_dirty INTEGER NOT NULL DEFAULT 0,
+                metadata_dirty INTEGER NOT NULL DEFAULT 0
             );
+            CREATE INDEX IF NOT EXISTS idx_local_workspaces_user_status
+                ON local_workspaces(user_id, deleted_at, connection_status, updated_at);
 
             CREATE TABLE IF NOT EXISTS local_sync_events (
                 id TEXT PRIMARY KEY,
@@ -693,6 +753,32 @@ impl TelemetryDb {
                 ON local_sync_events(status, next_attempt_at, created_at);
             CREATE INDEX IF NOT EXISTS idx_local_sync_events_entity
                 ON local_sync_events(entity_type, entity_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS local_insights (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                agent_type TEXT NOT NULL,
+                is_local INTEGER NOT NULL DEFAULT 1,
+                content TEXT NOT NULL,
+                full_exploration TEXT,
+                reasoning TEXT,
+                source_workspace_id TEXT,
+                source_file_id TEXT,
+                parent_node_id TEXT NOT NULL,
+                source_run_node_id TEXT,
+                validation_results_json TEXT,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT,
+                local_updated_at INTEGER NOT NULL,
+                server_ack_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_local_insights_workspace_status
+                ON local_insights(workspace_id, status, local_updated_at);
+            CREATE INDEX IF NOT EXISTS idx_local_insights_parent
+                ON local_insights(workspace_id, parent_node_id);
 
             CREATE TABLE IF NOT EXISTS local_commits (
                 workspace_id TEXT NOT NULL,
@@ -742,6 +828,45 @@ impl TelemetryDb {
             "#,
         )
         .map_err(|e| e.to_string())?;
+        let _ = conn.execute("ALTER TABLE local_workspaces ADD COLUMN user_id TEXT", []);
+        let _ = conn.execute("ALTER TABLE local_workspaces ADD COLUMN local_repo_path TEXT", []);
+        let _ = conn.execute("ALTER TABLE local_workspaces ADD COLUMN repo_fingerprint TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE local_workspaces ADD COLUMN connection_status TEXT NOT NULL DEFAULT 'remote_unconnected'",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_workspaces ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'synced'",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_workspaces ADD COLUMN last_local_change_id TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_workspaces ADD COLUMN server_workspace_id TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_workspaces ADD COLUMN name_dirty INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_workspaces ADD COLUMN metadata_dirty INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "UPDATE local_workspaces SET local_repo_path = COALESCE(local_repo_path, repo_path, folder_path) WHERE local_repo_path IS NULL AND deleted_at IS NULL",
+            [],
+        );
+        let _ = conn.execute(
+            "UPDATE local_workspaces SET connection_status = 'connected' WHERE local_repo_path IS NOT NULL AND deleted_at IS NULL AND connection_status = 'remote_unconnected'",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_local_workspaces_user_status ON local_workspaces(user_id, deleted_at, connection_status, updated_at)",
+            [],
+        );
         let _ = conn.execute("ALTER TABLE local_nodes ADD COLUMN payload_json TEXT", []);
         let _ = conn.execute("ALTER TABLE local_sync_events ADD COLUMN user_id TEXT", []);
         let _ = conn.execute(
@@ -2337,6 +2462,8 @@ impl TelemetryDb {
                 FROM local_nodes n
                 WHERE n.workspace_id = ?1
                   AND n.deleted_at IS NULL
+                  AND COALESCE(json_extract(n.payload_json, '$.execution_data.meta.agentree_hidden_node'), 0) != 1
+                  AND COALESCE(json_extract(n.payload_json, '$.execution_data.meta.agentree_insight_run'), 0) != 1
                 ORDER BY n.local_updated_at ASC
                 "#,
             )
@@ -3144,6 +3271,326 @@ impl TelemetryDb {
         )
     }
 
+    fn enqueue_local_sync_event_locked(
+        conn: &Connection,
+        now: i64,
+        workspace_id: Option<&str>,
+        user_id: Option<&str>,
+        entity_type: &str,
+        entity_id: &str,
+        event_type: &str,
+        payload_json: &str,
+        mutation_id: Option<&str>,
+    ) -> Result<String, String> {
+        let device_id = Self::local_device_id_locked(conn, now)?;
+        let mutation_id = mutation_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let idempotency_key = format!("{device_id}:{event_type}:{entity_id}:{mutation_id}");
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            r#"
+            INSERT INTO local_sync_events (
+                id, workspace_id, user_id, entity_type, entity_id, event_type, payload_json,
+                idempotency_key, status, attempt_count, next_attempt_at, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', 0, ?9, ?9, ?9)
+            ON CONFLICT(idempotency_key) DO UPDATE SET
+                workspace_id = excluded.workspace_id,
+                user_id = COALESCE(excluded.user_id, local_sync_events.user_id),
+                payload_json = excluded.payload_json,
+                status = CASE
+                    WHEN local_sync_events.status = 'synced' THEN 'synced'
+                    ELSE 'pending'
+                END,
+                next_attempt_at = CASE
+                    WHEN local_sync_events.status = 'synced' THEN local_sync_events.next_attempt_at
+                    ELSE ?9
+                END,
+                updated_at = ?9
+            "#,
+            params![
+                id,
+                workspace_id,
+                user_id,
+                entity_type,
+                entity_id,
+                event_type,
+                payload_json,
+                idempotency_key,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(idempotency_key)
+    }
+
+    pub fn upsert_local_insight_payload_for_user(
+        &self,
+        workspace_id: &str,
+        user_id: Option<&str>,
+        insight_id: &str,
+        payload_json: &str,
+        mutation_id: Option<&str>,
+    ) -> Result<LocalSyncEventRow, String> {
+        let now = unix_timestamp();
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let payload: JsonValue = serde_json::from_str(payload_json).map_err(|e| e.to_string())?;
+        let content = payload
+            .get("content")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Insight content is required.".to_string())?;
+        let agent_type = payload
+            .get("agentType")
+            .and_then(|value| value.as_str())
+            .unwrap_or("hypothesis");
+        let is_local = payload
+            .get("isLocal")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true);
+        let parent_node_id = payload
+            .get("parentNodeId")
+            .or_else(|| payload.get("parent_node_id"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Insight parentNodeId is required.".to_string())?;
+        let full_exploration = payload
+            .get("fullExploration")
+            .and_then(|value| value.as_str());
+        let reasoning = payload.get("reasoning").and_then(|value| value.as_str());
+        let source_workspace_id = payload
+            .get("sourceWorkspaceId")
+            .and_then(|value| value.as_str());
+        let source_file_id = payload.get("sourceFileId").and_then(|value| value.as_str());
+        let source_run_node_id = payload
+            .get("sourceRunNodeId")
+            .and_then(|value| value.as_str());
+        let validation_results_json = payload
+            .get("validationResults")
+            .and_then(|value| serde_json::to_string(value).ok());
+        let created_at = payload
+            .get("createdAt")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string())
+            .unwrap_or_else(chrono_like_now);
+        let updated_at = chrono_like_now();
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            r#"
+            INSERT INTO local_insights (
+                id, workspace_id, agent_type, is_local, content, full_exploration, reasoning,
+                source_workspace_id, source_file_id, parent_node_id, source_run_node_id,
+                validation_results_json, payload_json, status, created_at, updated_at,
+                deleted_at, local_updated_at, server_ack_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'active', ?14, ?15, NULL, ?16, NULL)
+            ON CONFLICT(id) DO UPDATE SET
+                workspace_id = excluded.workspace_id,
+                agent_type = excluded.agent_type,
+                is_local = excluded.is_local,
+                content = excluded.content,
+                full_exploration = excluded.full_exploration,
+                reasoning = excluded.reasoning,
+                source_workspace_id = excluded.source_workspace_id,
+                source_file_id = excluded.source_file_id,
+                parent_node_id = excluded.parent_node_id,
+                source_run_node_id = excluded.source_run_node_id,
+                validation_results_json = excluded.validation_results_json,
+                payload_json = excluded.payload_json,
+                status = 'active',
+                updated_at = excluded.updated_at,
+                deleted_at = NULL,
+                local_updated_at = excluded.local_updated_at
+            "#,
+            params![
+                insight_id,
+                workspace_id,
+                agent_type,
+                if is_local { 1 } else { 0 },
+                content,
+                full_exploration,
+                reasoning,
+                source_workspace_id,
+                source_file_id,
+                parent_node_id,
+                source_run_node_id,
+                validation_results_json,
+                payload_json,
+                created_at,
+                updated_at,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let sync_payload = serde_json::json!({
+            "action": "upsert",
+            "workspaceId": workspace_id,
+            "insight": payload,
+        });
+        let sync_payload_json = serde_json::to_string(&sync_payload).map_err(|e| e.to_string())?;
+        let idempotency_key = Self::enqueue_local_sync_event_locked(
+            &tx,
+            now,
+            Some(workspace_id),
+            user_id,
+            "insight",
+            insight_id,
+            "insight.upsert",
+            &sync_payload_json,
+            mutation_id,
+        )?;
+        tx.commit().map_err(|e| e.to_string())?;
+        self.get_local_sync_event_by_idempotency_key(&idempotency_key)?
+            .ok_or_else(|| "Failed to read enqueued insight sync event.".to_string())
+    }
+
+    pub fn local_first_dismiss_insight(
+        &self,
+        workspace_id: &str,
+        user_id: Option<&str>,
+        insight_id: &str,
+    ) -> Result<LocalSyncEventRow, String> {
+        let now = unix_timestamp();
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            r#"
+            UPDATE local_insights
+            SET status = 'dismissed',
+                deleted_at = ?3,
+                updated_at = ?3,
+                local_updated_at = ?4
+            WHERE workspace_id = ?1
+              AND id = ?2
+              AND status != 'dismissed'
+            "#,
+            params![workspace_id, insight_id, chrono_like_now(), now],
+        )
+        .map_err(|e| e.to_string())?;
+        let sync_payload = serde_json::json!({
+            "action": "dismiss",
+            "workspaceId": workspace_id,
+            "insightId": insight_id,
+        });
+        let sync_payload_json = serde_json::to_string(&sync_payload).map_err(|e| e.to_string())?;
+        let idempotency_key = Self::enqueue_local_sync_event_locked(
+            &tx,
+            now,
+            Some(workspace_id),
+            user_id,
+            "insight",
+            insight_id,
+            "insight.dismiss",
+            &sync_payload_json,
+            None,
+        )?;
+        tx.commit().map_err(|e| e.to_string())?;
+        self.get_local_sync_event_by_idempotency_key(&idempotency_key)?
+            .ok_or_else(|| "Failed to read enqueued insight dismiss event.".to_string())
+    }
+
+    pub fn list_local_insights_for_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<LocalInsightRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT
+                    i.id,
+                    i.workspace_id,
+                    i.payload_json,
+                    CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                            FROM local_sync_events e
+                            WHERE e.entity_type = 'insight'
+                              AND e.entity_id = i.id
+                              AND e.status IN ('pending', 'in_flight', 'dead')
+                        ) THEN 'local_only'
+                        WHEN i.server_ack_at IS NULL THEN 'local_only'
+                        ELSE 'persisted'
+                    END AS sync_status,
+                    i.created_at,
+                    i.updated_at,
+                    CASE
+                        WHEN i.server_ack_at IS NULL THEN NULL
+                        WHEN i.server_ack_at GLOB '[0-9]*' THEN CAST(i.server_ack_at AS INTEGER)
+                        ELSE NULL
+                    END AS server_ack_at,
+                    COALESCE((
+                        SELECT MAX(e.attempt_count)
+                        FROM local_sync_events e
+                        WHERE e.entity_type = 'insight'
+                          AND e.entity_id = i.id
+                          AND e.status IN ('pending', 'in_flight', 'dead')
+                    ), 0) AS retry_attempt,
+                    (
+                        SELECT MIN(e.next_attempt_at)
+                        FROM local_sync_events e
+                        WHERE e.entity_type = 'insight'
+                          AND e.entity_id = i.id
+                          AND e.status IN ('pending', 'in_flight')
+                    ) AS next_retry_at,
+                    (
+                        SELECT e.last_error
+                        FROM local_sync_events e
+                        WHERE e.entity_type = 'insight'
+                          AND e.entity_id = i.id
+                          AND e.status IN ('pending', 'in_flight', 'dead')
+                          AND e.last_error IS NOT NULL
+                        ORDER BY e.updated_at DESC
+                        LIMIT 1
+                    ) AS last_upload_error
+                FROM local_insights i
+                WHERE i.workspace_id = ?1
+                  AND i.status = 'active'
+                  AND i.deleted_at IS NULL
+                ORDER BY i.local_updated_at ASC
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![workspace_id], |row| {
+                Ok(LocalInsightRow {
+                    insight_id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    payload: row.get(2)?,
+                    sync_status: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                    server_ack_at: row.get(6)?,
+                    retry_attempt: row.get(7)?,
+                    next_retry_at: row.get(8)?,
+                    last_upload_error: row.get(9)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    pub fn mark_local_insight_persisted(&self, insight_id: &str) -> Result<(), String> {
+        let now = unix_timestamp();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            r#"
+            UPDATE local_insights
+            SET server_ack_at = ?2,
+                updated_at = ?3
+            WHERE id = ?1
+            "#,
+            params![insight_id, now.to_string(), chrono_like_now()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn has_retryable_terminal_node_sync(&self, node_id: &str) -> Result<bool, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let exists: i64 = conn
@@ -3495,6 +3942,444 @@ impl TelemetryDb {
         )
     }
 
+    fn local_workspace_row_from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<LocalWorkspaceRow> {
+        Ok(LocalWorkspaceRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            user_id: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            local_repo_path: row.get(3)?,
+            folder_path: row.get(4)?,
+            repo_path: row.get(5)?,
+            base_commit_sha: row.get(6)?,
+            connection_status: row.get(7)?,
+            sync_status: row.get(8)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
+            deleted_at: row.get(11)?,
+            local_updated_at: row.get(12)?,
+            server_workspace_id: row.get(13)?,
+            server_version: row.get(14)?,
+            name_dirty: row.get::<_, i64>(15)? != 0,
+            metadata_dirty: row.get::<_, i64>(16)? != 0,
+        })
+    }
+
+    fn select_local_workspace_locked(
+        conn: &Connection,
+        workspace_id: &str,
+        user_id: &str,
+    ) -> Result<Option<LocalWorkspaceRow>, String> {
+        conn.query_row(
+            r#"
+            SELECT
+                id, name, user_id, local_repo_path, folder_path, repo_path, base_commit_sha,
+                connection_status, sync_status, created_at, updated_at, deleted_at,
+                local_updated_at, server_workspace_id, server_version, name_dirty, metadata_dirty
+            FROM local_workspaces
+            WHERE id = ?1 AND (user_id = ?2 OR user_id IS NULL)
+            ORDER BY user_id IS NULL ASC
+            LIMIT 1
+            "#,
+            params![workspace_id, user_id],
+            Self::local_workspace_row_from_sql,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn list_local_workspaces(&self, user_id: &str) -> Result<Vec<LocalWorkspaceRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT
+                    id, name, user_id, local_repo_path, folder_path, repo_path, base_commit_sha,
+                    connection_status, sync_status, created_at, updated_at, deleted_at,
+                    local_updated_at, server_workspace_id, server_version, name_dirty, metadata_dirty
+                FROM local_workspaces
+                WHERE user_id = ?1 AND deleted_at IS NULL
+                ORDER BY local_updated_at DESC, updated_at DESC
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![user_id], Self::local_workspace_row_from_sql)
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    pub fn merge_server_workspaces(
+        &self,
+        user_id: &str,
+        payloads: Vec<String>,
+    ) -> Result<Vec<LocalWorkspaceRow>, String> {
+        let now = unix_timestamp();
+        let now_text = chrono_like_now();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        for payload_json in payloads {
+            let payload: JsonValue = match serde_json::from_str(&payload_json) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let Some(id) = payload.get("id").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            let name = payload
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("Untitled workspace");
+            let server_version = payload
+                .get("updatedAt")
+                .or_else(|| payload.get("updated_at"))
+                .and_then(|value| value.as_str())
+                .unwrap_or(&now_text);
+            let existing = Self::select_local_workspace_locked(&conn, id, user_id)?;
+            if existing
+                .as_ref()
+                .and_then(|row| row.deleted_at.as_ref())
+                .is_some()
+            {
+                continue;
+            }
+            if let Some(row) = existing {
+                if row.name_dirty {
+                    conn.execute(
+                        r#"
+                        UPDATE local_workspaces
+                        SET user_id = ?5,
+                            server_workspace_id = COALESCE(server_workspace_id, ?2),
+                            server_version = ?3,
+                            server_ack_at = COALESCE(server_ack_at, ?4)
+                        WHERE id = ?1 AND (user_id = ?5 OR user_id IS NULL)
+                        "#,
+                        params![id, id, server_version, now_text, user_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                } else {
+                    conn.execute(
+                        r#"
+                        UPDATE local_workspaces
+                        SET user_id = ?5,
+                            name = ?2,
+                            server_workspace_id = COALESCE(server_workspace_id, ?1),
+                            server_version = ?3,
+                            server_ack_at = COALESCE(server_ack_at, ?4),
+                            updated_at = ?4
+                        WHERE id = ?1 AND (user_id = ?5 OR user_id IS NULL)
+                        "#,
+                        params![id, name, server_version, now_text, user_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            } else {
+                conn.execute(
+                    r#"
+                    INSERT INTO local_workspaces (
+                        id, user_id, name, base_commit_sha, connection_status, sync_status,
+                        created_at, updated_at, local_updated_at, server_workspace_id,
+                        server_ack_at, server_version
+                    )
+                    VALUES (?1, ?2, ?3, ?4, 'remote_unconnected', 'synced', ?5, ?5, ?6, ?1, ?5, ?7)
+                    "#,
+                    params![
+                        id,
+                        user_id,
+                        name,
+                        payload
+                            .get("base_commit_sha")
+                            .or_else(|| payload.get("baseCommitSha"))
+                            .and_then(|value| value.as_str()),
+                        now_text,
+                        now,
+                        server_version
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        drop(conn);
+        self.list_local_workspaces(user_id)
+    }
+
+    fn canonical_local_repo_path(path: &str) -> Result<String, String> {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("Local repo path is required.".to_string());
+        }
+        let canonical = std::fs::canonicalize(trimmed)
+            .map_err(|e| format!("Cannot access local repo path {}: {}", trimmed, e))?;
+        if !canonical.is_dir() {
+            return Err("Local repo path is not a directory.".to_string());
+        }
+        Ok(canonical.to_string_lossy().to_string())
+    }
+
+    pub fn local_first_create_workspace(
+        &self,
+        request: LocalWorkspaceMutationRequest,
+    ) -> Result<LocalWorkspaceRow, String> {
+        let path = request
+            .local_repo_path
+            .as_deref()
+            .ok_or_else(|| "Local repo path is required.".to_string())
+            .and_then(Self::canonical_local_repo_path)?;
+        let now = unix_timestamp();
+        let now_text = chrono_like_now();
+        let name = request.name.unwrap_or_else(|| {
+            Path::new(&path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("Untitled workspace")
+                .to_string()
+        });
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            r#"
+            INSERT INTO local_workspaces (
+                id, user_id, name, folder_path, repo_path, local_repo_path, repo_fingerprint,
+                base_commit_sha, connection_status, sync_status, created_at, updated_at,
+                local_updated_at, last_local_change_id, metadata_dirty
+            )
+            VALUES (?1, ?2, ?3, ?4, ?4, ?4, ?5, ?6, 'connected', 'sync_pending', ?7, ?7, ?8, ?9, 1)
+            ON CONFLICT(id) DO UPDATE SET
+                user_id = excluded.user_id,
+                name = excluded.name,
+                folder_path = excluded.folder_path,
+                repo_path = excluded.repo_path,
+                local_repo_path = excluded.local_repo_path,
+                repo_fingerprint = excluded.repo_fingerprint,
+                base_commit_sha = excluded.base_commit_sha,
+                connection_status = 'connected',
+                sync_status = 'sync_pending',
+                updated_at = excluded.updated_at,
+                local_updated_at = excluded.local_updated_at,
+                deleted_at = NULL,
+                last_local_change_id = excluded.last_local_change_id,
+                metadata_dirty = 1
+            "#,
+            params![
+                &request.workspace_id,
+                &request.current_user_id,
+                name,
+                &path,
+                request.repo_fingerprint.as_deref(),
+                request.base_commit_sha.as_deref(),
+                now_text,
+                now,
+                request.mutation_id.as_deref()
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let row = Self::select_local_workspace_locked(
+            &conn,
+            &request.workspace_id,
+            &request.current_user_id,
+        )?
+        .ok_or_else(|| "Local workspace was not created.".to_string())?;
+        drop(conn);
+        let payload = serde_json::json!({
+            "id": row.id,
+            "name": row.name,
+            "folderPath": row.local_repo_path,
+            "repoPath": row.local_repo_path,
+            "baseCommitSha": row.base_commit_sha,
+        });
+        self.enqueue_local_sync_event_for_user(
+            Some(&request.workspace_id),
+            Some(request.current_user_id.as_str()),
+            "workspace",
+            &request.workspace_id,
+            "workspace.create",
+            &serde_json::to_string(&payload).map_err(|e| e.to_string())?,
+            request.mutation_id.as_deref(),
+        )?;
+        Ok(row)
+    }
+
+    pub fn local_first_rename_workspace(
+        &self,
+        workspace_id: &str,
+        user_id: &str,
+        name: &str,
+    ) -> Result<LocalWorkspaceRow, String> {
+        let trimmed_name = name.trim();
+        if trimmed_name.is_empty() {
+            return Err("Workspace name cannot be empty.".to_string());
+        }
+        let now = unix_timestamp();
+        let now_text = chrono_like_now();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let updated = conn
+            .execute(
+                r#"
+                UPDATE local_workspaces
+                SET name = ?3,
+                    updated_at = ?4,
+                    local_updated_at = ?5,
+                    sync_status = 'sync_pending',
+                    name_dirty = 1,
+                    last_local_change_id = ?6
+                WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL
+                "#,
+                params![
+                    workspace_id,
+                    user_id,
+                    trimmed_name,
+                    now_text,
+                    now,
+                    format!("workspace.rename:{}:{}", workspace_id, now)
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        if updated == 0 {
+            return Err("Workspace not found for active account.".to_string());
+        }
+        let row = Self::select_local_workspace_locked(&conn, workspace_id, user_id)?
+            .ok_or_else(|| "Workspace not found for active account.".to_string())?;
+        drop(conn);
+        let payload = serde_json::json!({
+            "id": workspace_id,
+            "name": trimmed_name,
+        });
+        self.enqueue_local_sync_event_for_user(
+            Some(workspace_id),
+            Some(user_id),
+            "workspace",
+            workspace_id,
+            "workspace.update",
+            &serde_json::to_string(&payload).map_err(|e| e.to_string())?,
+            None,
+        )?;
+        Ok(row)
+    }
+
+    pub fn local_first_reconnect_workspace(
+        &self,
+        request: LocalWorkspaceMutationRequest,
+    ) -> Result<LocalWorkspaceRow, String> {
+        let path = request
+            .local_repo_path
+            .as_deref()
+            .ok_or_else(|| "Local repo path is required.".to_string())
+            .and_then(Self::canonical_local_repo_path)?;
+        let now = unix_timestamp();
+        let now_text = chrono_like_now();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let updated = conn
+            .execute(
+                r#"
+                UPDATE local_workspaces
+                SET folder_path = ?3,
+                    repo_path = ?3,
+                    local_repo_path = ?3,
+                    repo_fingerprint = ?4,
+                    base_commit_sha = COALESCE(?5, base_commit_sha),
+                    connection_status = 'connected',
+                    sync_status = 'sync_pending',
+                    updated_at = ?6,
+                    local_updated_at = ?7,
+                    metadata_dirty = 1,
+                    last_local_change_id = ?8
+                WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL
+                "#,
+                params![
+                    request.workspace_id,
+                    request.current_user_id,
+                    path,
+                    request.repo_fingerprint,
+                    request.base_commit_sha,
+                    now_text,
+                    now,
+                    request.mutation_id
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        if updated == 0 {
+            return Err("Workspace not found for active account.".to_string());
+        }
+        let row = Self::select_local_workspace_locked(
+            &conn,
+            &request.workspace_id,
+            &request.current_user_id,
+        )?
+        .ok_or_else(|| "Workspace not found for active account.".to_string())?;
+        drop(conn);
+        let payload = serde_json::json!({
+            "id": row.id,
+            "folderPath": row.local_repo_path,
+            "repoPath": row.local_repo_path,
+            "baseCommitSha": row.base_commit_sha,
+        });
+        self.enqueue_local_sync_event_for_user(
+            Some(&request.workspace_id),
+            Some(request.current_user_id.as_str()),
+            "workspace",
+            &request.workspace_id,
+            "workspace.update",
+            &serde_json::to_string(&payload).map_err(|e| e.to_string())?,
+            request.mutation_id.as_deref(),
+        )?;
+        Ok(row)
+    }
+
+    pub fn mark_local_workspace_persisted(
+        &self,
+        workspace_id: &str,
+        response_body: Option<&JsonValue>,
+    ) -> Result<(), String> {
+        let now_text = chrono_like_now();
+        let server_version = response_body
+            .and_then(|body| body.get("updatedAt").or_else(|| body.get("updated_at")))
+            .and_then(|value| value.as_str())
+            .unwrap_or(&now_text);
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            r#"
+            UPDATE local_workspaces
+            SET sync_status = 'synced',
+                server_ack_at = ?2,
+                server_version = ?3,
+                name_dirty = 0,
+                metadata_dirty = 0
+            WHERE id = ?1
+            "#,
+            params![workspace_id, now_text, server_version],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn resolve_trusted_local_workspace_repo_path(
+        &self,
+        workspace_id: &str,
+        user_id: &str,
+        advisory_repo_path: Option<&str>,
+    ) -> Result<String, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let row = Self::select_local_workspace_locked(&conn, workspace_id, user_id)?
+            .ok_or_else(|| "Workspace not found for active account.".to_string())?;
+        if row.connection_status != "connected" {
+            return Err(
+                "This workspace is not connected to a local folder on this machine. Reconnect repository."
+                    .to_string(),
+            );
+        }
+        let stored = row.local_repo_path.as_deref().ok_or_else(|| {
+            "This workspace is not connected to a local folder on this machine. Reconnect repository."
+                .to_string()
+        })?;
+        let trusted = Self::canonical_local_repo_path(stored)?;
+        if let Some(advisory) = advisory_repo_path.filter(|value| !value.trim().is_empty()) {
+            let advisory = Self::canonical_local_repo_path(advisory)?;
+            if advisory != trusted {
+                return Err("Repo path does not match the trusted local workspace binding.".to_string());
+            }
+        }
+        Ok(trusted)
+    }
+
     pub fn local_first_delete_workspace(
         &self,
         workspace_id: &str,
@@ -3506,14 +4391,16 @@ impl TelemetryDb {
         conn.execute(
             r#"
             INSERT INTO local_workspaces (
-                id, name, created_at, updated_at, deleted_at, local_updated_at
+                id, user_id, name, connection_status, sync_status, created_at, updated_at, deleted_at, local_updated_at
             )
-            VALUES (?1, '', ?2, ?2, ?2, ?3)
+            VALUES (?1, ?4, '', 'remote_unconnected', 'sync_pending', ?2, ?2, ?2, ?3)
             ON CONFLICT(id) DO UPDATE SET
+                user_id = COALESCE(local_workspaces.user_id, excluded.user_id),
                 deleted_at = excluded.deleted_at,
+                sync_status = 'sync_pending',
                 local_updated_at = excluded.local_updated_at
             "#,
-            params![workspace_id, deleted_at, now],
+            params![workspace_id, deleted_at, now, user_id],
         )
         .map_err(|e| e.to_string())?;
         conn.execute(
@@ -3720,6 +4607,49 @@ pub fn list_local_nodes(
 
 #[tauri::command]
 #[specta::specta]
+pub fn list_local_insights(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+) -> Result<Vec<LocalInsightRow>, String> {
+    telemetry.list_local_insights_for_workspace(&workspace_id)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn upsert_local_insight(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+    current_user_id: String,
+    insight_id: String,
+    payload_json: String,
+    mutation_id: Option<String>,
+) -> Result<LocalSyncEventRow, String> {
+    telemetry.upsert_local_insight_payload_for_user(
+        &workspace_id,
+        Some(current_user_id.as_str()),
+        &insight_id,
+        &payload_json,
+        mutation_id.as_deref(),
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn local_first_dismiss_insight(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+    current_user_id: String,
+    insight_id: String,
+) -> Result<LocalSyncEventRow, String> {
+    telemetry.local_first_dismiss_insight(
+        &workspace_id,
+        Some(current_user_id.as_str()),
+        &insight_id,
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn hydrate_local_nodes_from_server(
     telemetry: State<TelemetryDb>,
     workspace_id: String,
@@ -3832,6 +4762,54 @@ pub fn enqueue_local_commit_graph_sync(
 
 #[tauri::command]
 #[specta::specta]
+pub fn list_local_workspaces(
+    telemetry: State<TelemetryDb>,
+    current_user_id: String,
+) -> Result<Vec<LocalWorkspaceRow>, String> {
+    telemetry.list_local_workspaces(&current_user_id)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn merge_server_workspaces(
+    telemetry: State<TelemetryDb>,
+    current_user_id: String,
+    payloads: Vec<String>,
+) -> Result<Vec<LocalWorkspaceRow>, String> {
+    telemetry.merge_server_workspaces(&current_user_id, payloads)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn local_first_create_workspace(
+    telemetry: State<TelemetryDb>,
+    request: LocalWorkspaceMutationRequest,
+) -> Result<LocalWorkspaceRow, String> {
+    telemetry.local_first_create_workspace(request)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn local_first_rename_workspace(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+    current_user_id: String,
+    name: String,
+) -> Result<LocalWorkspaceRow, String> {
+    telemetry.local_first_rename_workspace(&workspace_id, &current_user_id, &name)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn local_first_reconnect_workspace(
+    telemetry: State<TelemetryDb>,
+    request: LocalWorkspaceMutationRequest,
+) -> Result<LocalWorkspaceRow, String> {
+    telemetry.local_first_reconnect_workspace(request)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn local_first_delete_branch(
     telemetry: State<TelemetryDb>,
     workspace_id: String,
@@ -3888,6 +4866,62 @@ fn sync_event(
             };
         let response = client
             .post(format!("{}/{}", crate::config::server_base_url(), endpoint))
+            .header("Authorization", format!("Bearer {}", auth_token))
+            .header("Idempotency-Key", &event.idempotency_key)
+            .json(&payload)
+            .send()
+            .map_err(|err| format!("{} transport error: {}", event.event_type, err))?;
+        if response.status().is_success() {
+            return match response.json::<JsonValue>() {
+                Ok(body) => Ok(Some(body)),
+                Err(_) => Ok(None),
+            };
+        }
+        return Err(local_sync_response_error(&event.event_type, response));
+    }
+
+    if event.entity_type == "insight"
+        && (event.event_type == "insight.upsert" || event.event_type == "insight.dismiss")
+    {
+        let workspace_id = event
+            .workspace_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(event.entity_id.as_str());
+        let payload: JsonValue =
+            serde_json::from_str(&event.payload_json).map_err(|err| err.to_string())?;
+        let response = client
+            .post(format!(
+                "{}/workspaces/{}/insights/sync",
+                crate::config::server_base_url(),
+                workspace_id
+            ))
+            .header("Authorization", format!("Bearer {}", auth_token))
+            .header("Idempotency-Key", &event.idempotency_key)
+            .json(&payload)
+            .send()
+            .map_err(|err| format!("{} transport error: {}", event.event_type, err))?;
+        if response.status().is_success() {
+            return Ok(None);
+        }
+        return Err(local_sync_response_error(&event.event_type, response));
+    }
+
+    if event.entity_type == "workspace"
+        && (event.event_type == "workspace.create" || event.event_type == "workspace.update")
+    {
+        let payload: JsonValue =
+            serde_json::from_str(&event.payload_json).map_err(|err| err.to_string())?;
+        let request = if event.event_type == "workspace.create" {
+            client.post(format!("{}/workspaces", crate::config::server_base_url()))
+        } else {
+            client.patch(format!(
+                "{}/workspaces/{}",
+                crate::config::server_base_url(),
+                event.entity_id
+            ))
+        };
+        let response = request
             .header("Authorization", format!("Bearer {}", auth_token))
             .header("Idempotency-Key", &event.idempotency_key)
             .json(&payload)
@@ -4062,6 +5096,13 @@ pub async fn process_local_sync_events(
                                 output_commit_sha,
                             );
                         }
+                    }
+                    if event.entity_type == "insight" {
+                        let _ = telemetry.mark_local_insight_persisted(&event.entity_id);
+                    }
+                    if event.entity_type == "workspace" {
+                        let _ = telemetry
+                            .mark_local_workspace_persisted(&event.entity_id, response_body.as_ref());
                     }
                     telemetry.mark_local_sync_event_synced(&event.id)?;
                     synced += 1;
@@ -5639,6 +6680,54 @@ mod tests {
             .expect("deleted roots");
         assert_eq!(deleted.len(), 1);
         assert_eq!(deleted[0].node_id, "node-1");
+    }
+
+    #[test]
+    fn server_workspace_merge_preserves_local_binding_and_dirty_name() {
+        let (_db_dir, db) = open_test_db();
+        let repo_dir = tempfile::tempdir().expect("repo dir");
+        let local_path = std::fs::canonicalize(repo_dir.path())
+            .expect("canonical repo")
+            .to_string_lossy()
+            .to_string();
+        db.local_first_create_workspace(LocalWorkspaceMutationRequest {
+            workspace_id: "workspace-1".to_string(),
+            current_user_id: "user-1".to_string(),
+            name: Some("Local name".to_string()),
+            local_repo_path: Some(local_path.clone()),
+            base_commit_sha: Some("base-sha".to_string()),
+            repo_fingerprint: Some("base:base-sha".to_string()),
+            mutation_id: Some("workspace.create:workspace-1".to_string()),
+        })
+        .expect("create local workspace");
+        db.local_first_rename_workspace("workspace-1", "user-1", "Dirty local name")
+            .expect("rename local workspace");
+
+        let rows = db
+            .merge_server_workspaces(
+                "user-1",
+                vec![
+                    r#"{"id":"workspace-1","name":"Stale server name","folderPath":"/server/path","repoPath":"/server/path","updatedAt":"server-v1"}"#.to_string(),
+                    r#"{"id":"workspace-remote","name":"Remote only","folderPath":"/server/remote","updatedAt":"server-v1"}"#.to_string(),
+                ],
+            )
+            .expect("merge server workspaces");
+
+        let local = rows
+            .iter()
+            .find(|row| row.id == "workspace-1")
+            .expect("local workspace");
+        assert_eq!(local.name, "Dirty local name");
+        assert_eq!(local.local_repo_path.as_deref(), Some(local_path.as_str()));
+        assert_eq!(local.connection_status, "connected");
+        assert!(local.name_dirty);
+
+        let remote = rows
+            .iter()
+            .find(|row| row.id == "workspace-remote")
+            .expect("remote workspace");
+        assert_eq!(remote.connection_status, "remote_unconnected");
+        assert!(remote.local_repo_path.is_none());
     }
 
     #[test]

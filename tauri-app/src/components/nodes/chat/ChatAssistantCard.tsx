@@ -21,6 +21,8 @@ import { agentRunManager } from '../../../agent-runs/agentRunManager';
 import { recordAssistantTextVisible } from '../../../perf/agentRunVisibilityPerf';
 import { getAssistantIdentityLabel } from '../../../lib/assistantIdentity';
 import { getNodeFailureReason, isNodeFailureStatus } from '../../../lib/nodeFailureReason';
+import { useWorkspaces } from '../../../hooks/useWorkspaces';
+import { useAgentreeSurface } from '../../graph/surfaceCapabilities';
 
 const AgentChip = ({
   agentId,
@@ -82,9 +84,11 @@ const isStreamingStatus = (
 const StreamingMarkdown = memo(function StreamingMarkdown({
   text,
   isStreaming,
+  repoPath,
 }: {
   text: string;
   isStreaming: boolean;
+  repoPath?: string | null;
 }) {
   const targetText = typeof text === 'string' ? text : '';
   const [shouldRenderMarkdown, setShouldRenderMarkdown] = useState(!isStreaming);
@@ -140,7 +144,7 @@ const StreamingMarkdown = memo(function StreamingMarkdown({
   }
 
   return (
-    <ChatMarkdown>{targetText}</ChatMarkdown>
+    <ChatMarkdown repoPath={repoPath}>{targetText}</ChatMarkdown>
   );
 });
 
@@ -253,7 +257,40 @@ const formatTokenValue = (value: number | null | undefined): string | null => {
   return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : value.toLocaleString();
 };
 
-function InterleavedToolCard({ row }: { row: Extract<TimelineRow, { kind: 'tool' }> }) {
+const getTimelineRowReactKey = (row: TimelineRow, index: number, prefix: string) =>
+  `${prefix}:${row.key ?? 'row'}:${index}`;
+
+const buildSanitizedWorkLogTimeline = (workLogs: unknown): any[] => {
+  if (!Array.isArray(workLogs)) return [];
+
+  return workLogs
+    .filter((row) => row && typeof row === 'object')
+    .map((row: any, index) => {
+      const type = typeof row.type === 'string' && row.type.trim() ? row.type.trim() : 'tool_use';
+      const label = typeof row.label === 'string' && row.label.trim()
+        ? row.label.trim()
+        : type.replace(/_/g, ' ');
+      const status = typeof row.status === 'string' && row.status.trim() ? row.status.trim() : null;
+      return {
+        id: typeof row.id === 'string' && row.id.trim() ? row.id : `public-work-log-${index}`,
+        type: type === 'thinking' || type === 'message' || type === 'error' ? type : 'tool_use',
+        toolName: label,
+        content: label,
+        timestamp: typeof row.timestamp === 'string' && row.timestamp.trim() ? row.timestamp : undefined,
+        durationMs: typeof row.durationMs === 'number' && Number.isFinite(row.durationMs) ? row.durationMs : undefined,
+        toolOutput: status === 'completed' ? '' : undefined,
+        isError: status === 'failed' || status === 'error',
+      };
+    });
+};
+
+function InterleavedToolCard({
+  row,
+  allowExpansion = true,
+}: {
+  row: Extract<TimelineRow, { kind: 'tool' }>;
+  allowExpansion?: boolean;
+}) {
   const [isExpanded, setIsExpanded] = useState(false);
   const summary = getToolSummary(row.toolName, row.toolInput) || row.toolName;
   const fileChangesPayload = summarizeFileChangesPayload(row.toolInput)
@@ -268,18 +305,26 @@ function InterleavedToolCard({ row }: { row: Extract<TimelineRow, { kind: 'tool'
 
   return (
     <div className="min-w-0 max-w-full py-0.5" onClick={stopCardFocus} onMouseDown={stopCardFocus}>
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          setIsExpanded((value) => !value);
-        }}
+      <div
         className={cn(
           "flex min-w-0 w-full max-w-full items-start gap-2 rounded-md px-0 py-0.5 text-left",
-          "transition-[background-color,color] duration-150 hover:text-foreground/90",
-          fileChangesPayload && "-mx-1 px-1 py-0.5 hover:bg-muted/30"
+          allowExpansion && "transition-[background-color,color] duration-150 hover:text-foreground/90",
+          fileChangesPayload && allowExpansion && "-mx-1 px-1 py-0.5 hover:bg-muted/30",
+          fileChangesPayload && !allowExpansion && "-mx-1 px-1 py-0.5"
         )}
-        aria-expanded={isExpanded}
+        role={allowExpansion ? 'button' : undefined}
+        tabIndex={allowExpansion ? 0 : undefined}
+        aria-expanded={allowExpansion ? isExpanded : undefined}
+        onClick={allowExpansion ? (event) => {
+          event.stopPropagation();
+          setIsExpanded((value) => !value);
+        } : undefined}
+        onKeyDown={allowExpansion ? (event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          event.stopPropagation();
+          setIsExpanded((value) => !value);
+        } : undefined}
       >
         <div className={cn(
           "flex h-4 w-4 shrink-0 items-center justify-center",
@@ -301,11 +346,13 @@ function InterleavedToolCard({ row }: { row: Extract<TimelineRow, { kind: 'tool'
           fileChangesPayload && "pt-1"
         )}>
           {duration ? <span className="text-[10px] font-mono text-muted-foreground/45">{duration}</span> : null}
-          <ChevronDown size={11} className={cn("text-muted-foreground/45 transition-transform", isExpanded && "rotate-180")} />
+          {allowExpansion ? (
+            <ChevronDown size={11} className={cn("text-muted-foreground/45 transition-transform", isExpanded && "rotate-180")} />
+          ) : null}
         </div>
-      </button>
+      </div>
 
-      {isExpanded ? (
+      {allowExpansion && isExpanded ? (
         <div className="mt-1 ml-6 min-w-0 max-w-full space-y-2">
           {row.toolInput !== undefined ? (
             <ToolPayloadDisplay payload={row.toolInput} className="max-h-40 min-w-0 max-w-full" variant="raw" />
@@ -319,7 +366,13 @@ function InterleavedToolCard({ row }: { row: Extract<TimelineRow, { kind: 'tool'
   );
 }
 
-function InterleavedExplorationCard({ row }: { row: Extract<TimelineRow, { kind: 'exploration' }> }) {
+function InterleavedExplorationCard({
+  row,
+  allowExpansion = true,
+}: {
+  row: Extract<TimelineRow, { kind: 'exploration' }>;
+  allowExpansion?: boolean;
+}) {
   const [isExpanded, setIsExpanded] = useState(false);
   const title = row.status === 'running' ? 'Exploring' : 'Explored';
   const duration = row.durationMs ? (row.durationMs < 1000 ? `${row.durationMs}ms` : `${(row.durationMs / 1000).toFixed(1)}s`) : null;
@@ -329,14 +382,24 @@ function InterleavedExplorationCard({ row }: { row: Extract<TimelineRow, { kind:
 
   return (
     <div className="min-w-0 max-w-full py-0.5" onClick={stopCardFocus} onMouseDown={stopCardFocus}>
-      <button
-        type="button"
-        onClick={(event) => {
+      <div
+        className={cn(
+          "flex min-w-0 w-full max-w-full items-start gap-2 px-0 py-0.5 text-left",
+          allowExpansion && "transition-colors hover:text-foreground/90"
+        )}
+        role={allowExpansion ? 'button' : undefined}
+        tabIndex={allowExpansion ? 0 : undefined}
+        aria-expanded={allowExpansion ? isExpanded : undefined}
+        onClick={allowExpansion ? (event) => {
           event.stopPropagation();
           setIsExpanded((value) => !value);
-        }}
-        className="flex min-w-0 w-full max-w-full items-start gap-2 px-0 py-0.5 text-left transition-colors hover:text-foreground/90"
-        aria-expanded={isExpanded}
+        } : undefined}
+        onKeyDown={allowExpansion ? (event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          event.stopPropagation();
+          setIsExpanded((value) => !value);
+        } : undefined}
       >
         <div className="flex h-4 w-4 shrink-0 items-center justify-center pt-0.5">
           {row.status === 'error'
@@ -360,11 +423,13 @@ function InterleavedExplorationCard({ row }: { row: Extract<TimelineRow, { kind:
         </div>
         <div className="flex shrink-0 items-center gap-2 pt-0.5">
           {duration ? <span className="text-[10px] font-mono text-muted-foreground/45">{duration}</span> : null}
-          <ChevronDown size={11} className={cn("text-muted-foreground/45 transition-transform", isExpanded && "rotate-180")} />
+          {allowExpansion ? (
+            <ChevronDown size={11} className={cn("text-muted-foreground/45 transition-transform", isExpanded && "rotate-180")} />
+          ) : null}
         </div>
-      </button>
+      </div>
 
-      {isExpanded ? (
+      {allowExpansion && isExpanded ? (
         <div className="mt-1 ml-6 min-w-0 max-w-full space-y-2">
           {row.toolCalls.map((call, index) => (
             <ToolPayloadDisplay key={call.key || index} payload={call.toolInput} className="max-h-40 min-w-0 max-w-full" variant="raw" />
@@ -375,8 +440,18 @@ function InterleavedExplorationCard({ row }: { row: Extract<TimelineRow, { kind:
   );
 }
 
-function WorkLogsPanel({ rows }: { rows: TimelineRow[] }) {
-  const [isOpen, setIsOpen] = useState(false);
+function WorkLogsPanel({
+  rows,
+  repoPath,
+  defaultOpen = false,
+  allowToolExpansion = true,
+}: {
+  rows: TimelineRow[];
+  repoPath?: string | null;
+  defaultOpen?: boolean;
+  allowToolExpansion?: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
   if (rows.length === 0) return null;
 
   return (
@@ -410,29 +485,29 @@ function WorkLogsPanel({ rows }: { rows: TimelineRow[] }) {
               if (!row.content) return null;
               return (
                 <div
-                  key={row.key ?? `work-message-${index}`}
+                  key={getTimelineRowReactKey(row, index, 'work-message')}
                   className="min-w-0 max-w-full rounded-lg border border-border/40 bg-background/75 px-3 py-2"
                 >
                   <div className="min-w-0 max-w-full prose dark:prose-invert prose-sm max-w-none break-words text-[13px] leading-[1.55] [overflow-wrap:anywhere] prose-p:my-1 prose-li:my-0.5 prose-pre:my-1">
-                    <StreamingMarkdown text={row.content} isStreaming={false} />
+                    <StreamingMarkdown text={row.content} isStreaming={false} repoPath={repoPath} />
                   </div>
                 </div>
               );
             }
 
             if (row.kind === 'tool') {
-              return <InterleavedToolCard key={row.key ?? `work-tool-${index}`} row={row} />;
+              return <InterleavedToolCard key={getTimelineRowReactKey(row, index, 'work-tool')} row={row} allowExpansion={allowToolExpansion} />;
             }
 
             if (row.kind === 'exploration') {
-              return <InterleavedExplorationCard key={row.key ?? `work-exploration-${index}`} row={row} />;
+              return <InterleavedExplorationCard key={getTimelineRowReactKey(row, index, 'work-exploration')} row={row} allowExpansion={allowToolExpansion} />;
             }
 
             if (row.kind === 'thinking') {
               if (!row.content) return null;
               return (
                 <div
-                  key={row.key ?? `work-thinking-${index}`}
+                  key={getTimelineRowReactKey(row, index, 'work-thinking')}
                   className="min-w-0 max-w-full rounded-lg border border-blue-200/70 bg-blue-50/50 px-3 py-2 text-[11px] text-blue-900/80 dark:border-blue-900/70 dark:bg-blue-950/20 dark:text-blue-200/80"
                 >
                   <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
@@ -448,7 +523,7 @@ function WorkLogsPanel({ rows }: { rows: TimelineRow[] }) {
               if (!row.content) return null;
               return (
                 <div
-                  key={row.key ?? `work-error-${index}`}
+                  key={getTimelineRowReactKey(row, index, 'work-error')}
                   className="min-w-0 max-w-full rounded-lg border border-red-200/70 bg-red-50/60 px-3 py-2 text-[11px] text-red-900/90 dark:border-red-900/70 dark:bg-red-950/20 dark:text-red-200/90"
                 >
                   <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
@@ -503,16 +578,19 @@ export const ChatAssistantCard = memo(({
   onSelect,
   onContextMenu,
 }: SharedNodeProps) => {
+  const { surfaceMode, capabilities } = useAgentreeSurface();
+  const isPublicShare = surfaceMode === 'public-share';
   const [copiedMessageId, setCopiedMessageId] = useState(false);
   const updateTagsMutation = useUpdateTags();
   const messageId = entity.message?.id ?? entity.messageId ?? null;
   useEffect(() => {
+    if (isPublicShare) return;
     if (!messageId) return;
     agentRunManager.watch(messageId, 'chat-focus');
     return () => {
       agentRunManager.unwatch(messageId, 'chat-focus');
     };
-  }, [messageId]);
+  }, [isPublicShare, messageId]);
   const liveMessage = useAgentRunProjectionStore((state) => (
     messageId ? state.projectionsById[messageId] ?? null : null
   ));
@@ -534,9 +612,18 @@ export const ChatAssistantCard = memo(({
   }, [contentLength, displayStatus, hasRenderableContent, messageId]);
 
   const workspaceId = message?.workspaceId ?? null;
+  const { data: workspaces = [] } = useWorkspaces();
+  const repoPath = useMemo(() => {
+    const workspace = workspaces.find((item) => item.id === workspaceId) ?? null;
+    return workspace?.git_repo_path ?? workspace?.folderPath ?? null;
+  }, [workspaces, workspaceId]);
   const tags = useMemo(() => message?.tags ?? [], [message?.tags]);
   const executionData = (message?.execution_data as any) ?? null;
-  const timeline = executionData?.timeline || [];
+  const timeline = useMemo(() => {
+    const rawTimeline = Array.isArray(executionData?.timeline) ? executionData.timeline : [];
+    if (rawTimeline.length > 0) return rawTimeline;
+    return buildSanitizedWorkLogTimeline(executionData?.work_logs);
+  }, [executionData]);
   const hasStructuredTimeline = useMemo(
     () => timeline.some((event: any) => event?.type && event.type !== 'message'),
     [timeline]
@@ -585,6 +672,7 @@ export const ChatAssistantCard = memo(({
   );
 
   const handleRemoveTag = (tagToRemove: string) => {
+    if (!capabilities.canMutate) return;
     if (!workspaceId || !message?.id) return;
     updateTagsMutation.mutate({
       workspaceId,
@@ -595,6 +683,7 @@ export const ChatAssistantCard = memo(({
   };
 
   const handleAddTags = async (_messageId: string, newTags: string[]) => {
+    if (!capabilities.canMutate) return;
     if (!workspaceId || !message?.id) return;
     await updateTagsMutation.mutateAsync({
       workspaceId,
@@ -740,23 +829,28 @@ export const ChatAssistantCard = memo(({
                   <Badge
                     key={tag}
                     variant="secondary"
-                    className="group/tag relative h-5 cursor-default pr-5 text-[11px] font-medium shadow-xs"
+                    className={cn(
+                      "group/tag relative h-5 cursor-default text-[11px] font-medium shadow-xs",
+                      capabilities.canMutate && "pr-5"
+                    )}
                   >
                     <span className="opacity-90">{tag}</span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleRemoveTag(tag);
-                      }}
-                      className="absolute bottom-[1px] right-[1px] top-[1px] flex h-[calc(100%-2px)] w-4 items-center justify-center rounded-sm text-muted-foreground/60 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover/tag:opacity-100"
-                      aria-label={`Remove tag: ${tag}`}
-                      title={`Remove tag: ${tag}`}
-                    >
-                      <X size={10} strokeWidth={2.5} />
-                    </button>
+                    {capabilities.canMutate ? (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRemoveTag(tag);
+                        }}
+                        className="absolute bottom-[1px] right-[1px] top-[1px] flex h-[calc(100%-2px)] w-4 items-center justify-center rounded-sm text-muted-foreground/60 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover/tag:opacity-100"
+                        aria-label={`Remove tag: ${tag}`}
+                        title={`Remove tag: ${tag}`}
+                      >
+                        <X size={10} strokeWidth={2.5} />
+                      </button>
+                    ) : null}
                   </Badge>
                 ))}
-                {message?.id ? (
+                {capabilities.canMutate && message?.id ? (
                   <TagInputPopover
                     messageId={message.id}
                     existingTags={tags}
@@ -784,7 +878,14 @@ export const ChatAssistantCard = memo(({
         </div>
       )}
 
-      {showCompletedFinalOnly ? <WorkLogsPanel rows={transcriptRows} /> : null}
+      {showCompletedFinalOnly ? (
+        <WorkLogsPanel
+          rows={transcriptRows}
+          repoPath={repoPath}
+          defaultOpen={isPublicShare}
+          allowToolExpansion={capabilities.canExpandToolCalls}
+        />
+      ) : null}
 
       {/* Content */}
       <div className="relative z-10 min-w-0 max-w-full">
@@ -795,29 +896,29 @@ export const ChatAssistantCard = memo(({
                 if (!row.content) return null;
                 return (
                   <div
-                    key={row.key ?? `message-${index}`}
+                    key={getTimelineRowReactKey(row, index, 'message')}
                     className="min-w-0 max-w-full rounded-xl border border-border/40 bg-background/80 px-3 py-2.5 shadow-sm"
                   >
                     <div className="min-w-0 max-w-full prose dark:prose-invert prose-sm max-w-none break-words text-[14px] leading-[1.62] [overflow-wrap:anywhere] prose-p:my-1.5 prose-p:max-w-[74ch] prose-p:text-foreground/90 prose-p:leading-[1.62] prose-li:max-w-[74ch] prose-li:leading-[1.58] prose-pre:my-1.5 prose-pre:max-w-full prose-pre:whitespace-pre-wrap prose-pre:break-words prose-table:my-1.5 prose-th:py-1 prose-td:py-1">
-                      <StreamingMarkdown text={row.content} isStreaming={shouldRevealStream} />
+                      <StreamingMarkdown text={row.content} isStreaming={shouldRevealStream} repoPath={repoPath} />
                     </div>
                   </div>
                 );
               }
 
               if (row.kind === 'tool') {
-                return <InterleavedToolCard key={row.key ?? `tool-${index}`} row={row} />;
+                return <InterleavedToolCard key={getTimelineRowReactKey(row, index, 'tool')} row={row} allowExpansion={capabilities.canExpandToolCalls} />;
               }
 
               if (row.kind === 'exploration') {
-                return <InterleavedExplorationCard key={row.key ?? `exploration-${index}`} row={row} />;
+                return <InterleavedExplorationCard key={getTimelineRowReactKey(row, index, 'exploration')} row={row} allowExpansion={capabilities.canExpandToolCalls} />;
               }
 
               if (row.kind === 'thinking') {
                 if (!row.content) return null;
                 return (
                   <div
-                    key={row.key ?? `thinking-${index}`}
+                    key={getTimelineRowReactKey(row, index, 'thinking')}
                     className="min-w-0 max-w-full rounded-xl border border-blue-200/70 bg-blue-50/50 px-3 py-2 text-[11px] text-blue-900/80 dark:border-blue-900/70 dark:bg-blue-950/20 dark:text-blue-200/80"
                   >
                     <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
@@ -833,7 +934,7 @@ export const ChatAssistantCard = memo(({
                 if (!row.content) return null;
                 return (
                   <div
-                    key={row.key ?? `user-steer-${index}`}
+                    key={getTimelineRowReactKey(row, index, 'user-steer')}
                     className="min-w-0 max-w-full rounded-xl border border-violet-200/70 bg-violet-50/55 px-3 py-2 text-[11px] text-violet-950/85 dark:border-violet-900/70 dark:bg-violet-950/20 dark:text-violet-100/85"
                   >
                     <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
@@ -849,7 +950,7 @@ export const ChatAssistantCard = memo(({
                 if (!row.content) return null;
                 return (
                   <div
-                    key={row.key ?? `error-${index}`}
+                    key={getTimelineRowReactKey(row, index, 'error')}
                     className="min-w-0 max-w-full rounded-xl border border-red-200/70 bg-red-50/60 px-3 py-2 text-[11px] text-red-900/90 dark:border-red-900/70 dark:bg-red-950/20 dark:text-red-200/90"
                   >
                     <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
@@ -866,7 +967,7 @@ export const ChatAssistantCard = memo(({
           </div>
         ) : (
           <div className="min-w-0 max-w-full prose dark:prose-invert prose-sm max-w-none break-words text-[14px] leading-[1.62] [overflow-wrap:anywhere] prose-p:my-1.5 prose-p:max-w-[74ch] prose-p:text-foreground/90 prose-p:leading-[1.62] prose-li:max-w-[74ch] prose-li:leading-[1.58] prose-pre:my-1.5 prose-pre:max-w-full prose-pre:whitespace-pre-wrap prose-pre:break-words prose-table:my-1.5 prose-th:py-1 prose-td:py-1">
-            <StreamingMarkdown text={message?.content || ''} isStreaming={shouldRevealStream} />
+            <StreamingMarkdown text={message?.content || ''} isStreaming={shouldRevealStream} repoPath={repoPath} />
           </div>
         )}
         <LiveComposerCue isStreaming={shouldRevealStream} text={streamingTailText} />
@@ -898,8 +999,8 @@ export const ChatAssistantCard = memo(({
           <div className="min-w-0 max-w-full space-y-1.5">
             {toolRows.map((row, index) => (
               row.kind === 'exploration'
-                ? <InterleavedExplorationCard key={row.key ?? `exploration-tool-${index}`} row={row} />
-                : <InterleavedToolCard key={row.key ?? `tool-only-${index}`} row={row} />
+                ? <InterleavedExplorationCard key={getTimelineRowReactKey(row, index, 'exploration-tool')} row={row} allowExpansion={capabilities.canExpandToolCalls} />
+                : <InterleavedToolCard key={getTimelineRowReactKey(row, index, 'tool-only')} row={row} allowExpansion={capabilities.canExpandToolCalls} />
             ))}
           </div>
         </div>

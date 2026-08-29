@@ -36,6 +36,7 @@ import { ScrollArea } from "../../@/components/ui/scroll-area";
 import { ExecutionTimeline, TimelineEvent, buildTimelineRows, type TimelineRow, getToolSummary, ToolPayloadDisplay } from './ExecutionTimeline';
 import { useNodeEvents } from '../hooks/useNodeEvents';
 import { FileChangePreview } from './FileChangePreview';
+import { createMarkdownLinkClickHandler } from '../lib/linkActivation';
 
 // --- Constants ---
 const CHAR_THRESHOLD = 750;
@@ -563,6 +564,13 @@ export function MessageCard({
     });
   }, [content, showCompletedFinalOnly, transcriptRows]);
 
+  const { data: workspaces } = useWorkspaces();
+  const repoPath = useMemo(() => {
+    const workspace = workspaces?.find(c => c.id === workspaceId) ?? null;
+    return workspace?.git_repo_path ?? workspace?.folderPath ?? null;
+  }, [workspaces, workspaceId]);
+  const handleMarkdownLinkClick = useMemo(() => createMarkdownLinkClickHandler(repoPath), [repoPath]);
+
   /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
   const markdownComponents = useMemo(() => ({
     code: (props: any) => { const { node, inline, className: codeClassName, children, ...rest } = props; const match = /language-(\w+)/.exec(codeClassName || ''); const language = match?.[1]; const codeContent = String(children).replace(/\n$/, ''); if (language === 'mermaid' && !inline) return <div className="my-2 flex justify-center"><Suspense fallback={<pre className="text-xs text-muted-foreground">Rendering diagram...</pre>}><LazyMermaidDiagram chart={codeContent} /></Suspense></div>; if (!inline && match) return <CodeBlockWrapper language={language} code={codeContent} />; return <code className={cn("bg-muted/50 dark:bg-muted/30 px-1 py-0.5 rounded-sm text-[0.9em] font-mono break-words", codeClassName)} {...rest}>{children}</code>; },
@@ -578,7 +586,7 @@ export function MessageCard({
         // Node link detected - debug log removed (too noisy)
         return <NodeLink shortId={shortId} workspaceId={workspaceId} nodeMapping={{ [shortId]: uuid }} />;
       }
-      return <a target="_blank" rel="noopener noreferrer" className="text-primary hover:underline break-all" href={href} {...rest}>{children}</a>;
+      return <a target="_blank" rel="noopener noreferrer" className="text-primary hover:underline break-all" href={href} {...rest} onClick={handleMarkdownLinkClick}>{children}</a>;
     },
     blockquote: (props: any) => <blockquote className="pl-3 italic border-l-2 border-border my-1.5 break-words" {...props} />,
     ul: (props: any) => <ul className="list-disc list-inside my-1.5 space-y-1 pl-2" {...props} />,
@@ -587,16 +595,10 @@ export function MessageCard({
     table: (props: any) => <div className="overflow-x-auto my-1.5"><table className="table-auto w-full border-collapse border border-border" {...props} /></div>,
     th: (props: any) => <th className="border border-border px-2 py-1 text-left font-semibold bg-muted/50" {...props} />,
     td: (props: any) => <td className="border border-border px-2 py-1" {...props} />,
-  }), [workspaceId]);
+  }), [handleMarkdownLinkClick, workspaceId]);
   /* eslint-enable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 
   const currentTags = useMemo(() => tags || [], [tags]);
-
-  const { data: workspaces } = useWorkspaces();
-  const repoPath = useMemo(() => {
-    const workspace = workspaces?.find(c => c.id === workspaceId) ?? null;
-    return workspace?.git_repo_path ?? workspace?.folderPath ?? null;
-  }, [workspaces, workspaceId]);
   const showParentRefMoveAction = role === 'assistant' && !isOptimistic && focusedMessageId === messageId;
 
   return (
@@ -1041,7 +1043,7 @@ export function MessageCard({
                 const displayTitle = title || hostname;
                 const tooltip = title ? `${title} (${hostname})` : url;
                 return (
-                  <a key={`cite-${index}-${url}`} href={url} target="_blank" rel="noopener noreferrer" className="no-underline" title={tooltip}>
+                  <a key={`cite-${index}-${url}`} href={url} target="_blank" rel="noopener noreferrer" className="no-underline" title={tooltip} onClick={handleMarkdownLinkClick}>
                     <Badge variant="outline" className="flex items-center gap-1 px-1.5 py-0.5 hover:border-primary/80 hover:bg-primary/5 transition-colors cursor-pointer border-primary/50 text-primary dark:text-primary dark:border-primary/70 text-xs h-auto shadow-xs">
                       <Globe size={12} className="flex-shrink-0 mr-0.5" /> <span className="font-normal truncate max-w-[160px]">{displayTitle}</span>
                     </Badge>

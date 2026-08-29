@@ -152,7 +152,7 @@ export interface WorkspaceProjection {
   chatItems: ProjectedChatItem[];
 }
 
-interface BuildWorkspaceProjectionInput {
+export interface BuildWorkspaceProjectionInput {
   messages: Message[];
   summaries: Summary[];
   commits?: CommitEntity[];

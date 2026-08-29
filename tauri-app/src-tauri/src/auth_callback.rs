@@ -84,9 +84,8 @@ pub async fn ensure_auth_callback_server_started(app_handle: AppHandle) -> Resul
             return Err(message);
         }
         Err(error) => {
-            let message = format!(
-                "[Auth] Failed to bind Kinde callback server on http://{addr}: {error}"
-            );
+            let message =
+                format!("[Auth] Failed to bind Kinde callback server on http://{addr}: {error}");
             crate::app_log!("{}", message);
             AUTH_CALLBACK_STARTED.store(false, Ordering::SeqCst);
             return Err(message);
@@ -254,10 +253,9 @@ mod tests {
     #[test]
     fn recognizes_configured_auth_callback_navigation() {
         with_auth_callback_port_env(Some("34119"), || {
-            let url = tauri::Url::parse(
-                "http://127.0.0.1:34119/kinde/callback?code=abc&state=state",
-            )
-            .expect("valid callback url");
+            let url =
+                tauri::Url::parse("http://127.0.0.1:34119/kinde/callback?code=abc&state=state")
+                    .expect("valid callback url");
 
             assert!(is_auth_callback_url(&url));
         });

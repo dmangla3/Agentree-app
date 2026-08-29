@@ -1,4 +1,4 @@
-import { memo, type MouseEvent } from 'react';
+import { memo, useMemo, type MouseEvent } from 'react';
 import { Sparkles, Clock, Pencil } from 'lucide-react';
 import { ChatCardWrapper } from './ChatCardWrapper';
 import { ChatMarkdown } from './ChatMarkdown';
@@ -6,6 +6,8 @@ import { CopyMessageContentButton } from './CopyMessageContentButton';
 import { SharedNodeProps } from '../../../types/nodes';
 import { ROLE_COLORS } from '../../../lib/visualTokens';
 import { cn } from '../../../lib/utils';
+import { useWorkspaces } from '../../../hooks/useWorkspaces';
+import { useAgentreeSurface } from '../../graph/surfaceCapabilities';
 
 export const ChatUserCard = memo(({
   entity,
@@ -15,6 +17,13 @@ export const ChatUserCard = memo(({
   onSelect,
   onContextMenu,
 }: SharedNodeProps) => {
+  const { capabilities } = useAgentreeSurface();
+  const { data: workspaces = [] } = useWorkspaces();
+  const workspaceId = entity.message?.workspaceId ?? null;
+  const repoPath = useMemo(() => {
+    const workspace = workspaces.find((item) => item.id === workspaceId) ?? null;
+    return workspace?.git_repo_path ?? workspace?.folderPath ?? null;
+  }, [workspaces, workspaceId]);
   const timestamp = entity.message?.createdAt
     ? new Date(entity.message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : null;
@@ -67,30 +76,33 @@ export const ChatUserCard = memo(({
         "prose-p:my-1.5 prose-p:max-w-[74ch] prose-p:text-current prose-p:leading-[1.58] prose-li:max-w-[74ch] prose-li:leading-[1.56]",
         ROLE_COLORS.user_message.text
       )}>
-        <ChatMarkdown>{entity.message?.content || ''}</ChatMarkdown>
+        <ChatMarkdown repoPath={repoPath}>{entity.message?.content || ''}</ChatMarkdown>
       </div>
 
-      <button
-        type="button"
-        onClick={handleEditClick}
-        className={cn(
-          "absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full text-slate-500 transition-colors",
-          "bg-background/70 opacity-0 shadow-sm backdrop-blur-sm",
-          "hover:bg-slate-200/80 hover:text-slate-900 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400",
-          "group-hover:opacity-100 dark:bg-slate-900/55 dark:text-slate-400 dark:hover:bg-slate-700/80 dark:hover:text-slate-100"
-        )}
-        aria-label="Edit and run this message"
-        title="Edit and run"
-      >
-        <Pencil size={12} strokeWidth={2} />
-      </button>
+      {capabilities.canMutate ? (
+        <button
+          type="button"
+          onClick={handleEditClick}
+          className={cn(
+            "absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full text-slate-500 transition-colors",
+            "bg-background/70 opacity-0 shadow-sm backdrop-blur-sm",
+            "hover:bg-slate-200/80 hover:text-slate-900 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400",
+            "group-hover:opacity-100 dark:bg-slate-900/55 dark:text-slate-400 dark:hover:bg-slate-700/80 dark:hover:text-slate-100"
+          )}
+          aria-label="Edit and run this message"
+          title="Edit and run"
+        >
+          <Pencil size={12} strokeWidth={2} />
+        </button>
+      ) : null}
 
       <CopyMessageContentButton
         text={entity.message?.content}
         ariaLabel="Copy user message"
         title="Copy message"
         className={cn(
-          "absolute bottom-2 right-9 z-20 h-6 w-6 bg-background/70 opacity-0 backdrop-blur-sm",
+          "absolute bottom-2 z-20 h-6 w-6 bg-background/70 opacity-0 backdrop-blur-sm",
+          capabilities.canMutate ? "right-9" : "right-2",
           "focus-visible:opacity-100 group-hover:opacity-100 dark:bg-slate-900/55"
         )}
       />

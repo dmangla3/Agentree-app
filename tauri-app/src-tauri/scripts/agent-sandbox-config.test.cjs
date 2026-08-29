@@ -19,10 +19,19 @@ test('vite config sends cache output to the agent sandbox when available', () =>
 });
 
 test('dependency guard prompts allow sandboxed test and build commands', () => {
-  const chatInputSource = readRepoFile('tauri-app/src/components/ChatInput.tsx');
+  const agentRunPromptsSource = readRepoFile('tauri-app/src/lib/prompts/agentRunPrompts.ts');
   const mergeReviewSource = readRepoFile('tauri-app/src-tauri/scripts/merge-review-runner.cjs');
   const expectedPhrase = 'It is okay to run read-only checks, tests, and builds when their caches and build output are redirected outside those symlinked directories';
 
-  assert.match(chatInputSource, new RegExp(expectedPhrase));
+  assert.match(agentRunPromptsSource, new RegExp(expectedPhrase));
   assert.match(mergeReviewSource, new RegExp(expectedPhrase));
+});
+
+test('codex adapter makes the node worktree writable without full access', () => {
+  const source = readRepoFile('tauri-app/src-tauri/scripts/codex-app-server-adapter.py');
+
+  assert.match(source, /"sandbox": "workspace-write"/);
+  assert.match(source, /"type": "workspaceWrite"/);
+  assert.match(source, /"writableRoots": \[cwd\]/);
+  assert.match(source, /sandbox_policy=_workspace_write_sandbox_policy\(args\.cwd\)/);
 });

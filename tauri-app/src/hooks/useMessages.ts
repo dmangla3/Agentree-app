@@ -46,6 +46,26 @@ const markMessagesStaleOnly = (
     void scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, { reason });
 };
 
+const syncMessageTagsToServer = async ({
+    messageId,
+    tags,
+    action,
+}: {
+    messageId: string;
+    tags: string[];
+    action: 'add' | 'remove';
+}): Promise<Message | null> => {
+    if (action === 'add') {
+        const response = await api.post<Message>(`/messages/${messageId}/tags`, { tags });
+        return response.data;
+    }
+
+    const responses = await Promise.all(tags.map((tag) =>
+        api.delete<Message>(`/messages/${messageId}/tags/${encodeURIComponent(tag)}`)
+    ));
+    return responses.length > 0 ? responses[responses.length - 1].data : null;
+};
+
 const fetchServerMessages = async (workspaceId: string): Promise<Message[]> => {
     const response = await api.get(`/workspaces/${workspaceId}/messages`);
     return Array.isArray(response.data) ? response.data : [];
@@ -488,15 +508,20 @@ export const useUpdateTags = () => {
             action: 'add' | 'remove';
         }) => {
             console.log(`${action === 'add' ? 'Adding' : 'Removing'} tags for message ${messageId} in workspace ${workspaceId}`);
-            if (action === 'add') {
-                const response = await api.post<Message>(`/messages/${messageId}/tags`, { tags });
-                return response.data;
-            } else {
-                const responses = await Promise.all(tags.map((tag) =>
-                    api.delete<Message>(`/messages/${messageId}/tags/${encodeURIComponent(tag)}`)
-                ));
-                return responses.length > 0 ? responses[responses.length - 1].data : null;
+            if (agentClient.hasRuntime()) {
+                void syncMessageTagsToServer({ messageId, tags, action }).catch((error) => {
+                    recordPerfEvent('mutation.tags.background-sync-failed', {
+                        workspaceId,
+                        messageId,
+                        action,
+                        tagCount: tags.length,
+                        error: error instanceof Error ? error.message : String(error),
+                    }, { source: 'useUpdateTags' });
+                    console.warn('[useUpdateTags] Background tag sync failed', error);
+                });
+                return null;
             }
+            return syncMessageTagsToServer({ messageId, tags, action });
         },
         onSuccess: (updatedMessage, variables) => {
             patchMessageInCache(queryClient, variables.workspaceId, variables.messageId, (message) => {

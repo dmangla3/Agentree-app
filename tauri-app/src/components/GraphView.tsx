@@ -31,6 +31,7 @@ import { useGitSync } from '../hooks/useGitSync';
 import { getEnabledTrackedGitRefs, getTrackedRefsNeedingSync, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
 import { useLocalNodes } from '../hooks/useLocalNodes';
 import { useGraphMessages } from '../hooks/useLiveMessages';
+import { useInsights } from '../hooks/useInsights';
 import { getPublicShareUrl, useCreateNodePublicShare } from '../hooks/useWorkspacePublicShare';
 import { useCreateThreadSession, useDeleteThreadSession, useThreadSessions } from '../hooks/useThreadSessions';
 
@@ -46,6 +47,7 @@ import { mapLocalCommitToCommitEntity } from '../lib/localCommitGraphProjection'
 import { createSubgraphFilterState, getSubgraphMessageIds, shouldClearSubgraphForFocus } from '../lib/graphSubgraphFilter';
 import { buildThreadRootIndex, getEmptyWorkspaceThreadRootId, getHiddenConversationMessageIds, getLatestThreadMessageId } from '../lib/graphThreadRoots';
 import { deriveBackfilledThreadSessions, mergeThreadSessionsWithBackfills, threadSessionSortKey } from '../lib/threadSessions';
+import { resolveLocalWorkspaceRepoPath } from '../lib/workspaceRepoPath';
 import {
     filterCommitContextForThreadScope,
     filterSummariesForThreadScope,
@@ -110,6 +112,7 @@ import { ListView } from './ListView';
 import { ExecutionTimelineDock } from './timeline/ExecutionTimelineDock';
 import AdvancedSearchPanel from './AdvancedSearchPanel';
 import { NodeContextMenu, type NodeContextMenuState } from './NodeContextMenu';
+import InsightPanel from './InsightPanel';
 import { AddCommitDialog } from './AddCommitDialog';
 import { DeleteBranchDialog, type DeleteBranchDialogPhase } from './DeleteBranchDialog';
 import { classifyMessageNodeKind } from '../domain/nodes';
@@ -188,6 +191,7 @@ const ACTIVE_GRAPH_WINDOW_FALLBACK_NODE_WIDTH = 120;
 const ACTIVE_GRAPH_WINDOW_FALLBACK_NODE_HEIGHT = 120;
 const ACTIVE_GRAPH_WINDOW_SPATIAL_CELL_SIZE = 900;
 const ACTIVE_GRAPH_RUN_STATUSES = new Set(['pending', 'creating', 'initializing', 'running', 'streaming']);
+const EMPTY_GRAPH_INSIGHTS: any[] = [];
 const GRAPH_GEOMETRY_DIAGNOSTICS_ENABLED = import.meta.env.VITE_GRAPH_GEOMETRY_DIAGNOSTICS === 'true';
 
 export const shouldTreatGraphMoveAsViewportInteraction = ({
@@ -990,8 +994,10 @@ function GraphViewInternal({
 
     // Insights
     const insights = useWorkspaceStore(state => state.insights);
+    const insightsEnabled = useWorkspaceStore(state => state.insightsEnabled);
     const insightsVisible = useWorkspaceStore(state => state.insightsVisible);
     const showInsightsInGraph = useWorkspaceStore(state => state.showInsightsInGraph);
+    const toggleInsightsEnabled = useWorkspaceStore(state => state.toggleInsightsEnabled);
     const toggleInsightsVisible = useWorkspaceStore(state => state.toggleInsightsVisible);
     const toggleShowInsightsInGraph = useWorkspaceStore(state => state.toggleShowInsightsInGraph);
     const dismissInsight = useWorkspaceStore(state => state.dismissInsight);
@@ -1153,6 +1159,22 @@ function GraphViewInternal({
     }, [canUseLiveFocusedMessageId, runningCount, storeFocusedMessageId]);
 
     const messages = messagesOverride ?? storeMessages;
+    const completedAssistantInsightSignal = useMemo(() => (
+        (messages as Message[]).filter((message) => (
+            message.role === 'assistant' &&
+            (
+                message.status === 'completed' ||
+                message.execution_data?.last_terminal_status === 'completed' ||
+                (!message.status && Boolean(message.content?.trim()))
+            )
+        )).length
+    ), [messages]);
+    const insightControls = useInsights(selectedWorkspaceId, completedAssistantInsightSignal, {
+        enabled: agentClient.hasRuntime() && !messagesOverride && insightsEnabled,
+        messages: messages as Message[],
+        agents,
+        workspace: selectedWorkspace,
+    });
     useEffect(() => {
         reconcileTerminalAgentRunsFromMessages(messages as Message[]);
     }, [messages]);
@@ -1795,7 +1817,7 @@ function GraphViewInternal({
     const scopedVisibleSnapshotCommits = scopedSnapshotCommitContext.commits;
     const scopedVisibleSnapshotCommitParents = scopedSnapshotCommitContext.commitParents;
     const scopedVisibleSnapshotCommitObservations = scopedSnapshotCommitContext.commitObservations;
-    const repoPath = selectedWorkspace?.git_repo_path ?? selectedWorkspace?.folderPath ?? null;
+    const repoPath = resolveLocalWorkspaceRepoPath(selectedWorkspace);
     const { runSync, isSyncing } = useGitSync(
         selectedWorkspaceId,
         repoPath
@@ -3796,6 +3818,7 @@ function GraphViewInternal({
     }, [messages, nodeSelection.clearSelection, selectedWorkspaceId, subgraphRootNodeId, toast]);
 
     const graphLayoutCacheScopeKey = getThreadScopeKey(selectedWorkspaceId, threadGraphScope.activeThreadRootId);
+    const graphLayoutInsights = showInsightsInGraph ? insights : EMPTY_GRAPH_INSIGHTS;
     const { nodes: layoutNodes, edges: layoutEdges } = useGraphLayout({
         projection: workspaceProjection,
         messages: graphComputationMessages,
@@ -3817,7 +3840,7 @@ function GraphViewInternal({
         hiddenThreadRootIds: hiddenThreadRootIdsForLayout,
         layoutCacheScopeKey: graphLayoutCacheScopeKey,
         visibleNodeSections,
-        insights,
+        insights: graphLayoutInsights,
         showInsightsInGraph,
         workspaceRepoMap,
         branchPointersByNodeId,
@@ -5839,8 +5862,10 @@ function GraphViewInternal({
                         onClearTagFilters={tagFilter.handleClearTagFilters}
                         onClearAllFilters={tagFilter.handleClearAllFilters}
                         insights={insights}
+                        insightsEnabled={insightsEnabled}
                         insightsVisible={insightsVisible}
                         showInsightsInGraph={showInsightsInGraph}
+                        onToggleInsightsEnabled={toggleInsightsEnabled}
                         onToggleInsightsVisible={toggleInsightsVisible}
                         onToggleShowInsightsInGraph={toggleShowInsightsInGraph}
                         threadItems={threadIndexItems}
@@ -5863,6 +5888,17 @@ function GraphViewInternal({
                     <TrackedBranchesPanel
                         workspaceId={selectedWorkspaceId}
                         repoPath={selectedWorkspace?.git_repo_path ?? selectedWorkspace?.folderPath ?? null}
+                    />
+                    <InsightPanel
+                        insights={insights}
+                        isVisible={insightsVisible}
+                        onToggleVisibility={toggleInsightsVisible}
+                        onDismissInsight={(insightId) => {
+                            void insightControls.dismissInsight(insightId);
+                        }}
+                        onViewInsight={(insight) => {
+                            if (insight.parentNodeId) handleFocus(insight.parentNodeId);
+                        }}
                     />
                     {threadNavigationOrientation === 'horizontal' ? (
                         <GraphThreadTabs

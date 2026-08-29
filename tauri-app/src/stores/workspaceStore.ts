@@ -12,6 +12,12 @@ export interface Workspace {
   snapshot_id?: string | null;
   repo_path?: string | null;
   git_repo_path?: string | null;
+  local_repo_path?: string | null;
+  localRepoPath?: string | null;
+  connection_status?: 'connected' | 'missing' | 'remote_unconnected' | 'path_mismatch' | string | null;
+  connectionStatus?: 'connected' | 'missing' | 'remote_unconnected' | 'path_mismatch' | string | null;
+  sync_status?: 'sync_pending' | 'synced' | 'sync_error' | 'local_only' | string | null;
+  syncStatus?: 'sync_pending' | 'synced' | 'sync_error' | 'local_only' | string | null;
   base_commit_sha?: string | null;
   agentArgs?: string | null;
   createdAt: string;
@@ -247,6 +253,7 @@ interface WorkspaceState {
   clearSelectedWorkspace: () => void;
 
   insights: Insight[];
+  insightsEnabled: boolean;
   insightsVisible: boolean;
   showInsightsInGraph: boolean;
   isLoadingInsights: boolean;
@@ -287,6 +294,7 @@ interface WorkspaceState {
   addInsights: (insights: Insight[]) => void;
   dismissInsight: (insightId: string) => void;
   clearInsights: () => void;
+  toggleInsightsEnabled: () => void;
   toggleInsightsVisible: () => void;
   toggleShowInsightsInGraph: () => void;
   setLoadingInsights: (loading: boolean) => void;
@@ -320,6 +328,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       activeSendFlowFocus: null,
       selectedAgentId: null,
       insights: [],
+      insightsEnabled: true,
       insightsVisible: true,
       showInsightsInGraph: false,
       isLoadingInsights: false,
@@ -515,6 +524,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       dismissInsight: (insightId) =>
         set((state) => ({ insights: state.insights.filter((insight) => insight.id !== insightId) })),
       clearInsights: () => set({ insights: [] }),
+      toggleInsightsEnabled: () => set((state) => ({ insightsEnabled: !state.insightsEnabled })),
       toggleInsightsVisible: () => set((state) => ({ insightsVisible: !state.insightsVisible })),
       toggleShowInsightsInGraph: () =>
         set((state) => ({ showInsightsInGraph: !state.showInsightsInGraph })),

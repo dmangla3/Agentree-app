@@ -13,12 +13,7 @@ pub struct Editor {
 pub fn get_available_editors() -> Vec<Editor> {
     let mut editors = Vec::new();
 
-    // Always add Finder
-    editors.push(Editor {
-        name: "Finder".to_string(),
-        command: "open".to_string(),
-        icon_key: "finder".to_string(),
-    });
+    editors.push(platform_file_opener());
 
     // Check for VS Code
     if is_command_available("code") {
@@ -77,6 +72,30 @@ pub fn get_available_editors() -> Vec<Editor> {
     editors
 }
 
+fn platform_file_opener() -> Editor {
+    platform_file_opener_for(std::env::consts::OS)
+}
+
+fn platform_file_opener_for(os: &str) -> Editor {
+    match os {
+        "linux" => Editor {
+            name: "Default App".to_string(),
+            command: "xdg-open".to_string(),
+            icon_key: "default-app".to_string(),
+        },
+        "windows" => Editor {
+            name: "File Explorer".to_string(),
+            command: "explorer".to_string(),
+            icon_key: "finder".to_string(),
+        },
+        _ => Editor {
+            name: "Finder".to_string(),
+            command: "open".to_string(),
+            icon_key: "finder".to_string(),
+        },
+    }
+}
+
 fn is_command_available(cmd: &str) -> bool {
     // On macOS/Linux, use 'which' to check availability
     // Note: This relies on the PATH seen by the Tauri app.
@@ -103,4 +122,16 @@ fn is_command_available(cmd: &str) -> bool {
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn platform_file_opener_matches_desktop_os_conventions() {
+        assert_eq!(platform_file_opener_for("macos").command, "open");
+        assert_eq!(platform_file_opener_for("linux").command, "xdg-open");
+        assert_eq!(platform_file_opener_for("windows").command, "explorer");
+    }
 }

@@ -1,6 +1,7 @@
 import { DiffRelationship, BlameResult } from './agentClient';
 import { Workspace, Message } from '../stores/workspaceStore';
 import { getMessageOutputCommitSha } from './graph/commitAccessors';
+import { resolveLocalWorkspaceRepoPath } from './workspaceRepoPath';
 
 type MessageMap = Map<string, Message>;
 
@@ -10,7 +11,7 @@ function getExecutionMeta(message: Message | null | undefined): Record<string, u
 }
 
 export function getRepoPathFromWorkspace(workspace: Workspace | null | undefined): string | null {
-  return workspace?.git_repo_path ?? workspace?.folderPath ?? null;
+  return resolveLocalWorkspaceRepoPath(workspace);
 }
 
 export function buildMessageMap(messages: Message[]): MessageMap {

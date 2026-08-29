@@ -555,6 +555,15 @@ def _recommended_file_auth_command(codex_home: str) -> str:
     return f"CODEX_HOME={codex_home} codex -c 'cli_auth_credentials_store=\"file\"' login --device-auth"
 
 
+def _workspace_write_sandbox_policy(cwd: str) -> dict[str, Any]:
+    return {
+        "type": "workspaceWrite",
+        "writableRoots": [cwd],
+        "networkAccess": False,
+        "readOnlyAccess": {"type": "fullAccess"},
+    }
+
+
 def _emit_readiness_check() -> int:
     codex_home = _resolve_codex_home()
     recommended_command = _recommended_file_auth_command(codex_home)
@@ -1194,6 +1203,7 @@ def main() -> int:
             thread_kwargs: dict[str, Any] = {
                 "model": args.model,
                 "cwd": args.cwd,
+                "sandbox": "workspace-write",
             }
             if args.reasoning_effort:
                 thread_kwargs["config"] = {"model_reasoning_effort": args.reasoning_effort}
@@ -1367,6 +1377,7 @@ def main() -> int:
                 model=args.model,
                 cwd=args.cwd,
                 output_schema=FINAL_RESULT_SCHEMA,
+                sandbox_policy=_workspace_write_sandbox_policy(args.cwd),
             )
 
             control_done = threading.Event()

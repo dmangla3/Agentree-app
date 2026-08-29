@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../stores/workspaceStore';
-import { mergeWorkspaceIntoCachedWorkspaces, workspaceKeys } from './useWorkspaces';
+import {
+  mergeWorkspaceIntoCachedWorkspaces,
+  renameWorkspaceInCachedWorkspaces,
+  workspaceKeys,
+} from './useWorkspaces';
 
 const workspace = (id: string, name = id): Workspace => ({
   id,
@@ -30,5 +34,26 @@ describe('workspaceKeys', () => {
   it('scopes the workspace list cache by user id', () => {
     expect(workspaceKeys.list('user-1')).toEqual(['workspaces', 'user-1']);
     expect(workspaceKeys.list('user-2')).toEqual(['workspaces', 'user-2']);
+  });
+});
+
+describe('renameWorkspaceInCachedWorkspaces', () => {
+  it('updates the renamed workspace without changing unrelated rows', () => {
+    const first = workspace('workspace-1', 'Old name');
+    const second = workspace('workspace-2', 'Other');
+
+    expect(renameWorkspaceInCachedWorkspaces([first, second], 'workspace-1', 'New name')).toEqual([
+      { ...first, name: 'New name' },
+      second,
+    ]);
+  });
+
+  it('keeps the requested name even when the server returns a stale workspace name', () => {
+    const existing = workspace('workspace-1', 'Old name');
+    const staleServerWorkspace = workspace('workspace-1', 'Old name');
+
+    expect(
+      renameWorkspaceInCachedWorkspaces([existing], 'workspace-1', 'New name', staleServerWorkspace)
+    ).toEqual([{ ...staleServerWorkspace, name: 'New name' }]);
   });
 });

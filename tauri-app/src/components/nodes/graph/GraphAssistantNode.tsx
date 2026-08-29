@@ -11,6 +11,17 @@ import { getNodeFailureReason, isNodeFailureStatus } from '../../../lib/nodeFail
 import { shouldHydrateAgentRunHover } from '../../../lib/agentRunHoverHydrationPolicy';
 
 // Compact status icon only - no text
+const ACTIVE_ASSISTANT_STATUSES = new Set<AgentStatus | 'creating' | 'initializing'>([
+  'pending',
+  'creating',
+  'initializing',
+  'running',
+  'streaming',
+]);
+
+const isActiveAssistantStatus = (status: AgentStatus | null | undefined): boolean => (
+  Boolean(status && ACTIVE_ASSISTANT_STATUSES.has(status as AgentStatus))
+);
 
 const StatusIcon = ({
   status,
@@ -62,6 +73,7 @@ export const GraphAssistantNode = memo(({
   const failureReason = isNodeFailureStatus(displayStatus)
     ? getNodeFailureReason(entity.message?.execution_data)
     : null;
+  const isAssistantWorking = isActiveAssistantStatus(displayStatus as AgentStatus | null | undefined);
 
   return (
     <GraphNodeWrapper
@@ -112,6 +124,28 @@ export const GraphAssistantNode = memo(({
       {isMinimalDetail ? (
         <div className="relative z-10 flex min-h-0 flex-1 items-center">
           <div className="h-1.5 w-full rounded-full bg-zinc-200/70 dark:bg-zinc-800/75" />
+        </div>
+      ) : isAssistantWorking ? (
+        <div className={cn(
+          'relative z-10 mb-2 flex-1 rounded-md border px-2.5 py-2',
+          'border-amber-200/75 bg-amber-50/80 text-amber-950',
+          'shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]',
+          'dark:border-amber-900/55 dark:bg-amber-950/20 dark:text-amber-100'
+        )}>
+          <div className="flex items-start gap-2">
+            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-amber-500 dark:bg-amber-400" />
+            <span className="min-w-0">
+              <span className="block text-[11px] font-semibold leading-tight">
+                Assistant is working.
+              </span>
+              <span className={cn(
+                'block text-[10px] font-medium leading-snug text-amber-800/80 dark:text-amber-200/75',
+                isFullDetail ? 'line-clamp-2' : 'line-clamp-1'
+              )}>
+                Please hover to check progress.
+              </span>
+            </span>
+          </div>
         </div>
       ) : (
         <p className={cn(

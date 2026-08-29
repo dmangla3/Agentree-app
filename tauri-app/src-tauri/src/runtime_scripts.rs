@@ -132,11 +132,9 @@ pub fn codex_adapter_command(app: &AppHandle) -> Result<RuntimeCommand, String> 
     // include "macos" in requires_codex_adapter_helper.
     Ok(RuntimeCommand {
         program: runtime_python_command(app),
-        args_prefix: vec![
-            runtime_script_path(app, "codex-app-server-adapter.py")?
-                .to_string_lossy()
-                .into_owned(),
-        ],
+        args_prefix: vec![runtime_script_path(app, "codex-app-server-adapter.py")?
+            .to_string_lossy()
+            .into_owned()],
     })
 }
 

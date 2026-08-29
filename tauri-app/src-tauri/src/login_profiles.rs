@@ -384,9 +384,8 @@ pub fn upsert_login_profile_with_vault(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let allows_deferred_secret =
-        (provider == "codex" && auth_type == "codex_chatgpt_session")
-            || (provider == "claude" && auth_type == "claude_oauth");
+    let allows_deferred_secret = (provider == "codex" && auth_type == "codex_chatgpt_session")
+        || (provider == "claude" && auth_type == "claude_oauth");
     if existing.is_none() && !allows_deferred_secret && secret.is_none() {
         return Err("a secret is required for managed login profiles".to_string());
     }
@@ -624,7 +623,10 @@ fn read_claude_code_oauth_blob_with_security() -> Result<String, String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() {
-            format!("security find-generic-password exited with {}", output.status)
+            format!(
+                "security find-generic-password exited with {}",
+                output.status
+            )
         } else {
             stderr
         });
@@ -660,7 +662,10 @@ fn write_claude_code_oauth_blob_with_security(account: &str, secret: &str) -> Re
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         Err(if stderr.is_empty() {
-            format!("security add-generic-password exited with {}", output.status)
+            format!(
+                "security add-generic-password exited with {}",
+                output.status
+            )
         } else {
             stderr
         })
@@ -744,7 +749,12 @@ fn delete_claude_code_oauth_blob_with_security() -> Result<(), String> {
         .arg("-s")
         .arg(CLAUDE_CODE_KEYCHAIN_SERVICE)
         .output()
-        .map_err(|error| format!("security delete-generic-password failed to start: {}", error))?;
+        .map_err(|error| {
+            format!(
+                "security delete-generic-password failed to start: {}",
+                error
+            )
+        })?;
     if output.status.success() {
         return Ok(());
     }
@@ -753,7 +763,10 @@ fn delete_claude_code_oauth_blob_with_security() -> Result<(), String> {
     if lower.contains("could not be found") || lower.contains("no matching") {
         Ok(())
     } else if stderr.is_empty() {
-        Err(format!("security delete-generic-password exited with {}", output.status))
+        Err(format!(
+            "security delete-generic-password exited with {}",
+            output.status
+        ))
     } else {
         Err(stderr)
     }
@@ -914,14 +927,13 @@ pub fn persist_claude_oauth_state(
         return Ok(());
     }
     let config_path = claude_global_config_json_path()?;
-    let claude_config_json =
-        fs::read_to_string(&config_path).map_err(|error| {
-            format!(
-                "failed to read Claude profile config {}: {}",
-                config_path.display(),
-                error
-            )
-        })?;
+    let claude_config_json = fs::read_to_string(&config_path).map_err(|error| {
+        format!(
+            "failed to read Claude profile config {}: {}",
+            config_path.display(),
+            error
+        )
+    })?;
     let oauth_keychain_json = read_claude_code_oauth_blob()?;
     let payload = ClaudeOAuthProfileSecret {
         oauth_keychain_json: oauth_keychain_json.trim().to_string(),
@@ -1072,7 +1084,9 @@ fn parse_claude_login_url_line(line: &str) -> Option<String> {
     }
     trimmed
         .split_whitespace()
-        .find(|part| part.starts_with("https://claude.com/") || part.starts_with("https://www.claude.com/"))
+        .find(|part| {
+            part.starts_with("https://claude.com/") || part.starts_with("https://www.claude.com/")
+        })
         .map(ToOwned::to_owned)
 }
 
@@ -1092,7 +1106,10 @@ fn finish_codex_login_process(
         if !code_sent {
             if let Some(code) = parse_codex_device_code_line(&line, &mut expecting_code) {
                 code_sent = true;
-                crate::app_log!("[LOGIN_PROFILE] event=codex_login_device_code profile_id={}", profile_id);
+                crate::app_log!(
+                    "[LOGIN_PROFILE] event=codex_login_device_code profile_id={}",
+                    profile_id
+                );
                 let _ = sender.send(Ok(code));
             }
         }
@@ -1107,7 +1124,9 @@ fn finish_codex_login_process(
         .ok_or_else(|| "could not resolve telemetry db directory".to_string())
         .and_then(TelemetryDb::open);
     let Ok(db) = db_result else {
-        let message = db_result.err().unwrap_or_else(|| "failed to open telemetry db".to_string());
+        let message = db_result
+            .err()
+            .unwrap_or_else(|| "failed to open telemetry db".to_string());
         let _ = app.emit(
             "login-profiles:changed",
             LoginProfilesChangedEvent {
@@ -1115,16 +1134,22 @@ fn finish_codex_login_process(
                 status: "error".to_string(),
             },
         );
-        crate::app_log!("[LOGIN_PROFILE] event=codex_login_db_open_failed error={}", message);
+        crate::app_log!(
+            "[LOGIN_PROFILE] event=codex_login_db_open_failed error={}",
+            message
+        );
         return;
     };
 
     let vault = KeyringCredentialVault;
     match status {
         Ok(exit_status) if exit_status.success() => {
-            crate::app_log!("[LOGIN_PROFILE] event=codex_login_process_completed profile_id={}", profile_id);
-            let result = persist_codex_auth_state(&db, &vault, &profile_id, &codex_home)
-                .and_then(|_| {
+            crate::app_log!(
+                "[LOGIN_PROFILE] event=codex_login_process_completed profile_id={}",
+                profile_id
+            );
+            let result =
+                persist_codex_auth_state(&db, &vault, &profile_id, &codex_home).and_then(|_| {
                     mark_login_profile_status(
                         &db,
                         &profile_id,
@@ -1135,7 +1160,10 @@ fn finish_codex_login_process(
                 });
             match result {
                 Ok(()) => {
-                    crate::app_log!("[LOGIN_PROFILE] event=codex_login_profile_ready profile_id={}", profile_id);
+                    crate::app_log!(
+                        "[LOGIN_PROFILE] event=codex_login_profile_ready profile_id={}",
+                        profile_id
+                    );
                     let _ = app.emit(
                         "login-profiles:changed",
                         LoginProfilesChangedEvent {
@@ -1145,12 +1173,8 @@ fn finish_codex_login_process(
                     );
                 }
                 Err(error) => {
-                    let _ = mark_login_profile_status(
-                        &db,
-                        &profile_id,
-                        "error",
-                        Some(error.clone()),
-                    );
+                    let _ =
+                        mark_login_profile_status(&db, &profile_id, "error", Some(error.clone()));
                     let _ = app.emit(
                         "login-profiles:changed",
                         LoginProfilesChangedEvent {
@@ -1158,7 +1182,10 @@ fn finish_codex_login_process(
                             status: "error".to_string(),
                         },
                     );
-                    crate::app_log!("[LOGIN_PROFILE] event=codex_login_persist_failed error={}", error);
+                    crate::app_log!(
+                        "[LOGIN_PROFILE] event=codex_login_persist_failed error={}",
+                        error
+                    );
                 }
             }
         }
@@ -1654,7 +1681,8 @@ fn run_claude_live_check(
 }
 
 fn run_claude_oauth_connect_smoke_check(claude_config_dir: &Path) -> Result<(), String> {
-    let claude = crate::cli_path::find_on_tool_path("claude").unwrap_or_else(|| "claude".to_string());
+    let claude =
+        crate::cli_path::find_on_tool_path("claude").unwrap_or_else(|| "claude".to_string());
     let mut command = Command::new(claude);
     command
         .arg("-p")
@@ -1670,7 +1698,10 @@ fn run_claude_oauth_connect_smoke_check(claude_config_dir: &Path) -> Result<(), 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     if stdout.trim().is_empty() && stderr.trim().is_empty() {
-        return Err(format!("Claude login validation exited with {}.", output.status));
+        return Err(format!(
+            "Claude login validation exited with {}.",
+            output.status
+        ));
     }
     Err(format!(
         "Claude login validation failed: {}",
@@ -1727,7 +1758,8 @@ fn run_login_profile_live_check(
                     let result = run_claude_live_check(app, profile, Some(&materialized));
                     if materialized.auth_type == "claude_oauth" {
                         if result.is_ok() {
-                            if let Some(claude_config_dir) = materialized.claude_config_dir.as_deref()
+                            if let Some(claude_config_dir) =
+                                materialized.claude_config_dir.as_deref()
                             {
                                 if let Err(error) = persist_claude_oauth_state(
                                     db,
@@ -1894,7 +1926,9 @@ pub fn connect_codex_login_profile(
 ) -> Result<CodexLoginStart, String> {
     let profile = db.get_login_profile(&profile_id)?;
     if profile.provider != "codex" || profile.auth_type != "codex_chatgpt_session" {
-        return Err("Connect is only supported for managed Codex ChatGPT session profiles.".to_string());
+        return Err(
+            "Connect is only supported for managed Codex ChatGPT session profiles.".to_string(),
+        );
     }
     let cache_dir = app
         .path()
@@ -1925,10 +1959,13 @@ pub fn connect_codex_login_profile(
         "checking",
         Some("Waiting for Codex browser sign in.".to_string()),
     );
-    emit_login_profiles_changed(&app, &LoginProfile {
-        status: "checking".to_string(),
-        ..profile.clone()
-    });
+    emit_login_profiles_changed(
+        &app,
+        &LoginProfile {
+            status: "checking".to_string(),
+            ..profile.clone()
+        },
+    );
 
     let (sender, receiver) = mpsc::channel();
     let app_for_thread = app.clone();
@@ -1950,11 +1987,11 @@ pub fn connect_codex_login_profile(
     let device_code = receiver
         .recv_timeout(CODEX_LOGIN_START_TIMEOUT)
         .map_err(|_| "Timed out waiting for Codex device login code.".to_string())??;
-    if let Err(error) = app
-        .opener()
-        .open_url(CODEX_DEVICE_LOGIN_URL, None::<&str>)
-    {
-        crate::app_log!("[LOGIN_PROFILE] event=codex_login_open_browser_failed error={}", error);
+    if let Err(error) = app.opener().open_url(CODEX_DEVICE_LOGIN_URL, None::<&str>) {
+        crate::app_log!(
+            "[LOGIN_PROFILE] event=codex_login_open_browser_failed error={}",
+            error
+        );
     }
     Ok(CodexLoginStart {
         profile_id: profile.id,
@@ -2011,10 +2048,13 @@ pub fn connect_claude_oauth_login_profile(
             "checking",
             Some("Waiting for Claude browser sign in.".to_string()),
         );
-        emit_login_profiles_changed(&app, &LoginProfile {
-            status: "checking".to_string(),
-            ..profile.clone()
-        });
+        emit_login_profiles_changed(
+            &app,
+            &LoginProfile {
+                status: "checking".to_string(),
+                ..profile.clone()
+            },
+        );
 
         let started_at = Instant::now();
         let mut reader = BufReader::new(stdout);
@@ -2120,26 +2160,24 @@ fn poll_claude_oauth_login(
             db.get_login_profile(profile_id)
         }
         Ok(Some(status)) if status.success() => {
-            let profile = finish_claude_oauth_login_success(
-                app,
-                db,
-                profile_id,
-                &pending.claude_config_dir,
-            )?;
+            let profile =
+                finish_claude_oauth_login_success(app, db, profile_id, &pending.claude_config_dir)?;
             release_claude_oauth_activation(profile_id);
             Ok(profile)
         }
         Ok(Some(status)) => {
             release_claude_oauth_activation(profile_id);
             let message = format!("Claude login exited with status {}.", status);
-            let profile = mark_login_profile_status(db, profile_id, "error", Some(message.clone()))?;
+            let profile =
+                mark_login_profile_status(db, profile_id, "error", Some(message.clone()))?;
             emit_login_profiles_changed(app, &profile);
             Err(message)
         }
         Err(error) => {
             release_claude_oauth_activation(profile_id);
             let message = format!("failed to check Claude login status: {}", error);
-            let profile = mark_login_profile_status(db, profile_id, "error", Some(message.clone()))?;
+            let profile =
+                mark_login_profile_status(db, profile_id, "error", Some(message.clone()))?;
             emit_login_profiles_changed(app, &profile);
             Err(message)
         }

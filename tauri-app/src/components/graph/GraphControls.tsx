@@ -211,8 +211,10 @@ export interface GraphControlsProps {
 
     // Insights
     insights: Insight[];
+    insightsEnabled?: boolean;
     insightsVisible: boolean;
     showInsightsInGraph: boolean;
+    onToggleInsightsEnabled?: () => void;
     onToggleInsightsVisible: () => void;
     onToggleShowInsightsInGraph: () => void;
 
@@ -977,8 +979,10 @@ export function GraphControls({
     onClearTagFilters,
     onClearAllFilters,
     insights,
+    insightsEnabled = true,
     insightsVisible,
     showInsightsInGraph,
+    onToggleInsightsEnabled,
     onToggleInsightsVisible,
     onToggleShowInsightsInGraph,
     threadItems,
@@ -2071,6 +2075,13 @@ export function GraphControls({
                                         Insights ({insightsCount})
                                     </DropdownMenuSubTrigger>
                                     <DropdownMenuSubContent className="w-56">
+                                        <DropdownMenuCheckboxItem
+                                            checked={insightsEnabled}
+                                            onCheckedChange={() => onToggleInsightsEnabled?.()}
+                                            className="text-xs"
+                                        >
+                                            Generate Insights
+                                        </DropdownMenuCheckboxItem>
                                         <DropdownMenuCheckboxItem
                                             checked={insightsVisible}
                                             onCheckedChange={onToggleInsightsVisible}

@@ -14,6 +14,7 @@ import type { BranchPointer } from '../../../stores/workspaceStore';
 import { CopyCommitShaButton } from '../../CopyCommitShaButton';
 import { CommitCheckoutButton } from '../../CommitCheckoutButton';
 import { getMessageOutputCommitSha } from '../../../lib/graph/commitAccessors';
+import { useAgentreeSurface } from '../../graph/surfaceCapabilities';
 
 interface ChatCommitCardProps extends SharedNodeProps {
   compact?: boolean;
@@ -28,6 +29,7 @@ export const ChatCommitCard = memo(({
   onContextMenu,
   compact = false,
 }: ChatCommitCardProps) => {
+  const { capabilities } = useAgentreeSurface();
   const selectedWorkspaceId = useWorkspaceStore((state) => state.selectedWorkspaceId);
   const { data: workspaces = [] } = useWorkspaces();
   const { data: messages = [] } = useMessages(selectedWorkspaceId);
@@ -79,9 +81,9 @@ export const ChatCommitCard = memo(({
   );
 
   const { data: diffResult, isLoading: isLoadingDiff } = useDiffNodes(
-    expanded ? repoPath : null,
-    expanded ? parentCommit : null,
-    expanded ? nodeCommit : null,
+    expanded && capabilities.canMutate ? repoPath : null,
+    expanded && capabilities.canMutate ? parentCommit : null,
+    expanded && capabilities.canMutate ? nodeCommit : null,
     true
   );
 
@@ -205,11 +207,13 @@ export const ChatCommitCard = memo(({
           </div>
 
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <CommitCheckoutButton
-              repoPath={repoPath}
-              commitSha={nodeCommit}
-            />
-            {parentCommit && nodeCommit ? (
+            {capabilities.canMutate ? (
+              <CommitCheckoutButton
+                repoPath={repoPath}
+                commitSha={nodeCommit}
+              />
+            ) : null}
+            {capabilities.canMutate && parentCommit && nodeCommit ? (
               <button
                 type="button"
                 onClick={(e) => {
