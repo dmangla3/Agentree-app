@@ -16,6 +16,8 @@ export interface FlowNodeRunInput {
   prompt: string;
   args: Record<string, FlowRuntimeValue>;
   requiresFinalizedCommit?: boolean;
+  signal?: AbortSignal;
+  onNodeLaunched?: (node: FlowNodeLaunchEvent) => void;
 }
 
 export interface FlowNodeRunner {
@@ -24,10 +26,17 @@ export interface FlowNodeRunner {
 
 export type FlowExecutionStatus = 'completed' | 'stopped' | 'failed' | 'cancelled';
 
+export interface FlowNodeLaunchEvent {
+  templateId: string;
+  userNodeId: string;
+  assistantNodeId: string;
+}
+
 export interface FlowExecutionEvent {
-  type: 'node_started' | 'node_completed' | 'flow_stopped' | 'flow_completed';
+  type: 'node_started' | 'node_launched' | 'node_completed' | 'flow_stopped' | 'flow_completed' | 'flow_cancelled';
   templateId?: string;
   nodeId?: string;
+  userNodeId?: string;
   message: string;
 }
 
@@ -42,6 +51,7 @@ export async function executeFlow(input: {
   definition: FlowDefinition;
   inputs: Record<string, FlowRuntimeValue>;
   runner: FlowNodeRunner;
+  signal?: AbortSignal;
   onEvent?: (event: FlowExecutionEvent) => void;
 }): Promise<FlowExecutionResult> {
   const templates = new Map(input.definition.nodes.map((template) => [template.id, template]));
@@ -52,6 +62,7 @@ export async function executeFlow(input: {
   const context: ExecutionContext = {
     templates,
     runner: input.runner,
+    signal: input.signal,
     emit: (event) => {
       events.push(event);
       input.onEvent?.(event);
@@ -59,14 +70,23 @@ export async function executeFlow(input: {
   };
 
   try {
+    throwIfFlowCancelled(context.signal);
     const signal = await executeStatements(input.definition.run, scope, context);
     if (signal.type === 'stopped') {
       context.emit({ type: 'flow_stopped', message: signal.reason });
       return { status: 'stopped', reason: signal.reason, scope, events };
     }
+    if (signal.type === 'cancelled') {
+      context.emit({ type: 'flow_cancelled', message: signal.reason });
+      return { status: 'cancelled', reason: signal.reason, scope, events };
+    }
     context.emit({ type: 'flow_completed', message: 'Flow completed.' });
     return { status: 'completed', scope, events };
   } catch (error) {
+    if (isFlowExecutionCancelledError(error)) {
+      context.emit({ type: 'flow_cancelled', message: error.message });
+      return { status: 'cancelled', reason: error.message, scope, events };
+    }
     const reason = error instanceof Error ? error.message : 'Flow execution failed.';
     context.emit({ type: 'flow_stopped', message: reason });
     return { status: 'failed', reason, scope, events };
@@ -76,10 +96,15 @@ export async function executeFlow(input: {
 interface ExecutionContext {
   templates: Map<string, FlowNodeTemplate>;
   runner: FlowNodeRunner;
+  signal?: AbortSignal;
   emit: (event: FlowExecutionEvent) => void;
 }
 
-type ExecutionSignal = { type: 'continue' } | { type: 'break' } | { type: 'stopped'; reason: string };
+type ExecutionSignal =
+  | { type: 'continue' }
+  | { type: 'break' }
+  | { type: 'stopped'; reason: string }
+  | { type: 'cancelled'; reason: string };
 
 async function executeStatements(
   statements: FlowStatement[],
@@ -87,6 +112,7 @@ async function executeStatements(
   context: ExecutionContext
 ): Promise<ExecutionSignal> {
   for (const statement of statements) {
+    throwIfFlowCancelled(context.signal);
     const signal = await executeStatement(statement, scope, context);
     if (signal.type !== 'continue') {
       return signal;
@@ -100,6 +126,8 @@ async function executeStatement(
   scope: Record<string, FlowRuntimeValue>,
   context: ExecutionContext
 ): Promise<ExecutionSignal> {
+  throwIfFlowCancelled(context.signal);
+
   if ('call' in statement) {
     const result = await executeCall(statement.call, statement.args ?? {}, statement.parent, scope, context);
     if (result.signal) {
@@ -153,11 +181,12 @@ async function executeStatement(
 
   if ('loop' in statement) {
     for (let round = 0; round < statement.loop.max_rounds; round += 1) {
+      throwIfFlowCancelled(context.signal);
       const signal = await executeStatements(statement.loop.steps, scope, context);
       if (signal.type === 'break') {
         return { type: 'continue' };
       }
-      if (signal.type === 'stopped') {
+      if (signal.type === 'stopped' || signal.type === 'cancelled') {
         return signal;
       }
     }
@@ -182,6 +211,8 @@ async function executeCall(
   scope: Record<string, FlowRuntimeValue>,
   context: ExecutionContext
 ): Promise<{ node: FlowNodeValue; signal?: ExecutionSignal }> {
+  throwIfFlowCancelled(context.signal);
+
   const template = context.templates.get(templateId);
   if (!template) {
     return { node: emptyNode(templateId), signal: { type: 'stopped', reason: `Unknown node template "${templateId}".` } };
@@ -210,6 +241,7 @@ async function executeCall(
   }
 
   context.emit({ type: 'node_started', templateId, message: `Started ${templateId}.` });
+  throwIfFlowCancelled(context.signal);
   const rawNode = await context.runner.runNode({
     templateId,
     ...(template.registryId ? { registryId: template.registryId } : {}),
@@ -217,8 +249,25 @@ async function executeCall(
     prompt,
     args: argsResult.args,
     requiresFinalizedCommit: template.requiresFinalizedCommit ?? false,
+    signal: context.signal,
+    onNodeLaunched: (node) => {
+      context.emit({
+        type: 'node_launched',
+        templateId: node.templateId,
+        userNodeId: node.userNodeId,
+        nodeId: node.assistantNodeId,
+        message: `Launched ${node.templateId}.`,
+      });
+    },
   });
-  if (rawNode.status === 'failed' || rawNode.status === 'cancelled') {
+  throwIfFlowCancelled(context.signal);
+  if (rawNode.status === 'cancelled') {
+    return {
+      node: rawNode,
+      signal: { type: 'cancelled', reason: `Node "${rawNode.id}" ended with status "cancelled".` },
+    };
+  }
+  if (rawNode.status === 'failed') {
     return {
       node: rawNode,
       signal: { type: 'stopped', reason: `Node "${rawNode.id}" ended with status "${rawNode.status}".` },
@@ -335,6 +384,28 @@ function collectNodeValuesFromValue(value: FlowRuntimeValue, nodes: FlowNodeValu
 
 function stopFromIssues(issues: string[]): ExecutionSignal {
   return { type: 'stopped', reason: issues.join(' ') };
+}
+
+export class FlowExecutionCancelledError extends Error {
+  constructor(reason = 'Flow cancelled.') {
+    super(reason);
+    this.name = 'FlowExecutionCancelledError';
+  }
+}
+
+export function isFlowExecutionCancelledError(error: unknown): error is FlowExecutionCancelledError {
+  return error instanceof FlowExecutionCancelledError ||
+    (typeof error === 'object' && error !== null && (error as { name?: unknown }).name === 'FlowExecutionCancelledError');
+}
+
+export function throwIfFlowCancelled(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) {
+    return;
+  }
+  const reason = typeof signal.reason === 'string' && signal.reason.trim()
+    ? signal.reason.trim()
+    : 'Flow cancelled.';
+  throw new FlowExecutionCancelledError(reason);
 }
 
 function emptyNode(id: string): FlowNodeValue {

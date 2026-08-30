@@ -89,6 +89,8 @@ import { useDiff } from '../contexts/DiffContext';
 import { useToastHelpers } from './Toast';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { agentRunManager } from '../agent-runs/agentRunManager';
+import { flowRunManager } from '../flows/flowRunManager';
+import { resolveActiveFlowCancelTarget } from '../flows/flowRunSelectors';
 import { useGraphViewHotkeys, type GraphNavigationDirection } from '../hotkeys/graphHotkeys';
 
 // Components - Nodes/Edges
@@ -4688,6 +4690,31 @@ function GraphViewInternal({
         if (!selectedWorkspaceId) return;
 
         try {
+            const message = messageMap.get(nodeId) ?? null;
+            const flowCancelTarget = resolveActiveFlowCancelTarget({
+                nodeId,
+                node: message,
+            });
+            if (flowCancelTarget) {
+                for (const activeNodeId of flowCancelTarget.activeNodeIds) {
+                    const activeMessage = messageMap.get(activeNodeId) ?? null;
+                    agentRunManager.dispatch(activeNodeId, {
+                        type: 'terminal',
+                        status: 'cancelled',
+                        reason: 'cancelled',
+                    }, {
+                        workspaceId: activeMessage?.workspaceId ?? selectedWorkspaceId,
+                        parentId: activeMessage?.parentId ?? null,
+                        role: 'assistant',
+                        agentId: activeMessage?.agent_id ?? null,
+                        content: activeMessage?.content ?? '',
+                        executionData: (activeMessage?.execution_data ?? {}) as Record<string, any>,
+                    });
+                }
+                await flowRunManager.cancel(flowCancelTarget.flowRunId, 'cancelled');
+                await scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'cancel-flow' });
+                return;
+            }
             await agentClient.stopAgent(nodeId);
             agentRunManager.dispatch(nodeId, {
                 type: 'terminal',
@@ -4702,7 +4729,7 @@ function GraphViewInternal({
             console.error('[GraphView] Failed to stop agent from list:', error);
             toast.error('Unable to stop agent', 'The stop request did not complete.');
         }
-    }, [queryClient, selectedWorkspaceId, toast]);
+    }, [messageMap, queryClient, selectedWorkspaceId, toast]);
 
     const getBulkDeleteTargets = useCallback((selectedIds: Set<string>) => {
         if (selectedIds.size === 0) return [] as string[];

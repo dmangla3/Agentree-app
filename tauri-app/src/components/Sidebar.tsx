@@ -5,6 +5,7 @@ import { useAuthStore } from '../stores/authStore';
 import { logoutCurrentSession } from '../lib/authSession';
 import { logoutDesktopBrowserAuth, shouldUseDesktopBrowserAuth } from '../lib/kindeDesktopAuth';
 import { DiagnosticsButton } from './DiagnosticsButton';
+import { WorktreePolicyButton } from './WorktreePolicyButton';
 
 
 interface SidebarProps {
@@ -12,9 +13,20 @@ interface SidebarProps {
     onViewChange: (view: 'chat' | 'flows' | 'tracking' | 'knowledge' | 'skills' | 'logins') => void;
     selectedWorkspaceId: string | null;
     selectedWorkspaceName: string | null;
+    selectedWorkspaceRepoPath: string | null;
+    worktreePolicyOpen?: boolean;
+    onWorktreePolicyOpenChange?: (open: boolean) => void;
 }
 
-export function Sidebar({ activeView, onViewChange, selectedWorkspaceId, selectedWorkspaceName }: SidebarProps) {
+export function Sidebar({
+    activeView,
+    onViewChange,
+    selectedWorkspaceId,
+    selectedWorkspaceName,
+    selectedWorkspaceRepoPath,
+    worktreePolicyOpen,
+    onWorktreePolicyOpenChange,
+}: SidebarProps) {
     const { user } = useAuthStore();
     const navItems = [
         { id: 'chat' as const, label: 'Workspace', icon: MessageSquare },
@@ -59,6 +71,12 @@ export function Sidebar({ activeView, onViewChange, selectedWorkspaceId, selecte
                 <DiagnosticsButton
                     selectedWorkspaceId={selectedWorkspaceId}
                     selectedWorkspaceName={selectedWorkspaceName}
+                />
+
+                <WorktreePolicyButton
+                    repoPath={selectedWorkspaceRepoPath}
+                    open={worktreePolicyOpen}
+                    onOpenChange={onWorktreePolicyOpenChange}
                 />
 
                 <button

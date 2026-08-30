@@ -4,6 +4,7 @@ import {
   type AgentreeFlowNodeLauncher,
   type WaitForAgentreeNode,
 } from './agentreeFlowNodeRunner';
+import { throwIfFlowCancelled, type FlowNodeLaunchEvent } from './flowExecutor';
 import type { FlowNodeValue } from './types';
 import type { Message } from '../stores/workspaceStore';
 
@@ -241,5 +242,50 @@ describe('createAgentreeFlowNodeRunner', () => {
       message: 'failed',
       commit: null,
     }));
+  });
+
+  it('reports launched nodes and stops them when the flow is cancelled while waiting', async () => {
+    const controller = new AbortController();
+    const launchedNodes: FlowNodeLaunchEvent[] = [];
+    const stoppedNodeIds: string[] = [];
+    const runner = createAgentreeFlowNodeRunner({
+      workspaceId: 'workspace-1',
+      selectedAgentId: 'agent-1',
+      selectedAgentType: 'codex',
+      baseNodeId: 'base-1',
+      baseCommitSha: 'base-commit',
+      flowId: 'parallel_review_until_satisfied',
+      flowRunId: 'flow-run-1',
+      launchAgentNode: async () => ({ userNodeId: 'user-1', assistantNodeId: 'assistant-1' }),
+      waitForAssistantNode: async (_assistantNodeId, options) => {
+        controller.abort('User cancelled flow.');
+        await Promise.resolve();
+        throwIfFlowCancelled(options?.signal);
+        return message({ id: 'assistant-1' });
+      },
+      stopAgentNode: async (assistantNodeId) => {
+        stoppedNodeIds.push(assistantNodeId);
+      },
+    });
+
+    await expect(runner.runNode({
+      templateId: 'Implementer',
+      registryId: 'core.implementer@1',
+      parent: 'root',
+      prompt: 'Implement',
+      args: {},
+      signal: controller.signal,
+      onNodeLaunched: (event) => launchedNodes.push(event),
+    })).rejects.toMatchObject({
+      name: 'FlowExecutionCancelledError',
+      message: 'User cancelled flow.',
+    });
+
+    expect(launchedNodes).toEqual([{
+      templateId: 'Implementer',
+      userNodeId: 'user-1',
+      assistantNodeId: 'assistant-1',
+    }]);
+    expect(stoppedNodeIds).toEqual(['assistant-1']);
   });
 });

@@ -91,6 +91,36 @@ export interface WorktreeInfo {
     parent_commit: string;
 }
 
+export interface AgentWorktreeConfig {
+    dependencyLinkDirs: string[];
+    copyEnvFiles: boolean;
+    envFilePatterns: string[];
+    commitExcludePatterns: string[];
+    runtimeScaffoldingDirs: string[];
+    blockDependencyMutationCommands: boolean;
+}
+
+export interface AgentWorktreeConfigStatus {
+    config: AgentWorktreeConfig;
+    configPath: string;
+    source: 'default' | 'project' | string;
+}
+
+export const DEFAULT_AGENT_WORKTREE_CONFIG: AgentWorktreeConfig = {
+    dependencyLinkDirs: ['node_modules', '.venv', 'venv', 'vendor', '.gradle', 'target'],
+    copyEnvFiles: true,
+    envFilePatterns: ['.env*'],
+    commitExcludePatterns: [],
+    runtimeScaffoldingDirs: ['.agents/skills', '.claude/skills'],
+    blockDependencyMutationCommands: true,
+};
+
+const defaultAgentWorktreeConfigStatus = (repoPath: string): AgentWorktreeConfigStatus => ({
+    config: { ...DEFAULT_AGENT_WORKTREE_CONFIG },
+    configPath: `${repoPath.replace(/\/$/, '')}/.agentree/config.json`,
+    source: 'default',
+});
+
 export interface AgentRunContext {
     runId: string;
     executionData: Record<string, any>;
@@ -958,6 +988,20 @@ export const agentClient = {
     },
     previewAgentWorktree: async (repoPath: string, nodeId: string, parentCommit: string): Promise<WorktreeInfo> => {
         return await tauriCommands.previewAgentWorktree(repoPath, nodeId, parentCommit);
+    },
+    getAgentWorktreeConfig: async (repoPath: string): Promise<AgentWorktreeConfigStatus> => {
+        if (!hasTauriRuntime()) return defaultAgentWorktreeConfigStatus(repoPath);
+        return await invoke<AgentWorktreeConfigStatus>('get_agent_worktree_config', { repoPath });
+    },
+    getAgentSandboxRoot: async (): Promise<string | null> => {
+        if (!hasTauriRuntime()) return null;
+        return await invoke<string>('get_agent_sandbox_root');
+    },
+    saveAgentWorktreeConfig: async (repoPath: string, config: AgentWorktreeConfig): Promise<AgentWorktreeConfigStatus> => {
+        if (!hasTauriRuntime()) {
+            return { ...defaultAgentWorktreeConfigStatus(repoPath), config: { ...config }, source: 'project' };
+        }
+        return await invoke<AgentWorktreeConfigStatus>('save_agent_worktree_config', { repoPath, config });
     },
     checkoutCommitDetached: async (repoPath: string, commitSha: string): Promise<string> => {
         return await tauriCommands.checkoutCommitDetached(repoPath, commitSha);

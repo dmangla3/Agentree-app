@@ -56,6 +56,7 @@ import { ChangedFilesSummary } from './ChangedFilesSummary';
 interface WorkspaceSelectionDialogProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
+  onRepositoryConnected?: (repoPath: string, workspaceId: string) => void;
 }
 
 const formatRelativeTime = (timestamp?: string): string => {
@@ -360,7 +361,7 @@ const RepoSection = memo(function RepoSection({
 
 RepoSection.displayName = 'RepoSection';
 
-export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSelectionDialogProps) {
+export function WorkspaceSelectionDialog({ isOpen, onOpenChange, onRepositoryConnected }: WorkspaceSelectionDialogProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { selectWorkspace, selectedWorkspaceId, dispatchFocus } = useWorkspaceStore();
@@ -372,6 +373,7 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
   const [searchTerm, setSearchTerm] = useState('');
   const [isContentReady, setIsContentReady] = useState(false);
   const [pendingFolderPath, setPendingFolderPath] = useState<string | null>(null);
+  const [pendingPolicyPromptAfterSetup, setPendingPolicyPromptAfterSetup] = useState(false);
   const [workspacePendingDelete, setWorkspacePendingDelete] = useState<Workspace | null>(null);
   const [workspacePendingRename, setWorkspacePendingRename] = useState<Workspace | null>(null);
   const [setupRequirement, setSetupRequirement] = useState<RepoPrepareActionRequiredError['requirement'] | null>(null);
@@ -402,6 +404,7 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
       setIsContentReady(false);
       setSetupRequirement(null);
       setPendingFolderPath(null);
+      setPendingPolicyPromptAfterSetup(false);
       return;
     }
 
@@ -464,6 +467,7 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
       allowGitInit?: boolean;
       dirtyStrategy?: RepoDirtyStrategy;
       commitMessage?: string | null;
+      promptWorktreePolicy?: boolean;
     }
   ) => {
     if (createWorkspace.isPending) return;
@@ -477,7 +481,12 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
       });
       setSetupRequirement(null);
       setPendingFolderPath(null);
+      setPendingPolicyPromptAfterSetup(false);
       if (created?.id) {
+        const createdRepoPath = created.git_repo_path || created.repo_path || created.folderPath || folderPath;
+        if (options?.promptWorktreePolicy && createdRepoPath) {
+          onRepositoryConnected?.(createdRepoPath, created.id);
+        }
         onOpenChange(false);
         navigate(`/workspaces/${encodeURIComponent(created.id)}`);
         void finalizeCreatedWorkspace({
@@ -499,6 +508,7 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
     } catch (error) {
       if (error instanceof RepoPrepareActionRequiredError) {
         setPendingFolderPath(folderPath);
+        setPendingPolicyPromptAfterSetup(options?.promptWorktreePolicy ?? false);
         setSetupRequirement(error.requirement);
         setCheckpointMessage(error.requirement.defaultCommitMessage);
         return;
@@ -510,7 +520,7 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
         variant: 'error',
       });
     }
-  }, [addToast, createWorkspace, dispatchFocus, navigate, onOpenChange, queryClient, selectWorkspace]);
+  }, [addToast, createWorkspace, dispatchFocus, navigate, onOpenChange, onRepositoryConnected, queryClient, selectWorkspace]);
 
   const handleCreateRepo = async () => {
     if (createWorkspace.isPending) return;
@@ -531,7 +541,7 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
         return;
       }
 
-      await createWorkspaceForFolder(folderPath);
+      await createWorkspaceForFolder(folderPath, { promptWorktreePolicy: true });
     } catch (error) {
       addToast({
         title: 'Unable to open repository',
@@ -560,8 +570,11 @@ export function WorkspaceSelectionDialog({ isOpen, onOpenChange }: WorkspaceSele
     commitMessage?: string | null;
   }) => {
     if (!pendingFolderPath) return;
-    await createWorkspaceForFolder(pendingFolderPath, options);
-  }, [createWorkspaceForFolder, pendingFolderPath]);
+    await createWorkspaceForFolder(pendingFolderPath, {
+      ...options,
+      promptWorktreePolicy: pendingPolicyPromptAfterSetup,
+    });
+  }, [createWorkspaceForFolder, pendingFolderPath, pendingPolicyPromptAfterSetup]);
 
   const handleRequestRenameWorkspace = (workspace: Workspace) => {
     setWorkspacePendingRename(workspace);

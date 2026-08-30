@@ -1,4 +1,5 @@
 use crate::types::{DiffHunk, DiffRelationship, DiffResult, DiffStats, FileDiff, FileStatus};
+use crate::worktree_config::AgentWorktreeConfig;
 use once_cell::sync::Lazy;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -528,18 +529,8 @@ fn merge_root(_repo_path: &str) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-const DEPENDENCY_DIR_NAMES: &[&str] = &[
-    "node_modules",
-    ".venv",
-    "venv",
-    "vendor",
-    ".gradle",
-    "target",
-];
-
 const SCAFFOLDING_EXCLUDE_START: &str = "# agentree-managed-scaffolding:start";
 const SCAFFOLDING_EXCLUDE_END: &str = "# agentree-managed-scaffolding:end";
-const RUNTIME_SKILL_DIRS: &[&str] = &[".agents/skills", ".claude/skills"];
 
 #[cfg(unix)]
 fn symlink_dependency_dir(source: &Path, target: &Path) -> Result<(), String> {
@@ -553,8 +544,17 @@ fn symlink_dependency_dir(source: &Path, target: &Path) -> Result<(), String> {
         .map_err(|e| format!("Failed to symlink {:?} -> {:?}: {}", target, source, e))
 }
 
-fn candidate_dependency_roots(repo_path: &Path) -> Result<Vec<PathBuf>, String> {
+fn candidate_dependency_roots(
+    repo_path: &Path,
+    config: &AgentWorktreeConfig,
+) -> Result<Vec<PathBuf>, String> {
     let mut roots = vec![repo_path.to_path_buf()];
+    let dependency_dir_names = config
+        .dependency_link_dirs
+        .iter()
+        .filter(|path| !path.contains('/'))
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
     let read_dir = fs::read_dir(repo_path)
         .map_err(|e| format!("Failed to read repo directory {:?}: {}", repo_path, e))?;
 
@@ -568,7 +568,7 @@ fn candidate_dependency_roots(repo_path: &Path) -> Result<Vec<PathBuf>, String> 
         }
 
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') || DEPENDENCY_DIR_NAMES.contains(&name.as_str()) {
+        if name.starts_with('.') || dependency_dir_names.contains(name.as_str()) {
             continue;
         }
 
@@ -578,14 +578,32 @@ fn candidate_dependency_roots(repo_path: &Path) -> Result<Vec<PathBuf>, String> 
     Ok(roots)
 }
 
-fn collect_dependency_dirs(repo_path: &str) -> Result<Vec<PathBuf>, String> {
+fn collect_dependency_dirs(
+    repo_path: &str,
+    config: &AgentWorktreeConfig,
+) -> Result<Vec<PathBuf>, String> {
     let repo_root = Path::new(repo_path);
     let mut seen = HashSet::new();
     let mut dependency_dirs = Vec::new();
 
-    for root in candidate_dependency_roots(repo_root)? {
-        for dir_name in DEPENDENCY_DIR_NAMES {
-            let source = root.join(dir_name);
+    for configured_dir in &config.dependency_link_dirs {
+        if configured_dir.contains('/') {
+            let source = repo_root.join(configured_dir);
+            if !source.is_dir() {
+                continue;
+            }
+            let relative = source
+                .strip_prefix(repo_root)
+                .map_err(|e| format!("Failed to relativize dependency dir {:?}: {}", source, e))?
+                .to_path_buf();
+            if seen.insert(relative.clone()) {
+                dependency_dirs.push(relative);
+            }
+            continue;
+        }
+
+        for root in candidate_dependency_roots(repo_root, config)? {
+            let source = root.join(configured_dir);
             if !source.is_dir() {
                 continue;
             }
@@ -691,12 +709,13 @@ fn install_scaffolding_excludes(repo_path: &str, paths: &HashSet<String>) -> Res
 fn collect_worktree_scaffolding_paths(
     repo_path: &str,
     worktree_path: &str,
+    config: &AgentWorktreeConfig,
 ) -> Result<HashSet<String>, String> {
     let repo_root = Path::new(repo_path);
     let worktree_root = Path::new(worktree_path);
     let mut paths = HashSet::new();
 
-    for relative_dir in collect_dependency_dirs(repo_path)? {
+    for relative_dir in collect_dependency_dirs(repo_path, config)? {
         let worktree_link = worktree_root.join(&relative_dir);
         let Ok(metadata) = fs::symlink_metadata(&worktree_link) else {
             continue;
@@ -713,19 +732,25 @@ fn collect_worktree_scaffolding_paths(
         }
     }
 
-    paths.extend(collect_runtime_skill_scaffolding_paths(worktree_path)?);
+    paths.extend(collect_runtime_skill_scaffolding_paths(
+        worktree_path,
+        config,
+    )?);
 
     Ok(paths)
 }
 
-fn collect_runtime_skill_scaffolding_paths(worktree_path: &str) -> Result<HashSet<String>, String> {
+fn collect_runtime_skill_scaffolding_paths(
+    worktree_path: &str,
+    config: &AgentWorktreeConfig,
+) -> Result<HashSet<String>, String> {
     let worktree_root = Path::new(worktree_path);
     let store_root = dirs::home_dir()
         .map(|home| home.join(".agentree").join("skills"))
         .ok_or_else(|| "Failed to resolve home directory".to_string())?;
     let mut paths = HashSet::new();
 
-    for relative_dir in RUNTIME_SKILL_DIRS {
+    for relative_dir in &config.runtime_scaffolding_dirs {
         let runtime_dir = worktree_root.join(relative_dir);
         let Ok(entries) = fs::read_dir(&runtime_dir) else {
             continue;
@@ -773,13 +798,17 @@ fn collect_runtime_skill_scaffolding_paths(worktree_path: &str) -> Result<HashSe
     Ok(paths)
 }
 
-fn link_dependencies(repo_path: &str, worktree_path: &str) -> Result<Vec<PathBuf>, String> {
+fn link_dependencies(
+    repo_path: &str,
+    worktree_path: &str,
+    config: &AgentWorktreeConfig,
+) -> Result<Vec<PathBuf>, String> {
     let repo_root = Path::new(repo_path);
     let worktree_root = Path::new(worktree_path);
     let mut linked_paths = Vec::new();
     let mut scaffolding_paths = HashSet::new();
 
-    for relative_dir in collect_dependency_dirs(repo_path)? {
+    for relative_dir in collect_dependency_dirs(repo_path, config)? {
         let source = repo_root.join(&relative_dir);
         let target = worktree_root.join(&relative_dir);
         if target.exists() {
@@ -830,17 +859,39 @@ fn collect_git_changed_paths(worktree_path: &str) -> Result<HashSet<String>, Str
 }
 
 fn committable_changed_paths(repo_path: &str, worktree_path: &str) -> Result<Vec<String>, String> {
-    let scaffolding_paths = collect_worktree_scaffolding_paths(repo_path, worktree_path)?;
+    let config = crate::worktree_config::load_agent_worktree_config(repo_path)?;
+    committable_changed_paths_with_config(repo_path, worktree_path, &config)
+}
+
+fn committable_changed_paths_with_config(
+    repo_path: &str,
+    worktree_path: &str,
+    config: &AgentWorktreeConfig,
+) -> Result<Vec<String>, String> {
+    let scaffolding_paths = collect_worktree_scaffolding_paths(repo_path, worktree_path, config)?;
+    let commit_exclude_matcher = crate::worktree_config::compile_gitignore_patterns(
+        Path::new(repo_path),
+        &config.commit_exclude_patterns,
+        "worktree.commitExcludePatterns",
+    )?;
     let mut paths = collect_git_changed_paths(worktree_path)?
         .into_iter()
         .filter(|path| !scaffolding_paths.contains(path))
+        .filter(|path| {
+            !crate::worktree_config::path_matches_patterns(
+                &commit_exclude_matcher,
+                Path::new(path),
+                false,
+            )
+        })
         .collect::<Vec<_>>();
     paths.sort();
     Ok(paths)
 }
 
 fn stage_committable_paths(repo_path: &str, worktree_path: &str) -> Result<Vec<String>, String> {
-    let paths = committable_changed_paths(repo_path, worktree_path)?;
+    let config = crate::worktree_config::load_agent_worktree_config(repo_path)?;
+    let paths = committable_changed_paths_with_config(repo_path, worktree_path, &config)?;
     if paths.is_empty() {
         return Ok(paths);
     }
@@ -851,6 +902,7 @@ fn stage_committable_paths(repo_path: &str, worktree_path: &str) -> Result<Vec<S
     Ok(paths)
 }
 
+#[cfg(test)]
 fn is_env_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -858,9 +910,27 @@ fn is_env_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn copy_env_files(repo_path: &str, worktree_path: &str) -> Result<(), String> {
+fn copy_env_files(
+    repo_path: &str,
+    worktree_path: &str,
+    config: &AgentWorktreeConfig,
+) -> Result<(), String> {
+    if !config.copy_env_files {
+        return Ok(());
+    }
     let repo_root = Path::new(repo_path);
     let worktree_root = Path::new(worktree_path);
+    let env_file_matcher = crate::worktree_config::compile_gitignore_patterns(
+        repo_root,
+        &config.env_file_patterns,
+        "worktree.envFilePatterns",
+    )?;
+    let dependency_dir_names = config
+        .dependency_link_dirs
+        .iter()
+        .filter(|path| !path.contains('/'))
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
 
     for entry in WalkDir::new(repo_root)
         .follow_links(false)
@@ -873,18 +943,21 @@ fn copy_env_files(repo_path: &str, worktree_path: &str) -> Result<(), String> {
             let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
                 return true;
             };
-            name != ".git" && !DEPENDENCY_DIR_NAMES.contains(&name)
+            name != ".git" && !dependency_dir_names.contains(name)
         })
     {
         let entry = entry.map_err(|e| format!("Failed to walk repo for env files: {}", e))?;
-        if !entry.file_type().is_file() || !is_env_file(entry.path()) {
+        if !entry.file_type().is_file() {
             continue;
         }
-
         let relative = entry
             .path()
             .strip_prefix(repo_root)
             .map_err(|e| format!("Failed to relativize env file {:?}: {}", entry.path(), e))?;
+        if !crate::worktree_config::path_matches_patterns(&env_file_matcher, relative, false) {
+            continue;
+        }
+
         let target = worktree_root.join(relative);
 
         if let Some(parent) = target.parent() {
@@ -1452,6 +1525,7 @@ pub async fn create_agent_worktree(
     workspace_id: Option<String>,
     agent_type: Option<String>,
 ) -> Result<WorktreeInfo, String> {
+    let config = crate::worktree_config::load_agent_worktree_config(&repo_path)?;
     let worktree_path = worktree_root(&repo_path)?.join(&node_id);
     let worktree_path_string = worktree_path.to_string_lossy().to_string();
     let branch_name = format!("agentree/{}", node_id);
@@ -1576,15 +1650,18 @@ pub async fn create_agent_worktree(
         );
         Ok(())
     })?;
-    link_dependencies(&repo_path, &worktree_path_string)?;
+    link_dependencies(&repo_path, &worktree_path_string, &config)?;
     // Preserve dotenv-style runtime config in the agent worktree even when git ignores it.
-    copy_env_files(&repo_path, &worktree_path_string)?;
+    copy_env_files(&repo_path, &worktree_path_string, &config)?;
     log_agent_worktree_lifecycle(
         "create.ready",
         &repo_path,
         &node_id,
         &worktree_path,
-        "dependencies_linked=true",
+        &format!(
+            "dependencies_linked=true {}",
+            crate::worktree_config::config_summary(&config)
+        ),
     );
     if run_id.is_some() {
         let _ = app
@@ -2009,10 +2086,10 @@ pub async fn cleanup_worktree_owned(
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_worktree_head_commit_if_advanced, finalize_agent_merge_worktree,
+        agent_worktree_head_commit_if_advanced, copy_env_files, finalize_agent_merge_worktree,
         finalize_agent_worktree, is_agent_worktree_path_for_node, is_env_file,
         legacy_worktree_root, link_dependencies, read_commit_metadata_range_sync, resolve_git_dir,
-        symlink_dependency_dir, worktree_root,
+        symlink_dependency_dir, worktree_root, AgentWorktreeConfig,
     };
     use std::fs;
     use std::path::Path;
@@ -2212,7 +2289,12 @@ mod tests {
             create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
         let worktree_path_string = worktree_path.to_string_lossy().to_string();
 
-        link_dependencies(&repo_path, &worktree_path_string).expect("link dependencies");
+        link_dependencies(
+            &repo_path,
+            &worktree_path_string,
+            &AgentWorktreeConfig::default(),
+        )
+        .expect("link dependencies");
 
         assert!(
             worktree_path.join("client/node_modules").is_symlink(),
@@ -2240,6 +2322,99 @@ mod tests {
     }
 
     #[test]
+    fn dependency_linking_uses_configured_dirs() {
+        let dir = init_test_repo();
+        add_source_dependency_dirs(dir.path());
+        fs::create_dir_all(dir.path().join("web/.yarn/cache")).expect("create yarn cache");
+        fs::write(dir.path().join("web/.yarn/cache/package.zip"), "cache\n")
+            .expect("write yarn cache marker");
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-custom-dependency-config";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        let worktree_path_string = worktree_path.to_string_lossy().to_string();
+        let config = AgentWorktreeConfig {
+            dependency_link_dirs: vec!["web/.yarn/cache".to_string()],
+            ..AgentWorktreeConfig::default()
+        };
+
+        link_dependencies(&repo_path, &worktree_path_string, &config).expect("link dependencies");
+
+        assert!(worktree_path.join("web/.yarn/cache").is_symlink());
+        assert!(!worktree_path.join("client/node_modules").exists());
+        assert!(!worktree_path.join("server/venv").exists());
+    }
+
+    #[test]
+    fn copy_env_files_uses_configured_patterns() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-custom-env-config";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        let worktree_path_string = worktree_path.to_string_lossy().to_string();
+        fs::write(dir.path().join(".env.local"), "local\n").expect("write env local");
+        fs::write(dir.path().join(".agent.env"), "agent\n").expect("write agent env");
+        let config = AgentWorktreeConfig {
+            env_file_patterns: vec![".agent.env".to_string()],
+            ..AgentWorktreeConfig::default()
+        };
+
+        copy_env_files(&repo_path, &worktree_path_string, &config).expect("copy env files");
+
+        assert!(worktree_path.join(".agent.env").exists());
+        assert!(!worktree_path.join(".env.local").exists());
+    }
+
+    #[test]
+    fn finalize_agent_worktree_honors_commit_exclude_patterns() {
+        let dir = init_test_repo();
+        let config_path = dir.path().join(".agentree/config.json");
+        fs::create_dir_all(config_path.parent().unwrap()).expect("create config dir");
+        fs::write(
+            &config_path,
+            r#"{"worktree":{"commitExcludePatterns":["generated/**"]}}"#,
+        )
+        .expect("write config");
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-commit-exclude-config";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        fs::create_dir_all(worktree_path.join("generated")).expect("create generated dir");
+        fs::write(worktree_path.join("generated/out.txt"), "generated\n")
+            .expect("write generated output");
+        fs::write(worktree_path.join("assistant.txt"), "assistant output\n")
+            .expect("write assistant output");
+
+        let result = tauri::async_runtime::block_on(finalize_agent_worktree(
+            repo_path,
+            node_id.to_string(),
+            "Assistant output".to_string(),
+            Some("Agentree Test".to_string()),
+        ))
+        .expect("finalize agent worktree");
+        let commit_sha = result.commit_sha.expect("commit sha");
+
+        assert!(result.commit_created);
+        assert_eq!(
+            run_test_git(
+                &worktree_path,
+                &["show", &format!("{commit_sha}:assistant.txt")]
+            ),
+            "assistant output"
+        );
+        let tree_files = run_test_git(
+            &worktree_path,
+            &["ls-tree", "-r", "--name-only", &commit_sha],
+        );
+        assert!(tree_files.lines().any(|path| path == "assistant.txt"));
+        assert!(!tree_files.lines().any(|path| path == "generated/out.txt"));
+    }
+
+    #[test]
     fn finalize_agent_worktree_skips_symlink_only_scaffolding_changes() {
         let dir = init_test_repo();
         add_source_dependency_dirs(dir.path());
@@ -2249,7 +2424,12 @@ mod tests {
         let worktree_path =
             create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
         let worktree_path_string = worktree_path.to_string_lossy().to_string();
-        link_dependencies(&repo_path, &worktree_path_string).expect("link dependencies");
+        link_dependencies(
+            &repo_path,
+            &worktree_path_string,
+            &AgentWorktreeConfig::default(),
+        )
+        .expect("link dependencies");
 
         let result = tauri::async_runtime::block_on(finalize_agent_worktree(
             repo_path.clone(),
@@ -2292,7 +2472,12 @@ mod tests {
         let worktree_path =
             create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
         let worktree_path_string = worktree_path.to_string_lossy().to_string();
-        link_dependencies(&repo_path, &worktree_path_string).expect("link dependencies");
+        link_dependencies(
+            &repo_path,
+            &worktree_path_string,
+            &AgentWorktreeConfig::default(),
+        )
+        .expect("link dependencies");
         clear_repo_excludes(dir.path());
 
         assert!(
@@ -2386,7 +2571,12 @@ mod tests {
         let worktree_path =
             create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
         let worktree_path_string = worktree_path.to_string_lossy().to_string();
-        link_dependencies(&repo_path, &worktree_path_string).expect("link dependencies");
+        link_dependencies(
+            &repo_path,
+            &worktree_path_string,
+            &AgentWorktreeConfig::default(),
+        )
+        .expect("link dependencies");
         fs::write(worktree_path.join("assistant.txt"), "assistant output\n")
             .expect("write assistant output");
 

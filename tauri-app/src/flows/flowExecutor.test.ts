@@ -13,6 +13,26 @@ function predefinedDefinition(): FlowDefinition {
   return result.definition;
 }
 
+function singleCallDefinition(): FlowDefinition {
+  return {
+    flow: { id: 'single_call' },
+    nodes: [{
+      id: 'Worker',
+      params: ['request'],
+      parent: 'root',
+      prompt: '{{ request }}',
+    }],
+    run: [{
+      set: 'worker',
+      call: 'Worker',
+      args: {
+        request: 'input.input',
+      },
+      parent: 'root',
+    }],
+  };
+}
+
 function node(input: Partial<FlowNodeValue> & Pick<FlowNodeValue, 'id'>): FlowNodeValue {
   return {
     kind: 'node',
@@ -251,5 +271,86 @@ describe('executeFlow', () => {
     expect(result.status).toBe('stopped');
     expect(result.reason).toBe('synthesized_implementation_has_no_commit');
     expect(calls.map((call) => call.templateId)).toEqual(['Implementer', 'Synthesizer']);
+  });
+
+  it('returns cancelled without launching nodes when already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort('User cancelled flow.');
+    const calls: FlowNodeRunInput[] = [];
+    const runner: FlowNodeRunner = {
+      async runNode(input) {
+        calls.push(input);
+        return node({ id: 'worker-1' });
+      },
+    };
+
+    const result = await executeFlow({
+      definition: singleCallDefinition(),
+      inputs: { input: 'Build' },
+      runner,
+      signal: controller.signal,
+    });
+
+    expect(result.status).toBe('cancelled');
+    expect(result.reason).toBe('User cancelled flow.');
+    expect(calls).toHaveLength(0);
+    expect(result.events).toEqual([{
+      type: 'flow_cancelled',
+      message: 'User cancelled flow.',
+    }]);
+  });
+
+  it('passes cancellation context through node calls and emits launched node events', async () => {
+    const controller = new AbortController();
+    const runner: FlowNodeRunner = {
+      async runNode(input) {
+        expect(input.signal).toBe(controller.signal);
+        input.onNodeLaunched?.({
+          templateId: input.templateId,
+          userNodeId: 'user-1',
+          assistantNodeId: 'assistant-1',
+        });
+        return node({ id: 'assistant-1' });
+      },
+    };
+
+    const result = await executeFlow({
+      definition: singleCallDefinition(),
+      inputs: { input: 'Build' },
+      runner,
+      signal: controller.signal,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(result.events).toEqual(expect.arrayContaining([
+      {
+        type: 'node_launched',
+        templateId: 'Worker',
+        userNodeId: 'user-1',
+        nodeId: 'assistant-1',
+        message: 'Launched Worker.',
+      },
+    ]));
+  });
+
+  it('returns cancelled when a child node is cancelled', async () => {
+    const runner: FlowNodeRunner = {
+      async runNode() {
+        return node({ id: 'assistant-1', status: 'cancelled' });
+      },
+    };
+
+    const result = await executeFlow({
+      definition: singleCallDefinition(),
+      inputs: { input: 'Build' },
+      runner,
+    });
+
+    expect(result.status).toBe('cancelled');
+    expect(result.reason).toBe('Node "assistant-1" ended with status "cancelled".');
+    expect(result.events[result.events.length - 1]).toEqual({
+      type: 'flow_cancelled',
+      message: 'Node "assistant-1" ended with status "cancelled".',
+    });
   });
 });

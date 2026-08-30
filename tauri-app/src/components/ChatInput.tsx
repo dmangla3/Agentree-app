@@ -99,6 +99,8 @@ import { agentRunManager } from '../agent-runs/agentRunManager';
 import { registerAgentRunEffectsQueryClient } from '../agent-runs/agentRunEffects';
 import { getEnabledTrackedGitRefs, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
 import { useAgentFlowRunner } from '../hooks/useAgentFlowRunner';
+import { flowRunManager } from '../flows/flowRunManager';
+import { resolveActiveFlowCancelTarget } from '../flows/flowRunSelectors';
 import {
     materializePersistedOptimisticUserMessage,
     shouldClearPersistedOptimisticUserProjection,
@@ -2765,6 +2767,13 @@ export function ChatInput({
         role: selectedNodeRole,
         status: selectedResolvedState.status,
     });
+    const activeFlowCancelTarget = useMemo(() => (
+        resolveActiveFlowCancelTarget({
+            nodeId: selectedNodeId,
+            node: selectedNodeMessage,
+            projection: selectedProjection as any,
+        })
+    ), [selectedNodeId, selectedNodeMessage, selectedProjection]);
     const startFlowStreamForNode = useCallback(
         (node: Message, options: { authToken: string; parentId: string | null }) => (
             startStreamForNode(node, {
@@ -5358,6 +5367,36 @@ export function ChatInput({
             const targetStatus = resolveNodeState(targetMessage, targetProjection).status;
             const isRunning = isInProgressStatus(targetStatus);
                 if (isRunning) {
+                    const flowCancelTarget = resolveActiveFlowCancelTarget({
+                        nodeId: targetNodeId,
+                        node: targetMessage,
+                        projection: targetProjection,
+                    });
+                    if (flowCancelTarget) {
+                        sendFlowDebug('Cancelling flow execution', {
+                            flowRunId: flowCancelTarget.flowRunId,
+                            nodeId: targetNodeId,
+                        });
+                        for (const activeNodeId of flowCancelTarget.activeNodeIds) {
+                            const activeProjection = projectionsById[activeNodeId] || null;
+                            const activeMessage = messages.find((msg: Message) => msg.id === activeNodeId) || null;
+                            unregisterStreamHandler(activeNodeId);
+                            agentRunManager.dispatch(activeNodeId, {
+                                type: 'cancel',
+                                reason: 'cancelled',
+                            }, {
+                                workspaceId: activeProjection?.workspaceId ?? activeMessage?.workspaceId ?? targetWorkspaceId,
+                                parentId: activeProjection?.parentId ?? activeMessage?.parentId ?? null,
+                                role: 'assistant',
+                                agentId: activeProjection?.agent_id ?? activeMessage?.agent_id ?? null,
+                                content: activeProjection?.content ?? activeMessage?.content ?? '',
+                                executionData: (activeProjection?.execution_data || activeMessage?.execution_data || {}) as Record<string, any>,
+                            });
+                        }
+                        await flowRunManager.cancel(flowCancelTarget.flowRunId, 'cancelled');
+                        void scheduleMessagesRefreshWhenGraphIdle(queryClient, targetWorkspaceId, { reason: 'cancel-flow' });
+                        return;
+                    }
                     sendFlowDebug('Cancelling agent execution', { nodeId: targetNodeId });
                     unregisterStreamHandler(targetNodeId);
                     agentRunManager.dispatch(targetNodeId, {
@@ -5457,6 +5496,8 @@ export function ChatInput({
         || !selectedAgentId
         || isParentIncomplete;
     const showPrimaryCancel = showCancel && !isSteeringRunningAssistant;
+    const cancelActionLabel = activeFlowCancelTarget ? 'Cancel flow' : 'Cancel';
+    const cancelActionAriaLabel = activeFlowCancelTarget ? 'Cancel running flow' : 'Cancel running agent';
     const isPrimaryActionDisabled = isFlowSelected
         ? isFlowRunDisabled
         : isSteeringRunningAssistant
@@ -6093,13 +6134,13 @@ export function ChatInput({
                                 sendPressFeedback && !showPrimaryCancel && !isFlowSelected && "scale-95 ring-2 ring-primary/40 ring-offset-2",
                                 "disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:opacity-40 disabled:hover:shadow-none"
                             )}
-                            aria-label={showPrimaryCancel ? "Cancel sending message" : primaryActionLabel}
+                            aria-label={showPrimaryCancel ? cancelActionAriaLabel : primaryActionLabel}
                             title={isParentIncomplete ? parentStatusLabel : undefined}
                         >
                             {showPrimaryCancel ? (
                                 <>
                                     <Loader2 className="h-3 w-3 animate-spin" />
-                                    <span>Cancel</span>
+                                    <span>{cancelActionLabel}</span>
                                 </>
                             ) : (
                                 <>
@@ -6127,7 +6168,8 @@ export function ChatInput({
                                     "transition-[background-color,color,transform] duration-150 hover:bg-destructive hover:text-destructive-foreground active:scale-95",
                                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1"
                                 )}
-                                aria-label="Cancel running agent"
+                                aria-label={cancelActionAriaLabel}
+                                title={cancelActionLabel}
                             >
                                 <X className="h-3.5 w-3.5" />
                             </button>

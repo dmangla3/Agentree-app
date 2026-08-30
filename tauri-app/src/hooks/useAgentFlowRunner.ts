@@ -2,8 +2,9 @@ import { useCallback, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { TERMINAL_STATUSES } from '@shared/agentStatus';
 import { createAgentreeFlowNodeRunner } from '../flows/agentreeFlowNodeRunner';
-import { executeFlow, type FlowExecutionEvent, type FlowExecutionResult } from '../flows/flowExecutor';
+import { executeFlow, throwIfFlowCancelled, type FlowExecutionEvent, type FlowExecutionResult } from '../flows/flowExecutor';
 import { compileFlowDefinition } from '../flows/flowNodeRegistry';
+import { flowRunManager } from '../flows/flowRunManager';
 import { parseFlowYaml } from '../flows/parseFlowYaml';
 import { PREDEFINED_FLOW_SOURCES } from '../flows/predefinedFlows';
 import type { FlowDefinition } from '../flows/types';
@@ -43,16 +44,17 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
   const [selectedFlowId, setSelectedFlowId] = useState('');
   const [events, setEvents] = useState<FlowExecutionEvent[]>([]);
 
-  const waitForAssistantNode = useCallback((assistantNodeId: string, options?: { requireCommit?: boolean }) => (
+  const waitForAssistantNode = useCallback((assistantNodeId: string, options?: { requireCommit?: boolean; signal?: AbortSignal }) => (
     waitForAssistantNodeCompletion({
       assistantNodeId,
       queryClient,
       workspaceId: input.workspaceId,
       requireCommit: options?.requireCommit ?? false,
+      signal: options?.signal,
     })
   ), [input.workspaceId, queryClient]);
 
-  const runFlow = useCallback(async (runInput: { input: string; count: number }): Promise<FlowExecutionResult> => {
+  const runFlow = useCallback(async (runInput: { input: string; count: number; signal?: AbortSignal }): Promise<FlowExecutionResult> => {
     if (!input.workspaceId || !input.selectedAgentId || !input.selectedAgentType) {
       throw new Error('Workspace and selected agent are required to run a flow.');
     }
@@ -68,6 +70,22 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
     setEvents([]);
     const flowRunId = crypto.randomUUID();
     const threadOriginId = crypto.randomUUID();
+    const controller = new AbortController();
+    flowRunManager.start({
+      flowRunId,
+      flowId: selectedFlow.id,
+      abortController: controller,
+      stopNode: agentClient.stopAgent,
+    });
+
+    const abortFromInputSignal = () => {
+      void flowRunManager.cancel(flowRunId, readAbortReason(runInput.signal));
+    };
+    runInput.signal?.addEventListener('abort', abortFromInputSignal, { once: true });
+    if (runInput.signal?.aborted) {
+      abortFromInputSignal();
+    }
+
     const runner = createAgentreeFlowNodeRunner({
       workspaceId: input.workspaceId,
       selectedAgentId: input.selectedAgentId,
@@ -87,14 +105,29 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
       reasoningEffort: input.reasoningEffort,
       launchAgentNode,
       waitForAssistantNode,
+      stopAgentNode: agentClient.stopAgent,
     });
 
-    return await executeFlow({
-      definition: selectedFlow.definition,
-      inputs: { input: runInput.input, count: runInput.count },
-      runner,
-      onEvent: (event) => setEvents((current) => [...current, event]),
-    });
+    try {
+      const result = await executeFlow({
+        definition: selectedFlow.definition,
+        inputs: { input: runInput.input, count: runInput.count },
+        runner,
+        signal: controller.signal,
+        onEvent: (event) => {
+          flowRunManager.recordExecutionEvent(flowRunId, event);
+          setEvents((current) => [...current, event]);
+        },
+      });
+      flowRunManager.finish(flowRunId, result);
+      return result;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Flow execution failed.';
+      flowRunManager.fail(flowRunId, reason);
+      throw error;
+    } finally {
+      runInput.signal?.removeEventListener('abort', abortFromInputSignal);
+    }
   }, [
     flows,
     input.agentCliArgs,
@@ -124,6 +157,13 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
   };
 }
 
+function readAbortReason(signal: AbortSignal | undefined): string {
+  if (!signal?.aborted) return 'Flow cancelled.';
+  return typeof signal.reason === 'string' && signal.reason.trim()
+    ? signal.reason.trim()
+    : 'Flow cancelled.';
+}
+
 function compilePredefinedFlows(): PredefinedFlowDescriptor[] {
   return PREDEFINED_FLOW_SOURCES.map((source) => {
     const result = compileFlowDefinition(parseFlowYaml(source.source));
@@ -143,11 +183,13 @@ async function waitForAssistantNodeCompletion(input: {
   queryClient: ReturnType<typeof useQueryClient>;
   workspaceId: string | null;
   requireCommit?: boolean;
+  signal?: AbortSignal;
 }): Promise<Message> {
   const startedAt = Date.now();
   let terminalObservedAt: number | null = null;
   let latestTerminalMessage: Message | null = null;
   while (Date.now() - startedAt < 30 * 60 * 1000) {
+    throwIfFlowCancelled(input.signal);
     const message = readAssistantNode(input.assistantNodeId, input.workspaceId, input.queryClient);
     if (message?.status && TERMINAL_STATUSES.includes(message.status as never)) {
       latestTerminalMessage = message;
@@ -166,9 +208,39 @@ async function waitForAssistantNodeCompletion(input: {
         return latestTerminalMessage;
       }
     }
-    await new Promise((resolve) => window.setTimeout(resolve, 500));
+    await waitForAssistantNodePoll(input.signal);
   }
   throw new Error(`Timed out waiting for assistant node "${input.assistantNodeId}" to complete.`);
+}
+
+function waitForAssistantNodePoll(signal: AbortSignal | undefined): Promise<void> {
+  throwIfFlowCancelled(signal);
+  return new Promise((resolve, reject) => {
+    let timeout: number | null = null;
+    let onAbort: (() => void) | null = null;
+    const cleanup = () => {
+      if (timeout !== null) {
+        window.clearTimeout(timeout);
+        timeout = null;
+      }
+      if (onAbort) {
+        signal?.removeEventListener('abort', onAbort);
+      }
+    };
+    onAbort = () => {
+      cleanup();
+      try {
+        throwIfFlowCancelled(signal);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    timeout = window.setTimeout(() => {
+      cleanup();
+      resolve();
+    }, 500);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function readMessageCommit(message: Message): string | null {

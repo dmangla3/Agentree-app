@@ -320,7 +320,16 @@ fn initialize_merge_review_session(
     );
 }
 
-fn cleanup_review_workspace(workspace: &ReviewWorkspace) {
+fn cleanup_review_workspace(run_id: &str, workspace: &ReviewWorkspace) {
+    if let Ok(Some(sandbox_path)) =
+        crate::command_guards::cleanup_agent_sandbox(run_id, Path::new(&workspace.worktree_path))
+    {
+        crate::app_log!(
+            "[merge-review][{}][lifecycle] sandbox_removed path={}",
+            run_id,
+            sandbox_path.display()
+        );
+    }
     let _ = run_git(
         &workspace.repo_path,
         &["worktree", "remove", &workspace.worktree_path, "--force"],
@@ -474,6 +483,7 @@ fn run_sync_runner_with_events<T: for<'de> Deserialize<'de>>(
     run_id: &str,
     worktree_path: &str,
     config: serde_json::Value,
+    worktree_config: &crate::worktree_config::AgentWorktreeConfig,
 ) -> Result<T, String> {
     let mut command = Command::new("node");
     command
@@ -482,11 +492,12 @@ fn run_sync_runner_with_events<T: for<'de> Deserialize<'de>>(
         .current_dir(worktree_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    crate::command_guards::apply_agent_command_env(
+    crate::command_guards::apply_agent_command_env_with_config(
         &mut command,
         app,
         run_id,
         Path::new(worktree_path),
+        worktree_config,
     )?;
     let mut child = command
         .spawn()
@@ -649,6 +660,7 @@ pub fn start_merge_review(
     initialize_merge_review_session(&app, &run_id, &workspace, "review");
 
     let payload = build_payload(&request)?;
+    let worktree_config = crate::worktree_config::load_agent_worktree_config(&request.repo_path)?;
     let agentree_dir = Path::new(&worktree_string).join(".agentree");
     ensure_directory(&agentree_dir)?;
     let payload_file = agentree_dir.join("merge-review-input.json");
@@ -676,11 +688,12 @@ pub fn start_merge_review(
         .current_dir(&workspace.worktree_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    crate::command_guards::apply_agent_command_env(
+    crate::command_guards::apply_agent_command_env_with_config(
         &mut command,
         &app,
         &run_id,
         Path::new(&workspace.worktree_path),
+        &worktree_config,
     )?;
     let mut child = command
         .spawn()
@@ -825,7 +838,7 @@ pub fn start_merge_review(
                         status.code().unwrap_or(-1)
                     ),
                 );
-                cleanup_review_workspace(workspace);
+                cleanup_review_workspace(&run_id_for_wait, workspace);
             }
 
             if !status.success() {
@@ -889,10 +902,18 @@ pub async fn synthesize_merge_resolutions(
                 "worktreePath": workspace.worktree_path.clone(),
             });
 
-            run_sync_runner_with_events(&app, &run_id, &workspace.worktree_path, config)
+            let worktree_config =
+                crate::worktree_config::load_agent_worktree_config(&request.repo_path)?;
+            run_sync_runner_with_events(
+                &app,
+                &run_id,
+                &workspace.worktree_path,
+                config,
+                &worktree_config,
+            )
         })();
 
-        cleanup_review_workspace(&workspace);
+        cleanup_review_workspace(&run_id, &workspace);
         result
     })
     .await
@@ -935,7 +956,7 @@ pub fn stop_merge_review(
             Some(&workspace.worktree_path),
         );
         append_merge_review_backend_log(&app, &run_id, "lifecycle", "cancelled");
-        cleanup_review_workspace(&workspace);
+        cleanup_review_workspace(&run_id, &workspace);
     } else {
         update_merge_review_session_status(&app, &run_id, "cancelled", None, None);
         append_merge_review_backend_log(&app, &run_id, "lifecycle", "cancelled");

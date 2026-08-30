@@ -47,6 +47,7 @@ interface FirstRunExperienceProps {
   workspaces: Workspace[];
   onSelectWorkspace: (workspaceId: string) => void;
   onComplete: (workspaceId?: string | null) => void;
+  onRepositoryConnected?: (repoPath: string, workspaceId: string) => void;
 }
 
 const onboardingTips = [
@@ -191,6 +192,7 @@ export function FirstRunExperience({
   workspaces,
   onSelectWorkspace,
   onComplete,
+  onRepositoryConnected,
 }: FirstRunExperienceProps) {
   const [currentStep, setCurrentStep] = useState<StepId>('environment');
   const [activeTipIndex, setActiveTipIndex] = useState(0);
@@ -389,9 +391,13 @@ export function FirstRunExperience({
       });
       setSetupRequirement(null);
       if (created?.id) {
+        const createdRepoPath = created.git_repo_path || created.repo_path || created.folderPath || selectedFolderPath;
         track('Onboarding Completed', {
           workspace_id: created.id,
         });
+        if (createdRepoPath) {
+          onRepositoryConnected?.(createdRepoPath, created.id);
+        }
         void finalizeCreatedWorkspace({
           created,
           fallbackFolderPath: selectedFolderPath,

@@ -245,6 +245,7 @@ interface WorkspaceState {
   composerDraftByWorkspace: Record<string, string>;
   lastFocusedMessageByWorkspace: Record<string, string>;
   recentFocusedMessageIdsByWorkspace: Record<string, string[]>;
+  lastUsedWorkspaceAt: Record<string, number>;
   autoCheckoutOnAgentCommit: boolean;
   hoveredWorkspaceId: string | null;
   pendingInitialFocusId: string | null;
@@ -259,6 +260,7 @@ interface WorkspaceState {
   isLoadingInsights: boolean;
 
   selectWorkspace: (id: string, initialFocusId?: string | null) => void;
+  markWorkspaceUsed: (id: string) => void;
   setHoveredWorkspace: (id: string | null) => void;
   beginSendFlowFocus: (input: ActiveSendFlowFocus) => void;
   advanceSendFlowFocus: (input: {
@@ -321,6 +323,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       composerDraftByWorkspace: {},
       lastFocusedMessageByWorkspace: {},
       recentFocusedMessageIdsByWorkspace: {},
+      lastUsedWorkspaceAt: {},
       autoCheckoutOnAgentCommit: false,
       hoveredWorkspaceId: null,
       pendingInitialFocusId: null,
@@ -355,6 +358,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       selectWorkspace: (id, initialFocusId = null) =>
         set((state) => {
           const nextFocusId = initialFocusId ?? state.lastFocusedMessageByWorkspace[id] ?? null;
+          const now = Date.now();
           return {
             selectedWorkspaceId: id,
             pendingInitialFocusId: initialFocusId,
@@ -367,8 +371,20 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             composerBaseCommitOverride: null,
             threadComposerTarget: null,
             insights: [],
+            lastUsedWorkspaceAt: {
+              ...state.lastUsedWorkspaceAt,
+              [id]: now,
+            },
           };
         }),
+
+      markWorkspaceUsed: (id) =>
+        set((state) => ({
+          lastUsedWorkspaceAt: {
+            ...state.lastUsedWorkspaceAt,
+            [id]: Date.now(),
+          },
+        })),
 
       setHoveredWorkspace: (id) => set({ hoveredWorkspaceId: id }),
 
@@ -558,6 +574,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         focusedMessageId: state.focusedMessageId,
         lastFocusedMessageByWorkspace: state.lastFocusedMessageByWorkspace,
         recentFocusedMessageIdsByWorkspace: state.recentFocusedMessageIdsByWorkspace,
+        lastUsedWorkspaceAt: state.lastUsedWorkspaceAt,
         focusNonce: state.focusNonce,
         autoCheckoutOnAgentCommit: state.autoCheckoutOnAgentCommit,
         disabledSummaryIds: state.disabledSummaryIds,

@@ -66,6 +66,11 @@ export const commands = {
 	listLocalCommitGraph: (workspaceId: string) => __TAURI_INVOKE<LocalCommitGraphSnapshot>("list_local_commit_graph", { workspaceId }),
 	repairLocalCommitGraph: (workspaceId: string, repoPath: string, gitRef: string | null) => __TAURI_INVOKE<number>("repair_local_commit_graph", { workspaceId, repoPath, gitRef }),
 	enqueueLocalCommitGraphSync: (workspaceId: string, currentUserId: string, payloadJson: string, mutationId: string | null) => __TAURI_INVOKE<LocalSyncEventRow>("enqueue_local_commit_graph_sync", { workspaceId, currentUserId, payloadJson, mutationId }),
+	listLocalWorkspaces: (currentUserId: string) => __TAURI_INVOKE<LocalWorkspaceRow[]>("list_local_workspaces", { currentUserId }),
+	mergeServerWorkspaces: (currentUserId: string, payloads: string[]) => __TAURI_INVOKE<LocalWorkspaceRow[]>("merge_server_workspaces", { currentUserId, payloads }),
+	localFirstCreateWorkspace: (request: LocalWorkspaceMutationRequest) => __TAURI_INVOKE<LocalWorkspaceRow>("local_first_create_workspace", { request }),
+	localFirstRenameWorkspace: (workspaceId: string, currentUserId: string, name: string) => __TAURI_INVOKE<LocalWorkspaceRow>("local_first_rename_workspace", { workspaceId, currentUserId, name }),
+	localFirstReconnectWorkspace: (request: LocalWorkspaceMutationRequest) => __TAURI_INVOKE<LocalWorkspaceRow>("local_first_reconnect_workspace", { request }),
 	localFirstDeleteBranch: (workspaceId: string, currentUserId: string, rootNodeId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_delete_branch", { workspaceId, currentUserId, rootNodeId }),
 	localFirstDeleteWorkspace: (workspaceId: string, currentUserId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_delete_workspace", { workspaceId, currentUserId }),
 	listLocalDeletedNodeRoots: (workspaceId: string) => __TAURI_INVOKE<LocalDeletedNodeRoot[]>("list_local_deleted_node_roots", { workspaceId }),
@@ -92,6 +97,9 @@ export const commands = {
 	checkRuntimeReadiness: (provider: string) => __TAURI_INVOKE<RuntimeReadiness>("check_runtime_readiness", { provider }),
 	checkAllRuntimeReadiness: () => __TAURI_INVOKE<RuntimeReadiness[]>("check_all_runtime_readiness"),
 	refreshProviderLimits: (provider: string, profileId: string | null) => __TAURI_INVOKE<string>("refresh_provider_limits", { provider, profileId }),
+	getAgentSandboxRoot: () => __TAURI_INVOKE<string>("get_agent_sandbox_root"),
+	getAgentWorktreeConfig: (repoPath: string) => __TAURI_INVOKE<AgentWorktreeConfigStatus>("get_agent_worktree_config", { repoPath }),
+	saveAgentWorktreeConfig: (repoPath: string, config: AgentWorktreeConfig) => __TAURI_INVOKE<AgentWorktreeConfigStatus>("save_agent_worktree_config", { repoPath, config }),
 	checkLocalEnvironment: () => __TAURI_INVOKE<LocalEnvironmentStatus>("check_local_environment"),
 	attachWorkspace: (path: string) => __TAURI_INVOKE<WorkspaceInfo>("attach_workspace", { path }),
 	initGitRepo: (repoPath: string) => __TAURI_INVOKE<string>("init_git_repo", { repoPath }),
@@ -223,6 +231,21 @@ export type AgentRunStateResponse = {
 	ledger: AgentRunLedgerRow | null,
 	running: boolean,
 	pid: number | null,
+};
+
+export type AgentWorktreeConfig = {
+	dependencyLinkDirs: string[],
+	copyEnvFiles: boolean,
+	envFilePatterns: string[],
+	commitExcludePatterns: string[],
+	runtimeScaffoldingDirs: string[],
+	blockDependencyMutationCommands: boolean,
+};
+
+export type AgentWorktreeConfigStatus = {
+	config: AgentWorktreeConfig,
+	configPath: string,
+	source: string,
 };
 
 export type BranchPointerInfo = {
@@ -512,6 +535,36 @@ export type LocalSyncEventRow = {
 	lastError: string | null,
 	createdAt: number,
 	updatedAt: number,
+};
+
+export type LocalWorkspaceMutationRequest = {
+	workspaceId: string,
+	currentUserId: string,
+	name: string | null,
+	localRepoPath: string | null,
+	baseCommitSha: string | null,
+	repoFingerprint: string | null,
+	mutationId: string | null,
+};
+
+export type LocalWorkspaceRow = {
+	id: string,
+	name: string,
+	userId: string,
+	localRepoPath: string | null,
+	folderPath: string | null,
+	repoPath: string | null,
+	baseCommitSha: string | null,
+	connectionStatus: string,
+	syncStatus: string,
+	createdAt: string,
+	updatedAt: string,
+	deletedAt: string | null,
+	localUpdatedAt: number,
+	serverWorkspaceId: string | null,
+	serverVersion: string | null,
+	nameDirty: boolean,
+	metadataDirty: boolean,
 };
 
 export type LogPaths = {

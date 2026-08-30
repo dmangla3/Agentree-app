@@ -32,6 +32,23 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../../@/components/ui/tooltip';
 import { WorkspaceDeleteDialog } from './WorkspaceDeleteDialog';
 import { WorkspaceRenameDialog } from './WorkspaceRenameDialog';
+import { useToast } from './Toast';
+import { resolveLocalWorkspaceRepoPath } from '../lib/workspaceRepoPath';
+
+function normalizeRepoPathForComparison(path: string | null | undefined): string | null {
+  const trimmed = path?.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/[\\/]+$/, '');
+}
+
+function workspaceRecencyMs(workspace: Workspace, lastUsedWorkspaceAt: Record<string, number>): number {
+  const explicitLastUsed = lastUsedWorkspaceAt[workspace.id];
+  if (Number.isFinite(explicitLastUsed)) return explicitLastUsed;
+  const updatedAt = Date.parse(workspace.updatedAt || '');
+  if (Number.isFinite(updatedAt)) return updatedAt;
+  const createdAt = Date.parse(workspace.createdAt || '');
+  return Number.isFinite(createdAt) ? createdAt : 0;
+}
 
 // Group workspaces by their repo path
 interface RepoGroup {
@@ -39,14 +56,15 @@ interface RepoGroup {
   path: string;
   name: string;
   workspaces: Workspace[];
+  lastUsedAt: number;
 }
 
-function groupWorkspacesByRepo(workspaces: Workspace[]): RepoGroup[] {
+function groupWorkspacesByRepo(workspaces: Workspace[], lastUsedWorkspaceAt: Record<string, number>): RepoGroup[] {
   const groups = new Map<string, RepoGroup>();
   const unassigned: Workspace[] = [];
 
   workspaces.forEach((workspace) => {
-    const repoPath = workspace.repo_path || workspace.git_repo_path || workspace.folderPath;
+    const repoPath = resolveLocalWorkspaceRepoPath(workspace);
     
     if (!repoPath) {
       unassigned.push(workspace);
@@ -62,24 +80,34 @@ function groupWorkspacesByRepo(workspaces: Workspace[]): RepoGroup[] {
         path: repoPath,
         name: repoName,
         workspaces: [],
+        lastUsedAt: 0,
       });
     }
     
-    groups.get(repoPath)!.workspaces.push(workspace);
+    const group = groups.get(repoPath)!;
+    group.workspaces.push(workspace);
+    group.lastUsedAt = Math.max(group.lastUsedAt, workspaceRecencyMs(workspace, lastUsedWorkspaceAt));
   });
 
-  // Sort groups by name
-  const sortedGroups = Array.from(groups.values()).sort((a, b) => 
-    a.name.toLowerCase().localeCompare(b.name.toLowerCase())
-  );
+  for (const group of groups.values()) {
+    group.workspaces.sort((a, b) => workspaceRecencyMs(b, lastUsedWorkspaceAt) - workspaceRecencyMs(a, lastUsedWorkspaceAt));
+  }
+
+  const sortedGroups = Array.from(groups.values()).sort((a, b) => {
+    const recencyDelta = b.lastUsedAt - a.lastUsedAt;
+    if (recencyDelta !== 0) return recencyDelta;
+    return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+  });
 
   // Add unassigned group if there are unassigned workspaces
   if (unassigned.length > 0) {
+    unassigned.sort((a, b) => workspaceRecencyMs(b, lastUsedWorkspaceAt) - workspaceRecencyMs(a, lastUsedWorkspaceAt));
     sortedGroups.push({
       id: 'unassigned',
       path: '',
       name: 'Unassigned',
       workspaces: unassigned,
+      lastUsedAt: Math.max(...unassigned.map((workspace) => workspaceRecencyMs(workspace, lastUsedWorkspaceAt))),
     });
   }
 
@@ -317,15 +345,27 @@ function WorkspaceItem({ workspace, isSelected, onSelect, onRequestRename, onReq
 
 export function WorkspaceList() {
   const { selectedWorkspaceId, selectWorkspace } = useWorkspaceStore();
+  const lastUsedWorkspaceAt = useWorkspaceStore((state) => state.lastUsedWorkspaceAt);
   const { data: workspacesData, isLoading, error } = useWorkspaces();
   const workspaces = useMemo(() => workspacesData ?? [], [workspacesData]);
+  const { addToast } = useToast();
   const createWorkspace = useCreateWorkspace();
   const renameWorkspace = useRenameWorkspace();
   const deleteWorkspace = useDeleteWorkspace();
   const [workspacePendingDelete, setWorkspacePendingDelete] = useState<Workspace | null>(null);
   const [workspacePendingRename, setWorkspacePendingRename] = useState<Workspace | null>(null);
 
-  const repoGroups = useMemo(() => groupWorkspacesByRepo(workspaces), [workspaces]);
+  const repoGroups = useMemo(
+    () => groupWorkspacesByRepo(workspaces, lastUsedWorkspaceAt),
+    [lastUsedWorkspaceAt, workspaces]
+  );
+  const existingRepoPaths = useMemo(() => {
+    return new Set(
+      repoGroups
+        .map((repo) => normalizeRepoPathForComparison(repo.path))
+        .filter((path): path is string => Boolean(path))
+    );
+  }, [repoGroups]);
 
   const handleNewRepo = async () => {
     const selected = await openFolderDialog({ 
@@ -334,6 +374,14 @@ export function WorkspaceList() {
     });
     const folderPath = Array.isArray(selected) ? selected[0] : selected;
     if (!folderPath || typeof folderPath !== 'string') return;
+    if (existingRepoPaths.has(normalizeRepoPathForComparison(folderPath) ?? '')) {
+      addToast({
+        title: 'Repository already exists',
+        description: 'This repo already exists. Please create a workspace under the existing repo.',
+        variant: 'warning',
+      });
+      return;
+    }
     
     createWorkspace.mutate({ folderPath });
   };

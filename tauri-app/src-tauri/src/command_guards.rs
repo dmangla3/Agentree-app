@@ -1,10 +1,13 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::AppHandle;
+
+use crate::worktree_config::AgentWorktreeConfig;
 
 const PACKAGE_MANAGER_GUARD_COMMANDS: &[&str] = &[
     "npm", "pnpm", "yarn", "bun", "pip", "pip3", "poetry", "uv", "cargo",
@@ -30,6 +33,16 @@ fn sandbox_root(override_root: Option<&Path>) -> PathBuf {
     std::env::var_os("AGENTREE_AGENT_SANDBOX_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("agentree").join("agents"))
+}
+
+pub fn agent_sandbox_root() -> PathBuf {
+    sandbox_root(None)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_agent_sandbox_root() -> String {
+    path_string(&agent_sandbox_root())
 }
 
 fn sanitize_sandbox_segment(raw: &str) -> String {
@@ -197,6 +210,23 @@ fn agent_sandbox_env(agent_id: &str, cwd: &Path, root_override: Option<&Path>) -
     }
 }
 
+pub fn agent_sandbox_path(agent_id: &str, cwd: &Path) -> PathBuf {
+    agent_sandbox_env(agent_id, cwd, None).sandbox_path
+}
+
+pub fn cleanup_agent_sandbox(agent_id: &str, cwd: &Path) -> Result<Option<PathBuf>, String> {
+    let sandbox_path = agent_sandbox_path(agent_id, cwd);
+    match fs::remove_dir_all(&sandbox_path) {
+        Ok(()) => Ok(Some(sandbox_path)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "Failed to remove agent sandbox {}: {}",
+            sandbox_path.display(),
+            error
+        )),
+    }
+}
+
 fn command_guard_root() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
     Ok(home
@@ -263,17 +293,20 @@ fn prepend_path_entry(entry: &Path, existing_path: &str) -> Result<String, Strin
         .map_err(|e| format!("Failed to build guarded PATH: {}", e))
 }
 
-pub fn apply_agent_command_env(
+pub fn apply_agent_command_env_with_config(
     command: &mut Command,
     app: &AppHandle,
     agent_id: &str,
     cwd: &Path,
+    config: &AgentWorktreeConfig,
 ) -> Result<(), String> {
     let base_path = build_agent_path();
-    let guard_bin = ensure_command_guard_bin()?;
-    let guarded_path = prepend_path_entry(&guard_bin, &base_path)?;
-    let guard_script =
-        crate::runtime_scripts::runtime_script_path(app, "package-manager-guard.sh")?;
+    let guarded_path = if config.block_dependency_mutation_commands {
+        let guard_bin = ensure_command_guard_bin()?;
+        prepend_path_entry(&guard_bin, &base_path)?
+    } else {
+        base_path.clone()
+    };
     let sandbox = agent_sandbox_env(agent_id, cwd, None);
 
     for dir in &sandbox.dirs {
@@ -288,20 +321,31 @@ pub fn apply_agent_command_env(
             crate::runtime_scripts::runtime_python_command(app),
         )
         .env("AGENTREE_GUARD_REAL_PATH", base_path)
-        .env(
+        .envs(sandbox.vars.iter());
+
+    if config.block_dependency_mutation_commands {
+        let guard_script =
+            crate::runtime_scripts::runtime_script_path(app, "package-manager-guard.sh")?;
+        command.env(
             "AGENTREE_PACKAGE_MANAGER_GUARD",
             guard_script.to_string_lossy().into_owned(),
-        )
-        .envs(sandbox.vars.iter());
+        );
+    }
 
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_sandbox_env, build_agent_path, sanitize_sandbox_segment};
+    use super::{
+        agent_sandbox_env, agent_sandbox_root, build_agent_path, cleanup_agent_sandbox,
+        sanitize_sandbox_segment,
+    };
     use std::ffi::OsString;
     use std::path::Path;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvVarGuard {
         name: &'static str,
@@ -365,6 +409,36 @@ mod tests {
         );
         assert_eq!(sanitize_sandbox_segment("///"), "unknown");
         assert_eq!(sanitize_sandbox_segment(""), "unknown");
+    }
+
+    #[test]
+    fn sandbox_root_honors_env_override() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _root = EnvVarGuard::set("AGENTREE_AGENT_SANDBOX_ROOT", "/tmp/custom-agentree-root");
+
+        assert_eq!(
+            agent_sandbox_root().to_string_lossy(),
+            "/tmp/custom-agentree-root"
+        );
+    }
+
+    #[test]
+    fn cleanup_agent_sandbox_removes_only_computed_agent_dir() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _root = EnvVarGuard::set("AGENTREE_AGENT_SANDBOX_ROOT", temp_dir.path());
+        let cwd = Path::new("/repos/agentree/worktrees/worktree-123");
+        let sandbox = temp_dir.path().join("worktree-123").join("assistant-1");
+        let sibling = temp_dir.path().join("worktree-123").join("assistant-2");
+        std::fs::create_dir_all(sandbox.join("npm-cache")).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(sandbox.join("npm-cache").join("index"), "cache").unwrap();
+
+        let removed = cleanup_agent_sandbox("assistant-1", cwd).expect("cleanup sandbox");
+
+        assert_eq!(removed.as_deref(), Some(sandbox.as_path()));
+        assert!(!sandbox.exists());
+        assert!(sibling.exists());
     }
 
     #[test]

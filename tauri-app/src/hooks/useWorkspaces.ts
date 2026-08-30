@@ -241,6 +241,7 @@ export const useCreateWorkspace = () => {
   const queryClient = useQueryClient();
   const { addToast } = useToast();
   const userId = useAuthStore((state) => state.user?.id ?? null);
+  const markWorkspaceUsed = useWorkspaceStore((state) => state.markWorkspaceUsed);
 
   return useMutation({
     mutationFn: async ({
@@ -285,6 +286,7 @@ export const useCreateWorkspace = () => {
         dirty_strategy: variables.dirtyStrategy ?? null,
       });
       if (workspace?.id) {
+        markWorkspaceUsed(workspace.id);
         queryClient.setQueryData<Workspace[]>(workspaceKeys.list(userId), (current) =>
           mergeWorkspaceIntoCachedWorkspaces(current, workspace as Workspace)
         );

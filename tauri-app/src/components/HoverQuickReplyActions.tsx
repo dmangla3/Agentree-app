@@ -4,6 +4,8 @@ import TextareaAutosize from 'react-textarea-autosize';
 import { Loader2, Reply, Square } from 'lucide-react';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspaceProjection';
 import { agentRunManager } from '../agent-runs/agentRunManager';
+import { flowRunManager } from '../flows/flowRunManager';
+import { resolveActiveFlowCancelTarget } from '../flows/flowRunSelectors';
 import { Button } from '../../@/components/ui/button';
 import { useHeadlessQuickReply } from '../hooks/useHeadlessQuickReply';
 import { agentClient } from '../lib/agentClient';
@@ -59,7 +61,13 @@ export function HoverQuickReplyActions({
       ? null
       : rawReplyMode;
   const isSteeringReply = replyMode === 'steer';
+  const activeFlowCancelTarget = resolveActiveFlowCancelTarget({
+    nodeId: replyParentId,
+    node: projection.messageMap.get(replyParentId) ?? entity.message ?? null,
+  });
   const canCancelRunningAgent = isSteeringReply && !isCancelling;
+  const cancelActionLabel = activeFlowCancelTarget ? 'Cancel flow' : 'Cancel';
+  const cancelActionAriaLabel = activeFlowCancelTarget ? 'Cancel running flow' : 'Cancel running agent';
   const inputLabel = isSteeringReply ? 'Steering prompt' : 'Quick reply prompt';
   const actionLabel = isSteeringReply ? 'Steer' : 'Quick Reply';
   const sendingLabel = isSteeringReply ? 'Steering' : 'Sending';
@@ -91,6 +99,31 @@ export function HoverQuickReplyActions({
     setCancelError(null);
     setIsCancelling(true);
     try {
+      const flowCancelTarget = resolveActiveFlowCancelTarget({
+        nodeId: replyParentId,
+        node: assistantMessage,
+      });
+      if (flowCancelTarget) {
+        for (const activeNodeId of flowCancelTarget.activeNodeIds) {
+          const activeMessage = projection.messageMap.get(activeNodeId) ?? null;
+          agentRunManager.dispatch(activeNodeId, {
+            type: 'cancel',
+            reason: 'cancelled',
+          }, {
+            workspaceId: activeMessage?.workspaceId ?? workspaceId,
+            parentId: activeMessage?.parentId ?? null,
+            role: 'assistant',
+            agentId: activeMessage?.agent_id ?? null,
+            content: activeMessage?.content ?? '',
+            executionData: (activeMessage?.execution_data ?? {}) as Record<string, any>,
+          });
+        }
+        await flowRunManager.cancel(flowCancelTarget.flowRunId, 'cancelled');
+        void scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, { reason: 'cancel-flow' });
+        hoverQuickReplyDrafts.delete(replyParentId);
+        setDraftResetVersion((version) => version + 1);
+        return;
+      }
       await agentClient.stopAgent(replyParentId);
       agentRunManager.dispatch(replyParentId, {
         type: 'cancel',
@@ -127,6 +160,8 @@ export function HoverQuickReplyActions({
       isCancelling={isCancelling}
       isSteeringReply={isSteeringReply}
       canCancelRunningAgent={canCancelRunningAgent}
+      cancelActionLabel={cancelActionLabel}
+      cancelActionAriaLabel={cancelActionAriaLabel}
       error={error || cancelError}
       resetVersion={draftResetVersion}
       onSubmit={handleQuickReply}
@@ -145,6 +180,8 @@ interface HoverQuickReplyComposerProps {
   isCancelling: boolean;
   isSteeringReply: boolean;
   canCancelRunningAgent: boolean;
+  cancelActionLabel: string;
+  cancelActionAriaLabel: string;
   error: string | null;
   resetVersion: number;
   onSubmit: (prompt: string) => Promise<boolean>;
@@ -161,6 +198,8 @@ const HoverQuickReplyComposer = memo(function HoverQuickReplyComposer({
   isCancelling,
   isSteeringReply,
   canCancelRunningAgent,
+  cancelActionLabel,
+  cancelActionAriaLabel,
   error,
   resetVersion,
   onSubmit,
@@ -295,10 +334,11 @@ const HoverQuickReplyComposer = memo(function HoverQuickReplyComposer({
             stopQuickReplyControlEvent(event);
             void onCancelRunningAgent();
           }}
-          aria-label="Cancel running agent"
+          aria-label={cancelActionAriaLabel}
+          title={cancelActionLabel}
         >
           {isCancelling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3 w-3 fill-current" />}
-          {isCancelling ? 'Stopping' : 'Cancel'}
+          {isCancelling ? 'Stopping' : cancelActionLabel}
         </Button>
       ) : null}
       {error && (

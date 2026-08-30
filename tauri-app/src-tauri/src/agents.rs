@@ -508,6 +508,15 @@ fn cleanup_agent_run_worktree_internal(
         return Ok(());
     }
     telemetry.update_agent_run_phase(node_id, terminal_status, "cleaning", None)?;
+    if let Some(sandbox_path) =
+        crate::command_guards::cleanup_agent_sandbox(node_id, Path::new(&worktree_path))?
+    {
+        crate::app_log!(
+            "[AGENT_WORKTREE] event=cleanup.sandbox_removed node_id={} path={}",
+            node_id,
+            sandbox_path.display()
+        );
+    }
     tauri::async_runtime::block_on(crate::git_workspace::cleanup_worktree_owned(
         repo_path.to_string(),
         node_id.to_string(),
@@ -2065,6 +2074,7 @@ fn spawn_agent_internal(
     trace_id: Option<String>,
     login_profile_id: Option<String>,
     run_context: Option<AgentRunContext>,
+    worktree_config: crate::worktree_config::AgentWorktreeConfig,
 ) -> Result<u32, String> {
     crate::app_log!(
         "[AGENT_WORKTREE] event=spawn.start node_id={} agent_type={} cwd={} has_run_context={}",
@@ -2161,11 +2171,12 @@ fn spawn_agent_internal(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    crate::command_guards::apply_agent_command_env(
+    crate::command_guards::apply_agent_command_env_with_config(
         &mut command,
         &app,
         &session_id,
         Path::new(&cwd),
+        &worktree_config,
     )?;
 
     let mut codex_auth_state_to_persist: Option<(String, std::path::PathBuf)> = None;
@@ -2627,7 +2638,11 @@ pub async fn start_agent_run(
 ) -> Result<StartAgentRunResponse, String> {
     let mut intent = intent;
     let telemetry = app.state::<crate::db::TelemetryDb>();
-    if let Some(workspace_id) = intent.workspace_id.as_deref().filter(|value| !value.is_empty()) {
+    if let Some(workspace_id) = intent
+        .workspace_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
         let trusted_repo_path = telemetry.resolve_trusted_local_workspace_repo_path(
             workspace_id,
             &intent.current_user_id,
@@ -2769,6 +2784,7 @@ fn run_agent_lifecycle_background(
     }
 
     let agent_state = app.state::<AgentState>();
+    let worktree_config = crate::worktree_config::load_agent_worktree_config(&intent.repo_path)?;
     match spawn_agent_internal(
         app.clone(),
         &agent_state,
@@ -2780,6 +2796,7 @@ fn run_agent_lifecycle_background(
         intent.trace_id.clone(),
         intent.login_profile_id.clone(),
         Some(run_context),
+        worktree_config,
     ) {
         Ok(_) => Ok(()),
         Err(err) => {

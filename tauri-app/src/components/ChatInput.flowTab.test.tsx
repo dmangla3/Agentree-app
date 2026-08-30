@@ -19,7 +19,7 @@ describe('ChatInput flow selector integration', () => {
   it('keeps normal chat send wired to handleSend', () => {
     const source = readChatInputSource();
 
-    expect(source).toMatch(/showCancel\s*\?\s*handleCancel/);
+    expect(source).toMatch(/showPrimaryCancel\s*\?\s*handleCancel/);
     expect(source).toContain('onClick={handlePrimaryAction}');
     expect(source).toContain("handleRunFlow({ input: trimmedPrompt, count: flowParallelCount })");
   });
@@ -55,6 +55,6 @@ describe('ChatInput flow selector integration', () => {
     expect(end).toBeGreaterThan(start);
 
     const body = source.slice(start, end);
-    expect(body).toMatch(/promptRef\.current = newPrompt;\s*setPrompt\(newPrompt\);/);
+    expect(body).toContain('setComposerPrompt(newPrompt);');
   });
 });

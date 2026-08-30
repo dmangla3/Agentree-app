@@ -1,4 +1,8 @@
-import type { FlowNodeRunner } from './flowExecutor';
+import {
+  isFlowExecutionCancelledError,
+  throwIfFlowCancelled,
+  type FlowNodeRunner,
+} from './flowExecutor';
 import type { FlowNodeValue, FlowRuntimeValue, FlowNodeStatus } from './types';
 import type { LaunchAgentNodeInput, LaunchAgentNodeResult } from '../hooks/useAgentNodeLauncher';
 import type { ComposerContextManifest } from '../lib/composerContext';
@@ -7,8 +11,9 @@ import type { Message } from '../stores/workspaceStore';
 export type AgentreeFlowNodeLauncher = (input: LaunchAgentNodeInput) => Promise<LaunchAgentNodeResult>;
 export type WaitForAgentreeNode = (
   assistantNodeId: string,
-  options?: { requireCommit?: boolean }
+  options?: { requireCommit?: boolean; signal?: AbortSignal }
 ) => Promise<Message>;
+export type StopAgentreeNode = (assistantNodeId: string) => Promise<void>;
 
 export interface AgentreeFlowNodeRunnerInput {
   workspaceId: string;
@@ -29,11 +34,13 @@ export interface AgentreeFlowNodeRunnerInput {
   reasoningEffort?: string | null;
   launchAgentNode: AgentreeFlowNodeLauncher;
   waitForAssistantNode: WaitForAgentreeNode;
+  stopAgentNode?: StopAgentreeNode;
 }
 
 export function createAgentreeFlowNodeRunner(input: AgentreeFlowNodeRunnerInput): FlowNodeRunner {
   return {
     async runNode(runInput) {
+      throwIfFlowCancelled(runInput.signal);
       const isRootNode = isRootParent(runInput.parent);
       const parentNodeId = resolveParentNodeId(runInput.parent, input.rootParentNodeId ?? null);
       const contextParentNodeId = isRootNode
@@ -60,10 +67,43 @@ export function createAgentreeFlowNodeRunner(input: AgentreeFlowNodeRunnerInput)
         llmModel: input.llmModel,
         reasoningEffort: input.reasoningEffort,
       });
-      const completedMessage = await input.waitForAssistantNode(launchResult.assistantNodeId, {
-        requireCommit: runInput.requiresFinalizedCommit ?? false,
+      runInput.onNodeLaunched?.({
+        templateId: runInput.templateId,
+        userNodeId: launchResult.userNodeId,
+        assistantNodeId: launchResult.assistantNodeId,
       });
-      return messageToFlowNode(completedMessage, runInput.templateId);
+
+      let stopPromise: Promise<void> | null = null;
+      const stopLaunchedNode = () => {
+        if (!input.stopAgentNode) return null;
+        stopPromise ??= input.stopAgentNode(launchResult.assistantNodeId).catch(() => undefined);
+        return stopPromise;
+      };
+      const abortListener = () => {
+        void stopLaunchedNode();
+      };
+
+      if (runInput.signal?.aborted) {
+        await stopLaunchedNode();
+        throwIfFlowCancelled(runInput.signal);
+      }
+
+      runInput.signal?.addEventListener('abort', abortListener, { once: true });
+      try {
+        const completedMessage = await input.waitForAssistantNode(launchResult.assistantNodeId, {
+          requireCommit: runInput.requiresFinalizedCommit ?? false,
+          ...(runInput.signal ? { signal: runInput.signal } : {}),
+        });
+        throwIfFlowCancelled(runInput.signal);
+        return messageToFlowNode(completedMessage, runInput.templateId);
+      } catch (error) {
+        if (isFlowExecutionCancelledError(error)) {
+          await stopLaunchedNode();
+        }
+        throw error;
+      } finally {
+        runInput.signal?.removeEventListener('abort', abortListener);
+      }
     },
   };
 }

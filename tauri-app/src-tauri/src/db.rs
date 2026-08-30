@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
@@ -730,8 +731,6 @@ impl TelemetryDb {
                 name_dirty INTEGER NOT NULL DEFAULT 0,
                 metadata_dirty INTEGER NOT NULL DEFAULT 0
             );
-            CREATE INDEX IF NOT EXISTS idx_local_workspaces_user_status
-                ON local_workspaces(user_id, deleted_at, connection_status, updated_at);
 
             CREATE TABLE IF NOT EXISTS local_sync_events (
                 id TEXT PRIMARY KEY,
@@ -829,8 +828,14 @@ impl TelemetryDb {
         )
         .map_err(|e| e.to_string())?;
         let _ = conn.execute("ALTER TABLE local_workspaces ADD COLUMN user_id TEXT", []);
-        let _ = conn.execute("ALTER TABLE local_workspaces ADD COLUMN local_repo_path TEXT", []);
-        let _ = conn.execute("ALTER TABLE local_workspaces ADD COLUMN repo_fingerprint TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE local_workspaces ADD COLUMN local_repo_path TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_workspaces ADD COLUMN repo_fingerprint TEXT",
+            [],
+        );
         let _ = conn.execute(
             "ALTER TABLE local_workspaces ADD COLUMN connection_status TEXT NOT NULL DEFAULT 'remote_unconnected'",
             [],
@@ -855,14 +860,7 @@ impl TelemetryDb {
             "ALTER TABLE local_workspaces ADD COLUMN metadata_dirty INTEGER NOT NULL DEFAULT 0",
             [],
         );
-        let _ = conn.execute(
-            "UPDATE local_workspaces SET local_repo_path = COALESCE(local_repo_path, repo_path, folder_path) WHERE local_repo_path IS NULL AND deleted_at IS NULL",
-            [],
-        );
-        let _ = conn.execute(
-            "UPDATE local_workspaces SET connection_status = 'connected' WHERE local_repo_path IS NOT NULL AND deleted_at IS NULL AND connection_status = 'remote_unconnected'",
-            [],
-        );
+        let _ = Self::repair_local_workspace_repo_paths(&conn);
         let _ = conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_local_workspaces_user_status ON local_workspaces(user_id, deleted_at, connection_status, updated_at)",
             [],
@@ -3775,10 +3773,10 @@ impl TelemetryDb {
 
         let now = unix_timestamp();
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let parent_status: Option<String> = conn
+        let parent: Option<(String, Option<String>)> = conn
             .query_row(
                 r#"
-                SELECT status
+                SELECT status, last_error
                 FROM local_sync_events
                 WHERE entity_type = 'node'
                   AND entity_id = ?1
@@ -3792,12 +3790,40 @@ impl TelemetryDb {
                 LIMIT 1
                 "#,
                 params![parent_id, event.user_id.as_deref()],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(|e| e.to_string())?;
 
-        if parent_status.as_deref() == Some("dead") {
+        if let Some((status, last_error)) = parent.as_ref() {
+            if status == "dead" {
+                let parent_error = last_error
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or("terminal parent sync is dead");
+                conn.execute(
+                    r#"
+                    UPDATE local_sync_events
+                    SET status = 'dead',
+                        next_attempt_at = NULL,
+                        last_error = ?2,
+                        updated_at = ?3
+                    WHERE id = ?1
+                      AND status IN ('pending', 'in_flight')
+                    "#,
+                    params![
+                        &event.id,
+                        format!(
+                            "Blocked by permanently failed terminal parent {}: {}",
+                            parent_id, parent_error
+                        ),
+                        now
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                return Ok(Some(parent_id.to_string()));
+            }
+
             conn.execute(
                 r#"
                 UPDATE local_sync_events
@@ -3818,7 +3844,7 @@ impl TelemetryDb {
             .map_err(|e| e.to_string())?;
         }
 
-        Ok(parent_status.map(|_| parent_id.to_string()))
+        Ok(parent.map(|_| parent_id.to_string()))
     }
 
     pub fn mark_local_sync_event_synced(&self, id: &str) -> Result<(), String> {
@@ -3873,7 +3899,7 @@ impl TelemetryDb {
         conn.execute(
             r#"
             UPDATE local_sync_events
-            SET status = 'dead', last_error = ?2, updated_at = ?3
+            SET status = 'dead', next_attempt_at = NULL, last_error = ?2, updated_at = ?3
             WHERE id = ?1
             "#,
             params![id, error, now],
@@ -3942,7 +3968,9 @@ impl TelemetryDb {
         )
     }
 
-    fn local_workspace_row_from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<LocalWorkspaceRow> {
+    fn local_workspace_row_from_sql(
+        row: &rusqlite::Row<'_>,
+    ) -> rusqlite::Result<LocalWorkspaceRow> {
         Ok(LocalWorkspaceRow {
             id: row.get(0)?,
             name: row.get(1)?,
@@ -4113,7 +4141,79 @@ impl TelemetryDb {
         if !canonical.is_dir() {
             return Err("Local repo path is not a directory.".to_string());
         }
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&canonical)
+            .args(["rev-parse", "--is-inside-work-tree"])
+            .output()
+            .map_err(|e| format!("Failed to run git for local repo path {}: {}", trimmed, e))?;
+        if !output.status.success() || String::from_utf8_lossy(&output.stdout).trim() != "true" {
+            return Err("Local repo path is not a git worktree.".to_string());
+        }
         Ok(canonical.to_string_lossy().to_string())
+    }
+
+    fn repair_local_workspace_repo_paths(conn: &Connection) -> Result<(), String> {
+        let candidates = {
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                    SELECT id, local_repo_path, repo_path, folder_path
+                    FROM local_workspaces
+                    WHERE deleted_at IS NULL
+                    "#,
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            rows
+        };
+
+        for (id, local_repo_path, repo_path, folder_path) in candidates {
+            let candidate = local_repo_path
+                .as_deref()
+                .or(repo_path.as_deref())
+                .or(folder_path.as_deref());
+            match candidate.and_then(|path| Self::canonical_local_repo_path(path).ok()) {
+                Some(canonical) => {
+                    conn.execute(
+                        r#"
+                        UPDATE local_workspaces
+                        SET local_repo_path = ?2,
+                            folder_path = ?2,
+                            repo_path = ?2,
+                            connection_status = 'connected'
+                        WHERE id = ?1 AND deleted_at IS NULL
+                        "#,
+                        params![id, canonical],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+                None => {
+                    conn.execute(
+                        r#"
+                        UPDATE local_workspaces
+                        SET local_repo_path = NULL,
+                            connection_status = 'remote_unconnected'
+                        WHERE id = ?1 AND deleted_at IS NULL
+                        "#,
+                        params![id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn local_first_create_workspace(
@@ -4127,6 +4227,10 @@ impl TelemetryDb {
             .and_then(Self::canonical_local_repo_path)?;
         let now = unix_timestamp();
         let now_text = chrono_like_now();
+        let local_change_id = request
+            .mutation_id
+            .clone()
+            .unwrap_or_else(|| format!("workspace.create:{}:{}", request.workspace_id, now));
         let name = request.name.unwrap_or_else(|| {
             Path::new(&path)
                 .file_name()
@@ -4168,7 +4272,7 @@ impl TelemetryDb {
                 request.base_commit_sha.as_deref(),
                 now_text,
                 now,
-                request.mutation_id.as_deref()
+                local_change_id.as_str()
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -4193,7 +4297,7 @@ impl TelemetryDb {
             &request.workspace_id,
             "workspace.create",
             &serde_json::to_string(&payload).map_err(|e| e.to_string())?,
-            request.mutation_id.as_deref(),
+            Some(local_change_id.as_str()),
         )?;
         Ok(row)
     }
@@ -4210,6 +4314,7 @@ impl TelemetryDb {
         }
         let now = unix_timestamp();
         let now_text = chrono_like_now();
+        let local_change_id = format!("workspace.rename:{}:{}", workspace_id, now);
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let updated = conn
             .execute(
@@ -4229,7 +4334,7 @@ impl TelemetryDb {
                     trimmed_name,
                     now_text,
                     now,
-                    format!("workspace.rename:{}:{}", workspace_id, now)
+                    local_change_id.as_str()
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -4250,7 +4355,7 @@ impl TelemetryDb {
             workspace_id,
             "workspace.update",
             &serde_json::to_string(&payload).map_err(|e| e.to_string())?,
-            None,
+            Some(local_change_id.as_str()),
         )?;
         Ok(row)
     }
@@ -4266,6 +4371,10 @@ impl TelemetryDb {
             .and_then(Self::canonical_local_repo_path)?;
         let now = unix_timestamp();
         let now_text = chrono_like_now();
+        let local_change_id = request
+            .mutation_id
+            .clone()
+            .unwrap_or_else(|| format!("workspace.reconnect:{}:{}", request.workspace_id, now));
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let updated = conn
             .execute(
@@ -4292,7 +4401,7 @@ impl TelemetryDb {
                     request.base_commit_sha,
                     now_text,
                     now,
-                    request.mutation_id
+                    local_change_id.as_str()
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -4319,14 +4428,14 @@ impl TelemetryDb {
             &request.workspace_id,
             "workspace.update",
             &serde_json::to_string(&payload).map_err(|e| e.to_string())?,
-            request.mutation_id.as_deref(),
+            Some(local_change_id.as_str()),
         )?;
         Ok(row)
     }
 
     pub fn mark_local_workspace_persisted(
         &self,
-        workspace_id: &str,
+        event: &LocalSyncEventRow,
         response_body: Option<&JsonValue>,
     ) -> Result<(), String> {
         let now_text = chrono_like_now();
@@ -4334,6 +4443,23 @@ impl TelemetryDb {
             .and_then(|body| body.get("updatedAt").or_else(|| body.get("updated_at")))
             .and_then(|value| value.as_str())
             .unwrap_or(&now_text);
+        let payload = serde_json::from_str::<JsonValue>(&event.payload_json).ok();
+        let clear_name_dirty = event.event_type == "workspace.update"
+            && payload
+                .as_ref()
+                .and_then(|value| value.as_object())
+                .map_or(false, |object| object.contains_key("name"));
+        let clear_metadata_dirty = event.event_type == "workspace.create"
+            || (event.event_type == "workspace.update"
+                && payload
+                    .as_ref()
+                    .and_then(|value| value.as_object())
+                    .map_or(false, |object| {
+                        object.contains_key("folderPath")
+                            || object.contains_key("repoPath")
+                            || object.contains_key("baseCommitSha")
+                    }));
+        let mutation_id = Self::local_sync_event_mutation_id(event);
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
             r#"
@@ -4341,14 +4467,49 @@ impl TelemetryDb {
             SET sync_status = 'synced',
                 server_ack_at = ?2,
                 server_version = ?3,
-                name_dirty = 0,
-                metadata_dirty = 0
+                name_dirty = CASE
+                    WHEN ?4 = 1
+                        AND (
+                            last_local_change_id = ?6
+                            OR last_local_change_id IS NULL
+                            OR last_local_change_id NOT LIKE 'workspace.rename:%'
+                        )
+                    THEN 0
+                    ELSE name_dirty
+                END,
+                metadata_dirty = CASE
+                    WHEN ?5 = 1
+                        AND (
+                            last_local_change_id = ?6
+                            OR last_local_change_id IS NULL
+                            OR last_local_change_id LIKE 'workspace.rename:%'
+                        )
+                    THEN 0
+                    ELSE metadata_dirty
+                END
             WHERE id = ?1
             "#,
-            params![workspace_id, now_text, server_version],
+            params![
+                event.entity_id,
+                now_text,
+                server_version,
+                clear_name_dirty,
+                clear_metadata_dirty,
+                mutation_id.as_deref()
+            ],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    fn local_sync_event_mutation_id(event: &LocalSyncEventRow) -> Option<String> {
+        let marker = format!(":{}:{}:", event.event_type, event.entity_id);
+        event
+            .idempotency_key
+            .split_once(marker.as_str())
+            .map(|(_, mutation_id)| mutation_id)
+            .filter(|mutation_id| !mutation_id.is_empty())
+            .map(|mutation_id| mutation_id.to_string())
     }
 
     pub fn resolve_trusted_local_workspace_repo_path(
@@ -4374,7 +4535,9 @@ impl TelemetryDb {
         if let Some(advisory) = advisory_repo_path.filter(|value| !value.trim().is_empty()) {
             let advisory = Self::canonical_local_repo_path(advisory)?;
             if advisory != trusted {
-                return Err("Repo path does not match the trusted local workspace binding.".to_string());
+                return Err(
+                    "Repo path does not match the trusted local workspace binding.".to_string(),
+                );
             }
         }
         Ok(trusted)
@@ -5102,7 +5265,7 @@ pub async fn process_local_sync_events(
                     }
                     if event.entity_type == "workspace" {
                         let _ = telemetry
-                            .mark_local_workspace_persisted(&event.entity_id, response_body.as_ref());
+                            .mark_local_workspace_persisted(&event, response_body.as_ref());
                     }
                     telemetry.mark_local_sync_event_synced(&event.id)?;
                     synced += 1;
@@ -5154,6 +5317,46 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = TelemetryDb::open(dir.path()).expect("open telemetry db");
         (dir, db)
+    }
+
+    #[test]
+    fn opening_existing_local_workspaces_without_user_id_migrates_before_indexing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("telemetry.db");
+        {
+            let conn = Connection::open(&db_path).expect("create legacy db");
+            conn.execute_batch(
+                r#"
+                CREATE TABLE local_workspaces (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    folder_path TEXT,
+                    repo_path TEXT,
+                    base_commit_sha TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted_at TEXT,
+                    local_updated_at INTEGER NOT NULL,
+                    server_ack_at TEXT
+                );
+                "#,
+            )
+            .expect("legacy local_workspaces schema");
+        }
+
+        let db = TelemetryDb::open(dir.path()).expect("migrate existing db");
+        let conn = db.conn.lock().expect("lock db");
+        assert!(conn
+            .prepare("SELECT user_id FROM local_workspaces LIMIT 0")
+            .is_ok());
+        let has_user_status_index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_local_workspaces_user_status'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("index count");
+        assert_eq!(has_user_status_index, 1);
     }
 
     #[test]
@@ -6571,7 +6774,7 @@ mod tests {
     }
 
     #[test]
-    fn child_terminal_sync_requeues_dead_parent_terminal_sync() {
+    fn child_terminal_sync_dies_when_parent_terminal_sync_is_dead() {
         let (_dir, db) = open_test_db();
         let parent = db
             .enqueue_local_sync_event(
@@ -6601,20 +6804,25 @@ mod tests {
 
         let blocking_parent = db
             .requeue_blocking_terminal_parent_if_needed(&child)
-            .expect("requeue parent");
+            .expect("handle dead parent");
 
         assert_eq!(blocking_parent.as_deref(), Some("parent-assistant"));
         let parent = db
             .get_local_sync_event(&parent.id)
             .expect("read parent")
             .expect("parent event");
-        assert_eq!(parent.status, "pending");
-        assert!(parent.next_attempt_at.is_some());
+        assert_eq!(parent.status, "dead");
+        assert!(parent.next_attempt_at.is_none());
         let child = db
             .get_local_sync_event(&child.id)
             .expect("read child")
             .expect("child event");
-        assert_eq!(child.status, "pending");
+        assert_eq!(child.status, "dead");
+        assert!(child
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Blocked by permanently failed terminal parent parent-assistant"));
     }
 
     #[test]
@@ -6685,7 +6893,7 @@ mod tests {
     #[test]
     fn server_workspace_merge_preserves_local_binding_and_dirty_name() {
         let (_db_dir, db) = open_test_db();
-        let repo_dir = tempfile::tempdir().expect("repo dir");
+        let (repo_dir, shas) = init_test_repo_with_commits(1);
         let local_path = std::fs::canonicalize(repo_dir.path())
             .expect("canonical repo")
             .to_string_lossy()
@@ -6695,8 +6903,8 @@ mod tests {
             current_user_id: "user-1".to_string(),
             name: Some("Local name".to_string()),
             local_repo_path: Some(local_path.clone()),
-            base_commit_sha: Some("base-sha".to_string()),
-            repo_fingerprint: Some("base:base-sha".to_string()),
+            base_commit_sha: Some(shas[0].clone()),
+            repo_fingerprint: Some(format!("base:{}", shas[0])),
             mutation_id: Some("workspace.create:workspace-1".to_string()),
         })
         .expect("create local workspace");
@@ -6728,6 +6936,144 @@ mod tests {
             .expect("remote workspace");
         assert_eq!(remote.connection_status, "remote_unconnected");
         assert!(remote.local_repo_path.is_none());
+    }
+
+    #[test]
+    fn workspace_create_ack_does_not_clear_later_dirty_name() {
+        let (_db_dir, db) = open_test_db();
+        let (repo_dir, shas) = init_test_repo_with_commits(1);
+        let local_path = std::fs::canonicalize(repo_dir.path())
+            .expect("canonical repo")
+            .to_string_lossy()
+            .to_string();
+        db.local_first_create_workspace(LocalWorkspaceMutationRequest {
+            workspace_id: "workspace-1".to_string(),
+            current_user_id: "user-1".to_string(),
+            name: Some("Initial local name".to_string()),
+            local_repo_path: Some(local_path.clone()),
+            base_commit_sha: Some(shas[0].clone()),
+            repo_fingerprint: Some(format!("base:{}", shas[0])),
+            mutation_id: Some("workspace.create:workspace-1".to_string()),
+        })
+        .expect("create local workspace");
+        let create_event = db
+            .list_due_local_sync_events_for_user("user-1", 25)
+            .expect("list sync events")
+            .into_iter()
+            .find(|event| event.event_type == "workspace.create")
+            .expect("create event");
+
+        db.local_first_rename_workspace("workspace-1", "user-1", "Dirty local name")
+            .expect("rename local workspace");
+        db.mark_local_workspace_persisted(
+            &create_event,
+            Some(&serde_json::json!({"updatedAt":"server-create-v1"})),
+        )
+        .expect("mark create persisted");
+
+        let rows = db
+            .merge_server_workspaces(
+                "user-1",
+                vec![
+                    r#"{"id":"workspace-1","name":"Stale server name","updatedAt":"server-v1"}"#
+                        .to_string(),
+                ],
+            )
+            .expect("merge server workspaces");
+        let local = rows
+            .iter()
+            .find(|row| row.id == "workspace-1")
+            .expect("local workspace");
+
+        assert_eq!(local.name, "Dirty local name");
+        assert!(local.name_dirty);
+        assert!(!local.metadata_dirty);
+    }
+
+    #[test]
+    fn local_first_create_workspace_rejects_non_git_directory() {
+        let (_db_dir, db) = open_test_db();
+        let dir = tempfile::tempdir().expect("plain dir");
+        let err = db
+            .local_first_create_workspace(LocalWorkspaceMutationRequest {
+                workspace_id: "workspace-1".to_string(),
+                current_user_id: "user-1".to_string(),
+                name: Some("Plain directory".to_string()),
+                local_repo_path: Some(dir.path().to_string_lossy().to_string()),
+                base_commit_sha: None,
+                repo_fingerprint: None,
+                mutation_id: None,
+            })
+            .expect_err("plain directory should be rejected");
+
+        assert!(err.contains("not a git worktree"), "{err}");
+    }
+
+    #[test]
+    fn repair_local_workspace_repo_paths_demotes_invalid_cross_machine_path() {
+        let (_db_dir, db) = open_test_db();
+        let now = chrono_like_now();
+        let conn = db.conn.lock().expect("lock db");
+        conn.execute(
+            r#"
+            INSERT INTO local_workspaces (
+                id, user_id, name, folder_path, repo_path, local_repo_path,
+                connection_status, sync_status, created_at, updated_at, local_updated_at
+            )
+            VALUES (
+                'workspace-1', 'user-1', 'Remote path', '/home/example/work/repo',
+                '/home/example/work/repo', '/home/example/work/repo',
+                'connected', 'synced', ?1, ?1, ?2
+            )
+            "#,
+            params![now, unix_timestamp()],
+        )
+        .expect("insert stale workspace");
+
+        TelemetryDb::repair_local_workspace_repo_paths(&conn).expect("repair paths");
+        drop(conn);
+
+        let rows = db.list_local_workspaces("user-1").expect("list workspaces");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].connection_status, "remote_unconnected");
+        assert!(rows[0].local_repo_path.is_none());
+    }
+
+    #[test]
+    fn repair_local_workspace_repo_paths_connects_valid_legacy_path() {
+        let (_db_dir, db) = open_test_db();
+        let (repo_dir, _) = init_test_repo_with_commits(1);
+        let local_path = std::fs::canonicalize(repo_dir.path())
+            .expect("canonical repo")
+            .to_string_lossy()
+            .to_string();
+        let now = chrono_like_now();
+        let conn = db.conn.lock().expect("lock db");
+        conn.execute(
+            r#"
+            INSERT INTO local_workspaces (
+                id, user_id, name, folder_path, repo_path, local_repo_path,
+                connection_status, sync_status, created_at, updated_at, local_updated_at
+            )
+            VALUES (
+                'workspace-1', 'user-1', 'Legacy local path', ?1,
+                NULL, NULL, 'remote_unconnected', 'synced', ?2, ?2, ?3
+            )
+            "#,
+            params![local_path, now, unix_timestamp()],
+        )
+        .expect("insert legacy workspace");
+
+        TelemetryDb::repair_local_workspace_repo_paths(&conn).expect("repair paths");
+        drop(conn);
+
+        let rows = db.list_local_workspaces("user-1").expect("list workspaces");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].connection_status, "connected");
+        assert_eq!(
+            rows[0].local_repo_path.as_deref(),
+            Some(local_path.as_str())
+        );
     }
 
     #[test]

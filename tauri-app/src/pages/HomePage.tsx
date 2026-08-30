@@ -66,6 +66,7 @@ export function HomePage() {
   const [activeView, setActiveView] = useState<'chat' | 'flows' | 'tracking' | 'knowledge' | 'skills' | 'logins'>('chat');
   const [isWorkspaceSelectorOpen, setIsWorkspaceSelectorOpen] = useState(false);
   const [isChatCollapsed, setIsChatCollapsed] = useState(true);
+  const [worktreePolicyPromptRepoPath, setWorktreePolicyPromptRepoPath] = useState<string | null>(null);
   const shellReadyLoggedRef = useRef(false);
   const graphPanelRef = useRef<ImperativePanelHandle>(null);
   const chatPanelRef = useRef<ImperativePanelHandle>(null);
@@ -89,6 +90,15 @@ export function HomePage() {
     if (!workspaces.length || !selectedWorkspaceId) return null;
     return workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null;
   }, [workspaces, selectedWorkspaceId]);
+  const selectedWorkspaceRepoPath = selectedWorkspace
+    ? selectedWorkspace.git_repo_path
+      || selectedWorkspace.local_repo_path
+      || selectedWorkspace.localRepoPath
+      || selectedWorkspace.repo_path
+      || selectedWorkspace.folderPath
+      || null
+    : null;
+  const worktreePolicyRepoPath = worktreePolicyPromptRepoPath ?? selectedWorkspaceRepoPath;
   const routeState = useMemo(() => resolveWorkspaceRouteState({
     workspaceIdParam: workspaceId,
     selectedWorkspaceId,
@@ -159,6 +169,16 @@ export function HomePage() {
     setActiveView('chat'); // Switch to chat view
   };
 
+  const handleRepositoryConnected = useCallback((repoPath: string) => {
+    setWorktreePolicyPromptRepoPath(repoPath);
+  }, []);
+
+  const handleWorktreePolicyOpenChange = useCallback((open: boolean) => {
+    if (!open) {
+      setWorktreePolicyPromptRepoPath(null);
+    }
+  }, []);
+
   const handleGraphChatLayout = useCallback((layout: number[]) => {
     const rememberedSplit = rememberGraphChatSplit(layout);
     if (rememberedSplit) {
@@ -224,6 +244,7 @@ export function HomePage() {
           workspaces={workspaces}
           onSelectWorkspace={(workspaceId) => selectAndNavigateWorkspace(workspaceId, null, { replace: true })}
           onComplete={(workspaceId) => markCompletedOnboarding(user.id, workspaceId)}
+          onRepositoryConnected={handleRepositoryConnected}
         />
       </Suspense>
     );
@@ -255,6 +276,9 @@ export function HomePage() {
           onViewChange={setActiveView}
           selectedWorkspaceId={selectedWorkspaceId}
           selectedWorkspaceName={selectedWorkspace?.name || null}
+          selectedWorkspaceRepoPath={worktreePolicyRepoPath}
+          worktreePolicyOpen={worktreePolicyPromptRepoPath ? true : undefined}
+          onWorktreePolicyOpenChange={worktreePolicyPromptRepoPath ? handleWorktreePolicyOpenChange : undefined}
         />
 
         <main className="app-shell-stage flex h-full min-w-0 flex-1 flex-col overflow-hidden" aria-label="Agentree workspace shell">
@@ -448,6 +472,7 @@ export function HomePage() {
       <WorkspaceSelectionDialog
         isOpen={isWorkspaceSelectorOpen}
         onOpenChange={setIsWorkspaceSelectorOpen}
+        onRepositoryConnected={handleRepositoryConnected}
       />
     </div>
   );

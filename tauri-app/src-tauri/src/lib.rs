@@ -33,6 +33,7 @@ mod runtime_readiness;
 mod runtime_scripts;
 mod skills;
 pub mod types;
+mod worktree_config;
 
 #[cfg(all(debug_assertions, unix))]
 fn prepare_pilot_socket() -> bool {
@@ -166,6 +167,9 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             runtime_readiness::check_runtime_readiness,
             runtime_readiness::check_all_runtime_readiness,
             runtime_readiness::refresh_provider_limits,
+            command_guards::get_agent_sandbox_root,
+            worktree_config::get_agent_worktree_config,
+            worktree_config::save_agent_worktree_config,
             git_workspace::check_local_environment,
             git_workspace::attach_workspace,
             git_workspace::init_git_repo,

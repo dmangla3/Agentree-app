@@ -14,6 +14,8 @@ import { useWorkspaces } from '../hooks/useWorkspaces';
 import { useCommitAncestors, useCommitDescendants } from '../hooks/useMessages';
 import { useCreateThreadSession } from '../hooks/useThreadSessions';
 import { useAgentFlowRunner } from '../hooks/useAgentFlowRunner';
+import { flowRunManager } from '../flows/flowRunManager';
+import { resolveActiveFlowCancelTarget } from '../flows/flowRunSelectors';
 import { getEnabledTrackedGitRefs, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
 import { useTrackedRefs } from '../hooks/useTrackedRefs';
 import { agentRunManager } from '../agent-runs/agentRunManager';
@@ -34,6 +36,7 @@ import { getMergeVisualParentEntries, isMergeResultNode } from '../lib/graph/lin
 import { isFirstClassCommitMessage } from '../lib/graph/turnUtils';
 import { hasFreshContextBoundary } from '../lib/messageContext';
 import { isSteerableAssistantNode } from '../lib/agentRunSteering';
+import { resolveLocalWorkspaceRepoPath } from '../lib/workspaceRepoPath';
 import { dispatchGraphComposerDockExpand } from '../lib/graphComposerDockEvents';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
 import { cn } from '../lib/utils';
@@ -367,8 +370,8 @@ export function GraphDockComposer() {
     [selectedWorkspaceId, workspaces]
   );
   const selectedWorkspaceRepoPath = useMemo(
-    () => selectedWorkspace?.git_repo_path?.trim() || selectedWorkspace?.folderPath?.trim() || null,
-    [selectedWorkspace?.folderPath, selectedWorkspace?.git_repo_path]
+    () => resolveLocalWorkspaceRepoPath(selectedWorkspace),
+    [selectedWorkspace]
   );
   const installedSkillsQuery = useQuery({
     queryKey: ['skills', 'installed'],
@@ -468,6 +471,12 @@ export function GraphDockComposer() {
     status: parentMessage?.status ?? null,
     runStatus: targetRunStatus,
   });
+  const activeFlowCancelTarget = useMemo(() => (
+    resolveActiveFlowCancelTarget({
+      nodeId: target.parentMessageId,
+      node: parentMessage,
+    })
+  ), [parentMessage, target.parentMessageId]);
   const defaultContextParentMessage = useMemo(
     () => resolveConversationContextMessage(target.parentMessageId, messageById),
     [messageById, target.parentMessageId]
@@ -1418,6 +1427,29 @@ export function GraphDockComposer() {
     setError(null);
     setIsCancellingRun(true);
     try {
+      const flowCancelTarget = resolveActiveFlowCancelTarget({
+        nodeId,
+        node: parentMessage,
+      });
+      if (flowCancelTarget) {
+        for (const activeNodeId of flowCancelTarget.activeNodeIds) {
+          const activeMessage = messageById.get(activeNodeId) ?? null;
+          agentRunManager.dispatch(activeNodeId, {
+            type: 'cancel',
+            reason: 'cancelled',
+          }, {
+            workspaceId: activeMessage?.workspaceId ?? selectedWorkspaceId,
+            parentId: activeMessage?.parentId ?? null,
+            role: 'assistant',
+            agentId: activeMessage?.agent_id ?? null,
+            content: activeMessage?.content ?? '',
+            executionData: (activeMessage?.execution_data ?? {}) as Record<string, any>,
+          });
+        }
+        await flowRunManager.cancel(flowCancelTarget.flowRunId, 'cancelled');
+        void scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'cancel-flow' });
+        return;
+      }
       await agentClient.stopAgent(nodeId);
       agentRunManager.dispatch(nodeId, {
         type: 'cancel',
@@ -1437,7 +1469,7 @@ export function GraphDockComposer() {
     } finally {
       setIsCancellingRun(false);
     }
-  }, [isCancellingRun, parentMessage, queryClient, selectedWorkspaceId, target.parentMessageId]);
+  }, [isCancellingRun, messageById, parentMessage, queryClient, selectedWorkspaceId, target.parentMessageId]);
 
   const targetModeLabel = composerTargetMode === 'new-thread' ? 'New thread' : 'Reply to';
   const sendButtonLabel = isSteeringRunningAssistant ? 'Steer' : editDraftSource ? 'Edit and run' : selectedFlow ? 'Run Flow' : 'Send';
@@ -1964,11 +1996,11 @@ export function GraphDockComposer() {
                   'hover:-translate-y-0.5 hover:border-destructive/35 hover:bg-destructive/10 hover:text-destructive active:translate-y-0',
                   'disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:translate-y-0 disabled:hover:border-[hsl(var(--app-border)/0.78)] disabled:hover:text-muted-foreground'
                 )}
-                aria-label="Cancel running agent"
-                title="Cancel running agent"
+                aria-label={activeFlowCancelTarget ? 'Cancel running flow' : 'Cancel running agent'}
+                title={activeFlowCancelTarget ? 'Cancel flow' : 'Cancel running agent'}
               >
                 {isCancellingRun ? <Loader2 className="h-3 w-3 animate-spin" /> : <Square className="h-2.5 w-2.5 fill-current" />}
-                <span className="hidden sm:inline">{isCancellingRun ? 'Stopping' : 'Cancel'}</span>
+                <span className="hidden sm:inline">{isCancellingRun ? 'Stopping' : activeFlowCancelTarget ? 'Cancel flow' : 'Cancel'}</span>
               </button>
             ) : null}
             <button
