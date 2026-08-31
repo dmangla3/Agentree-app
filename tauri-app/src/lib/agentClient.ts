@@ -334,6 +334,29 @@ export interface StartAgentRunIntent {
     loginProfileId?: string | null;
 }
 
+export interface InternalCompletionRequest {
+    purpose: string;
+    provider: string;
+    model: string;
+    reasoningEffort?: string | null;
+    loginProfileId?: string | null;
+    requestId?: string | null;
+    prompt: string;
+}
+
+export interface InternalCompletionEvent {
+    requestId: string;
+    stream: string;
+    line: string;
+}
+
+export interface InternalCompletionResponse {
+    text: string;
+    provider: string;
+    model: string;
+    usage?: unknown | null;
+}
+
 export interface LoginProfile {
     id: string;
     provider: string;
@@ -922,6 +945,21 @@ export const agentClient = {
             loginProfileId: intent.loginProfileId ?? null,
         } as any);
     },
+    completeInternalPrompt: async (request: InternalCompletionRequest): Promise<InternalCompletionResponse> => {
+        if (!hasTauriRuntime()) {
+            throw new Error('Flow authoring requires the Agentree desktop runtime.');
+        }
+        return await tauriCommands.completeInternalPrompt({
+            ...request,
+            reasoningEffort: request.reasoningEffort ?? null,
+            loginProfileId: request.loginProfileId ?? null,
+            requestId: request.requestId ?? null,
+        });
+    },
+    cancelInternalCompletion: async (requestId: string): Promise<void> => {
+        if (!hasTauriRuntime()) return;
+        await (tauriCommands as any).cancelInternalCompletion(requestId);
+    },
     listLoginProfiles: async (): Promise<LoginProfile[]> => {
         if (!hasTauriRuntime()) return [];
         return await (tauriCommands as any).listLoginProfiles() as LoginProfile[];
@@ -971,6 +1009,12 @@ export const agentClient = {
 
     onEvent: async (callback: (event: AgentRuntimeEventEnvelope) => void): Promise<UnlistenFn> => {
         return await listen<AgentRuntimeEventEnvelope>('agent:event', (event) => {
+            callback(event.payload);
+        });
+    },
+    onInternalCompletionEvent: async (callback: (event: InternalCompletionEvent) => void): Promise<UnlistenFn> => {
+        if (!hasTauriRuntime()) return () => {};
+        return await listen<InternalCompletionEvent>('internal-completion:event', (event) => {
             callback(event.payload);
         });
     },

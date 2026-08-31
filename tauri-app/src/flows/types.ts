@@ -1,6 +1,16 @@
 export type FlowScope = 'global' | 'workspace';
 export type UserFlowScope = FlowScope;
 export type FlowScalarType = 'string' | 'integer' | 'node';
+export type FlowParamType =
+  | 'string'
+  | 'integer'
+  | 'boolean'
+  | 'commit'
+  | 'commit[]'
+  | 'agent'
+  | 'agent[]'
+  | 'verdict'
+  | 'scalar';
 export type FlowNodeStatus = 'pending' | 'running' | 'complete' | 'failed' | 'cancelled';
 
 export interface FlowSource {
@@ -38,6 +48,7 @@ export interface FlowNodeTemplate {
   registryId?: string;
   label?: string;
   params?: string[];
+  paramTypes?: Record<string, FlowParamType[]>;
   parent: string;
   returns?: Record<string, FlowReturnDefinition>;
   prompt: string;

@@ -19,6 +19,7 @@ function singleCallDefinition(): FlowDefinition {
     nodes: [{
       id: 'Worker',
       params: ['request'],
+      paramTypes: { request: ['string'] },
       parent: 'root',
       prompt: '{{ request }}',
     }],
@@ -109,6 +110,18 @@ describe('executeFlow', () => {
             message: 'fixed\ncounterpoint: reviewer missed context',
           });
         }
+        if (input.templateId === 'Handoff') {
+          expect(input.requiresFinalizedCommit).toBe(false);
+          expect(input.parent).toEqual(expect.objectContaining({ id: 'fixer-1' }));
+          expect(input.args.request).toBe('Build the feature');
+          expect(input.args.phase).toBe('implementation handoff');
+          expect(input.args.source_nodes).toEqual(expect.objectContaining({ id: 'fixer-1' }));
+          expect(input.args.review).toEqual(expect.objectContaining({ id: 'reviewer-2' }));
+          expect(input.prompt).toContain('prose-only node');
+          expect(input.prompt).toContain('Summarize the final implementation');
+          expect(input.prompt).toContain('reviewer-2');
+          return node({ id: 'handoff-1', label: 'Handoff', message: '## What Matters\n- Fixed.' });
+        }
         throw new Error(`Unexpected template ${input.templateId}`);
       },
     };
@@ -139,6 +152,10 @@ describe('executeFlow', () => {
     expect(calls[5]).toEqual(expect.objectContaining({
       templateId: 'Reviewer',
       parent: 'root',
+    }));
+    expect(calls[6]).toEqual(expect.objectContaining({
+      templateId: 'Handoff',
+      parent: expect.objectContaining({ id: 'fixer-1' }),
     }));
   });
 
@@ -233,6 +250,9 @@ describe('executeFlow', () => {
           expect(input.args.latest_fix_commit).toBeNull();
           expect(input.prompt).not.toContain('Using the first candidate unchanged');
           return node({ id: 'reviewer', message: 'verdict: pass' });
+        }
+        if (input.templateId === 'Handoff') {
+          return node({ id: 'handoff' });
         }
         throw new Error(`Unexpected template ${input.templateId}`);
       },

@@ -28,7 +28,7 @@ describe('validateFlowDefinition', () => {
     const result = validateFlowDefinition({
       flow: { id: 'call_parent' },
       nodes: [
-        { id: 'Reviewer', params: ['request'], parent: 'root', prompt: 'Review {{ request }}' },
+        { id: 'Reviewer', params: { request: 'string' }, parent: 'root', prompt: 'Review {{ request }}' },
       ],
       run: [
         { set: 'reviewer_parent', value: 'root' },
@@ -77,13 +77,142 @@ describe('validateFlowDefinition', () => {
   it('rejects args that are not declared as node params', () => {
     const result = validateFlowDefinition({
       flow: { id: 'bad_args' },
-      nodes: [{ id: 'Worker', params: ['input'], parent: 'root', prompt: 'work' }],
+      nodes: [{ id: 'Worker', params: { input: 'string' }, parent: 'root', prompt: 'work' }],
       run: [{ set: 'result', call: 'Worker', args: { input: 'input.input', extra: 'input.extra' } }],
     });
 
     expect(result.issues).toContainEqual({
       path: 'run.0.args.extra',
       message: 'Argument "extra" is not declared in params for node template "Worker".',
+    });
+  });
+
+  it('rejects legacy array params', () => {
+    const result = validateFlowDefinition({
+      flow: { id: 'legacy_params' },
+      inputs: { input: { type: 'string' } },
+      nodes: [{ id: 'Worker', params: ['request'], parent: 'root', prompt: 'work {{ request }}' }],
+      run: [{ set: 'worker', call: 'Worker', args: { request: 'input.input' } }],
+    });
+
+    expect(result.issues).toContainEqual({
+      path: 'nodes.0.params',
+      message: 'Node params must be an object of typed params.',
+    });
+  });
+
+  it('rejects unknown projected node fields in flow expressions', () => {
+    const result = validateFlowDefinition({
+      flow: { id: 'bad_projection' },
+      inputs: { input: { type: 'string' } },
+      nodes: [
+        { id: 'Planner', params: { request: 'string' }, parent: 'root', prompt: 'plan {{ request }}' },
+        {
+          id: 'PlanSynthesizer',
+          params: { candidate_commits: 'commit[]' },
+          parent: 'root',
+          prompt: 'synthesize {{ candidate_commits }}',
+        },
+      ],
+      run: [
+        {
+          set: 'planners',
+          parallel: {
+            count: 3,
+            call: 'Planner',
+            args: { request: 'input.input' },
+          },
+        },
+        {
+          set: 'final_plan',
+          call: 'PlanSynthesizer',
+          args: { candidate_commits: 'planners.commits' },
+        },
+      ],
+    });
+
+    expect(result.issues).toContainEqual({
+      path: 'run.1.args.candidate_commits',
+      message: 'Expression "planners.commits" references unknown field "commits" on "planners". Did you mean "planners.commit"?',
+    });
+  });
+
+  it('accepts singular projected node fields in flow expressions', () => {
+    const result = validateFlowDefinition({
+      flow: { id: 'good_projection' },
+      inputs: { input: { type: 'string' } },
+      nodes: [
+        { id: 'Planner', params: { request: 'string' }, parent: 'root', prompt: 'plan {{ request }}' },
+        {
+          id: 'PlanSynthesizer',
+          params: { candidate_commits: 'commit[]' },
+          parent: 'root',
+          prompt: 'synthesize {{ candidate_commits }}',
+        },
+      ],
+      run: [
+        {
+          set: 'planners',
+          parallel: {
+            count: 3,
+            call: 'Planner',
+            args: { request: 'input.input' },
+          },
+        },
+        {
+          set: 'final_plan',
+          call: 'PlanSynthesizer',
+          args: { candidate_commits: 'planners.commit' },
+        },
+      ],
+    });
+
+    expect(result.issues).toEqual([]);
+  });
+
+  it('accepts typed object params and normalizes them on compiled templates', () => {
+    const result = validateFlowDefinition({
+      flow: { id: 'typed_params' },
+      inputs: { input: { type: 'string' } },
+      nodes: [
+        {
+          id: 'Worker',
+          params: { request: 'string', source_nodes: 'agent | agent[]' },
+          parent: 'root',
+          prompt: 'work {{ request }}',
+        },
+      ],
+      run: [
+        { set: 'worker', call: 'Worker', args: { request: 'input.input' } },
+        { set: 'handoff', call: 'Worker', args: { request: 'input.input', source_nodes: 'worker' } },
+      ],
+    });
+
+    expect(result.issues).toEqual([]);
+    expect(result.definition?.nodes[0].params).toEqual(['request', 'source_nodes']);
+    expect(result.definition?.nodes[0].paramTypes).toEqual({
+      request: ['string'],
+      source_nodes: ['agent', 'agent[]'],
+    });
+  });
+
+  it('rejects incompatible typed argument bindings before save or run', () => {
+    const result = validateFlowDefinition({
+      flow: { id: 'type_mismatch' },
+      inputs: { input: { type: 'string' } },
+      nodes: [
+        { id: 'Implementer', params: { request: 'string' }, parent: 'root', requiresFinalizedCommit: true, prompt: 'work {{ request }}' },
+        { id: 'Reviewer', params: { commit: 'commit' }, parent: 'root', prompt: 'review {{ commit }}' },
+      ],
+      run: [
+        { set: 'implementations', parallel: { count: 2, call: 'Implementer', args: { request: 'input.input' } } },
+        { set: 'reviewer', call: 'Reviewer', args: { commit: 'implementations.commit' } },
+      ],
+    });
+
+    expect(result.issues).toContainEqual({
+      path: 'run.1.args.commit',
+      message: 'Reviewer.commit expected commit but expression "implementations.commit" resolves to commit[].',
     });
   });
 

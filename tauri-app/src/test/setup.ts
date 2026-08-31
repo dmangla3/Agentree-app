@@ -25,6 +25,12 @@ const installMemoryLocalStorage = () => {
   });
 };
 
+class MockResizeObserver implements ResizeObserver {
+  observe = vi.fn();
+  unobserve = vi.fn();
+  disconnect = vi.fn();
+}
+
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
   isTauri: vi.fn(() => false),
@@ -47,6 +53,14 @@ vi.mock('../lib/analytics', () => ({
 
 beforeAll(() => {
   installMemoryLocalStorage();
+  Object.defineProperty(window, 'ResizeObserver', {
+    configurable: true,
+    value: MockResizeObserver,
+  });
+  Object.defineProperty(globalThis, 'ResizeObserver', {
+    configurable: true,
+    value: MockResizeObserver,
+  });
   server.listen({ onUnhandledRequest: 'error' });
 });
 

@@ -31,6 +31,9 @@ nodes:
   - use: core.fixer@1
     as: Fixer
 
+  - use: core.handoff@1
+    as: Handoff
+
 run:
   - set: implementations
     parallel:
@@ -62,6 +65,9 @@ run:
 
   - set: fixer_parent
     value: implementation
+
+  - set: reviewer
+    value: null
 
   - set: latest_fix_commit
     value: null
@@ -96,6 +102,16 @@ run:
 
         - set: fixer_parent
           value: fixer
+
+  - set: handoff
+    call: Handoff
+    parent: fixer_parent
+    args:
+      request: input.input
+      phase: implementation handoff
+      source_nodes: fixer_parent
+      review: reviewer
+      focus: "Summarize the final implementation in simple words and give the user only the key things to test before accepting or requesting changes."
 `,
   },
 ];

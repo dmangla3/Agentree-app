@@ -46,6 +46,18 @@ describe('buildFlowRunMermaid', () => {
     expect(chart).not.toContain('set workers');
   });
 
+  it('renders break as a loop exit instead of a continuation to later loop steps', () => {
+    const chart = buildFlowRunMermaid(definition);
+    const breakNode = chart.match(/(step_\d+)\(\("break"\)\)/)?.[1];
+    const fixerNode = chart.match(/(step_\d+)\["Fixer"\]/)?.[1];
+
+    expect(breakNode).toBeTruthy();
+    expect(fixerNode).toBeTruthy();
+    expect(chart).toContain(`${breakNode} -->|break| done`);
+    expect(chart).not.toContain(`${breakNode} -->|break| ${fixerNode}`);
+    expect(chart).not.toContain(`${breakNode} -->|next|`);
+  });
+
   it('can include set statements in debug mode', () => {
     const chart = buildFlowRunMermaid({
       ...definition,

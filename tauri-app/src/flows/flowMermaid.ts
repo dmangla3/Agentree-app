@@ -9,6 +9,11 @@ interface EdgeTail {
   label?: string;
 }
 
+interface FlowTails {
+  next: EdgeTail[];
+  breaks: EdgeTail[];
+}
+
 interface MermaidBuildContext {
   lines: string[];
   edges: string[];
@@ -29,7 +34,8 @@ export function buildFlowRunMermaid(definition: FlowDefinition, options: FlowMer
   };
 
   const tails = appendStatements(definition, [{ id: 'start' }], definition.run, context);
-  for (const tail of tails.length > 0 ? tails : [{ id: 'start' }]) {
+  const terminalTails = [...tails.next, ...tails.breaks];
+  for (const tail of terminalTails.length > 0 ? terminalTails : [{ id: 'start' }]) {
     connect(context, tail, 'done');
   }
 
@@ -49,13 +55,16 @@ function appendStatements(
   incoming: EdgeTail[],
   statements: FlowStatement[],
   context: MermaidBuildContext
-): EdgeTail[] {
+): FlowTails {
   let tails = incoming;
+  const breaks: EdgeTail[] = [];
   for (const statement of statements) {
-    tails = appendStatement(definition, tails, statement, context);
+    const result = appendStatement(definition, tails, statement, context);
+    breaks.push(...result.breaks);
+    tails = result.next;
     if (tails.length === 0) break;
   }
-  return tails;
+  return { next: tails, breaks };
 }
 
 function appendStatement(
@@ -63,15 +72,15 @@ function appendStatement(
   incoming: EdgeTail[],
   statement: FlowStatement,
   context: MermaidBuildContext
-): EdgeTail[] {
+): FlowTails {
   if ('call' in statement) {
     const id = addNode(context, statement.call, 'agentStep');
     incoming.forEach((tail) => connect(context, tail, id));
-    return [{ id }];
+    return { next: [{ id }], breaks: [] };
   }
 
   if ('parallel' in statement) {
-    return appendParallel(definition, incoming, statement, context);
+    return { next: appendParallel(definition, incoming, statement, context), breaks: [] };
   }
 
   if ('if' in statement) {
@@ -79,36 +88,42 @@ function appendStatement(
     incoming.forEach((tail) => connect(context, tail, id));
     const thenSteps = Array.isArray(statement.then) ? statement.then : [statement.then];
     const thenTails = appendStatements(definition, [{ id, label: 'true' }], thenSteps, context);
-    return [...thenTails, { id, label: 'false' }];
+    return {
+      next: [...thenTails.next, { id, label: 'false' }],
+      breaks: thenTails.breaks,
+    };
   }
 
   if ('loop' in statement) {
     const id = addNode(context, `loop max ${statement.loop.max_rounds}`, 'controlStep', 'decision');
     incoming.forEach((tail) => connect(context, tail, id));
     const loopTails = appendStatements(definition, [{ id, label: 'round' }], statement.loop.steps, context);
-    loopTails.forEach((tail) => connect(context, tail, id, tail.label ?? 'next'));
-    return [{ id, label: 'done' }];
+    loopTails.next.forEach((tail) => connect(context, tail, id, tail.label ?? 'next'));
+    return {
+      next: [{ id, label: 'done' }, ...loopTails.breaks],
+      breaks: [],
+    };
   }
 
   if ('stop' in statement) {
     const id = addNode(context, `stop: ${statement.stop}`, 'terminalStep', 'terminal');
     incoming.forEach((tail) => connect(context, tail, id));
-    return [];
+    return { next: [], breaks: [] };
   }
 
   if ('break' in statement) {
     const id = addNode(context, 'break', 'controlStep', 'terminal');
     incoming.forEach((tail) => connect(context, tail, id));
-    return [{ id, label: 'break' }];
+    return { next: [], breaks: [{ id, label: 'break' }] };
   }
 
   if ('value' in statement && context.options.debugSetStatements) {
     const id = addNode(context, `set ${statement.set}`, 'controlStep');
     incoming.forEach((tail) => connect(context, tail, id));
-    return [{ id }];
+    return { next: [{ id }], breaks: [] };
   }
 
-  return incoming;
+  return { next: incoming, breaks: [] };
 }
 
 function appendParallel(

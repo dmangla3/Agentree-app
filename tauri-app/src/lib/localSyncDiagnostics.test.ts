@@ -31,6 +31,16 @@ describe('localSyncDiagnostics', () => {
     unsubscribe();
   });
 
+  it('classifies missing relation failures as schema not ready', () => {
+    reportLocalSyncFailure(new Error('insight.upsert failed with status 500 Internal Server Error: {"error":"Failed to sync insight: relation \\"Insights\\" does not exist"}'));
+
+    expect(getLocalSyncPauseState()).toEqual(expect.objectContaining({
+      paused: true,
+      reason: 'server_schema_not_ready',
+      message: 'Local sync is paused because the backend database schema is not ready. Run the dev migrations, restart the server, then retry sync.',
+    }));
+  });
+
   it('keeps sync paused after repeated server errors until explicitly cleared', () => {
     reportLocalSyncFailure(new Error('node.delete failed with status 500 Internal Server Error'));
     reportLocalSyncFailure(new Error('node.update_terminal transport error: operation timed out'));

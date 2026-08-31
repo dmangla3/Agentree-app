@@ -1,4 +1,5 @@
-import { compileFlowDefinition } from './flowNodeRegistry';
+import { compileFlowDefinition, FLOW_NODE_REGISTRY, type FlowNodeRegistry } from './flowNodeRegistry';
+import { extractFlowRegistryAdditions, mergeFlowRegistryAdditions } from './flowRegistryAdditions';
 import { parseFlowYaml } from './parseFlowYaml';
 import { PREDEFINED_FLOW_SOURCES } from './predefinedFlows';
 import type { FlowDefinition, FlowSource, FlowValidationIssue, UserFlowSource } from './types';
@@ -30,12 +31,14 @@ export interface RunnableFlowDescriptor {
 export function buildFlowCatalog(input?: {
   predefinedSources?: FlowSource[];
   userSources?: UserFlowSource[];
+  registry?: FlowNodeRegistry;
 }): FlowCatalogItem[] {
   const predefinedSources = input?.predefinedSources ?? PREDEFINED_FLOW_SOURCES;
   const userSources = input?.userSources ?? [];
+  const registry = input?.registry;
   return [
-    ...predefinedSources.map((source) => compileCatalogSource(source, 'predefined')),
-    ...userSources.map((source) => compileCatalogSource(source, 'user')),
+    ...predefinedSources.map((source) => compileCatalogSource(source, 'predefined', registry)),
+    ...userSources.map((source) => compileCatalogSource(source, 'user', registry)),
   ].sort(compareCatalogItems);
 }
 
@@ -52,14 +55,21 @@ export function getRunnableFlowDescriptors(catalog: FlowCatalogItem[]): Runnable
     }));
 }
 
-export function compileCatalogSource(source: FlowSource | UserFlowSource, kind: FlowCatalogSourceKind): FlowCatalogItem {
+export function compileCatalogSource(
+  source: FlowSource | UserFlowSource,
+  kind: FlowCatalogSourceKind,
+  registry?: FlowNodeRegistry
+): FlowCatalogItem {
   const enabled = kind === 'predefined' || !('enabled' in source) || source.enabled;
   const sourceVersion = 'version' in source ? source.version : 1;
   try {
-    const result = compileFlowDefinition(parseFlowYaml(source.source));
-    const definition = result.definition ?? null;
+    const parsed = parseFlowYaml(source.source);
+    const baseRegistry = registry ?? FLOW_NODE_REGISTRY;
+    const extracted = extractFlowRegistryAdditions(parsed, baseRegistry);
+    const result = compileFlowDefinition(parsed, mergeFlowRegistryAdditions(baseRegistry, extracted.registryAdditions));
+    const issues = [...extracted.issues, ...result.issues];
+    const definition = issues.length === 0 ? result.definition ?? null : null;
     const label = definition?.flow.label ?? source.label;
-    const issues = result.issues;
     return {
       id: source.id,
       label,

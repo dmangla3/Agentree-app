@@ -5,6 +5,7 @@ import type {
   FlowDefinition,
   FlowNodeTemplate,
   FlowNodeValue,
+  FlowParamType,
   FlowRuntimeValue,
   FlowStatement,
 } from './types';
@@ -222,6 +223,10 @@ async function executeCall(
   if (argsResult.issues.length > 0) {
     return { node: emptyNode(templateId), signal: stopFromIssues(argsResult.issues) };
   }
+  const typeIssues = validateRuntimeArgs(template, argsResult.args);
+  if (typeIssues.length > 0) {
+    return { node: emptyNode(templateId), signal: stopFromIssues(typeIssues) };
+  }
 
   let prompt: string;
   let parent: FlowRuntimeValue;
@@ -307,6 +312,41 @@ function evaluateArgs(
     }
   }
   return { args, issues };
+}
+
+function validateRuntimeArgs(template: FlowNodeTemplate, args: Record<string, FlowRuntimeValue>): string[] {
+  const issues: string[] = [];
+  for (const [key, value] of Object.entries(args)) {
+    const expected = template.paramTypes?.[key];
+    if (!expected) continue;
+    if (expected.includes('scalar')) continue;
+    const actual = runtimeValueType(value);
+    if (!actual || isRuntimeTypeCompatible(actual, expected)) continue;
+    issues.push(`${template.id}.${key} expected ${expected.join(' | ')}, got ${actual}.`);
+  }
+  return issues;
+}
+
+function isRuntimeTypeCompatible(actual: FlowParamType, expected: FlowParamType[]): boolean {
+  if (expected.includes(actual)) return true;
+  if (actual === 'string' && (expected.includes('commit') || expected.includes('verdict'))) return true;
+  if (actual === 'commit[]' && expected.includes('commit[]')) return true;
+  return false;
+}
+
+function runtimeValueType(value: FlowRuntimeValue): FlowParamType | null {
+  if (value === null) return null;
+  if (Array.isArray(value)) {
+    const firstType = value.length > 0 ? runtimeValueType(value[0]) : null;
+    if (firstType === 'commit' || firstType === 'string') return 'commit[]';
+    if (firstType === 'agent') return 'agent[]';
+    return null;
+  }
+  if (typeof value === 'string') return 'string';
+  if (typeof value === 'number') return Number.isInteger(value) ? 'integer' : 'scalar';
+  if (typeof value === 'boolean') return 'boolean';
+  if (typeof value === 'object' && value.kind === 'node') return 'agent';
+  return null;
 }
 
 function resolveCallParent(parentExpression: string, scope: Record<string, FlowRuntimeValue>): FlowRuntimeValue {

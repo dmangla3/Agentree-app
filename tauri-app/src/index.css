@@ -629,6 +629,115 @@
   color: hsl(var(--foreground));
 }
 
+.agentree-flow-canvas,
+.agentree-flow-canvas .react-flow__pane {
+  user-select: none;
+}
+
+.agentree-flow-canvas .agentree-flow-react-flow {
+  min-width: 0;
+  min-height: 0;
+  overflow: clip !important;
+  cursor: grab !important;
+  background:
+    radial-gradient(circle at 18% 0%, hsl(var(--app-accent) / 0.07), transparent 32%),
+    linear-gradient(180deg, hsl(var(--app-bg-muted) / 0.38), hsl(var(--app-panel) / 0.26));
+}
+
+.agentree-flow-canvas .react-flow__renderer,
+.agentree-flow-canvas .react-flow__pane {
+  overflow: clip !important;
+}
+
+.agentree-flow-canvas .react-flow__pane {
+  cursor: grab !important;
+}
+
+.agentree-flow-canvas .react-flow__pane.dragging {
+  cursor: grabbing !important;
+}
+
+.agentree-flow-canvas .react-flow__edge-path {
+  stroke: hsl(var(--app-border-strong) / 0.72);
+  stroke-width: 1.5;
+}
+
+.agentree-flow-canvas .react-flow__edge.animated .react-flow__edge-path {
+  stroke: hsl(var(--app-graph-summary) / 0.72);
+}
+
+.agentree-flow-canvas .react-flow__edge.agentree-flow-data-edge .react-flow__edge-path {
+  stroke: hsl(var(--app-graph-commit) / 0.78);
+  stroke-width: 1.7;
+}
+
+.agentree-flow-canvas .react-flow__edge-textbg {
+  fill: hsl(var(--app-panel) / 0.9);
+}
+
+.agentree-flow-canvas .react-flow__edge-text {
+  fill: hsl(var(--muted-foreground));
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.agentree-flow-canvas .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid hsl(var(--app-border) / 0.72);
+  border-radius: 0.75rem;
+  background: hsl(var(--app-panel) / 0.9);
+  box-shadow: var(--app-shadow-panel);
+  backdrop-filter: blur(14px);
+}
+
+.agentree-flow-canvas .react-flow__controls-button {
+  border: 0;
+  border-bottom: 1px solid hsl(var(--app-border) / 0.72);
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  fill: currentColor;
+  transition: background-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.agentree-flow-canvas .react-flow__controls-button:last-child {
+  border-bottom: 0;
+}
+
+.agentree-flow-canvas .react-flow__controls-button:hover {
+  background: hsl(var(--app-accent-soft) / 0.72);
+  color: hsl(var(--foreground));
+}
+
+.agentree-flow-canvas .react-flow__controls-button:active {
+  transform: scale(0.96);
+}
+
+.agentree-flow-canvas .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.dark .agentree-flow-canvas .agentree-flow-react-flow {
+  background:
+    radial-gradient(circle at 18% 0%, hsl(var(--app-accent) / 0.08), transparent 34%),
+    linear-gradient(180deg, hsl(var(--app-bg-muted) / 0.38), hsl(var(--app-bg) / 0.18));
+}
+
+.dark .agentree-flow-canvas .react-flow__controls {
+  border-color: hsl(var(--app-border) / 0.82);
+  background: hsl(var(--app-panel) / 0.92);
+  box-shadow: var(--app-shadow-floating);
+}
+
+.dark .agentree-flow-canvas .react-flow__controls-button {
+  border-bottom-color: hsl(var(--app-border) / 0.82);
+  color: hsl(var(--muted-foreground));
+}
+
+.dark .agentree-flow-canvas .react-flow__controls-button:hover {
+  background: hsl(var(--app-panel-strong) / 0.88);
+  color: hsl(var(--foreground));
+}
+
 @layer utilities {
   .text-\[9px\] {
     font-size: 10px;

@@ -24,6 +24,7 @@ mod db;
 mod editors;
 mod git_workspace;
 mod graph_snapshot_cache;
+mod internal_completion;
 mod logging;
 mod login_profiles;
 mod mcp;
@@ -166,6 +167,8 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             agents::stop_agent,
             agents::steer_agent_run,
             agents::get_agent_run_state,
+            internal_completion::complete_internal_prompt,
+            internal_completion::cancel_internal_completion,
             login_profiles::list_login_profiles,
             login_profiles::upsert_login_profile,
             login_profiles::delete_login_profile,

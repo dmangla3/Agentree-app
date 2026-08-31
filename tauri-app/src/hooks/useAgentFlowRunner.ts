@@ -4,12 +4,14 @@ import { TERMINAL_STATUSES } from '@shared/agentStatus';
 import { createAgentreeFlowNodeRunner } from '../flows/agentreeFlowNodeRunner';
 import { executeFlow, throwIfFlowCancelled, type FlowExecutionEvent, type FlowExecutionResult } from '../flows/flowExecutor';
 import { buildFlowCatalog, getRunnableFlowDescriptors, type RunnableFlowDescriptor } from '../flows/flowCatalog';
+import { buildUserFlowNodeRegistry, useUserFlowNodeDefinitions } from '../flows/userFlowNodeRegistryStore';
 import { flowRunManager } from '../flows/flowRunManager';
 import { useUserFlowSources } from '../flows/userFlowStore';
 import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
 import type { Message } from '../stores/workspaceStore';
 import type { ComposerContextManifest } from '../lib/composerContext';
 import { agentClient } from '../lib/agentClient';
+import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { localNodeKeys, parseLocalNode, type LocalNodeMessage } from './useLocalNodes';
 import { useAgentNodeLauncher, type UseAgentNodeLauncherOptions } from './useAgentNodeLauncher';
 
@@ -35,7 +37,9 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
   const queryClient = useQueryClient();
   const { launchAgentNode } = useAgentNodeLauncher({ startStreamForNode: input.startStreamForNode });
   const userFlowSources = useUserFlowSources(input.workspaceId);
-  const catalog = useMemo(() => buildFlowCatalog({ userSources: userFlowSources }), [userFlowSources]);
+  const userNodeDefinitions = useUserFlowNodeDefinitions();
+  const registry = useMemo(() => buildUserFlowNodeRegistry(userNodeDefinitions), [userNodeDefinitions]);
+  const catalog = useMemo(() => buildFlowCatalog({ userSources: userFlowSources, registry }), [registry, userFlowSources]);
   const flows = useMemo(() => getRunnableFlowDescriptors(catalog), [catalog]);
   const [selectedFlowId, setSelectedFlowId] = useState('');
   const [events, setEvents] = useState<FlowExecutionEvent[]>([]);
@@ -228,7 +232,7 @@ function waitForAssistantNodePoll(signal: AbortSignal | undefined): Promise<void
 }
 
 function readMessageCommit(message: Message): string | null {
-  return message.output_commit_sha ?? message.commit?.sha ?? null;
+  return getMessageOutputCommitSha(message);
 }
 
 async function readPersistedAssistantNode(

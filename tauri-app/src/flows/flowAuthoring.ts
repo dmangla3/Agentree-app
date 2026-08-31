@@ -1,6 +1,6 @@
-import { stringify } from 'yaml';
 import { buildFlowAuthoringPrompt, buildFlowAuthoringRepairPrompt } from './flowAuthoringPrompt';
-import { compileFlowDefinition } from './flowNodeRegistry';
+import { compileFlowDefinition, FLOW_NODE_REGISTRY, type FlowNodeDefinition, type FlowNodeRegistry } from './flowNodeRegistry';
+import { extractFlowRegistryAdditions, mergeFlowRegistryAdditions } from './flowRegistryAdditions';
 import { parseFlowYaml } from './parseFlowYaml';
 import type { FlowDefinition, FlowValidationIssue, UserFlowSource } from './types';
 
@@ -14,13 +14,16 @@ export interface AuthorFlowFromNaturalLanguageInput {
   workspaceId?: string | null;
   maxRepairAttempts?: number;
   now?: string;
+  registry?: FlowNodeRegistry;
 }
 
 export interface FlowAuthoringReview {
   status: 'ready';
   source: UserFlowSource;
   definition: FlowDefinition;
+  registryAdditions: FlowNodeDefinition[];
   registryNodeIds: string[];
+  registryAdditionIds: string[];
   inlineNodeIds: string[];
   attempts: number;
 }
@@ -37,10 +40,11 @@ export type FlowAuthoringResult = FlowAuthoringReview | FlowAuthoringFailure;
 export async function authorFlowFromNaturalLanguage(input: AuthorFlowFromNaturalLanguageInput): Promise<FlowAuthoringResult> {
   const maxRepairAttempts = input.maxRepairAttempts ?? 2;
   const now = input.now ?? new Date().toISOString();
+  const baseRegistry = input.registry ?? FLOW_NODE_REGISTRY;
   let attempts = 0;
-  let yaml = extractYaml(await input.agent.complete(buildFlowAuthoringPrompt(input.request)));
+  let yaml = extractYaml(await input.agent.complete(buildFlowAuthoringPrompt(input.request, baseRegistry)));
   attempts += 1;
-  let validation = validateDraftYaml(yaml);
+  let validation = validateDraftYaml(yaml, baseRegistry);
 
   while (validation.issues.length > 0 && attempts <= maxRepairAttempts) {
     yaml = extractYaml(await input.agent.complete(buildFlowAuthoringRepairPrompt({
@@ -49,7 +53,7 @@ export async function authorFlowFromNaturalLanguage(input: AuthorFlowFromNatural
       issues: validation.issues.map((issue) => formatIssue(issue)),
     })));
     attempts += 1;
-    validation = validateDraftYaml(yaml);
+    validation = validateDraftYaml(yaml, baseRegistry);
   }
 
   const source = toUserFlowSource({
@@ -73,40 +77,33 @@ export async function authorFlowFromNaturalLanguage(input: AuthorFlowFromNatural
     status: 'ready',
     source,
     definition: validation.definition,
+    registryAdditions: validation.registryAdditions,
     registryNodeIds: validation.definition.nodes.flatMap((node) => node.registryId ? [node.registryId] : []),
+    registryAdditionIds: validation.registryAdditions.map((definition) => definition.id),
     inlineNodeIds: validation.definition.nodes.flatMap((node) => node.registryId ? [] : [node.id]),
     attempts,
   };
 }
 
-export function createRuleBasedFlowDraft(request: string): string {
-  const label = titleCase(request).slice(0, 64) || 'Custom Flow';
-  const id = slugifyFlowId(label);
-  return stringify({
-    flow: { id, label },
-    inputs: {
-      input: { type: 'string' },
-    },
-    nodes: [
-      { use: 'core.implementer@1', as: 'Implementer' },
-    ],
-    run: [
-      {
-        set: 'implementation',
-        call: 'Implementer',
-        parent: 'root',
-        args: { request: 'input.input' },
-      },
-    ],
-  }).trim();
-}
-
-function validateDraftYaml(source: string): { definition: FlowDefinition | null; issues: FlowValidationIssue[] } {
+function validateDraftYaml(
+  source: string,
+  baseRegistry: FlowNodeRegistry
+): { definition: FlowDefinition | null; registryAdditions: FlowNodeDefinition[]; issues: FlowValidationIssue[] } {
   try {
-    return compileFlowDefinition(parseFlowYaml(source));
+    const parsed = parseFlowYaml(source);
+    const extracted = extractFlowRegistryAdditions(parsed, baseRegistry);
+    const candidateRegistry = mergeFlowRegistryAdditions(baseRegistry, extracted.registryAdditions);
+    const compiled = compileFlowDefinition(parsed, candidateRegistry);
+    const issues = [...extracted.issues, ...compiled.issues];
+    return {
+      definition: issues.length === 0 ? compiled.definition : null,
+      registryAdditions: extracted.registryAdditions,
+      issues,
+    };
   } catch (error) {
     return {
       definition: null,
+      registryAdditions: [],
       issues: [{
         path: '',
         message: error instanceof Error ? error.message : 'Flow YAML could not be parsed.',

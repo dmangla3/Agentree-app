@@ -857,7 +857,7 @@ fn claude_global_config_json_path() -> Result<PathBuf, String> {
         .ok_or_else(|| "failed to resolve home directory for Claude config".to_string())
 }
 
-fn apply_claude_oauth_command_env(command: &mut Command, _claude_home_dir: &Path) {
+pub(crate) fn apply_claude_oauth_command_env(command: &mut Command, _claude_home_dir: &Path) {
     for key in ["HOME", "USER", "LOGNAME", "SHELL"] {
         if let Ok(value) = std::env::var(key) {
             command.env(key, value);

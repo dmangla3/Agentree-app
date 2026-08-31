@@ -1,19 +1,36 @@
-import { CheckCircle2, ChevronDown, FileCode2, ListChecks, Loader2, Network, Plus, Workflow } from 'lucide-react';
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
-import MermaidDiagram from '../MermaidDiagram';
-import { authorFlowFromNaturalLanguage, createRuleBasedFlowDraft, type FlowAuthoringResult } from '../../flows/flowAuthoring';
+import { Bot, CheckCircle2, ChevronDown, FileCode2, ListChecks, Loader2, Network, Pencil, Plus, RotateCcw, Save, Workflow, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { stringify as stringifyYaml } from 'yaml';
+import { UnifiedAgentModelSelector } from '../UnifiedAgentModelSelector';
+import { Popover, PopoverContent, PopoverTrigger } from '../../../@/components/ui/popover';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../../@/components/ui/tooltip';
+import { FlowCanvasEditor } from './FlowCanvasEditor';
+import { authorFlowFromNaturalLanguage, type FlowAuthoringAgent, type FlowAuthoringResult } from '../../flows/flowAuthoring';
 import { buildFlowCatalog, type FlowCatalogItem } from '../../flows/flowCatalog';
-import { buildFlowRunMermaid } from '../../flows/flowMermaid';
 import { PREDEFINED_FLOW_SOURCES } from '../../flows/predefinedFlows';
-import { saveUserFlowSource, useUserFlowSources } from '../../flows/userFlowStore';
+import { compileFlowDefinition, type FlowNodeRegistry } from '../../flows/flowNodeRegistry';
+import { parseFlowYaml } from '../../flows/parseFlowYaml';
+import { buildUserFlowNodeRegistry, saveUserFlowNodeDefinitions, USER_FLOW_NODE_REGISTRY_STORE_KEY, useUserFlowNodeDefinitions, writeUserFlowNodeDefinitions } from '../../flows/userFlowNodeRegistryStore';
+import { saveUserFlowSource, USER_FLOW_STORE_KEY, useUserFlowSources, writeUserFlowSources } from '../../flows/userFlowStore';
+import { mergeStreamingOutput } from '../../agent-runs/agentRunStreamDispatch';
+import { agentClient } from '../../lib/agentClient';
+import { isLoginProfileActive } from '../../lib/loginProfiles';
+import { getRuntimeModelByKey } from '../../lib/runtimeModels';
+import { track } from '../../lib/analytics';
 import type { FlowDefinition, FlowInputDefinition, FlowNodeTemplate, FlowSource, FlowStatement, UserFlowSource } from '../../flows/types';
 import { cn } from '../../lib/utils';
+import { useLoginProfilesStore } from '../../stores/loginProfilesStore';
+import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { formatFlowParamTypes } from '../../flows/flowParamTypes';
+import { useToastHelpers } from '../Toast';
 
 export interface FlowsPanelProps {
   className?: string;
   workspaceId?: string | null;
   sources?: FlowSource[];
   userSources?: UserFlowSource[];
+  authoringAgent?: FlowAuthoringAgent;
+  authoringAgentLabel?: string | null;
 }
 
 export function FlowsPanel({
@@ -21,14 +38,33 @@ export function FlowsPanel({
   workspaceId = null,
   sources = PREDEFINED_FLOW_SOURCES,
   userSources,
+  authoringAgent,
+  authoringAgentLabel,
 }: FlowsPanelProps) {
   const storedUserSources = useUserFlowSources(workspaceId);
+  const userNodeDefinitions = useUserFlowNodeDefinitions();
+  const [hasRawUserArtifacts, setHasRawUserArtifacts] = useState(() => hasStoredUserFlowArtifacts());
+  const toast = useToastHelpers();
   const effectiveUserSources = userSources ?? storedUserSources;
+  const registry = useMemo(() => buildUserFlowNodeRegistry(userNodeDefinitions), [userNodeDefinitions]);
   const flows = useMemo(
-    () => buildFlowCatalog({ predefinedSources: sources, userSources: effectiveUserSources }),
-    [effectiveUserSources, sources]
+    () => buildFlowCatalog({ predefinedSources: sources, userSources: effectiveUserSources, registry }),
+    [effectiveUserSources, registry, sources]
   );
   const enabledCount = flows.filter((flow) => flow.enabled).length;
+  const resettableUserArtifactCount = storedUserSources.length + userNodeDefinitions.length;
+  const canResetUserArtifacts = resettableUserArtifactCount > 0 || hasRawUserArtifacts;
+  const handleResetToDefaults = useCallback(() => {
+    if (!canResetUserArtifacts) return;
+    writeUserFlowSources([]);
+    writeUserFlowNodeDefinitions([]);
+    setHasRawUserArtifacts(false);
+    toast.success('Reset to app default flows', 'User-created flows and reusable node templates were removed.');
+  }, [canResetUserArtifacts, toast]);
+
+  useEffect(() => {
+    setHasRawUserArtifacts(hasStoredUserFlowArtifacts());
+  }, [resettableUserArtifactCount]);
 
   return (
     <section
@@ -51,6 +87,23 @@ export function FlowsPanel({
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={handleResetToDefaults}
+                  disabled={!canResetUserArtifacts}
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[hsl(var(--app-border)/0.7)] bg-background/65 px-2 text-xs font-semibold text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:pointer-events-none disabled:opacity-45"
+                  aria-label="Reset to app default flows"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Reset
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" align="end" className="max-w-72 leading-5">
+                Removes user-created flows and reusable node templates from local storage. Built-in app default flows stay available.
+              </TooltipContent>
+            </Tooltip>
             <span className="rounded-md border border-[hsl(var(--app-border)/0.7)] bg-background/65 px-2.5 py-1 text-xs font-semibold text-foreground shadow-[0_10px_24px_-22px_hsl(var(--app-accent)/0.55)]">
               YAML-backed
             </span>
@@ -63,7 +116,11 @@ export function FlowsPanel({
 
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="border-b border-[hsl(var(--app-border)/0.58)] px-5 py-5">
-          <FlowAuthoringReviewPanel workspaceId={workspaceId} />
+          <FlowAuthoringReviewPanel
+            workspaceId={workspaceId}
+            authoringAgent={authoringAgent}
+            authoringAgentLabel={authoringAgentLabel}
+          />
         </div>
         {flows.length === 0 ? (
           <div className="flex min-h-48 items-center justify-center p-8 text-sm text-muted-foreground">
@@ -72,7 +129,7 @@ export function FlowsPanel({
         ) : (
           <div className="divide-y divide-[hsl(var(--app-border)/0.58)]">
             {flows.map((flow) => (
-              <FlowCatalogEntry key={`${flow.kind}:${flow.source.id}`} flow={flow} />
+              <FlowCatalogEntry key={`${flow.kind}:${flow.source.id}`} flow={flow} registry={registry} />
             ))}
           </div>
         )}
@@ -81,33 +138,199 @@ export function FlowsPanel({
   );
 }
 
-function FlowAuthoringReviewPanel({ workspaceId }: { workspaceId: string | null }) {
+function FlowAuthoringReviewPanel({
+  workspaceId,
+  authoringAgent,
+  authoringAgentLabel,
+}: {
+  workspaceId: string | null;
+  authoringAgent?: FlowAuthoringAgent;
+  authoringAgentLabel?: string | null;
+}) {
+  const userNodeDefinitions = useUserFlowNodeDefinitions();
+  const registry = useMemo(() => buildUserFlowNodeRegistry(userNodeDefinitions), [userNodeDefinitions]);
+  const selectedAgentId = useWorkspaceStore((state) => state.selectedAgentId);
+  const setSelectedAgentId = useWorkspaceStore((state) => state.setSelectedAgentId);
+  const { profiles, startSync } = useLoginProfilesStore();
+  const toast = useToastHelpers();
   const [request, setRequest] = useState('');
-  const [status, setStatus] = useState<'idle' | 'drafting' | 'ready' | 'failed' | 'saved'>('idle');
+  const [status, setStatus] = useState<'idle' | 'drafting' | 'ready' | 'failed'>('idle');
   const [result, setResult] = useState<FlowAuthoringResult | null>(null);
+  const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
+  const [streamOutput, setStreamOutput] = useState('');
+  const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
+  const activeRequestIdRef = useRef<string | null>(null);
+  const selectedAgent = useMemo(
+    () => getRuntimeModelByKey(selectedAgentId),
+    [selectedAgentId]
+  );
+  const selectedLoginProfile = useMemo(() => {
+    if (!selectedAgent) return null;
+    const compatible = profiles.filter((profile) => profile.provider === selectedAgent.provider);
+    return compatible.find((profile) => profile.isDefault) ?? compatible[0] ?? null;
+  }, [profiles, selectedAgent]);
+  const selectedLoginProfileReady = selectedLoginProfile ? isLoginProfileActive(selectedLoginProfile) : false;
+  const resolvedAuthoringAgent = useMemo<FlowAuthoringAgent | undefined>(() => {
+    if (authoringAgent) return authoringAgent;
+    if (!selectedAgent || !selectedLoginProfile || !selectedLoginProfileReady || !agentClient.hasRuntime()) {
+      return undefined;
+    }
+    return {
+      complete: async (prompt) => {
+        const requestId = crypto.randomUUID();
+        activeRequestIdRef.current = requestId;
+        setActiveRequestId(requestId);
+        const response = await agentClient.completeInternalPrompt({
+          purpose: 'flow_authoring',
+          provider: selectedAgent.provider,
+          model: selectedAgent.modelId,
+          reasoningEffort: selectedAgent.reasoningEffort ?? null,
+          loginProfileId: selectedLoginProfile.id,
+          requestId,
+          prompt,
+        });
+        if (activeRequestIdRef.current === requestId) {
+          activeRequestIdRef.current = null;
+          setActiveRequestId(null);
+        }
+        return response.text;
+      },
+    };
+  }, [authoringAgent, selectedAgent, selectedLoginProfile, selectedLoginProfileReady]);
+  const authoringUnavailableReason = useMemo(() => {
+    if (resolvedAuthoringAgent) return null;
+    if (!selectedAgentId || !selectedAgent) {
+      return 'Select a model before drafting a flow.';
+    }
+    if (!agentClient.hasRuntime()) {
+      return 'Flow authoring requires the Agentree desktop runtime.';
+    }
+    if (!selectedLoginProfile) {
+      return `${selectedAgent.label} uses ${selectedAgent.providerLabel}. Add or connect a ready ${selectedAgent.providerLabel} account in Logins before drafting a flow.`;
+    }
+    if (!selectedLoginProfileReady) {
+      return selectedLoginProfile.statusMessage
+        ?? `${selectedLoginProfile.displayName} is not ready. Open Logins and reconnect or check readiness before drafting a flow.`;
+    }
+    return null;
+  }, [resolvedAuthoringAgent, selectedAgent, selectedAgentId, selectedLoginProfile, selectedLoginProfileReady]);
+  const effectiveAuthoringLabel = authoringAgentLabel ?? selectedAgent?.label ?? 'selected agent';
+
+  useEffect(() => startSync(), [startSync]);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void agentClient.onInternalCompletionEvent?.((event) => {
+      if (disposed || event.requestId !== activeRequestIdRef.current) return;
+      setStreamOutput((current) => applyInternalCompletionStreamUpdate(current, event.line, event.stream));
+    }).then((cleanup) => {
+      unlisten = cleanup;
+      if (disposed) cleanup();
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   const handleDraft = useCallback(async () => {
     const trimmed = request.trim();
-    if (!trimmed) return;
+    if (!trimmed || !resolvedAuthoringAgent) return;
     setStatus('drafting');
-    const authored = await authorFlowFromNaturalLanguage({
-      request: trimmed,
+    setStreamOutput('');
+    const telemetryBase = flowAuthoringTelemetryBase({
+      requestLength: trimmed.length,
       workspaceId,
-      agent: {
-        async complete() {
-          return createRuleBasedFlowDraft(trimmed);
-        },
-      },
+      registry,
     });
-    setResult(authored);
-    setStatus(authored.status === 'ready' ? 'ready' : 'failed');
-  }, [request, workspaceId]);
+    track('Flow Authoring Started', telemetryBase);
+    try {
+      const authored = await authorFlowFromNaturalLanguage({
+        request: trimmed,
+        workspaceId,
+        registry,
+        agent: resolvedAuthoringAgent,
+      });
+      setResult(authored);
+      if (authored.status === 'failed') {
+        track('Flow Authoring Failed', {
+          ...telemetryBase,
+          failure_type: 'validation',
+          attempts: authored.attempts,
+          issue_count: authored.issues.length,
+          first_issue_path: authored.issues[0]?.path || null,
+        });
+        console.warn('[FlowAuthoring] validation_failed', {
+          attempts: authored.attempts,
+          issueCount: authored.issues.length,
+          issues: authored.issues.map((issue) => ({
+            path: issue.path,
+            message: issue.message,
+          })),
+        });
+      } else {
+        track('Flow Authoring Succeeded', {
+          ...telemetryBase,
+          attempts: authored.attempts,
+          registry_addition_count: authored.registryAdditionIds.length,
+          registry_node_count: authored.registryNodeIds.length,
+          inline_node_count: authored.inlineNodeIds.length,
+          node_count: authored.definition.nodes.length,
+          source_length: authored.source.source.length,
+        });
+      }
+      setStatus(authored.status === 'ready' ? 'ready' : 'failed');
+    } catch (error) {
+      track('Flow Authoring Failed', {
+        ...telemetryBase,
+        failure_type: 'exception',
+        attempts: 0,
+        issue_count: 0,
+        error_name: error instanceof Error ? error.name : typeof error,
+      });
+      console.error('[FlowAuthoring] draft failed', error);
+      setResult({
+        status: 'failed',
+        source: {
+          id: 'flow_authoring_failed',
+          label: 'Flow authoring failed',
+          scope: workspaceId ? 'workspace' : 'global',
+          workspaceId,
+          source: '',
+          version: 1,
+          enabled: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        issues: [{
+          path: '',
+          message: formatFlowAuthoringError(error),
+        }],
+        attempts: 0,
+      });
+      setStatus('failed');
+    } finally {
+      activeRequestIdRef.current = null;
+      setActiveRequestId(null);
+    }
+  }, [registry, request, resolvedAuthoringAgent, workspaceId]);
+
+  const handleCancel = useCallback(() => {
+    const requestId = activeRequestIdRef.current ?? activeRequestId;
+    if (!requestId) return;
+    void agentClient.cancelInternalCompletion?.(requestId);
+  }, [activeRequestId]);
 
   const handleApprove = useCallback(() => {
     if (!result || result.status !== 'ready') return;
+    saveUserFlowNodeDefinitions({ definitions: result.registryAdditions });
     saveUserFlowSource(result.source);
-    setStatus('saved');
-  }, [result]);
+    toast.success('Flow saved and enabled');
+    setRequest('');
+    setResult(null);
+    setStreamOutput('');
+    setStatus('idle');
+  }, [result, toast]);
 
   const readyResult = result?.status === 'ready' ? result : null;
   const failedResult = result?.status === 'failed' ? result : null;
@@ -124,29 +347,77 @@ function FlowAuthoringReviewPanel({ workspaceId }: { workspaceId: string | null 
             Draft a user-defined flow from natural language, validate it, review the compiled artifacts, then approve it for the selector.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => void handleDraft()}
-          disabled={!request.trim() || status === 'drafting'}
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[hsl(var(--app-border))] bg-background/72 px-3 text-xs font-semibold text-foreground transition-colors hover:bg-background disabled:pointer-events-none disabled:opacity-50"
-        >
-          {status === 'drafting' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Workflow className="h-3.5 w-3.5" />}
-          Draft
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Popover open={isModelPickerOpen} onOpenChange={setIsModelPickerOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                disabled={status === 'drafting'}
+                className="inline-flex h-8 max-w-[220px] items-center gap-1.5 rounded-lg border border-[hsl(var(--app-border))] bg-background/72 px-2.5 text-xs font-semibold text-foreground transition-colors hover:bg-background disabled:pointer-events-none disabled:opacity-50"
+                aria-label="Select flow authoring model"
+              >
+                <Bot className="h-3.5 w-3.5 text-[hsl(var(--app-accent))]" />
+                <span className="truncate">{selectedAgent?.label ?? 'Choose model'}</span>
+                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[620px] p-0" side="bottom" align="end" sideOffset={8}>
+              <div className="h-[390px]">
+                <UnifiedAgentModelSelector
+                  selectedAgentId={selectedAgentId}
+                  onSelectAgent={(agentId) => {
+                    setSelectedAgentId(agentId);
+                    setIsModelPickerOpen(false);
+                  }}
+                />
+              </div>
+            </PopoverContent>
+          </Popover>
+          {status === 'drafting' ? (
+            <button
+              type="button"
+              onClick={handleCancel}
+              disabled={!activeRequestId}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-destructive/35 bg-destructive/8 px-3 text-xs font-semibold text-destructive transition-colors hover:bg-destructive/12 disabled:pointer-events-none disabled:opacity-50"
+            >
+              <X className="h-3.5 w-3.5" />
+              Cancel
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void handleDraft()}
+              disabled={!request.trim() || Boolean(authoringUnavailableReason)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[hsl(var(--app-border))] bg-background/72 px-3 text-xs font-semibold text-foreground transition-colors hover:bg-background disabled:pointer-events-none disabled:opacity-50"
+            >
+              <Workflow className="h-3.5 w-3.5" />
+              Draft
+            </button>
+          )}
+        </div>
       </div>
       <textarea
         value={request}
         onChange={(event) => {
           setRequest(event.target.value);
-          if (status === 'saved') setStatus('idle');
         }}
-        placeholder="Describe the automation to create..."
-        className="min-h-20 w-full resize-y rounded-xl border border-[hsl(var(--app-border)/0.72)] bg-background/72 px-3 py-2.5 text-sm text-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.38)] outline-none transition-colors placeholder:text-muted-foreground/65 focus:border-[hsl(var(--app-accent)/0.48)]"
+        placeholder="Example: Run 3 implementers in parallel, synthesize the best result, review it against the original request, then ask a fixer to iterate until the review passes."
+        className="min-h-20 w-full resize-y rounded-xl border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel-strong)/0.78)] px-3 py-2.5 text-sm text-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.42)] outline-none transition-colors placeholder:text-muted-foreground/65 focus:border-[hsl(var(--app-accent)/0.48)] focus:bg-[hsl(var(--app-panel-strong)/0.9)]"
       />
       {status === 'drafting' ? (
-        <div className="flex items-center gap-2 rounded-lg border border-[hsl(var(--app-border)/0.62)] bg-background/48 px-3 py-2 text-xs text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          Drafting and validating flow YAML.
+        <div className="rounded-lg border border-[hsl(var(--app-border)/0.62)] bg-background/48">
+          <div className="flex items-center gap-2 border-b border-[hsl(var(--app-border)/0.48)] px-3 py-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Drafting and validating flow YAML with {effectiveAuthoringLabel}.
+          </div>
+          <pre className="max-h-52 overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-[11px] leading-5 text-muted-foreground">
+            {streamOutput.trim() ? streamOutput : 'Waiting for model output...'}
+          </pre>
+        </div>
+      ) : null}
+      {authoringUnavailableReason ? (
+        <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-300">
+          {authoringUnavailableReason}
         </div>
       ) : null}
       {failedResult ? (
@@ -166,6 +437,7 @@ function FlowAuthoringReviewPanel({ workspaceId }: { workspaceId: string | null 
                   </code>
                   <span>{readyResult.definition.nodes.length} nodes</span>
                   <span>{readyResult.registryNodeIds.length} registry</span>
+                  <span>{readyResult.registryAdditionIds.length} new reusable</span>
                   <span>{readyResult.inlineNodeIds.length} inline</span>
                 </div>
               </div>
@@ -178,28 +450,202 @@ function FlowAuthoringReviewPanel({ workspaceId }: { workspaceId: string | null 
                 Approve
               </button>
             </div>
-            <FlowRunMermaidDiagram definition={readyResult.definition} />
+            {readyResult.registryAdditions.length > 0 ? (
+              <div className="rounded-lg border border-[hsl(var(--app-accent)/0.22)] bg-[hsl(var(--app-accent-soft))] px-3 py-2 text-xs text-[hsl(var(--app-accent))]">
+                Adds reusable templates: {readyResult.registryAdditions.map((definition) => definition.id).join(', ')}
+              </div>
+            ) : null}
+            <FlowCanvasEditor definition={readyResult.definition} />
           </div>
           <pre className="max-h-80 overflow-auto rounded-xl border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--app-panel-strong))] p-3.5 font-mono text-[11px] leading-5 text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.45)]">
             {readyResult.source.source.trim()}
           </pre>
         </div>
       ) : null}
-      {status === 'saved' ? (
-        <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
-          Flow saved and enabled.
-        </div>
-      ) : null}
     </section>
   );
 }
 
-function FlowCatalogEntry({ flow }: { flow: FlowCatalogItem }) {
+function formatFlowAuthoringError(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  if (typeof error === 'string' && error.trim()) return error;
+  if (typeof error === 'object' && error !== null) {
+    const message = 'message' in error ? (error as { message?: unknown }).message : null;
+    if (typeof message === 'string' && message.trim()) return message;
+  }
+  return 'Flow authoring failed.';
+}
+
+function flowAuthoringTelemetryBase(input: {
+  requestLength: number;
+  workspaceId: string | null;
+  registry: FlowNodeRegistry;
+}): Record<string, string | number | boolean | null> {
+  return {
+    request_length: input.requestLength,
+    workspace_scoped: Boolean(input.workspaceId),
+    registry_size: Object.keys(input.registry).length,
+  };
+}
+
+function hasStoredUserFlowArtifacts(): boolean {
+  if (typeof window === 'undefined') return false;
+  const flowSource = window.localStorage?.getItem(USER_FLOW_STORE_KEY);
+  const nodeRegistry = window.localStorage?.getItem(USER_FLOW_NODE_REGISTRY_STORE_KEY);
+  return Boolean(flowSource || nodeRegistry);
+}
+
+type InternalCompletionStreamUpdate =
+  | { kind: 'delta'; text: string }
+  | { kind: 'snapshot'; text: string }
+  | { kind: 'diagnostic'; text: string };
+
+export function applyInternalCompletionStreamUpdate(current: string, line: string, stream: string): string {
+  const update = parseInternalCompletionStreamUpdate(line, stream);
+  if (!update) return current;
+  if (update.kind === 'delta') return `${current}${update.text}`;
+  if (update.kind === 'snapshot') return mergeStreamingOutput(current, update.text);
+  return current ? `${current}\n${update.text}` : update.text;
+}
+
+function parseInternalCompletionStreamUpdate(line: string, stream: string): InternalCompletionStreamUpdate | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    const type = typeof parsed.type === 'string' ? parsed.type : '';
+    if (type === 'message_delta') {
+      const text = rawStringField(parsed.delta) ?? rawStringField(parsed.content);
+      return text ? { kind: 'delta', text } : null;
+    }
+    if (type === 'message_completed' || type === 'message') {
+      const text = rawStringField(parsed.content);
+      return text ? { kind: 'snapshot', text } : null;
+    }
+    if (type === 'provider_stop' || type === 'stop') {
+      const finalContent = rawStringField(parsed.final_content);
+      if (finalContent) return { kind: 'snapshot', text: finalContent };
+      const reason = stringField(parsed.provider_stop_reason) ?? stringField(parsed.stop_reason);
+      return reason ? { kind: 'diagnostic', text: `Provider stopped: ${reason}` } : null;
+    }
+    if (type === 'error') {
+      return { kind: 'diagnostic', text: stringField(parsed.content) ?? 'Provider reported an error.' };
+    }
+    return null;
+  } catch {
+    return stream === 'stderr' ? { kind: 'diagnostic', text: trimmed } : null;
+  }
+}
+
+function rawStringField(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function stringField(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function updateFlowSourceNodePrompt(source: string, node: FlowNodeTemplate, prompt: string): string {
+  const parsed = parseFlowYaml(source);
+  if (!isRecord(parsed) || !Array.isArray(parsed.nodes)) {
+    throw new Error('Flow source nodes could not be edited.');
+  }
+  const index = parsed.nodes.findIndex((candidate) => {
+    if (!isRecord(candidate)) return false;
+    if (candidate.id === node.id) return true;
+    return candidate.as === node.id;
+  });
+  if (index < 0) {
+    throw new Error(`Node "${node.id}" was not found in the flow source.`);
+  }
+
+  const existing = parsed.nodes[index];
+  if (!isRecord(existing)) {
+    throw new Error(`Node "${node.id}" source is invalid.`);
+  }
+
+  if (typeof existing.use === 'string') {
+    parsed.nodes[index] = compactObject({
+      id: node.id,
+      ...(node.label ? { label: node.label } : {}),
+      ...(node.params?.length ? { params: serializeNodeParams(node) } : {}),
+      parent: node.parent,
+      ...(node.returns ? { returns: node.returns } : {}),
+      prompt,
+      ...(typeof node.requiresFinalizedCommit === 'boolean'
+        ? { requiresFinalizedCommit: node.requiresFinalizedCommit }
+        : {}),
+    });
+  } else {
+    parsed.nodes[index] = {
+      ...existing,
+      prompt,
+    };
+  }
+
+  return stringifyYaml(parsed).trimEnd();
+}
+
+function compactObject<T extends Record<string, unknown>>(input: T): T {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) as T;
+}
+
+function flowDefinitionToSource(definition: FlowDefinition): unknown {
+  return {
+    ...definition,
+    nodes: definition.nodes.map((node) => ({
+      ...node,
+      params: node.params?.length ? serializeNodeParams(node) : undefined,
+      paramTypes: undefined,
+    })),
+  };
+}
+
+function FlowCatalogEntry({ flow, registry }: { flow: FlowCatalogItem; registry: FlowNodeRegistry }) {
   const definition = flow.definition;
   const label = definition?.flow.label ?? flow.source.label;
   const inputCount = Object.keys(definition?.inputs ?? {}).length;
   const returnCount = definition?.nodes.reduce((total, node) => total + Object.keys(node.returns ?? {}).length, 0) ?? 0;
   const maxLoopRounds = findMaxLoopRounds(definition?.run ?? []);
+  const toast = useToastHelpers();
+  const canEditPrompts = flow.kind === 'user' && 'version' in flow.source;
+
+  const handleSaveNodePrompt = useCallback((node: FlowNodeTemplate, prompt: string) => {
+    if (!canEditPrompts || !('version' in flow.source)) return;
+    try {
+      const nextSource = updateFlowSourceNodePrompt(flow.source.source, node, prompt);
+      const compiled = compileFlowDefinition(parseFlowYaml(nextSource), registry);
+      if (!compiled.definition || compiled.issues.length > 0) {
+        throw new Error(compiled.issues.map(formatIssue).join(' ') || 'Edited flow source is invalid.');
+      }
+      saveUserFlowSource({
+        ...flow.source,
+        source: nextSource,
+        version: flow.source.version + 1,
+        updatedAt: new Date().toISOString(),
+      });
+      toast.success('Prompt saved');
+    } catch (error) {
+      toast.error('Prompt save failed', formatFlowAuthoringError(error));
+      throw error;
+    }
+  }, [canEditPrompts, flow.source, registry, toast]);
+
+  const handleSaveDefinition = useCallback((nextDefinition: FlowDefinition) => {
+    if (!canEditPrompts || !('version' in flow.source)) return;
+    const nextSource = stringifyYaml(flowDefinitionToSource(nextDefinition)).trimEnd();
+    const compiled = compileFlowDefinition(parseFlowYaml(nextSource), registry);
+    if (!compiled.definition || compiled.issues.length > 0) {
+      throw new Error(compiled.issues.map(formatIssue).join(' ') || 'Edited flow source is invalid.');
+    }
+    saveUserFlowSource({
+      ...flow.source,
+      source: nextSource,
+      version: flow.source.version + 1,
+      updatedAt: new Date().toISOString(),
+    });
+    toast.success('Flow canvas saved');
+  }, [canEditPrompts, flow.source, registry, toast]);
 
   return (
     <article className="px-5 py-5">
@@ -258,14 +704,23 @@ function FlowCatalogEntry({ flow }: { flow: FlowCatalogItem }) {
                 <SectionHeading icon={<Network className="h-3.5 w-3.5" />} label="Nodes" />
                 <div className="overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.64)] bg-background/42">
                   {definition.nodes.map((node, index) => (
-                    <NodeTemplateRow key={node.id} node={node} index={index} />
+                    <NodeTemplateRow
+                      key={node.id}
+                      node={node}
+                      index={index}
+                      onSavePrompt={canEditPrompts ? handleSaveNodePrompt : undefined}
+                    />
                   ))}
                 </div>
               </section>
 
               <section className="space-y-2.5">
                 <SectionHeading icon={<Workflow className="h-3.5 w-3.5" />} label="Run Shape" />
-                <FlowRunMermaidDiagram definition={definition} />
+                <FlowCanvasEditor
+                  definition={definition}
+                  editable={canEditPrompts}
+                  onSaveDefinition={canEditPrompts ? handleSaveDefinition : undefined}
+                />
               </section>
             </>
           ) : null}
@@ -315,8 +770,35 @@ function InputDefinitionRow({ name, input }: { name: string; input: FlowInputDef
   );
 }
 
-function NodeTemplateRow({ node, index }: { node: FlowNodeTemplate; index: number }) {
+function NodeTemplateRow({
+  node,
+  index,
+  onSavePrompt,
+}: {
+  node: FlowNodeTemplate;
+  index: number;
+  onSavePrompt?: (node: FlowNodeTemplate, prompt: string) => void;
+}) {
   const returns = Object.entries(node.returns ?? {}).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`);
+  const [isEditing, setIsEditing] = useState(false);
+  const [draftPrompt, setDraftPrompt] = useState(node.prompt);
+
+  useEffect(() => {
+    if (!isEditing) {
+      setDraftPrompt(node.prompt);
+    }
+  }, [isEditing, node.prompt]);
+
+  const savePrompt = () => {
+    const trimmed = draftPrompt.trim();
+    if (!trimmed || trimmed === node.prompt.trim()) {
+      setIsEditing(false);
+      setDraftPrompt(node.prompt);
+      return;
+    }
+    onSavePrompt?.(node, draftPrompt);
+    setIsEditing(false);
+  };
 
   return (
     <details
@@ -340,7 +822,7 @@ function NodeTemplateRow({ node, index }: { node: FlowNodeTemplate; index: numbe
             </div>
           </div>
           <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
-            <span>{node.params?.length ? `params: ${node.params.join(', ')}` : 'no params'}</span>
+            <span>{node.params?.length ? `params: ${formatNodeParams(node)}` : 'no params'}</span>
             {node.registryId ? <span>uses {node.registryId}</span> : null}
             {node.requiresFinalizedCommit ? <span>requires commit</span> : null}
           </div>
@@ -358,29 +840,76 @@ function NodeTemplateRow({ node, index }: { node: FlowNodeTemplate; index: numbe
       <div className="border-t border-[hsl(var(--app-border)/0.48)] bg-background/30 px-3 pb-3 pt-2 sm:pl-[4.5rem]">
         <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
           <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Compiled prompt</span>
-          <span className="rounded-md bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-            {node.registryId ? `from ${node.registryId}` : 'inline'}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="rounded-md bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+              {node.registryId ? `from ${node.registryId}` : 'inline'}
+            </span>
+            {onSavePrompt && !isEditing ? (
+              <button
+                type="button"
+                onClick={() => setIsEditing(true)}
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[hsl(var(--app-border)/0.66)] bg-background/70 text-muted-foreground transition-colors hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]"
+                aria-label={`Edit ${node.id} prompt`}
+                title="Edit prompt"
+              >
+                <Pencil className="h-3 w-3" />
+              </button>
+            ) : null}
+          </div>
         </div>
-        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel-strong)/0.78)] px-3 py-2.5 font-mono text-[11px] leading-5 text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.42)]">
-          {node.prompt.trim()}
-        </pre>
+        {isEditing ? (
+          <div className="space-y-2">
+            <textarea
+              value={draftPrompt}
+              onChange={(event) => setDraftPrompt(event.target.value)}
+              className="min-h-44 w-full resize-y rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel-strong)/0.78)] px-3 py-2.5 font-mono text-[11px] leading-5 text-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.42)] outline-none focus:border-[hsl(var(--app-accent)/0.48)]"
+              aria-label={`${node.id} prompt editor`}
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsEditing(false);
+                  setDraftPrompt(node.prompt);
+                }}
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[hsl(var(--app-border)/0.66)] bg-background/70 px-2.5 text-xs font-semibold text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={savePrompt}
+                disabled={!draftPrompt.trim()}
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-emerald-500/28 bg-emerald-500/10 px-2.5 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-500/15 disabled:pointer-events-none disabled:opacity-50 dark:text-emerald-300"
+              >
+                <Save className="h-3.5 w-3.5" />
+                Save
+              </button>
+            </div>
+          </div>
+        ) : (
+          <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel-strong)/0.78)] px-3 py-2.5 font-mono text-[11px] leading-5 text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.42)]">
+            {node.prompt.trim()}
+          </pre>
+        )}
       </div>
     </details>
   );
 }
 
-function FlowRunMermaidDiagram({ definition }: { definition: FlowDefinition }) {
-  const chart = useMemo(() => buildFlowRunMermaid(definition), [definition]);
+function serializeNodeParams(node: FlowNodeTemplate): Record<string, string> {
+  return Object.fromEntries((node.params ?? []).map((param) => [
+    param,
+    formatFlowParamTypes(node.paramTypes?.[param] ?? ['scalar']),
+  ]));
+}
 
-  return (
-    <div
-      aria-label="Flow run activity diagram"
-      className="overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.66)] bg-background/58 px-3 py-3 shadow-[0_18px_42px_-36px_hsl(var(--app-accent)/0.72)] [&_.mermaid]:flex [&_.mermaid]:justify-center [&_.mermaid_svg]:h-auto [&_.mermaid_svg]:max-w-full"
-    >
-      <MermaidDiagram chart={chart} />
-    </div>
-  );
+function formatNodeParams(node: FlowNodeTemplate): string {
+  return (node.params ?? []).map((param) => {
+    const types = node.paramTypes?.[param];
+    return types?.length ? `${param}: ${formatFlowParamTypes(types)}` : param;
+  }).join(', ');
 }
 
 function formatInputRange(input: FlowInputDefinition): string {
@@ -407,4 +936,8 @@ function findMaxLoopRounds(statements: FlowStatement[]): number | null {
     }
   }
   return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -17,6 +17,10 @@ fn unix_timestamp() -> i64 {
         .as_secs() as i64
 }
 
+fn utc_iso_now() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
 fn normalize_thread_title(value: &str) -> Option<String> {
     let normalized = value
         .replace(['\n', '\r', '\t'], " ")
@@ -549,7 +553,7 @@ fn parse_insight_candidate(
         .map(|value| value.to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let exploration = build_insight_exploration(&raw, rationale.as_deref());
-    let created_at = chrono_like_now();
+    let created_at = utc_iso_now();
     let payload = serde_json::json!({
         "id": id,
         "candidateId": id,
@@ -6128,6 +6132,38 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = TelemetryDb::open(dir.path()).expect("open telemetry db");
         (dir, db)
+    }
+
+    #[test]
+    fn generated_insight_candidate_payload_uses_iso_timestamps() {
+        let candidate = parse_insight_candidate(
+            "workspace-1",
+            "parent-1",
+            "run-1",
+            "light",
+            "assistant_completed",
+            Some(10),
+            Some(20),
+            Some(30),
+            serde_json::json!({
+                "claim": "This workflow needs browser verification after UI changes",
+                "rationale": "The implementation changed visible UI behavior, so browser verification would reduce regression risk.",
+                "novelty": 0.8,
+                "relevance": 0.8,
+                "actionability": 0.8,
+                "timing": 0.8,
+                "confidence": 0.8,
+                "risk": 0.2
+            }),
+        )
+        .expect("candidate");
+        let created_at = candidate
+            .payload
+            .get("createdAt")
+            .and_then(|value| value.as_str())
+            .expect("createdAt");
+
+        assert!(chrono::DateTime::parse_from_rfc3339(created_at).is_ok());
     }
 
     #[test]

@@ -24,8 +24,6 @@ interface InsightPanelProps {
     insights: Insight[];
     candidates?: InsightCandidate[];
     focusedMessageId?: string | null;
-    isVisible?: boolean;
-    variant?: 'dock' | 'popover';
     onToggleVisibility?: () => void;
     onViewInsight?: (insight: Insight) => void;
     onViewSource?: (parentNodeId: string) => void;
@@ -397,8 +395,6 @@ export function InsightPanel({
     insights,
     candidates = [],
     focusedMessageId = null,
-    isVisible = false,
-    variant = 'dock',
     onToggleVisibility,
     onViewInsight,
     onViewSource,
@@ -518,13 +514,9 @@ export function InsightPanel({
         </div>
     );
 
-    if (!isVisible) return null;
-
     return (
         <aside className={cn(
-            variant === 'dock'
-                ? 'absolute bottom-4 right-4 top-20 z-50 flex w-[min(440px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[1.4rem] border border-slate-200/82 bg-slate-50/94 shadow-[0_24px_80px_-42px_rgba(15,23,42,0.62),inset_0_1px_0_rgba(255,255,255,0.74)] backdrop-blur-xl dark:border-slate-800/88 dark:bg-slate-950/94 dark:shadow-[0_24px_82px_-42px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.04)]'
-                : 'flex h-full w-full flex-col overflow-hidden bg-transparent',
+            'flex h-full w-full flex-col overflow-hidden bg-transparent',
             className,
         )}>
             <header className="border-b border-slate-200/72 bg-white/62 px-4 py-4 dark:border-slate-800/82 dark:bg-slate-950/48">

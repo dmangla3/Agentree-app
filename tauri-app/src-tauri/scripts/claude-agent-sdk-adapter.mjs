@@ -145,6 +145,7 @@ function parseArgs(argv) {
     providerThreadStrategy: 'fresh_thread',
     nodeId: null,
     targetNodeId: null,
+    denyTools: false,
     unknown: [],
   };
 
@@ -210,6 +211,9 @@ function parseArgs(argv) {
       case '--target-node-id':
         parsed.targetNodeId = next ?? null;
         index += 1;
+        break;
+      case '--deny-tools':
+        parsed.denyTools = true;
         break;
       case '--print':
       case '--verbose':
@@ -674,6 +678,12 @@ async function main() {
         return {
           behavior: 'deny',
           message: 'The client captured your proposed plan. Stop here and wait for the user.',
+        };
+      }
+      if (args.denyTools) {
+        return {
+          behavior: 'deny',
+          message: 'Tool use is disabled for this internal completion. Respond directly in the requested output format.',
         };
       }
       return { behavior: 'allow', updatedInput: input };

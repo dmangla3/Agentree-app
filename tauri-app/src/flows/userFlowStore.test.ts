@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildFlowCatalog, getRunnableFlowDescriptors } from './flowCatalog';
+import { FLOW_NODE_REGISTRY } from './flowNodeRegistry';
 import type { UserFlowSource } from './types';
 
 function userSource(input: Partial<UserFlowSource> & Pick<UserFlowSource, 'id' | 'label' | 'source'>): UserFlowSource {
@@ -72,5 +73,109 @@ run:
       'single_implementation',
     ]));
     expect(runnable.find((flow) => flow.id === 'single_implementation')?.sourceVersion).toBe(1);
+  });
+
+  it('compiles user flows against user-approved registry nodes', () => {
+    const catalog = buildFlowCatalog({
+      predefinedSources: [],
+      registry: {
+        ...FLOW_NODE_REGISTRY,
+        'core.planner@1': {
+          id: 'core.planner@1',
+          label: 'Planner',
+          params: { request: 'string' },
+          parent: 'root',
+          requiresFinalizedCommit: true,
+          prompt: 'Create a plan for {{ request }}',
+        },
+      },
+      userSources: [
+        userSource({
+          id: 'planning',
+          label: 'Planning',
+          source: `flow:
+  id: planning
+nodes:
+  - use: core.planner@1
+    as: Planner
+run:
+  - set: plan
+    call: Planner
+    args:
+      request: input.input`,
+        }),
+      ],
+    });
+
+    expect(catalog[0].runnable).toBe(true);
+    expect(catalog[0].definition?.nodes[0].registryId).toBe('core.planner@1');
+  });
+
+  it('compiles user flows against typed registry additions embedded in the flow source', () => {
+    const catalog = buildFlowCatalog({
+      predefinedSources: [],
+      userSources: [
+        userSource({
+          id: 'self_contained_planning',
+          label: 'Self Contained Planning',
+          source: `registry:
+  - id: core.planner@1
+    label: Planner
+    params:
+      request: string
+    parent: root
+    requiresFinalizedCommit: true
+    prompt: "Create a plan for {{ request }}"
+flow:
+  id: self_contained_planning
+nodes:
+  - use: core.planner@1
+    as: Planner
+run:
+  - set: plan
+    call: Planner
+    args:
+      request: input.input`,
+        }),
+      ],
+    });
+
+    expect(catalog[0].runnable).toBe(true);
+    expect(catalog[0].definition?.nodes[0].registryId).toBe('core.planner@1');
+  });
+
+  it('rejects legacy array params in embedded registry additions', () => {
+    const catalog = buildFlowCatalog({
+      predefinedSources: [],
+      userSources: [
+        userSource({
+          id: 'legacy_registry',
+          label: 'Legacy Registry',
+          source: `registry:
+  - id: core.planner@1
+    label: Planner
+    params:
+      - request
+    parent: root
+    prompt: "Create a plan for {{ request }}"
+flow:
+  id: legacy_registry
+nodes:
+  - use: core.planner@1
+    as: Planner
+run:
+  - set: plan
+    call: Planner
+    args:
+      request: input.input`,
+        }),
+      ],
+    });
+
+    expect(catalog[0].runnable).toBe(false);
+    expect(catalog[0].issues).toContainEqual({
+      path: 'registry.0',
+      message: 'Registry node definition is invalid.',
+    });
   });
 });

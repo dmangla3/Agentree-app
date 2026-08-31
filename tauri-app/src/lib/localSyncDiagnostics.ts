@@ -78,6 +78,7 @@ const classifyFailure = (errorText: string, readiness?: ReadinessPayload | null)
         (readiness?.missingTables?.length ?? 0) > 0 ||
         (readiness?.missingColumns?.length ?? 0) > 0 ||
         normalized.includes('column "thread_id" does not exist') ||
+        /relation\s+\\?"/.test(normalized) && normalized.includes('does not exist') ||
         normalized.includes('schema') ||
         normalized.includes('migration')
     ) {

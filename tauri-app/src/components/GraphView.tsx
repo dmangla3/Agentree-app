@@ -5977,8 +5977,6 @@ function GraphViewInternal({
                                 insights={insights}
                                 candidates={insightCandidates}
                                 focusedMessageId={focusedMessageId}
-                                isVisible={true}
-                                variant="popover"
                                 onToggleVisibility={onClose}
                                 onDismissInsight={(insightId) => {
                                     void insightControls.dismissInsight(insightId);

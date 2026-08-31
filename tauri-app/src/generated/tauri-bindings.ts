@@ -82,6 +82,8 @@ export const commands = {
 	stopAgent: (sessionId: string) => __TAURI_INVOKE<null>("stop_agent", { sessionId }),
 	steerAgentRun: (assistantNodeId: string, content: string, idempotencyKey: string) => __TAURI_INVOKE<null>("steer_agent_run", { assistantNodeId, content, idempotencyKey }),
 	getAgentRunState: (assistantNodeId: string) => __TAURI_INVOKE<AgentRunStateResponse>("get_agent_run_state", { assistantNodeId }),
+	completeInternalPrompt: (request: InternalCompletionRequest) => __TAURI_INVOKE<InternalCompletionResponse_Serialize>("complete_internal_prompt", { request }),
+	cancelInternalCompletion: (requestId: string) => __TAURI_INVOKE<null>("cancel_internal_completion", { requestId }),
 	listLoginProfiles: () => __TAURI_INVOKE<LoginProfile[]>("list_login_profiles"),
 	upsertLoginProfile: (request: UpsertLoginProfileRequest) => __TAURI_INVOKE<LoginProfile>("upsert_login_profile", { request }),
 	deleteLoginProfile: (profileId: string) => __TAURI_INVOKE<null>("delete_login_profile", { profileId }),
@@ -431,6 +433,32 @@ export type ImportLoginCandidateRequest = {
 	candidateId: string,
 	displayName: string | null,
 	makeDefault: boolean | null,
+};
+
+export type InternalCompletionRequest = {
+	purpose: string,
+	provider: string,
+	model: string,
+	reasoningEffort?: string | null,
+	loginProfileId?: string | null,
+	requestId?: string | null,
+	prompt: string,
+};
+
+export type InternalCompletionResponse = InternalCompletionResponse_Serialize | InternalCompletionResponse_Deserialize;
+
+export type InternalCompletionResponse_Deserialize = {
+	text: string,
+	provider: string,
+	model: string,
+	usage: unknown,
+};
+
+export type InternalCompletionResponse_Serialize = {
+	text: string,
+	provider: string,
+	model: string,
+	usage?: unknown,
 };
 
 export type LocalCommitGraphSnapshot = {
