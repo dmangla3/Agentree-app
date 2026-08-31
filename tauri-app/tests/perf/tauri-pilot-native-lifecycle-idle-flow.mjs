@@ -32,8 +32,8 @@ const assertVisibleWebView = () => {
     throw new Error(`native lifecycle preflight failed: ${result.stderr || result.stdout}`);
   }
   const state = JSON.parse(result.stdout || '{}');
-  if (state.visibility !== 'visible') {
-    throw new Error(`native lifecycle preflight failed: WebView must be visible for RAF sampling, got visibility=${state.visibility}`);
+  if (state.visibility !== 'visible' || state.hasFocus !== true) {
+    throw new Error(`native lifecycle preflight failed: WebView must be visible and focused for RAF sampling, got ${JSON.stringify(state)}`);
   }
   return state;
 };

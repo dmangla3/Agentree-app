@@ -25,6 +25,8 @@ export interface AgentreeFlowNodeRunnerInput {
   rootContextParentNodeId?: string | null;
   rootContextManifest?: ComposerContextManifest | null;
   flowId: string;
+  flowSourceId: string;
+  flowSourceVersion: number;
   flowRunId: string;
   threadOriginId?: string | null;
   agentCliArgs?: string | null;
@@ -57,6 +59,8 @@ export function createAgentreeFlowNodeRunner(input: AgentreeFlowNodeRunnerInput)
         prompt: runInput.prompt,
         contextManifest: isRootNode ? input.rootContextManifest ?? null : null,
         flowId: input.flowId,
+        flowSourceId: input.flowSourceId,
+        flowSourceVersion: input.flowSourceVersion,
         flowRunId: input.flowRunId,
         threadOriginId: parentNodeId ? null : input.threadOriginId ?? null,
         flowNodeTemplateId: runInput.templateId,

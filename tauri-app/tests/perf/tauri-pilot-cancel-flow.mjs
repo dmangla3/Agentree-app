@@ -102,8 +102,8 @@ const preflight = async () => {
   graphNodeCount: document.querySelectorAll('.react-flow__node,[data-agentree-graph-node-id]').length,
 }))()
 `, 30000)).value;
-  if (visible?.visibility !== 'visible' || visible?.hidden === true) {
-    throw new Error(`Tauri webview is not visible: ${JSON.stringify(visible)}`);
+  if (visible?.visibility !== 'visible' || visible?.hidden === true || visible?.hasFocus !== true) {
+    throw new Error(`Tauri webview is not visible and focused: ${JSON.stringify(visible)}`);
   }
   let readyVisible = visible;
   const startedAt = Date.now();
@@ -122,6 +122,9 @@ const preflight = async () => {
   }
   if (!readyVisible?.composerCount) {
     throw new Error(`Composer not found in visible Tauri webview: ${JSON.stringify(readyVisible)}`);
+  }
+  if (readyVisible?.visibility !== 'visible' || readyVisible?.hidden === true || readyVisible?.hasFocus !== true) {
+    throw new Error(`Tauri webview lost visible/focused state: ${JSON.stringify(readyVisible)}`);
   }
   return { inventory, visible: readyVisible };
 };

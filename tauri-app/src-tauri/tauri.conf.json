@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "agentree",
+  "productName": "Agentree",
   "version": "0.2.1",
   "identifier": "com.agentree.agentree",
   "build": {

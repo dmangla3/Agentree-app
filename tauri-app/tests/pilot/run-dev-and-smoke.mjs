@@ -81,7 +81,7 @@ const run = (cmd, args, options = {}) => new Promise((resolve, reject) => {
 const main = async () => {
   await preflight();
 
-  const dev = spawn('npm', ['run', 'tauri', '--', 'dev'], {
+  const dev = spawn('npm', ['run', 'tauri', '--', 'dev', '--config', 'src-tauri/tauri.dev.conf.json'], {
     cwd: process.cwd(),
     stdio: 'inherit',
     env: {

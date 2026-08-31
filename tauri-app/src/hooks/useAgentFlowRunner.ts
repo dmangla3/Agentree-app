@@ -3,11 +3,9 @@ import { useQueryClient } from '@tanstack/react-query';
 import { TERMINAL_STATUSES } from '@shared/agentStatus';
 import { createAgentreeFlowNodeRunner } from '../flows/agentreeFlowNodeRunner';
 import { executeFlow, throwIfFlowCancelled, type FlowExecutionEvent, type FlowExecutionResult } from '../flows/flowExecutor';
-import { compileFlowDefinition } from '../flows/flowNodeRegistry';
+import { buildFlowCatalog, getRunnableFlowDescriptors, type RunnableFlowDescriptor } from '../flows/flowCatalog';
 import { flowRunManager } from '../flows/flowRunManager';
-import { parseFlowYaml } from '../flows/parseFlowYaml';
-import { PREDEFINED_FLOW_SOURCES } from '../flows/predefinedFlows';
-import type { FlowDefinition } from '../flows/types';
+import { useUserFlowSources } from '../flows/userFlowStore';
 import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
 import type { Message } from '../stores/workspaceStore';
 import type { ComposerContextManifest } from '../lib/composerContext';
@@ -31,16 +29,14 @@ export interface UseAgentFlowRunnerInput extends UseAgentNodeLauncherOptions {
   reasoningEffort?: string | null;
 }
 
-export interface PredefinedFlowDescriptor {
-  id: string;
-  label: string;
-  definition: FlowDefinition;
-}
+export type AgentFlowDescriptor = RunnableFlowDescriptor;
 
 export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
   const queryClient = useQueryClient();
   const { launchAgentNode } = useAgentNodeLauncher({ startStreamForNode: input.startStreamForNode });
-  const flows = useMemo(() => compilePredefinedFlows(), []);
+  const userFlowSources = useUserFlowSources(input.workspaceId);
+  const catalog = useMemo(() => buildFlowCatalog({ userSources: userFlowSources }), [userFlowSources]);
+  const flows = useMemo(() => getRunnableFlowDescriptors(catalog), [catalog]);
   const [selectedFlowId, setSelectedFlowId] = useState('');
   const [events, setEvents] = useState<FlowExecutionEvent[]>([]);
 
@@ -96,6 +92,8 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
       rootContextParentNodeId: input.rootContextParentNodeId ?? null,
       rootContextManifest: input.rootContextManifest ?? null,
       flowId: selectedFlow.id,
+      flowSourceId: selectedFlow.sourceId,
+      flowSourceVersion: selectedFlow.sourceVersion,
       flowRunId,
       threadOriginId,
       agentCliArgs: input.agentCliArgs,
@@ -162,20 +160,6 @@ function readAbortReason(signal: AbortSignal | undefined): string {
   return typeof signal.reason === 'string' && signal.reason.trim()
     ? signal.reason.trim()
     : 'Flow cancelled.';
-}
-
-function compilePredefinedFlows(): PredefinedFlowDescriptor[] {
-  return PREDEFINED_FLOW_SOURCES.map((source) => {
-    const result = compileFlowDefinition(parseFlowYaml(source.source));
-    if (!result.definition || result.issues.length > 0) {
-      throw new Error(`Invalid predefined flow "${source.id}": ${JSON.stringify(result.issues)}`);
-    }
-    return {
-      id: source.id,
-      label: source.label,
-      definition: result.definition,
-    };
-  });
 }
 
 async function waitForAssistantNodeCompletion(input: {

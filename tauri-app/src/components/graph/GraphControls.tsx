@@ -55,6 +55,7 @@ import {
     ChevronRight,
     Loader2,
     CheckCircle2,
+    Brain,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { Insight, Message, Summary } from '../../stores/workspaceStore';
@@ -211,12 +212,14 @@ export interface GraphControlsProps {
 
     // Insights
     insights: Insight[];
+    insightInboxCount?: number;
     insightsEnabled?: boolean;
     insightsVisible: boolean;
     showInsightsInGraph: boolean;
     onToggleInsightsEnabled?: () => void;
     onToggleInsightsVisible: () => void;
     onToggleShowInsightsInGraph: () => void;
+    renderInsightPanel?: (onClose: () => void) => ReactNode;
 
     // Actions
     threadItems: ThreadNavigationItem[];
@@ -979,12 +982,14 @@ export function GraphControls({
     onClearTagFilters,
     onClearAllFilters,
     insights,
+    insightInboxCount,
     insightsEnabled = true,
     insightsVisible,
     showInsightsInGraph,
     onToggleInsightsEnabled,
     onToggleInsightsVisible,
     onToggleShowInsightsInGraph,
+    renderInsightPanel,
     threadItems,
     onThreadFocus,
     onThreadDoneChange,
@@ -998,7 +1003,7 @@ export function GraphControls({
     mergeAttentionNonce,
     renderMergePanel,
 }: GraphControlsProps) {
-    const insightsCount = insights.length;
+    const insightsCount = insightInboxCount ?? insights.length;
     const [agentSearch, setAgentSearch] = useState('');
     const [tagSearch, setTagSearch] = useState('');
     const [threadListFilter, setThreadListFilter] = useState<ThreadListFilter>('all');
@@ -1135,6 +1140,13 @@ export function GraphControls({
             : mergeSourceCount > 0
                 ? `${mergeSourceCount} merge ${mergeSourceCount === 1 ? 'source' : 'sources'} selected.`
                 : 'Open the merge workflow without switching to chat.';
+    const insightTooltipLabel = insightsCount > 0
+        ? `${insightsCount} background attention ${insightsCount === 1 ? 'item' : 'items'}`
+        : 'Attention inbox is empty';
+    const handleInsightInboxOpenChange = useCallback((open: boolean) => {
+        if (open === insightsVisible) return;
+        onToggleInsightsVisible();
+    }, [insightsVisible, onToggleInsightsVisible]);
     const leafStatusToneClass = {
         active: 'bg-amber-500/12 text-amber-700 dark:bg-amber-400/12 dark:text-amber-300',
         success: 'bg-emerald-500/12 text-emerald-700 dark:bg-emerald-400/12 dark:text-emerald-300',
@@ -1613,6 +1625,55 @@ export function GraphControls({
 
                     <span className={toolbarDividerClass} aria-hidden="true" />
 
+                    <Popover open={insightsVisible} onOpenChange={handleInsightInboxOpenChange}>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <PopoverTrigger asChild>
+                                    <button
+                                        type="button"
+                                        className={cn(
+                                            iconButtonBase,
+                                            toolbarButtonClass,
+                                            'h-8 w-8 px-0',
+                                            insightsVisible ? activeToolbarButtonClass : '',
+                                        )}
+                                        aria-label={`Attention inbox (${insightsCount})`}
+                                        title="Background attention inbox."
+                                    >
+                                        <span className={iconGlow} />
+                                        <span className={iconContainer}>
+                                            <Brain size={15} strokeWidth={2} />
+                                        </span>
+                                        <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--background)/0.92)] px-1 text-[9px] font-semibold leading-none tabular-nums text-foreground shadow-sm">
+                                            {insightsCount > 99 ? '99+' : insightsCount}
+                                        </span>
+                                    </button>
+                                </PopoverTrigger>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" align="end">
+                                {insightTooltipLabel}
+                            </TooltipContent>
+                        </Tooltip>
+                        <PopoverContent
+                            align="end"
+                            side="bottom"
+                            sideOffset={10}
+                            collisionPadding={12}
+                            className="z-50 h-[min(760px,calc(100vh-5rem))] w-[min(440px,calc(100vw-1.5rem))] overflow-hidden rounded-[22px] border border-slate-200/82 bg-slate-50/96 p-0 shadow-[0_30px_90px_-46px_rgba(15,23,42,0.66),0_14px_34px_-24px_rgba(15,23,42,0.34),inset_0_1px_0_rgba(255,255,255,0.76)] backdrop-blur-xl dark:border-slate-800/88 dark:bg-slate-950/96 dark:shadow-[0_30px_92px_-46px_rgba(0,0,0,0.82),inset_0_1px_0_rgba(255,255,255,0.04)]"
+                            onOpenAutoFocus={(event) => event.preventDefault()}
+                            onWheelCapture={stopNestedScrollPropagation}
+                            onTouchMoveCapture={stopNestedScrollPropagation}
+                        >
+                            {renderInsightPanel ? (
+                                renderInsightPanel(() => handleInsightInboxOpenChange(false))
+                            ) : (
+                                <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
+                                    Attention inbox is unavailable in this view.
+                                </div>
+                            )}
+                        </PopoverContent>
+                    </Popover>
+
                     {threadItems.length > 0 ? (
                         <DropdownMenu modal={false} open={threadDropdownOpen} onOpenChange={setThreadDropdownOpen}>
                             <DropdownMenuTrigger asChild>
@@ -2072,7 +2133,7 @@ export function GraphControls({
                                 <DropdownMenuSub>
                                     <DropdownMenuSubTrigger className="text-xs">
                                         <Zap size={14} className="mr-2 text-amber-500" />
-                                        Insights ({insightsCount})
+                                        Insights
                                     </DropdownMenuSubTrigger>
                                     <DropdownMenuSubContent className="w-56">
                                         <DropdownMenuCheckboxItem
@@ -2083,18 +2144,11 @@ export function GraphControls({
                                             Generate Insights
                                         </DropdownMenuCheckboxItem>
                                         <DropdownMenuCheckboxItem
-                                            checked={insightsVisible}
-                                            onCheckedChange={onToggleInsightsVisible}
-                                            className="text-xs"
-                                        >
-                                            Show Insight Panel
-                                        </DropdownMenuCheckboxItem>
-                                        <DropdownMenuCheckboxItem
                                             checked={showInsightsInGraph}
                                             onCheckedChange={onToggleShowInsightsInGraph}
                                             className="text-xs"
                                         >
-                                            Show Insights in Graph
+                                            Show Insight Nodes in Graph
                                         </DropdownMenuCheckboxItem>
                                     </DropdownMenuSubContent>
                                 </DropdownMenuSub>

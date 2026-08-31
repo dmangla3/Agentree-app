@@ -1,7 +1,7 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { Bot, GitCommitHorizontal, Wrench, Zap } from 'lucide-react';
 import { GraphNodeWrapper } from './GraphNodeWrapper';
-import { SharedNodeProps } from '../../../types/nodes';
+import type { AttentionBadgeItem, SharedNodeProps } from '../../../types/nodes';
 import { cn } from '../../../lib/utils';
 import type { AgentStatus } from '@shared/agentStatus';
 import { getAgentVisualState } from '../../../lib/agentStateUI';
@@ -9,6 +9,7 @@ import { useRunStatusStore } from '../../../stores/runStatusStore';
 import { getAssistantIdentityLabel } from '../../../lib/assistantIdentity';
 import { getNodeFailureReason, isNodeFailureStatus } from '../../../lib/nodeFailureReason';
 import { shouldHydrateAgentRunHover } from '../../../lib/agentRunHoverHydrationPolicy';
+import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../../@/components/ui/hover-card';
 
 // Compact status icon only - no text
 const ACTIVE_ASSISTANT_STATUSES = new Set<AgentStatus | 'creating' | 'initializing'>([
@@ -46,6 +47,155 @@ const StatusIcon = ({
   );
 };
 
+const kindLabel = (kind: string): string => (
+  kind
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (character) => character.toUpperCase())
+);
+
+const AttentionBadge = ({
+  count,
+  items,
+  onHoverChange,
+}: {
+  count: number;
+  items: AttentionBadgeItem[];
+  onHoverChange: (active: boolean) => void;
+}) => {
+  const previewItems = items.slice(0, 5);
+  const hiddenCount = Math.max(0, count - previewItems.length);
+  const [expandedItemIds, setExpandedItemIds] = useState<Set<string>>(() => new Set());
+
+  const toggleExpanded = (itemId: string) => {
+    setExpandedItemIds((current) => {
+      const next = new Set(current);
+      if (next.has(itemId)) {
+        next.delete(itemId);
+      } else {
+        next.add(itemId);
+      }
+      return next;
+    });
+  };
+
+  return (
+    <HoverCard
+      openDelay={120}
+      closeDelay={90}
+      onOpenChange={onHoverChange}
+    >
+      <HoverCardTrigger asChild>
+        <button
+          type="button"
+          data-agentree-attention-badge
+          className={cn(
+            'app-focus-ring group/attention inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-1.5 pr-2',
+            'border border-amber-300/72 bg-amber-50/95 text-amber-800',
+            'shadow-[0_8px_18px_-14px_rgba(180,83,9,0.72),inset_0_1px_0_rgba(255,255,255,0.78)]',
+            'transition-[background-color,border-color,box-shadow,transform] duration-150 active:scale-[0.96]',
+            'hover:border-amber-400/80 hover:bg-amber-100',
+            'dark:border-amber-400/24 dark:bg-amber-950/48 dark:text-amber-100 dark:hover:border-amber-300/38 dark:hover:bg-amber-900/46',
+          )}
+          aria-label={`${count} attention ${count === 1 ? 'item' : 'items'} from this turn`}
+          onPointerEnter={() => onHoverChange(true)}
+          onPointerLeave={() => onHoverChange(false)}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        >
+          <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-500 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.3)] dark:bg-amber-300 dark:text-amber-950">
+            <Zap size={9} strokeWidth={2.4} />
+          </span>
+          <span className="font-mono text-[10px] font-bold leading-none tabular-nums">
+            {count > 99 ? '99+' : count}
+          </span>
+        </button>
+      </HoverCardTrigger>
+      <HoverCardContent
+        side="top"
+        align="end"
+        sideOffset={8}
+        collisionPadding={12}
+        className="z-[70] w-72 overflow-hidden rounded-2xl border border-slate-200/82 bg-white/96 p-0 shadow-[0_24px_70px_-42px_rgba(15,23,42,0.62),0_10px_28px_-22px_rgba(15,23,42,0.36),inset_0_1px_0_rgba(255,255,255,0.8)] backdrop-blur-xl dark:border-slate-800/88 dark:bg-slate-950/96 dark:shadow-[0_24px_72px_-42px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.05)]"
+        onPointerEnter={() => onHoverChange(true)}
+        onPointerLeave={() => onHoverChange(false)}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+      >
+        <div className="border-b border-slate-200/72 bg-amber-50/76 px-3 py-2.5 dark:border-slate-800/82 dark:bg-amber-950/24">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs font-semibold text-slate-950 dark:text-slate-50">
+              Attention from this turn
+            </div>
+            <div className="rounded-full bg-white/80 px-2 py-0.5 font-mono text-[10px] font-semibold tabular-nums text-amber-700 shadow-[inset_0_0_0_1px_rgba(245,158,11,0.2)] dark:bg-slate-950/70 dark:text-amber-200">
+              {count}
+            </div>
+          </div>
+        </div>
+        <div className="max-h-72 overflow-y-auto overscroll-contain p-2">
+          {previewItems.length > 0 ? (
+            <div className="space-y-1.5">
+              {previewItems.map((item) => {
+                const expanded = expandedItemIds.has(item.id);
+                const canExpand = item.label.length > 88;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className="app-focus-ring w-full rounded-xl border border-slate-200/70 bg-white/82 p-2.5 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.68)] transition-[background-color,border-color,box-shadow,transform] duration-150 hover:border-amber-300/62 hover:bg-amber-50/62 active:scale-[0.98] dark:border-slate-800/78 dark:bg-slate-900/56 dark:hover:border-amber-400/28 dark:hover:bg-amber-950/18"
+                    aria-expanded={expanded}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      toggleExpanded(item.id);
+                    }}
+                  >
+                    <div className="mb-1.5 flex items-center gap-1.5">
+                      <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.1em] text-amber-800 dark:bg-amber-400/12 dark:text-amber-200">
+                        {kindLabel(item.kind)}
+                      </span>
+                      {item.status ? (
+                        <span className="min-w-0 truncate rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                          {item.status}
+                        </span>
+                      ) : null}
+                      <span className="ml-auto text-[9px] font-semibold uppercase tracking-[0.1em] text-slate-400">
+                        {expanded ? 'Less' : canExpand ? 'More' : 'Open'}
+                      </span>
+                    </div>
+                    <p className={cn(
+                      'text-[11px] font-medium leading-4 text-slate-800 dark:text-slate-100',
+                      expanded ? 'whitespace-pre-wrap break-words' : 'line-clamp-2',
+                    )}>
+                      {item.label}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="px-3 py-5 text-center text-xs text-slate-500 dark:text-slate-400">
+              Attention details unavailable.
+            </div>
+          )}
+          {hiddenCount > 0 ? (
+            <div className="mt-2 rounded-xl bg-slate-100/72 px-3 py-2 text-[11px] font-medium text-slate-500 dark:bg-slate-900/70 dark:text-slate-400">
+              +{hiddenCount} more in the inbox
+            </div>
+          ) : null}
+        </div>
+      </HoverCardContent>
+    </HoverCard>
+  );
+};
+
 export const GraphAssistantNode = memo(({
   nodeId,
   entity,
@@ -53,6 +203,8 @@ export const GraphAssistantNode = memo(({
   isSelected,
   focusFeedbackEnabled,
   disableHoverCard,
+  attentionBadgeCount,
+  attentionBadgeItems = [],
   detailLevel = 'full',
   heightKey,
   onMeasureHeight,
@@ -61,6 +213,7 @@ export const GraphAssistantNode = memo(({
   onSelect,
   onContextMenu,
 }: SharedNodeProps) => {
+  const [attentionHoverActive, setAttentionHoverActive] = useState(false);
   const runStatus = useRunStatusStore(state => nodeId ? state.byNodeId[nodeId]?.status ?? null : null);
   const displayStatus = runStatus ?? entity.status;
   const resolvedHoverHydrationEnabled = shouldHydrateAgentRunHover(entity, runStatus);
@@ -74,6 +227,7 @@ export const GraphAssistantNode = memo(({
     ? getNodeFailureReason(entity.message?.execution_data)
     : null;
   const isAssistantWorking = isActiveAssistantStatus(displayStatus as AgentStatus | null | undefined);
+  const hasAttention = Boolean(attentionBadgeCount && attentionBadgeCount > 0);
 
   return (
     <GraphNodeWrapper
@@ -81,7 +235,7 @@ export const GraphAssistantNode = memo(({
       isFocused={isFocused}
       isSelected={isSelected}
       focusFeedbackEnabled={focusFeedbackEnabled}
-      disableHoverCard={disableHoverCard}
+      disableHoverCard={disableHoverCard || attentionHoverActive}
       heightKey={heightKey}
       className={cn(
         'bg-white/95 border-zinc-200/95 dark:bg-zinc-950/90 dark:border-zinc-800/95',
@@ -118,7 +272,16 @@ export const GraphAssistantNode = memo(({
             )}
           </div>
         </div>
-        <StatusIcon status={displayStatus as any} failureReason={failureReason} />
+        <div className="flex shrink-0 items-center gap-1.5">
+          {hasAttention ? (
+            <AttentionBadge
+              count={attentionBadgeCount ?? 0}
+              items={attentionBadgeItems}
+              onHoverChange={setAttentionHoverActive}
+            />
+          ) : null}
+          <StatusIcon status={displayStatus as any} failureReason={failureReason} />
+        </div>
       </div>
 
       {isMinimalDetail ? (

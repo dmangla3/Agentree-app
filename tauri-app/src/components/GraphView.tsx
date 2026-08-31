@@ -143,7 +143,7 @@ import {
 } from '../lib/graphNodeDetailLevel';
 import { withExplicitReactFlowNodeDimensions } from '../lib/reactFlowNodeDimensions';
 import { buildExecutionTimelineItems, packExecutionTimelineItems } from '../lib/executionTimelineModel';
-import type { FocusTriggerMetrics } from '../types/nodes';
+import type { AttentionBadgeItem, FocusTriggerMetrics } from '../types/nodes';
 
 import { graphNodeTypes } from './graph/graphNodeTypes';
 import { hasLayoutAnchoredGraphNodes, resolveAnchoredGraphWindowNodeIds } from './graph/graphRenderWindow';
@@ -996,13 +996,13 @@ function GraphViewInternal({
 
     // Insights
     const insights = useWorkspaceStore(state => state.insights);
+    const insightCandidates = useWorkspaceStore(state => state.insightCandidates);
     const insightsEnabled = useWorkspaceStore(state => state.insightsEnabled);
     const insightsVisible = useWorkspaceStore(state => state.insightsVisible);
     const showInsightsInGraph = useWorkspaceStore(state => state.showInsightsInGraph);
     const toggleInsightsEnabled = useWorkspaceStore(state => state.toggleInsightsEnabled);
     const toggleInsightsVisible = useWorkspaceStore(state => state.toggleInsightsVisible);
     const toggleShowInsightsInGraph = useWorkspaceStore(state => state.toggleShowInsightsInGraph);
-    const dismissInsight = useWorkspaceStore(state => state.dismissInsight);
     const mergeSession = useIntegrationStore((state) => state.session);
     const mergeAttentionNonce = useIntegrationStore((state) => state.mergeTabAttentionNonce);
     const mergeSourceCount = mergeSession?.sources.length ?? 0;
@@ -1177,6 +1177,50 @@ function GraphViewInternal({
         agents,
         workspace: selectedWorkspace,
     });
+    const attentionByParentId = useMemo(() => {
+        const surfacedCandidateIds = new Set(insights.map((insight) => insight.candidateId ?? insight.id));
+        const itemsByParentId = new Map<string, AttentionBadgeItem[]>();
+        const pushItem = (parentNodeId: string | null | undefined, item: AttentionBadgeItem) => {
+            if (!parentNodeId) return;
+            const current = itemsByParentId.get(parentNodeId);
+            if (current) {
+                current.push(item);
+            } else {
+                itemsByParentId.set(parentNodeId, [item]);
+            }
+        };
+        for (const insight of insights) {
+            pushItem(insight.parentNodeId, {
+                id: insight.id,
+                kind: insight.agentType,
+                label: insight.content,
+                status: insight.status ?? 'surfaced',
+                priority: insight.priority ?? insight.validationResults?.priority ?? null,
+                source: 'insight',
+            });
+        }
+        for (const candidate of insightCandidates) {
+            if (candidate.status === 'dismissed') continue;
+            if (surfacedCandidateIds.has(candidate.candidateId)) continue;
+            pushItem(candidate.parentNodeId, {
+                id: candidate.candidateId,
+                kind: candidate.agentKind,
+                label: candidate.claim,
+                status: candidate.status,
+                priority: candidate.priority ?? null,
+                source: 'candidate',
+            });
+        }
+        for (const [parentNodeId, items] of itemsByParentId) {
+            itemsByParentId.set(parentNodeId, items.sort((left, right) => (
+                (right.priority ?? 0) - (left.priority ?? 0)
+            )));
+        }
+        return itemsByParentId;
+    }, [insightCandidates, insights]);
+    const attentionInboxCount = useMemo(() => (
+        Array.from(attentionByParentId.values()).reduce((total, items) => total + items.length, 0)
+    ), [attentionByParentId]);
     useEffect(() => {
         reconcileTerminalAgentRunsFromMessages(messages as Message[]);
     }, [messages]);
@@ -4874,6 +4918,8 @@ function GraphViewInternal({
     const preparedGraphNodeCacheRef = useRef(new Map<string, {
         source: Node<any>;
         selected: boolean;
+        attentionBadgeCount?: number;
+        attentionBadgeItems?: AttentionBadgeItem[];
         prepared: Node<any>;
     }>());
     const graphNodeDetailCacheRef = useRef(new Map<string, {
@@ -4886,22 +4932,52 @@ function GraphViewInternal({
         const nextCache = new Map<string, {
             source: Node<any>;
             selected: boolean;
+            attentionBadgeCount?: number;
+            attentionBadgeItems?: AttentionBadgeItem[];
             prepared: Node<any>;
         }>();
         let reusedCount = 0;
         const result = layoutNodes.map((node) => {
             const selected = nodeSelection.selectedNodeIds.has(node.id);
+            const entity = node.data?.entity as { kind?: string; messageId?: string | null } | undefined;
+            const attentionBadgeItems = entity?.kind === 'assistant_message' && entity.messageId
+                ? attentionByParentId.get(entity.messageId)
+                : undefined;
+            const attentionBadgeCount = attentionBadgeItems?.length;
             const cached = preparedGraphNodeCacheRef.current.get(node.id);
-            if (cached?.source === node && cached.selected === selected) {
+            if (
+                cached?.source === node
+                && cached.selected === selected
+                && cached.attentionBadgeCount === attentionBadgeCount
+                && cached.attentionBadgeItems === attentionBadgeItems
+            ) {
                 nextCache.set(node.id, cached);
                 reusedCount += 1;
                 return cached.prepared;
             }
-            const baseNode = Boolean(node.selected) === selected
+            let baseNode = Boolean(node.selected) === selected
                 ? node
                 : { ...node, selected };
+            if ((baseNode.data as any)?.attentionBadgeCount !== attentionBadgeCount) {
+                baseNode = {
+                    ...baseNode,
+                    data: {
+                        ...(baseNode.data ?? {}),
+                        attentionBadgeCount,
+                        attentionBadgeItems,
+                    },
+                };
+            } else if ((baseNode.data as any)?.attentionBadgeItems !== attentionBadgeItems) {
+                baseNode = {
+                    ...baseNode,
+                    data: {
+                        ...(baseNode.data ?? {}),
+                        attentionBadgeItems,
+                    },
+                };
+            }
             const prepared = withExplicitReactFlowNodeDimensions(baseNode);
-            nextCache.set(node.id, { source: node, selected, prepared });
+            nextCache.set(node.id, { source: node, selected, attentionBadgeCount, attentionBadgeItems, prepared });
             return prepared;
         });
         preparedGraphNodeCacheRef.current = nextCache;
@@ -4913,7 +4989,7 @@ function GraphViewInternal({
             activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
         }, performance.now() - startedAt);
         return result;
-    }, [activeSendFlowFocus?.workspaceId, layoutNodes, nodeSelection.selectedNodeIds, selectedWorkspaceId]);
+    }, [activeSendFlowFocus?.workspaceId, attentionByParentId, layoutNodes, nodeSelection.selectedNodeIds, selectedWorkspaceId]);
     const branchNodesForRender = baseBranchNodesForRender;
     const graphEdgesForRender = previewEdges;
     const activeGraphRenderHold = runningCount > 0 || activeSendFlowFocus?.workspaceId === selectedWorkspaceId;
@@ -5889,12 +5965,42 @@ function GraphViewInternal({
                         onClearTagFilters={tagFilter.handleClearTagFilters}
                         onClearAllFilters={tagFilter.handleClearAllFilters}
                         insights={insights}
+                        insightInboxCount={attentionInboxCount}
                         insightsEnabled={insightsEnabled}
                         insightsVisible={insightsVisible}
                         showInsightsInGraph={showInsightsInGraph}
                         onToggleInsightsEnabled={toggleInsightsEnabled}
                         onToggleInsightsVisible={toggleInsightsVisible}
                         onToggleShowInsightsInGraph={toggleShowInsightsInGraph}
+                        renderInsightPanel={(onClose) => (
+                            <InsightPanel
+                                insights={insights}
+                                candidates={insightCandidates}
+                                focusedMessageId={focusedMessageId}
+                                isVisible={true}
+                                variant="popover"
+                                onToggleVisibility={onClose}
+                                onDismissInsight={(insightId) => {
+                                    void insightControls.dismissInsight(insightId);
+                                }}
+                                onViewInsight={(insight) => {
+                                    void insightControls.recordInsightFeedback(insight.id, 'seen', { source: 'view-source' });
+                                    onClose();
+                                    if (insight.parentNodeId) handleFocus(insight.parentNodeId);
+                                }}
+                                onPromoteToBranch={(insight) => {
+                                    onClose();
+                                    if (insight.parentNodeId) handleFocus(insight.parentNodeId);
+                                }}
+                                onViewSource={(parentNodeId) => {
+                                    onClose();
+                                    handleFocus(parentNodeId);
+                                }}
+                                onRecordFeedback={(insightId, action, context) => {
+                                    void insightControls.recordInsightFeedback(insightId, action, context);
+                                }}
+                            />
+                        )}
                         threadItems={threadIndexItems}
                         onThreadFocus={handleFocusThread}
                         onThreadDoneChange={handleThreadDoneChange}
@@ -5915,17 +6021,6 @@ function GraphViewInternal({
                     <TrackedBranchesPanel
                         workspaceId={selectedWorkspaceId}
                         repoPath={selectedWorkspace?.git_repo_path ?? selectedWorkspace?.folderPath ?? null}
-                    />
-                    <InsightPanel
-                        insights={insights}
-                        isVisible={insightsVisible}
-                        onToggleVisibility={toggleInsightsVisible}
-                        onDismissInsight={(insightId) => {
-                            void insightControls.dismissInsight(insightId);
-                        }}
-                        onViewInsight={(insight) => {
-                            if (insight.parentNodeId) handleFocus(insight.parentNodeId);
-                        }}
                     />
                     {threadNavigationOrientation === 'horizontal' ? (
                         <GraphThreadTabs

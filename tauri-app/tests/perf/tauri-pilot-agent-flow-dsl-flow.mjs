@@ -435,8 +435,8 @@ const main = async () => {
   if (report.preflight?.readiness?.status !== 'ready') {
     throw new Error(`Codex runtime is not ready: ${JSON.stringify(report.preflight.readiness)}`);
   }
-  if (report.preflight?.appProbe?.visibility !== 'visible') {
-    throw new Error(`Tauri webview is not visible: ${JSON.stringify(report.preflight.appProbe)}`);
+  if (report.preflight?.appProbe?.visibility !== 'visible' || report.preflight?.appProbe?.hasFocus !== true) {
+    throw new Error(`Tauri webview is not visible and focused: ${JSON.stringify(report.preflight.appProbe)}`);
   }
 
   report.start = await installAndStartFlow({ mainSha, startedAtIso });

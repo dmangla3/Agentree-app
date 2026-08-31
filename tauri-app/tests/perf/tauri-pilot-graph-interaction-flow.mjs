@@ -13,7 +13,6 @@ const TEST_AGENT_MODEL = process.env.AGENTREE_TAURI_PILOT_AGENT_MODEL ?? 'gpt-5.
 const RUN_TIMEOUT_MS = Number(process.env.AGENTREE_TAURI_PILOT_RUN_TIMEOUT_MS ?? 240000);
 const FOCUS_ONLY_CLICKS = Number(process.env.AGENTREE_TAURI_PILOT_FOCUS_ONLY_CLICKS ?? 0);
 const MIN_GRAPH_NODES = Number(process.env.AGENTREE_TAURI_PILOT_MIN_GRAPH_NODES ?? 0);
-const ALLOW_VISIBLE_UNFOCUSED_WEBVIEW = process.env.AGENTREE_TAURI_PILOT_ALLOW_VISIBLE_UNFOCUSED_WEBVIEW === 'true';
 const PROMPTS = (process.env.AGENTREE_TAURI_PILOT_PROMPTS
   ? JSON.parse(process.env.AGENTREE_TAURI_PILOT_PROMPTS)
   : [
@@ -74,7 +73,6 @@ const install = async () => pilotEval(`
   const runTimeoutMs = ${JSON.stringify(RUN_TIMEOUT_MS)};
   const focusOnlyClicks = ${JSON.stringify(FOCUS_ONLY_CLICKS)};
   const minGraphNodes = ${JSON.stringify(MIN_GRAPH_NODES)};
-  globalThis.__AGENTREE_TAURI_PILOT_ALLOW_VISIBLE_UNFOCUSED_WEBVIEW = ${JSON.stringify(ALLOW_VISIBLE_UNFOCUSED_WEBVIEW)};
   ${assertVisibleFocusedWebviewSource};
   window.__AGENTREE_PERF__?.clear?.();
   window.__AGENTREE_FUNDAMENTALS__?.clear?.();

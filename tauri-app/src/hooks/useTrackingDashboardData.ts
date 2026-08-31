@@ -1,7 +1,11 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { buildTrackingDashboardMetrics, type TrackingRange } from '../domain/trackingDashboardMetrics';
 import { agentClient } from '../lib/agentClient';
+import {
+  readBackgroundAttentionAuditEvents,
+  subscribeBackgroundAttentionAuditEvents,
+} from '../lib/backgroundAttentionAudit';
 import { mapLocalCommitToCommitEntity } from '../lib/localCommitGraphProjection';
 import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 import type { Message, Workspace } from '../stores/workspaceStore';
@@ -121,6 +125,9 @@ export function useTrackingDashboardData(workspace: Workspace | null, range: Tra
   const messagesQuery = useMessages(workspaceId, { enabled: Boolean(workspaceId) });
   const localNodesQuery = useLocalNodes(workspaceId);
   const graphSnapshotQuery = useGraphSnapshot(workspaceId);
+  const [backgroundAttentionAuditEvents, setBackgroundAttentionAuditEvents] = useState(() => (
+    readBackgroundAttentionAuditEvents(workspaceId)
+  ));
   const terminalProjectionFingerprint = useAgentRunProjectionStore((state) => (
     dashboardProjectionFingerprint(workspaceId, state.projectionsById)
   ));
@@ -137,6 +144,33 @@ export function useTrackingDashboardData(workspace: Workspace | null, range: Tra
     staleTime: 5_000,
     gcTime: 5 * 60 * 1000,
   });
+  const backgroundAttentionCandidatesQuery = useQuery({
+    queryKey: ['background-attention-candidates', workspaceId, 'tracking'],
+    queryFn: async () => {
+      if (!workspaceId) return [];
+      return agentClient.listLocalInsightCandidates(workspaceId);
+    },
+    enabled: Boolean(workspaceId && agentClient.hasRuntime()),
+    staleTime: 5_000,
+    gcTime: 5 * 60 * 1000,
+  });
+  const refetchBackgroundAttentionCandidates = backgroundAttentionCandidatesQuery.refetch;
+
+  useEffect(() => {
+    const refreshAuditEvents = () => {
+      setBackgroundAttentionAuditEvents(readBackgroundAttentionAuditEvents(workspaceId));
+    };
+
+    refreshAuditEvents();
+    if (!workspaceId) return () => undefined;
+
+    return subscribeBackgroundAttentionAuditEvents(workspaceId, () => {
+      refreshAuditEvents();
+      if (agentClient.hasRuntime()) {
+        void refetchBackgroundAttentionCandidates();
+      }
+    });
+  }, [refetchBackgroundAttentionCandidates, workspaceId]);
 
   const commits = useMemo(() => {
     if (!workspaceId) return [];
@@ -157,12 +191,14 @@ export function useTrackingDashboardData(workspace: Workspace | null, range: Tra
     range,
     messages: metricMessages,
     commits,
-  }), [commits, metricMessages, range]);
+    backgroundAttentionCandidates: backgroundAttentionCandidatesQuery.data ?? [],
+    backgroundAttentionAuditEvents,
+  }), [backgroundAttentionAuditEvents, backgroundAttentionCandidatesQuery.data, commits, metricMessages, range]);
 
   return {
     metrics,
-    isLoading: messagesQuery.isLoading || localNodesQuery.isLoading || graphSnapshotQuery.isLoading || localCommitGraphQuery.isLoading,
-    isRefreshing: messagesQuery.isFetching || localNodesQuery.isFetching || graphSnapshotQuery.isFetching || localCommitGraphQuery.isFetching,
-    error: messagesQuery.error ?? localNodesQuery.error ?? graphSnapshotQuery.error ?? localCommitGraphQuery.error ?? null,
+    isLoading: messagesQuery.isLoading || localNodesQuery.isLoading || graphSnapshotQuery.isLoading || localCommitGraphQuery.isLoading || backgroundAttentionCandidatesQuery.isLoading,
+    isRefreshing: messagesQuery.isFetching || localNodesQuery.isFetching || graphSnapshotQuery.isFetching || localCommitGraphQuery.isFetching || backgroundAttentionCandidatesQuery.isFetching,
+    error: messagesQuery.error ?? localNodesQuery.error ?? graphSnapshotQuery.error ?? localCommitGraphQuery.error ?? backgroundAttentionCandidatesQuery.error ?? null,
   };
 }

@@ -1,25 +1,34 @@
-import { ChevronDown, FileCode2, ListChecks, Network, Workflow } from 'lucide-react';
-import { useMemo, type ReactNode } from 'react';
+import { CheckCircle2, ChevronDown, FileCode2, ListChecks, Loader2, Network, Plus, Workflow } from 'lucide-react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import MermaidDiagram from '../MermaidDiagram';
-import { compileFlowDefinition } from '../../flows/flowNodeRegistry';
-import { parseFlowYaml } from '../../flows/parseFlowYaml';
+import { authorFlowFromNaturalLanguage, createRuleBasedFlowDraft, type FlowAuthoringResult } from '../../flows/flowAuthoring';
+import { buildFlowCatalog, type FlowCatalogItem } from '../../flows/flowCatalog';
+import { buildFlowRunMermaid } from '../../flows/flowMermaid';
 import { PREDEFINED_FLOW_SOURCES } from '../../flows/predefinedFlows';
-import type { FlowDefinition, FlowInputDefinition, FlowNodeTemplate, FlowSource, FlowStatement } from '../../flows/types';
+import { saveUserFlowSource, useUserFlowSources } from '../../flows/userFlowStore';
+import type { FlowDefinition, FlowInputDefinition, FlowNodeTemplate, FlowSource, FlowStatement, UserFlowSource } from '../../flows/types';
 import { cn } from '../../lib/utils';
 
 export interface FlowsPanelProps {
   className?: string;
+  workspaceId?: string | null;
   sources?: FlowSource[];
+  userSources?: UserFlowSource[];
 }
 
-interface FlowCatalogItem {
-  source: FlowSource;
-  definition: FlowDefinition | null;
-  issues: string[];
-}
-
-export function FlowsPanel({ className, sources = PREDEFINED_FLOW_SOURCES }: FlowsPanelProps) {
-  const flows = useMemo(() => sources.map(toCatalogItem), [sources]);
+export function FlowsPanel({
+  className,
+  workspaceId = null,
+  sources = PREDEFINED_FLOW_SOURCES,
+  userSources,
+}: FlowsPanelProps) {
+  const storedUserSources = useUserFlowSources(workspaceId);
+  const effectiveUserSources = userSources ?? storedUserSources;
+  const flows = useMemo(
+    () => buildFlowCatalog({ predefinedSources: sources, userSources: effectiveUserSources }),
+    [effectiveUserSources, sources]
+  );
+  const enabledCount = flows.filter((flow) => flow.enabled).length;
 
   return (
     <section
@@ -38,33 +47,149 @@ export function FlowsPanel({ className, sources = PREDEFINED_FLOW_SOURCES }: Flo
               Flow registry
             </div>
             <p className="mt-2 max-w-[56ch] text-sm leading-6 text-muted-foreground">
-              Read-only definitions for composer flows. Source lives in code and compiles from YAML before each run.
+              Validated YAML-backed flows. User-defined sources compile before review and only valid enabled flows can run.
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <span className="rounded-md border border-[hsl(var(--app-border)/0.7)] bg-background/65 px-2.5 py-1 text-xs font-semibold text-foreground shadow-[0_10px_24px_-22px_hsl(var(--app-accent)/0.55)]">
-              Code-defined
+              YAML-backed
             </span>
             <span className="rounded-md border border-[hsl(var(--app-border)/0.7)] bg-background/65 px-2.5 py-1 text-xs font-semibold tabular-nums text-muted-foreground">
-              {flows.length} global
+              {enabledCount} enabled
             </span>
           </div>
         </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
+        <div className="border-b border-[hsl(var(--app-border)/0.58)] px-5 py-5">
+          <FlowAuthoringReviewPanel workspaceId={workspaceId} />
+        </div>
         {flows.length === 0 ? (
-          <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
+          <div className="flex min-h-48 items-center justify-center p-8 text-sm text-muted-foreground">
             No flows are registered.
           </div>
         ) : (
           <div className="divide-y divide-[hsl(var(--app-border)/0.58)]">
             {flows.map((flow) => (
-              <FlowCatalogEntry key={flow.source.id} flow={flow} />
+              <FlowCatalogEntry key={`${flow.kind}:${flow.source.id}`} flow={flow} />
             ))}
           </div>
         )}
       </div>
+    </section>
+  );
+}
+
+function FlowAuthoringReviewPanel({ workspaceId }: { workspaceId: string | null }) {
+  const [request, setRequest] = useState('');
+  const [status, setStatus] = useState<'idle' | 'drafting' | 'ready' | 'failed' | 'saved'>('idle');
+  const [result, setResult] = useState<FlowAuthoringResult | null>(null);
+
+  const handleDraft = useCallback(async () => {
+    const trimmed = request.trim();
+    if (!trimmed) return;
+    setStatus('drafting');
+    const authored = await authorFlowFromNaturalLanguage({
+      request: trimmed,
+      workspaceId,
+      agent: {
+        async complete() {
+          return createRuleBasedFlowDraft(trimmed);
+        },
+      },
+    });
+    setResult(authored);
+    setStatus(authored.status === 'ready' ? 'ready' : 'failed');
+  }, [request, workspaceId]);
+
+  const handleApprove = useCallback(() => {
+    if (!result || result.status !== 'ready') return;
+    saveUserFlowSource(result.source);
+    setStatus('saved');
+  }, [result]);
+
+  const readyResult = result?.status === 'ready' ? result : null;
+  const failedResult = result?.status === 'failed' ? result : null;
+
+  return (
+    <section className="space-y-3" aria-label="Create flow">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+            <Plus className="h-4 w-4 text-[hsl(var(--app-accent))]" />
+            Create flow
+          </h2>
+          <p className="mt-1 max-w-[64ch] text-xs leading-5 text-muted-foreground">
+            Draft a user-defined flow from natural language, validate it, review the compiled artifacts, then approve it for the selector.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void handleDraft()}
+          disabled={!request.trim() || status === 'drafting'}
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[hsl(var(--app-border))] bg-background/72 px-3 text-xs font-semibold text-foreground transition-colors hover:bg-background disabled:pointer-events-none disabled:opacity-50"
+        >
+          {status === 'drafting' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Workflow className="h-3.5 w-3.5" />}
+          Draft
+        </button>
+      </div>
+      <textarea
+        value={request}
+        onChange={(event) => {
+          setRequest(event.target.value);
+          if (status === 'saved') setStatus('idle');
+        }}
+        placeholder="Describe the automation to create..."
+        className="min-h-20 w-full resize-y rounded-xl border border-[hsl(var(--app-border)/0.72)] bg-background/72 px-3 py-2.5 text-sm text-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.38)] outline-none transition-colors placeholder:text-muted-foreground/65 focus:border-[hsl(var(--app-accent)/0.48)]"
+      />
+      {status === 'drafting' ? (
+        <div className="flex items-center gap-2 rounded-lg border border-[hsl(var(--app-border)/0.62)] bg-background/48 px-3 py-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Drafting and validating flow YAML.
+        </div>
+      ) : null}
+      {failedResult ? (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          {failedResult.issues.map(formatIssue).join(' ')}
+        </div>
+      ) : null}
+      {readyResult ? (
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)]">
+          <div className="space-y-3 rounded-xl border border-[hsl(var(--app-border)/0.64)] bg-background/44 p-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-foreground">{readyResult.source.label}</div>
+                <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+                  <code className="rounded-md border border-[hsl(var(--app-border)/0.66)] bg-background/70 px-1.5 py-0.5 font-mono text-[11px] text-foreground">
+                    {readyResult.source.id}
+                  </code>
+                  <span>{readyResult.definition.nodes.length} nodes</span>
+                  <span>{readyResult.registryNodeIds.length} registry</span>
+                  <span>{readyResult.inlineNodeIds.length} inline</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleApprove}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-500/28 bg-emerald-500/10 px-3 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-500/15 dark:text-emerald-300"
+              >
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Approve
+              </button>
+            </div>
+            <FlowRunMermaidDiagram definition={readyResult.definition} />
+          </div>
+          <pre className="max-h-80 overflow-auto rounded-xl border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--app-panel-strong))] p-3.5 font-mono text-[11px] leading-5 text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.45)]">
+            {readyResult.source.source.trim()}
+          </pre>
+        </div>
+      ) : null}
+      {status === 'saved' ? (
+        <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
+          Flow saved and enabled.
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -92,6 +217,17 @@ function FlowCatalogEntry({ flow }: { flow: FlowCatalogItem }) {
                 <span className="rounded-md border border-[hsl(var(--app-border)/0.66)] bg-background/70 px-1.5 py-0.5">
                   {flow.source.scope}
                 </span>
+                <span className="rounded-md border border-[hsl(var(--app-border)/0.66)] bg-background/70 px-1.5 py-0.5">
+                  {flow.kind}
+                </span>
+                <span className={cn(
+                  "rounded-md border px-1.5 py-0.5",
+                  flow.runnable
+                    ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                    : "border-destructive/25 bg-destructive/5 text-destructive"
+                )}>
+                  {flow.runnable ? `version ${flow.sourceVersion}` : 'not runnable'}
+                </span>
               </div>
             </div>
 
@@ -105,7 +241,7 @@ function FlowCatalogEntry({ flow }: { flow: FlowCatalogItem }) {
 
           {flow.issues.length > 0 ? (
             <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-              {flow.issues.join(' ')}
+              {flow.issues.map(formatIssue).join(' ')}
             </div>
           ) : definition ? (
             <>
@@ -247,125 +383,15 @@ function FlowRunMermaidDiagram({ definition }: { definition: FlowDefinition }) {
   );
 }
 
-export function buildFlowRunMermaid(definition: FlowDefinition): string {
-  const statements = definition.run;
-  const parallel = statements.find((statement) => 'parallel' in statement);
-  const topLevelCall = statements.find((statement) => 'call' in statement);
-  const loop = statements.find((statement) => 'loop' in statement);
-  const loopCalls = loop && 'loop' in loop
-    ? loop.loop.steps.filter((statement) => 'call' in statement)
-    : [];
-  const reviewer = loopCalls[0];
-  const fixer = loopCalls[1];
-
-  if (!parallel || !('parallel' in parallel) || !topLevelCall || !('call' in topLevelCall)) {
-    return buildLinearFlowRunMermaid(statements);
-  }
-
-  const implementerCount = resolveParallelBranchCount(definition, parallel.parallel.count);
-  const implementerIds = Array.from({ length: implementerCount }, (_, index) => `implementer${index + 1}`);
-  const synthesizerLabel = topLevelCall.call;
-  const reviewerLabel = reviewer && 'call' in reviewer ? reviewer.call : 'Reviewer';
-  const fixerLabel = fixer && 'call' in fixer ? fixer.call : 'Fixer';
-  const implementerNodeLines = implementerIds.map(
-    (id, index) => `    ${id}["${escapeMermaidLabel(`${parallel.parallel.call} ${index + 1}`)}"]`
-  );
-  const startEdges = implementerIds.map((id) => `  start --> ${id}`);
-  const synthesizerEdges = implementerIds.map((id) => `  ${id} --> synthesizer`);
-
-  return [
-    'flowchart LR',
-    '  start(("Start"))',
-    '  subgraph implementers["parallel"]',
-    '    direction TB',
-    ...implementerNodeLines,
-    '  end',
-    `  synthesizer["${escapeMermaidLabel(synthesizerLabel)}"]`,
-    `  reviewer{"${escapeMermaidLabel(reviewerLabel)}"}`,
-    `  fixer["${escapeMermaidLabel(fixerLabel)}"]`,
-    '  done(("Done"))',
-    ...startEdges,
-    ...synthesizerEdges,
-    '  synthesizer --> reviewer',
-    '  reviewer -->|pass| done',
-    '  reviewer -->|feedback| fixer',
-    '  fixer --> reviewer',
-    '  classDef terminalStep fill:#f8fafc,stroke:#94a3b8,color:#0f172a,stroke-width:1px;',
-    '  classDef agentStep fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1px;',
-    '  classDef reviewStep fill:#fff7ed,stroke:#f97316,color:#7c2d12,stroke-width:1px;',
-    '  class start,done terminalStep;',
-    `  class ${implementerIds.join(',')},synthesizer,fixer agentStep;`,
-    '  class reviewer reviewStep;',
-  ].join('\n');
-}
-
-function escapeMermaidLabel(label: string): string {
-  return label.replace(/"/g, "'");
-}
-
-function pluralizeFlowNodeLabel(label: string): string {
-  return label.endsWith('s') ? label : `${label}s`;
-}
-
-function resolveParallelBranchCount(definition: FlowDefinition, count: string | number): number {
-  if (typeof count === 'number') {
-    return clampParallelBranchCount(count);
-  }
-
-  const inputName = count.match(/^input\.([A-Za-z_][A-Za-z0-9_]*)$/)?.[1];
-  const inputDefault = inputName ? definition.inputs?.[inputName]?.default : undefined;
-  if (typeof inputDefault === 'number') {
-    return clampParallelBranchCount(inputDefault);
-  }
-
-  const parsed = Number.parseInt(count, 10);
-  return Number.isFinite(parsed) ? clampParallelBranchCount(parsed) : 3;
-}
-
-function clampParallelBranchCount(count: number): number {
-  return Math.max(1, Math.min(5, Math.trunc(count)));
-}
-
-function buildLinearFlowRunMermaid(statements: FlowStatement[]): string {
-  const labels = statements.flatMap((statement) => {
-    if ('parallel' in statement) return [`parallel ${pluralizeFlowNodeLabel(statement.parallel.call)}`];
-    if ('call' in statement) return [statement.call];
-    if ('loop' in statement) {
-      return statement.loop.steps.flatMap((step) => ('call' in step ? [step.call] : []));
-    }
-    return [];
-  });
-  const nodeLines = labels.map((label, index) => `  step${index}["${escapeMermaidLabel(label)}"]`);
-  const edgeTargets = ['start', ...labels.map((_, index) => `step${index}`), 'done'];
-  const edgeLines = edgeTargets.slice(0, -1).map((from, index) => `  ${from} --> ${edgeTargets[index + 1]}`);
-
-  return [
-    'flowchart LR',
-    '  start(("Start"))',
-    ...nodeLines,
-    '  done(("Done"))',
-    ...edgeLines,
-    '  classDef terminalStep fill:#f8fafc,stroke:#94a3b8,color:#0f172a,stroke-width:1px;',
-    '  classDef agentStep fill:#ecfdf5,stroke:#10b981,color:#064e3b,stroke-width:1px;',
-    '  class start,done terminalStep;',
-    labels.length ? `  class ${labels.map((_, index) => `step${index}`).join(',')} agentStep;` : '',
-  ].filter(Boolean).join('\n');
-}
-
-function toCatalogItem(source: FlowSource): FlowCatalogItem {
-  const result = compileFlowDefinition(parseFlowYaml(source.source));
-  return {
-    source,
-    definition: result.definition ?? null,
-    issues: result.issues.map((issue) => `${issue.path}: ${issue.message}`),
-  };
-}
-
 function formatInputRange(input: FlowInputDefinition): string {
   if (typeof input.min === 'number' || typeof input.max === 'number') {
     return `${input.min ?? 'any'} to ${input.max ?? 'any'}`;
   }
   return 'required';
+}
+
+function formatIssue(issue: { path: string; message: string }): string {
+  return issue.path ? `${issue.path}: ${issue.message}` : issue.message;
 }
 
 function findMaxLoopRounds(statements: FlowStatement[]): number | null {

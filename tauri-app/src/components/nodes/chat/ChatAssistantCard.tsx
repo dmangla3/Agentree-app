@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { Wrench, ChevronDown, Terminal, Tag, X, Hash, Sigma, Sparkles, AlertTriangle, Copy, Check, CheckCircle2, GitCommitHorizontal, Zap, MessageSquarePlus } from 'lucide-react';
+import { Wrench, ChevronDown, Terminal, Tag, X, Hash, Sparkles, AlertTriangle, Copy, Check, CheckCircle2, GitCommitHorizontal, MessageSquarePlus } from 'lucide-react';
 import { ChatCardWrapper } from './ChatCardWrapper';
 import { ChatMarkdown } from './ChatMarkdown';
 import { CopyMessageContentButton } from './CopyMessageContentButton';
@@ -23,6 +23,7 @@ import { getAssistantIdentityLabel } from '../../../lib/assistantIdentity';
 import { getNodeFailureReason, isNodeFailureStatus } from '../../../lib/nodeFailureReason';
 import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import { useAgentreeSurface } from '../../graph/surfaceCapabilities';
+import { TokenUsagePill } from '../../TokenUsagePill';
 
 const AgentChip = ({
   agentId,
@@ -251,11 +252,6 @@ const LiveComposerCue = memo(function LiveComposerCue({
 });
 
 
-
-const formatTokenValue = (value: number | null | undefined): string | null => {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
-  return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : value.toLocaleString();
-};
 
 const getTimelineRowReactKey = (row: TimelineRow, index: number, prefix: string) =>
   `${prefix}:${row.key ?? 'row'}:${index}`;
@@ -770,61 +766,13 @@ export const ChatAssistantCard = memo(({
                   </>
                 ) : null}
                 <AiLabelChip aiLabel={message?.aiLabel} />
-                {/* Unified Token Display */}
-                {(formatTokenValue(promptTokens) || formatTokenValue(completionTokens) || formatTokenValue(cachedInputTokens) || formatTokenValue(totalTokens)) ? (
-                  <div className="inline-flex min-w-0 max-w-full flex-wrap items-center overflow-hidden rounded-lg border border-border/50 bg-muted/30 dark:bg-slate-800/50">
-                    {/* Input tokens */}
-                    {formatTokenValue(promptTokens) ? (
-                      <span 
-                        className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 border-r border-border/30 last:border-r-0"
-                        title={typeof promptTokens === 'number' ? `${promptTokens.toLocaleString()} input tokens sent as context for this response.` : undefined}
-                      >
-                        <Zap size={9} strokeWidth={2.5} className="text-emerald-500 dark:text-emerald-400" />
-                        {formatTokenValue(promptTokens)}
-                      </span>
-                    ) : null}
-                    {/* Output tokens */}
-                    {formatTokenValue(completionTokens) ? (
-                      <span 
-                        className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400 border-r border-border/30 last:border-r-0"
-                        title={typeof completionTokens === 'number' ? `${completionTokens.toLocaleString()} output tokens generated in this response.` : undefined}
-                      >
-                        <Zap size={9} strokeWidth={2.5} className="text-blue-500 dark:text-blue-400" />
-                        {formatTokenValue(completionTokens)}
-                      </span>
-                    ) : null}
-                    {/* Cached tokens */}
-                    {formatTokenValue(cachedInputTokens) ? (
-                      <span 
-                        className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 border-r border-border/30 last:border-r-0"
-                        title={typeof cachedInputTokens === 'number' ? `${cachedInputTokens.toLocaleString()} cached input tokens reused from prior context.` : undefined}
-                      >
-                        <Sigma size={9} strokeWidth={2.5} className="text-cyan-500 dark:text-cyan-400" />
-                        {formatTokenValue(cachedInputTokens)}
-                      </span>
-                    ) : null}
-                    {/* Reasoning tokens */}
-                    {formatTokenValue(reasoningTokens) ? (
-                      <span 
-                        className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 border-r border-border/30 last:border-r-0"
-                        title={typeof reasoningTokens === 'number' ? `${reasoningTokens.toLocaleString()} internal reasoning tokens used by the model.` : undefined}
-                      >
-                        <Sparkles size={9} strokeWidth={2.5} className="text-violet-500 dark:text-violet-400" />
-                        {formatTokenValue(reasoningTokens)}
-                      </span>
-                    ) : null}
-                    {/* Total tokens */}
-                    {formatTokenValue(totalTokens) ? (
-                      <span 
-                        className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400 bg-amber-50/50 dark:bg-amber-950/20"
-                        title={typeof totalTokens === 'number' ? `${totalTokens.toLocaleString()} total input, output, cached, and reasoning tokens reported for this response.` : undefined}
-                      >
-                        <Sigma size={9} strokeWidth={2.5} className="text-amber-500 dark:text-amber-400" />
-                        {formatTokenValue(totalTokens)}
-                      </span>
-                    ) : null}
-                  </div>
-                ) : null}
+                <TokenUsagePill
+                  promptTokens={promptTokens}
+                  completionTokens={completionTokens}
+                  cachedInputTokens={cachedInputTokens}
+                  reasoningTokens={reasoningTokens}
+                  totalTokens={totalTokens}
+                />
                 {tags.map((tag: string) => (
                   <Badge
                     key={tag}

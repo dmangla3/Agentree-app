@@ -21,7 +21,7 @@
     "perf:trace": "node ./scripts/perf-trace.mjs",
     "smoke:send-flow:tauri": "node ./tests/perf/tauri-pilot-send-stream-status-smoke.mjs",
     "pilot:install": "cargo install tauri-pilot-cli --locked",
-    "pilot:dev": "npm run tauri -- dev",
+    "pilot:dev": "npm run tauri -- dev --config src-tauri/tauri.dev.conf.json",
     "pilot:smoke": "node ./tests/pilot/smoke-ui.mjs",
     "pilot:test-ui": "node ./tests/pilot/run-dev-and-smoke.mjs",
     "audit:agent-runs": "node ./scripts/audit-agent-run-lifecycle.mjs",

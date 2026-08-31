@@ -7,7 +7,6 @@ import {
 const withWebviewGlobals = (document, callback) => {
   const previousDocument = globalThis.document;
   const previousLocation = globalThis.location;
-  const previousOverride = globalThis.__AGENTREE_TAURI_PILOT_ALLOW_VISIBLE_UNFOCUSED_WEBVIEW;
   try {
     globalThis.document = document;
     globalThis.location = { href: 'tauri://localhost/' };
@@ -15,11 +14,6 @@ const withWebviewGlobals = (document, callback) => {
   } finally {
     globalThis.document = previousDocument;
     globalThis.location = previousLocation;
-    if (previousOverride === undefined) {
-      delete globalThis.__AGENTREE_TAURI_PILOT_ALLOW_VISIBLE_UNFOCUSED_WEBVIEW;
-    } else {
-      globalThis.__AGENTREE_TAURI_PILOT_ALLOW_VISIBLE_UNFOCUSED_WEBVIEW = previousOverride;
-    }
   }
 };
 
@@ -60,30 +54,12 @@ describe('Tauri Pilot desktop preflight helpers', () => {
     });
   });
 
-  it('allows an unfocused but visible webview with the explicit remote override', () => {
-    withWebviewGlobals({
-      visibilityState: 'visible',
-      hidden: false,
-      hasFocus: () => false,
-    }, () => {
-      globalThis.__AGENTREE_TAURI_PILOT_ALLOW_VISIBLE_UNFOCUSED_WEBVIEW = true;
-      expect(evaluateVisibleFocusedWebviewSource()).toEqual({
-        visibility: 'visible',
-        hidden: false,
-        hasFocus: false,
-        focusOverride: true,
-        url: 'tauri://localhost/',
-      });
-    });
-  });
-
-  it('still rejects hidden webviews when the remote focus override is set', () => {
+  it('rejects hidden webviews', () => {
     withWebviewGlobals({
       visibilityState: 'hidden',
       hidden: true,
       hasFocus: () => false,
     }, () => {
-      globalThis.__AGENTREE_TAURI_PILOT_ALLOW_VISIBLE_UNFOCUSED_WEBVIEW = true;
       expect(evaluateVisibleFocusedWebviewSource).toThrow(/desktop webview preflight failed/);
     });
   });
@@ -98,7 +74,6 @@ describe('Tauri Pilot desktop preflight helpers', () => {
         visibility: 'visible',
         hidden: false,
         hasFocus: true,
-        focusOverride: false,
         url: 'tauri://localhost/',
       });
     });

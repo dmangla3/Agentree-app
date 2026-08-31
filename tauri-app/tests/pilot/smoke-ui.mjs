@@ -122,13 +122,14 @@ const waitForUiReady = async () => {
     latest = await readProbe();
     const documentReady = latest?.readyState === 'complete' || latest?.readyState === 'interactive';
     const visible = latest?.visibility === 'visible';
+    const focused = latest?.hasFocus === true;
     const appLoaded = !latest?.isInitialLoading && (
       latest?.composerFound ||
       latest?.hasLoginUi ||
       latest?.buttonCount > 0 ||
       latest?.hasErrorUi
     );
-    if (documentReady && visible && appLoaded) {
+    if (documentReady && visible && focused && appLoaded) {
       return latest;
     }
     await sleep(1000);
@@ -159,6 +160,9 @@ const main = async () => {
   }
   if (probe?.visibility !== 'visible') {
     throw new Error(`App webview is not visible to Pilot: ${JSON.stringify(probe)}`);
+  }
+  if (probe?.hasFocus !== true) {
+    throw new Error(`App webview is not focused to Pilot: ${JSON.stringify(probe)}`);
   }
   if (probe?.isInitialLoading) {
     throw new Error(`App is still on initial loading screen: ${JSON.stringify(probe)}`);

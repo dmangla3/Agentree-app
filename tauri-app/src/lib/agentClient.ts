@@ -190,6 +190,30 @@ export interface LocalInsightRecord {
     lastUploadError?: string | null;
 }
 
+export interface LocalInsightCandidateRecord {
+    candidateId: string;
+    workspaceId: string;
+    parentNodeId: string;
+    agentKind: 'hypothesis' | 'doubt' | 'meta' | 'association' | 'memory' | 'kb' | 'risk' | 'opportunity' | string;
+    claim: string;
+    rationale?: string | null;
+    status: string;
+    noveltyScore: number | null;
+    relevanceScore: number | null;
+    actionabilityScore: number | null;
+    riskScore: number | null;
+    timingScore: number | null;
+    confidence: number | null;
+    priority?: number | null;
+    surfaceReason?: string | null;
+    surfacedInsightId?: string | null;
+    sourceRunNodeId?: string | null;
+    explorationJson?: string | null;
+    payload: string;
+    createdAt: string;
+    updatedAt: string;
+}
+
 export interface LocalSyncEventRecord {
     id: string;
     workspaceId?: string | null;
@@ -725,6 +749,10 @@ export const agentClient = {
         if (!hasTauriRuntime()) return [];
         return await (tauriCommands as any).listLocalInsights(workspaceId) as LocalInsightRecord[];
     },
+    listLocalInsightCandidates: async (workspaceId: string): Promise<LocalInsightCandidateRecord[]> => {
+        if (!hasTauriRuntime()) return [];
+        return await (tauriCommands as any).listLocalInsightCandidates(workspaceId) as LocalInsightCandidateRecord[];
+    },
     upsertLocalInsight: async (workspaceId: string, insightId: string, payload: unknown, mutationId?: string | null): Promise<LocalSyncEventRecord | null> => {
         if (!hasTauriRuntime()) return null;
         return await (tauriCommands as any).upsertLocalInsight(
@@ -738,6 +766,16 @@ export const agentClient = {
     localFirstDismissInsight: async (workspaceId: string, insightId: string): Promise<LocalSyncEventRecord | null> => {
         if (!hasTauriRuntime()) return null;
         return await (tauriCommands as any).localFirstDismissInsight(workspaceId, currentAuthUserId(), insightId) as LocalSyncEventRecord;
+    },
+    recordLocalInsightFeedback: async (workspaceId: string, insightId: string, action: string, context?: unknown): Promise<void> => {
+        if (!hasTauriRuntime()) return;
+        await (tauriCommands as any).recordLocalInsightFeedback(
+            workspaceId,
+            currentAuthUserId(),
+            insightId,
+            action,
+            context === undefined ? null : JSON.stringify(context),
+        );
     },
     hydrateLocalNodesFromServer: async (workspaceId: string, messages: unknown[]): Promise<number> => {
         if (!hasTauriRuntime()) return 0;

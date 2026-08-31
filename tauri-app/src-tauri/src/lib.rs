@@ -37,11 +37,25 @@ mod worktree_config;
 
 #[cfg(all(debug_assertions, unix))]
 fn prepare_pilot_socket() -> bool {
-    use std::io::ErrorKind;
-    use std::os::unix::net::UnixStream;
     use std::path::Path;
 
-    let socket_path = Path::new("/tmp/tauri-pilot-com.agentree.agentree.sock");
+    let socket_paths = [
+        Path::new("/tmp/tauri-pilot-com.agentree.agentree.sock"),
+        Path::new("/tmp/tauri-pilot-com.agentree.agentree.dev.sock"),
+    ];
+    for socket_path in socket_paths {
+        if !prepare_single_pilot_socket(socket_path) {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(all(debug_assertions, unix))]
+fn prepare_single_pilot_socket(socket_path: &std::path::Path) -> bool {
+    use std::io::ErrorKind;
+    use std::os::unix::net::UnixStream;
+
     if !socket_path.exists() {
         return true;
     }
@@ -124,8 +138,10 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             db::replay_agent_run_events,
             db::list_local_nodes,
             db::list_local_insights,
+            db::list_local_insight_candidates,
             db::upsert_local_insight,
             db::local_first_dismiss_insight,
+            db::record_local_insight_feedback,
             db::hydrate_local_nodes_from_server,
             db::create_thread_session,
             db::upsert_thread_session,

@@ -1326,6 +1326,11 @@ fn is_insight_run_execution_data(execution_data: &JsonValue) -> bool {
     bool_from_execution_meta(execution_data, "agentree_insight_run")
 }
 
+fn insight_stage_from_execution_data(execution_data: &JsonValue) -> String {
+    string_from_execution_meta(execution_data, "insight_stage")
+        .unwrap_or_else(|| "validate".to_string())
+}
+
 fn insight_parent_node_id_from_execution_data(execution_data: &JsonValue) -> Option<String> {
     string_from_execution_meta(execution_data, "insight_parent_node_id")
         .or_else(|| parent_id_from_execution_data(execution_data))
@@ -1344,70 +1349,20 @@ fn extract_json_from_agent_text(content: &str) -> Option<JsonValue> {
     serde_json::from_str::<JsonValue>(&trimmed[start..=end]).ok()
 }
 
-fn insight_agent_type(value: Option<&str>) -> String {
-    match value.unwrap_or("hypothesis") {
-        "hypothesis" | "doubt" | "meta" | "association" | "memory" | "kb" => {
-            value.unwrap_or("hypothesis").to_string()
-        }
-        _ => "hypothesis".to_string(),
-    }
-}
-
-fn insight_payloads_for_snapshot(
-    snapshot: &AgentRunSnapshot,
-) -> Result<Vec<(String, JsonValue)>, String> {
-    let workspace_id = workspace_id_from_execution_data(&snapshot.execution_data)
-        .ok_or_else(|| "Missing workspace_id for insight run.".to_string())?;
-    let parent_node_id = insight_parent_node_id_from_execution_data(&snapshot.execution_data)
-        .ok_or_else(|| "Missing parent node id for insight run.".to_string())?;
+fn insight_candidates_for_snapshot(snapshot: &AgentRunSnapshot) -> Vec<JsonValue> {
     let Some(parsed) = extract_json_from_agent_text(&snapshot.final_content) else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
-    let raw_insights = if let Some(array) = parsed.as_array() {
+    let raw_candidates = if let Some(array) = parsed.as_array() {
+        array.clone()
+    } else if let Some(array) = parsed.get("candidates").and_then(|value| value.as_array()) {
         array.clone()
     } else if let Some(array) = parsed.get("insights").and_then(|value| value.as_array()) {
         array.clone()
     } else {
         Vec::new()
     };
-    let mut payloads = Vec::new();
-    for raw in raw_insights.into_iter().take(5) {
-        let Some(content) = raw
-            .get("content")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            continue;
-        };
-        let id = raw
-            .get("id")
-            .and_then(|value| value.as_str())
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let confidence = raw
-            .get("validationResults")
-            .and_then(|value| value.get("confidence"))
-            .and_then(|value| value.as_f64())
-            .or_else(|| raw.get("confidence").and_then(|value| value.as_f64()))
-            .unwrap_or(0.5)
-            .clamp(0.0, 1.0);
-        let payload = serde_json::json!({
-            "id": id,
-            "agentType": insight_agent_type(raw.get("agentType").or_else(|| raw.get("type")).and_then(|value| value.as_str())),
-            "isLocal": true,
-            "content": content,
-            "fullExploration": raw.get("fullExploration").or_else(|| raw.get("analysis")).and_then(|value| value.as_str()),
-            "reasoning": raw.get("reasoning").or_else(|| raw.get("why")).and_then(|value| value.as_str()),
-            "sourceWorkspaceId": workspace_id,
-            "sourceRunNodeId": snapshot.node_id,
-            "validationResults": { "confidence": confidence },
-            "parentNodeId": raw.get("parentNodeId").and_then(|value| value.as_str()).unwrap_or(parent_node_id.as_str()),
-            "createdAt": chrono_like_now(),
-        });
-        payloads.push((id, payload));
-    }
-    Ok(payloads)
+    raw_candidates.into_iter().take(8).collect()
 }
 
 fn persist_insights_for_snapshot(
@@ -1417,23 +1372,48 @@ fn persist_insights_for_snapshot(
     if snapshot.status != "completed" {
         return Ok(0);
     }
+    if insight_stage_from_execution_data(&snapshot.execution_data) != "validate" {
+        return Ok(0);
+    }
     let workspace_id = workspace_id_from_execution_data(&snapshot.execution_data)
         .ok_or_else(|| "Missing workspace_id for insight run.".to_string())?;
-    let payloads = insight_payloads_for_snapshot(snapshot)?;
+    let parent_node_id = insight_parent_node_id_from_execution_data(&snapshot.execution_data)
+        .ok_or_else(|| "Missing parent node id for insight run.".to_string())?;
+    let candidates = insight_candidates_for_snapshot(snapshot);
     let telemetry = app_handle.state::<crate::db::TelemetryDb>();
-    let mut persisted = 0usize;
-    for (insight_id, payload) in payloads {
-        let payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-        telemetry.upsert_local_insight_payload_for_user(
+    let observation_summary = snapshot
+        .final_content
+        .split_whitespace()
+        .take(80)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let trigger_class =
+        string_from_execution_meta(&snapshot.execution_data, "insight_trigger_class")
+            .unwrap_or_else(|| "light".to_string());
+    let trigger_reason =
+        string_from_execution_meta(&snapshot.execution_data, "insight_trigger_reason")
+            .unwrap_or_else(|| "light_assistant_completed".to_string());
+    let (candidate_count, surfaced_count) = telemetry
+        .persist_background_insight_candidates_for_user(
             &workspace_id,
             snapshot.auth_user_id.as_deref(),
-            &insight_id,
-            &payload_json,
-            Some(&format!("{}:{}", snapshot.run_id, insight_id)),
+            &parent_node_id,
+            &snapshot.node_id,
+            &trigger_class,
+            &trigger_reason,
+            snapshot.prompt_tokens,
+            snapshot.completion_tokens,
+            snapshot.total_tokens,
+            candidates,
+            &observation_summary,
         )?;
-        persisted += 1;
-    }
-    Ok(persisted)
+    crate::app_log!(
+        "[INSIGHTS] event=background_candidates_persisted node_id={} candidates={} surfaced={}",
+        snapshot.node_id,
+        candidate_count,
+        surfaced_count
+    );
+    Ok(surfaced_count)
 }
 
 fn store_finalize_ack(

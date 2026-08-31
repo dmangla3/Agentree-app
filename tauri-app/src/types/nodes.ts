@@ -10,6 +10,15 @@ export interface FocusTriggerMetrics {
   metadata?: Record<string, unknown>;
 }
 
+export interface AttentionBadgeItem {
+  id: string;
+  kind: string;
+  label: string;
+  status?: string | null;
+  priority?: number | null;
+  source: 'insight' | 'candidate';
+}
+
 export interface SharedNodeProps {
   nodeId?: string;
   entity: ProjectedNodeEntity;
@@ -19,6 +28,8 @@ export interface SharedNodeProps {
   focusFeedbackEnabled?: boolean;
   detailLevel?: GraphNodeDetailLevel;
   disableHoverCard?: boolean;
+  attentionBadgeCount?: number;
+  attentionBadgeItems?: AttentionBadgeItem[];
   showSelectionControl?: boolean;
   layout: ViewLayout;
   heightKey?: string;

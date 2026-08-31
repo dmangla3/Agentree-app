@@ -356,6 +356,253 @@ pub struct LocalInsightRow {
     pub last_upload_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalInsightCandidateRow {
+    pub candidate_id: String,
+    pub workspace_id: String,
+    pub parent_node_id: String,
+    pub agent_kind: String,
+    pub claim: String,
+    pub rationale: Option<String>,
+    pub status: String,
+    pub novelty_score: f64,
+    pub relevance_score: f64,
+    pub actionability_score: f64,
+    pub risk_score: f64,
+    pub timing_score: f64,
+    pub confidence: f64,
+    pub priority: Option<f64>,
+    pub surface_reason: Option<String>,
+    pub surfaced_insight_id: Option<String>,
+    pub source_run_node_id: Option<String>,
+    pub exploration_json: Option<String>,
+    pub payload: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+struct InsightCandidateDraft {
+    id: String,
+    agent_kind: String,
+    claim: String,
+    rationale: Option<String>,
+    novelty_score: f64,
+    relevance_score: f64,
+    actionability_score: f64,
+    risk_score: f64,
+    timing_score: f64,
+    confidence: f64,
+    priority: f64,
+    should_surface: bool,
+    surface_reason: String,
+    payload: JsonValue,
+    exploration: JsonValue,
+}
+
+fn clamp_score(value: f64) -> f64 {
+    if value.is_nan() {
+        return 0.5;
+    }
+    value.clamp(0.0, 1.0)
+}
+
+fn normalize_insight_agent_kind(value: Option<&str>) -> String {
+    match value.unwrap_or("hypothesis").trim() {
+        "hypothesis" | "doubt" | "meta" | "association" | "memory" | "kb" | "risk"
+        | "opportunity" => value.unwrap_or("hypothesis").trim().to_string(),
+        _ => "hypothesis".to_string(),
+    }
+}
+
+fn json_string_field<'a>(value: &'a JsonValue, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(|field| field.as_str()))
+        .map(str::trim)
+        .filter(|field| !field.is_empty())
+}
+
+fn json_score_field(value: &JsonValue, keys: &[&str], default: f64) -> f64 {
+    for key in keys {
+        if let Some(score) = value.get(*key).and_then(|field| field.as_f64()) {
+            return clamp_score(score);
+        }
+        if let Some(score) = value
+            .get("validationResults")
+            .or_else(|| value.get("validation"))
+            .and_then(|validation| validation.get(*key))
+            .and_then(|field| field.as_f64())
+        {
+            return clamp_score(score);
+        }
+    }
+    default
+}
+
+fn insight_claim_is_generic(claim: &str) -> bool {
+    let normalized = claim.to_ascii_lowercase();
+    [
+        "consider tradeoffs",
+        "think about",
+        "it may be useful",
+        "you could consider",
+        "keep in mind",
+        "best practice",
+        "be careful",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase))
+}
+
+fn build_insight_exploration(raw: &JsonValue, rationale: Option<&str>) -> JsonValue {
+    if let Some(exploration) = raw.get("exploration").cloned() {
+        return exploration;
+    }
+    serde_json::json!({
+        "analysis": json_string_field(raw, &["fullExploration", "analysis", "evidence", "support"]).or(rationale),
+        "raw": raw,
+    })
+}
+
+fn parse_insight_candidate(
+    workspace_id: &str,
+    parent_node_id: &str,
+    source_run_node_id: &str,
+    trigger_class: &str,
+    trigger_reason: &str,
+    prompt_tokens: Option<i64>,
+    completion_tokens: Option<i64>,
+    total_tokens: Option<i64>,
+    raw: JsonValue,
+) -> Option<InsightCandidateDraft> {
+    let claim = json_string_field(&raw, &["claim", "content", "title", "insight"])?.to_string();
+    let rationale = json_string_field(&raw, &["rationale", "reasoning", "why", "surfaceReason"])
+        .map(|value| value.to_string());
+    let agent_kind = normalize_insight_agent_kind(json_string_field(
+        &raw,
+        &["agentKind", "agentType", "strategy", "type"],
+    ));
+    let mut novelty_score =
+        json_score_field(&raw, &["novelty", "noveltyScore", "novelty_score"], 0.55);
+    let mut relevance_score = json_score_field(
+        &raw,
+        &["relevance", "relevanceScore", "relevance_score"],
+        0.55,
+    );
+    let mut actionability_score = json_score_field(
+        &raw,
+        &["actionability", "actionabilityScore", "actionability_score"],
+        0.5,
+    );
+    let risk_score = json_score_field(&raw, &["risk", "riskScore", "risk_score"], 0.35);
+    let timing_score = json_score_field(&raw, &["timing", "timingScore", "timing_score"], 0.5);
+    let mut confidence = json_score_field(
+        &raw,
+        &["confidence", "confidenceScore", "confidence_score"],
+        0.55,
+    );
+
+    let word_count = claim.split_whitespace().count();
+    if word_count < 5 {
+        relevance_score = clamp_score(relevance_score - 0.15);
+        actionability_score = clamp_score(actionability_score - 0.2);
+    }
+    if insight_claim_is_generic(&claim) {
+        novelty_score = clamp_score(novelty_score - 0.25);
+        actionability_score = clamp_score(actionability_score - 0.2);
+    }
+    let has_evidence = rationale
+        .as_deref()
+        .map(|value| value.split_whitespace().count() >= 8)
+        .unwrap_or(false)
+        || json_string_field(
+            &raw,
+            &["fullExploration", "analysis", "evidence", "support"],
+        )
+        .map(|value| value.split_whitespace().count() >= 8)
+        .unwrap_or(false);
+    if !has_evidence && risk_score > 0.55 {
+        confidence = clamp_score(confidence - 0.15);
+    }
+
+    let priority = clamp_score(
+        ((novelty_score + relevance_score + actionability_score + timing_score + confidence) / 5.0)
+            - (risk_score * 0.25),
+    );
+    let should_surface = novelty_score >= 0.45
+        && relevance_score >= 0.5
+        && actionability_score >= 0.42
+        && timing_score >= 0.45
+        && confidence >= 0.5
+        && risk_score <= 0.75
+        && priority >= 0.48;
+    let surface_reason = json_string_field(&raw, &["surfaceReason", "reason", "whyNow"])
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| {
+            if should_surface {
+                "Validated as novel, relevant, actionable, and timely.".to_string()
+            } else {
+                "Saved quietly because it did not clear the attention gate.".to_string()
+            }
+        });
+    let id = json_string_field(&raw, &["id", "candidateId", "candidate_id"])
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let exploration = build_insight_exploration(&raw, rationale.as_deref());
+    let created_at = chrono_like_now();
+    let payload = serde_json::json!({
+        "id": id,
+        "candidateId": id,
+        "agentKind": agent_kind,
+        "agentType": agent_kind,
+        "isLocal": true,
+        "claim": claim,
+        "content": claim,
+        "rationale": rationale,
+        "reasoning": rationale,
+        "fullExploration": exploration.get("analysis").and_then(|value| value.as_str()),
+        "sourceWorkspaceId": workspace_id,
+        "sourceRunNodeId": source_run_node_id,
+        "triggerClass": trigger_class,
+        "triggerReason": trigger_reason,
+        "promptTokens": prompt_tokens,
+        "completionTokens": completion_tokens,
+        "totalTokens": total_tokens,
+        "parentNodeId": parent_node_id,
+        "validationResults": {
+            "novelty": novelty_score,
+            "relevance": relevance_score,
+            "actionability": actionability_score,
+            "risk": risk_score,
+            "timing": timing_score,
+            "confidence": confidence,
+            "surface": should_surface,
+            "reason": surface_reason,
+            "priority": priority,
+        },
+        "createdAt": created_at,
+        "updatedAt": created_at,
+    });
+
+    Some(InsightCandidateDraft {
+        id,
+        agent_kind,
+        claim,
+        rationale,
+        novelty_score,
+        relevance_score,
+        actionability_score,
+        risk_score,
+        timing_score,
+        confidence,
+        priority,
+        should_surface,
+        surface_reason,
+        payload,
+        exploration,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSessionPayload {
@@ -778,6 +1025,79 @@ impl TelemetryDb {
                 ON local_insights(workspace_id, status, local_updated_at);
             CREATE INDEX IF NOT EXISTS idx_local_insights_parent
                 ON local_insights(workspace_id, parent_node_id);
+
+            CREATE TABLE IF NOT EXISTS background_observations (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                source_node_id TEXT NOT NULL,
+                source_event_type TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_background_observations_workspace_source
+                ON background_observations(workspace_id, source_node_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS insight_candidates (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                parent_node_id TEXT NOT NULL,
+                agent_kind TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                rationale TEXT,
+                status TEXT NOT NULL DEFAULT 'seed',
+                novelty_score REAL NOT NULL DEFAULT 0.5,
+                relevance_score REAL NOT NULL DEFAULT 0.5,
+                actionability_score REAL NOT NULL DEFAULT 0.5,
+                risk_score REAL NOT NULL DEFAULT 0.5,
+                timing_score REAL NOT NULL DEFAULT 0.5,
+                confidence REAL NOT NULL DEFAULT 0.5,
+                source_run_node_id TEXT,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_insight_candidates_workspace_status
+                ON insight_candidates(workspace_id, status, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_insight_candidates_parent
+                ON insight_candidates(workspace_id, parent_node_id, status);
+
+            CREATE TABLE IF NOT EXISTS insight_explorations (
+                id TEXT PRIMARY KEY,
+                candidate_id TEXT NOT NULL,
+                run_node_id TEXT,
+                exploration_type TEXT NOT NULL,
+                content_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_insight_explorations_candidate
+                ON insight_explorations(candidate_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS surfaced_insights (
+                id TEXT PRIMARY KEY,
+                candidate_id TEXT NOT NULL UNIQUE,
+                workspace_id TEXT NOT NULL,
+                surface_reason TEXT NOT NULL,
+                priority REAL NOT NULL,
+                seen_at TEXT,
+                acted_at TEXT,
+                dismissed_at TEXT,
+                promoted_node_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_surfaced_insights_workspace_active
+                ON surfaced_insights(workspace_id, dismissed_at, priority, updated_at);
+
+            CREATE TABLE IF NOT EXISTS insight_feedback (
+                id TEXT PRIMARY KEY,
+                insight_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                context_json TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_insight_feedback_insight
+                ON insight_feedback(insight_id, created_at);
 
             CREATE TABLE IF NOT EXISTS local_commits (
                 workspace_id TEXT NOT NULL,
@@ -3441,8 +3761,236 @@ impl TelemetryDb {
             mutation_id,
         )?;
         tx.commit().map_err(|e| e.to_string())?;
+        drop(conn);
         self.get_local_sync_event_by_idempotency_key(&idempotency_key)?
             .ok_or_else(|| "Failed to read enqueued insight sync event.".to_string())
+    }
+
+    pub fn persist_background_insight_candidates_for_user(
+        &self,
+        workspace_id: &str,
+        user_id: Option<&str>,
+        parent_node_id: &str,
+        source_run_node_id: &str,
+        trigger_class: &str,
+        trigger_reason: &str,
+        prompt_tokens: Option<i64>,
+        completion_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+        raw_candidates: Vec<JsonValue>,
+        observation_summary: &str,
+    ) -> Result<(usize, usize), String> {
+        let candidates = raw_candidates
+            .into_iter()
+            .filter_map(|raw| {
+                parse_insight_candidate(
+                    workspace_id,
+                    parent_node_id,
+                    source_run_node_id,
+                    trigger_class,
+                    trigger_reason,
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    raw,
+                )
+            })
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Ok((0, 0));
+        }
+
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let existing_active_for_parent: i64 = conn
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM surfaced_insights s
+                JOIN insight_candidates c ON c.id = s.candidate_id
+                WHERE s.workspace_id = ?1
+                  AND c.parent_node_id = ?2
+                  AND s.dismissed_at IS NULL
+                "#,
+                params![workspace_id, parent_node_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        let selected_candidate_id = if existing_active_for_parent == 0 {
+            candidates
+                .iter()
+                .filter(|candidate| candidate.should_surface)
+                .max_by(|left, right| {
+                    left.priority
+                        .partial_cmp(&right.priority)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|candidate| candidate.id.clone())
+        } else {
+            None
+        };
+
+        let now = chrono_like_now();
+        let observation_id = uuid::Uuid::new_v4().to_string();
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            r#"
+            INSERT INTO background_observations (
+                id, workspace_id, source_node_id, source_event_type, summary, created_at
+            )
+            VALUES (?1, ?2, ?3, 'assistant_completed', ?4, ?5)
+            ON CONFLICT(id) DO NOTHING
+            "#,
+            params![
+                observation_id,
+                workspace_id,
+                parent_node_id,
+                observation_summary,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+        let mut surfaced_payloads: Vec<(String, JsonValue, String)> = Vec::new();
+        for candidate in &candidates {
+            let is_selected = selected_candidate_id.as_deref() == Some(candidate.id.as_str());
+            let candidate_status = if is_selected {
+                "surfaced"
+            } else if candidate.should_surface || candidate.priority >= 0.4 {
+                "validated"
+            } else {
+                "archived"
+            };
+            let payload_json =
+                serde_json::to_string(&candidate.payload).map_err(|err| err.to_string())?;
+            tx.execute(
+                r#"
+                INSERT INTO insight_candidates (
+                    id, workspace_id, parent_node_id, agent_kind, claim, rationale, status,
+                    novelty_score, relevance_score, actionability_score, risk_score, timing_score,
+                    confidence, source_run_node_id, payload_json, created_at, updated_at, deleted_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, NULL)
+                ON CONFLICT(id) DO UPDATE SET
+                    workspace_id = excluded.workspace_id,
+                    parent_node_id = excluded.parent_node_id,
+                    agent_kind = excluded.agent_kind,
+                    claim = excluded.claim,
+                    rationale = excluded.rationale,
+                    status = excluded.status,
+                    novelty_score = excluded.novelty_score,
+                    relevance_score = excluded.relevance_score,
+                    actionability_score = excluded.actionability_score,
+                    risk_score = excluded.risk_score,
+                    timing_score = excluded.timing_score,
+                    confidence = excluded.confidence,
+                    source_run_node_id = excluded.source_run_node_id,
+                    payload_json = excluded.payload_json,
+                    updated_at = excluded.updated_at,
+                    deleted_at = NULL
+                "#,
+                params![
+                    candidate.id,
+                    workspace_id,
+                    parent_node_id,
+                    candidate.agent_kind,
+                    candidate.claim,
+                    candidate.rationale,
+                    candidate_status,
+                    candidate.novelty_score,
+                    candidate.relevance_score,
+                    candidate.actionability_score,
+                    candidate.risk_score,
+                    candidate.timing_score,
+                    candidate.confidence,
+                    source_run_node_id,
+                    payload_json,
+                    now,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            let exploration_id = uuid::Uuid::new_v4().to_string();
+            let exploration_json =
+                serde_json::to_string(&candidate.exploration).map_err(|err| err.to_string())?;
+            tx.execute(
+                r#"
+                INSERT INTO insight_explorations (
+                    id, candidate_id, run_node_id, exploration_type, content_json, created_at
+                )
+                VALUES (?1, ?2, ?3, 'initial_private_exploration', ?4, ?5)
+                "#,
+                params![
+                    exploration_id,
+                    candidate.id,
+                    source_run_node_id,
+                    exploration_json,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            if is_selected {
+                tx.execute(
+                    r#"
+                    INSERT INTO surfaced_insights (
+                        id, candidate_id, workspace_id, surface_reason, priority,
+                        seen_at, acted_at, dismissed_at, promoted_node_id, created_at, updated_at
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, ?6, ?7)
+                    ON CONFLICT(candidate_id) DO UPDATE SET
+                        surface_reason = excluded.surface_reason,
+                        priority = excluded.priority,
+                        dismissed_at = NULL,
+                        updated_at = excluded.updated_at
+                    "#,
+                    params![
+                        candidate.id,
+                        candidate.id,
+                        workspace_id,
+                        candidate.surface_reason,
+                        candidate.priority,
+                        now,
+                        now
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                let mut surface_payload = candidate.payload.clone();
+                if let Some(object) = surface_payload.as_object_mut() {
+                    object.insert(
+                        "surfaceReason".to_string(),
+                        JsonValue::String(candidate.surface_reason.clone()),
+                    );
+                    object.insert("priority".to_string(), JsonValue::from(candidate.priority));
+                    object.insert(
+                        "status".to_string(),
+                        JsonValue::String("surfaced".to_string()),
+                    );
+                }
+                surfaced_payloads.push((
+                    candidate.id.clone(),
+                    surface_payload,
+                    format!("{}:{}", source_run_node_id, candidate.id),
+                ));
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        drop(conn);
+
+        let mut surfaced = 0usize;
+        for (insight_id, payload, mutation_id) in surfaced_payloads {
+            let payload_json = serde_json::to_string(&payload).map_err(|err| err.to_string())?;
+            self.upsert_local_insight_payload_for_user(
+                workspace_id,
+                user_id,
+                &insight_id,
+                &payload_json,
+                Some(&mutation_id),
+            )?;
+            surfaced += 1;
+        }
+
+        Ok((candidates.len(), surfaced))
     }
 
     pub fn local_first_dismiss_insight(
@@ -3468,6 +4016,43 @@ impl TelemetryDb {
             params![workspace_id, insight_id, chrono_like_now(), now],
         )
         .map_err(|e| e.to_string())?;
+        tx.execute(
+            r#"
+            UPDATE surfaced_insights
+            SET dismissed_at = ?3,
+                updated_at = ?3
+            WHERE workspace_id = ?1
+              AND id = ?2
+              AND dismissed_at IS NULL
+            "#,
+            params![workspace_id, insight_id, chrono_like_now()],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            r#"
+            UPDATE insight_candidates
+            SET status = 'dismissed',
+                updated_at = ?3
+            WHERE workspace_id = ?1
+              AND id = ?2
+            "#,
+            params![workspace_id, insight_id, chrono_like_now()],
+        )
+        .map_err(|e| e.to_string())?;
+        let feedback_id = uuid::Uuid::new_v4().to_string();
+        tx.execute(
+            r#"
+            INSERT INTO insight_feedback (id, insight_id, action, context_json, created_at)
+            VALUES (?1, ?2, 'dismissed', ?3, ?4)
+            "#,
+            params![
+                feedback_id,
+                insight_id,
+                serde_json::json!({ "workspaceId": workspace_id, "userId": user_id }).to_string(),
+                chrono_like_now()
+            ],
+        )
+        .map_err(|e| e.to_string())?;
         let sync_payload = serde_json::json!({
             "action": "dismiss",
             "workspaceId": workspace_id,
@@ -3486,8 +4071,113 @@ impl TelemetryDb {
             None,
         )?;
         tx.commit().map_err(|e| e.to_string())?;
+        drop(conn);
         self.get_local_sync_event_by_idempotency_key(&idempotency_key)?
             .ok_or_else(|| "Failed to read enqueued insight dismiss event.".to_string())
+    }
+
+    pub fn record_local_insight_feedback(
+        &self,
+        workspace_id: &str,
+        user_id: Option<&str>,
+        insight_id: &str,
+        action: &str,
+        context_json: Option<&str>,
+    ) -> Result<(), String> {
+        let action = match action {
+            "seen" | "expanded" | "dismissed" | "promoted" | "copied" | "ignored" => action,
+            _ => return Err(format!("Unsupported insight feedback action: {}", action)),
+        };
+        let now = chrono_like_now();
+        let context = context_json
+            .map(|value| serde_json::from_str::<JsonValue>(value).unwrap_or(JsonValue::Null))
+            .unwrap_or_else(|| serde_json::json!({}));
+        let mut context = match context {
+            JsonValue::Object(map) => JsonValue::Object(map),
+            other => serde_json::json!({ "value": other }),
+        };
+        if let Some(object) = context.as_object_mut() {
+            object.insert(
+                "workspaceId".to_string(),
+                JsonValue::String(workspace_id.to_string()),
+            );
+            if let Some(user_id) = user_id {
+                object.insert("userId".to_string(), JsonValue::String(user_id.to_string()));
+            }
+        }
+        let promoted_node_id = context
+            .get("promotedNodeId")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string());
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            r#"
+            INSERT INTO insight_feedback (id, insight_id, action, context_json, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                insight_id,
+                action,
+                serde_json::to_string(&context).map_err(|err| err.to_string())?,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        match action {
+            "seen" => {
+                conn.execute(
+                    r#"
+                    UPDATE surfaced_insights
+                    SET seen_at = COALESCE(seen_at, ?3),
+                        updated_at = ?3
+                    WHERE workspace_id = ?1 AND id = ?2
+                    "#,
+                    params![workspace_id, insight_id, now],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            "expanded" | "copied" => {
+                conn.execute(
+                    r#"
+                    UPDATE surfaced_insights
+                    SET seen_at = COALESCE(seen_at, ?3),
+                        acted_at = ?3,
+                        updated_at = ?3
+                    WHERE workspace_id = ?1 AND id = ?2
+                    "#,
+                    params![workspace_id, insight_id, now],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            "promoted" => {
+                conn.execute(
+                    r#"
+                    UPDATE surfaced_insights
+                    SET seen_at = COALESCE(seen_at, ?3),
+                        acted_at = ?3,
+                        promoted_node_id = COALESCE(?4, promoted_node_id),
+                        updated_at = ?3
+                    WHERE workspace_id = ?1 AND id = ?2
+                    "#,
+                    params![workspace_id, insight_id, now, promoted_node_id],
+                )
+                .map_err(|e| e.to_string())?;
+                conn.execute(
+                    r#"
+                    UPDATE insight_candidates
+                    SET status = 'promoted',
+                        updated_at = ?3
+                    WHERE workspace_id = ?1 AND id = ?2
+                    "#,
+                    params![workspace_id, insight_id, now],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            "ignored" | "dismissed" => {}
+            _ => {}
+        }
+        Ok(())
     }
 
     pub fn list_local_insights_for_workspace(
@@ -3499,22 +4189,22 @@ impl TelemetryDb {
             .prepare(
                 r#"
                 SELECT
-                    i.id,
-                    i.workspace_id,
-                    i.payload_json,
+                    s.id,
+                    s.workspace_id,
+                    COALESCE(i.payload_json, c.payload_json),
                     CASE
                         WHEN EXISTS (
                             SELECT 1
                             FROM local_sync_events e
                             WHERE e.entity_type = 'insight'
-                              AND e.entity_id = i.id
+                              AND e.entity_id = s.id
                               AND e.status IN ('pending', 'in_flight', 'dead')
                         ) THEN 'local_only'
-                        WHEN i.server_ack_at IS NULL THEN 'local_only'
+                        WHEN i.id IS NULL OR i.server_ack_at IS NULL THEN 'local_only'
                         ELSE 'persisted'
                     END AS sync_status,
-                    i.created_at,
-                    i.updated_at,
+                    COALESCE(i.created_at, s.created_at),
+                    COALESCE(i.updated_at, s.updated_at),
                     CASE
                         WHEN i.server_ack_at IS NULL THEN NULL
                         WHEN i.server_ack_at GLOB '[0-9]*' THEN CAST(i.server_ack_at AS INTEGER)
@@ -3524,31 +4214,34 @@ impl TelemetryDb {
                         SELECT MAX(e.attempt_count)
                         FROM local_sync_events e
                         WHERE e.entity_type = 'insight'
-                          AND e.entity_id = i.id
+                          AND e.entity_id = s.id
                           AND e.status IN ('pending', 'in_flight', 'dead')
                     ), 0) AS retry_attempt,
                     (
                         SELECT MIN(e.next_attempt_at)
                         FROM local_sync_events e
                         WHERE e.entity_type = 'insight'
-                          AND e.entity_id = i.id
+                          AND e.entity_id = s.id
                           AND e.status IN ('pending', 'in_flight')
                     ) AS next_retry_at,
                     (
                         SELECT e.last_error
                         FROM local_sync_events e
                         WHERE e.entity_type = 'insight'
-                          AND e.entity_id = i.id
+                          AND e.entity_id = s.id
                           AND e.status IN ('pending', 'in_flight', 'dead')
                           AND e.last_error IS NOT NULL
                         ORDER BY e.updated_at DESC
                         LIMIT 1
                     ) AS last_upload_error
-                FROM local_insights i
-                WHERE i.workspace_id = ?1
-                  AND i.status = 'active'
-                  AND i.deleted_at IS NULL
-                ORDER BY i.local_updated_at ASC
+                FROM surfaced_insights s
+                JOIN insight_candidates c ON c.id = s.candidate_id
+                LEFT JOIN local_insights i ON i.id = s.id
+                WHERE s.workspace_id = ?1
+                  AND s.dismissed_at IS NULL
+                  AND c.deleted_at IS NULL
+                  AND c.status IN ('surfaced', 'promoted')
+                ORDER BY s.priority DESC, s.updated_at DESC
                 "#,
             )
             .map_err(|e| e.to_string())?;
@@ -3565,6 +4258,96 @@ impl TelemetryDb {
                     retry_attempt: row.get(7)?,
                     next_retry_at: row.get(8)?,
                     last_upload_error: row.get(9)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    pub fn list_local_insight_candidates_for_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<LocalInsightCandidateRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT
+                    c.id,
+                    c.workspace_id,
+                    c.parent_node_id,
+                    c.agent_kind,
+                    c.claim,
+                    c.rationale,
+                    c.status,
+                    c.novelty_score,
+                    c.relevance_score,
+                    c.actionability_score,
+                    c.risk_score,
+                    c.timing_score,
+                    c.confidence,
+                    s.priority,
+                    s.surface_reason,
+                    s.id AS surfaced_insight_id,
+                    c.source_run_node_id,
+                    (
+                        SELECT e.content_json
+                        FROM insight_explorations e
+                        WHERE e.candidate_id = c.id
+                        ORDER BY e.created_at DESC
+                        LIMIT 1
+                    ) AS exploration_json,
+                    c.payload_json,
+                    c.created_at,
+                    c.updated_at
+                FROM insight_candidates c
+                LEFT JOIN surfaced_insights s
+                  ON s.candidate_id = c.id
+                 AND s.dismissed_at IS NULL
+                WHERE c.workspace_id = ?1
+                  AND c.deleted_at IS NULL
+                  AND c.status != 'dismissed'
+                ORDER BY
+                    CASE c.status
+                        WHEN 'surfaced' THEN 0
+                        WHEN 'validated' THEN 1
+                        WHEN 'promoted' THEN 2
+                        WHEN 'seed' THEN 3
+                        ELSE 4
+                    END,
+                    COALESCE(s.priority, (
+                        (c.novelty_score + c.relevance_score + c.actionability_score + c.timing_score + c.confidence) / 5.0
+                    ) - (c.risk_score * 0.25)) DESC,
+                    c.updated_at DESC
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![workspace_id], |row| {
+                Ok(LocalInsightCandidateRow {
+                    candidate_id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    parent_node_id: row.get(2)?,
+                    agent_kind: row.get(3)?,
+                    claim: row.get(4)?,
+                    rationale: row.get(5)?,
+                    status: row.get(6)?,
+                    novelty_score: row.get(7)?,
+                    relevance_score: row.get(8)?,
+                    actionability_score: row.get(9)?,
+                    risk_score: row.get(10)?,
+                    timing_score: row.get(11)?,
+                    confidence: row.get(12)?,
+                    priority: row.get(13)?,
+                    surface_reason: row.get(14)?,
+                    surfaced_insight_id: row.get(15)?,
+                    source_run_node_id: row.get(16)?,
+                    exploration_json: row.get(17)?,
+                    payload: row.get(18)?,
+                    created_at: row.get(19)?,
+                    updated_at: row.get(20)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -4779,6 +5562,15 @@ pub fn list_local_insights(
 
 #[tauri::command]
 #[specta::specta]
+pub fn list_local_insight_candidates(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+) -> Result<Vec<LocalInsightCandidateRow>, String> {
+    telemetry.list_local_insight_candidates_for_workspace(&workspace_id)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn upsert_local_insight(
     telemetry: State<TelemetryDb>,
     workspace_id: String,
@@ -4808,6 +5600,25 @@ pub fn local_first_dismiss_insight(
         &workspace_id,
         Some(current_user_id.as_str()),
         &insight_id,
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn record_local_insight_feedback(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+    current_user_id: String,
+    insight_id: String,
+    action: String,
+    context_json: Option<String>,
+) -> Result<(), String> {
+    telemetry.record_local_insight_feedback(
+        &workspace_id,
+        Some(current_user_id.as_str()),
+        &insight_id,
+        &action,
+        context_json.as_deref(),
     )
 }
 
@@ -5515,6 +6326,99 @@ mod tests {
             .list_thread_sessions_for_workspace("workspace-1")
             .expect("list threads");
         assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn background_insight_candidates_are_private_until_arbitrated() {
+        let (_dir, db) = open_test_db();
+        let candidates = vec![
+            serde_json::json!({
+                "id": "candidate-1",
+                "agentKind": "doubt",
+                "claim": "Candidate generation and user interruption are still coupled.",
+                "rationale": "The branch discusses insight generation, but the attention gate is the unresolved product decision.",
+                "analysis": "This is grounded in the active architecture discussion and gives the user a concrete next design boundary.",
+                "novelty": 0.86,
+                "relevance": 0.88,
+                "actionability": 0.74,
+                "risk": 0.18,
+                "timing": 0.82,
+                "confidence": 0.81
+            }),
+            serde_json::json!({
+                "id": "candidate-2",
+                "agentKind": "meta",
+                "claim": "Consider tradeoffs.",
+                "rationale": "Generic advice.",
+                "novelty": 0.2,
+                "relevance": 0.3,
+                "actionability": 0.2,
+                "risk": 0.2,
+                "timing": 0.4,
+                "confidence": 0.4
+            }),
+        ];
+
+        let (candidate_count, surfaced_count) = db
+            .persist_background_insight_candidates_for_user(
+                "workspace-1",
+                Some("user-1"),
+                "parent-1",
+                "run-1",
+                "light",
+                "light_assistant_completed",
+                Some(1800),
+                Some(220),
+                Some(2020),
+                candidates,
+                "assistant completed",
+            )
+            .expect("persist candidates");
+
+        assert_eq!(candidate_count, 2);
+        assert_eq!(surfaced_count, 1);
+
+        let surfaced = db
+            .list_local_insights_for_workspace("workspace-1")
+            .expect("list surfaced insights");
+        assert_eq!(surfaced.len(), 1);
+        assert_eq!(surfaced[0].insight_id, "candidate-1");
+        let surfaced_payload: JsonValue =
+            serde_json::from_str(&surfaced[0].payload).expect("surfaced payload json");
+        assert_eq!(
+            surfaced_payload
+                .get("triggerReason")
+                .and_then(|value| value.as_str()),
+            Some("light_assistant_completed")
+        );
+        assert_eq!(
+            surfaced_payload
+                .get("promptTokens")
+                .and_then(|value| value.as_i64()),
+            Some(1800)
+        );
+        assert_eq!(
+            surfaced_payload
+                .get("completionTokens")
+                .and_then(|value| value.as_i64()),
+            Some(220)
+        );
+
+        let candidates = db
+            .list_local_insight_candidates_for_workspace("workspace-1")
+            .expect("list candidates");
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].candidate_id, "candidate-1");
+        assert_eq!(candidates[0].status, "surfaced");
+        assert_eq!(candidates[1].candidate_id, "candidate-2");
+        assert_eq!(candidates[1].status, "archived");
+
+        db.local_first_dismiss_insight("workspace-1", Some("user-1"), "candidate-1")
+            .expect("dismiss surfaced insight");
+        assert!(db
+            .list_local_insights_for_workspace("workspace-1")
+            .expect("list after dismiss")
+            .is_empty());
     }
 
     #[test]

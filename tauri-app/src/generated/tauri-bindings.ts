@@ -54,8 +54,10 @@ export const commands = {
 	replayAgentRunEvents: (runId: string, afterSeq: number | null) => __TAURI_INVOKE<AgentRunJournalEvent[]>("replay_agent_run_events", { runId, afterSeq }),
 	listLocalNodes: (workspaceId: string) => __TAURI_INVOKE<LocalNodeRow[]>("list_local_nodes", { workspaceId }),
 	listLocalInsights: (workspaceId: string) => __TAURI_INVOKE<LocalInsightRow[]>("list_local_insights", { workspaceId }),
+	listLocalInsightCandidates: (workspaceId: string) => __TAURI_INVOKE<LocalInsightCandidateRow[]>("list_local_insight_candidates", { workspaceId }),
 	upsertLocalInsight: (workspaceId: string, currentUserId: string, insightId: string, payloadJson: string, mutationId: string | null) => __TAURI_INVOKE<LocalSyncEventRow>("upsert_local_insight", { workspaceId, currentUserId, insightId, payloadJson, mutationId }),
 	localFirstDismissInsight: (workspaceId: string, currentUserId: string, insightId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_dismiss_insight", { workspaceId, currentUserId, insightId }),
+	recordLocalInsightFeedback: (workspaceId: string, currentUserId: string, insightId: string, action: string, contextJson: string | null) => __TAURI_INVOKE<null>("record_local_insight_feedback", { workspaceId, currentUserId, insightId, action, contextJson }),
 	hydrateLocalNodesFromServer: (workspaceId: string, payloads: string[]) => __TAURI_INVOKE<number>("hydrate_local_nodes_from_server", { workspaceId, payloads }),
 	createThreadSession: (payload: ThreadSessionPayload) => __TAURI_INVOKE<ThreadSessionPayload>("create_thread_session", { payload }),
 	upsertThreadSession: (payload: ThreadSessionPayload) => __TAURI_INVOKE<ThreadSessionPayload>("upsert_thread_session", { payload }),
@@ -493,6 +495,30 @@ export type LocalEnvironmentStatus = {
 	codex_auth: CliToolStatus,
 	claude: CliToolStatus,
 	claude_auth: CliToolStatus,
+};
+
+export type LocalInsightCandidateRow = {
+	candidateId: string,
+	workspaceId: string,
+	parentNodeId: string,
+	agentKind: string,
+	claim: string,
+	rationale: string | null,
+	status: string,
+	noveltyScore: number | null,
+	relevanceScore: number | null,
+	actionabilityScore: number | null,
+	riskScore: number | null,
+	timingScore: number | null,
+	confidence: number | null,
+	priority: number | null,
+	surfaceReason: string | null,
+	surfacedInsightId: string | null,
+	sourceRunNodeId: string | null,
+	explorationJson: string | null,
+	payload: string,
+	createdAt: string,
+	updatedAt: string,
 };
 
 export type LocalInsightRow = {

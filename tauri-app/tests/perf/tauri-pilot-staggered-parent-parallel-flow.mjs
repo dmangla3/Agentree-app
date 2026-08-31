@@ -21,7 +21,6 @@ const DISABLE_GRAPH_CLICKS = process.env.AGENTREE_TAURI_PILOT_DISABLE_GRAPH_CLIC
 const GRAPH_INTERACTIONS_DURING_LAUNCH = process.env.AGENTREE_TAURI_PILOT_GRAPH_INTERACTIONS_DURING_LAUNCH !== 'false';
 const DISABLE_PERF_CAPTURE = process.env.AGENTREE_TAURI_PILOT_DISABLE_PERF_CAPTURE === 'true';
 const SKIP_CONVERGENCE_COLLECTION = process.env.AGENTREE_TAURI_PILOT_SKIP_CONVERGENCE_COLLECTION === 'true';
-const ALLOW_VISIBLE_UNFOCUSED_WEBVIEW = process.env.AGENTREE_TAURI_PILOT_ALLOW_VISIBLE_UNFOCUSED_WEBVIEW === 'true';
 const PROMPTS = (process.env.AGENTREE_TAURI_PILOT_PROMPTS
   ? JSON.parse(process.env.AGENTREE_TAURI_PILOT_PROMPTS)
   : [
@@ -80,7 +79,6 @@ const install = async () => pilotEval(`
   const disableGraphClicks = ${JSON.stringify(DISABLE_GRAPH_CLICKS)};
   const graphInteractionsDuringLaunch = ${JSON.stringify(GRAPH_INTERACTIONS_DURING_LAUNCH)};
   const disablePerfCapture = ${JSON.stringify(DISABLE_PERF_CAPTURE)};
-  globalThis.__AGENTREE_TAURI_PILOT_ALLOW_VISIBLE_UNFOCUSED_WEBVIEW = ${JSON.stringify(ALLOW_VISIBLE_UNFOCUSED_WEBVIEW)};
   ${assertVisibleFocusedWebviewSource};
 
   const probe = {
@@ -1314,7 +1312,7 @@ const install = async () => pilotEval(`
   window.__PARALLEL_AGENT_FLOW__ = probe;
   window.__PARALLEL_AGENT_FLOW_SUMMARY__ = summarizeProbe;
   window.setTimeout(run, 250);
-  return { label, url: location.href, promptCount: prompts.length, testAgentModel, sendSpacingMs, composerSurface, disableGraphInteractions, graphInteractionsDuringLaunch, disablePerfCapture, allowVisibleUnfocusedWebview: ${JSON.stringify(ALLOW_VISIBLE_UNFOCUSED_WEBVIEW)} };
+  return { label, url: location.href, promptCount: prompts.length, testAgentModel, sendSpacingMs, composerSurface, disableGraphInteractions, graphInteractionsDuringLaunch, disablePerfCapture };
 })()
 `);
 

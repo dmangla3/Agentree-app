@@ -1,4 +1,5 @@
-export type FlowScope = 'global';
+export type FlowScope = 'global' | 'workspace';
+export type UserFlowScope = FlowScope;
 export type FlowScalarType = 'string' | 'integer' | 'node';
 export type FlowNodeStatus = 'pending' | 'running' | 'complete' | 'failed' | 'cancelled';
 
@@ -7,6 +8,15 @@ export interface FlowSource {
   label: string;
   scope: FlowScope;
   source: string;
+}
+
+export interface UserFlowSource extends FlowSource {
+  scope: UserFlowScope;
+  version: number;
+  enabled: boolean;
+  workspaceId?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface FlowDefinition {

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CommitEntity, Message } from '../stores/workspaceStore';
+import type { BackgroundAttentionAuditEvent } from '../lib/backgroundAttentionAudit';
+import type { LocalInsightCandidateRecord } from '../lib/agentClient';
 import { buildTrackingDashboardMetrics } from './trackingDashboardMetrics';
 
 const workspaceId = 'workspace-1';
@@ -35,6 +37,47 @@ const commit = (input: Partial<CommitEntity> & Pick<CommitEntity, 'sha'>): Commi
   total_additions: input.total_additions ?? null,
   total_deletions: input.total_deletions ?? null,
   subject: input.subject ?? null,
+});
+
+const backgroundCandidate = (
+  input: Partial<LocalInsightCandidateRecord> & Pick<LocalInsightCandidateRecord, 'candidateId' | 'createdAt'>,
+): LocalInsightCandidateRecord => ({
+  candidateId: input.candidateId,
+  workspaceId,
+  parentNodeId: input.parentNodeId ?? 'assistant-parent',
+  agentKind: input.agentKind ?? 'hypothesis',
+  claim: input.claim ?? 'Candidate claim',
+  rationale: input.rationale ?? null,
+  status: input.status ?? 'validated',
+  noveltyScore: input.noveltyScore ?? null,
+  relevanceScore: input.relevanceScore ?? null,
+  actionabilityScore: input.actionabilityScore ?? null,
+  riskScore: input.riskScore ?? null,
+  timingScore: input.timingScore ?? null,
+  confidence: input.confidence ?? null,
+  priority: input.priority ?? null,
+  surfaceReason: input.surfaceReason ?? null,
+  surfacedInsightId: input.surfacedInsightId ?? null,
+  sourceRunNodeId: input.sourceRunNodeId ?? null,
+  explorationJson: input.explorationJson ?? null,
+  payload: input.payload ?? '{}',
+  createdAt: input.createdAt,
+  updatedAt: input.updatedAt ?? input.createdAt,
+});
+
+const attentionAudit = (
+  input: Partial<BackgroundAttentionAuditEvent> & Pick<BackgroundAttentionAuditEvent, 'id' | 'createdAt' | 'outcome' | 'reason'>,
+): BackgroundAttentionAuditEvent => ({
+  id: input.id,
+  workspaceId,
+  createdAt: input.createdAt,
+  outcome: input.outcome,
+  reason: input.reason,
+  triggerClass: input.triggerClass ?? 'light',
+  parentNodeId: input.parentNodeId ?? null,
+  runNodeId: input.runNodeId ?? null,
+  message: input.message ?? null,
+  metadata: input.metadata ?? null,
 });
 
 describe('buildTrackingDashboardMetrics', () => {
@@ -296,5 +339,88 @@ describe('buildTrackingDashboardMetrics', () => {
     });
 
     expect(metrics.recentRuns[0].status).toBe('completed');
+  });
+
+  it('deduplicates background attention token usage per run and counts audit outcomes', () => {
+    const metrics = buildTrackingDashboardMetrics({
+      now,
+      range: '7d',
+      commits: [],
+      messages: [],
+      backgroundAttentionCandidates: [
+        backgroundCandidate({
+          candidateId: 'candidate-1',
+          createdAt: '2026-05-23T08:00:00.000Z',
+          status: 'surfaced',
+          surfacedInsightId: 'candidate-1',
+          sourceRunNodeId: 'run-1',
+          payload: JSON.stringify({
+            sourceRunNodeId: 'run-1',
+            promptTokens: 1800,
+            completionTokens: 220,
+            totalTokens: 2020,
+          }),
+        }),
+        backgroundCandidate({
+          candidateId: 'candidate-2',
+          createdAt: '2026-05-23T08:01:00.000Z',
+          status: 'validated',
+          sourceRunNodeId: 'run-1',
+          payload: JSON.stringify({
+            sourceRunNodeId: 'run-1',
+            promptTokens: 1800,
+            completionTokens: 220,
+            totalTokens: 2020,
+          }),
+        }),
+        backgroundCandidate({
+          candidateId: 'candidate-3',
+          createdAt: '2026-05-22T08:00:00.000Z',
+          status: 'archived',
+          sourceRunNodeId: 'run-2',
+          payload: JSON.stringify({
+            sourceRunNodeId: 'run-2',
+            promptTokens: 400,
+            completionTokens: 80,
+          }),
+        }),
+      ],
+      backgroundAttentionAuditEvents: [
+        attentionAudit({
+          id: 'audit-1',
+          createdAt: '2026-05-23T08:02:00.000Z',
+          outcome: 'ran',
+          reason: 'run_completed',
+          runNodeId: 'run-1',
+        }),
+        attentionAudit({
+          id: 'audit-2',
+          createdAt: '2026-05-22T08:02:00.000Z',
+          outcome: 'skipped',
+          reason: 'already_processed',
+        }),
+      ],
+    });
+
+    const today = metrics.backgroundAttention.buckets[metrics.backgroundAttention.buckets.length - 1];
+
+    expect(metrics.backgroundAttention.totals.runCount).toBe(2);
+    expect(metrics.backgroundAttention.totals.candidateCount).toBe(3);
+    expect(metrics.backgroundAttention.totals.surfacedCount).toBe(1);
+    expect(metrics.backgroundAttention.totals.savedCount).toBe(1);
+    expect(metrics.backgroundAttention.totals.archivedCount).toBe(1);
+    expect(metrics.backgroundAttention.totals.promptTokens).toBe(2200);
+    expect(metrics.backgroundAttention.totals.completionTokens).toBe(300);
+    expect(metrics.backgroundAttention.totals.totalTokens).toBe(2500);
+    expect(metrics.backgroundAttention.totals.ranTriggers).toBe(1);
+    expect(metrics.backgroundAttention.totals.skippedTriggers).toBe(1);
+    expect(today).toMatchObject({
+      runCount: 1,
+      candidateCount: 2,
+      surfacedCount: 1,
+      savedCount: 1,
+      totalTokens: 2020,
+      ranTriggers: 1,
+    });
   });
 });

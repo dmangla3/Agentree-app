@@ -44,12 +44,11 @@ export const assertVisibleFocusedWebviewSource = `
     hidden: document.hidden,
     hasFocus: document.hasFocus(),
     url: location.href,
-    focusOverride: globalThis.__AGENTREE_TAURI_PILOT_ALLOW_VISIBLE_UNFOCUSED_WEBVIEW === true,
   };
   if (state.visibility !== 'visible' || state.hidden === true) {
     throw new Error('desktop webview preflight failed: ' + JSON.stringify(state));
   }
-  if (state.hasFocus !== true && state.focusOverride !== true) {
+  if (state.hasFocus !== true) {
     throw new Error('desktop webview preflight failed: ' + JSON.stringify(state));
   }
   return state;

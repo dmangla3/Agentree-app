@@ -902,6 +902,24 @@ fn stage_committable_paths(repo_path: &str, worktree_path: &str) -> Result<Vec<S
     Ok(paths)
 }
 
+fn is_git_ignored(repo_path: &str, relative_path: &str) -> Result<bool, String> {
+    let output = Command::new("git")
+        .args(["check-ignore", "--quiet", "--", relative_path])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("git check-ignore failed to start: {}", e))?;
+
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(format!(
+            "git check-ignore failed for {}: {}",
+            relative_path,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
+}
+
 #[cfg(test)]
 fn is_env_file(path: &Path) -> bool {
     path.file_name()
@@ -955,6 +973,10 @@ fn copy_env_files(
             .strip_prefix(repo_root)
             .map_err(|e| format!("Failed to relativize env file {:?}: {}", entry.path(), e))?;
         if !crate::worktree_config::path_matches_patterns(&env_file_matcher, relative, false) {
+            continue;
+        }
+        let relative_git_path = relative_path_to_git_path(relative);
+        if !is_git_ignored(repo_path, &relative_git_path)? {
             continue;
         }
 
@@ -2357,6 +2379,7 @@ mod tests {
         let worktree_path_string = worktree_path.to_string_lossy().to_string();
         fs::write(dir.path().join(".env.local"), "local\n").expect("write env local");
         fs::write(dir.path().join(".agent.env"), "agent\n").expect("write agent env");
+        fs::write(dir.path().join(".gitignore"), ".agent.env\n").expect("write gitignore");
         let config = AgentWorktreeConfig {
             env_file_patterns: vec![".agent.env".to_string()],
             ..AgentWorktreeConfig::default()
@@ -2366,6 +2389,42 @@ mod tests {
 
         assert!(worktree_path.join(".agent.env").exists());
         assert!(!worktree_path.join(".env.local").exists());
+    }
+
+    #[test]
+    fn copy_env_files_skips_matching_files_that_are_tracked() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        fs::write(dir.path().join(".env.example"), "tracked template\n")
+            .expect("write tracked env example");
+        fs::write(dir.path().join(".env.local"), "local secret\n").expect("write env local");
+        fs::write(dir.path().join(".gitignore"), ".env.local\n").expect("write gitignore");
+        run_test_git(dir.path(), &["add", ".env.example", ".gitignore"]);
+        run_test_git(dir.path(), &["commit", "-m", "add env example"]);
+        fs::write(dir.path().join(".env.example"), "local modified template\n")
+            .expect("modify tracked env example");
+
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-env-ignore-only";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        let worktree_path_string = worktree_path.to_string_lossy().to_string();
+
+        copy_env_files(
+            &repo_path,
+            &worktree_path_string,
+            &AgentWorktreeConfig::default(),
+        )
+        .expect("copy env files");
+
+        assert_eq!(
+            fs::read_to_string(worktree_path.join(".env.example")).expect("read tracked env"),
+            "tracked template\n"
+        );
+        assert_eq!(
+            fs::read_to_string(worktree_path.join(".env.local")).expect("read copied env"),
+            "local secret\n"
+        );
     }
 
     #[test]

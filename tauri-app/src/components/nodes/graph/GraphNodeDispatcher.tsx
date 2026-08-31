@@ -13,7 +13,7 @@ import { NodeHoverCardContent, preloadNodeHoverPreview } from '../../NodeHoverCa
 import { useGraphInteractionContext } from '../../graph/GraphInteractionContext';
 import { useGraphHoverProjectionInput } from '../../graph/GraphHoverProjectionContext';
 import { useWorkspaceProjection } from '../../../hooks/useWorkspaceProjection';
-import type { FocusTriggerMetrics } from '../../../types/nodes';
+import type { AttentionBadgeItem, FocusTriggerMetrics } from '../../../types/nodes';
 import { createCommitHoverEntity } from './commitHoverEntity';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { getMessageOutputCommitSha } from '../../../lib/graph/commitAccessors';
@@ -36,6 +36,8 @@ export interface GraphNodeData {
   focusedMessageId?: string | null;
   isSelected: boolean;
   isComposerBaseCommit?: boolean;
+  attentionBadgeCount?: number;
+  attentionBadgeItems?: AttentionBadgeItem[];
   detailLevel?: GraphNodeDetailLevel;
   heightKey?: string;
   onMeasureHeight?: (id: string, height: number) => void;
@@ -211,6 +213,8 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
     isFocused,
     isSelected,
     isComposerBaseCommit,
+    attentionBadgeCount: typeof data.attentionBadgeCount === 'number' ? data.attentionBadgeCount : undefined,
+    attentionBadgeItems: Array.isArray(data.attentionBadgeItems) ? data.attentionBadgeItems : undefined,
     focusFeedbackEnabled: !isRedirectedUserNode,
     detailLevel,
     layout: 'graph' as const,

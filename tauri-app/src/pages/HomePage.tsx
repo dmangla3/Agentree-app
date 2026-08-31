@@ -376,7 +376,7 @@ export function HomePage() {
                 </header>
                 <div className="min-h-0 flex-1 overflow-hidden">
                   <Suspense fallback={<PanelLoading />}>
-                    <FlowsPanel />
+                    <FlowsPanel workspaceId={selectedWorkspaceId} />
                   </Suspense>
                 </div>
               </div>

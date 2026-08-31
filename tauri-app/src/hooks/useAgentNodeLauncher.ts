@@ -21,6 +21,8 @@ export interface LaunchAgentNodeInput {
   prompt: string;
   contextManifest?: ComposerContextManifest | null;
   flowId: string;
+  flowSourceId: string;
+  flowSourceVersion: number;
   flowNodeTemplateId: string;
   flowNodeRegistryId?: string | null;
   flowRunId?: string;
@@ -68,6 +70,8 @@ export function createFlowNodeMessages(input: CreateFlowNodeMessagesInput): Flow
     agentree_context_volatile_tail_hash: contextManifest?.volatileTailHash ?? null,
     agentree_context_block_count: contextManifest?.blocks.length ?? 0,
     flow_id: input.flowId,
+    flow_source_id: input.flowSourceId,
+    flow_source_version: input.flowSourceVersion,
     flow_run_id: input.flowRunId,
     flow_node_template_id: input.flowNodeTemplateId,
     ...(input.threadOriginId ? { thread_origin_id: input.threadOriginId } : {}),
@@ -205,6 +209,8 @@ export function useAgentNodeLauncher(options: UseAgentNodeLauncherOptions = {}) 
         ...((pair.assistantNode.execution_data?.meta ?? {}) as Record<string, unknown>),
         base_commit_sha: input.baseCommitSha,
         flow_id: input.flowId,
+        flow_source_id: input.flowSourceId,
+        flow_source_version: input.flowSourceVersion,
         flow_run_id: flowRunId,
         flow_node_template_id: input.flowNodeTemplateId,
         ...(input.flowNodeRegistryId ? { flow_node_registry_id: input.flowNodeRegistryId } : {}),

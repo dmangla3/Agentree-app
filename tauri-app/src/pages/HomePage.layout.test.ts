@@ -97,7 +97,7 @@ describe('HomePage graph/chat split layout', () => {
 
     expect(homePageSource).toContain("const FlowsPanel = lazy");
     expect(homePageSource).toContain("activeView === 'flows'");
-    expect(homePageSource).toContain('<FlowsPanel />');
+    expect(homePageSource).toContain('<FlowsPanel workspaceId={selectedWorkspaceId} />');
     expect(sidebarSource).toContain("label: 'Flows'");
     expect(sidebarSource).toContain("id: 'flows'");
     expect(sidebarSource).toContain('Workflow');

@@ -2,16 +2,27 @@ import { useMemo, useState, type ReactNode } from 'react';
 import {
   Activity,
   BarChart3,
+  Brain,
+  CheckCircle2,
   CircleDot,
   Code2,
   Gauge,
   GitCommitHorizontal,
   Hash,
+  ListChecks,
   Loader2,
+  PanelRightOpen,
   TrendingUp,
+  X,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import type { TrackingBucket, TrackingRange, TrackingRunRow } from '../domain/trackingDashboardMetrics';
+import type {
+  BackgroundAttentionBucket,
+  TrackingBucket,
+  TrackingRange,
+  TrackingRunRow,
+} from '../domain/trackingDashboardMetrics';
+import type { BackgroundAttentionAuditEvent } from '../lib/backgroundAttentionAudit';
 import { useTrackingDashboardData } from '../hooks/useTrackingDashboardData';
 import type { Workspace } from '../stores/workspaceStore';
 
@@ -50,6 +61,26 @@ const formatSigned = (value: number): string => {
   return `${value > 0 ? '+' : '-'}${numberFormatter.format(Math.abs(value))}`;
 };
 
+const formatReason = (value: string): string => (
+  value
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+);
+
+const shortId = (value: string | null | undefined): string | null => {
+  if (!value) return null;
+  return value.length > 12 ? `${value.slice(0, 8)}…` : value;
+};
+
+const metadataSummary = (metadata: Record<string, unknown> | null | undefined): string | null => {
+  if (!metadata) return null;
+  const entries = Object.entries(metadata)
+    .filter(([, value]) => value !== null && value !== undefined)
+    .slice(0, 3)
+    .map(([key, value]) => `${formatReason(key)}: ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`);
+  return entries.length > 0 ? entries.join(' · ') : null;
+};
+
 const formatDateTime = (value: string): string => {
   const time = new Date(value).getTime();
   if (!Number.isFinite(time)) return 'Unknown';
@@ -65,6 +96,14 @@ const statusClassName = (status: string | null): string => {
   if (status === 'completed') return 'border-[hsl(var(--app-success)/0.22)] bg-[hsl(var(--app-success)/0.1)] text-[hsl(var(--app-success))]';
   if (status === 'failed' || status === 'cancelled') return 'border-[hsl(var(--app-danger)/0.24)] bg-[hsl(var(--app-danger)/0.1)] text-[hsl(var(--app-danger))]';
   if (status === 'running' || status === 'streaming') return 'border-[hsl(var(--app-warning)/0.28)] bg-[hsl(var(--app-warning)/0.11)] text-[hsl(var(--app-warning))]';
+  return 'border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--app-panel-strong)/0.72)] text-muted-foreground';
+};
+
+const auditOutcomeClassName = (outcome: BackgroundAttentionAuditEvent['outcome']): string => {
+  if (outcome === 'ran') return 'border-[hsl(var(--app-success)/0.24)] bg-[hsl(var(--app-success)/0.1)] text-[hsl(var(--app-success))]';
+  if (outcome === 'failed') return 'border-[hsl(var(--app-danger)/0.24)] bg-[hsl(var(--app-danger)/0.1)] text-[hsl(var(--app-danger))]';
+  if (outcome === 'skipped') return 'border-[hsl(var(--app-warning)/0.28)] bg-[hsl(var(--app-warning)/0.11)] text-[hsl(var(--app-warning))]';
+  if (outcome === 'queued') return 'border-[hsl(var(--app-accent)/0.24)] bg-[hsl(var(--app-accent)/0.1)] text-[hsl(var(--app-accent))]';
   return 'border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--app-panel-strong)/0.72)] text-muted-foreground';
 };
 
@@ -135,6 +174,169 @@ function ThroughputChart({ buckets }: { buckets: TrackingBucket[] }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function BackgroundAttentionChart({ buckets }: { buckets: BackgroundAttentionBucket[] }) {
+  const visibleBuckets = buckets.slice(-30);
+  const hasActivity = visibleBuckets.some((bucket) => (
+    bucket.totalTokens > 0
+    || bucket.candidateCount > 0
+    || bucket.queuedTriggers > 0
+    || bucket.ranTriggers > 0
+    || bucket.skippedTriggers > 0
+    || bucket.failedTriggers > 0
+  ));
+  const maxTokens = Math.max(1, ...visibleBuckets.map((bucket) => bucket.totalTokens));
+  const maxCandidates = Math.max(1, ...visibleBuckets.map((bucket) => bucket.candidateCount));
+  const maxSkipped = Math.max(1, ...visibleBuckets.map((bucket) => bucket.skippedTriggers + bucket.failedTriggers));
+
+  if (visibleBuckets.length === 0 || !hasActivity) {
+    return (
+      <div className="flex h-56 items-center justify-center rounded-lg border border-dashed border-[hsl(var(--app-border)/0.78)] text-sm text-muted-foreground">
+        No background attention activity in this range
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-56 items-end gap-2 rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.38)] px-3 pb-3 pt-6">
+      {visibleBuckets.map((bucket) => {
+        const tokenHeight = Math.max(4, (bucket.totalTokens / maxTokens) * 100);
+        const candidateHeight = Math.max(4, (bucket.candidateCount / maxCandidates) * 100);
+        const skippedHeight = Math.max(4, ((bucket.skippedTriggers + bucket.failedTriggers) / maxSkipped) * 100);
+        const bucketHasActivity = bucket.totalTokens > 0 || bucket.candidateCount > 0 || bucket.skippedTriggers > 0 || bucket.failedTriggers > 0;
+        return (
+          <div key={bucket.key} className="group flex min-w-0 flex-1 flex-col items-center gap-2">
+            <div className="flex h-40 w-full items-end justify-center gap-1">
+              <div
+                className={cn(
+                  'w-full max-w-4 rounded-t-sm bg-[hsl(var(--app-accent)/0.76)] transition-[height,opacity] duration-200',
+                  bucket.totalTokens === 0 && 'opacity-20'
+                )}
+                style={{ height: `${tokenHeight}%` }}
+                title={`${bucket.label}: ${formatNumber(bucket.totalTokens)} background tokens`}
+              />
+              <div
+                className={cn(
+                  'w-full max-w-4 rounded-t-sm bg-[hsl(var(--app-success)/0.72)] transition-[height,opacity] duration-200',
+                  bucket.candidateCount === 0 && 'opacity-20'
+                )}
+                style={{ height: `${candidateHeight}%` }}
+                title={`${bucket.label}: ${formatNumber(bucket.candidateCount)} candidates, ${formatNumber(bucket.surfacedCount)} surfaced`}
+              />
+              <div
+                className={cn(
+                  'w-full max-w-4 rounded-t-sm bg-[hsl(var(--app-warning)/0.72)] transition-[height,opacity] duration-200',
+                  !bucketHasActivity && 'opacity-20',
+                  bucket.skippedTriggers + bucket.failedTriggers === 0 && 'opacity-20'
+                )}
+                style={{ height: `${skippedHeight}%` }}
+                title={`${bucket.label}: ${formatNumber(bucket.skippedTriggers)} skipped, ${formatNumber(bucket.failedTriggers)} failed`}
+              />
+            </div>
+            <div className="w-full truncate text-center text-[10px] font-medium text-muted-foreground">{bucket.label}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function BackgroundAttentionAuditDrawer({
+  open,
+  events,
+  onClose,
+}: {
+  open: boolean;
+  events: BackgroundAttentionAuditEvent[];
+  onClose: () => void;
+}) {
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[70]">
+      <button
+        type="button"
+        aria-label="Close background attention audit drawer"
+        className="absolute inset-0 cursor-default bg-black/28"
+        onClick={onClose}
+      />
+      <aside className="absolute bottom-4 right-4 top-4 flex w-[min(440px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-[hsl(var(--app-border)/0.74)] bg-[hsl(var(--app-panel)/0.96)] shadow-[0_24px_80px_-36px_hsl(var(--foreground)/0.52),inset_0_1px_0_hsl(var(--foreground)/0.04)] backdrop-blur-xl">
+        <div className="flex items-start justify-between gap-4 border-b border-[hsl(var(--app-border)/0.58)] px-5 py-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+              <ListChecks className="h-4 w-4 text-[hsl(var(--app-accent))]" />
+              Attention audit
+            </div>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              Why background attention queued, ran, skipped, or failed.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="app-focus-ring flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-[background-color,color,transform] hover:bg-[hsl(var(--app-panel-strong)/0.78)] hover:text-foreground active:scale-[0.96]"
+            onClick={onClose}
+            aria-label="Close audit drawer"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
+          {events.length === 0 ? (
+            <div className="flex h-full min-h-56 flex-col items-center justify-center rounded-xl border border-dashed border-[hsl(var(--app-border)/0.78)] px-5 text-center">
+              <ListChecks className="h-7 w-7 text-muted-foreground" />
+              <div className="mt-3 text-sm font-semibold text-foreground">No audit events yet</div>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                Enable insights and run an assistant turn to populate trigger decisions.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {events.map((event) => {
+                const parentId = shortId(event.parentNodeId);
+                const runId = shortId(event.runNodeId);
+                const summary = metadataSummary(event.metadata);
+                return (
+                  <article
+                    key={event.id}
+                    className="rounded-xl border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong)/0.58)] p-3 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)]"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className={cn('inline-flex shrink-0 items-center rounded-md border px-2 py-1 text-[11px] font-semibold capitalize', auditOutcomeClassName(event.outcome))}>
+                            {event.outcome}
+                          </span>
+                          <span className="truncate text-sm font-semibold text-foreground">{formatReason(event.reason)}</span>
+                        </div>
+                        {event.message && (
+                          <p className="mt-2 text-xs leading-5 text-muted-foreground">{event.message}</p>
+                        )}
+                      </div>
+                      <time className="shrink-0 whitespace-nowrap font-mono text-[11px] text-muted-foreground">
+                        {formatDateTime(event.createdAt)}
+                      </time>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] font-medium text-muted-foreground">
+                      <span className="rounded-md bg-[hsl(var(--app-bg-muted)/0.68)] px-2 py-1">{event.triggerClass ?? 'light'} trigger</span>
+                      {parentId && <span className="rounded-md bg-[hsl(var(--app-bg-muted)/0.68)] px-2 py-1">parent {parentId}</span>}
+                      {runId && <span className="rounded-md bg-[hsl(var(--app-bg-muted)/0.68)] px-2 py-1">run {runId}</span>}
+                    </div>
+                    {summary && (
+                      <div className="mt-2 truncate font-mono text-[11px] text-muted-foreground" title={summary}>
+                        {summary}
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </aside>
     </div>
   );
 }
@@ -228,12 +430,26 @@ function RecentRunsTable({ runs }: { runs: TrackingRunRow[] }) {
 
 export function TrackingDashboard({ workspace }: TrackingDashboardProps) {
   const [range, setRange] = useState<TrackingRange>('7d');
+  const [auditDrawerOpen, setAuditDrawerOpen] = useState(false);
   const { metrics, isLoading, isRefreshing, error } = useTrackingDashboardData(workspace, range);
+  const backgroundAttention = metrics.backgroundAttention;
   const hasData = metrics.totals.commits > 0 || metrics.totals.tokenKnownRuns > 0;
+  const observedAttentionRuns = Math.max(backgroundAttention.totals.runCount, backgroundAttention.totals.ranTriggers);
   const chartSummary = useMemo(() => {
     const activeDays = metrics.buckets.filter((bucket) => bucket.commitCount > 0 || bucket.totalTokens > 0).length;
     return `${formatNumber(activeDays)} active days, ${formatNumber(metrics.totals.locKnownCommits)} commits with LOC stats`;
   }, [metrics.buckets, metrics.totals.locKnownCommits]);
+  const backgroundAttentionSummary = useMemo(() => {
+    const activeDays = backgroundAttention.buckets.filter((bucket) => (
+      bucket.totalTokens > 0
+      || bucket.candidateCount > 0
+      || bucket.queuedTriggers > 0
+      || bucket.ranTriggers > 0
+      || bucket.skippedTriggers > 0
+      || bucket.failedTriggers > 0
+    )).length;
+    return `${formatNumber(activeDays)} active days, ${formatNumber(backgroundAttention.totals.auditEventCount)} audit events`;
+  }, [backgroundAttention.buckets, backgroundAttention.totals.auditEventCount]);
 
   return (
     <div className="app-view-frame mx-auto flex h-full w-full max-w-7xl flex-col">
@@ -311,6 +527,76 @@ export function TrackingDashboard({ workspace }: TrackingDashboardProps) {
           </div>
         )}
 
+        <section className="mt-4 rounded-2xl border border-[hsl(var(--app-border)/0.74)] bg-[hsl(var(--app-panel)/0.88)] p-4 shadow-[var(--app-shadow-panel)]">
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                <Brain className="h-4 w-4 text-[hsl(var(--app-accent))]" />
+                Background attention
+              </div>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                Trigger decisions, private candidates, and token usage over time.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="app-focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel-strong)/0.62)] px-3 text-xs font-semibold text-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.035)] transition-[background-color,color,box-shadow,transform] hover:bg-[hsl(var(--app-panel-strong)/0.86)] active:scale-[0.96]"
+              onClick={() => setAuditDrawerOpen(true)}
+            >
+              <PanelRightOpen className="h-3.5 w-3.5 text-[hsl(var(--app-accent))]" />
+              Audit drawer
+              <span className="font-mono text-[11px] text-muted-foreground">{formatNumber(backgroundAttention.totals.auditEventCount)}</span>
+            </button>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-4">
+            <div className="rounded-xl border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong)/0.56)] p-3">
+              <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                <CheckCircle2 className="h-3.5 w-3.5 text-[hsl(var(--app-success))]" />
+                Runs
+              </div>
+              <div className="mt-2 font-mono text-xl font-semibold text-foreground">{formatNumber(observedAttentionRuns)}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{formatNumber(backgroundAttention.totals.queuedTriggers)} queued · {formatNumber(backgroundAttention.totals.failedTriggers)} failed</div>
+            </div>
+            <div className="rounded-xl border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong)/0.56)] p-3">
+              <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                <CircleDot className="h-3.5 w-3.5 text-[hsl(var(--app-warning))]" />
+                Tokens
+              </div>
+              <div className="mt-2 font-mono text-xl font-semibold text-foreground">{formatCompact(backgroundAttention.totals.totalTokens)}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{formatCompact(backgroundAttention.totals.promptTokens)} in · {formatCompact(backgroundAttention.totals.completionTokens)} out</div>
+            </div>
+            <div className="rounded-xl border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong)/0.56)] p-3">
+              <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                <ListChecks className="h-3.5 w-3.5 text-[hsl(var(--app-accent))]" />
+                Candidates
+              </div>
+              <div className="mt-2 font-mono text-xl font-semibold text-foreground">{formatNumber(backgroundAttention.totals.candidateCount)}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{formatNumber(backgroundAttention.totals.surfacedCount)} surfaced · {formatNumber(backgroundAttention.totals.savedCount)} saved</div>
+            </div>
+            <div className="rounded-xl border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong)/0.56)] p-3">
+              <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                <Hash className="h-3.5 w-3.5 text-muted-foreground" />
+                Skips
+              </div>
+              <div className="mt-2 font-mono text-xl font-semibold text-foreground">{formatNumber(backgroundAttention.totals.skippedTriggers)}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{formatNumber(backgroundAttention.totals.baselineEvents)} baselines · {formatNumber(backgroundAttention.totals.archivedCount)} archived</div>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-col gap-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-muted-foreground">{backgroundAttentionSummary}</p>
+              <div className="flex flex-wrap items-center gap-3 text-[11px] font-medium text-muted-foreground">
+                <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[hsl(var(--app-accent))]" /> Tokens</span>
+                <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[hsl(var(--app-success))]" /> Candidates</span>
+                <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[hsl(var(--app-warning))]" /> Skips/failures</span>
+              </div>
+            </div>
+            <BackgroundAttentionChart buckets={backgroundAttention.buckets} />
+          </div>
+        </section>
+
         <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(340px,0.8fr)]">
           <section className="rounded-2xl border border-[hsl(var(--app-border)/0.74)] bg-[hsl(var(--app-panel)/0.88)] p-4 shadow-[var(--app-shadow-panel)]">
             <div className="mb-4 flex items-center justify-between gap-3">
@@ -385,6 +671,11 @@ export function TrackingDashboard({ workspace }: TrackingDashboardProps) {
           )}
         </section>
       </div>
+      <BackgroundAttentionAuditDrawer
+        open={auditDrawerOpen}
+        events={backgroundAttention.recentAuditEvents}
+        onClose={() => setAuditDrawerOpen(false)}
+      />
     </div>
   );
 }

@@ -1,4 +1,6 @@
 import type { CommitEntity, Message } from '../stores/workspaceStore';
+import type { BackgroundAttentionAuditEvent } from '../lib/backgroundAttentionAudit';
+import type { LocalInsightCandidateRecord } from '../lib/agentClient';
 
 export type TrackingRange = '7d' | '30d' | 'all';
 
@@ -14,6 +16,24 @@ export interface TrackingBucket {
   totalTokens: number;
 }
 
+export interface BackgroundAttentionBucket {
+  key: string;
+  label: string;
+  runCount: number;
+  candidateCount: number;
+  surfacedCount: number;
+  savedCount: number;
+  archivedCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  queuedTriggers: number;
+  ranTriggers: number;
+  skippedTriggers: number;
+  failedTriggers: number;
+  baselineEvents: number;
+}
+
 export interface TrackingRunRow {
   nodeId: string;
   label: string;
@@ -24,6 +44,29 @@ export interface TrackingRunRow {
   locDeleted: number;
   netLoc: number;
   totalTokens: number;
+}
+
+export interface BackgroundAttentionTotals {
+  runCount: number;
+  candidateCount: number;
+  surfacedCount: number;
+  savedCount: number;
+  archivedCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  auditEventCount: number;
+  queuedTriggers: number;
+  ranTriggers: number;
+  skippedTriggers: number;
+  failedTriggers: number;
+  baselineEvents: number;
+}
+
+export interface BackgroundAttentionMetrics {
+  totals: BackgroundAttentionTotals;
+  buckets: BackgroundAttentionBucket[];
+  recentAuditEvents: BackgroundAttentionAuditEvent[];
 }
 
 export interface TrackingTotals {
@@ -54,6 +97,7 @@ export interface TrackingDashboardMetrics {
   totals: TrackingTotals;
   buckets: TrackingBucket[];
   recentRuns: TrackingRunRow[];
+  backgroundAttention: BackgroundAttentionMetrics;
 }
 
 interface BuildTrackingDashboardMetricsInput {
@@ -61,6 +105,8 @@ interface BuildTrackingDashboardMetricsInput {
   range: TrackingRange;
   messages: Message[];
   commits: CommitEntity[];
+  backgroundAttentionCandidates?: LocalInsightCandidateRecord[];
+  backgroundAttentionAuditEvents?: BackgroundAttentionAuditEvent[];
 }
 
 interface TokenUsage {
@@ -85,6 +131,18 @@ const safeDateMs = (value: string | null | undefined): number | null => {
   if (!value) return null;
   const time = new Date(value).getTime();
   return Number.isFinite(time) ? time : null;
+};
+
+const safeJsonObject = (value: string | null | undefined): Record<string, unknown> => {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 };
 
 const commitDateMs = (commit: CommitEntity): number | null =>
@@ -182,6 +240,195 @@ const createBucket = (key: string): TrackingBucket => ({
   totalTokens: 0,
 });
 
+const createBackgroundAttentionBucket = (key: string): BackgroundAttentionBucket => ({
+  key,
+  label: formatBucketLabel(key),
+  runCount: 0,
+  candidateCount: 0,
+  surfacedCount: 0,
+  savedCount: 0,
+  archivedCount: 0,
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+  queuedTriggers: 0,
+  ranTriggers: 0,
+  skippedTriggers: 0,
+  failedTriggers: 0,
+  baselineEvents: 0,
+});
+
+const candidateDateMs = (candidate: LocalInsightCandidateRecord): number | null =>
+  safeDateMs(candidate.createdAt) ?? safeDateMs(candidate.updatedAt);
+
+const auditEventDateMs = (event: BackgroundAttentionAuditEvent): number | null =>
+  safeDateMs(event.createdAt);
+
+const isCandidateSurfaced = (candidate: LocalInsightCandidateRecord): boolean => (
+  candidate.status === 'surfaced'
+  || candidate.status === 'promoted'
+  || Boolean(candidate.surfacedInsightId)
+);
+
+const isCandidateArchived = (candidate: LocalInsightCandidateRecord): boolean => (
+  candidate.status === 'archived'
+  || candidate.status === 'dismissed'
+);
+
+const extractCandidateUsage = (candidate: LocalInsightCandidateRecord): TokenUsage & { sourceRunNodeId: string | null } => {
+  const payload = safeJsonObject(candidate.payload);
+  const promptTokens = toFiniteNumber(payload.promptTokens) ?? toFiniteNumber(payload.prompt_tokens) ?? 0;
+  const completionTokens = toFiniteNumber(payload.completionTokens) ?? toFiniteNumber(payload.completion_tokens) ?? 0;
+  const directTotal = toFiniteNumber(payload.totalTokens) ?? toFiniteNumber(payload.total_tokens);
+  const totalTokens = directTotal ?? promptTokens + completionTokens;
+  const hasUsage = directTotal !== null || promptTokens > 0 || completionTokens > 0;
+  const payloadRunId = typeof payload.sourceRunNodeId === 'string' ? payload.sourceRunNodeId : null;
+
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    hasUsage,
+    sourceRunNodeId: candidate.sourceRunNodeId ?? payloadRunId,
+  };
+};
+
+const buildBackgroundAttentionBuckets = (
+  now: Date,
+  startedAt: Date | null,
+  candidates: LocalInsightCandidateRecord[],
+  auditEvents: BackgroundAttentionAuditEvent[],
+): BackgroundAttentionBucket[] => {
+  const bucketMap = new Map<string, BackgroundAttentionBucket>();
+
+  if (startedAt) {
+    for (let time = startedAt.getTime(); time <= startOfUtcDay(now).getTime(); time += DAY_MS) {
+      const key = dateKey(new Date(time));
+      bucketMap.set(key, createBackgroundAttentionBucket(key));
+    }
+  }
+
+  const getBucket = (time: number | null): BackgroundAttentionBucket | null => {
+    if (time === null) return null;
+    const key = dateKey(new Date(time));
+    let bucket = bucketMap.get(key);
+    if (!bucket) {
+      bucket = createBackgroundAttentionBucket(key);
+      bucketMap.set(key, bucket);
+    }
+    return bucket;
+  };
+
+  const runUsageByKey = new Map<string, {
+    time: number | null;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    hasUsage: boolean;
+  }>();
+
+  for (const candidate of candidates) {
+    const bucket = getBucket(candidateDateMs(candidate));
+    if (!bucket) continue;
+    bucket.candidateCount += 1;
+    if (isCandidateSurfaced(candidate)) bucket.surfacedCount += 1;
+    else if (isCandidateArchived(candidate)) bucket.archivedCount += 1;
+    else bucket.savedCount += 1;
+
+    const usage = extractCandidateUsage(candidate);
+    const runKey = usage.sourceRunNodeId ?? candidate.candidateId;
+    const existing = runUsageByKey.get(runKey);
+    if (!existing || usage.totalTokens > existing.totalTokens) {
+      runUsageByKey.set(runKey, {
+        time: candidateDateMs(candidate),
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        totalTokens: usage.totalTokens,
+        hasUsage: usage.hasUsage,
+      });
+    }
+  }
+
+  for (const runUsage of runUsageByKey.values()) {
+    const bucket = getBucket(runUsage.time);
+    if (!bucket) continue;
+    bucket.runCount += 1;
+    if (runUsage.hasUsage) {
+      bucket.promptTokens += runUsage.promptTokens;
+      bucket.completionTokens += runUsage.completionTokens;
+      bucket.totalTokens += runUsage.totalTokens;
+    }
+  }
+
+  for (const event of auditEvents) {
+    const bucket = getBucket(auditEventDateMs(event));
+    if (!bucket) continue;
+    if (event.outcome === 'queued') bucket.queuedTriggers += 1;
+    else if (event.outcome === 'ran') bucket.ranTriggers += 1;
+    else if (event.outcome === 'skipped') bucket.skippedTriggers += 1;
+    else if (event.outcome === 'failed') bucket.failedTriggers += 1;
+    else if (event.outcome === 'baseline') bucket.baselineEvents += 1;
+  }
+
+  return Array.from(bucketMap.values()).sort((left, right) => left.key.localeCompare(right.key));
+};
+
+const buildBackgroundAttentionMetrics = (
+  now: Date,
+  startedAt: Date | null,
+  endedAt: Date,
+  candidates: LocalInsightCandidateRecord[],
+  auditEvents: BackgroundAttentionAuditEvent[],
+): BackgroundAttentionMetrics => {
+  const rangeCandidates = candidates.filter((candidate) => (
+    isWithinRange(candidateDateMs(candidate), startedAt, endedAt)
+  ));
+  const rangeAuditEvents = auditEvents.filter((event) => (
+    isWithinRange(auditEventDateMs(event), startedAt, endedAt)
+  ));
+  const buckets = buildBackgroundAttentionBuckets(now, startedAt, rangeCandidates, rangeAuditEvents);
+  const totals: BackgroundAttentionTotals = {
+    runCount: 0,
+    candidateCount: 0,
+    surfacedCount: 0,
+    savedCount: 0,
+    archivedCount: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    auditEventCount: rangeAuditEvents.length,
+    queuedTriggers: 0,
+    ranTriggers: 0,
+    skippedTriggers: 0,
+    failedTriggers: 0,
+    baselineEvents: 0,
+  };
+
+  for (const bucket of buckets) {
+    totals.runCount += bucket.runCount;
+    totals.candidateCount += bucket.candidateCount;
+    totals.surfacedCount += bucket.surfacedCount;
+    totals.savedCount += bucket.savedCount;
+    totals.archivedCount += bucket.archivedCount;
+    totals.promptTokens += bucket.promptTokens;
+    totals.completionTokens += bucket.completionTokens;
+    totals.totalTokens += bucket.totalTokens;
+    totals.queuedTriggers += bucket.queuedTriggers;
+    totals.ranTriggers += bucket.ranTriggers;
+    totals.skippedTriggers += bucket.skippedTriggers;
+    totals.failedTriggers += bucket.failedTriggers;
+    totals.baselineEvents += bucket.baselineEvents;
+  }
+
+  return {
+    totals,
+    buckets,
+    recentAuditEvents: [...rangeAuditEvents]
+      .sort((left, right) => (auditEventDateMs(right) ?? 0) - (auditEventDateMs(left) ?? 0))
+      .slice(0, 80),
+  };
+};
+
 const buildBuckets = (now: Date, startedAt: Date | null, commits: CommitEntity[], messages: Message[]): TrackingBucket[] => {
   const bucketMap = new Map<string, TrackingBucket>();
 
@@ -241,6 +488,8 @@ export const buildTrackingDashboardMetrics = ({
   range,
   messages,
   commits,
+  backgroundAttentionCandidates = [],
+  backgroundAttentionAuditEvents = [],
 }: BuildTrackingDashboardMetricsInput): TrackingDashboardMetrics => {
   const startedAtDate = getRangeStart(now, range);
   const endedAtDate = now;
@@ -354,5 +603,12 @@ export const buildTrackingDashboardMetrics = ({
     totals,
     buckets: buildBuckets(now, startedAtDate, rangeCommits, rangeMessages),
     recentRuns,
+    backgroundAttention: buildBackgroundAttentionMetrics(
+      now,
+      startedAtDate,
+      endedAtDate,
+      backgroundAttentionCandidates,
+      backgroundAttentionAuditEvents,
+    ),
   };
 };

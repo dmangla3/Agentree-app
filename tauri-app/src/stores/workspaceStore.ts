@@ -195,18 +195,63 @@ export interface ActiveSendFlowFocus {
 
 export interface Insight {
   id: string;
-  agentType: 'hypothesis' | 'doubt' | 'meta' | 'association' | 'memory' | 'kb';
+  agentType: 'hypothesis' | 'doubt' | 'meta' | 'association' | 'memory' | 'kb' | 'risk' | 'opportunity';
   isLocal: boolean;
   content: string;
   fullExploration?: string;
   reasoning?: string;
   sourceWorkspaceId?: string;
   sourceFileId?: string;
+  sourceRunNodeId?: string;
+  candidateId?: string;
+  surfaceReason?: string;
+  priority?: number;
+  status?: string;
+  triggerClass?: string;
+  triggerReason?: string;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  totalTokens?: number | null;
+  cachedInputTokens?: number | null;
+  reasoningTokens?: number | null;
+  estimatedCostUsd?: number | null;
   validationResults?: {
     confidence: number;
+    novelty?: number;
+    relevance?: number;
+    actionability?: number;
+    risk?: number;
+    timing?: number;
+    surface?: boolean;
+    reason?: string;
+    priority?: number;
   };
   parentNodeId: string;
   createdAt: string;
+}
+
+export interface InsightCandidate {
+  candidateId: string;
+  workspaceId: string;
+  parentNodeId: string;
+  agentKind: Insight['agentType'] | string;
+  claim: string;
+  rationale?: string | null;
+  status: 'seed' | 'explored' | 'validated' | 'surfaced' | 'dismissed' | 'promoted' | 'archived' | string;
+  noveltyScore: number | null;
+  relevanceScore: number | null;
+  actionabilityScore: number | null;
+  riskScore: number | null;
+  timingScore: number | null;
+  confidence: number | null;
+  priority?: number | null;
+  surfaceReason?: string | null;
+  surfacedInsightId?: string | null;
+  sourceRunNodeId?: string | null;
+  explorationJson?: string | null;
+  payload: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ComposerContextPreviewState {
@@ -254,6 +299,7 @@ interface WorkspaceState {
   clearSelectedWorkspace: () => void;
 
   insights: Insight[];
+  insightCandidates: InsightCandidate[];
   insightsEnabled: boolean;
   insightsVisible: boolean;
   showInsightsInGraph: boolean;
@@ -293,6 +339,7 @@ interface WorkspaceState {
   setSelectedAgentId: (agentId: string | null) => void;
 
   setInsights: (insights: Insight[]) => void;
+  setInsightCandidates: (candidates: InsightCandidate[]) => void;
   addInsights: (insights: Insight[]) => void;
   dismissInsight: (insightId: string) => void;
   clearInsights: () => void;
@@ -331,8 +378,9 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       activeSendFlowFocus: null,
       selectedAgentId: null,
       insights: [],
-      insightsEnabled: true,
-      insightsVisible: true,
+      insightCandidates: [],
+      insightsEnabled: false,
+      insightsVisible: false,
       showInsightsInGraph: false,
       isLoadingInsights: false,
       isFloatingChatInputOpen: false,
@@ -353,6 +401,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           composerDraftByWorkspace: {},
           activeSendFlowFocus: null,
           insights: [],
+          insightCandidates: [],
         }),
 
       selectWorkspace: (id, initialFocusId = null) =>
@@ -371,6 +420,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             composerBaseCommitOverride: null,
             threadComposerTarget: null,
             insights: [],
+            insightCandidates: [],
             lastUsedWorkspaceAt: {
               ...state.lastUsedWorkspaceAt,
               [id]: now,
@@ -536,10 +586,18 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       setSelectedAgentId: (agentId) => set({ selectedAgentId: agentId }),
 
       setInsights: (insights) => set({ insights }),
+      setInsightCandidates: (candidates) => set({ insightCandidates: candidates }),
       addInsights: (insights) => set((state) => ({ insights: [...state.insights, ...insights] })),
       dismissInsight: (insightId) =>
-        set((state) => ({ insights: state.insights.filter((insight) => insight.id !== insightId) })),
-      clearInsights: () => set({ insights: [] }),
+        set((state) => ({
+          insights: state.insights.filter((insight) => insight.id !== insightId),
+          insightCandidates: state.insightCandidates.map((candidate) => (
+            candidate.candidateId === insightId || candidate.surfacedInsightId === insightId
+              ? { ...candidate, status: 'dismissed' }
+              : candidate
+          )),
+        })),
+      clearInsights: () => set({ insights: [], insightCandidates: [] }),
       toggleInsightsEnabled: () => set((state) => ({ insightsEnabled: !state.insightsEnabled })),
       toggleInsightsVisible: () => set((state) => ({ insightsVisible: !state.insightsVisible })),
       toggleShowInsightsInGraph: () =>

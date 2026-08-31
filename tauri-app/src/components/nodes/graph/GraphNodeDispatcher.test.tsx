@@ -139,6 +139,7 @@ vi.mock('../../NodeHoverCardContent', () => ({
   NodeHoverCardContent: ({ entity }: { entity?: ProjectedNodeEntity }) => (
     <div>hover entity kind: {entity?.kind}</div>
   ),
+  preloadNodeHoverPreview: vi.fn(),
 }));
 
 vi.mock('../../graph/GraphInteractionContext', () => ({
