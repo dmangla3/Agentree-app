@@ -40,6 +40,7 @@ import type { RuntimeProvider } from '../../lib/runtimeModels';
 import { cn } from '../../lib/utils';
 import { LoginProfileEditor } from './LoginProfileEditor';
 import { LoginProfileRows } from './LoginProfileRows';
+import { RuntimeHealthCard } from './RuntimeHealthCard';
 
 type ProviderFilter = 'codex' | 'claude';
 
@@ -451,6 +452,8 @@ export function LoginProfilesPanel() {
                 </div>
               </div>
             </section>
+
+            <RuntimeHealthCard />
           </aside>
         </div>
       </div>

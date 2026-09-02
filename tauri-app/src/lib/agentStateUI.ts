@@ -25,11 +25,51 @@ export function getAgentVisualState(status: AgentStatus | string | null | undefi
     const normalized = typeof status === 'string' ? status.trim().toLowerCase() : 'pending';
 
     switch (normalized) {
+        case 'creating':
+            return {
+                icon: Loader2,
+                label: 'Creating',
+                colorClass: 'text-amber-500',
+                badgeContainerClass: 'bg-amber-50/80 border-amber-200/70 text-amber-700 dark:bg-amber-950/30 dark:border-amber-900 dark:text-amber-300',
+                bgColorClass: 'bg-amber-500/10',
+                borderColorClass: 'border-amber-500/20',
+                animate: true,
+            };
+        case 'initializing':
+            return {
+                icon: Loader2,
+                label: 'Initializing',
+                colorClass: 'text-amber-500',
+                badgeContainerClass: 'bg-amber-50/80 border-amber-200/70 text-amber-700 dark:bg-amber-950/30 dark:border-amber-900 dark:text-amber-300',
+                bgColorClass: 'bg-amber-500/10',
+                borderColorClass: 'border-amber-500/20',
+                animate: true,
+            };
+        case 'preparing_worktree':
+            return {
+                icon: Loader2,
+                label: 'Preparing worktree',
+                colorClass: 'text-amber-500',
+                badgeContainerClass: 'bg-amber-50/80 border-amber-200/70 text-amber-700 dark:bg-amber-950/30 dark:border-amber-900 dark:text-amber-300',
+                bgColorClass: 'bg-amber-500/10',
+                borderColorClass: 'border-amber-500/20',
+                animate: true,
+            };
         case 'streaming':
         case 'running':
             return {
                 icon: Loader2,
                 label: 'Running',
+                colorClass: 'text-blue-500',
+                badgeContainerClass: 'bg-blue-50/80 border-blue-200/70 text-blue-700 dark:bg-blue-950/30 dark:border-blue-900 dark:text-blue-300',
+                bgColorClass: 'bg-blue-500/10',
+                borderColorClass: 'border-blue-500/20',
+                animate: true,
+            };
+        case 'finalizing':
+            return {
+                icon: Loader2,
+                label: 'Finalizing',
                 colorClass: 'text-blue-500',
                 badgeContainerClass: 'bg-blue-50/80 border-blue-200/70 text-blue-700 dark:bg-blue-950/30 dark:border-blue-900 dark:text-blue-300',
                 bgColorClass: 'bg-blue-500/10',
@@ -48,9 +88,23 @@ export function getAgentVisualState(status: AgentStatus | string | null | undefi
             };
         case 'error':
         case 'failed':
+        case 'failed_setup':
+        case 'failed_spawn':
+        case 'failed_finalization':
+        case 'failed_runtime':
             return {
                 icon: AlertCircle,
-                label: normalized === 'failed' ? 'Failed' : 'Error',
+                label: normalized === 'error'
+                    ? 'Error'
+                    : normalized === 'failed_setup'
+                        ? 'Setup failed'
+                        : normalized === 'failed_spawn'
+                            ? 'Spawn failed'
+                            : normalized === 'failed_finalization'
+                                ? 'Finalization failed'
+                                : normalized === 'failed_runtime'
+                                    ? 'Runtime failed'
+                                    : 'Failed',
                 colorClass: 'text-red-500',
                 badgeContainerClass: 'bg-red-50/80 border-red-200/70 text-red-700 dark:bg-red-950/30 dark:border-red-900 dark:text-red-300',
                 bgColorClass: 'bg-red-500/10',

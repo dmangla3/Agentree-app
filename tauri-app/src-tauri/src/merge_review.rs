@@ -478,13 +478,39 @@ fn merge_review_script_path(app: &AppHandle) -> Result<PathBuf, String> {
     crate::runtime_scripts::runtime_script_path(app, "merge-review-runner.cjs")
 }
 
+fn add_codex_adapter_command_to_config(
+    app: &AppHandle,
+    config: &mut serde_json::Value,
+) -> Result<(), String> {
+    let command = crate::runtime_scripts::codex_adapter_command(app)?;
+    let Some(object) = config.as_object_mut() else {
+        return Err("Merge review runner config must be a JSON object.".to_string());
+    };
+    object.insert(
+        "codexAdapterProgram".to_string(),
+        serde_json::Value::String(command.program),
+    );
+    object.insert(
+        "codexAdapterArgsPrefix".to_string(),
+        serde_json::Value::Array(
+            command
+                .args_prefix
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
+    );
+    Ok(())
+}
+
 fn run_sync_runner_with_events<T: for<'de> Deserialize<'de>>(
     app: &AppHandle,
     run_id: &str,
     worktree_path: &str,
-    config: serde_json::Value,
+    mut config: serde_json::Value,
     worktree_config: &crate::worktree_config::AgentWorktreeConfig,
 ) -> Result<T, String> {
+    add_codex_adapter_command_to_config(app, &mut config)?;
     let mut command = Command::new("node");
     command
         .arg(merge_review_script_path(app)?)
@@ -670,7 +696,7 @@ pub fn start_merge_review(
     )
     .map_err(|e| format!("Failed to write review payload: {}", e))?;
 
-    let config = serde_json::json!({
+    let mut config = serde_json::json!({
         "mode": "review",
         "agentType": request.agent_type,
         "agentName": request.agent_name,
@@ -680,6 +706,7 @@ pub fn start_merge_review(
         "payloadFile": payload_file.to_string_lossy().to_string(),
         "worktreePath": worktree_string,
     });
+    add_codex_adapter_command_to_config(&app, &mut config)?;
 
     let mut command = Command::new("node");
     command

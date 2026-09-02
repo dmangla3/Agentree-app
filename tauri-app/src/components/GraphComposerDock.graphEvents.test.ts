@@ -30,7 +30,7 @@ describe('graph composer dock graph events', () => {
 
     expect(composerSource).toContain("window.addEventListener('editUserMessage'");
     expect(composerSource).toContain('setEditDraftSource(sourceMessage)');
-    expect(composerSource).toContain('setComposerDraft(selectedWorkspaceId, sourceMessage.content || \'\')');
+    expect(composerSource).toContain('setComposerDraft(selectedWorkspaceId, sourceMessage.content || \'\', sourceMessage.id)');
     expect(composerSource).toContain('dispatchGraphComposerDockExpand();');
   });
 

@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "minCodexCliVersion": "0.135.0",
+  "releaseBase": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime",
+  "components": {
+    "node": {
+      "version": "22.21.1",
+      "platforms": {
+        "linux-x86_64": {
+          "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-node-22.21.1-linux-x86_64.tar.gz",
+          "sha256": "14d9f77d2ab6d37c27d38fa8b67f3d30941832dc1bee5bb16652f82a67279260"
+        },
+        "darwin-aarch64": {
+          "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-node-22.21.1-darwin-aarch64.tar.gz",
+          "sha256": ""
+        }
+      }
+    },
+    "claude-sdk": {
+      "version": "0.2.107",
+      "platforms": {
+        "linux-x86_64": {
+          "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-claude-sdk-0.2.107-linux-x86_64.tar.gz",
+          "sha256": "aefaf13af90a607798bd7e1cc0f63f705066afdce13fa9544f8030de6e645326"
+        },
+        "darwin-aarch64": {
+          "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-claude-sdk-0.2.107-darwin-aarch64.tar.gz",
+          "sha256": ""
+        }
+      }
+    },
+    "codex": {
+      "version": "0.139.0",
+      "platforms": {
+        "linux-x86_64": {
+          "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-codex-0.139.0-linux-x86_64.tar.gz",
+          "sha256": "a62abc29eb063051db5b9be2af3ff62ae1d52531682ba3e8fdd36499343d6b51"
+        },
+        "darwin-aarch64": {
+          "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-codex-0.139.0-darwin-aarch64.tar.gz",
+          "sha256": ""
+        }
+      }
+    }
+  }
+}

@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { agentClient, type LocalNodeRecord } from '../lib/agentClient';
 import type { Message } from '../stores/workspaceStore';
 import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
+import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 
 export interface LocalNodeMessage {
   nodeId: string;
@@ -97,10 +98,21 @@ export const useLocalNodes = (workspaceId: string | null | undefined) => {
     queryKey: localNodeKeys.workspace(workspaceId),
     queryFn: async () => {
       if (!workspaceId || !agentClient.hasRuntime()) return [];
+      const startedAt = performance.now();
       const rows = await agentClient.listLocalNodes(workspaceId);
-      return rows
+      const localNodes = rows
         .map(parseLocalNode)
         .filter((row): row is LocalNodeMessage => Boolean(row));
+      recordPerfEvent('query.local-nodes.read', {
+        elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
+        workspaceId,
+        rowCount: rows.length,
+        messageCount: localNodes.length,
+      }, {
+        source: 'useLocalNodes',
+        durationMs: Number((performance.now() - startedAt).toFixed(2)),
+      });
+      return localNodes;
     },
     enabled: Boolean(workspaceId) && agentClient.hasRuntime(),
     staleTime: 1000,

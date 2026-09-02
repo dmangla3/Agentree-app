@@ -4,6 +4,14 @@ import { recordPerfEvent } from '../lib/perfRecorder';
 import { createBestEffortStorage } from '../lib/bestEffortStorage';
 import type { AgentStatus } from '@shared/agentStatus';
 
+export const buildComposerDraftKey = (
+  workspaceId: string | null | undefined,
+  targetId?: string | null
+): string | null => {
+  if (!workspaceId) return null;
+  return targetId ? `${workspaceId}::${targetId}` : workspaceId;
+};
+
 export interface Workspace {
   id: string;
   name: string;
@@ -329,9 +337,9 @@ interface WorkspaceState {
   setComposerBaseCommitOverride: (override: ComposerBaseCommitOverrideState | null) => void;
   setThreadComposerTarget: (target: ThreadComposerTargetState | null) => void;
   clearThreadComposerTarget: (nonce?: number) => void;
-  getComposerDraft: (workspaceId: string | null | undefined) => string;
-  setComposerDraft: (workspaceId: string | null | undefined, prompt: string) => void;
-  clearComposerDraft: (workspaceId: string | null | undefined) => void;
+  getComposerDraft: (workspaceId: string | null | undefined, targetId?: string | null) => string;
+  setComposerDraft: (workspaceId: string | null | undefined, prompt: string, targetId?: string | null) => void;
+  clearComposerDraft: (workspaceId: string | null | undefined, targetId?: string | null) => void;
   setAutoCheckoutOnAgentCommit: (enabled: boolean) => void;
   clearPendingInitialFocusId: () => void;
   toggleSummaryDisabled: (summaryId: string) => void;
@@ -555,23 +563,26 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           if (nonce !== undefined && state.threadComposerTarget?.nonce !== nonce) return state;
           return { threadComposerTarget: null };
         }),
-      getComposerDraft: (workspaceId) => {
-        if (!workspaceId) return '';
-        return get().composerDraftByWorkspace[workspaceId] ?? '';
+      getComposerDraft: (workspaceId, targetId) => {
+        const draftKey = buildComposerDraftKey(workspaceId, targetId);
+        if (!draftKey) return '';
+        return get().composerDraftByWorkspace[draftKey] ?? '';
       },
-      setComposerDraft: (workspaceId, prompt) => {
-        if (!workspaceId) return;
+      setComposerDraft: (workspaceId, prompt, targetId) => {
+        const draftKey = buildComposerDraftKey(workspaceId, targetId);
+        if (!draftKey) return;
         set((state) => ({
           composerDraftByWorkspace: {
             ...state.composerDraftByWorkspace,
-            [workspaceId]: prompt,
+            [draftKey]: prompt,
           },
         }));
       },
-      clearComposerDraft: (workspaceId) => {
-        if (!workspaceId) return;
+      clearComposerDraft: (workspaceId, targetId) => {
+        const draftKey = buildComposerDraftKey(workspaceId, targetId);
+        if (!draftKey) return;
         set((state) => {
-          const { [workspaceId]: _removed, ...rest } = state.composerDraftByWorkspace;
+          const { [draftKey]: _removed, ...rest } = state.composerDraftByWorkspace;
           return { composerDraftByWorkspace: rest };
         });
       },

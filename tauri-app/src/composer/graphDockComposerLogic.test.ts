@@ -141,6 +141,24 @@ describe('graph dock composer logic', () => {
     });
   });
 
+  it('uses main for parentless reply targets such as root message edits', () => {
+    expect(resolveGraphDockComposerBase({
+      targetMode: 'reply',
+      replyParentMessageId: null,
+      selectedNodeId: null,
+      focusedCommitSha: null,
+      messages: [message({ id: 'root-user', base_commit_sha: 'workspace-base' })],
+      refs: [{ git_ref: 'refs/heads/main', short_name: 'main', commit_sha: 'main-tip' }],
+      trackedRefs: [],
+      workspace: { id: 'workspace-1', base_commit_sha: 'workspace-base' } as Workspace,
+      override: null,
+    })).toEqual({
+      commitSha: 'main-tip',
+      selectedFromNodeId: null,
+      source: 'main-ref',
+    });
+  });
+
   it('uses the selected agent before parent defaults so model changes take effect', () => {
     const parent = message({
       id: 'parent',

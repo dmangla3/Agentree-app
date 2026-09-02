@@ -28,10 +28,10 @@ test('dependency guard prompts allow sandboxed test and build commands', () => {
 });
 
 test('codex adapter makes the node worktree writable without full access', () => {
-  const source = readRepoFile('tauri-app/src-tauri/scripts/codex-app-server-adapter.py');
+  const source = readRepoFile('tauri-app/src-tauri/src/codex_adapter.rs');
 
   assert.match(source, /"sandbox": "workspace-write"/);
   assert.match(source, /"type": "workspaceWrite"/);
   assert.match(source, /"writableRoots": \[cwd\]/);
-  assert.match(source, /sandbox_policy=_workspace_write_sandbox_policy\(args\.cwd\)/);
+  assert.match(source, /"sandboxPolicy": workspace_write_sandbox_policy\(&args\.cwd\)/);
 });

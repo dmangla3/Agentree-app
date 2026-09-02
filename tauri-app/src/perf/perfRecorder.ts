@@ -183,6 +183,14 @@ const shouldLogPerfEvent = (name: string, hasActiveSession: boolean) => {
     name.startsWith('runtime.') ||
     name.startsWith('send-flow.') ||
     name.startsWith('run-status.') ||
+    name.startsWith('query.workspace-switch.') ||
+    name.startsWith('query.local-nodes.') ||
+    name.startsWith('query.thread-sessions.') ||
+    name.startsWith('query.local-commit-graph.') ||
+    name.startsWith('query.messages.') ||
+    name.startsWith('query.graph-snapshot.') ||
+    name.startsWith('graph.data-ready') ||
+    name.startsWith('graph.first-content-render') ||
     name.startsWith('query.message-deltas.') ||
     name.startsWith('chat.focus-scroll.') ||
     name === 'browser.long-task'

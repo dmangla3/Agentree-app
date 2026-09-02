@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { AGENT_STATUS } from '@shared/agentStatus';
+import { AGENT_STATUS, isTerminalAgentStatus } from '@shared/agentStatus';
 import { agentClient, type LocalInsightCandidateRecord, type LocalInsightRecord } from '../lib/agentClient';
 import { getAccessToken } from '../lib/authSession';
 import { appendBackgroundAttentionAuditEvent } from '../lib/backgroundAttentionAudit';
@@ -270,17 +270,7 @@ const candidateRowsFingerprint = (rows: LocalInsightCandidateRecord[]): string =
 const isTerminalInsightRunState = (state: Awaited<ReturnType<typeof agentClient.getAgentRunState>> | null): boolean => {
   const ledger = state?.ledger as Record<string, unknown> | null | undefined;
   const status = String(ledger?.terminalStatus ?? ledger?.status ?? '');
-  return [
-    'completed',
-    'failed',
-    'cancelled',
-    'error',
-    'failed_setup',
-    'failed_spawn',
-    'failed_runtime',
-    'failed_finalization',
-    'needs_user_action',
-  ].includes(status);
+  return isTerminalAgentStatus(status) || status === 'needs_user_action';
 };
 
 const recordBackgroundAttentionAudit = (input: {

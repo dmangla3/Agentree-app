@@ -1,6 +1,5 @@
-import { Bot, CheckCircle2, ChevronDown, FileCode2, ListChecks, Loader2, Network, Pencil, Plus, RotateCcw, Save, Workflow, X } from 'lucide-react';
+import { Bot, CheckCircle2, ChevronDown, FileCode2, ListChecks, Loader2, Network, Plus, RotateCcw, Workflow, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { stringify as stringifyYaml } from 'yaml';
 import { UnifiedAgentModelSelector } from '../UnifiedAgentModelSelector';
 import { Popover, PopoverContent, PopoverTrigger } from '../../../@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../@/components/ui/tooltip';
@@ -8,8 +7,7 @@ import { FlowCanvasEditor } from './FlowCanvasEditor';
 import { authorFlowFromNaturalLanguage, type FlowAuthoringAgent, type FlowAuthoringResult } from '../../flows/flowAuthoring';
 import { buildFlowCatalog, type FlowCatalogItem } from '../../flows/flowCatalog';
 import { PREDEFINED_FLOW_SOURCES } from '../../flows/predefinedFlows';
-import { compileFlowDefinition, type FlowNodeRegistry } from '../../flows/flowNodeRegistry';
-import { parseFlowYaml } from '../../flows/parseFlowYaml';
+import type { FlowNodeRegistry } from '../../flows/flowNodeRegistry';
 import { buildUserFlowNodeRegistry, saveUserFlowNodeDefinitions, USER_FLOW_NODE_REGISTRY_STORE_KEY, useUserFlowNodeDefinitions, writeUserFlowNodeDefinitions } from '../../flows/userFlowNodeRegistryStore';
 import { saveUserFlowSource, USER_FLOW_STORE_KEY, useUserFlowSources, writeUserFlowSources } from '../../flows/userFlowStore';
 import { mergeStreamingOutput } from '../../agent-runs/agentRunStreamDispatch';
@@ -17,7 +15,7 @@ import { agentClient } from '../../lib/agentClient';
 import { isLoginProfileActive } from '../../lib/loginProfiles';
 import { getRuntimeModelByKey } from '../../lib/runtimeModels';
 import { track } from '../../lib/analytics';
-import type { FlowDefinition, FlowInputDefinition, FlowNodeTemplate, FlowSource, FlowStatement, UserFlowSource } from '../../flows/types';
+import type { FlowInputDefinition, FlowNodeTemplate, FlowSource, FlowStatement, UserFlowSource } from '../../flows/types';
 import { cn } from '../../lib/utils';
 import { useLoginProfilesStore } from '../../stores/loginProfilesStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
@@ -115,24 +113,47 @@ export function FlowsPanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
-        <div className="border-b border-[hsl(var(--app-border)/0.58)] px-5 py-5">
-          <FlowAuthoringReviewPanel
-            workspaceId={workspaceId}
-            authoringAgent={authoringAgent}
-            authoringAgentLabel={authoringAgentLabel}
-          />
+        <div className="space-y-4 px-5 py-5">
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold text-foreground">Existing flows</h2>
+                <p className="mt-1 max-w-[62ch] text-xs leading-5 text-muted-foreground">
+                  Browse flow summaries first. Expand a card only when you need inputs, node prompts, canvas, or YAML.
+                </p>
+              </div>
+              <span className="rounded-full border border-[hsl(var(--app-border)/0.62)] bg-background/62 px-2.5 py-1 text-xs font-semibold tabular-nums text-muted-foreground">
+                {flows.length} total
+              </span>
+            </div>
+            {flows.length === 0 ? (
+              <div className="flex min-h-36 items-center justify-center rounded-2xl border border-dashed border-[hsl(var(--app-border)/0.68)] bg-background/36 p-8 text-sm text-muted-foreground">
+                No flows are registered.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {flows.map((flow) => (
+                  <FlowCatalogEntry
+                    key={`${flow.kind}:${flow.source.id}`}
+                    flow={flow}
+                    registry={registry}
+                    workspaceId={workspaceId}
+                    authoringAgent={authoringAgent}
+                    authoringAgentLabel={authoringAgentLabel}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-2xl border border-[hsl(var(--app-border)/0.68)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.78),hsl(var(--app-panel)/0.54))] p-4 shadow-[0_22px_60px_-48px_hsl(var(--app-accent)/0.75)]">
+            <FlowAuthoringReviewPanel
+              workspaceId={workspaceId}
+              authoringAgent={authoringAgent}
+              authoringAgentLabel={authoringAgentLabel}
+            />
+          </div>
         </div>
-        {flows.length === 0 ? (
-          <div className="flex min-h-48 items-center justify-center p-8 text-sm text-muted-foreground">
-            No flows are registered.
-          </div>
-        ) : (
-          <div className="divide-y divide-[hsl(var(--app-border)/0.58)]">
-            {flows.map((flow) => (
-              <FlowCatalogEntry key={`${flow.kind}:${flow.source.id}`} flow={flow} registry={registry} />
-            ))}
-          </div>
-        )}
       </div>
     </section>
   );
@@ -373,12 +394,27 @@ function FlowAuthoringReviewPanel({
               </div>
             </PopoverContent>
           </Popover>
+        </div>
+      </div>
+      <div className="overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel-strong)/0.78)] shadow-[inset_0_1px_0_hsl(var(--app-border)/0.42)] transition-colors focus-within:border-[hsl(var(--app-accent)/0.48)] focus-within:bg-[hsl(var(--app-panel-strong)/0.9)]">
+        <textarea
+          value={request}
+          onChange={(event) => {
+            setRequest(event.target.value);
+          }}
+          placeholder="Example: Run 3 implementers in parallel, synthesize the best result, review it against the original request, then ask a fixer to iterate until the review passes."
+          className="min-h-24 w-full resize-y border-0 bg-transparent px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground/65"
+        />
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[hsl(var(--app-border)/0.52)] bg-background/34 px-3 py-2">
+          <span className="text-xs text-muted-foreground">
+            Describe the flow; Agentree will draft YAML and validate it before saving.
+          </span>
           {status === 'drafting' ? (
             <button
               type="button"
               onClick={handleCancel}
               disabled={!activeRequestId}
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-destructive/35 bg-destructive/8 px-3 text-xs font-semibold text-destructive transition-colors hover:bg-destructive/12 disabled:pointer-events-none disabled:opacity-50"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-destructive/35 bg-destructive/8 px-3 text-xs font-semibold text-destructive transition-[background-color,transform] duration-150 hover:bg-destructive/12 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-50"
             >
               <X className="h-3.5 w-3.5" />
               Cancel
@@ -388,7 +424,7 @@ function FlowAuthoringReviewPanel({
               type="button"
               onClick={() => void handleDraft()}
               disabled={!request.trim() || Boolean(authoringUnavailableReason)}
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[hsl(var(--app-border))] bg-background/72 px-3 text-xs font-semibold text-foreground transition-colors hover:bg-background disabled:pointer-events-none disabled:opacity-50"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[hsl(var(--app-border))] bg-background/82 px-3 text-xs font-semibold text-foreground transition-[background-color,transform] duration-150 hover:bg-background active:scale-[0.96] disabled:pointer-events-none disabled:opacity-50"
             >
               <Workflow className="h-3.5 w-3.5" />
               Draft
@@ -396,14 +432,6 @@ function FlowAuthoringReviewPanel({
           )}
         </div>
       </div>
-      <textarea
-        value={request}
-        onChange={(event) => {
-          setRequest(event.target.value);
-        }}
-        placeholder="Example: Run 3 implementers in parallel, synthesize the best result, review it against the original request, then ask a fixer to iterate until the review passes."
-        className="min-h-20 w-full resize-y rounded-xl border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel-strong)/0.78)] px-3 py-2.5 text-sm text-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.42)] outline-none transition-colors placeholder:text-muted-foreground/65 focus:border-[hsl(var(--app-accent)/0.48)] focus:bg-[hsl(var(--app-panel-strong)/0.9)]"
-      />
       {status === 'drafting' ? (
         <div className="rounded-lg border border-[hsl(var(--app-border)/0.62)] bg-background/48">
           <div className="flex items-center gap-2 border-b border-[hsl(var(--app-border)/0.48)] px-3 py-2 text-xs text-muted-foreground">
@@ -545,205 +573,203 @@ function stringField(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function updateFlowSourceNodePrompt(source: string, node: FlowNodeTemplate, prompt: string): string {
-  const parsed = parseFlowYaml(source);
-  if (!isRecord(parsed) || !Array.isArray(parsed.nodes)) {
-    throw new Error('Flow source nodes could not be edited.');
-  }
-  const index = parsed.nodes.findIndex((candidate) => {
-    if (!isRecord(candidate)) return false;
-    if (candidate.id === node.id) return true;
-    return candidate.as === node.id;
-  });
-  if (index < 0) {
-    throw new Error(`Node "${node.id}" was not found in the flow source.`);
-  }
-
-  const existing = parsed.nodes[index];
-  if (!isRecord(existing)) {
-    throw new Error(`Node "${node.id}" source is invalid.`);
-  }
-
-  if (typeof existing.use === 'string') {
-    parsed.nodes[index] = compactObject({
-      id: node.id,
-      ...(node.label ? { label: node.label } : {}),
-      ...(node.params?.length ? { params: serializeNodeParams(node) } : {}),
-      parent: node.parent,
-      ...(node.returns ? { returns: node.returns } : {}),
-      prompt,
-      ...(typeof node.requiresFinalizedCommit === 'boolean'
-        ? { requiresFinalizedCommit: node.requiresFinalizedCommit }
-        : {}),
-    });
-  } else {
-    parsed.nodes[index] = {
-      ...existing,
-      prompt,
-    };
-  }
-
-  return stringifyYaml(parsed).trimEnd();
-}
-
-function compactObject<T extends Record<string, unknown>>(input: T): T {
-  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) as T;
-}
-
-function flowDefinitionToSource(definition: FlowDefinition): unknown {
-  return {
-    ...definition,
-    nodes: definition.nodes.map((node) => ({
-      ...node,
-      params: node.params?.length ? serializeNodeParams(node) : undefined,
-      paramTypes: undefined,
-    })),
-  };
-}
-
-function FlowCatalogEntry({ flow, registry }: { flow: FlowCatalogItem; registry: FlowNodeRegistry }) {
+function FlowCatalogEntry({
+  flow,
+  registry,
+  workspaceId,
+  authoringAgent,
+  authoringAgentLabel,
+}: {
+  flow: FlowCatalogItem;
+  registry: FlowNodeRegistry;
+  workspaceId: string | null;
+  authoringAgent?: FlowAuthoringAgent;
+  authoringAgentLabel?: string | null;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
   const definition = flow.definition;
   const label = definition?.flow.label ?? flow.source.label;
   const inputCount = Object.keys(definition?.inputs ?? {}).length;
   const returnCount = definition?.nodes.reduce((total, node) => total + Object.keys(node.returns ?? {}).length, 0) ?? 0;
   const maxLoopRounds = findMaxLoopRounds(definition?.run ?? []);
-  const toast = useToastHelpers();
-  const canEditPrompts = flow.kind === 'user' && 'version' in flow.source;
-
-  const handleSaveNodePrompt = useCallback((node: FlowNodeTemplate, prompt: string) => {
-    if (!canEditPrompts || !('version' in flow.source)) return;
-    try {
-      const nextSource = updateFlowSourceNodePrompt(flow.source.source, node, prompt);
-      const compiled = compileFlowDefinition(parseFlowYaml(nextSource), registry);
-      if (!compiled.definition || compiled.issues.length > 0) {
-        throw new Error(compiled.issues.map(formatIssue).join(' ') || 'Edited flow source is invalid.');
-      }
-      saveUserFlowSource({
-        ...flow.source,
-        source: nextSource,
-        version: flow.source.version + 1,
-        updatedAt: new Date().toISOString(),
-      });
-      toast.success('Prompt saved');
-    } catch (error) {
-      toast.error('Prompt save failed', formatFlowAuthoringError(error));
-      throw error;
-    }
-  }, [canEditPrompts, flow.source, registry, toast]);
-
-  const handleSaveDefinition = useCallback((nextDefinition: FlowDefinition) => {
-    if (!canEditPrompts || !('version' in flow.source)) return;
-    const nextSource = stringifyYaml(flowDefinitionToSource(nextDefinition)).trimEnd();
-    const compiled = compileFlowDefinition(parseFlowYaml(nextSource), registry);
-    if (!compiled.definition || compiled.issues.length > 0) {
-      throw new Error(compiled.issues.map(formatIssue).join(' ') || 'Edited flow source is invalid.');
-    }
-    saveUserFlowSource({
-      ...flow.source,
-      source: nextSource,
-      version: flow.source.version + 1,
-      updatedAt: new Date().toISOString(),
-    });
-    toast.success('Flow canvas saved');
-  }, [canEditPrompts, flow.source, registry, toast]);
 
   return (
-    <article className="px-5 py-5">
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(20rem,25rem)]">
-        <div className="min-w-0 space-y-5">
-          <div className="flex flex-wrap items-start justify-between gap-4">
+    <article
+      className={cn(
+        "overflow-hidden rounded-2xl border bg-background/46 shadow-[0_18px_48px_-42px_hsl(var(--app-accent)/0.72)] transition-[background-color,border-color,box-shadow] duration-200",
+        isExpanded
+          ? "border-[hsl(var(--app-accent)/0.28)] bg-background/58 shadow-[0_24px_64px_-46px_hsl(var(--app-accent)/0.82)]"
+          : "border-[hsl(var(--app-border)/0.64)] hover:border-[hsl(var(--app-border)/0.9)] hover:bg-background/56"
+      )}
+    >
+      <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+        <button
+          type="button"
+          onClick={() => setIsExpanded((expanded) => !expanded)}
+          aria-expanded={isExpanded}
+          aria-label={`Toggle ${label} flow details`}
+          className="group min-w-0 rounded-xl text-left outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        >
+          <div className="flex min-w-0 items-start gap-3">
+            <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel-strong)/0.78)] text-[hsl(var(--app-accent))] shadow-[inset_0_1px_0_hsl(var(--app-border)/0.42)] transition-transform duration-200 group-active:scale-[0.96]">
+              <Workflow className="h-4 w-4" strokeWidth={2.1} />
+            </span>
             <div className="min-w-0">
-              <h2 className="max-w-[24ch] text-2xl font-semibold leading-tight tracking-[-0.025em] text-foreground text-balance">
-                {label}
-              </h2>
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span
+                  role="heading"
+                  aria-level={2}
+                  className="max-w-[34ch] truncate text-base font-semibold leading-6 tracking-[-0.015em] text-foreground"
+                >
+                  {label}
+                </span>
+                <span className={cn(
+                  "inline-flex h-6 items-center rounded-full border px-2 text-[11px] font-semibold",
+                  flow.runnable
+                    ? "border-emerald-500/24 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                    : "border-destructive/24 bg-destructive/5 text-destructive"
+                )}>
+                  {flow.runnable ? 'Runnable' : 'Needs fix'}
+                </span>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                 <code className="rounded-md border border-[hsl(var(--app-border)/0.66)] bg-background/70 px-1.5 py-0.5 font-mono text-[11px] text-foreground">
                   {flow.source.id}
                 </code>
-                <span className="rounded-md border border-[hsl(var(--app-border)/0.66)] bg-background/70 px-1.5 py-0.5">
+                <span className="rounded-md border border-[hsl(var(--app-border)/0.58)] bg-background/54 px-1.5 py-0.5">
                   {flow.source.scope}
                 </span>
-                <span className="rounded-md border border-[hsl(var(--app-border)/0.66)] bg-background/70 px-1.5 py-0.5">
-                  {flow.kind}
+                <span className="rounded-md border border-[hsl(var(--app-border)/0.58)] bg-background/54 px-1.5 py-0.5">
+                  {formatFlowKindLabel(flow.kind)}
                 </span>
-                <span className={cn(
-                  "rounded-md border px-1.5 py-0.5",
-                  flow.runnable
-                    ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                    : "border-destructive/25 bg-destructive/5 text-destructive"
-                )}>
-                  {flow.runnable ? `version ${flow.sourceVersion}` : 'not runnable'}
+                <span className="rounded-md border border-[hsl(var(--app-border)/0.58)] bg-background/54 px-1.5 py-0.5 tabular-nums">
+                  version {flow.sourceVersion}
                 </span>
+                {maxLoopRounds ? (
+                  <span className="rounded-md border border-[hsl(var(--app-border)/0.58)] bg-background/54 px-1.5 py-0.5 tabular-nums">
+                    loop cap {maxLoopRounds}
+                  </span>
+                ) : null}
               </div>
             </div>
-
-            <dl className="grid min-w-[16rem] grid-cols-3 overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.64)] bg-background/52 text-center shadow-[0_18px_44px_-34px_hsl(var(--app-accent)/0.7)]">
-              <Metric label="inputs" value={inputCount} />
-              <Metric label="nodes" value={definition?.nodes.length ?? 0} />
-              <Metric label="returns" value={returnCount} />
-              <Metric label="loop cap" value={maxLoopRounds || '-'} className="col-span-3 border-t border-[hsl(var(--app-border)/0.58)]" />
-            </dl>
           </div>
+        </button>
 
-          {flow.issues.length > 0 ? (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-              {flow.issues.map(formatIssue).join(' ')}
-            </div>
-          ) : definition ? (
-            <>
-              <section className="space-y-2.5">
-                <SectionHeading icon={<ListChecks className="h-3.5 w-3.5" />} label="Inputs" />
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {Object.entries(definition.inputs ?? {}).map(([name, input]) => (
-                    <InputDefinitionRow key={name} name={name} input={input} />
-                  ))}
-                </div>
-              </section>
-
-              <section className="space-y-2.5">
-                <SectionHeading icon={<Network className="h-3.5 w-3.5" />} label="Nodes" />
-                <div className="overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.64)] bg-background/42">
-                  {definition.nodes.map((node, index) => (
-                    <NodeTemplateRow
-                      key={node.id}
-                      node={node}
-                      index={index}
-                      onSavePrompt={canEditPrompts ? handleSaveNodePrompt : undefined}
-                    />
-                  ))}
-                </div>
-              </section>
-
-              <section className="space-y-2.5">
-                <SectionHeading icon={<Workflow className="h-3.5 w-3.5" />} label="Run Shape" />
-                <FlowCanvasEditor
-                  definition={definition}
-                  editable={canEditPrompts}
-                  onSaveDefinition={canEditPrompts ? handleSaveDefinition : undefined}
-                />
-              </section>
-            </>
-          ) : null}
+        <div className="flex flex-wrap items-center justify-between gap-3 lg:justify-end">
+          <dl className="grid grid-cols-3 overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.58)] bg-background/54 text-center">
+            <CompactMetric label="inputs" value={inputCount} />
+            <CompactMetric label="nodes" value={definition?.nodes.length ?? 0} />
+            <CompactMetric label="returns" value={returnCount} />
+          </dl>
+          <button
+            type="button"
+            onClick={() => setIsExpanded((expanded) => !expanded)}
+            aria-expanded={isExpanded}
+            aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${label} flow details`}
+            className="inline-flex h-9 min-w-24 items-center justify-center gap-1.5 rounded-xl border border-[hsl(var(--app-border)/0.66)] bg-background/72 px-3 text-xs font-semibold text-foreground shadow-[0_12px_28px_-24px_hsl(var(--app-accent)/0.72)] transition-[background-color,transform] duration-150 hover:bg-background active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]"
+          >
+            {isExpanded ? 'Collapse' : 'Details'}
+            <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform duration-200", isExpanded && "rotate-180")} />
+          </button>
         </div>
-
-        <section className="min-w-0 space-y-2.5">
-          <SectionHeading icon={<FileCode2 className="h-3.5 w-3.5" />} label="Source YAML" />
-          <pre className="max-h-[34rem] overflow-auto rounded-xl border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--app-panel-strong))] p-3.5 font-mono text-[11px] leading-5 text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.45)]">
-            {flow.source.source.trim()}
-          </pre>
-        </section>
       </div>
+
+      {isExpanded ? (
+        <div className="border-t border-[hsl(var(--app-border)/0.58)] px-4 pb-4 pt-5">
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(20rem,25rem)]">
+            <div className="min-w-0 space-y-5">
+              {flow.issues.length > 0 ? (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                  {flow.issues.map(formatIssue).join(' ')}
+                </div>
+              ) : definition ? (
+                <>
+                  <section className="space-y-2.5">
+                    <SectionHeading icon={<ListChecks className="h-3.5 w-3.5" />} label="Inputs" />
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {Object.entries(definition.inputs ?? {}).map(([name, input]) => (
+                        <InputDefinitionRow key={name} name={name} input={input} />
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="space-y-2.5">
+                    <SectionHeading icon={<Network className="h-3.5 w-3.5" />} label="Nodes" />
+                    <div className="overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.64)] bg-background/42">
+                      {definition.nodes.map((node, index) => (
+                        <NodeTemplateRow
+                          key={node.id}
+                          node={node}
+                          index={index}
+                        />
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="space-y-2.5">
+                    <SectionHeading icon={<Workflow className="h-3.5 w-3.5" />} label="Run Shape" />
+                    <FlowCanvasEditor
+                      definition={definition}
+                    />
+                  </section>
+                </>
+              ) : null}
+            </div>
+
+            <section className="min-w-0 space-y-2.5">
+              <SectionHeading icon={<FileCode2 className="h-3.5 w-3.5" />} label="Source YAML" />
+              <pre className="h-[60rem] overflow-auto rounded-xl border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--app-panel-strong))] p-3.5 font-mono text-[11px] leading-5 text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.45)]">
+                {flow.source.source.trim()}
+              </pre>
+              <FlowModificationPanel
+                flow={flow}
+                registry={registry}
+                workspaceId={workspaceId}
+                authoringAgent={authoringAgent}
+                authoringAgentLabel={authoringAgentLabel}
+              />
+            </section>
+          </div>
+        </div>
+      ) : null}
     </article>
   );
 }
 
-function Metric({ label, value, className }: { label: string; value: string | number; className?: string }) {
+function CompactMetric({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className={cn("px-3 py-2.5", className)}>
-      <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{label}</dt>
-      <dd className="mt-1 font-mono text-lg font-semibold tabular-nums tracking-[-0.02em] text-foreground">{value}</dd>
+    <div className="min-w-16 border-r border-[hsl(var(--app-border)/0.5)] px-2.5 py-1.5 last:border-r-0">
+      <dt className="text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 font-mono text-sm font-semibold tabular-nums tracking-[-0.02em] text-foreground">{value}</dd>
     </div>
   );
+}
+
+function formatFlowKindLabel(kind: FlowCatalogItem['kind']): string {
+  return kind === 'predefined' ? 'App in-built' : 'User created';
+}
+
+function buildFlowModificationRequest(input: {
+  currentYaml: string;
+  flowId: string;
+  changeRequest: string;
+}): string {
+  return [
+    'Modify the existing Agentree FlowSource YAML according to the requested change.',
+    '',
+    'Modification rules:',
+    '- Return the complete updated YAML, not a patch.',
+    `- Preserve flow.id and source identity "${input.flowId}" unless the user explicitly asks to rename the flow.`,
+    '- Preserve existing behavior unless the requested change requires altering it.',
+    '- Keep the flow valid against the Agentree flow DSL.',
+    '- Do not include prose or Markdown fences.',
+    '',
+    'Current YAML:',
+    input.currentYaml.trim(),
+    '',
+    'Requested change:',
+    input.changeRequest.trim(),
+  ].join('\n');
 }
 
 function SectionHeading({ icon, label }: { icon: ReactNode; label: string }) {
@@ -770,35 +796,313 @@ function InputDefinitionRow({ name, input }: { name: string; input: FlowInputDef
   );
 }
 
+function FlowModificationPanel({
+  flow,
+  registry,
+  workspaceId,
+  authoringAgent,
+  authoringAgentLabel,
+}: {
+  flow: FlowCatalogItem;
+  registry: FlowNodeRegistry;
+  workspaceId: string | null;
+  authoringAgent?: FlowAuthoringAgent;
+  authoringAgentLabel?: string | null;
+}) {
+  const userSource = flow.kind === 'user' && 'version' in flow.source ? flow.source : null;
+  const selectedAgentId = useWorkspaceStore((state) => state.selectedAgentId);
+  const { profiles, startSync } = useLoginProfilesStore();
+  const toast = useToastHelpers();
+  const [isOpen, setIsOpen] = useState(false);
+  const [request, setRequest] = useState('');
+  const [status, setStatus] = useState<'idle' | 'drafting' | 'ready' | 'failed'>('idle');
+  const [result, setResult] = useState<FlowAuthoringResult | null>(null);
+  const [streamOutput, setStreamOutput] = useState('');
+  const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
+  const activeRequestIdRef = useRef<string | null>(null);
+  const selectedAgent = useMemo(
+    () => getRuntimeModelByKey(selectedAgentId),
+    [selectedAgentId]
+  );
+  const selectedLoginProfile = useMemo(() => {
+    if (!selectedAgent) return null;
+    const compatible = profiles.filter((profile) => profile.provider === selectedAgent.provider);
+    return compatible.find((profile) => profile.isDefault) ?? compatible[0] ?? null;
+  }, [profiles, selectedAgent]);
+  const selectedLoginProfileReady = selectedLoginProfile ? isLoginProfileActive(selectedLoginProfile) : false;
+  const resolvedAuthoringAgent = useMemo<FlowAuthoringAgent | undefined>(() => {
+    if (authoringAgent) return authoringAgent;
+    if (!selectedAgent || !selectedLoginProfile || !selectedLoginProfileReady || !agentClient.hasRuntime()) {
+      return undefined;
+    }
+    return {
+      complete: async (prompt) => {
+        const requestId = crypto.randomUUID();
+        activeRequestIdRef.current = requestId;
+        setActiveRequestId(requestId);
+        const response = await agentClient.completeInternalPrompt({
+          purpose: 'flow_authoring',
+          provider: selectedAgent.provider,
+          model: selectedAgent.modelId,
+          reasoningEffort: selectedAgent.reasoningEffort ?? null,
+          loginProfileId: selectedLoginProfile.id,
+          requestId,
+          prompt,
+        });
+        if (activeRequestIdRef.current === requestId) {
+          activeRequestIdRef.current = null;
+          setActiveRequestId(null);
+        }
+        return response.text;
+      },
+    };
+  }, [authoringAgent, selectedAgent, selectedLoginProfile, selectedLoginProfileReady]);
+  const authoringUnavailableReason = useMemo(() => {
+    if (resolvedAuthoringAgent) return null;
+    if (!selectedAgentId || !selectedAgent) {
+      return 'Select a model in Create flow before modifying this flow.';
+    }
+    if (!agentClient.hasRuntime()) {
+      return 'Flow modification requires the Agentree desktop runtime.';
+    }
+    if (!selectedLoginProfile) {
+      return `${selectedAgent.label} uses ${selectedAgent.providerLabel}. Add or connect a ready ${selectedAgent.providerLabel} account in Logins before modifying this flow.`;
+    }
+    if (!selectedLoginProfileReady) {
+      return selectedLoginProfile.statusMessage
+        ?? `${selectedLoginProfile.displayName} is not ready. Open Logins and reconnect or check readiness before modifying this flow.`;
+    }
+    return null;
+  }, [resolvedAuthoringAgent, selectedAgent, selectedAgentId, selectedLoginProfile, selectedLoginProfileReady]);
+  const effectiveAuthoringLabel = authoringAgentLabel ?? selectedAgent?.label ?? 'selected agent';
+  const readyResult = result?.status === 'ready' ? result : null;
+  const failedResult = result?.status === 'failed' ? result : null;
+
+  useEffect(() => startSync(), [startSync]);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void agentClient.onInternalCompletionEvent?.((event) => {
+      if (disposed || event.requestId !== activeRequestIdRef.current) return;
+      setStreamOutput((current) => applyInternalCompletionStreamUpdate(current, event.line, event.stream));
+    }).then((cleanup) => {
+      unlisten = cleanup;
+      if (disposed) cleanup();
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const handleDraftModification = useCallback(async () => {
+    const trimmed = request.trim();
+    if (!trimmed || !userSource || !resolvedAuthoringAgent) return;
+    setStatus('drafting');
+    setResult(null);
+    setStreamOutput('');
+    try {
+      const authored = await authorFlowFromNaturalLanguage({
+        request: buildFlowModificationRequest({
+          currentYaml: userSource.source,
+          flowId: userSource.id,
+          changeRequest: trimmed,
+        }),
+        workspaceId: userSource.workspaceId ?? workspaceId,
+        registry,
+        agent: resolvedAuthoringAgent,
+      });
+      setResult(authored);
+      setStatus(authored.status === 'ready' ? 'ready' : 'failed');
+    } catch (error) {
+      console.error('[FlowModification] draft failed', error);
+      setResult({
+        status: 'failed',
+        source: {
+          id: userSource.id,
+          label: userSource.label,
+          scope: userSource.scope,
+          workspaceId: userSource.workspaceId,
+          source: userSource.source,
+          version: userSource.version,
+          enabled: false,
+          createdAt: userSource.createdAt,
+          updatedAt: new Date().toISOString(),
+        },
+        issues: [{
+          path: '',
+          message: formatFlowAuthoringError(error),
+        }],
+        attempts: 0,
+      });
+      setStatus('failed');
+    } finally {
+      activeRequestIdRef.current = null;
+      setActiveRequestId(null);
+    }
+  }, [registry, request, resolvedAuthoringAgent, userSource, workspaceId]);
+
+  const handleCancel = useCallback(() => {
+    const requestId = activeRequestIdRef.current ?? activeRequestId;
+    if (!requestId) return;
+    void agentClient.cancelInternalCompletion?.(requestId);
+  }, [activeRequestId]);
+
+  const handleApproveModification = useCallback(() => {
+    if (!readyResult || !userSource) return;
+    saveUserFlowNodeDefinitions({ definitions: readyResult.registryAdditions });
+    saveUserFlowSource({
+      ...userSource,
+      label: readyResult.definition.flow.label ?? userSource.label,
+      source: readyResult.source.source,
+      version: userSource.version + 1,
+      enabled: true,
+      updatedAt: new Date().toISOString(),
+    });
+    toast.success('Flow updated and validated');
+    setRequest('');
+    setResult(null);
+    setStreamOutput('');
+    setStatus('idle');
+  }, [readyResult, toast, userSource]);
+
+  if (!userSource) return null;
+
+  if (!isOpen) {
+    return (
+      <button
+        type="button"
+        onClick={() => setIsOpen(true)}
+        className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-[hsl(var(--app-border)/0.66)] bg-background/72 px-3 text-sm font-semibold text-foreground shadow-[0_14px_32px_-28px_hsl(var(--app-accent)/0.78)] transition-[background-color,transform] duration-150 hover:bg-background active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]"
+      >
+        <Bot className="h-4 w-4 text-[hsl(var(--app-accent))]" />
+        Modify with AI
+      </button>
+    );
+  }
+
+  return (
+    <section className="space-y-2.5 rounded-xl border border-[hsl(var(--app-border)/0.64)] bg-background/36 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <SectionHeading icon={<Bot className="h-3.5 w-3.5" />} label="Modify with AI" />
+        <button
+          type="button"
+          onClick={() => {
+            setIsOpen(false);
+            setRequest('');
+            setResult(null);
+            setStreamOutput('');
+            setStatus('idle');
+          }}
+          disabled={status === 'drafting'}
+          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[hsl(var(--app-border)/0.66)] bg-background/70 px-2 text-xs font-semibold text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+        >
+          <X className="h-3.5 w-3.5" />
+          Close
+        </button>
+      </div>
+      <div className="overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.64)] bg-background/44 shadow-[0_14px_38px_-34px_hsl(var(--app-accent)/0.72)]">
+        <div className="border-b border-[hsl(var(--app-border)/0.52)] px-3 py-2.5">
+          <p className="text-xs leading-5 text-muted-foreground">
+            Describe the change. Agentree will send the current YAML and your request to AI, validate the full replacement flow, then ask for approval before saving.
+          </p>
+        </div>
+        <textarea
+          value={request}
+          onChange={(event) => setRequest(event.target.value)}
+          placeholder="Example: Add a reviewer after the implementer and hand off only when the review passes."
+          aria-label={`Describe AI modification for ${userSource.label}`}
+          className="min-h-20 w-full resize-y border-0 bg-transparent px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground/65"
+        />
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[hsl(var(--app-border)/0.52)] bg-background/34 px-3 py-2">
+          <span className="text-xs text-muted-foreground">
+            Uses {effectiveAuthoringLabel}. Current flow details remain read-only.
+          </span>
+          {status === 'drafting' ? (
+            <button
+              type="button"
+              onClick={handleCancel}
+              disabled={!activeRequestId}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-destructive/35 bg-destructive/8 px-3 text-xs font-semibold text-destructive transition-[background-color,transform] duration-150 hover:bg-destructive/12 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-50"
+            >
+              <X className="h-3.5 w-3.5" />
+              Cancel
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void handleDraftModification()}
+              disabled={!request.trim() || Boolean(authoringUnavailableReason)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[hsl(var(--app-border))] bg-background/82 px-3 text-xs font-semibold text-foreground transition-[background-color,transform] duration-150 hover:bg-background active:scale-[0.96] disabled:pointer-events-none disabled:opacity-50"
+            >
+              <Workflow className="h-3.5 w-3.5" />
+              Draft modification
+            </button>
+          )}
+        </div>
+      </div>
+      {authoringUnavailableReason ? (
+        <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-300">
+          {authoringUnavailableReason}
+        </div>
+      ) : null}
+      {status === 'drafting' ? (
+        <div className="rounded-lg border border-[hsl(var(--app-border)/0.62)] bg-background/48">
+          <div className="flex items-center gap-2 border-b border-[hsl(var(--app-border)/0.48)] px-3 py-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Drafting and validating updated flow YAML with {effectiveAuthoringLabel}.
+          </div>
+          <pre className="max-h-52 overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-[11px] leading-5 text-muted-foreground">
+            {streamOutput.trim() ? streamOutput : 'Waiting for model output...'}
+          </pre>
+        </div>
+      ) : null}
+      {failedResult ? (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          {failedResult.issues.map(formatIssue).join(' ')}
+        </div>
+      ) : null}
+      {readyResult ? (
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)]">
+          <div className="space-y-3 rounded-xl border border-emerald-500/24 bg-emerald-500/5 p-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-foreground">{readyResult.definition.flow.label ?? userSource.label}</div>
+                <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+                  <span>{readyResult.definition.nodes.length} nodes</span>
+                  <span>{readyResult.registryNodeIds.length} registry</span>
+                  <span>{readyResult.registryAdditionIds.length} new reusable</span>
+                  <span>{readyResult.inlineNodeIds.length} inline</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleApproveModification}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-500/28 bg-emerald-500/10 px-3 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-500/15 dark:text-emerald-300"
+              >
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Approve changes
+              </button>
+            </div>
+            <FlowCanvasEditor definition={readyResult.definition} />
+          </div>
+          <pre className="max-h-80 overflow-auto rounded-xl border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--app-panel-strong))] p-3.5 font-mono text-[11px] leading-5 text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.45)]">
+            {readyResult.source.source.trim()}
+          </pre>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function NodeTemplateRow({
   node,
   index,
-  onSavePrompt,
 }: {
   node: FlowNodeTemplate;
   index: number;
-  onSavePrompt?: (node: FlowNodeTemplate, prompt: string) => void;
 }) {
   const returns = Object.entries(node.returns ?? {}).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`);
-  const [isEditing, setIsEditing] = useState(false);
-  const [draftPrompt, setDraftPrompt] = useState(node.prompt);
-
-  useEffect(() => {
-    if (!isEditing) {
-      setDraftPrompt(node.prompt);
-    }
-  }, [isEditing, node.prompt]);
-
-  const savePrompt = () => {
-    const trimmed = draftPrompt.trim();
-    if (!trimmed || trimmed === node.prompt.trim()) {
-      setIsEditing(false);
-      setDraftPrompt(node.prompt);
-      return;
-    }
-    onSavePrompt?.(node, draftPrompt);
-    setIsEditing(false);
-  };
 
   return (
     <details
@@ -844,65 +1148,14 @@ function NodeTemplateRow({
             <span className="rounded-md bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
               {node.registryId ? `from ${node.registryId}` : 'inline'}
             </span>
-            {onSavePrompt && !isEditing ? (
-              <button
-                type="button"
-                onClick={() => setIsEditing(true)}
-                className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-[hsl(var(--app-border)/0.66)] bg-background/70 text-muted-foreground transition-colors hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]"
-                aria-label={`Edit ${node.id} prompt`}
-                title="Edit prompt"
-              >
-                <Pencil className="h-3 w-3" />
-              </button>
-            ) : null}
           </div>
         </div>
-        {isEditing ? (
-          <div className="space-y-2">
-            <textarea
-              value={draftPrompt}
-              onChange={(event) => setDraftPrompt(event.target.value)}
-              className="min-h-44 w-full resize-y rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel-strong)/0.78)] px-3 py-2.5 font-mono text-[11px] leading-5 text-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.42)] outline-none focus:border-[hsl(var(--app-accent)/0.48)]"
-              aria-label={`${node.id} prompt editor`}
-            />
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsEditing(false);
-                  setDraftPrompt(node.prompt);
-                }}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[hsl(var(--app-border)/0.66)] bg-background/70 px-2.5 text-xs font-semibold text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-              >
-                <X className="h-3.5 w-3.5" />
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={savePrompt}
-                disabled={!draftPrompt.trim()}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-emerald-500/28 bg-emerald-500/10 px-2.5 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-500/15 disabled:pointer-events-none disabled:opacity-50 dark:text-emerald-300"
-              >
-                <Save className="h-3.5 w-3.5" />
-                Save
-              </button>
-            </div>
-          </div>
-        ) : (
-          <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel-strong)/0.78)] px-3 py-2.5 font-mono text-[11px] leading-5 text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.42)]">
-            {node.prompt.trim()}
-          </pre>
-        )}
+        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel-strong)/0.78)] px-3 py-2.5 font-mono text-[11px] leading-5 text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.42)]">
+          {node.prompt.trim()}
+        </pre>
       </div>
     </details>
   );
-}
-
-function serializeNodeParams(node: FlowNodeTemplate): Record<string, string> {
-  return Object.fromEntries((node.params ?? []).map((param) => [
-    param,
-    formatFlowParamTypes(node.paramTypes?.[param] ?? ['scalar']),
-  ]));
 }
 
 function formatNodeParams(node: FlowNodeTemplate): string {
@@ -936,8 +1189,4 @@ function findMaxLoopRounds(statements: FlowStatement[]): number | null {
     }
   }
   return null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

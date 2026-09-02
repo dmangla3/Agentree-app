@@ -126,6 +126,30 @@ describe('agentRun projection integration', () => {
     expect(useRunStatusStore.getState().getRunningCount('workspace-1')).toBe(0);
   });
 
+  it('reconciles stale preparing worktree run status from authoritative terminal messages', () => {
+    useRunStatusStore.getState().setRunStatus('assistant-1', {
+      workspaceId: 'workspace-1',
+      role: 'assistant',
+      status: 'preparing_worktree',
+      progress: 'Preparing worktree...',
+    });
+
+    expect(useRunStatusStore.getState().getRunningCount('workspace-1')).toBe(1);
+
+    const reconciledCount = reconcileTerminalAgentRunsFromMessages([
+      message({
+        status: 'completed',
+        content: 'done',
+        execution_data: { last_terminal_status: 'completed' },
+      }),
+    ]);
+
+    expect(reconciledCount).toBe(1);
+    expect(agentRunManager.snapshot('assistant-1')?.status).toBe('completed');
+    expect(useRunStatusStore.getState().byNodeId['assistant-1']?.status).toBe('completed');
+    expect(useRunStatusStore.getState().getRunningCount('workspace-1')).toBe(0);
+  });
+
   it('preserves optimistic message metadata needed by chat and graph projections', () => {
     agentRunManager.seed(message({
       id: 'optimistic-user',

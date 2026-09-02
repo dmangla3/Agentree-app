@@ -1,18 +1,11 @@
-export const ACTIVE_AGENT_RUN_STATUSES = new Set([
-  'pending',
-  'creating',
-  'initializing',
-  'running',
-  'streaming',
-]);
+import { isActiveAgentStatus } from '@shared/agentStatus';
 
 const clean = (value: unknown): string | null => (
   typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null
 );
 
 export const isActiveAgentRunStatus = (status: unknown): boolean => {
-  const normalized = clean(status);
-  return Boolean(normalized && ACTIVE_AGENT_RUN_STATUSES.has(normalized));
+  return isActiveAgentStatus(status);
 };
 
 export interface SteerableAssistantNodeInput {

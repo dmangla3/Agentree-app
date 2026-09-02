@@ -18,6 +18,7 @@ use tauri_specta::{collect_commands, Builder as SpectaBuilder, ErrorHandlingMode
 mod agents;
 mod auth_callback;
 mod cli_path;
+mod codex_adapter;
 mod command_guards;
 mod config;
 mod db;
@@ -27,6 +28,7 @@ mod graph_snapshot_cache;
 mod internal_completion;
 mod logging;
 mod login_profiles;
+mod managed_runtime;
 mod mcp;
 mod merge_review;
 mod metric_kit;
@@ -35,6 +37,10 @@ mod runtime_scripts;
 mod skills;
 pub mod types;
 mod worktree_config;
+
+pub fn maybe_run_codex_adapter_from_process_args() -> Option<i32> {
+    codex_adapter::maybe_run_from_process_args()
+}
 
 #[cfg(all(debug_assertions, unix))]
 fn prepare_pilot_socket() -> bool {
@@ -186,6 +192,8 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             runtime_readiness::check_runtime_readiness,
             runtime_readiness::check_all_runtime_readiness,
             runtime_readiness::refresh_provider_limits,
+            runtime_readiness::check_managed_runtime_doctor,
+            runtime_readiness::repair_managed_runtime_component,
             command_guards::get_agent_sandbox_root,
             worktree_config::get_agent_worktree_config,
             worktree_config::save_agent_worktree_config,
@@ -196,6 +204,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             git_workspace::create_base_branch,
             git_workspace::preview_agent_worktree,
             git_workspace::checkout_commit_detached,
+            git_workspace::target_branch_checkout_status,
             git_workspace::diff_commits,
             git_workspace::diff_file_between_commits,
             git_workspace::show_file_at_commit,
@@ -332,6 +341,47 @@ pub fn run() {
                     crate::app_log!(
                         "[AGENT_RECOVERY] event=startup_reconcile classified_needs_user_action count={}",
                         reconciled_stale_runs
+                    );
+                }
+                // Reclaim scratch worktrees/branches left behind by runs that are
+                // no longer live (crashes, force-quits, skipped cleanup). Runs that
+                // reconcile_agent_runs_on_startup just reclassified are now dead, so
+                // this must come after it; the clean-worktree guard preserves any
+                // run that crashed mid-edit with unsaved work.
+                match telemetry.list_agent_run_repo_paths() {
+                    Ok(repos) => {
+                        let mut reclaimed_total = 0usize;
+                        for repo in repos {
+                            match crate::git_workspace::reconcile_orphaned_agent_worktrees(
+                                &repo, &telemetry,
+                            ) {
+                                Ok(count) => reclaimed_total += count,
+                                Err(err) => crate::app_log!(
+                                    "[AGENT_WORKTREE] event=startup_reconcile.error repo={} err={}",
+                                    repo,
+                                    err
+                                ),
+                            }
+                        }
+                        if reclaimed_total > 0 {
+                            crate::app_log!(
+                                "[AGENT_WORKTREE] event=startup_reconcile.reclaimed count={}",
+                                reclaimed_total
+                            );
+                        }
+                    }
+                    Err(err) => crate::app_log!(
+                        "[AGENT_WORKTREE] event=startup_reconcile.list_repos_error err={}",
+                        err
+                    ),
+                }
+
+                let reconciled_stale_logins =
+                    login_profiles::reconcile_login_profiles_on_startup(&telemetry)?;
+                if reconciled_stale_logins > 0 {
+                    crate::app_log!(
+                        "[LOGIN_PROFILE] event=startup_reconcile reset_orphaned_checking count={}",
+                        reconciled_stale_logins
                     );
                 }
                 app.manage(telemetry);

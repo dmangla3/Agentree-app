@@ -114,4 +114,21 @@ describe('applyDashboardMetricMessageProjection', () => {
     expect(projected.totalTokens).toBeNull();
     expect(projected.content).toBe('local content');
   });
+
+  it('accepts extended terminal statuses from the shared agent taxonomy', () => {
+    const [projected] = applyDashboardMetricMessageProjection({
+      workspaceId,
+      messages: [message()],
+      localMessages: [localNode()],
+      projectionsById: {
+        'assistant-1': projection({
+          status: 'failed_runtime',
+          _optimisticStatus: 'failed_runtime',
+          execution_data: { last_terminal_status: 'failed_runtime' },
+        }),
+      },
+    });
+
+    expect(projected.status).toBe('failed_runtime');
+  });
 });

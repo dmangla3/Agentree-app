@@ -51,6 +51,10 @@ interface WorktreePolicyButtonProps {
   onOpenChange?: (open: boolean) => void;
 }
 
+interface WorktreePolicyPanelProps {
+  repoPath: string | null;
+}
+
 type LoadState =
   | { status: 'idle'; data: null; error: null }
   | { status: 'loading'; data: null; error: null }
@@ -363,15 +367,12 @@ function RuntimeCachePolicy() {
   );
 }
 
-export function WorktreePolicyButton({ repoPath, open, onOpenChange }: WorktreePolicyButtonProps) {
+export function WorktreePolicyPanel({ repoPath }: WorktreePolicyPanelProps) {
   const [loadState, setLoadState] = useState<LoadState>(emptyState);
   const [draft, setDraft] = useState<AgentWorktreeConfig | null>(null);
-  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
-  const isOpen = open ?? uncontrolledOpen;
-  const setIsOpen = onOpenChange ?? setUncontrolledOpen;
 
   const loadPolicy = () => {
     if (!repoPath) {
@@ -446,40 +447,8 @@ export function WorktreePolicyButton({ repoPath, open, onOpenChange }: WorktreeP
     setSavedMessage(null);
   };
 
-  const TriggerIcon = loadState.status === 'loading'
-    ? Loader2
-    : loadState.status === 'error'
-      ? AlertCircle
-      : policy?.source === 'project'
-        ? ShieldCheck
-        : Settings2;
-  const triggerTitle = repoPath
-    ? `Worktree policy: ${policy?.source === 'project' ? 'project' : 'default'}`
-    : 'Worktree policy unavailable';
-
   return (
     <TooltipProvider delayDuration={150}>
-      <Dialog open={isOpen} onOpenChange={setIsOpen}>
-      <DialogTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            'app-rail-button app-focus-ring',
-            loadState.status === 'error' && 'text-destructive',
-            !repoPath && 'cursor-not-allowed opacity-45'
-          )}
-          disabled={!repoPath}
-          title={triggerTitle}
-          aria-label={triggerTitle}
-        >
-          <TriggerIcon
-            size={18}
-            strokeWidth={2.1}
-            className={loadState.status === 'loading' ? 'animate-spin' : undefined}
-          />
-        </button>
-      </DialogTrigger>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-[860px] gap-0 overflow-hidden rounded-xl border-border/80 p-0 shadow-[0_28px_90px_-46px_hsl(var(--foreground)/0.65)] sm:max-w-[860px]">
         <DialogHeader className="border-b border-border/70 px-5 py-4 pr-12">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0 space-y-1">
@@ -632,8 +601,35 @@ export function WorktreePolicyButton({ repoPath, open, onOpenChange }: WorktreeP
             Save policy
           </Button>
         </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </TooltipProvider>
+  );
+}
+
+export function WorktreePolicyButton({ repoPath, open, onOpenChange }: WorktreePolicyButtonProps) {
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const isOpen = open ?? uncontrolledOpen;
+  const setIsOpen = onOpenChange ?? setUncontrolledOpen;
+  const triggerTitle = repoPath ? 'Worktree policy' : 'Worktree policy unavailable';
+
+  return (
+    <Dialog open={isOpen} onOpenChange={setIsOpen}>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            'app-rail-button app-focus-ring',
+            !repoPath && 'cursor-not-allowed opacity-45'
+          )}
+          disabled={!repoPath}
+          title={triggerTitle}
+          aria-label={triggerTitle}
+        >
+          <Settings2 size={18} strokeWidth={2.1} />
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-[860px] gap-0 overflow-hidden rounded-xl border-border/80 p-0 shadow-[0_28px_90px_-46px_hsl(var(--foreground)/0.65)] sm:max-w-[860px]">
+        <WorktreePolicyPanel repoPath={repoPath} />
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -6,7 +6,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager, State};
@@ -16,11 +16,12 @@ use uuid::Uuid;
 use crate::db::TelemetryDb;
 
 const KEYCHAIN_SERVICE: &str = "com.agentree.agentree.login-profiles";
-const CLAUDE_CODE_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 const LIVE_CHECK_TIMEOUT: Duration = Duration::from_secs(45);
 const CODEX_DEVICE_LOGIN_URL: &str = "https://auth.openai.com/codex/device";
 const CODEX_LOGIN_START_TIMEOUT: Duration = Duration::from_secs(20);
 const CLAUDE_LOGIN_START_TIMEOUT: Duration = Duration::from_secs(20);
+const CLAUDE_LOGIN_PENDING_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const CLAUDE_LOGIN_CODE_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -118,20 +119,17 @@ pub struct MaterializedRuntimeCredentials {
     pub auth_type: String,
     pub env: HashMap<String, String>,
     pub codex_home: Option<PathBuf>,
-    pub claude_config_dir: Option<PathBuf>,
 }
 
 struct PendingClaudeOAuthLogin {
     child: std::process::Child,
     stdin: std::process::ChildStdin,
-    _stdout: std::process::ChildStdout,
-    claude_config_dir: PathBuf,
+    output: Arc<Mutex<String>>,
     started_at: SystemTime,
 }
 
 static PENDING_CLAUDE_OAUTH_LOGINS: OnceLock<Mutex<HashMap<String, PendingClaudeOAuthLogin>>> =
     OnceLock::new();
-static CLAUDE_OAUTH_ACTIVE_PROFILE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 pub trait CredentialVault {
     fn set_secret(&self, account: &str, secret: &str) -> Result<(), String>;
@@ -459,7 +457,6 @@ pub fn delete_login_profile_with_vault(
         if let Some(mut pending) = pending_logins.remove(profile_id) {
             let _ = pending.child.kill();
             let _ = pending.child.wait();
-            release_claude_oauth_activation(profile_id);
         }
     }
     db.delete_login_profile_metadata(profile_id)?;
@@ -496,7 +493,7 @@ pub fn materialize_runtime_credentials(
             materialized(profile, env, None)
         }
         "codex_chatgpt_session" => materialize_codex_home(profile, secret, app_cache_dir, env),
-        "claude_oauth" => materialize_claude_oauth(profile, secret, app_cache_dir, env),
+        "claude_oauth" => materialize_claude_oauth(profile, secret, env),
         "claude_api_key" => {
             env.insert("ANTHROPIC_API_KEY".to_string(), secret.to_string());
             copy_optional_string(
@@ -526,345 +523,13 @@ fn materialized(
         auth_type: profile.auth_type,
         env,
         codex_home,
-        claude_config_dir: None,
     })
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeOAuthProfileSecret {
-    oauth_keychain_json: String,
-    claude_config_json: String,
-}
+const CLAUDE_SETUP_TOKEN_PREFIX: &str = "sk-ant-oat";
 
-fn claude_oauth_active_profiles() -> &'static Mutex<Option<String>> {
-    CLAUDE_OAUTH_ACTIVE_PROFILE.get_or_init(|| Mutex::new(None))
-}
-
-fn acquire_claude_oauth_activation(profile_id: &str) -> Result<(), String> {
-    let mut active = claude_oauth_active_profiles()
-        .lock()
-        .map_err(|_| "Claude OAuth activation lock is poisoned.".to_string())?;
-    match active.as_deref() {
-        None => {
-            *active = Some(profile_id.to_string());
-            Ok(())
-        }
-        Some(current) if current == profile_id => Ok(()),
-        Some(_) => Err(
-            "Another Claude subscription account is currently active. Try again after that run finishes."
-                .to_string(),
-        ),
-    }
-}
-
-pub fn release_claude_oauth_activation(profile_id: &str) {
-    if let Ok(mut active) = claude_oauth_active_profiles().lock() {
-        if active.as_deref() == Some(profile_id) {
-            *active = None;
-        }
-    }
-}
-
-fn push_unique_account(accounts: &mut Vec<String>, account: impl Into<String>) {
-    let account = account.into();
-    let trimmed = account.trim();
-    if !trimmed.is_empty() && !accounts.iter().any(|existing| existing == trimmed) {
-        accounts.push(trimmed.to_string());
-    }
-}
-
-fn parse_keychain_account_from_security_output(output: &str) -> Option<String> {
-    output.lines().find_map(|line| {
-        let line = line.trim();
-        if !line.starts_with("\"acct\"<blob>=") {
-            return None;
-        }
-        let (_, value) = line.split_once('=')?;
-        value
-            .trim()
-            .trim_matches('"')
-            .split('\0')
-            .next()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn discover_claude_code_keychain_account() -> Option<String> {
-    let output = Command::new("security")
-        .arg("find-generic-password")
-        .arg("-s")
-        .arg(CLAUDE_CODE_KEYCHAIN_SERVICE)
-        .output()
-        .ok()?;
-    let mut combined = String::new();
-    combined.push_str(&String::from_utf8_lossy(&output.stdout));
-    combined.push_str(&String::from_utf8_lossy(&output.stderr));
-    parse_keychain_account_from_security_output(&combined)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn discover_claude_code_keychain_account() -> Option<String> {
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn read_claude_code_oauth_blob_with_security() -> Result<String, String> {
-    let output = Command::new("security")
-        .arg("find-generic-password")
-        .arg("-w")
-        .arg("-s")
-        .arg(CLAUDE_CODE_KEYCHAIN_SERVICE)
-        .output()
-        .map_err(|error| format!("security find-generic-password failed to start: {}", error))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            format!(
-                "security find-generic-password exited with {}",
-                output.status
-            )
-        } else {
-            stderr
-        });
-    }
-    let secret = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if secret.is_empty() {
-        Err("security find-generic-password returned an empty OAuth state".to_string())
-    } else {
-        Ok(secret)
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn read_claude_code_oauth_blob_with_security() -> Result<String, String> {
-    Err("security CLI is only available on macOS".to_string())
-}
-
-#[cfg(target_os = "macos")]
-fn write_claude_code_oauth_blob_with_security(account: &str, secret: &str) -> Result<(), String> {
-    let output = Command::new("security")
-        .arg("add-generic-password")
-        .arg("-U")
-        .arg("-s")
-        .arg(CLAUDE_CODE_KEYCHAIN_SERVICE)
-        .arg("-a")
-        .arg(account)
-        .arg("-w")
-        .arg(secret)
-        .output()
-        .map_err(|error| format!("security add-generic-password failed to start: {}", error))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(if stderr.is_empty() {
-            format!(
-                "security add-generic-password exited with {}",
-                output.status
-            )
-        } else {
-            stderr
-        })
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn write_claude_code_oauth_blob_with_security(_account: &str, _secret: &str) -> Result<(), String> {
-    Err("security CLI is only available on macOS".to_string())
-}
-
-fn claude_code_keychain_accounts() -> Vec<String> {
-    let mut accounts = Vec::new();
-    if let Some(account) = discover_claude_code_keychain_account() {
-        push_unique_account(&mut accounts, account);
-    }
-    for key in ["USER", "LOGNAME"] {
-        if let Ok(value) = std::env::var(key) {
-            push_unique_account(&mut accounts, value);
-        }
-    }
-    if let Some(home_dir) = dirs::home_dir() {
-        if let Some(user_name) = home_dir.file_name().and_then(|value| value.to_str()) {
-            push_unique_account(&mut accounts, user_name.to_string());
-        }
-    }
-    push_unique_account(&mut accounts, "default".to_string());
-    accounts
-}
-
-fn read_claude_code_oauth_blob() -> Result<String, String> {
-    let mut errors = Vec::new();
-    for account in claude_code_keychain_accounts() {
-        match Entry::new(CLAUDE_CODE_KEYCHAIN_SERVICE, &account) {
-            Ok(entry) => match entry.get_password() {
-                Ok(secret) => return Ok(secret),
-                Err(error) => errors.push(format!("{}: {}", account, error)),
-            },
-            Err(error) => errors.push(format!("{}: {}", account, error)),
-        }
-    }
-    match read_claude_code_oauth_blob_with_security() {
-        Ok(secret) => return Ok(secret),
-        Err(error) => errors.push(format!("security: {}", error)),
-    }
-    Err(format!(
-        "failed to read Claude Code OAuth state: {}",
-        errors.join("; ")
-    ))
-}
-
-fn write_claude_code_oauth_blob(secret: &str) -> Result<(), String> {
-    let mut errors = Vec::new();
-    for account in claude_code_keychain_accounts() {
-        match Entry::new(CLAUDE_CODE_KEYCHAIN_SERVICE, &account) {
-            Ok(entry) => match entry.set_password(secret) {
-                Ok(()) => return Ok(()),
-                Err(error) => errors.push(format!("{}: {}", account, error)),
-            },
-            Err(error) => errors.push(format!("{}: {}", account, error)),
-        }
-    }
-    if let Some(account) = discover_claude_code_keychain_account()
-        .or_else(|| claude_code_keychain_accounts().into_iter().next())
-    {
-        match write_claude_code_oauth_blob_with_security(&account, secret) {
-            Ok(()) => return Ok(()),
-            Err(error) => errors.push(format!("security: {}", error)),
-        }
-    }
-    Err(format!(
-        "failed to write Claude Code OAuth state: {}",
-        errors.join("; ")
-    ))
-}
-
-#[cfg(target_os = "macos")]
-fn delete_claude_code_oauth_blob_with_security() -> Result<(), String> {
-    let output = Command::new("security")
-        .arg("delete-generic-password")
-        .arg("-s")
-        .arg(CLAUDE_CODE_KEYCHAIN_SERVICE)
-        .output()
-        .map_err(|error| {
-            format!(
-                "security delete-generic-password failed to start: {}",
-                error
-            )
-        })?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let lower = stderr.to_ascii_lowercase();
-    if lower.contains("could not be found") || lower.contains("no matching") {
-        Ok(())
-    } else if stderr.is_empty() {
-        Err(format!(
-            "security delete-generic-password exited with {}",
-            output.status
-        ))
-    } else {
-        Err(stderr)
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn delete_claude_code_oauth_blob_with_security() -> Result<(), String> {
-    Ok(())
-}
-
-fn delete_claude_code_oauth_blob() -> Result<(), String> {
-    let mut errors = Vec::new();
-    for account in claude_code_keychain_accounts() {
-        match Entry::new(CLAUDE_CODE_KEYCHAIN_SERVICE, &account) {
-            Ok(entry) => match entry.delete_credential() {
-                Ok(()) => {}
-                Err(error) => {
-                    let message = error.to_string();
-                    let lower = message.to_ascii_lowercase();
-                    if !lower.contains("no entry")
-                        && !lower.contains("no matching")
-                        && !lower.contains("not found")
-                    {
-                        errors.push(format!("{}: {}", account, message));
-                    }
-                }
-            },
-            Err(error) => errors.push(format!("{}: {}", account, error)),
-        }
-    }
-    if let Err(error) = delete_claude_code_oauth_blob_with_security() {
-        errors.push(format!("security: {}", error));
-    }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "failed to clear Claude Code OAuth state: {}",
-            errors.join("; ")
-        ))
-    }
-}
-
-fn reset_global_claude_oauth_login_state() -> Result<(), String> {
-    let config_path = claude_global_config_json_path()?;
-    if let Ok(raw_config) = fs::read_to_string(&config_path) {
-        if let Ok(mut value) = serde_json::from_str::<JsonValue>(&raw_config) {
-            if let Some(object) = value.as_object_mut() {
-                object.remove("oauthAccount");
-                object.remove("hasAvailableSubscription");
-                object.remove("recommendedSubscription");
-                let serialized = serde_json::to_string_pretty(&value)
-                    .map_err(|error| format!("failed to serialize Claude config: {}", error))?;
-                write_restricted_file(&config_path, &serialized)?;
-            }
-        }
-    }
-    delete_claude_code_oauth_blob()
-}
-
-fn parse_claude_oauth_secret(secret: &str) -> Result<ClaudeOAuthProfileSecret, String> {
-    serde_json::from_str::<ClaudeOAuthProfileSecret>(secret)
-        .map_err(|error| format!("failed to parse Claude OAuth profile state: {}", error))
-}
-
-fn claude_profile_config_dir(app_cache_dir: &Path, profile_id: &str) -> PathBuf {
-    app_cache_dir
-        .join("login-profiles")
-        .join(profile_id)
-        .join("claude-config")
-}
-
-fn prepare_claude_profile_config_dir(
-    app_cache_dir: &Path,
-    profile_id: &str,
-) -> Result<PathBuf, String> {
-    let config_dir = claude_profile_config_dir(app_cache_dir, profile_id);
-    fs::create_dir_all(&config_dir)
-        .map_err(|error| format!("failed to create profile Claude home: {}", error))?;
-    fs::create_dir_all(config_dir.join(".claude"))
-        .map_err(|error| format!("failed to create profile CLAUDE_CONFIG_DIR: {}", error))?;
-    Ok(config_dir)
-}
-
-fn claude_global_config_json_path() -> Result<PathBuf, String> {
-    dirs::home_dir()
-        .map(|home| home.join(".claude.json"))
-        .ok_or_else(|| "failed to resolve home directory for Claude config".to_string())
-}
-
-pub(crate) fn apply_claude_oauth_command_env(command: &mut Command, _claude_home_dir: &Path) {
-    for key in ["HOME", "USER", "LOGNAME", "SHELL"] {
-        if let Ok(value) = std::env::var(key) {
-            command.env(key, value);
-        }
-    }
+fn scrub_claude_auth_env(command: &mut Command) {
     command.env("PATH", crate::cli_path::build_tool_path());
-    command.env_remove("CLAUDE_CONFIG_DIR");
     for key in [
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
@@ -874,76 +539,190 @@ pub(crate) fn apply_claude_oauth_command_env(command: &mut Command, _claude_home
         "ANTHROPIC_DEFAULT_OPUS_MODEL",
         "ANTHROPIC_DEFAULT_SONNET_MODEL",
         "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
     ] {
         command.env_remove(key);
+    }
+}
+
+// The user decides where to open the sign-in URL, so the CLI's built-in
+// browser auto-open is suppressed with no-op `xdg-open`/`open` shims placed
+// first on PATH.
+fn browser_suppression_tool_path(app_cache_dir: &Path) -> Result<String, String> {
+    let shim_dir = app_cache_dir.join("login-shims");
+    fs::create_dir_all(&shim_dir)
+        .map_err(|error| format!("failed to create login shim directory: {}", error))?;
+    for name in ["xdg-open", "open"] {
+        let shim_path = shim_dir.join(name);
+        fs::write(&shim_path, "#!/bin/sh\nexit 0\n")
+            .map_err(|error| format!("failed to write {} shim: {}", name, error))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&shim_path, fs::Permissions::from_mode(0o755))
+                .map_err(|error| format!("failed to mark {} shim executable: {}", name, error))?;
+        }
+    }
+    Ok(format!(
+        "{}:{}",
+        shim_dir.display(),
+        crate::cli_path::build_tool_path()
+    ))
+}
+
+// `claude setup-token` only renders through a TTY, so wrap it in `script` to
+// allocate a pseudo terminal. The wide `stty` size keeps the login URL and the
+// minted token on single unwrapped lines so they can be parsed from the output.
+fn claude_setup_token_command(claude_binary: &str, app_cache_dir: &Path) -> Result<Command, String> {
+    let script_binary = crate::cli_path::find_on_tool_path("script").ok_or_else(|| {
+        "the `script` command is missing; Claude login needs it to allocate a terminal. \
+         Install it (Fedora: `sudo dnf install util-linux-script`, Debian/Ubuntu: part of \
+         `bsdutils`/`util-linux`) and retry."
+            .to_string()
+    })?;
+    let shell_command =
+        "stty cols 400 rows 60 2>/dev/null; exec \"$AGENTREE_CLAUDE_BIN\" setup-token";
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = Command::new(&script_binary);
+        command
+            .arg("-q")
+            .arg("/dev/null")
+            .arg("sh")
+            .arg("-c")
+            .arg(shell_command);
+        command
+    } else {
+        let mut command = Command::new(&script_binary);
+        command.arg("-qefc").arg(shell_command).arg("/dev/null");
+        command
+    };
+    command.env("AGENTREE_CLAUDE_BIN", claude_binary);
+    scrub_claude_auth_env(&mut command);
+    command.env("PATH", browser_suppression_tool_path(app_cache_dir)?);
+    Ok(command)
+}
+
+fn find_claude_login_failure_line(cleaned_output: &str) -> Option<String> {
+    cleaned_output.lines().map(str::trim).find_map(|line| {
+        let lower = line.to_ascii_lowercase();
+        let is_failure = lower.contains("oauth error")
+            || lower.contains("invalid")
+            || lower.contains("expired")
+            || lower.contains("mismatch")
+            || lower.contains("failed");
+        if is_failure {
+            Some(line.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn collect_command_output<R>(stream: R, buffer: Arc<Mutex<String>>)
+where
+    R: std::io::Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut stream = stream;
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    if let Ok(mut buffer) = buffer.lock() {
+                        buffer.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn extract_claude_login_url(raw_output: &str) -> Option<String> {
+    let mut best: Option<String> = None;
+    let mut search_from = 0;
+    while let Some(found) = raw_output[search_from..].find("https://") {
+        let start = search_from + found;
+        search_from = start + "https://".len();
+        let mut candidate: String = raw_output[start..]
+            .chars()
+            .take_while(|ch| !ch.is_whitespace() && !ch.is_control() && *ch != '"' && *ch != '\'')
+            .collect();
+        // OSC 8 hyperlinks repeat the link target as display text with no
+        // separator; keep only the first copy.
+        if let Some(duplicate) = candidate["https://".len()..].find("https://") {
+            candidate.truncate("https://".len() + duplicate);
+        }
+        let is_claude_host = candidate.starts_with("https://claude.com/")
+            || candidate.starts_with("https://www.claude.com/")
+            || candidate.starts_with("https://claude.ai/");
+        if is_claude_host && candidate.contains("oauth") {
+            // Hard-wrapped display copies are truncated at the line break, so
+            // the longest candidate is the complete unwrapped URL.
+            if best
+                .as_ref()
+                .map(|url| candidate.len() > url.len())
+                .unwrap_or(true)
+            {
+                best = Some(candidate);
+            }
+        }
+    }
+    best
+}
+
+fn extract_claude_setup_token(raw_output: &str) -> Option<String> {
+    let cleaned = strip_ansi(raw_output);
+    let start = cleaned.find(CLAUDE_SETUP_TOKEN_PREFIX)?;
+    let token: String = cleaned[start..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .collect();
+    if token.len() >= 40 {
+        Some(token)
+    } else {
+        None
     }
 }
 
 fn materialize_claude_oauth(
     profile: LoginProfile,
     secret: &str,
-    app_cache_dir: PathBuf,
     mut env: HashMap<String, String>,
 ) -> Result<MaterializedRuntimeCredentials, String> {
-    let profile_id = profile.id.clone();
-    acquire_claude_oauth_activation(&profile_id)?;
-    let result = (|| {
-        let payload = parse_claude_oauth_secret(secret)?;
-        let claude_config_dir = prepare_claude_profile_config_dir(&app_cache_dir, &profile.id)?;
-        write_restricted_file(
-            &claude_global_config_json_path()?,
-            payload.claude_config_json.trim(),
-        )?;
-        write_claude_code_oauth_blob(payload.oauth_keychain_json.trim())?;
-        for key in ["HOME", "USER", "LOGNAME", "SHELL"] {
-            if let Ok(value) = std::env::var(key) {
-                env.insert(key.to_string(), value);
-            }
-        }
-        env.remove("CLAUDE_CONFIG_DIR");
-        Ok(MaterializedRuntimeCredentials {
-            profile_id: profile.id,
-            provider: profile.provider,
-            auth_type: profile.auth_type,
-            env,
-            codex_home: None,
-            claude_config_dir: Some(claude_config_dir),
-        })
-    })();
-    if result.is_err() {
-        release_claude_oauth_activation(&profile_id);
+    let token = secret.trim();
+    if token.is_empty() {
+        return Err(
+            "Claude login profile has no stored token. Reconnect this profile.".to_string(),
+        );
     }
-    result
+    if !token.starts_with(CLAUDE_SETUP_TOKEN_PREFIX) {
+        return Err(
+            "This Claude profile was connected with an older login flow. Reconnect it to mint a long-lived token."
+                .to_string(),
+        );
+    }
+    env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_string(), token.to_string());
+    materialized(profile, env, None)
 }
 
-pub fn persist_claude_oauth_state(
+pub fn persist_claude_oauth_token(
     db: &TelemetryDb,
     vault: &dyn CredentialVault,
     profile_id: &str,
-    _claude_config_dir: &Path,
+    token: &str,
 ) -> Result<(), String> {
     let mut profile = db.get_login_profile(profile_id)?;
     if profile.provider != "claude" || profile.auth_type != "claude_oauth" {
         return Ok(());
     }
-    let config_path = claude_global_config_json_path()?;
-    let claude_config_json = fs::read_to_string(&config_path).map_err(|error| {
-        format!(
-            "failed to read Claude profile config {}: {}",
-            config_path.display(),
-            error
-        )
-    })?;
-    let oauth_keychain_json = read_claude_code_oauth_blob()?;
-    let payload = ClaudeOAuthProfileSecret {
-        oauth_keychain_json: oauth_keychain_json.trim().to_string(),
-        claude_config_json: claude_config_json.trim().to_string(),
-    };
-    let serialized = serde_json::to_string(&payload)
-        .map_err(|error| format!("failed to serialize Claude OAuth state: {}", error))?;
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return Err("Claude setup token is empty.".to_string());
+    }
     let account = secret_account_id(profile_id, "primary");
-    vault.set_secret(&account, &serialized)?;
-    profile.redacted_hint = None;
+    vault.set_secret(&account, trimmed)?;
+    profile.redacted_hint = Some(redacted_secret_hint(trimmed));
     profile.updated_at = unix_timestamp();
     db.upsert_login_profile_metadata(&profile, Some(&account))?;
     Ok(())
@@ -1036,12 +815,31 @@ fn strip_ansi(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
     while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
-            let _ = chars.next();
-            for next in chars.by_ref() {
-                if next.is_ascii_alphabetic() {
-                    break;
+        if ch == '\u{1b}' {
+            match chars.peek() {
+                Some('[') => {
+                    let _ = chars.next();
+                    for next in chars.by_ref() {
+                        if next.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
                 }
+                // OSC sequences (terminal hyperlinks, window titles) end with
+                // BEL or ESC-backslash.
+                Some(']') => {
+                    let _ = chars.next();
+                    while let Some(next) = chars.next() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                        if next == '\u{1b}' {
+                            let _ = chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => {}
             }
             continue;
         }
@@ -1068,26 +866,6 @@ fn parse_codex_device_code_line(line: &str, expecting_code: &mut bool) -> Option
 
 fn pending_claude_oauth_logins() -> &'static Mutex<HashMap<String, PendingClaudeOAuthLogin>> {
     PENDING_CLAUDE_OAUTH_LOGINS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn parse_claude_login_url_line(line: &str) -> Option<String> {
-    let cleaned = strip_ansi(line);
-    let trimmed = cleaned.trim();
-    let marker = "visit:";
-    if let Some(index) = trimmed.find(marker) {
-        return trimmed[index + marker.len()..]
-            .split_whitespace()
-            .next()
-            .map(str::trim)
-            .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
-            .map(ToOwned::to_owned);
-    }
-    trimmed
-        .split_whitespace()
-        .find(|part| {
-            part.starts_with("https://claude.com/") || part.starts_with("https://www.claude.com/")
-        })
-        .map(ToOwned::to_owned)
 }
 
 fn finish_codex_login_process(
@@ -1502,37 +1280,163 @@ fn explicit_live_check_model(profile: &LoginProfile) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn concise_live_check_error(raw: &str) -> String {
-    let mut message = raw
-        .lines()
-        .rev()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            serde_json::from_str::<JsonValue>(trimmed)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("content")
-                        .or_else(|| value.get("final_content"))
-                        .and_then(|field| field.as_str())
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(ToOwned::to_owned)
-                })
-                .or_else(|| Some(trimmed.to_string()))
-        })
-        .unwrap_or_else(|| "Live check failed without provider output.".to_string());
-    if message.trim().is_empty() {
-        message = "Live check failed without provider output.".to_string();
+#[derive(Debug, Clone)]
+pub struct LiveCheckFailure {
+    pub code: Option<String>,
+    pub message: String,
+}
+
+impl LiveCheckFailure {
+    fn uncoded(message: impl Into<String>) -> Self {
+        Self {
+            code: None,
+            message: message.into(),
+        }
     }
+}
+
+impl From<String> for LiveCheckFailure {
+    fn from(message: String) -> Self {
+        Self::uncoded(message)
+    }
+}
+
+impl std::fmt::Display for LiveCheckFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+fn truncate_live_check_message(mut message: String) -> String {
     if message.len() > 500 {
-        message.truncate(500);
+        let mut cut = 500;
+        while !message.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        message.truncate(cut);
         message.push('…');
     }
     message
+}
+
+/// Stack frames, crash banners, and code-frame markers that Node prints around
+/// the actual error; surfacing these instead of the error line is what made
+/// packaged-build failures look like "Node.js v18.19.1".
+fn is_diagnostic_noise_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("at ")
+        || trimmed.starts_with("node:internal")
+        || trimmed.starts_with("Node.js v")
+        || trimmed.starts_with("ErrorCaptureStackTrace")
+        || trimmed.chars().all(|character| matches!(character, '^' | '~' | '|' | ' '))
+        || trimmed.starts_with("code:")
+        || trimmed == "}"
+        || trimmed == "{"
+}
+
+fn structured_error_from_stdout(stdout: &str) -> Option<LiveCheckFailure> {
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<JsonValue>(trimmed) else {
+            continue;
+        };
+        if value.get("type").and_then(JsonValue::as_str) != Some("error") {
+            continue;
+        }
+        let content = value
+            .get("content")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|content| !content.is_empty())?;
+        return Some(LiveCheckFailure {
+            code: value
+                .get("provider_error_code")
+                .and_then(JsonValue::as_str)
+                .map(ToOwned::to_owned),
+            message: content.to_string(),
+        });
+    }
+    None
+}
+
+fn failed_provider_stop_content(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        let Ok(value) = serde_json::from_str::<JsonValue>(line.trim()) else {
+            continue;
+        };
+        if value.get("type").and_then(JsonValue::as_str) != Some("provider_stop") {
+            continue;
+        }
+        if let Some(content) = value
+            .get("final_content")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|content| !content.is_empty())
+        {
+            return Some(content.to_string());
+        }
+    }
+    None
+}
+
+fn stderr_failure(stderr: &str) -> Option<LiveCheckFailure> {
+    let meaningful = stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !is_diagnostic_noise_line(line));
+    let line = match meaningful {
+        Some(line) => line,
+        None => stderr.lines().map(str::trim).find(|line| !line.is_empty())?,
+    };
+    if line.contains("ERR_MODULE_NOT_FOUND") || line.contains("Cannot find package") {
+        return Some(LiveCheckFailure {
+            code: Some("claude_runtime_missing".to_string()),
+            message: format!(
+                "Claude runtime dependency is missing or broken: {}. Reinstall or repair the Claude runtime.",
+                line
+            ),
+        });
+    }
+    Some(LiveCheckFailure::uncoded(line))
+}
+
+fn extract_live_check_failure(stdout: &str, stderr: &str) -> LiveCheckFailure {
+    let failure = structured_error_from_stdout(stdout)
+        .or_else(|| failed_provider_stop_content(stdout).map(LiveCheckFailure::uncoded))
+        .or_else(|| stderr_failure(stderr))
+        .or_else(|| {
+            stdout
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty() && !is_diagnostic_noise_line(line))
+                .map(LiveCheckFailure::uncoded)
+        })
+        .unwrap_or_else(|| {
+            LiveCheckFailure::uncoded("Live check failed without provider output.")
+        });
+    LiveCheckFailure {
+        code: failure.code,
+        message: truncate_live_check_message(failure.message),
+    }
+}
+
+fn status_for_live_check_failure(failure: &LiveCheckFailure) -> &'static str {
+    match failure.code.as_deref() {
+        Some("auth_missing") | Some("codex_auth_missing") | Some("claude_auth_missing") => {
+            return "auth_missing"
+        }
+        Some("usage_limited") | Some("rate_limited") => return "usage_limited",
+        Some("claude_runtime_missing")
+        | Some("codex_cli_missing")
+        | Some("codex_cli_outdated")
+        | Some("node_runtime_missing")
+        | Some("codex_transport_closed") => return "unknown_error",
+        _ => {}
+    }
+    status_from_live_check_error(&failure.message)
 }
 
 fn status_from_live_check_error(message: &str) -> &'static str {
@@ -1541,6 +1445,10 @@ fn status_from_live_check_error(message: &str) -> &'static str {
         || lower.contains("unauthorized")
         || lower.contains("401")
         || lower.contains("login")
+        || lower.contains("session has ended")
+        || lower.contains("session ended")
+        || lower.contains("refresh token")
+        || lower.contains("failed to refresh token")
         || lower.contains("api key")
     {
         "auth_missing"
@@ -1599,15 +1507,38 @@ fn parse_live_check_success(output: &str) -> Option<String> {
         .or_else(|| message_completed.filter(|value| !value.trim().is_empty()))
 }
 
+fn capture_live_check_output(
+    app: &tauri::AppHandle,
+    label: &str,
+    stdout: &str,
+    stderr: &str,
+) -> Option<PathBuf> {
+    crate::logging::append_live_check_capture(app, label, stdout, stderr).ok()
+}
+
+fn live_check_failure_with_log(
+    app: &tauri::AppHandle,
+    label: &str,
+    stdout: &str,
+    stderr: &str,
+) -> LiveCheckFailure {
+    let mut failure = extract_live_check_failure(stdout, stderr);
+    if let Some(log_path) = capture_live_check_output(app, label, stdout, stderr) {
+        failure.message = format!("{} (full output: {})", failure.message, log_path.display());
+    }
+    failure
+}
+
 fn run_codex_live_check(
     app: &tauri::AppHandle,
     profile: &LoginProfile,
     materialized: &MaterializedRuntimeCredentials,
-) -> Result<String, String> {
-    let script = crate::runtime_scripts::runtime_script_path(app, "codex-app-server-adapter.py")?;
-    let mut command = Command::new(crate::runtime_scripts::runtime_python_command(app));
+) -> Result<String, LiveCheckFailure> {
+    crate::managed_runtime::ensure_component_best_effort(app, crate::managed_runtime::COMPONENT_CODEX);
+    let command_plan = crate::runtime_scripts::codex_adapter_command(app)?;
+    let mut command = Command::new(&command_plan.program);
     command
-        .arg(script)
+        .args(command_plan.args_prefix)
         .arg("--model")
         .arg(live_check_model(profile))
         .arg("--cwd")
@@ -1626,21 +1557,28 @@ fn run_codex_live_check(
         }
     }
     if stdout.trim().is_empty() && stderr.trim().is_empty() {
-        return Err(format!("Live check process exited with {}.", output.status));
+        return Err(LiveCheckFailure::uncoded(format!(
+            "Live check process exited with {}.",
+            output.status
+        )));
     }
-    Err(concise_live_check_error(&format!("{}\n{}", stdout, stderr)))
+    Err(live_check_failure_with_log(
+        app,
+        &format!("codex live check (profile {})", profile.id),
+        &stdout,
+        &stderr,
+    ))
 }
 
 fn run_claude_live_check(
     app: &tauri::AppHandle,
     profile: &LoginProfile,
     materialized: Option<&MaterializedRuntimeCredentials>,
-) -> Result<String, String> {
-    let script = crate::runtime_scripts::runtime_script_path(app, "claude-agent-sdk-adapter.mjs")?;
-    let node = crate::cli_path::find_on_tool_path("node").unwrap_or_else(|| "node".to_string());
-    let mut command = Command::new(node);
+) -> Result<String, LiveCheckFailure> {
+    let invocation = crate::managed_runtime::claude_adapter_invocation(app)?;
+    let mut command = Command::new(&invocation.node_program);
     command
-        .arg(script)
+        .arg(&invocation.adapter_script)
         .arg("--permission-mode")
         .arg("bypassPermissions")
         .arg("hi")
@@ -1657,11 +1595,7 @@ fn run_claude_live_check(
         command.arg("--model").arg(model);
     }
     if let Some(materialized) = materialized {
-        if materialized.auth_type == "claude_oauth" {
-            if let Some(claude_config_dir) = materialized.claude_config_dir.as_deref() {
-                apply_claude_oauth_command_env(&mut command, claude_config_dir);
-            }
-        }
+        scrub_claude_auth_env(&mut command);
         for (key, value) in &materialized.env {
             command.env(key, value);
         }
@@ -1675,28 +1609,42 @@ fn run_claude_live_check(
         }
     }
     if stdout.trim().is_empty() && stderr.trim().is_empty() {
-        return Err(format!("Live check process exited with {}.", output.status));
+        return Err(LiveCheckFailure::uncoded(format!(
+            "Live check process exited with {}.",
+            output.status
+        )));
     }
-    Err(concise_live_check_error(&format!("{}\n{}", stdout, stderr)))
+    Err(live_check_failure_with_log(
+        app,
+        &format!("claude live check (profile {})", profile.id),
+        &stdout,
+        &stderr,
+    ))
 }
 
-fn run_claude_oauth_connect_smoke_check(claude_config_dir: &Path) -> Result<(), String> {
-    let claude =
-        crate::cli_path::find_on_tool_path("claude").unwrap_or_else(|| "claude".to_string());
-    let mut command = Command::new(claude);
+/// Validates a freshly connected OAuth token through the same SDK adapter
+/// the live check uses — previously this went through the `claude` CLI from
+/// PATH, so connect could "succeed" via one toolchain and the live check
+/// then fail via another.
+fn run_claude_oauth_connect_smoke_check(app: &tauri::AppHandle, token: &str) -> Result<(), String> {
+    let invocation = crate::managed_runtime::claude_adapter_invocation(app)
+        .map_err(|error| format!("Claude login validation failed: {}", error))?;
+    let mut command = Command::new(&invocation.node_program);
     command
-        .arg("-p")
+        .arg(&invocation.adapter_script)
         .arg("--permission-mode")
         .arg("bypassPermissions")
         .arg("hi")
-        .current_dir(std::env::temp_dir());
-    apply_claude_oauth_command_env(&mut command, claude_config_dir);
+        .current_dir(std::env::temp_dir())
+        .env("PATH", crate::cli_path::build_tool_path());
+    scrub_claude_auth_env(&mut command);
+    command.env("CLAUDE_CODE_OAUTH_TOKEN", token.trim());
     let output = command_output_with_timeout(&mut command, LIVE_CHECK_TIMEOUT)?;
-    if output.status.success() {
-        return Ok(());
-    }
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if output.status.success() && parse_live_check_success(&stdout).is_some() {
+        return Ok(());
+    }
     if stdout.trim().is_empty() && stderr.trim().is_empty() {
         return Err(format!(
             "Claude login validation exited with {}.",
@@ -1705,7 +1653,7 @@ fn run_claude_oauth_connect_smoke_check(claude_config_dir: &Path) -> Result<(), 
     }
     Err(format!(
         "Claude login validation failed: {}",
-        concise_live_check_error(&format!("{}\n{}", stdout, stderr))
+        live_check_failure_with_log(app, "claude oauth connect smoke check", &stdout, &stderr)
     ))
 }
 
@@ -1713,10 +1661,10 @@ fn finish_claude_oauth_login_success(
     app: &tauri::AppHandle,
     db: &TelemetryDb,
     profile_id: &str,
-    claude_config_dir: &Path,
+    token: &str,
 ) -> Result<LoginProfile, String> {
-    persist_claude_oauth_state(db, &KeyringCredentialVault, profile_id, claude_config_dir)?;
-    run_claude_oauth_connect_smoke_check(claude_config_dir)?;
+    persist_claude_oauth_token(db, &KeyringCredentialVault, profile_id, token)?;
+    run_claude_oauth_connect_smoke_check(app, token)?;
     let profile = mark_login_profile_status(
         db,
         profile_id,
@@ -1733,16 +1681,16 @@ fn run_login_profile_live_check(
     vault: &dyn CredentialVault,
     profile: &LoginProfile,
     cache_dir: PathBuf,
-) -> Result<String, String> {
+) -> Result<String, LiveCheckFailure> {
     match (profile.provider.as_str(), profile.auth_type.as_str()) {
         ("claude", "external_cli") => run_claude_live_check(app, profile, None),
         ("codex", _) | ("claude", _) => {
             let materialized = resolve_runtime_credentials(db, vault, &profile.id, cache_dir)?;
             if materialized.provider != profile.provider {
-                return Err(format!(
+                return Err(LiveCheckFailure::uncoded(format!(
                     "Login profile is for {}, not {}.",
                     materialized.provider, profile.provider
-                ));
+                )));
             }
             match profile.provider.as_str() {
                 "codex" => {
@@ -1754,35 +1702,17 @@ fn run_login_profile_live_check(
                     }
                     result
                 }
-                "claude" => {
-                    let result = run_claude_live_check(app, profile, Some(&materialized));
-                    if materialized.auth_type == "claude_oauth" {
-                        if result.is_ok() {
-                            if let Some(claude_config_dir) =
-                                materialized.claude_config_dir.as_deref()
-                            {
-                                if let Err(error) = persist_claude_oauth_state(
-                                    db,
-                                    vault,
-                                    &profile.id,
-                                    claude_config_dir,
-                                ) {
-                                    release_claude_oauth_activation(&profile.id);
-                                    return Err(error);
-                                }
-                            }
-                        }
-                        release_claude_oauth_activation(&profile.id);
-                    }
-                    result
-                }
-                _ => Err(format!("Unsupported login provider: {}", profile.provider)),
+                "claude" => run_claude_live_check(app, profile, Some(&materialized)),
+                _ => Err(LiveCheckFailure::uncoded(format!(
+                    "Unsupported login provider: {}",
+                    profile.provider
+                ))),
             }
         }
-        _ => Err(format!(
+        _ => Err(LiveCheckFailure::uncoded(format!(
             "Unsupported login profile auth type: {}",
             profile.auth_type
-        )),
+        ))),
     }
 }
 
@@ -1816,9 +1746,9 @@ pub fn check_login_profile_readiness_with_vault(
                 response.trim()
             ),
         ),
-        Err(error) => (
-            status_from_live_check_error(&error),
-            format!("Live check failed: {}", error),
+        Err(failure) => (
+            status_for_live_check_failure(&failure),
+            format!("Live check failed: {}", failure.message),
         ),
     };
     db.mark_login_profile_status(profile_id, status, Some(&message), None, unix_timestamp())
@@ -1865,6 +1795,24 @@ fn enqueue_login_profile_live_check(
     emit_login_profiles_changed(&app, &profile);
     spawn_login_profile_live_check(app, profile_id.to_string());
     Ok(profile)
+}
+
+pub fn reconcile_login_profiles_on_startup(db: &TelemetryDb) -> Result<usize, String> {
+    let profiles = db.list_login_profiles()?;
+    let mut reconciled = 0usize;
+    for profile in profiles {
+        if profile.status == "checking" {
+            db.mark_login_profile_status(
+                &profile.id,
+                "unchecked",
+                Some("Previous sign in or live check was interrupted. Re-check or reconnect this account."),
+                None,
+                unix_timestamp(),
+            )?;
+            reconciled += 1;
+        }
+    }
+    Ok(reconciled)
 }
 
 #[tauri::command]
@@ -2000,36 +1948,33 @@ pub fn connect_codex_login_profile(
     })
 }
 
-#[tauri::command]
-#[specta::specta]
-pub fn connect_claude_oauth_login_profile(
-    app: tauri::AppHandle,
-    db: State<TelemetryDb>,
+fn connect_claude_oauth_login_profile_blocking(
+    app: &tauri::AppHandle,
+    db: &TelemetryDb,
     profile_id: String,
 ) -> Result<ClaudeOAuthLoginStart, String> {
     let profile = db.get_login_profile(&profile_id)?;
     if profile.provider != "claude" || profile.auth_type != "claude_oauth" {
         return Err("Connect is only supported for Claude subscription profiles.".to_string());
     }
-    acquire_claude_oauth_activation(&profile.id)?;
-    let result = (|| {
+    if let Ok(mut pending_logins) = pending_claude_oauth_logins().lock() {
+        if let Some(mut previous) = pending_logins.remove(&profile.id) {
+            let _ = previous.child.kill();
+            let _ = previous.child.wait();
+        }
+    }
+    let result: Result<ClaudeOAuthLoginStart, String> = (|| {
         let cache_dir = app
             .path()
             .app_cache_dir()
             .map_err(|error| format!("failed to resolve app cache dir: {}", error))?;
-        let claude_config_dir = prepare_claude_profile_config_dir(&cache_dir, &profile.id)?;
-        reset_global_claude_oauth_login_state()?;
         let claude =
             crate::cli_path::find_on_tool_path("claude").unwrap_or_else(|| "claude".to_string());
-        let mut command = Command::new(claude);
+        let mut command = claude_setup_token_command(&claude, &cache_dir)?;
         command
-            .arg("auth")
-            .arg("login")
-            .arg("--claudeai")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        apply_claude_oauth_command_env(&mut command, &claude_config_dir);
+            .stderr(Stdio::null());
         let process_started_at = SystemTime::now();
         let mut child = command
             .spawn()
@@ -2042,6 +1987,8 @@ pub fn connect_claude_oauth_login_profile(
             .stdout
             .take()
             .ok_or_else(|| "failed to capture Claude login output".to_string())?;
+        let output = Arc::new(Mutex::new(String::new()));
+        collect_command_output(stdout, output.clone());
         let _ = mark_login_profile_status(
             &db,
             &profile.id,
@@ -2056,28 +2003,17 @@ pub fn connect_claude_oauth_login_profile(
             },
         );
 
-        let started_at = Instant::now();
-        let mut reader = BufReader::new(stdout);
-        let mut login_url = None;
-        let mut line = String::new();
-        while started_at.elapsed() < CLAUDE_LOGIN_START_TIMEOUT {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    if let Some(url) = parse_claude_login_url_line(&line) {
-                        login_url = Some(url);
-                        break;
-                    }
-                }
-                Err(error) => {
-                    return Err(format!("failed to read Claude login output: {}", error));
+        let wait_started = Instant::now();
+        let mut login_url = String::new();
+        while wait_started.elapsed() < CLAUDE_LOGIN_START_TIMEOUT {
+            if let Ok(buffer) = output.lock() {
+                if let Some(url) = extract_claude_login_url(&buffer) {
+                    login_url = url;
+                    break;
                 }
             }
+            thread::sleep(Duration::from_millis(150));
         }
-        let stdout = reader.into_inner();
-        let login_url =
-            login_url.ok_or_else(|| "Claude did not print a browser login URL.".to_string())?;
         pending_claude_oauth_logins()
             .lock()
             .map_err(|_| "Claude login state lock is poisoned.".to_string())?
@@ -2086,15 +2022,14 @@ pub fn connect_claude_oauth_login_profile(
                 PendingClaudeOAuthLogin {
                     child,
                     stdin,
-                    _stdout: stdout,
-                    claude_config_dir,
+                    output,
                     started_at: process_started_at,
                 },
             );
-        if let Err(error) = app.opener().open_url(&login_url, None::<&str>) {
+        if login_url.is_empty() {
             crate::app_log!(
-                "[LOGIN_PROFILE] event=claude_login_open_browser_failed error={}",
-                error
+                "[LOGIN_PROFILE] event=claude_login_url_not_captured profile_id={}",
+                profile.id
             );
         }
         Ok(ClaudeOAuthLoginStart {
@@ -2102,10 +2037,37 @@ pub fn connect_claude_oauth_login_profile(
             login_url,
         })
     })();
-    if result.is_err() {
-        release_claude_oauth_activation(&profile_id);
+    if let Err(error) = &result {
+        if let Ok(profile) =
+            mark_login_profile_status(db, &profile_id, "error", Some(error.clone()))
+        {
+            emit_login_profiles_changed(app, &profile);
+        }
     }
     result
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn connect_claude_oauth_login_profile(
+    app: tauri::AppHandle,
+    profile_id: String,
+) -> Result<ClaudeOAuthLoginStart, String> {
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = worker_app.state::<TelemetryDb>();
+        connect_claude_oauth_login_profile_blocking(&worker_app, &db, profile_id)
+    })
+    .await
+    .map_err(|error| format!("Claude login task failed: {}", error))?
+}
+
+fn pending_output_snapshot(pending: &PendingClaudeOAuthLogin) -> String {
+    pending
+        .output
+        .lock()
+        .map(|buffer| buffer.clone())
+        .unwrap_or_default()
 }
 
 fn poll_claude_oauth_login(
@@ -2123,35 +2085,27 @@ fn poll_claude_oauth_login(
         }
     };
 
+    if let Some(token) = extract_claude_setup_token(&pending_output_snapshot(&pending)) {
+        let _ = pending.child.kill();
+        let _ = pending.child.wait();
+        return finish_claude_oauth_login_success(app, db, profile_id, &token);
+    }
+
     match pending.child.try_wait() {
         Ok(None) => {
-            let global_config_updated = claude_global_config_json_path()
-                .ok()
-                .and_then(|path| fs::metadata(path).ok())
-                .and_then(|metadata| metadata.modified().ok())
-                .map(|modified| modified >= pending.started_at)
+            let timed_out = pending
+                .started_at
+                .elapsed()
+                .map(|elapsed| elapsed > CLAUDE_LOGIN_PENDING_TIMEOUT)
                 .unwrap_or(false);
-            if global_config_updated {
-                match finish_claude_oauth_login_success(
-                    app,
-                    db,
-                    profile_id,
-                    &pending.claude_config_dir,
-                ) {
-                    Ok(profile) => {
-                        let _ = pending.child.kill();
-                        let _ = pending.child.wait();
-                        release_claude_oauth_activation(profile_id);
-                        return Ok(profile);
-                    }
-                    Err(error) => {
-                        crate::app_log!(
-                            "[LOGIN_PROFILE] event=claude_oauth_login_state_not_ready profile_id={} error={}",
-                            profile_id,
-                            error
-                        );
-                    }
-                }
+            if timed_out {
+                let _ = pending.child.kill();
+                let _ = pending.child.wait();
+                let message = "Claude sign in timed out. Reconnect to try again.".to_string();
+                let profile =
+                    mark_login_profile_status(db, profile_id, "error", Some(message.clone()))?;
+                emit_login_profiles_changed(app, &profile);
+                return Err(message);
             }
             pending_claude_oauth_logins()
                 .lock()
@@ -2159,22 +2113,20 @@ fn poll_claude_oauth_login(
                 .insert(profile_id.to_string(), pending);
             db.get_login_profile(profile_id)
         }
-        Ok(Some(status)) if status.success() => {
-            let profile =
-                finish_claude_oauth_login_success(app, db, profile_id, &pending.claude_config_dir)?;
-            release_claude_oauth_activation(profile_id);
-            Ok(profile)
-        }
         Ok(Some(status)) => {
-            release_claude_oauth_activation(profile_id);
-            let message = format!("Claude login exited with status {}.", status);
+            if let Some(token) = extract_claude_setup_token(&pending_output_snapshot(&pending)) {
+                return finish_claude_oauth_login_success(app, db, profile_id, &token);
+            }
+            let message = format!(
+                "Claude sign in exited with {} before producing a token.",
+                status
+            );
             let profile =
                 mark_login_profile_status(db, profile_id, "error", Some(message.clone()))?;
             emit_login_profiles_changed(app, &profile);
             Err(message)
         }
         Err(error) => {
-            release_claude_oauth_activation(profile_id);
             let message = format!("failed to check Claude login status: {}", error);
             let profile =
                 mark_login_profile_status(db, profile_id, "error", Some(message.clone()))?;
@@ -2186,19 +2138,22 @@ fn poll_claude_oauth_login(
 
 #[tauri::command]
 #[specta::specta]
-pub fn poll_claude_oauth_login_profile(
+pub async fn poll_claude_oauth_login_profile(
     app: tauri::AppHandle,
-    db: State<TelemetryDb>,
     profile_id: String,
 ) -> Result<LoginProfile, String> {
-    poll_claude_oauth_login(&app, &db, &profile_id)
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = worker_app.state::<TelemetryDb>();
+        poll_claude_oauth_login(&worker_app, &db, &profile_id)
+    })
+    .await
+    .map_err(|error| format!("Claude login poll task failed: {}", error))?
 }
 
-#[tauri::command]
-#[specta::specta]
-pub fn submit_claude_oauth_login_code(
-    app: tauri::AppHandle,
-    db: State<TelemetryDb>,
+fn submit_claude_oauth_login_code_blocking(
+    app: &tauri::AppHandle,
+    db: &TelemetryDb,
     profile_id: String,
     code: String,
 ) -> Result<LoginProfile, String> {
@@ -2212,35 +2167,102 @@ pub fn submit_claude_oauth_login_code(
         .ok_or_else(|| "No pending Claude login is waiting for this profile.".to_string())?;
     let result = (|| {
         let trimmed_code = code.trim();
+        let submitted_at_output_len = pending_output_snapshot(&pending).len();
+        // Send the code and Enter as separate writes with a settle delay.
+        // Delivered as a single chunk, the CLI's input handling processes the
+        // trailing Enter against an empty field and exits without a token.
         pending
             .stdin
-            .write_all(format!("{}\n", trimmed_code).as_bytes())
+            .write_all(trimmed_code.as_bytes())
             .map_err(|error| format!("failed to submit Claude login code: {}", error))?;
-        drop(pending.stdin);
-        let status = pending
-            .child
-            .wait()
-            .map_err(|error| format!("failed to wait for Claude login: {}", error))?;
-        if !status.success() {
-            return Err(format!("Claude login exited with status {}.", status));
-        }
-        persist_claude_oauth_state(
-            &db,
-            &KeyringCredentialVault,
-            &profile_id,
-            &pending.claude_config_dir,
+        pending
+            .stdin
+            .flush()
+            .map_err(|error| format!("failed to submit Claude login code: {}", error))?;
+        thread::sleep(Duration::from_millis(700));
+        pending
+            .stdin
+            .write_all(b"\r")
+            .map_err(|error| format!("failed to submit Claude login code: {}", error))?;
+        pending
+            .stdin
+            .flush()
+            .map_err(|error| format!("failed to submit Claude login code: {}", error))?;
+
+        let deadline = Instant::now() + CLAUDE_LOGIN_CODE_TIMEOUT;
+        let mut logged_output_len = submitted_at_output_len;
+        let token = loop {
+            let snapshot = pending_output_snapshot(&pending);
+            if let Some(token) = extract_claude_setup_token(&snapshot) {
+                break token;
+            }
+            // Surface raw TUI output in the app log so failed sign-ins are
+            // diagnosable from the field.
+            if snapshot.len() > logged_output_len {
+                let fresh = strip_ansi(&snapshot[logged_output_len..]);
+                let fresh = fresh.trim();
+                if !fresh.is_empty() && !fresh.contains(CLAUDE_SETUP_TOKEN_PREFIX) {
+                    crate::app_log!(
+                        "[LOGIN_PROFILE] event=claude_setup_token_output profile_id={} output={}",
+                        profile_id,
+                        fresh.replace(['\r', '\n'], " | ")
+                    );
+                }
+                logged_output_len = snapshot.len();
+            }
+            let new_output = strip_ansi(&snapshot[submitted_at_output_len.min(snapshot.len())..]);
+            if let Some(failure_line) = find_claude_login_failure_line(&new_output) {
+                return Err(format!("Claude sign in rejected the code: {}", failure_line));
+            }
+            match pending.child.try_wait() {
+                Ok(Some(status)) => {
+                    let final_snapshot = pending_output_snapshot(&pending);
+                    if let Some(token) = extract_claude_setup_token(&final_snapshot) {
+                        break token;
+                    }
+                    return Err(format!(
+                        "Claude sign in exited with {} before producing a token.",
+                        status
+                    ));
+                }
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let last_line = new_output
+                            .lines()
+                            .rev()
+                            .map(str::trim)
+                            .find(|line| !line.is_empty())
+                            .unwrap_or("");
+                        return Err(if last_line.is_empty() {
+                            "Timed out waiting for Claude to accept the sign in code. Reconnect to try again.".to_string()
+                        } else {
+                            format!(
+                                "Timed out waiting for Claude to accept the sign in code. Last output: {}",
+                                last_line
+                            )
+                        });
+                    }
+                    thread::sleep(Duration::from_millis(200));
+                }
+                Err(error) => {
+                    return Err(format!("failed to wait for Claude login: {}", error));
+                }
+            }
+        };
+        persist_claude_oauth_token(&db, &KeyringCredentialVault, &profile_id, &token).and_then(
+            |_| {
+                run_claude_oauth_connect_smoke_check(&app, &token)?;
+                mark_login_profile_status(
+                    &db,
+                    &profile_id,
+                    "ready",
+                    Some("Claude account connected.".to_string()),
+                )
+            },
         )
-        .and_then(|_| {
-            run_claude_oauth_connect_smoke_check(&pending.claude_config_dir)?;
-            mark_login_profile_status(
-                &db,
-                &profile_id,
-                "ready",
-                Some("Claude account connected.".to_string()),
-            )
-        })
     })();
-    release_claude_oauth_activation(&profile_id);
+    let _ = pending.child.kill();
+    let _ = pending.child.wait();
     match result {
         Ok(profile) => {
             emit_login_profiles_changed(&app, &profile);
@@ -2267,6 +2289,22 @@ pub fn submit_claude_oauth_login_code(
             Err(error)
         }
     }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn submit_claude_oauth_login_code(
+    app: tauri::AppHandle,
+    profile_id: String,
+    code: String,
+) -> Result<LoginProfile, String> {
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = worker_app.state::<TelemetryDb>();
+        submit_claude_oauth_login_code_blocking(&worker_app, &db, profile_id, code)
+    })
+    .await
+    .map_err(|error| format!("Claude login submit task failed: {}", error))?
 }
 
 #[tauri::command]
@@ -3063,9 +3101,54 @@ mod tests {
     }
 
     #[test]
+    fn live_check_failure_prefers_structured_error_event_over_provider_stop_json() {
+        let stdout = concat!(
+            r#"{"type":"error","content":"Codex adapter failed: Codex app-server closed stdout. stderr_tail=error: unexpected argument '--listen' found","provider_error_code":"codex_transport_closed","timestamp":1}"#,
+            "\n",
+            r#"{"type":"provider_stop","provider_stop_reason":"error","provider_status":"failed","final_content":"","provider_thread_id":null,"provider_turn_id":null,"timestamp":1}"#,
+        );
+        let failure = extract_live_check_failure(stdout, "");
+        assert!(failure.message.contains("--listen"));
+        assert!(!failure.message.contains("provider_stop"));
+        assert_eq!(failure.code.as_deref(), Some("codex_transport_closed"));
+        assert_eq!(status_for_live_check_failure(&failure), "unknown_error");
+    }
+
+    #[test]
+    fn live_check_failure_surfaces_module_not_found_instead_of_node_banner() {
+        let stderr = concat!(
+            "node:internal/errors:496\n",
+            "    ErrorCaptureStackTrace(err);\n",
+            "    ^\n",
+            "\n",
+            "Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@anthropic-ai/claude-agent-sdk' imported from /app/scripts/claude-agent-sdk-adapter.mjs\n",
+            "    at packageResolve (node:internal/modules/esm/resolve:916:9)\n",
+            "\n",
+            "Node.js v18.19.1\n",
+        );
+        let failure = extract_live_check_failure("", stderr);
+        assert!(failure.message.contains("Cannot find package"));
+        assert!(!failure.message.contains("Node.js v18.19.1"));
+        assert_eq!(failure.code.as_deref(), Some("claude_runtime_missing"));
+        assert_eq!(status_for_live_check_failure(&failure), "unknown_error");
+    }
+
+    #[test]
+    fn live_check_failure_uses_failed_provider_stop_content_when_present() {
+        let stdout = r#"{"type":"provider_stop","provider_status":"failed","final_content":"Usage limit reached for this account."}"#;
+        let failure = extract_live_check_failure(stdout, "");
+        assert_eq!(failure.message, "Usage limit reached for this account.");
+        assert_eq!(status_for_live_check_failure(&failure), "usage_limited");
+    }
+
+    #[test]
     fn live_check_error_status_classifies_auth_and_usage_failures() {
         assert_eq!(
             status_from_live_check_error("Unauthorized: invalid API key"),
+            "auth_missing"
+        );
+        assert_eq!(
+            status_from_live_check_error("Failed to refresh token: 400 Bad Request: Your session has ended. Please log in again."),
             "auth_missing"
         );
         assert_eq!(
@@ -3321,5 +3404,81 @@ mod tests {
                 .map(String::as_str),
             Some("https://example.test")
         );
+    }
+
+    #[test]
+    fn claude_oauth_profile_injects_setup_token_environment() {
+        let materialized = materialize_runtime_credentials_for_test(
+            "profile-claude-oauth",
+            "claude",
+            "claude_oauth",
+            "sk-ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789ABCD",
+            serde_json::json!({}),
+        )
+        .expect("credentials materialize");
+
+        assert_eq!(
+            materialized
+                .env
+                .get("CLAUDE_CODE_OAUTH_TOKEN")
+                .map(String::as_str),
+            Some("sk-ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789ABCD")
+        );
+        assert!(materialized.codex_home.is_none());
+    }
+
+    #[test]
+    fn claude_oauth_profile_rejects_legacy_snapshot_secret() {
+        let error = materialize_runtime_credentials_for_test(
+            "profile-claude-oauth-legacy",
+            "claude",
+            "claude_oauth",
+            r#"{"oauthKeychainJson":"{}","claudeConfigJson":"{}"}"#,
+            serde_json::json!({}),
+        )
+        .expect_err("legacy snapshot secrets must require a reconnect");
+        assert!(error.contains("Reconnect"));
+    }
+
+    #[test]
+    fn extracts_full_login_url_from_osc8_terminal_output() {
+        // OSC 8 hyperlink: the unwrapped target URL, then the same URL as
+        // display text hard-wrapped by the terminal at column width.
+        let raw = "If the browser didn't open, visit: \u{1b}]8;;https://claude.com/cai/oauth/authorize?code=true&client_id=abc&state=xyz\u{7}https://claude.com/cai/oauth/au\r\nthorize?code=true&client_id=abc&state=xyz\u{1b}]8;;\u{7}\r\nPaste code here if prompted >";
+        let url = extract_claude_login_url(raw).expect("url extracted");
+        assert_eq!(
+            url,
+            "https://claude.com/cai/oauth/authorize?code=true&client_id=abc&state=xyz"
+        );
+    }
+
+    #[test]
+    fn extracts_login_url_when_display_copy_is_concatenated() {
+        // Piped (non-wrapped) output concatenates target and display copies
+        // with no separator between them.
+        let raw = "visit: \u{1b}]8;;https://claude.com/oauth/authorize?state=abchttps://claude.com/oauth/authorize?state=abc\u{1b}\\";
+        let url = extract_claude_login_url(raw).expect("url extracted");
+        assert_eq!(url, "https://claude.com/oauth/authorize?state=abc");
+    }
+
+    #[test]
+    fn extracts_setup_token_from_ansi_decorated_output() {
+        let raw = "\u{1b}[32mYour token:\u{1b}[0m sk-ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789ABCD\r\nStore it somewhere safe.";
+        let token = extract_claude_setup_token(raw).expect("token extracted");
+        assert_eq!(
+            token,
+            "sk-ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+        );
+    }
+
+    #[test]
+    fn ignores_short_token_like_fragments() {
+        assert!(extract_claude_setup_token("sk-ant-oat01-tooshort").is_none());
+    }
+
+    #[test]
+    fn strip_ansi_removes_osc_hyperlink_sequences() {
+        let raw = "before \u{1b}]8;;https://example.test\u{7}label\u{1b}]8;;\u{7} after";
+        assert_eq!(strip_ansi(raw), "before label after");
     }
 }

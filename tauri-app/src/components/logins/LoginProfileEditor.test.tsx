@@ -55,7 +55,7 @@ describe('LoginProfileEditor', () => {
   });
 
   it('uses an OpenAI API key field for Codex API key secrets', () => {
-    const { getByLabelText, getByPlaceholderText } = render(
+    const { getByLabelText, getByPlaceholderText, getByText } = render(
       <LoginProfileEditor
         open
         provider="codex"
@@ -66,6 +66,8 @@ describe('LoginProfileEditor', () => {
         onSave={vi.fn()}
       />
     );
+
+    fireEvent.click(getByText('API key'));
 
     expect(getByLabelText('OpenAI API key')).toBeTruthy();
     expect(getByPlaceholderText('sk-...')).toBeTruthy();

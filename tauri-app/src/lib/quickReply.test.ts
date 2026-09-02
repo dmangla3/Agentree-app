@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ACTIVE_STATUSES } from '@shared/agentStatus';
 import type { ProjectedNodeEntity } from '../domain/workspaceProjection';
 import type { Message } from '../stores/workspaceStore';
 import {
@@ -82,7 +83,7 @@ describe('quick reply helpers', () => {
   });
 
   it('shows steering for active assistant hover nodes', () => {
-    for (const status of ['pending', 'initializing', 'running', 'streaming']) {
+    for (const status of ACTIVE_STATUSES) {
       const hoverEntity = entity({
         status: status as any,
         message: message({ id: `assistant-${status}`, role: 'assistant', status: status as any }),

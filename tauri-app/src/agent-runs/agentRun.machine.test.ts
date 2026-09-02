@@ -168,6 +168,27 @@ describe('agentRun.machine', () => {
     expect(snapshot.executionData.timeline[0].toolOutput).toBe('a\nb\n');
   });
 
+  it('coalesces adjacent thinking deltas into one timeline row', () => {
+    const snapshot = reduce([
+      {
+        type: 'timeline_event',
+        event: { type: 'thinking', timestamp: 1, content: 'Reading ', isDelta: true },
+      },
+      {
+        type: 'timeline_event',
+        event: { type: 'thinking', timestamp: 2, content: 'the codebase', isDelta: true },
+      },
+    ]);
+
+    expect(snapshot.timeline).toHaveLength(1);
+    expect(snapshot.timeline[0]).toMatchObject({
+      type: 'thinking',
+      content: 'Reading the codebase',
+      timestamp: 2,
+    });
+    expect(snapshot.executionData.timeline).toEqual(snapshot.timeline);
+  });
+
   it('keeps a run active from provider stop until finalize ack', () => {
     const beforeAck = reduce([
       { type: 'status', status: 'running', progress: 'Running...' },
@@ -197,6 +218,44 @@ describe('agentRun.machine', () => {
     expect(snapshot.phase).toBe('terminal');
     expect(snapshot.progress).toBe('Commit generated');
     expect(snapshot.executionData.meta.output_commit_sha).toBe('commit-1');
+  });
+
+  it('replaces interim assistant messages with authoritative final content', () => {
+    const snapshot = reduce([
+      { type: 'content', content: 'Working on the fix.', appendedText: 'Working on the fix.', streamSeq: 1, timestamp: 1 },
+      {
+        type: 'timeline_event',
+        event: {
+          type: 'tool_use',
+          timestamp: 2,
+          toolName: 'shell',
+          toolUseId: 'tool-1',
+        },
+      },
+      {
+        type: 'content',
+        content: 'Working on the fix. Checking tests. Extra interim text.',
+        appendedText: ' Checking tests. Extra interim text.',
+        streamSeq: 3,
+        timestamp: 3,
+      },
+      {
+        type: 'content_final',
+        content: 'Implemented.\n\nVerification passed.',
+        streamSeq: 3,
+        timestamp: 4,
+      },
+    ]);
+
+    const messageEvents = snapshot.timeline.filter((event: any) => event?.type === 'message');
+    const toolEvents = snapshot.timeline.filter((event: any) => event?.type === 'tool_use');
+
+    expect(snapshot.content).toBe('Implemented.\n\nVerification passed.');
+    expect(messageEvents).toHaveLength(1);
+    expect(messageEvents[0].content).toBe('Implemented.\n\nVerification passed.');
+    expect(toolEvents).toHaveLength(1);
+    expect(snapshot.executionData.timeline).toEqual(snapshot.timeline);
+    expect(snapshot.lastStreamSeq).toBe(3);
   });
 
   it('stores typed finalize ack metadata on the actor snapshot', () => {

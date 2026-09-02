@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { TERMINAL_STATUSES } from '@shared/agentStatus';
+import { isTerminalAgentStatus } from '@shared/agentStatus';
 import { createAgentreeFlowNodeRunner } from '../flows/agentreeFlowNodeRunner';
 import { executeFlow, throwIfFlowCancelled, type FlowExecutionEvent, type FlowExecutionResult } from '../flows/flowExecutor';
 import { buildFlowCatalog, getRunnableFlowDescriptors, type RunnableFlowDescriptor } from '../flows/flowCatalog';
@@ -179,7 +179,7 @@ async function waitForAssistantNodeCompletion(input: {
   while (Date.now() - startedAt < 30 * 60 * 1000) {
     throwIfFlowCancelled(input.signal);
     const message = readAssistantNode(input.assistantNodeId, input.workspaceId, input.queryClient);
-    if (message?.status && TERMINAL_STATUSES.includes(message.status as never)) {
+    if (isTerminalAgentStatus(message?.status)) {
       latestTerminalMessage = message;
       if (!input.requireCommit || readMessageCommit(message)) {
         return message;

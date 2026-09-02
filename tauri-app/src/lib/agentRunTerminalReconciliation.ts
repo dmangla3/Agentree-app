@@ -1,9 +1,7 @@
+import { isActiveAgentStatus, isTerminalAgentStatus } from '@shared/agentStatus';
 import { agentRunManager } from '../agent-runs/agentRunManager';
-import { isTerminalAgentRunStatus } from '../agent-runs/agentRun.machine';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import type { Message } from '../stores/workspaceStore';
-
-const ACTIVE_RUN_STATUSES = new Set(['pending', 'creating', 'initializing', 'running', 'streaming']);
 
 const cleanStatus = (status: unknown): string | null => {
   if (typeof status !== 'string') return null;
@@ -14,14 +12,9 @@ const cleanStatus = (status: unknown): string | null => {
 const terminalStatusFromMessage = (message: Message): string | null => {
   const executionData = (message.execution_data ?? {}) as Record<string, unknown>;
   const terminalStatus = cleanStatus(executionData.last_terminal_status);
-  if (terminalStatus && isTerminalAgentRunStatus(terminalStatus)) return terminalStatus;
+  if (terminalStatus && isTerminalAgentStatus(terminalStatus)) return terminalStatus;
   const status = cleanStatus(message.status);
-  return status && isTerminalAgentRunStatus(status) ? status : null;
-};
-
-const isActiveStatus = (status: unknown) => {
-  const normalized = cleanStatus(status);
-  return Boolean(normalized && ACTIVE_RUN_STATUSES.has(normalized));
+  return status && isTerminalAgentStatus(status) ? status : null;
 };
 
 export const reconcileTerminalAgentRunsFromMessages = (messages: Message[]) => {
@@ -35,7 +28,7 @@ export const reconcileTerminalAgentRunsFromMessages = (messages: Message[]) => {
 
     const actorSnapshot = agentRunManager.snapshot(message.id);
     const runStatus = runStatusByNodeId[message.id]?.status ?? null;
-    if (!isActiveStatus(actorSnapshot?.status) && !isActiveStatus(runStatus)) continue;
+    if (!isActiveAgentStatus(actorSnapshot?.status) && !isActiveAgentStatus(runStatus)) continue;
 
     agentRunManager.dispatch(message.id, {
       type: 'terminal',

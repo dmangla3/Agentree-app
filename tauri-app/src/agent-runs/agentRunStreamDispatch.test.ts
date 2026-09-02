@@ -1,5 +1,38 @@
-import { describe, expect, it } from 'vitest';
-import { deriveStreamingAppendText, resolveProviderAssistantOutput } from './agentRunStreamDispatch';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { agentRunManager } from './agentRunManager';
+import { deriveStreamingAppendText, dispatchProviderStreamEvent, resolveProviderAssistantOutput } from './agentRunStreamDispatch';
+import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
+import { useRunStatusStore } from '../stores/runStatusStore';
+
+const dispatchContext = {
+  nodeId: 'assistant-1',
+  parentId: 'user-1',
+  workspaceId: 'workspace-1',
+  agentId: 'codex',
+  currentOutput: '',
+  getProjection: (nodeId: string) => useAgentRunProjectionStore.getState().projectionsById[nodeId] ?? null,
+  getAgents: () => [],
+  setSetupProgress: vi.fn(),
+};
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.stubGlobal('window', {
+    setTimeout: globalThis.setTimeout,
+    clearTimeout: globalThis.clearTimeout,
+  });
+  agentRunManager.clearAll();
+  useAgentRunProjectionStore.getState().clearAllProjections();
+  useRunStatusStore.getState().clearAllRunStatus();
+});
+
+afterEach(() => {
+  agentRunManager.clearAll();
+  useAgentRunProjectionStore.getState().clearAllProjections();
+  useRunStatusStore.getState().clearAllRunStatus();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 describe('resolveProviderAssistantOutput', () => {
   it('replaces prior Codex assistant item text when a later item completes', () => {
@@ -22,6 +55,28 @@ describe('resolveProviderAssistantOutput', () => {
 
     expect(result.output).toBe('I inspected and fixed it.');
     expect(result.providerItemId).toBe('msg-final');
+  });
+
+  it('treats empty provider stop final content as authoritative', () => {
+    const result = resolveProviderAssistantOutput(
+      'partial text',
+      '',
+      { kind: 'final', currentProviderItemId: 'msg-final', nextProviderItemId: null },
+    );
+
+    expect(result.output).toBe('');
+    expect(result.providerItemId).toBe('msg-final');
+  });
+
+  it('does not clear output for empty non-final provider item snapshots', () => {
+    const result = resolveProviderAssistantOutput(
+      'partial text',
+      '',
+      { kind: 'snapshot', currentProviderItemId: 'msg-1', nextProviderItemId: 'msg-2' },
+    );
+
+    expect(result.output).toBe('partial text');
+    expect(result.providerItemId).toBe('msg-2');
   });
 
   it('keeps same-item deltas append-only even when text repeats', () => {
@@ -53,5 +108,30 @@ describe('resolveProviderAssistantOutput', () => {
     );
 
     expect(appended).toBe(' the relevant UI');
+  });
+
+  it('dispatches thinking and steering provider events into the actor timeline', () => {
+    dispatchProviderStreamEvent({
+      type: 'thinking',
+      content: 'Inspecting the current runtime.',
+    }, dispatchContext);
+    dispatchProviderStreamEvent({
+      type: 'user_steer_requested',
+      content: 'Use the cached result.',
+      idempotency_key: 'steer-1',
+      timestamp: 123,
+    }, dispatchContext);
+
+    expect(agentRunManager.snapshot('assistant-1')?.timeline).toEqual([
+      expect.objectContaining({
+        type: 'thinking',
+        content: 'Inspecting the current runtime.',
+      }),
+      expect.objectContaining({
+        type: 'user_steer_requested',
+        content: 'Use the cached result.',
+        idempotencyKey: 'steer-1',
+      }),
+    ]);
   });
 });

@@ -16,7 +16,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentree"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -24,6 +24,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "dirs 5.0.1",
+ "flate2",
  "ignore",
  "keyring",
  "libc",
@@ -32,8 +33,10 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "specta",
  "specta-typescript",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",

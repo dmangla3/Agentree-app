@@ -4,14 +4,15 @@ import { useAuthStore } from '../stores/authStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { AgentRunLiveStreamCoordinator } from '../agent-runs/AgentRunLiveStreamCoordinatorMount';
 import { ChatInput } from '../components/ChatInput';
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "../../@/components/ui/resizable";
-import { WorkspaceSelectionDialog } from '../components/WorkspaceSelectionDialog';
 import { Sidebar } from '../components/Sidebar';
+import { WorkspaceNavigator, type WorkspaceThreadNavigationModel } from '../components/navigation/WorkspaceNavigator';
 import { useWorkspaces } from '../hooks/useWorkspaces';
 import { AppHeader } from '../components/AppHeader';
 import { useOnboardingStore } from '../stores/onboardingStore';
@@ -20,6 +21,7 @@ import { devLogLazy } from '../lib/appLogger';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 import { DEFAULT_GRAPH_CHAT_SPLIT, getGraphChatRestoreSplit, readRememberedGraphChatSplit, rememberGraphChatSplit } from '../lib/graphChatSplitLayout';
 import { resolveWorkspaceRouteState } from '../lib/workspaceRouteState';
+import { useAppFontSizeHotkeys } from '../hotkeys/appFontSizeHotkeys';
 import { useOpenSearchHotkey } from '../hotkeys/searchHotkeys';
 import { PanelRightClose, PanelRightOpen, X } from 'lucide-react';
 
@@ -64,7 +66,7 @@ export function HomePage() {
 
   const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
   const [activeView, setActiveView] = useState<'chat' | 'flows' | 'tracking' | 'knowledge' | 'skills' | 'logins'>('chat');
-  const [isWorkspaceSelectorOpen, setIsWorkspaceSelectorOpen] = useState(false);
+  const [threadNavigationModelsByWorkspace, setThreadNavigationModelsByWorkspace] = useState<Record<string, WorkspaceThreadNavigationModel>>({});
   const [isChatCollapsed, setIsChatCollapsed] = useState(true);
   const [worktreePolicyPromptRepoPath, setWorktreePolicyPromptRepoPath] = useState<string | null>(null);
   const shellReadyLoggedRef = useRef(false);
@@ -83,6 +85,15 @@ export function HomePage() {
     selectWorkspace(id, initialFocusId);
     navigateToWorkspace(id, { replace: options?.replace, messageId: initialFocusId });
   }, [navigateToWorkspace, selectWorkspace]);
+  const handleNavigatorWorkspaceSelect = useCallback((id: string, options?: { replace?: boolean }) => {
+    recordPerfEvent('query.workspace-switch.selected', {
+      elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
+      fromWorkspaceId: selectedWorkspaceId,
+      toWorkspaceId: id,
+      activeView,
+    }, { source: 'HomePage' });
+    selectAndNavigateWorkspace(id, null, options);
+  }, [activeView, selectAndNavigateWorkspace, selectedWorkspaceId]);
   devLogLazy(() => [
     `[ROUTE][HomePage] user=${!!user} workspaceIdParam=${workspaceId ?? 'none'} selectedWorkspaceId=${selectedWorkspaceId ?? 'none'} workspaces=${workspaces.length} isLoadingWorkspaces=${isLoadingWorkspaces} hasCompletedOnboarding=${user ? hasCompletedOnboarding : 'no-user'}`
   ]);
@@ -90,6 +101,9 @@ export function HomePage() {
     if (!workspaces.length || !selectedWorkspaceId) return null;
     return workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null;
   }, [workspaces, selectedWorkspaceId]);
+  const selectedThreadNavigationModel = useMemo(() => (
+    selectedWorkspaceId ? threadNavigationModelsByWorkspace[selectedWorkspaceId] ?? null : null
+  ), [selectedWorkspaceId, threadNavigationModelsByWorkspace]);
   const selectedWorkspaceRepoPath = selectedWorkspace
     ? selectedWorkspace.git_repo_path
       || selectedWorkspace.local_repo_path
@@ -161,6 +175,7 @@ export function HomePage() {
   useOpenSearchHotkey(() => {
     setIsSearchPanelOpen(true);
   });
+  useAppFontSizeHotkeys();
 
   // Handle navigation to message from search results
   const handleNavigateToMessage = (messageId: string, workspaceId: string) => {
@@ -172,6 +187,45 @@ export function HomePage() {
   const handleRepositoryConnected = useCallback((repoPath: string) => {
     setWorktreePolicyPromptRepoPath(repoPath);
   }, []);
+
+  const handleThreadNavigationModelChange = useCallback((model: WorkspaceThreadNavigationModel | null) => {
+    if (!model) {
+      return;
+    }
+    recordPerfEvent('query.workspace-switch.thread-navigation-received', {
+      elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
+      selectedWorkspaceId: useWorkspaceStore.getState().selectedWorkspaceId,
+      modelWorkspaceId: model.workspaceId,
+      threadCount: model.threadItems.length,
+    }, { source: 'HomePage' });
+    if (!model.workspaceId) return;
+    setThreadNavigationModelsByWorkspace((current) => (
+      current[model.workspaceId as string] === model
+        ? current
+        : { ...current, [model.workspaceId as string]: model }
+    ));
+  }, []);
+
+  useEffect(() => {
+    if (!selectedThreadNavigationModel) return;
+    recordPerfEvent('query.workspace-switch.home-model-state', {
+      elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
+      selectedWorkspaceId,
+      modelWorkspaceId: selectedThreadNavigationModel.workspaceId,
+      accepted: selectedThreadNavigationModel.workspaceId === selectedWorkspaceId,
+      threadCount: selectedThreadNavigationModel.threadItems.length,
+    }, { source: 'HomePage' });
+  }, [selectedThreadNavigationModel, selectedWorkspaceId]);
+
+  const handleNavigatorThreadOpen = useCallback((threadRootId: string) => {
+    setActiveView('chat');
+    selectedThreadNavigationModel?.onThreadFocus(threadRootId);
+  }, [selectedThreadNavigationModel]);
+
+  const handleNavigatorCreateThread = useCallback(() => {
+    setActiveView('chat');
+    selectedThreadNavigationModel?.onCreateThread();
+  }, [selectedThreadNavigationModel]);
 
   const handleWorktreePolicyOpenChange = useCallback((open: boolean) => {
     if (!open) {
@@ -263,10 +317,10 @@ export function HomePage() {
   devLogLazy(() => ['[ROUTE][HomePage] Rendering main workspace shell']);
   return (
     <div className="app-shell-background flex h-screen w-full flex-col overflow-hidden">
+      <AgentRunLiveStreamCoordinator />
       <AppHeader
         selectedWorkspaceId={selectedWorkspaceId}
         selectedWorkspaceName={selectedWorkspace?.name || null}
-        onOpenWorkspaceSelector={() => setIsWorkspaceSelectorOpen(true)}
         onOpenSearch={() => setIsSearchPanelOpen(true)}
       />
 
@@ -280,6 +334,17 @@ export function HomePage() {
           worktreePolicyOpen={worktreePolicyPromptRepoPath ? true : undefined}
           onWorktreePolicyOpenChange={worktreePolicyPromptRepoPath ? handleWorktreePolicyOpenChange : undefined}
         />
+        {activeView === 'chat' ? (
+          <WorkspaceNavigator
+            selectedWorkspaceId={selectedWorkspaceId}
+            activeView={activeView}
+            onSelectWorkspace={handleNavigatorWorkspaceSelect}
+            onOpenThread={handleNavigatorThreadOpen}
+            onCreateThread={handleNavigatorCreateThread}
+            onRepositoryConnected={handleRepositoryConnected}
+            threadNavigation={selectedThreadNavigationModel}
+          />
+        ) : null}
 
         <main className="app-shell-stage flex h-full min-w-0 flex-1 flex-col overflow-hidden" aria-label="Agentree workspace shell">
           {activeView === 'chat' ? (
@@ -300,7 +365,7 @@ export function HomePage() {
                     <div className="relative flex min-w-0 flex-col h-full">
                       <div className="flex-1 min-w-0 overflow-hidden">
                         <Suspense fallback={<PanelLoading />}>
-                          <GraphView threadNavigationOrientation={isChatCollapsed ? 'vertical' : 'horizontal'} />
+                          <GraphView onThreadNavigationModelChange={handleThreadNavigationModelChange} />
                         </Suspense>
                       </div>
                       <Suspense fallback={null}>
@@ -350,15 +415,8 @@ export function HomePage() {
                 <div className="app-panel max-w-md rounded-2xl p-6 text-center">
                   <div className="text-sm font-semibold text-foreground">No workspace selected</div>
                   <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                    Choose a workspace to load its graph, chat, and merge history.
+                    Choose a workspace in the navigator to load its graph, chat, and merge history.
                   </p>
-                  <button
-                    type="button"
-                    onClick={() => setIsWorkspaceSelectorOpen(true)}
-                    className="app-command-button app-focus-ring mt-5 rounded-lg px-3 py-2 text-sm font-semibold"
-                  >
-                    Select workspace
-                  </button>
                 </div>
               </div>
             )
@@ -468,12 +526,6 @@ export function HomePage() {
         />
       </Suspense>
 
-      {/* Workspace Selector Dialog */}
-      <WorkspaceSelectionDialog
-        isOpen={isWorkspaceSelectorOpen}
-        onOpenChange={setIsWorkspaceSelectorOpen}
-        onRepositoryConnected={handleRepositoryConnected}
-      />
     </div>
   );
 }

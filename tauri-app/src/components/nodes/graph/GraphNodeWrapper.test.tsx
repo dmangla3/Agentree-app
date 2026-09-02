@@ -2,8 +2,9 @@
 import '../../../test/setup';
 import React from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GraphNodeWrapper } from './GraphNodeWrapper';
+import { useRunStatusStore } from '../../../stores/runStatusStore';
 
 vi.mock('@xyflow/react', () => ({
   Handle: () => <div data-testid="handle" />,
@@ -39,6 +40,7 @@ vi.mock('../../../agent-runs/agentRunManager', () => ({
   agentRunManager: {
     watch: vi.fn(),
     unwatch: vi.fn(),
+    snapshot: vi.fn(() => null),
   },
 }));
 
@@ -56,7 +58,13 @@ const baseProps = {
 };
 
 describe('GraphNodeWrapper', () => {
+  beforeEach(async () => {
+    const { ensureAgentRunHydrated } = await import('../../../agent-runs/agentRunHydration');
+    vi.mocked(ensureAgentRunHydrated).mockClear();
+  });
+
   afterEach(() => {
+    useRunStatusStore.getState().clearAllRunStatus();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -100,6 +108,35 @@ describe('GraphNodeWrapper', () => {
 
     expect(screen.getByText('expensive hover content')).toBeTruthy();
     expect(ensureAgentRunHydrated).toHaveBeenCalledWith('node-1', 'hover');
+  });
+
+  it('does not poll hover hydration after the initial hover catch-up', async () => {
+    vi.useFakeTimers();
+    const { ensureAgentRunHydrated } = await import('../../../agent-runs/agentRunHydration');
+    useRunStatusStore.getState().setRunStatus('node-1', {
+      workspaceId: 'workspace-1',
+      role: 'assistant',
+      status: 'running',
+      progress: 'Running...',
+    });
+
+    render(
+      <GraphNodeWrapper {...baseProps} hoverHydrationEnabled hoverCardContent={<div>expensive hover content</div>}>
+        <div>node body</div>
+      </GraphNodeWrapper>
+    );
+
+    fireEvent.click(screen.getByText('open hover'));
+    await act(async () => {});
+
+    expect(ensureAgentRunHydrated).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+    await act(async () => {});
+
+    expect(ensureAgentRunHydrated).toHaveBeenCalledTimes(1);
   });
 
   it('does not request shared run hydration when hover hydration is disabled', async () => {

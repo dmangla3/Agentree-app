@@ -153,6 +153,33 @@ fn append_lines(path: &PathBuf, lines: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn live_check_log_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(ensure_log_dir(app)?.join("live-checks.log"))
+}
+
+/// Appends the full stdout/stderr of a provider live-check/smoke-check run so
+/// failures can be diagnosed from the log even when the UI shows a short message.
+/// Returns the log path for referencing in user-facing errors.
+pub fn append_live_check_capture(
+    app: &AppHandle,
+    label: &str,
+    stdout: &str,
+    stderr: &str,
+) -> Result<PathBuf, String> {
+    let path = live_check_log_path(app)?;
+    let mut lines = vec![format!("[{}] ===== {} =====", now_millis(), label)];
+    if !stdout.trim().is_empty() {
+        lines.push("--- stdout ---".to_string());
+        lines.extend(stdout.lines().map(ToOwned::to_owned));
+    }
+    if !stderr.trim().is_empty() {
+        lines.push("--- stderr ---".to_string());
+        lines.extend(stderr.lines().map(ToOwned::to_owned));
+    }
+    append_lines(&path, &lines)?;
+    Ok(path)
+}
+
 fn extract_bracket_value(line: &str) -> Option<&str> {
     let end = line.find(']')?;
     if !line.starts_with('[') {

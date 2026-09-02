@@ -269,9 +269,9 @@ const buildSanitizedWorkLogTimeline = (workLogs: unknown): any[] => {
       const status = typeof row.status === 'string' && row.status.trim() ? row.status.trim() : null;
       return {
         id: typeof row.id === 'string' && row.id.trim() ? row.id : `public-work-log-${index}`,
-        type: type === 'thinking' || type === 'message' || type === 'error' ? type : 'tool_use',
+        type: type === 'thinking' || type === 'message' || type === 'error' || type === 'user_steer_requested' ? type : 'tool_use',
         toolName: label,
-        content: label,
+        content: typeof row.content === 'string' && row.content.trim() ? row.content : label,
         timestamp: typeof row.timestamp === 'string' && row.timestamp.trim() ? row.timestamp : undefined,
         durationMs: typeof row.durationMs === 'number' && Number.isFinite(row.durationMs) ? row.durationMs : undefined,
         toolOutput: status === 'completed' ? '' : undefined,
@@ -448,6 +448,9 @@ function WorkLogsPanel({
   allowToolExpansion?: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
+  useEffect(() => {
+    if (defaultOpen) setIsOpen(true);
+  }, [defaultOpen]);
   if (rows.length === 0) return null;
 
   return (
@@ -509,6 +512,22 @@ function WorkLogsPanel({
                   <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
                     <Sparkles size={12} />
                     <span>Thinking</span>
+                  </div>
+                  <p className="whitespace-pre-wrap break-words">{row.content}</p>
+                </div>
+              );
+            }
+
+            if (row.kind === 'user_steer') {
+              if (!row.content) return null;
+              return (
+                <div
+                  key={getTimelineRowReactKey(row, index, 'work-user-steer')}
+                  className="min-w-0 max-w-full rounded-lg border border-violet-200/70 bg-violet-50/55 px-3 py-2 text-[11px] text-violet-950/85 dark:border-violet-900/70 dark:bg-violet-950/20 dark:text-violet-100/85"
+                >
+                  <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
+                    <MessageSquarePlus size={12} />
+                    <span>User Steer</span>
                   </div>
                   <p className="whitespace-pre-wrap break-words">{row.content}</p>
                 </div>
@@ -649,10 +668,24 @@ export const ChatAssistantCard = memo(({
       : null
   );
 
-  const toolRows = useMemo(
-    () => transcriptRows.filter((row) => row.kind === 'tool' || row.kind === 'exploration'),
-    [transcriptRows]
-  );
+  const workLogRows = useMemo(() => {
+    if (!hasStructuredTimeline) return [];
+    if (showCompletedFinalOnly) {
+      const normalizedFinalContent = (message?.content || '').replace(/\s+/g, ' ').trim();
+      return transcriptRows.filter((row) => {
+        if (row.kind !== 'message') return true;
+        const normalizedRowContent = (row.content || '').replace(/\s+/g, ' ').trim();
+        return normalizedRowContent !== '' && normalizedRowContent !== normalizedFinalContent;
+      });
+    }
+    if (hasInterleavedTranscript) return [];
+    return transcriptRows.filter((row) => (
+      row.kind === 'tool' ||
+      row.kind === 'exploration' ||
+      row.kind === 'thinking' ||
+      row.kind === 'error'
+    ));
+  }, [hasInterleavedTranscript, hasStructuredTimeline, message?.content, showCompletedFinalOnly, transcriptRows]);
 
   const timestamp = message?.createdAt
     ? new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -826,14 +859,12 @@ export const ChatAssistantCard = memo(({
         </div>
       )}
 
-      {showCompletedFinalOnly ? (
-        <WorkLogsPanel
-          rows={transcriptRows}
-          repoPath={repoPath}
-          defaultOpen={isPublicShare}
-          allowToolExpansion={capabilities.canExpandToolCalls}
-        />
-      ) : null}
+      <WorkLogsPanel
+        rows={workLogRows}
+        repoPath={repoPath}
+        defaultOpen={isPublicShare || shouldRevealStream}
+        allowToolExpansion={capabilities.canExpandToolCalls}
+      />
 
       {/* Content */}
       <div className="relative z-10 min-w-0 max-w-full">
@@ -918,7 +949,6 @@ export const ChatAssistantCard = memo(({
             <StreamingMarkdown text={message?.content || ''} isStreaming={shouldRevealStream} repoPath={repoPath} />
           </div>
         )}
-        <LiveComposerCue isStreaming={shouldRevealStream} text={streamingTailText} />
       </div>
 
       <CopyMessageContentButton
@@ -931,28 +961,7 @@ export const ChatAssistantCard = memo(({
         )}
       />
 
-      {/* Tool Calls Section */}
-      {!hasInterleavedTranscript && !showCompletedFinalOnly && toolRows.length > 0 && (
-        <div className="relative z-10 mt-4 min-w-0 max-w-full border-t border-border/30 pt-3">
-          {/* Section header */}
-          <div className="flex items-center gap-2 mb-2.5">
-            <div className="flex h-6 w-6 items-center justify-center rounded-lg border border-violet-200/60 bg-violet-50/80 text-violet-600 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-400">
-              <Terminal size={12} strokeWidth={2} />
-            </div>
-            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
-              {toolRows.length} {toolRows.length === 1 ? 'Action' : 'Actions'}
-            </span>
-          </div>
-
-          <div className="min-w-0 max-w-full space-y-1.5">
-            {toolRows.map((row, index) => (
-              row.kind === 'exploration'
-                ? <InterleavedExplorationCard key={getTimelineRowReactKey(row, index, 'exploration-tool')} row={row} allowExpansion={capabilities.canExpandToolCalls} />
-                : <InterleavedToolCard key={getTimelineRowReactKey(row, index, 'tool-only')} row={row} allowExpansion={capabilities.canExpandToolCalls} />
-            ))}
-          </div>
-        </div>
-      )}
+      <LiveComposerCue isStreaming={shouldRevealStream} text={streamingTailText} />
     </ChatCardWrapper>
   );
 });

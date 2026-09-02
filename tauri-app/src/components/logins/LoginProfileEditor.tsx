@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Check, CheckCircle2, Code2, Copy, KeyRound, Loader2, ShieldCheck, Terminal } from 'lucide-react';
 import { Button } from '../../../@/components/ui/button';
 import {
@@ -32,8 +32,8 @@ interface LoginProfileEditorProps {
 
 const authTypesByProvider = {
   codex: [
-    ['codex_api_key', 'OpenAI API key'],
     ['codex_chatgpt_session', 'Managed ChatGPT session'],
+    ['codex_api_key', 'OpenAI API key'],
   ],
   claude: [
     ['claude_oauth', 'Claude subscription'],
@@ -102,6 +102,8 @@ export function LoginProfileEditor({
   const [showClaudeCodeInput, setShowClaudeCodeInput] = useState(false);
   const [claudeLoginReady, setClaudeLoginReady] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedClaudeUrl, setCopiedClaudeUrl] = useState(false);
+  const claudeLoginPollInFlightRef = useRef(false);
 
   useEffect(() => {
     if (!open) return;
@@ -117,6 +119,7 @@ export function LoginProfileEditor({
     setShowClaudeCodeInput(false);
     setClaudeLoginReady(false);
     setCopiedCode(false);
+    setCopiedClaudeUrl(false);
   }, [authTypes, open, profile?.id, provider]);
 
   useEffect(() => {
@@ -135,6 +138,8 @@ export function LoginProfileEditor({
     if (!claudeLoginStart || !onPollClaudeOauth || claudeLoginReady) return;
     let cancelled = false;
     const poll = async () => {
+      if (claudeLoginPollInFlightRef.current) return;
+      claudeLoginPollInFlightRef.current = true;
       try {
         const latest = await onPollClaudeOauth(claudeLoginStart.profileId);
         if (!cancelled && latest.status === 'ready') {
@@ -146,9 +151,15 @@ export function LoginProfileEditor({
         }
       } catch (caughtError) {
         if (!cancelled) {
-          setLocalError(caughtError instanceof Error ? caughtError.message : String(caughtError));
-          setShowClaudeCodeInput(true);
+          const message = caughtError instanceof Error ? caughtError.message : String(caughtError);
+          setLocalError(message);
+          if (message.includes('login profile not found') || message.includes('No pending Claude login')) {
+            setClaudeLoginStart(null);
+          }
         }
+      }
+      finally {
+        claudeLoginPollInFlightRef.current = false;
       }
     };
     const timeoutId = window.setTimeout(() => void poll(), 900);
@@ -232,7 +243,7 @@ export function LoginProfileEditor({
         const started = await onConnectClaudeOauth(savedProfile.id);
         setClaudeLoginStart(started);
         setClaudeLoginCode('');
-        setShowClaudeCodeInput(false);
+        setShowClaudeCodeInput(true);
         setClaudeLoginReady(false);
       }
     } catch (caughtError) {
@@ -262,6 +273,13 @@ export function LoginProfileEditor({
     await navigator.clipboard?.writeText(codexLoginStart.deviceCode);
     setCopiedCode(true);
     window.setTimeout(() => setCopiedCode(false), 1500);
+  };
+
+  const copyClaudeLoginUrl = async () => {
+    if (!claudeLoginStart?.loginUrl) return;
+    await navigator.clipboard?.writeText(claudeLoginStart.loginUrl);
+    setCopiedClaudeUrl(true);
+    window.setTimeout(() => setCopiedClaudeUrl(false), 1500);
   };
 
   return (
@@ -400,19 +418,40 @@ export function LoginProfileEditor({
                 ) : (
                   <>
                     <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2 text-[12px] font-semibold text-foreground">
-                        <Loader2 className="h-4 w-4 animate-spin text-[hsl(var(--app-accent))]" />
-                        Checking sign in
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-[12px] font-semibold text-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin text-[hsl(var(--app-accent))]" />
+                          Checking sign in
+                        </div>
+                        <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                          Open the sign in link in any browser, authorize, then paste the code shown there below.
+                        </div>
                       </div>
-                      <a
-                        href={claudeLoginStart.loginUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[12px] font-medium text-[hsl(var(--app-accent))] hover:underline"
-                      >
-                        Open sign in
-                      </a>
+                      {claudeLoginStart.loginUrl ? (
+                        <a
+                          href={claudeLoginStart.loginUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="shrink-0 text-[12px] font-medium text-[hsl(var(--app-accent))] hover:underline"
+                        >
+                          Open sign in
+                        </a>
+                      ) : null}
                     </div>
+                    {claudeLoginStart.loginUrl ? (
+                      <div className="mt-2 flex w-full min-w-0 items-center gap-2">
+                        <Input
+                          readOnly
+                          value={claudeLoginStart.loginUrl}
+                          onFocus={(event) => event.currentTarget.select()}
+                          className="h-9 min-w-0 flex-1 font-mono text-[11px]"
+                        />
+                        <Button type="button" variant="outline" size="sm" className="h-9 shrink-0" onClick={() => void copyClaudeLoginUrl()}>
+                          {copiedClaudeUrl ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                          {copiedClaudeUrl ? 'Copied' : 'Copy link'}
+                        </Button>
+                      </div>
+                    ) : null}
                     {showClaudeCodeInput ? (
                       <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                         <Input

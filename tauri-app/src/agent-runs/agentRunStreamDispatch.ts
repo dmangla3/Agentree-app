@@ -111,10 +111,13 @@ export const resolveProviderAssistantOutput = (
   );
   const providerItemId = nextProviderItemId ?? currentProviderItemId;
 
+  if (options.kind === 'final') {
+    return { output: incoming, providerItemId };
+  }
   if (!incoming) {
     return { output: currentOutput, providerItemId };
   }
-  if (options.kind === 'final' || providerItemChanged) {
+  if (providerItemChanged) {
     return { output: incoming, providerItemId };
   }
   if (options.kind === 'delta') {
@@ -194,6 +197,28 @@ export const dispatchStreamingAssistantText = (
   });
 };
 
+export const dispatchFinalAssistantText = (
+  finalContent: string,
+  options: Pick<AgentRunStreamDispatchContext, 'nodeId' | 'parentId' | 'workspaceId' | 'agentId'> & {
+    timestamp?: number;
+    streamSeq?: number | null;
+  },
+) => {
+  agentRunManager.dispatch(options.nodeId, {
+    type: 'content_final',
+    content: finalContent,
+    timestamp: options.timestamp ?? Date.now(),
+    streamSeq: options.streamSeq ?? null,
+  }, {
+    workspaceId: options.workspaceId,
+    parentId: options.parentId,
+    role: 'assistant',
+    agentId: options.agentId || null,
+    content: finalContent,
+    executionData: { timeline: [] },
+  });
+};
+
 export const dispatchTimelineEvent = (
   event: any,
   context: Pick<AgentRunStreamDispatchContext, 'nodeId' | 'parentId' | 'workspaceId' | 'agentId' | 'currentOutput'>,
@@ -237,6 +262,7 @@ export const dispatchProviderStreamEvent = (
       type: 'thinking',
       timestamp: Date.now(),
       content: data.thinking || data.content,
+      isDelta: data.isDelta ?? data.is_delta ?? false,
     }, context);
   } else if (data.type === 'tool_use') {
     maybePromoteLiveActivity(`Running ${data.name || data.toolName || data.tool_name || 'tool'}...`);

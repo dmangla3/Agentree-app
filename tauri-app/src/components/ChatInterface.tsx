@@ -2,6 +2,7 @@ import { Profiler, useRef, useMemo, useState, useCallback, useEffect, useLayoutE
 import { ChatInput } from './ChatInput';
 import { useWorkspaceStore, Message, Summary } from '../stores/workspaceStore';
 import { ScrollArea } from '../../@/components/ui/scroll-area';
+import { isTerminalAgentStatus } from '@shared/agentStatus';
 
 import { useMessages, useSummaries, useDeleteMessageBranch } from '../hooks/useMessages';
 import { useGraphSnapshot, graphSnapshotToSummaries } from '../hooks/useGraphSnapshot';
@@ -45,14 +46,12 @@ const isViewportNearBottom = (viewport: HTMLDivElement): boolean => (
   viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= BOTTOM_PIN_THRESHOLD_PX
 );
 
-const TERMINAL_CHAT_STATUSES = new Set(['completed', 'failed', 'cancelled', 'error']);
-
 const shouldRefreshHeldChatMessage = (held: Message, incoming: Message): boolean => {
   const heldStatus = typeof held.status === 'string' ? held.status : null;
   const incomingStatus = typeof incoming.status === 'string' ? incoming.status : null;
   if (
-    TERMINAL_CHAT_STATUSES.has(heldStatus || '') &&
-    !TERMINAL_CHAT_STATUSES.has(incomingStatus || '')
+    isTerminalAgentStatus(heldStatus) &&
+    !isTerminalAgentStatus(incomingStatus)
   ) {
     return false;
   }
@@ -61,7 +60,7 @@ const shouldRefreshHeldChatMessage = (held: Message, incoming: Message): boolean
   const heldContentLength = held.content?.length ?? 0;
   const incomingContentLength = incoming.content?.length ?? 0;
   if (incomingContentLength > heldContentLength) return true;
-  if (TERMINAL_CHAT_STATUSES.has(incomingStatus || '') && incomingContentLength !== heldContentLength) return true;
+  if (isTerminalAgentStatus(incomingStatus) && incomingContentLength !== heldContentLength) return true;
 
   const heldExecution = (held.execution_data ?? {}) as Record<string, any>;
   const incomingExecution = (incoming.execution_data ?? {}) as Record<string, any>;

@@ -61,6 +61,7 @@ vi.mock('../hooks/useWorkspaces', () => ({
       name: 'Workspace',
       userId: 'user-1',
       git_repo_path: '/repo',
+      local_repo_path: '/repo',
       base_commit_sha: 'workspace-base',
       createdAt: '2026-05-27T00:00:00.000Z',
       updatedAt: '2026-05-27T00:00:00.000Z',
@@ -114,6 +115,8 @@ const message = (input: Partial<Message> & Pick<Message, 'id'>): Message => ({
   output_commit_sha: input.output_commit_sha ?? null,
   base_commit_sha: input.base_commit_sha ?? null,
   execution_data: input.execution_data ?? null,
+  threadId: input.threadId,
+  thread_id: input.thread_id,
   createdAt: input.createdAt ?? '2026-05-27T00:00:00.000Z',
   updatedAt: input.updatedAt ?? '2026-05-27T00:00:00.000Z',
 });
@@ -402,6 +405,20 @@ describe('GraphDockComposer steering behavior', () => {
     expect(assistantMessage.threadId).toBe('pending-thread');
   });
 
+  it('shows an unfocused root send as a thread root target, not a workspace root', async () => {
+    useWorkspaceStore.setState({
+      focusedMessageId: null,
+      lastFocusSource: 'graph',
+      lastFocusMetadata: null,
+    });
+
+    renderComposer([]);
+
+    expect(await screen.findByText('New thread')).toBeTruthy();
+    expect(screen.getByText('Thread root')).toBeTruthy();
+    expect(screen.queryByText('Workspace root')).toBeNull();
+  });
+
   it('returns the graph dock composer to reply mode after sending a new thread message', async () => {
     const user = userEvent.setup();
     renderComposer([
@@ -486,6 +503,53 @@ describe('GraphDockComposer steering behavior', () => {
     const userMessage = hookMocks.upsertLocalNode.mock.calls[0][2] as Message;
     expect(userMessage.parentId).toBe('assistant-parent');
     expect(userMessage.content).toBe('Revised graph prompt');
+  });
+
+  it('keeps edited root user messages in their original thread', async () => {
+    const user = userEvent.setup();
+    renderComposer([
+      message({
+        id: 'user-root',
+        role: 'user',
+        parentId: null,
+        content: 'Original root prompt',
+        threadId: 'thread-session-1',
+      }),
+      message({
+        id: 'assistant-root',
+        role: 'assistant',
+        parentId: 'user-root',
+        content: 'Root answer',
+        threadId: 'thread-session-1',
+      }),
+    ]);
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('editUserMessage', {
+        detail: { message: message({
+          id: 'user-root',
+          role: 'user',
+          parentId: null,
+          content: 'Original root prompt',
+          threadId: 'thread-session-1',
+        }) },
+      }));
+    });
+
+    const composer = await screen.findByLabelText('Graph composer prompt');
+    await user.clear(composer);
+    await user.type(composer, 'Revised root prompt');
+    await user.click(screen.getByRole('button', { name: 'Send graph composer message' }));
+
+    await waitFor(() => {
+      expect(hookMocks.upsertLocalNode).toHaveBeenCalledTimes(2);
+    });
+    expect(hookMocks.createThreadSession).not.toHaveBeenCalled();
+    const userMessage = hookMocks.upsertLocalNode.mock.calls[0][2] as Message;
+    expect(userMessage.parentId).toBeNull();
+    expect(userMessage.threadId).toBe('thread-session-1');
+    expect(userMessage.execution_data?.meta?.thread_origin_id).toBe('thread-session-1');
+    expect(userMessage.content).toBe('Revised root prompt');
   });
 
   it('keeps the fresh root target when thread creation also clears graph focus', async () => {

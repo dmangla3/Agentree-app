@@ -15,6 +15,7 @@ type PublicWorkLogEntry = {
   id?: string | null;
   type: string;
   label: string;
+  content?: string | null;
   status?: string | null;
   timestamp?: string | null;
   durationMs?: number | null;
@@ -134,9 +135,9 @@ const publicWorkLogsToTimeline = (workLogs: PublicWorkLogEntry[] | null | undefi
     const status = row.status?.trim() || null;
     return {
       id: row.id?.trim() || `public-work-log-${index}`,
-      type: type === 'thinking' || type === 'message' || type === 'error' ? type : 'tool_use',
+      type: type === 'thinking' || type === 'message' || type === 'error' || type === 'user_steer_requested' ? type : 'tool_use',
       toolName: label,
-      content: label,
+      content: row.content?.trim() || label,
       timestamp: row.timestamp ?? undefined,
       durationMs: row.durationMs ?? undefined,
       toolOutput: status === 'completed' ? '' : undefined,

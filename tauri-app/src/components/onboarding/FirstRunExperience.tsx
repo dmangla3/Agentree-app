@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { open as openFolderDialog } from '@tauri-apps/plugin-dialog';
 import { useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -14,6 +14,7 @@ import {
   Sparkles,
   Terminal,
   XCircle,
+  ShieldCheck,
 } from 'lucide-react';
 import { Button } from '../../../@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../../@/components/ui/card';
@@ -36,6 +37,7 @@ import {
 import { finalizeCreatedWorkspace } from '../../lib/finalizeCreatedWorkspace';
 import { useToast } from '../Toast';
 import { ChangedFilesSummary } from '../ChangedFilesSummary';
+import { LoginProfileEditor } from '../logins/LoginProfileEditor';
 import type { Workspace } from '../../stores/workspaceStore';
 import logoSrc from '../../assets/logo.png';
 import { track, trackOnboardingStepViewed } from '../../lib/analytics';
@@ -99,6 +101,7 @@ type EnvironmentCheck = {
   command: string;
   detail: string;
   status: CheckStatus;
+  provider?: 'codex' | 'claude';
 };
 
 function StatusRow({
@@ -106,11 +109,13 @@ function StatusRow({
   detail,
   command,
   status,
+  action,
 }: {
   label: string;
   detail: string;
   command: string;
   status: CheckStatus;
+  action?: ReactNode;
 }) {
   const iconClassName = 'h-4 w-4';
   const statusLabel = {
@@ -163,6 +168,7 @@ function StatusRow({
         </div>
         <div className="mt-1 break-words text-sm text-muted-foreground dark:text-zinc-300">{detail}</div>
         <div className="mt-2 font-mono text-xs text-muted-foreground/80 dark:text-zinc-400">{command}</div>
+        {action ? <div className="mt-3">{action}</div> : null}
       </div>
     </div>
   );
@@ -187,6 +193,18 @@ function loginProfileDetail(profile: LoginProfileSummary | null, provider: 'code
   return profile.statusMessage || `${profile.displayName} is ${profile.status}.`;
 }
 
+function loginProfileStatus(
+  profile: LoginProfileSummary | null,
+  isCheckingEnvironment: boolean,
+  hasEnvironmentCheck: boolean
+): CheckStatus {
+  if (isCheckingEnvironment) return 'checking';
+  if (!profile) return hasEnvironmentCheck ? 'missing' : 'pending';
+  if (isLoginProfileActive(profile)) return 'ready';
+  if (profile.status === 'checking') return 'checking';
+  return 'missing';
+}
+
 export function FirstRunExperience({
   userName,
   workspaces,
@@ -204,11 +222,22 @@ export function FirstRunExperience({
   const [checkpointMessage, setCheckpointMessage] = useState('WIP: pre-agentree checkpoint');
   const [setupRequirement, setSetupRequirement] = useState<RepoPrepareActionRequiredError['requirement'] | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [editorProvider, setEditorProvider] = useState<'codex' | 'claude'>('codex');
+  const [editingProfile, setEditingProfile] = useState<LoginProfileSummary | null>(null);
+  const [isLoginEditorOpen, setIsLoginEditorOpen] = useState(false);
   const createWorkspace = useCreateWorkspace();
   const queryClient = useQueryClient();
   const dispatchFocus = useWorkspaceStore((state) => state.dispatchFocus);
   const loginProfiles = useLoginProfilesStore((state) => state.profiles);
+  const isMutatingLoginProfiles = useLoginProfilesStore((state) => state.isMutating);
+  const loginProfilesError = useLoginProfilesStore((state) => state.error);
   const refreshLoginProfiles = useLoginProfilesStore((state) => state.refresh);
+  const saveLoginProfile = useLoginProfilesStore((state) => state.saveProfile);
+  const connectCodexProfile = useLoginProfilesStore((state) => state.connectCodexProfile);
+  const connectClaudeOauthProfile = useLoginProfilesStore((state) => state.connectClaudeOauthProfile);
+  const pollClaudeOauthProfile = useLoginProfilesStore((state) => state.pollClaudeOauthProfile);
+  const submitClaudeOauthCode = useLoginProfilesStore((state) => state.submitClaudeOauthCode);
+  const checkLoginProfile = useLoginProfilesStore((state) => state.checkProfile);
   const checkAllLoginProfiles = useLoginProfilesStore((state) => state.checkAllProfiles);
   const discoverImportCandidates = useLoginProfilesStore((state) => state.discoverImportCandidates);
   const importCandidate = useLoginProfilesStore((state) => state.importCandidate);
@@ -236,6 +265,7 @@ export function FirstRunExperience({
       if (!tool) return 'pending';
       return tool.installed ? 'ready' : 'missing';
     };
+    const hasEnvironmentCheck = Boolean(environment);
 
     return [
       {
@@ -248,13 +278,15 @@ export function FirstRunExperience({
         label: 'Codex login',
         command: codexProfile ? getLoginProfileAuthTypeLabel(codexProfile.authType) : 'Import or add a Codex login profile',
         detail: loginProfileDetail(codexProfile, 'codex'),
-        status: isCheckingEnvironment ? 'checking' : codexProfile ? (isLoginProfileActive(codexProfile) ? 'ready' : 'missing') : 'pending',
+        status: loginProfileStatus(codexProfile, isCheckingEnvironment, hasEnvironmentCheck),
+        provider: 'codex',
       },
       {
         label: 'Claude login',
         command: claudeProfile ? getLoginProfileAuthTypeLabel(claudeProfile.authType) : 'Import or add a Claude login profile',
         detail: loginProfileDetail(claudeProfile, 'claude'),
-        status: isCheckingEnvironment ? 'checking' : claudeProfile ? (isLoginProfileActive(claudeProfile) ? 'ready' : 'missing') : 'pending',
+        status: loginProfileStatus(claudeProfile, isCheckingEnvironment, hasEnvironmentCheck),
+        provider: 'claude',
       },
     ];
   }, [claudeProfile, codexProfile, environment, isCheckingEnvironment]);
@@ -339,6 +371,21 @@ export function FirstRunExperience({
     } finally {
       setImportingCandidateId(null);
     }
+  };
+
+  const openLoginSetup = (provider: 'codex' | 'claude') => {
+    setEditorProvider(provider);
+    setEditingProfile(provider === 'codex' ? codexProfile : claudeProfile);
+    setIsLoginEditorOpen(true);
+  };
+
+  const saveEditorProfile = async (request: Parameters<typeof saveLoginProfile>[0]) => {
+    const saved = await saveLoginProfile(request);
+    setEditingProfile(saved);
+    if (saved.authType !== 'codex_chatgpt_session' && saved.authType !== 'claude_oauth') {
+      await checkLoginProfile(saved.id).catch(() => undefined);
+    }
+    return saved;
   };
 
   const completeWithWorkspace = (workspaceId?: string | null) => {
@@ -572,6 +619,19 @@ export function FirstRunExperience({
                             command={check.command}
                             detail={check.detail}
                             status={check.status}
+                            action={check.provider ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="rounded-lg dark:border-white/12 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+                                onClick={() => openLoginSetup(check.provider!)}
+                                disabled={isCheckingEnvironment}
+                              >
+                                <ShieldCheck className="h-4 w-4" />
+                                {check.status === 'ready' ? 'Manage' : 'Set up'}
+                              </Button>
+                            ) : undefined}
                           />
                         ))}
                       </div>
@@ -812,6 +872,24 @@ export function FirstRunExperience({
           </AnimatePresence>
         </div>
       </div>
+      <LoginProfileEditor
+        open={isLoginEditorOpen}
+        provider={editorProvider}
+        profile={editingProfile}
+        isSaving={isMutatingLoginProfiles}
+        error={loginProfilesError}
+        onOpenChange={(open) => {
+          setIsLoginEditorOpen(open);
+          if (!open) {
+            void refreshLoginProfiles();
+          }
+        }}
+        onSave={saveEditorProfile}
+        onConnectCodex={connectCodexProfile}
+        onConnectClaudeOauth={connectClaudeOauthProfile}
+        onPollClaudeOauth={pollClaudeOauthProfile}
+        onSubmitClaudeOauthCode={submitClaudeOauthCode}
+      />
     </div>
   );
 }

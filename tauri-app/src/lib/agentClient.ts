@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { commands as tauriCommands } from '../generated/tauri-bindings';
+import type { ManagedRuntimeDoctorEntry } from '../generated/tauri-bindings';
 import {
     reportLocalSyncFailure,
     reportLocalSyncSuccess,
@@ -89,6 +90,11 @@ export interface WorktreeInfo {
     worktree_path: string;
     branch_name: string;
     parent_commit: string;
+}
+
+export interface TargetBranchCheckoutStatus {
+    checked_out: boolean;
+    dirty: boolean;
 }
 
 export interface AgentWorktreeConfig {
@@ -1056,6 +1062,13 @@ export const agentClient = {
     checkAllRuntimeReadiness: async (): Promise<RuntimeReadiness[]> => {
         return await tauriCommands.checkAllRuntimeReadiness() as RuntimeReadiness[];
     },
+    checkManagedRuntimeDoctor: async (): Promise<ManagedRuntimeDoctorEntry[]> => {
+        if (!hasTauriRuntime()) return [];
+        return await tauriCommands.checkManagedRuntimeDoctor();
+    },
+    repairManagedRuntimeComponent: async (component: string): Promise<ManagedRuntimeDoctorEntry> => {
+        return await tauriCommands.repairManagedRuntimeComponent(component);
+    },
     attachWorkspace: async (path: string): Promise<WorkspaceInfo> => {
         return await tauriCommands.attachWorkspace(path);
     },
@@ -1087,6 +1100,9 @@ export const agentClient = {
     },
     checkoutCommitDetached: async (repoPath: string, commitSha: string): Promise<string> => {
         return await tauriCommands.checkoutCommitDetached(repoPath, commitSha);
+    },
+    targetBranchCheckoutStatus: async (repoPath: string, targetBranch: string): Promise<TargetBranchCheckoutStatus> => {
+        return await tauriCommands.targetBranchCheckoutStatus(repoPath, targetBranch);
     },
 
     // ═══════════════════════════════════════════════════════════════════════

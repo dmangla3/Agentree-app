@@ -4,8 +4,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "../../@/components/ui/avata
 import { useAuthStore } from '../stores/authStore';
 import { logoutCurrentSession } from '../lib/authSession';
 import { logoutDesktopBrowserAuth, shouldUseDesktopBrowserAuth } from '../lib/kindeDesktopAuth';
+import { ConfigButton } from './ConfigButton';
 import { DiagnosticsButton } from './DiagnosticsButton';
-import { WorktreePolicyButton } from './WorktreePolicyButton';
 
 
 interface SidebarProps {
@@ -73,7 +73,7 @@ export function Sidebar({
                     selectedWorkspaceName={selectedWorkspaceName}
                 />
 
-                <WorktreePolicyButton
+                <ConfigButton
                     repoPath={selectedWorkspaceRepoPath}
                     open={worktreePolicyOpen}
                     onOpenChange={onWorktreePolicyOpenChange}

@@ -1,3 +1,5 @@
+import { isFailureAgentStatus } from '@shared/agentStatus';
+
 export function cleanNodeFailureReason(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -5,7 +7,7 @@ export function cleanNodeFailureReason(value: unknown): string | null {
 }
 
 export function isNodeFailureStatus(status: unknown): boolean {
-  return status === 'failed' || status === 'error' || status === 'failed_setup' || status === 'failed_spawn';
+  return isFailureAgentStatus(status);
 }
 
 export function getNodeFailureReason(

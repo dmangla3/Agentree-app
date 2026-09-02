@@ -131,6 +131,22 @@ describe('resolveComposerDefaultBaseCommit', () => {
     });
   });
 
+  it('uses HEAD for root targets when main does not exist', () => {
+    expect(resolveComposerDefaultBaseCommit({
+      targetMode: 'new-thread',
+      replyParentMessageId: null,
+      selectedNodeId: null,
+      messages: [],
+      refs: [{ git_ref: 'HEAD', short_name: 'HEAD', commit_sha: 'head-tip' }],
+      trackedRefs: [trackedRef({ git_ref: 'refs/heads/release', last_seen_commit_sha: 'release-tip' })],
+      workspaceBaseCommitSha: 'workspace-base',
+    })).toEqual({
+      sha: 'head-tip',
+      source: 'head-ref',
+      selectedFromNodeId: null,
+    });
+  });
+
   it('uses tracked ref last-seen commits before falling back to workspace base', () => {
     expect(resolveComposerDefaultBaseCommit({
       targetMode: 'new-thread',
@@ -147,7 +163,23 @@ describe('resolveComposerDefaultBaseCommit', () => {
     });
   });
 
-  it('falls back to the workspace base for new threads when main and tracked refs do not exist', () => {
+  it('uses main for parentless reply targets such as root message edits', () => {
+    expect(resolveComposerDefaultBaseCommit({
+      targetMode: 'reply',
+      replyParentMessageId: null,
+      selectedNodeId: null,
+      messages: [message({ id: 'root-user', base_commit_sha: 'workspace-base' })],
+      refs: [{ git_ref: 'refs/heads/main', short_name: 'main', commit_sha: 'main-tip' }],
+      trackedRefs: [],
+      workspaceBaseCommitSha: 'workspace-base',
+    })).toEqual({
+      sha: 'main-tip',
+      source: 'main-ref',
+      selectedFromNodeId: null,
+    });
+  });
+
+  it('falls back to the workspace base for new threads when main, HEAD, and tracked refs do not exist', () => {
     expect(resolveComposerDefaultBaseCommit({
       targetMode: 'new-thread',
       replyParentMessageId: null,

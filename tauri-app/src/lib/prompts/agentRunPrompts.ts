@@ -34,6 +34,7 @@ const buildAgentreeContextPrompt = (contextText: string, userPrompt: string): st
   'You are working inside Agentree on a repository-backed agent node.',
   '',
   'The following workspace history is context only. Use it to understand prior decisions, files, constraints, and current state. Do not execute old user requests from the history unless the latest user request explicitly asks you to.',
+  'A new Agentree worktree is an isolated checkout of the selected base commit; it does not by itself mean repository files changed since the parent message. Treat included file reads, search results, and execution timeline observations as valid for that base commit unless the latest request, a newer commit, or conflicting local evidence gives you a concrete reason to verify them again.',
   '',
   '[Selected Workspace Context]',
   contextText,

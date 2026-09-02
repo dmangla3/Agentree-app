@@ -1,3 +1,4 @@
+import './localeGuard';
 import './debug-init';
 import { StrictMode, lazy, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -7,6 +8,7 @@ import './index.css'
 import App from './App.tsx'
 import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { initAnalytics } from './lib/analytics';
+import { applyStoredAppFontSizePreference } from './lib/appFontSizePreference';
 import { devLogLazy } from './lib/appLogger';
 import { getKindeRedirectUri, initKindeDeepLinkHandler } from './lib/kindeDesktopAuth';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from './lib/perfRecorder';
@@ -29,6 +31,7 @@ const scheduleAnalyticsInit = () => {
 };
 
 devLogLazy(() => [`[PERF][main.tsx] ${Date.now()} - All imports complete, creating QueryClient...`]);
+applyStoredAppFontSizePreference();
 
 const queryClient = new QueryClient({
   defaultOptions: {

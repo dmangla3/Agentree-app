@@ -1,4 +1,7 @@
-import type { AgentStatus } from '@shared/agentStatus';
+import {
+  isTerminalAgentStatus,
+  type AgentStatus,
+} from '@shared/agentStatus';
 import type { Message } from '../stores/workspaceStore';
 import type { AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 import { agentRunManager } from '../agent-runs/agentRunManager';
@@ -17,8 +20,6 @@ export type NodeLifecycleStatus =
   | 'error'
   | string;
 
-const TERMINAL_STATUSES = new Set<string>(['completed', 'failed', 'cancelled', 'error']);
-
 const normalizeStatus = (status: unknown): string | null => {
   if (typeof status !== 'string') return null;
   const trimmed = status.trim();
@@ -27,7 +28,7 @@ const normalizeStatus = (status: unknown): string | null => {
 
 export const isTerminalNodeStatus = (status: unknown) => {
   const normalized = normalizeStatus(status);
-  return Boolean(normalized && TERMINAL_STATUSES.has(normalized));
+  return isTerminalAgentStatus(normalized);
 };
 
 const resolveProjectedNodeStatus = (
@@ -42,7 +43,7 @@ const resolveProjectedNodeStatus = (
 const terminalStatusFromExecutionData = (executionData: unknown): NodeLifecycleStatus | null => {
   if (!executionData || typeof executionData !== 'object') return null;
   const status = normalizeStatus((executionData as Record<string, unknown>).last_terminal_status);
-  return status && TERMINAL_STATUSES.has(status) ? status as NodeLifecycleStatus : null;
+  return status && isTerminalAgentStatus(status) ? status as NodeLifecycleStatus : null;
 };
 
 export interface ResolvedNodeState {
@@ -62,7 +63,9 @@ export function resolveNodeState(
   const liveTerminalStatus = terminalStatusFromExecutionData(liveMessage?.execution_data);
   const serverStatus = serverTerminalStatus ?? normalizeStatus(serverMessage?.status);
   const liveStatus = normalizeStatus(actorSnapshot?.status ?? liveTerminalStatus ?? liveMessage?._optimisticStatus ?? liveMessage?.status);
-  const status = resolveProjectedNodeStatus(serverStatus, liveStatus);
+  const status = isTerminalAgentStatus(serverStatus) && !isTerminalAgentStatus(liveStatus)
+    ? serverStatus as NodeLifecycleStatus
+    : resolveProjectedNodeStatus(serverStatus, liveStatus);
   const serverContent = typeof serverMessage?.content === 'string' ? serverMessage.content : '';
   const liveContent = typeof actorSnapshot?.content === 'string'
     ? actorSnapshot.content

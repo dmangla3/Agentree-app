@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { useWorkspaceStore } from './workspaceStore';
+import { buildComposerDraftKey, useWorkspaceStore } from './workspaceStore';
 
 describe('workspace composer drafts', () => {
   beforeEach(() => {
@@ -17,14 +17,26 @@ describe('workspace composer drafts', () => {
     expect(useWorkspaceStore.getState().getComposerDraft('workspace-b')).toBe('second prompt');
   });
 
-  it('clears only the requested workspace draft', () => {
-    useWorkspaceStore.getState().setComposerDraft('workspace-a', 'first prompt');
-    useWorkspaceStore.getState().setComposerDraft('workspace-b', 'second prompt');
+  it('stores composer drafts separately by workspace target', () => {
+    useWorkspaceStore.getState().setComposerDraft('workspace-a', 'first node prompt', 'message-1');
+    useWorkspaceStore.getState().setComposerDraft('workspace-a', 'second node prompt', 'message-2');
 
-    useWorkspaceStore.getState().clearComposerDraft('workspace-a');
-
+    expect(buildComposerDraftKey('workspace-a', 'message-1')).toBe('workspace-a::message-1');
+    expect(useWorkspaceStore.getState().getComposerDraft('workspace-a', 'message-1')).toBe('first node prompt');
+    expect(useWorkspaceStore.getState().getComposerDraft('workspace-a', 'message-2')).toBe('second node prompt');
     expect(useWorkspaceStore.getState().getComposerDraft('workspace-a')).toBe('');
-    expect(useWorkspaceStore.getState().getComposerDraft('workspace-b')).toBe('second prompt');
+  });
+
+  it('clears only the requested workspace target draft', () => {
+    useWorkspaceStore.getState().setComposerDraft('workspace-a', 'workspace prompt');
+    useWorkspaceStore.getState().setComposerDraft('workspace-a', 'first node prompt', 'message-1');
+    useWorkspaceStore.getState().setComposerDraft('workspace-a', 'second node prompt', 'message-2');
+
+    useWorkspaceStore.getState().clearComposerDraft('workspace-a', 'message-1');
+
+    expect(useWorkspaceStore.getState().getComposerDraft('workspace-a')).toBe('workspace prompt');
+    expect(useWorkspaceStore.getState().getComposerDraft('workspace-a', 'message-1')).toBe('');
+    expect(useWorkspaceStore.getState().getComposerDraft('workspace-a', 'message-2')).toBe('second node prompt');
   });
 
   it('does not persist composer drafts to workspace storage', () => {

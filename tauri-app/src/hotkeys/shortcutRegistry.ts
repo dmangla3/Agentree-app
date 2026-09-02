@@ -1,10 +1,12 @@
+import { formatForDisplay, normalizeRegisterableHotkey } from '@tanstack/react-hotkeys';
 import type { RegisterableHotkey } from '@tanstack/react-hotkeys';
 
 export type ShortcutScope = 'global' | 'search' | 'graph' | 'integration';
+export type ShortcutHotkey = RegisterableHotkey | RegisterableHotkey[];
 
 export interface ShortcutDefinition {
   id: string;
-  defaultHotkey: RegisterableHotkey;
+  defaultHotkey: ShortcutHotkey;
   label: string;
   description: string;
   scope: ShortcutScope;
@@ -24,6 +26,20 @@ export const SHORTCUTS = {
     label: 'Close search',
     description: 'Close the active search panel.',
     scope: 'search',
+  },
+  'app.font-size.increase': {
+    id: 'app.font-size.increase',
+    defaultHotkey: ['Mod+=', { key: '=', mod: true, shift: true }],
+    label: 'Increase font size',
+    description: 'Increase the app font size.',
+    scope: 'global',
+  },
+  'app.font-size.decrease': {
+    id: 'app.font-size.decrease',
+    defaultHotkey: 'Mod+-',
+    label: 'Decrease font size',
+    description: 'Decrease the app font size.',
+    scope: 'global',
   },
   'graph.selection.clear': {
     id: 'graph.selection.clear',
@@ -105,5 +121,120 @@ export const SHORTCUTS = {
 } as const satisfies Record<string, ShortcutDefinition>;
 
 export type ShortcutId = keyof typeof SHORTCUTS;
+export type ShortcutOverrideMap = Partial<Record<ShortcutId, RegisterableHotkey>>;
+
+const SHORTCUT_OVERRIDES_STORAGE_KEY = 'agentree.shortcut-overrides.v1';
+const EMPTY_SHORTCUT_OVERRIDES: ShortcutOverrideMap = {};
+const shortcutOverrideListeners = new Set<() => void>();
+let shortcutOverrideSnapshot: ShortcutOverrideMap | null = null;
 
 export const getShortcut = (id: ShortcutId): ShortcutDefinition => SHORTCUTS[id];
+
+const isShortcutId = (value: string): value is ShortcutId => (
+  Object.prototype.hasOwnProperty.call(SHORTCUTS, value)
+);
+
+const normalizeHotkeyList = (shortcut: ShortcutHotkey): RegisterableHotkey[] => (
+  Array.isArray(shortcut) ? shortcut : [shortcut]
+);
+
+const readShortcutOverridesFromStorage = (): ShortcutOverrideMap => {
+  if (typeof window === 'undefined') return EMPTY_SHORTCUT_OVERRIDES;
+
+  try {
+    const raw = window.localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY);
+    if (!raw) return EMPTY_SHORTCUT_OVERRIDES;
+
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return EMPTY_SHORTCUT_OVERRIDES;
+    }
+
+    const overrides: ShortcutOverrideMap = {};
+    for (const [id, value] of Object.entries(parsed)) {
+      if (!isShortcutId(id) || typeof value !== 'string' || value.trim().length === 0) {
+        continue;
+      }
+      overrides[id] = normalizeRegisterableHotkey(value.trim() as RegisterableHotkey);
+    }
+    return overrides;
+  } catch {
+    return EMPTY_SHORTCUT_OVERRIDES;
+  }
+};
+
+const writeShortcutOverridesToStorage = (overrides: ShortcutOverrideMap): void => {
+  if (typeof window === 'undefined') return;
+
+  try {
+    if (Object.keys(overrides).length === 0) {
+      window.localStorage.removeItem(SHORTCUT_OVERRIDES_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(SHORTCUT_OVERRIDES_STORAGE_KEY, JSON.stringify(overrides));
+  } catch {
+    // Shortcut overrides are a best-effort local preference.
+  }
+};
+
+const publishShortcutOverrides = (overrides: ShortcutOverrideMap): void => {
+  shortcutOverrideSnapshot = overrides;
+  shortcutOverrideListeners.forEach((listener) => listener());
+};
+
+export const getShortcutOverridesSnapshot = (): ShortcutOverrideMap => {
+  if (!shortcutOverrideSnapshot) {
+    shortcutOverrideSnapshot = readShortcutOverridesFromStorage();
+  }
+  return shortcutOverrideSnapshot;
+};
+
+export const subscribeShortcutOverrides = (listener: () => void): (() => void) => {
+  shortcutOverrideListeners.add(listener);
+  return () => {
+    shortcutOverrideListeners.delete(listener);
+  };
+};
+
+export const getEffectiveShortcutHotkeys = (
+  id: ShortcutId,
+  overrides: ShortcutOverrideMap = getShortcutOverridesSnapshot(),
+): RegisterableHotkey[] => {
+  const override = overrides[id];
+  return override ? [override] : normalizeHotkeyList(SHORTCUTS[id].defaultHotkey);
+};
+
+export const getShortcutDisplayLabel = (hotkey: RegisterableHotkey): string => (
+  formatForDisplay(hotkey, { useSymbols: false })
+);
+
+export const getShortcutDisplayLabels = (hotkeys: RegisterableHotkey[]): string => (
+  hotkeys.map(getShortcutDisplayLabel).join(' / ')
+);
+
+export const getDefaultShortcutDisplayLabels = (id: ShortcutId): string => (
+  getShortcutDisplayLabels(normalizeHotkeyList(SHORTCUTS[id].defaultHotkey))
+);
+
+export const setShortcutOverride = (id: ShortcutId, hotkey: RegisterableHotkey): void => {
+  const next: ShortcutOverrideMap = {
+    ...getShortcutOverridesSnapshot(),
+    [id]: normalizeRegisterableHotkey(hotkey),
+  };
+  writeShortcutOverridesToStorage(next);
+  publishShortcutOverrides(next);
+};
+
+export const resetShortcutOverride = (id: ShortcutId): void => {
+  const current = getShortcutOverridesSnapshot();
+  if (!current[id]) return;
+  const next = { ...current };
+  delete next[id];
+  writeShortcutOverridesToStorage(next);
+  publishShortcutOverrides(next);
+};
+
+export const resetAllShortcutOverrides = (): void => {
+  writeShortcutOverridesToStorage(EMPTY_SHORTCUT_OVERRIDES);
+  publishShortcutOverrides(EMPTY_SHORTCUT_OVERRIDES);
+};

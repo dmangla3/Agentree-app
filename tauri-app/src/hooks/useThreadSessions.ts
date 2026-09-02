@@ -7,6 +7,7 @@ import {
   threadSessionSortKey,
   type ThreadSession,
 } from '../lib/threadSessions';
+import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 
 export const threadSessionKeys = {
   workspace: (workspaceId: string | null | undefined) => ['thread-sessions', workspaceId] as const,
@@ -49,12 +50,24 @@ export const useThreadSessions = (workspaceId: string | null | undefined) => use
   queryKey: threadSessionKeys.workspace(workspaceId),
   queryFn: async (): Promise<ThreadSession[]> => {
     if (!workspaceId) return [];
+    const startedAt = performance.now();
+    const source = agentClient.hasRuntime() ? 'local-runtime' : 'api';
     const rawSessions = agentClient.hasRuntime()
       ? await agentClient.listThreadSessions(workspaceId)
       : (await api.get(`/workspaces/${workspaceId}/threads`)).data;
-    return (Array.isArray(rawSessions) ? rawSessions : [])
+    const sessions = (Array.isArray(rawSessions) ? rawSessions : [])
       .map((item) => normalizeThreadSession(item))
       .filter((item): item is ThreadSession => Boolean(item));
+    recordPerfEvent('query.thread-sessions.read', {
+      elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
+      workspaceId,
+      source,
+      threadCount: sessions.length,
+    }, {
+      source: 'useThreadSessions',
+      durationMs: Number((performance.now() - startedAt).toFixed(2)),
+    });
+    return sessions;
   },
   enabled: Boolean(workspaceId),
   staleTime: agentClient.hasRuntime() ? Infinity : 5 * 60 * 1000,

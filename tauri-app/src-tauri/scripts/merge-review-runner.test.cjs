@@ -1,15 +1,34 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { selectCodexPythonCommand } = require('./merge-review-runner.cjs');
+const { buildCodexCommand } = require('./merge-review-runner.cjs');
 
-test('selectCodexPythonCommand prefers PYTHON_BIN when provided', () => {
-  assert.equal(
-    selectCodexPythonCommand({ PYTHON_BIN: '/opt/homebrew/bin/python3.12' }),
-    '/opt/homebrew/bin/python3.12',
+test('buildCodexCommand uses Agentree Rust adapter command', () => {
+  assert.deepEqual(
+    buildCodexCommand({
+      codexAdapterProgram: '/Applications/Agentree.app/Contents/MacOS/agentree',
+      codexAdapterArgsPrefix: ['--agentree-codex-adapter'],
+      cliArgs: '--model gpt-5.4 --reasoning-effort high --permission-mode auto',
+    }, 'review this'),
+    {
+      program: '/Applications/Agentree.app/Contents/MacOS/agentree',
+      args: [
+        '--agentree-codex-adapter',
+        '--model',
+        'gpt-5.4',
+        '--reasoning-effort',
+        'high',
+        '--permission-mode',
+        'auto',
+        'review this',
+      ],
+    },
   );
 });
 
-test('selectCodexPythonCommand falls back to python3', () => {
-  assert.equal(selectCodexPythonCommand({}), 'python3');
+test('buildCodexCommand fails without adapter program', () => {
+  assert.throws(
+    () => buildCodexCommand({ cliArgs: '' }, 'review this'),
+    /Missing Codex adapter program/,
+  );
 });

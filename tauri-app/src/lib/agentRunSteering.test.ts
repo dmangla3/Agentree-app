@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ACTIVE_STATUSES, TERMINAL_STATUSES } from '@shared/agentStatus';
 import {
   getSteerableAgentNodeId,
   isActiveAgentRunStatus,
@@ -6,14 +7,14 @@ import {
 } from './agentRunSteering';
 
 describe('agent run steering helpers', () => {
-  it.each(['pending', 'creating', 'initializing', 'running', 'streaming'])(
+  it.each(ACTIVE_STATUSES)(
     'treats %s as active',
     (status) => {
       expect(isActiveAgentRunStatus(status)).toBe(true);
     }
   );
 
-  it.each(['completed', 'failed', 'cancelled', 'error', null, undefined, ''])(
+  it.each([...TERMINAL_STATUSES, null, undefined, ''])(
     'does not treat %s as active',
     (status) => {
       expect(isActiveAgentRunStatus(status)).toBe(false);

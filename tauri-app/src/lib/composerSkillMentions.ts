@@ -8,6 +8,12 @@ export interface ActiveSkillMention {
 }
 
 const collapseFuzzyText = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+const SKILL_MENTION_START_PATTERN = /(^|\s)\$/g;
+
+const sortSkillNamesForMatching = (skillNames: readonly string[]): string[] => (
+  Array.from(new Set(skillNames.map((name) => name.trim()).filter(Boolean)))
+    .sort((left, right) => right.length - left.length || left.localeCompare(right))
+);
 
 export const getActiveSkillMention = (
   value: string,
@@ -15,7 +21,7 @@ export const getActiveSkillMention = (
 ): ActiveSkillMention | null => {
   if (cursorPosition == null) return null;
   const beforeCursor = value.slice(0, cursorPosition);
-  const mentionMatch = beforeCursor.match(/(^|\s)\$([^\n$]*)$/);
+  const mentionMatch = beforeCursor.match(/(^|\s)\$([^\s\n$]*)$/);
   if (!mentionMatch) return null;
 
   const query = mentionMatch[2] ?? '';
@@ -32,7 +38,7 @@ export const insertSkillMention = (
   skillName: string
 ): { value: string; cursor: number } => {
   const suffix = value.slice(mention.end);
-  const separator = suffix.length === 0 || /^\s/.test(suffix) ? '' : ' ';
+  const separator = suffix.length === 0 ? ' ' : /^\s/.test(suffix) ? '' : ' ';
   const nextValue = `${value.slice(0, mention.start)}$${skillName}${separator}${suffix}`;
   return {
     value: nextValue,
@@ -40,7 +46,26 @@ export const insertSkillMention = (
   };
 };
 
-export const getSkillMentionNames = (value: string): string[] => {
+export const getSkillMentionNames = (value: string, knownSkillNames: readonly string[] = []): string[] => {
+  const sortedKnownSkillNames = sortSkillNamesForMatching(knownSkillNames);
+  if (sortedKnownSkillNames.length > 0) {
+    const names: string[] = [];
+    for (const match of value.matchAll(SKILL_MENTION_START_PATTERN)) {
+      const leadingLength = match[1]?.length ?? 0;
+      const start = (match.index ?? 0) + leadingLength + 1;
+      const nextDollar = value.indexOf('$', start);
+      const nextNewline = value.indexOf('\n', start);
+      const endCandidates = [nextDollar, nextNewline].filter((index) => index >= 0);
+      const end = endCandidates.length > 0 ? Math.min(...endCandidates) : value.length;
+      const tail = value.slice(start, end);
+      const knownName = sortedKnownSkillNames.find((name) => (
+        tail === name || (tail.startsWith(name) && /\s/.test(tail.charAt(name.length)))
+      ));
+      if (knownName) names.push(knownName);
+    }
+    return names;
+  }
+
   const matches = value.matchAll(/(^|\s)\$([^$\n]+?)(?=\s+and\s+\$|\s+\$|$)/g);
   return Array.from(matches)
     .map((match) => (match[2] ?? '').trim())

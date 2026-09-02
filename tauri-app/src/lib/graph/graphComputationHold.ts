@@ -1,3 +1,4 @@
+import { isTerminalAgentStatus } from '@shared/agentStatus';
 import type { Message } from '../../stores/workspaceStore';
 import {
   getMessageBaseCommitSha,
@@ -11,11 +12,9 @@ const cleanString = (value: unknown): string | null => {
   return trimmed ? trimmed : null;
 };
 
-const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'error']);
-
 const cleanTerminalStatus = (value: unknown): string | null => {
   const status = cleanString(value);
-  return status && TERMINAL_STATUSES.has(status) ? status : null;
+  return isTerminalAgentStatus(status) ? status : null;
 };
 
 const terminalStatus = (message: Message): string | null => (

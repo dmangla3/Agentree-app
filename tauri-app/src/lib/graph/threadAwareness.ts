@@ -1,3 +1,5 @@
+import { isActiveAgentStatus, isTerminalAgentStatus } from '@shared/agentStatus';
+
 export interface ThreadAwarenessMessageLike {
   id: string;
   parentId: string | null;
@@ -13,9 +15,6 @@ export interface ThreadAwarenessSummary {
   initialPreviewNodeId: string | null;
   previewNodeIds: string[];
 }
-
-const ACTIVE_STATUSES = new Set(['pending', 'creating', 'initializing', 'running', 'streaming']);
-const FAILED_STATUSES = new Set(['failed', 'error', 'cancelled']);
 
 export const getThreadAwarenessTimestamp = (message: ThreadAwarenessMessageLike): number => {
   const candidates = [message.last_event_at, message.updatedAt, message.createdAt];
@@ -62,8 +61,10 @@ export const getThreadAwarenessSummary = ({
     message.status === 'completed' &&
     getThreadAwarenessTimestamp(message) > lastVisitedAt
   ));
-  const activeMessages = assistantPreviewMessages.filter((message) => ACTIVE_STATUSES.has(message.status || ''));
-  const failedLeaves = assistantLeaves.filter((message) => FAILED_STATUSES.has(message.status || ''));
+  const activeMessages = assistantPreviewMessages.filter((message) => isActiveAgentStatus(message.status));
+  const failedLeaves = assistantLeaves.filter((message) => (
+    isTerminalAgentStatus(message.status) && message.status !== 'completed'
+  ));
 
   const initialPreviewNodeId = getLatestMessageId(unreadCompletedLeaves) ??
     getLatestMessageId(activeMessages) ??

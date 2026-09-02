@@ -59,6 +59,7 @@ export function hasAgentreeManagedClaudeCredential() {
   return Boolean(
     hasEnvValue('ANTHROPIC_API_KEY')
     || hasEnvValue('ANTHROPIC_AUTH_TOKEN')
+    || hasEnvValue('CLAUDE_CODE_OAUTH_TOKEN')
     || hasEnvValue('ANTHROPIC_BASE_URL')
     || hasEnvValue('ANTHROPIC_BEDROCK_BASE_URL')
     || hasEnvValue('ANTHROPIC_VERTEX_BASE_URL')
@@ -765,7 +766,7 @@ async function main() {
                 : '';
           if (typeof textDelta === 'string' && textDelta.length > 0) {
             if (delta.type === 'thinking_delta') {
-              emit({ type: 'thinking', content: textDelta, timestamp: nowMs() });
+              emit({ type: 'thinking', content: textDelta, is_delta: true, timestamp: nowMs() });
             } else {
               // Structured-output turns may stream wrapper text; only expose the parsed final_response.
               deltaCount += 1;

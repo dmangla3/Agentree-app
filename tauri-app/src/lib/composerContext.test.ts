@@ -108,7 +108,7 @@ describe('composer context', () => {
     ]));
   });
 
-  it('offers tool context without selecting it by default or adding extra path ids', () => {
+  it('selects bounded recent tool context by default without adding extra path ids', () => {
     const messages = [
       message({ id: 'user-1', role: 'user', parentId: null }, 1),
       message({
@@ -134,11 +134,37 @@ describe('composer context', () => {
     expect(selection.defaultSelectedIds).toEqual([
       'user-1:user',
       'assistant-1:assistant',
+      'assistant-1:tool',
     ]);
     expect(buildComposerContextPathIds({
       parentId: 'assistant-1',
       messages,
       contextPolicy: 'continue',
     })).toEqual(new Set(['user-1', 'assistant-1']));
+  });
+
+  it('does not select oversized tool context by default', () => {
+    const largeToolOutput = 'x'.repeat(24001);
+    const messages = [
+      message({ id: 'user-1', role: 'user', parentId: null }, 1),
+      message({
+        id: 'assistant-1',
+        role: 'assistant',
+        parentId: 'user-1',
+        execution_data: {
+          timeline: [
+            { type: 'tool_use', toolUseId: 'tool-1', toolName: 'read_file', toolInput: { path: 'large.ts' } },
+            { type: 'tool_result', toolUseId: 'tool-1', toolName: 'read_file', toolOutput: largeToolOutput },
+          ],
+        },
+      }, 2),
+    ];
+
+    const selection = buildComposerContextSelection('assistant-1', messages);
+
+    expect(selection.defaultSelectedIds).toEqual([
+      'user-1:user',
+      'assistant-1:assistant',
+    ]);
   });
 });

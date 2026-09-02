@@ -316,7 +316,14 @@ function validateSynthesisResult(result, payload) {
   };
 }
 
-function buildCodexArgs(config, prompt) {
+function buildCodexCommand(config, prompt) {
+  const program = String(config.codexAdapterProgram || '').trim();
+  if (!program) {
+    throw new Error('Missing Codex adapter program. Agentree should provide its Rust adapter command.');
+  }
+  const prefix = Array.isArray(config.codexAdapterArgsPrefix)
+    ? config.codexAdapterArgsPrefix.map((arg) => String(arg))
+    : [];
   const rawArgs = tokenizeArgs(config.cliArgs);
   let model = null;
   let reasoningEffort = null;
@@ -349,12 +356,10 @@ function buildCodexArgs(config, prompt) {
   if (permissionMode) {
     cliArgs.push('--permission-mode', permissionMode);
   }
-  return [path.join(__dirname, 'codex-app-server-adapter.py'), ...cliArgs, prompt];
-}
-
-function selectCodexPythonCommand(env = process.env) {
-  const explicit = String(env.PYTHON_BIN || '').trim();
-  return explicit || 'python3';
+  return {
+    program,
+    args: [...prefix, ...cliArgs, prompt],
+  };
 }
 
 function buildClaudeArgs(config, prompt) {
@@ -389,7 +394,8 @@ function buildClaudeArgs(config, prompt) {
 
 async function runCodex(config, prompt, payload) {
   return new Promise((resolve, reject) => {
-    const child = spawn(selectCodexPythonCommand(), buildCodexArgs(config, prompt), {
+    const command = buildCodexCommand(config, prompt);
+    const child = spawn(command.program, command.args, {
       cwd: config.worktreePath,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: process.env,
@@ -631,5 +637,5 @@ if (require.main === module) {
 }
 
 module.exports = {
-  selectCodexPythonCommand,
+  buildCodexCommand,
 };

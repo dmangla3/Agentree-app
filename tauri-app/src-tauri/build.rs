@@ -1,54 +1,7 @@
 fn main() {
     rerun_if_changed("scripts");
-    rerun_if_changed("python-sdk");
-    rerun_if_changed("binaries");
-    validate_release_codex_adapter_sidecar();
     compile_metric_kit_bridge();
     tauri_build::build()
-}
-
-fn validate_release_codex_adapter_sidecar() {
-    if std::env::var("PROFILE").ok().as_deref() != Some("release") {
-        return;
-    }
-
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    if !release_requires_codex_adapter_sidecar(&target_os) {
-        return;
-    }
-
-    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-    let Some(binary_name) = codex_adapter_binary_name_for(&target_os, &target_arch) else {
-        panic!(
-            "release build target is missing a Codex adapter sidecar mapping: \
-             {target_os} {target_arch}"
-        );
-    };
-
-    let binary_path = std::path::Path::new("binaries").join(&binary_name);
-    if !binary_path.exists() {
-        panic!(
-            "release build requires Codex adapter sidecar: {}",
-            binary_path.display()
-        );
-    }
-}
-
-fn release_requires_codex_adapter_sidecar(target_os: &str) -> bool {
-    // Linux is helper-only because relying on system Python caused failed_spawn
-    // in real logs. macOS keeps the legacy Python path until the Apple helper is
-    // added; to make macOS helper-only, return true for "macos" here and in
-    // runtime_scripts::requires_codex_adapter_helper.
-    target_os == "linux"
-}
-
-fn codex_adapter_binary_name_for(target_os: &str, target_arch: &str) -> Option<String> {
-    let triple = match (target_os, target_arch) {
-        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-        ("macos", "aarch64") => "aarch64-apple-darwin",
-        _ => return None,
-    };
-    Some(format!("codex-app-server-adapter-{triple}"))
 }
 
 fn compile_metric_kit_bridge() {

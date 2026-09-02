@@ -316,10 +316,6 @@ pub fn apply_agent_command_env_with_config(
 
     command
         .env("PATH", guarded_path)
-        .env(
-            "PYTHON_BIN",
-            crate::runtime_scripts::runtime_python_command(app),
-        )
         .env("AGENTREE_GUARD_REAL_PATH", base_path)
         .envs(sandbox.vars.iter());
 

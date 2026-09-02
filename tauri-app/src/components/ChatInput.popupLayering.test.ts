@@ -60,8 +60,8 @@ describe('chat composer popup layering', () => {
     expect(chatInputSource).toContain('getChatInputSurfaceClasses(surface)');
     expect(chatInputSource).toContain('getChatInputSurfaceLabel(surface)');
     expect(surfaceSource).not.toContain("'graph-dock'");
-    expect(chatInputSource).toContain('setComposerDraft(selectedWorkspaceId, nextPrompt)');
-    expect(chatInputSource).toContain('clearComposerDraft(selectedWorkspaceId)');
+    expect(chatInputSource).toContain('setComposerDraft(selectedWorkspaceId, nextPrompt, draftTargetId)');
+    expect(chatInputSource).toContain('clearComposerDraft(selectedWorkspaceId, composerDraftTargetId)');
     expect(chatInputSource).not.toContain('function GraphComposerSend');
   });
 

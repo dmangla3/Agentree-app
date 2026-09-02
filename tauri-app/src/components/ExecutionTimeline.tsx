@@ -543,12 +543,19 @@ export function buildTimelineRows(events: TimelineEvent[]): TimelineRow[] {
         }
 
         if (event.type === 'thinking') {
-            rows.push({
-                kind: 'thinking',
-                key: buildRowKey('thinking', event),
-                content: event.content,
-                durationMs: event.durationMs,
-            });
+            const isDelta = Boolean((event as any).isDelta || (event as any).is_delta);
+            const lastRow = rows[rows.length - 1];
+            if (isDelta && lastRow?.kind === 'thinking') {
+                lastRow.content = `${lastRow.content || ''}${event.content || ''}`;
+                lastRow.durationMs = event.durationMs ?? lastRow.durationMs;
+            } else {
+                rows.push({
+                    kind: 'thinking',
+                    key: buildRowKey('thinking', event),
+                    content: event.content,
+                    durationMs: event.durationMs,
+                });
+            }
             continue;
         }
 

@@ -1,4 +1,4 @@
-import { Search, Folder, ChevronDown, Command } from 'lucide-react';
+import { Search, Command } from 'lucide-react';
 import { ThemeToggle } from './ui/ThemeToggle';
 import logoSrc from '../assets/logo.png';
 import { UpdateToolbarButton } from './updates/UpdateManager';
@@ -7,14 +7,12 @@ import { WorkspaceShareDialog } from './WorkspaceShareDialog';
 interface AppHeaderProps {
     selectedWorkspaceId: string | null;
     selectedWorkspaceName: string | null;
-    onOpenWorkspaceSelector: () => void;
     onOpenSearch: () => void;
 }
 
 export function AppHeader({
     selectedWorkspaceId,
     selectedWorkspaceName,
-    onOpenWorkspaceSelector,
     onOpenSearch,
 }: AppHeaderProps) {
     return (
@@ -27,26 +25,6 @@ export function AppHeader({
                         className="h-5 w-auto"
                     />
                 </div>
-                <div className="h-5 w-px bg-border/70" />
-                <button
-                    type="button"
-                    title="Choose workspace"
-                    onClick={onOpenWorkspaceSelector}
-                    className="app-command-button app-focus-ring flex min-w-0 items-center gap-2 rounded-lg px-2 py-1"
-                >
-                    <div className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))] shadow-[inset_0_0_0_1px_hsl(var(--app-accent)/0.1)]">
-                        <Folder className="h-3.5 w-3.5" />
-                    </div>
-                    <span className="flex min-w-0 flex-col items-start leading-none">
-                        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                            Workspace
-                        </span>
-                        <span className="mt-0.5 max-w-[15rem] truncate text-sm font-semibold tracking-[-0.01em] text-foreground">
-                            {selectedWorkspaceName || 'Select workspace'}
-                        </span>
-                    </span>
-                    <ChevronDown className="ml-0.5 h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
-                </button>
             </div>
 
             <div className="flex flex-shrink-0 items-center gap-2">

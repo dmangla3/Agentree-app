@@ -50,10 +50,14 @@ describe('HomePage graph/chat split layout', () => {
     expect(source).toContain("isChatCollapsed ? 'h-4 w-4'");
   });
 
-  it('passes chat collapse state into the graph so thread navigation can change orientation', () => {
+  it('renders a single shell navigator and publishes graph thread navigation into it', () => {
     const source = readHomePageSource();
 
-    expect(source).toContain('<GraphView threadNavigationOrientation={isChatCollapsed ? \'vertical\' : \'horizontal\'} />');
+    expect(source).toContain('<WorkspaceNavigator');
+    expect(source).toContain('threadNavigation={selectedThreadNavigationModel}');
+    expect(source).toContain('<GraphView onThreadNavigationModelChange={handleThreadNavigationModelChange} />');
+    expect(source).not.toContain('threadNavigationOrientation');
+    expect(source).not.toContain('WorkspaceSelectionDialog');
   });
 
   it('keeps the app header as persistent workspace chrome across primary views', () => {

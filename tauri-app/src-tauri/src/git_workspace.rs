@@ -87,6 +87,12 @@ pub struct WorktreeInfo {
 }
 
 #[derive(Debug, Serialize, specta::Type)]
+pub struct TargetBranchCheckoutStatus {
+    pub checked_out: bool,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Serialize, specta::Type)]
 pub struct BranchPointerInfo {
     pub name: String,
     pub commit_sha: String,
@@ -520,6 +526,128 @@ fn prune_stale_node_heads(repo_path: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Whether an agent run is finished (or abandoned) so its scratch branch and
+/// worktree can be reclaimed. A missing ledger record means the scratch branch
+/// is fully orphaned and is treated as dead.
+fn agent_run_is_dead(ledger: Option<&crate::db::AgentRunLedgerRow>) -> bool {
+    let Some(ledger) = ledger else {
+        return true;
+    };
+    if ledger.cleanup_completed || ledger.terminal_status.is_some() {
+        return true;
+    }
+    matches!(
+        ledger.status.as_str(),
+        "completed"
+            | "failed"
+            | "cancelled"
+            | "error"
+            | "failed_setup"
+            | "failed_spawn"
+            | "failed_runtime"
+            | "failed_finalization"
+            | "needs_user_action"
+            | "cleaned"
+    )
+}
+
+/// Reclaim scratch `agentree/<node_id>` branches and their worktrees left behind
+/// by agent runs that are no longer live. A pair is removed only when (a) its run
+/// is dead (or has no ledger record) and (b) the worktree has no uncommitted
+/// changes — so in-flight runs and any unsaved agent work are never touched. The
+/// branch tip is archived into `refs/agentree/nodes/<node_id>` before deletion
+/// (the same mechanism as normal cleanup), so no commit is ever lost. Returns the
+/// number of scratch branches reclaimed.
+pub fn reconcile_orphaned_agent_worktrees(
+    repo_path: &str,
+    telemetry: &crate::db::TelemetryDb,
+) -> Result<usize, String> {
+    if resolve_git_dir(repo_path).is_err() {
+        return Ok(0);
+    }
+
+    with_repo_git_lock(repo_path, "worktree_reconcile", || {
+        let branches_output = run_git(
+            repo_path,
+            &[
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "refs/heads/agentree",
+            ],
+        )?;
+
+        let mut reclaimed = 0usize;
+        for branch_name in branches_output
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+        {
+            if branch_name == "agentree/base" || branch_name.starts_with("agentree/merge-") {
+                continue;
+            }
+            let Some(node_id) = branch_name.strip_prefix("agentree/") else {
+                continue;
+            };
+            if node_id.is_empty() {
+                continue;
+            }
+
+            // Never touch a run that is still in progress.
+            let ledger = telemetry.get_agent_run_ledger_by_assistant(node_id)?;
+            if !agent_run_is_dead(ledger.as_ref()) {
+                continue;
+            }
+
+            // Preserve any worktree that still holds uncommitted work (e.g. a run
+            // that crashed mid-edit and was reclassified as needs_user_action).
+            let worktrees = list_worktrees_for_branch(repo_path, branch_name)?;
+            let dirty = worktrees.iter().any(|path| {
+                matches!(run_git(path, &["status", "--porcelain"]), Ok(status) if !status.trim().is_empty())
+            });
+            if dirty {
+                log_agent_worktree_lifecycle(
+                    "reconcile.preserve_dirty",
+                    repo_path,
+                    node_id,
+                    Path::new(worktrees.first().map(String::as_str).unwrap_or("")),
+                    &format!("branch={}", branch_name),
+                );
+                continue;
+            }
+
+            // Remove the checked-out worktrees first so the branch can be deleted,
+            // then archive the tip and drop the scratch branch.
+            for path in &worktrees {
+                let _ = run_git(repo_path, &["worktree", "remove", path, "--force"]);
+                let _ = fs::remove_dir_all(Path::new(path));
+            }
+            if let Err(err) = archive_and_delete_node_head(repo_path, branch_name, node_id) {
+                log_agent_worktree_lifecycle(
+                    "reconcile.archive.error",
+                    repo_path,
+                    node_id,
+                    Path::new(""),
+                    &format!("branch={} err={}", branch_name, err),
+                );
+                continue;
+            }
+            let _ = telemetry.mark_agent_run_cleanup_completed(node_id);
+            log_agent_worktree_lifecycle(
+                "reconcile.reclaimed",
+                repo_path,
+                node_id,
+                Path::new(""),
+                &format!("branch={}", branch_name),
+            );
+            reclaimed += 1;
+        }
+
+        // Drop bookkeeping for any worktree directories that are already gone.
+        let _ = run_git(repo_path, &["worktree", "prune"]);
+        Ok(reclaimed)
+    })
 }
 
 fn merge_root(_repo_path: &str) -> Result<PathBuf, String> {
@@ -1924,7 +2052,14 @@ fn advance_target_branch_to_commit(
     target_branch: Option<&str>,
     expected_old_commit: &str,
     new_commit: &str,
+    update_target_branch: bool,
 ) -> Result<bool, String> {
+    // Moving the real target branch onto the merge commit is opt-in. By default
+    // we only create the merge commit and leave every branch / working tree
+    // exactly where it is.
+    if !update_target_branch {
+        return Ok(false);
+    }
     let Some(branch_name) = target_branch.and_then(normalize_target_branch_name) else {
         return Ok(false);
     };
@@ -1947,6 +2082,8 @@ fn advance_target_branch_to_commit(
 
     let checked_out_paths = list_worktrees_for_branch(repo_path, &branch_name)?;
     if checked_out_paths.is_empty() {
+        // Not checked out anywhere: a plain pointer move is safe and touches no
+        // working tree. The compare-and-swap form refuses if the ref changed.
         run_git(
             repo_path,
             &["update-ref", &branch_ref, new_commit, &current_commit],
@@ -1954,6 +2091,10 @@ fn advance_target_branch_to_commit(
         return Ok(true);
     }
 
+    // Checked out somewhere: never overwrite a working tree. Skip if dirty, and
+    // otherwise advance with a fast-forward (the merge commit descends from the
+    // target commit) instead of a destructive `reset --hard`, so nothing can be
+    // silently discarded.
     for path in &checked_out_paths {
         let status = run_git(path, &["status", "--porcelain"])?;
         if !status.trim().is_empty() {
@@ -1965,7 +2106,7 @@ fn advance_target_branch_to_commit(
             return Ok(false);
         }
     }
-    run_git(&checked_out_paths[0], &["reset", "--hard", new_commit])?;
+    run_git(&checked_out_paths[0], &["merge", "--ff-only", new_commit])?;
     Ok(true)
 }
 
@@ -1977,6 +2118,7 @@ pub fn finalize_agent_merge_worktree(
     commit_message: &str,
     author_name: Option<&str>,
     target_branch: Option<&str>,
+    update_target_branch: bool,
 ) -> Result<(GitCommitMetadata, bool), String> {
     if source_commits.is_empty() {
         return Err("AI merge finalization requires at least one source commit.".to_string());
@@ -2028,8 +2170,13 @@ pub fn finalize_agent_merge_worktree(
             .to_string();
 
         run_git(&worktree_path_string, &["reset", "--hard", &commit_sha])?;
-        let target_updated =
-            advance_target_branch_to_commit(repo_path, target_branch, &target_commit, &commit_sha)?;
+        let target_updated = advance_target_branch_to_commit(
+            repo_path,
+            target_branch,
+            &target_commit,
+            &commit_sha,
+            update_target_branch,
+        )?;
         log_agent_worktree_lifecycle(
             "finalize_merge.committed",
             repo_path,
@@ -2781,6 +2928,7 @@ mod tests {
             "AI merge result",
             None,
             Some("main"),
+            true,
         )
         .expect("finalize merge worktree");
 
@@ -2846,30 +2994,107 @@ mod tests {
             "AI merge result",
             None,
             Some("main"),
+            true,
         )
         .expect("finalize merge worktree");
 
+        // Opted in, but the checked-out target worktree is dirty: never overwrite
+        // it. The merge commit is still created; main is left untouched.
         assert!(!target_updated);
-        assert_eq!(
-            merge_commit.parents,
-            vec![target_commit.clone(), source_commit]
-        );
+        assert_ne!(merge_commit.sha, target_commit);
         assert_eq!(
             run_test_git(dir.path(), &["rev-parse", "main"]),
             target_commit
         );
-        assert_eq!(
-            run_test_git(
-                dir.path(),
-                &["show", &format!("{}:decision.txt", merge_commit.sha)]
-            ),
-            "ai decision"
+    }
+
+    #[test]
+    fn finalize_agent_merge_worktree_leaves_target_branch_when_not_opted_in() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        run_test_git(dir.path(), &["branch", "-M", "main"]);
+        let target_commit = run_test_git(dir.path(), &["rev-parse", "main"]);
+
+        run_test_git(dir.path(), &["checkout", "-b", "feature", "main"]);
+        fs::write(dir.path().join("feature.txt"), "feature\n").expect("write feature file");
+        run_test_git(dir.path(), &["add", "feature.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "feature commit"]);
+        let source_commit = run_test_git(dir.path(), &["rev-parse", "feature"]);
+        run_test_git(dir.path(), &["checkout", "main"]);
+
+        let node_id = "assistant-merge-no-advance";
+        let worktree_path = worktree_root(&repo_path)
+            .expect("worktree root")
+            .join(node_id);
+        let worktree_path_string = worktree_path.to_string_lossy().to_string();
+        run_test_git(
+            dir.path(),
+            &[
+                "worktree",
+                "add",
+                &worktree_path_string,
+                "-B",
+                &format!("agentree/{node_id}"),
+                &target_commit,
+            ],
         );
+        fs::write(worktree_path.join("feature.txt"), "feature\n").expect("write resolved file");
+
+        let (merge_commit, target_updated) = finalize_agent_merge_worktree(
+            &repo_path,
+            node_id,
+            &target_commit,
+            &[source_commit.clone()],
+            "AI merge result",
+            None,
+            Some("main"),
+            false,
+        )
+        .expect("finalize merge worktree");
+
+        // Default: the merge commit is created but main is left untouched.
+        assert!(!target_updated);
         assert_eq!(
-            run_test_git(&worktree_path, &["rev-parse", "HEAD"]),
-            merge_commit.sha
+            run_test_git(dir.path(), &["rev-parse", "main"]),
+            target_commit
+        );
+        assert_ne!(merge_commit.sha, target_commit);
+        assert_eq!(
+            merge_commit.parents,
+            vec![target_commit.clone(), source_commit]
         );
     }
+}
+
+/// Whether a branch is currently checked out in a worktree and, if so, whether
+/// that worktree has uncommitted changes. Used by the AI-merge UI to gate the
+/// "also move <target> to the merged commit" option: it must stay disabled when
+/// advancing the branch would require a clean checked-out worktree.
+#[tauri::command]
+#[specta::specta]
+pub async fn target_branch_checkout_status(
+    repo_path: String,
+    target_branch: String,
+) -> Result<TargetBranchCheckoutStatus, String> {
+    let Some(branch_name) = normalize_target_branch_name(&target_branch) else {
+        return Ok(TargetBranchCheckoutStatus {
+            checked_out: false,
+            dirty: false,
+        });
+    };
+    let checked_out_paths = list_worktrees_for_branch(&repo_path, &branch_name)?;
+    let checked_out = !checked_out_paths.is_empty();
+    let mut dirty = false;
+    for path in &checked_out_paths {
+        if !run_git(path, &["status", "--porcelain"])?.trim().is_empty() {
+            dirty = true;
+            break;
+        }
+    }
+    Ok(TargetBranchCheckoutStatus {
+        checked_out,
+        dirty,
+    })
 }
 
 #[tauri::command]

@@ -40,8 +40,79 @@ export class RepoPrepareActionRequiredError extends Error {
 
 const DEFAULT_CHECKPOINT_COMMIT_MESSAGE = 'WIP: pre-agentree checkpoint';
 const AGENTREE_GIT_COMMIT_PREFIX = 'git -c user.name=Agentree -c user.email=agentree@local commit';
+const NATO_WORKSPACE_SUFFIXES = [
+  'Alpha',
+  'Bravo',
+  'Charlie',
+  'Delta',
+  'Echo',
+  'Foxtrot',
+  'Golf',
+  'Hotel',
+  'India',
+  'Juliett',
+  'Kilo',
+  'Lima',
+  'Mike',
+  'November',
+  'Oscar',
+  'Papa',
+  'Quebec',
+  'Romeo',
+  'Sierra',
+  'Tango',
+  'Uniform',
+  'Victor',
+  'Whiskey',
+  'Xray',
+  'Yankee',
+  'Zulu',
+] as const;
 
 const quoteShellArg = (value: string) => `'${value.replace(/'/g, `'\"'\"'`)}'`;
+
+function normalizeRepoPathForComparison(path: string | null | undefined): string | null {
+  const trimmed = path?.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/[\\/]+$/, '').toLowerCase();
+}
+
+function getRepoNameFromPath(path: string): string {
+  return path.replace(/[\\/]+$/, '').split(/[/\\]/).pop()?.trim() || 'Workspace';
+}
+
+export function suggestWorkspaceNameForRepo(
+  repoPath: string,
+  existingWorkspaces: Workspace[] | undefined,
+): string {
+  const repoName = getRepoNameFromPath(repoPath);
+  const normalizedRepoPath = normalizeRepoPathForComparison(repoPath);
+  const usedNames = new Set(
+    (existingWorkspaces ?? [])
+      .filter((workspace) => {
+        const workspaceRepoPath = workspace.git_repo_path
+          ?? workspace.repo_path
+          ?? workspace.local_repo_path
+          ?? workspace.localRepoPath
+          ?? workspace.folderPath
+          ?? null;
+        return normalizeRepoPathForComparison(workspaceRepoPath) === normalizedRepoPath;
+      })
+      .map((workspace) => workspace.name.trim().toLowerCase())
+      .filter(Boolean),
+  );
+
+  for (const suffix of NATO_WORKSPACE_SUFFIXES) {
+    const candidate = `${repoName} ${suffix}`;
+    if (!usedNames.has(candidate.toLowerCase())) return candidate;
+  }
+
+  let index = NATO_WORKSPACE_SUFFIXES.length + 1;
+  while (usedNames.has(`${repoName} ${index}`.toLowerCase())) {
+    index += 1;
+  }
+  return `${repoName} ${index}`;
+}
 
 function workspaceFromLocalRecord(record: LocalWorkspaceRecord): Workspace {
   const localRepoPath = record.localRepoPath ?? null;
@@ -258,11 +329,13 @@ export const useCreateWorkspace = () => {
       dirtyStrategy?: RepoDirtyStrategy;
     }) => {
       const repo = await prepareRepoForWorkspace(folderPath, allowGitInit, commitMessage, dirtyStrategy);
+      const existingWorkspaces = queryClient.getQueryData<Workspace[]>(workspaceKeys.list(userId));
+      const workspaceName = name?.trim() || suggestWorkspaceNameForRepo(repo.repo_path || folderPath, existingWorkspaces);
       if (isTauriEnvironment()) {
         const workspaceId = crypto.randomUUID();
         const localWorkspace = await agentClient.localFirstCreateWorkspace({
           workspaceId,
-          name,
+          name: workspaceName,
           localRepoPath: repo.repo_path,
           baseCommitSha: repo.base_commit,
           repoFingerprint: repo.base_commit ? `base:${repo.base_commit}` : null,
@@ -271,7 +344,7 @@ export const useCreateWorkspace = () => {
         return workspaceFromLocalRecord(localWorkspace);
       }
       const response = await api.post('/workspaces', {
-        name,
+        name: workspaceName,
         folderPath,
         snapshot_id: null,
         repoPath: repo.repo_path,

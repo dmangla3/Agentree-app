@@ -12,26 +12,10 @@ import { agentClient } from '../lib/agentClient';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
 import { getHoverReplyMode, stopQuickReplyControlEvent } from '../lib/quickReply';
 import { cn } from '../lib/utils';
-
-const MAX_HOVER_QUICK_REPLY_DRAFTS = 200;
-const hoverQuickReplyDrafts = new Map<string, string>();
-
-const rememberHoverQuickReplyDraft = (draftKey: string, prompt: string) => {
-  if (!prompt) {
-    hoverQuickReplyDrafts.delete(draftKey);
-    return;
-  }
-  hoverQuickReplyDrafts.delete(draftKey);
-  hoverQuickReplyDrafts.set(draftKey, prompt);
-  while (hoverQuickReplyDrafts.size > MAX_HOVER_QUICK_REPLY_DRAFTS) {
-    const oldestDraftKey = hoverQuickReplyDrafts.keys().next().value;
-    if (!oldestDraftKey) break;
-    hoverQuickReplyDrafts.delete(oldestDraftKey);
-  }
-};
+import { buildComposerDraftKey, useWorkspaceStore } from '../stores/workspaceStore';
 
 export function clearHoverQuickReplyDraftsForTest() {
-  hoverQuickReplyDrafts.clear();
+  useWorkspaceStore.setState({ composerDraftByWorkspace: {} });
 }
 
 export function HoverQuickReplyActions({
@@ -54,6 +38,13 @@ export function HoverQuickReplyActions({
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [draftResetVersion, setDraftResetVersion] = useState(0);
   const { sendQuickReply, sendSteeringReply, isSending, error } = useHeadlessQuickReply();
+  const workspaceId = entity.message?.workspaceId ?? projection.messageMap.get(replyParentId)?.workspaceId ?? null;
+  const composerDraftKey = buildComposerDraftKey(workspaceId, replyParentId);
+  const promptDraft = useWorkspaceStore(state => (
+    composerDraftKey ? state.composerDraftByWorkspace[composerDraftKey] ?? '' : ''
+  ));
+  const setComposerDraft = useWorkspaceStore(state => state.setComposerDraft);
+  const clearComposerDraft = useWorkspaceStore(state => state.clearComposerDraft);
   const rawReplyMode = getHoverReplyMode(entity, replyRunStatus);
   const replyMode = rawReplyMode === 'steer' && !canSteer
     ? null
@@ -73,7 +64,6 @@ export function HoverQuickReplyActions({
   const sendingLabel = isSteeringReply ? 'Steering' : 'Sending';
   const handleQuickReply = useCallback(async (draftPrompt: string): Promise<boolean> => {
     const prompt = draftPrompt.trim();
-    const workspaceId = entity.message?.workspaceId ?? projection.messageMap.get(replyParentId)?.workspaceId ?? null;
     if (!prompt || isSending || !replyMode) return false;
     if (replyMode === 'steer') {
       await sendSteeringReply({
@@ -90,9 +80,8 @@ export function HoverQuickReplyActions({
       messages: projection.messages,
     });
     return true;
-  }, [entity.message?.workspaceId, isSending, projection.messageMap, projection.messages, replyMode, replyParentId, sendQuickReply, sendSteeringReply]);
+  }, [isSending, projection.messages, replyMode, replyParentId, sendQuickReply, sendSteeringReply, workspaceId]);
   const handleCancelRunningAgent = useCallback(async () => {
-    const workspaceId = entity.message?.workspaceId ?? projection.messageMap.get(replyParentId)?.workspaceId ?? null;
     const assistantMessage = projection.messageMap.get(replyParentId) ?? entity.message ?? null;
     if (!workspaceId || isCancelling) return;
 
@@ -120,7 +109,7 @@ export function HoverQuickReplyActions({
         }
         await flowRunManager.cancel(flowCancelTarget.flowRunId, 'cancelled');
         void scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, { reason: 'cancel-flow' });
-        hoverQuickReplyDrafts.delete(replyParentId);
+        clearComposerDraft(workspaceId, replyParentId);
         setDraftResetVersion((version) => version + 1);
         return;
       }
@@ -137,7 +126,7 @@ export function HoverQuickReplyActions({
         executionData: (assistantMessage?.execution_data ?? {}) as Record<string, any>,
       });
       void scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, { reason: 'cancel-agent' });
-      hoverQuickReplyDrafts.delete(replyParentId);
+      clearComposerDraft(workspaceId, replyParentId);
       setDraftResetVersion((version) => version + 1);
     } catch (caught) {
       console.error('[NodeHoverCardContent] Failed to stop agent:', caught);
@@ -145,7 +134,7 @@ export function HoverQuickReplyActions({
     } finally {
       setIsCancelling(false);
     }
-  }, [entity.message, isCancelling, projection.messageMap, queryClient, replyParentId]);
+  }, [clearComposerDraft, entity.message, isCancelling, projection.messageMap, queryClient, replyParentId, workspaceId]);
 
   if (!replyMode) return null;
 
@@ -156,6 +145,7 @@ export function HoverQuickReplyActions({
       actionLabel={actionLabel}
       sendingLabel={sendingLabel}
       placeholder={isSteeringReply ? 'Steer...' : 'Reply...'}
+      promptDraft={promptDraft}
       isSending={isSending}
       isCancelling={isCancelling}
       isSteeringReply={isSteeringReply}
@@ -165,6 +155,8 @@ export function HoverQuickReplyActions({
       error={error || cancelError}
       resetVersion={draftResetVersion}
       onSubmit={handleQuickReply}
+      onPromptDraftChange={(nextPrompt) => setComposerDraft(workspaceId, nextPrompt, replyParentId)}
+      onPromptDraftClear={() => clearComposerDraft(workspaceId, replyParentId)}
       onCancelRunningAgent={handleCancelRunningAgent}
     />
   );
@@ -176,6 +168,7 @@ interface HoverQuickReplyComposerProps {
   actionLabel: string;
   sendingLabel: string;
   placeholder: string;
+  promptDraft: string;
   isSending: boolean;
   isCancelling: boolean;
   isSteeringReply: boolean;
@@ -185,6 +178,8 @@ interface HoverQuickReplyComposerProps {
   error: string | null;
   resetVersion: number;
   onSubmit: (prompt: string) => Promise<boolean>;
+  onPromptDraftChange: (prompt: string) => void;
+  onPromptDraftClear: () => void;
   onCancelRunningAgent: () => Promise<void>;
 }
 
@@ -194,6 +189,7 @@ const HoverQuickReplyComposer = memo(function HoverQuickReplyComposer({
   actionLabel,
   sendingLabel,
   placeholder,
+  promptDraft,
   isSending,
   isCancelling,
   isSteeringReply,
@@ -203,23 +199,25 @@ const HoverQuickReplyComposer = memo(function HoverQuickReplyComposer({
   error,
   resetVersion,
   onSubmit,
+  onPromptDraftChange,
+  onPromptDraftClear,
   onCancelRunningAgent,
 }: HoverQuickReplyComposerProps) {
-  const [prompt, setPrompt] = useState(() => hoverQuickReplyDrafts.get(draftKey) ?? '');
+  const [prompt, setPrompt] = useState(promptDraft);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const lastResetVersionRef = useRef(resetVersion);
   const canSendQuickReply = prompt.trim().length > 0 && !isSending && !isCancelling;
 
   useEffect(() => {
-    setPrompt(hoverQuickReplyDrafts.get(draftKey) ?? '');
-  }, [draftKey]);
+    setPrompt(promptDraft);
+  }, [draftKey, promptDraft]);
 
   useEffect(() => {
     if (resetVersion === lastResetVersionRef.current) return;
     lastResetVersionRef.current = resetVersion;
-    hoverQuickReplyDrafts.delete(draftKey);
+    onPromptDraftClear();
     setPrompt('');
-  }, [draftKey, resetVersion]);
+  }, [onPromptDraftClear, resetVersion]);
 
   const focusInput = () => {
     const input = inputRef.current;
@@ -229,13 +227,13 @@ const HoverQuickReplyComposer = memo(function HoverQuickReplyComposer({
   };
 
   const clearDraft = () => {
-    hoverQuickReplyDrafts.delete(draftKey);
+    onPromptDraftClear();
     setPrompt('');
   };
 
   const handlePromptChange = (nextPrompt: string) => {
     setPrompt(nextPrompt);
-    rememberHoverQuickReplyDraft(draftKey, nextPrompt);
+    onPromptDraftChange(nextPrompt);
   };
 
   const submit = async () => {

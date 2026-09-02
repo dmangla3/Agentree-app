@@ -49,8 +49,33 @@ describe('composer skill mentions', () => {
     });
   });
 
+  it('adds a separator when inserting a selected skill at the end of the prompt', () => {
+    const activeMention = getActiveSkillMention('Use $front', 10);
+
+    expect(insertSkillMention('Use $front', activeMention!, 'Frontend Polish')).toEqual({
+      value: 'Use $Frontend Polish ',
+      cursor: 21,
+    });
+  });
+
+  it('does not keep searching inside an inserted multi-word skill mention', () => {
+    const prompt = 'Use $Frontend Polish please';
+
+    expect(getActiveSkillMention(prompt, prompt.length)).toBeNull();
+  });
+
   it('extracts skill names from explicit $ mentions', () => {
     expect(getSkillMentionNames('Use $Frontend Polish and $Systematic Debugging')).toEqual([
+      'Frontend Polish',
+      'Systematic Debugging',
+    ]);
+  });
+
+  it('extracts known selected skill names before regular prompt text', () => {
+    expect(getSkillMentionNames(
+      'Use $Frontend Polish please and $Systematic Debugging',
+      skills.map((skill) => skill.name)
+    )).toEqual([
       'Frontend Polish',
       'Systematic Debugging',
     ]);

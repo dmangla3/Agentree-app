@@ -1,4 +1,10 @@
 import { assign, setup } from 'xstate';
+import {
+  isActiveAgentStatus,
+  isFailureAgentStatus,
+  isSetupAgentStatus,
+  isTerminalAgentStatus,
+} from '@shared/agentStatus';
 import type {
   AgentRunEvent,
   AgentRunFinalizeAck,
@@ -9,11 +15,6 @@ import type {
 } from './agentRun.types';
 
 type MachineContext = { snapshot: AgentRunSnapshot };
-
-const TERMINAL_STATUSES = new Set<string>(['completed', 'failed', 'cancelled', 'error']);
-const FAILURE_STATUSES = new Set<string>(['failed', 'error', 'failed_setup', 'failed_spawn']);
-const RUNNING_OR_LATER_STATUSES = new Set<string>(['running', 'streaming', 'completed', 'failed', 'cancelled', 'error']);
-const PRE_RUNNING_STATUSES = new Set<string>(['pending', 'creating', 'initializing']);
 
 const nowIso = () => new Date().toISOString();
 
@@ -42,13 +43,7 @@ const failureReasonFromNativeEvent = (nativeEvent: Record<string, any>): string 
     ?? cleanFailureReason(nativeEvent.reason);
 };
 
-const isFailureAgentRunStatus = (status: unknown) => (
-  typeof status === 'string' && FAILURE_STATUSES.has(status)
-);
-
-export const isTerminalAgentRunStatus = (status: unknown) => (
-  typeof status === 'string' && TERMINAL_STATUSES.has(status)
-);
+export const isTerminalAgentRunStatus = isTerminalAgentStatus;
 
 export const resolveAgentRunStatus = (
   previous: AgentRunStatus | null | undefined,
@@ -56,18 +51,18 @@ export const resolveAgentRunStatus = (
 ): AgentRunStatus | null => {
   if (!next) return previous ?? null;
   if (!previous) return next;
-  if (isTerminalAgentRunStatus(previous) && !isTerminalAgentRunStatus(next)) return previous;
-  if (isTerminalAgentRunStatus(previous) && isTerminalAgentRunStatus(next)) return previous;
+  if (isTerminalAgentStatus(previous) && !isTerminalAgentStatus(next)) return previous;
+  if (isTerminalAgentStatus(previous) && isTerminalAgentStatus(next)) return previous;
   if (previous === 'streaming' && next === 'running') return previous;
-  if (RUNNING_OR_LATER_STATUSES.has(previous) && PRE_RUNNING_STATUSES.has(next)) return previous;
+  if (!isSetupAgentStatus(previous) && isActiveAgentStatus(previous) && isSetupAgentStatus(next)) return previous;
   return next;
 };
 
 const phaseForStatus = (status: AgentRunStatus | null, fallback: AgentRunSnapshot['phase']) => {
   if (!status) return fallback;
-  if (isTerminalAgentRunStatus(status)) return 'terminal';
+  if (isTerminalAgentStatus(status)) return 'terminal';
   if (status === 'pending' || status === 'creating') return 'optimistic';
-  if (status === 'initializing') return 'setup';
+  if (isSetupAgentStatus(status)) return 'setup';
   if (status === 'streaming') return 'streaming';
   if (status === 'running') return 'running';
   return fallback;
@@ -126,7 +121,7 @@ const runStatusFromNativeEvent = (nativeEvent: Record<string, any>): AgentRunSta
   // Only protocol-level exit is allowed to terminalize a run from raw native events.
   const eventType = typeof nativeEvent.type === 'string' ? nativeEvent.type : null;
   const status = typeof nativeEvent.status === 'string' ? nativeEvent.status : null;
-  if (eventType !== 'exit' || !isTerminalAgentRunStatus(status)) return null;
+  if (eventType !== 'exit' || !isTerminalAgentStatus(status)) return null;
   return status as AgentRunStatus;
 };
 
@@ -152,7 +147,7 @@ const initialSnapshot = (input: AgentRunInput): AgentRunSnapshot => {
     timeline: Array.isArray(executionData.timeline) ? executionData.timeline : [],
     executionData,
     usage: typeof executionData.usage === 'object' && executionData.usage ? executionData.usage : null,
-    terminalStatus: isTerminalAgentRunStatus(status) ? status : null,
+    terminalStatus: isTerminalAgentStatus(status) ? status : null,
     terminalReason: typeof executionData.last_terminal_status === 'string' ? executionData.last_terminal_status : null,
     finalizeAck: null,
     terminalHoldUntil: null,
@@ -191,6 +186,21 @@ const failureReasonPatch = (value: unknown): Record<string, string> => {
 
 const appendTimelineEvent = (timeline: any[], nextEvent: any) => {
   const nextTimeline = [...timeline];
+  if (nextEvent?.type === 'thinking' && (nextEvent.isDelta || nextEvent.is_delta)) {
+    const lastIndex = nextTimeline.length - 1;
+    const prior = lastIndex >= 0 ? nextTimeline[lastIndex] : null;
+    if (prior?.type === 'thinking') {
+      const existingContent = typeof prior.content === 'string' ? prior.content : '';
+      const delta = typeof nextEvent.content === 'string' ? nextEvent.content : '';
+      nextTimeline[lastIndex] = {
+        ...prior,
+        content: `${existingContent}${delta}`,
+        timestamp: nextEvent.timestamp ?? prior.timestamp,
+        isDelta: true,
+      };
+      return nextTimeline;
+    }
+  }
   if (nextEvent?.type === 'tool_output_delta') {
     const toolUseId = nextEvent.toolUseId || nextEvent.tool_use_id || nextEvent.id;
     const delta = typeof nextEvent.delta === 'string' ? nextEvent.delta : '';
@@ -242,6 +252,20 @@ const appendAssistantTimelineMessage = (
     type: 'message',
     timestamp: timestamp ?? Date.now(),
     content: appendedText,
+  });
+};
+
+const replaceAssistantTimelineMessage = (
+  timeline: any[],
+  content: string,
+  timestamp: number | null | undefined,
+) => {
+  const withoutAssistantMessages = timeline.filter((event: any) => event?.type !== 'message');
+  if (!content) return withoutAssistantMessages;
+  return appendTimelineEvent(withoutAssistantMessages, {
+    type: 'message',
+    timestamp: timestamp ?? Date.now(),
+    content,
   });
 };
 
@@ -297,7 +321,7 @@ const shouldAcceptContentEvent = (
   ) {
     return false;
   }
-  if (!isTerminalAgentRunStatus(snapshot.status)) return true;
+  if (!isTerminalAgentStatus(snapshot.status)) return true;
   if (
     typeof event.streamSeq === 'number' &&
     typeof snapshot.lastStreamSeq === 'number' &&
@@ -383,6 +407,20 @@ export const reduceAgentRunSnapshot = (
         timeline,
       };
       }
+    case 'content_final':
+      {
+        const timeline = replaceAssistantTimelineMessage(snapshot.timeline, event.content, event.timestamp);
+        return {
+          ...updateStatus(snapshot, 'streaming', snapshot.progress),
+          content: event.content,
+          lastStreamSeq: typeof event.streamSeq === 'number' ? event.streamSeq : snapshot.lastStreamSeq,
+          executionData: mergeExecutionData(snapshot.executionData, {
+            timeline,
+            ...(typeof event.streamSeq === 'number' ? { last_stream_seq: event.streamSeq } : {}),
+          }),
+          timeline,
+        };
+      }
     case 'timeline_event':
       {
         const timeline = appendTimelineEvent(snapshot.timeline, event.event);
@@ -454,7 +492,7 @@ export const reduceAgentRunSnapshot = (
           {
             last_terminal_status: acceptedTerminalStatus ? event.status : snapshot.terminalStatus ?? snapshot.status,
             ...(acceptedTerminalStatus && event.reason ? { stop_reason: event.reason } : {}),
-            ...(acceptedTerminalStatus && isFailureAgentRunStatus(event.status)
+            ...(acceptedTerminalStatus && isFailureAgentStatus(event.status)
               ? failureReasonPatch(event.reason)
               : {}),
           },

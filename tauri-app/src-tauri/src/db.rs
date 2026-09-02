@@ -1732,7 +1732,8 @@ impl TelemetryDb {
                   AND terminal_status IS NULL
                   AND status NOT IN (
                     'completed', 'cancelled', 'failed', 'error', 'failed_setup',
-                    'failed_spawn', 'failed_finalization'
+                    'failed_spawn', 'failed_finalization', 'failed_runtime',
+                    'needs_user_action'
                   )
                 ORDER BY updated_at DESC
                 "#,
@@ -1888,6 +1889,26 @@ impl TelemetryDb {
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Distinct repo paths that have ever hosted an agent run. Used by the
+    /// startup worktree sweep to know which repositories to reconcile.
+    pub fn list_agent_run_repo_paths(&self) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT repo_path FROM agent_run_ledger \
+                 WHERE repo_path IS NOT NULL AND repo_path <> ''",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        let mut paths = Vec::new();
+        for row in rows {
+            paths.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(paths)
     }
 
     pub fn mark_agent_run_needs_user_action(
@@ -6611,6 +6632,94 @@ mod tests {
             login_profile_id: None,
         })
         .expect("upsert run");
+    }
+
+    fn upsert_login_profile_for_test(db: &TelemetryDb, profile_id: &str) {
+        let profile = crate::login_profiles::LoginProfile {
+            id: profile_id.to_string(),
+            provider: "codex".to_string(),
+            display_name: "Codex".to_string(),
+            auth_type: "codex_chatgpt_session".to_string(),
+            redacted_hint: None,
+            config: serde_json::json!({}),
+            status: "ready".to_string(),
+            status_message: None,
+            plan_type: None,
+            is_default: true,
+            created_at: 1,
+            updated_at: 1,
+            last_checked_at: None,
+        };
+        db.upsert_login_profile_metadata(&profile, None)
+            .expect("upsert login profile");
+    }
+
+    fn upsert_run_for_profile(
+        db: &TelemetryDb,
+        assistant_node_id: &str,
+        status: &str,
+        phase: &str,
+        profile_id: &str,
+    ) {
+        db.upsert_agent_run_ledger(&AgentRunLedgerUpsert {
+            run_id: format!("run-{assistant_node_id}"),
+            user_node_id: Some(format!("user-{assistant_node_id}")),
+            assistant_node_id: assistant_node_id.to_string(),
+            workspace_id: Some("workspace-1".to_string()),
+            repo_path: Some("/tmp/repo".to_string()),
+            worktree_path: Some(format!("/tmp/repo/.agentree/worktrees/{assistant_node_id}")),
+            branch_name: Some(format!("agentree/{assistant_node_id}")),
+            parent_commit: Some("parent-sha".to_string()),
+            pid: Some(1234),
+            agent_type: Some("codex".to_string()),
+            status: status.to_string(),
+            phase: phase.to_string(),
+            login_profile_id: Some(profile_id.to_string()),
+        })
+        .expect("upsert run");
+    }
+
+    #[test]
+    fn recovery_login_profile_runs_do_not_count_as_active() {
+        let (_dir, db) = open_test_db();
+        upsert_run_for_profile(
+            &db,
+            "assistant-needs-action",
+            "needs_user_action",
+            "needs_user_action",
+            "profile-codex",
+        );
+
+        let active_runs = db.list_active_login_profile_runs().expect("active runs");
+        assert!(active_runs.is_empty());
+    }
+
+    #[test]
+    fn delete_login_profile_allows_recovery_runs_but_blocks_running_runs() {
+        let (_dir, db) = open_test_db();
+        upsert_login_profile_for_test(&db, "profile-recovery");
+        upsert_run_for_profile(
+            &db,
+            "assistant-recovery",
+            "needs_user_action",
+            "needs_user_action",
+            "profile-recovery",
+        );
+        db.delete_login_profile_metadata("profile-recovery")
+            .expect("recovery run should not block profile deletion");
+
+        upsert_login_profile_for_test(&db, "profile-running");
+        upsert_run_for_profile(
+            &db,
+            "assistant-running",
+            "running",
+            "running",
+            "profile-running",
+        );
+        let error = db
+            .delete_login_profile_metadata("profile-running")
+            .expect_err("running run should block profile deletion");
+        assert!(error.contains("active run"));
     }
 
     #[test]

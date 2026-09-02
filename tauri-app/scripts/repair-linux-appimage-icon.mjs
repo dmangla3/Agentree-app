@@ -106,6 +106,81 @@ function repairDirIcon(appDir) {
   console.log(`Repaired ${dirIconPath} -> ${linkTarget}`);
 }
 
+function removeIfExists(targetPath) {
+  fs.rmSync(targetPath, { force: true, recursive: true });
+}
+
+function pruneHostGraphicsRuntime(appDir) {
+  const usrLib = path.join(appDir, 'usr', 'lib');
+  const multiarchLib = path.join(appDir, 'usr', 'lib', 'x86_64-linux-gnu');
+  const directories = [
+    path.join(multiarchLib, 'webkit2gtk-4.1'),
+    path.join(multiarchLib, 'gtk-3.0'),
+    path.join(multiarchLib, 'gstreamer-1.0'),
+    path.join(usrLib, 'gstreamer-1.0'),
+  ];
+  const libraryPrefixes = [
+    'libwebkit2gtk-4.1',
+    'libjavascriptcoregtk-4.1',
+    'libgtk-3',
+    'libgdk-3',
+    'libgdk_pixbuf-2.0',
+    'libpango',
+    'libcairo',
+    'libharfbuzz',
+    'libepoxy',
+    'libatk',
+    'libatspi',
+    'libsoup-3.0',
+    'libgst',
+    'libgstreamer',
+    'liborc-',
+    'libglib-2.0',
+    'libgio-2.0',
+    'libgobject-2.0',
+    'libgmodule-2.0',
+    'libgthread-2.0',
+    'libffi',
+    'libwayland',
+    'libxkbcommon',
+    'libX',
+    'libxcb',
+    'libfontconfig',
+    'libfreetype',
+    'libpcre2',
+    'libmount',
+    'libblkid',
+    'libselinux',
+    'libz',
+    'liblzma',
+    'libzstd',
+    'libssl',
+    'libcrypto',
+    'libunwind',
+  ];
+  let removed = 0;
+
+  for (const directory of directories) {
+    if (fs.existsSync(directory)) {
+      removeIfExists(directory);
+      removed += 1;
+    }
+  }
+
+  if (fs.existsSync(usrLib)) {
+    for (const entry of fs.readdirSync(usrLib)) {
+      if (libraryPrefixes.some((prefix) => entry.startsWith(prefix))) {
+        removeIfExists(path.join(usrLib, entry));
+        removed += 1;
+      }
+    }
+  }
+
+  if (removed > 0) {
+    console.log(`Pruned ${removed} bundled host graphics/runtime entries from ${appDir}`);
+  }
+}
+
 function findAppImageTargets(appDirName) {
   const appName = appDirName.replace(/\.AppDir$/, '');
   return fs.readdirSync(appimageDir)
@@ -132,6 +207,7 @@ if (appDirs.length === 0) {
 }
 
 for (const appDir of appDirs) {
+  pruneHostGraphicsRuntime(appDir);
   repairDirIcon(appDir);
 
   const targets = findAppImageTargets(path.basename(appDir));

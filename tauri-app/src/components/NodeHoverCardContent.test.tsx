@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '../test/setup';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactElement } from 'react';
@@ -9,7 +9,8 @@ import { NodeHoverCardContent } from './NodeHoverCardContent';
 import { clearHoverQuickReplyDraftsForTest } from './HoverQuickReplyActions';
 import { ChatAssistantCard } from './nodes/chat/ChatAssistantCard';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspaceProjection';
-import type { Message } from '../stores/workspaceStore';
+import { useWorkspaceStore, type Message } from '../stores/workspaceStore';
+import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
 import { AgentreeSurfaceProvider, publicShareCapabilities } from './graph/surfaceCapabilities';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -27,7 +28,10 @@ const cancelMocks = vi.hoisted(() => ({
 
 vi.mock('./NodePreviewRenderer', () => ({
   NodePreviewRenderer: ({ entity }: { entity?: ProjectedNodeEntity }) => (
-    <div>hover body: {entity?.preview}</div>
+    <div>
+      <div>hover body: {entity?.preview}</div>
+      <div>hover content: {entity?.message?.content}</div>
+    </div>
   ),
 }));
 
@@ -150,6 +154,7 @@ describe('NodeHoverCardContent', () => {
     cancelMocks.dispatchAgentRun.mockReset();
     cancelMocks.scheduleRefresh.mockReset();
     cancelMocks.scheduleRefresh.mockResolvedValue(undefined);
+    useAgentRunProjectionStore.getState().clearAllProjections();
     clearHoverQuickReplyDraftsForTest();
   });
 
@@ -165,6 +170,41 @@ describe('NodeHoverCardContent', () => {
 
     expect(await screen.findByText('hover body: assistant_message preview')).toBeTruthy();
     expect(screen.getByText('Quick Reply')).toBeTruthy();
+  });
+
+  it('updates an open assistant hover from the live projection store', async () => {
+    const message = makeMessage({
+      id: 'assistant-live',
+      role: 'assistant',
+      content: 'Persisted graph preview',
+      status: 'running' as any,
+    });
+
+    render(
+      <NodeHoverCardContent
+        entity={makeEntity('assistant_message', {
+          message,
+          messageId: message.id,
+          focusMessageId: message.id,
+          preview: 'assistant live preview',
+          status: 'running' as any,
+        })}
+        projection={makeProjection([message])}
+      />
+    );
+
+    expect(await screen.findByText('hover content: Persisted graph preview')).toBeTruthy();
+
+    act(() => {
+      useAgentRunProjectionStore.getState().setProjectionForNode(message.id, {
+        ...message,
+        content: 'Live token update',
+        status: 'streaming' as any,
+        _optimisticStatus: 'streaming' as any,
+      });
+    });
+
+    expect(await screen.findByText('hover content: Live token update')).toBeTruthy();
   });
 
   it('uses the shared preview renderer for public hover cards without app-only quick reply actions', () => {
@@ -374,7 +414,7 @@ describe('NodeHoverCardContent', () => {
     expect((screen.getByLabelText('Quick reply prompt') as HTMLTextAreaElement).value).toBe('Keep this draft');
   });
 
-  it('keeps hover card quick reply drafts scoped to the reply message', async () => {
+  it('shares hover card quick reply drafts through the matching target composer draft', async () => {
     const user = userEvent.setup();
     const firstMessage = makeMessage({ id: 'message-1', role: 'assistant' });
     const secondMessage = makeMessage({ id: 'message-2', role: 'assistant' });
@@ -391,7 +431,11 @@ describe('NodeHoverCardContent', () => {
     });
     const { rerender } = render(<NodeHoverCardContent entity={firstEntity} projection={projection} />);
 
-    await user.type(screen.getByLabelText('Quick reply prompt'), 'First message draft');
+    await user.type(screen.getByLabelText('Quick reply prompt'), 'First node draft');
+
+    expect(useWorkspaceStore.getState().getComposerDraft('workspace-1', 'message-1')).toBe('First node draft');
+    expect(useWorkspaceStore.getState().getComposerDraft('workspace-1', 'message-2')).toBe('');
+
     rerender(
       <QueryClientProvider client={new QueryClient()}>
         <NodeHoverCardContent entity={secondEntity} projection={projection} />
@@ -400,13 +444,31 @@ describe('NodeHoverCardContent', () => {
 
     expect((screen.getByLabelText('Quick reply prompt') as HTMLTextAreaElement).value).toBe('');
 
+    await user.type(screen.getByLabelText('Quick reply prompt'), 'Second node draft');
+
     rerender(
       <QueryClientProvider client={new QueryClient()}>
         <NodeHoverCardContent entity={firstEntity} projection={projection} />
       </QueryClientProvider>
     );
 
-    expect((screen.getByLabelText('Quick reply prompt') as HTMLTextAreaElement).value).toBe('First message draft');
+    expect((screen.getByLabelText('Quick reply prompt') as HTMLTextAreaElement).value).toBe('First node draft');
+    expect(useWorkspaceStore.getState().getComposerDraft('workspace-1', 'message-2')).toBe('Second node draft');
+  });
+
+  it('reflects composer draft changes in an open hover quick reply', async () => {
+    const entity = makeEntity('assistant_message');
+    const projection = makeProjection([entity.message!]);
+
+    render(<NodeHoverCardContent entity={entity} projection={projection} />);
+
+    act(() => {
+      useWorkspaceStore.getState().setComposerDraft('workspace-1', 'Composer text', 'message-1');
+    });
+
+    await waitFor(() => {
+      expect((screen.getByLabelText('Quick reply prompt') as HTMLTextAreaElement).value).toBe('Composer text');
+    });
   });
 
   it('does not bubble quick reply input events into graph node focus handlers', () => {

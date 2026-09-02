@@ -96,6 +96,13 @@ const makeCodexModel = ({
 
 const claudeModelBases = [
   {
+    id: 'claude-fable-5',
+    modelId: 'claude-fable-5',
+    label: 'Claude Fable 5',
+    modelAlias: 'claude-fable-5',
+    description: 'Anthropic frontier model for complex reasoning and agentic work',
+  },
+  {
     id: 'claude-opus-4-8',
     modelId: 'claude-opus-4-8',
     label: 'Claude Opus 4.8',

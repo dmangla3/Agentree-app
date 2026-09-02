@@ -9,7 +9,6 @@ import {
   getThreadPreviewIndexForDisplayStep,
   getThreadPreviewDisplayIndex,
   GraphControls,
-  GraphThreadTabs,
   type GraphControlsProps,
 } from './GraphControls';
 
@@ -153,282 +152,6 @@ describe('GraphControls', () => {
     expect(screen.getByText('Workspace execution timeline panel')).toBeTruthy();
   });
 
-  it('shows a create-thread action in thread tabs', () => {
-    const onCreateThread = vi.fn();
-    const onThreadFocus = vi.fn();
-
-    render(
-      <TooltipProvider>
-        <GraphThreadTabs
-          threadItems={[
-            {
-              threadRootId: 'thread-active',
-              label: 'Fix checkout race condition',
-              turnCount: 8,
-              commitCount: 3,
-              updatedLabel: '12m ago',
-              runningCount: 0,
-              hidden: false,
-              done: false,
-              current: true,
-            },
-          ]}
-          onThreadFocus={onThreadFocus}
-          onThreadDoneChange={vi.fn()}
-          doneThreadsCollapsed={true}
-          onDoneThreadsCollapsedChange={vi.fn()}
-          onCreateThread={onCreateThread}
-        />
-      </TooltipProvider>
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Start new thread' }));
-
-    expect(onCreateThread).toHaveBeenCalledTimes(1);
-    expect(onThreadFocus).not.toHaveBeenCalled();
-  });
-
-  it('orders active thread tabs with the newest incoming thread first', () => {
-    render(
-      <TooltipProvider>
-        <GraphThreadTabs
-          threadItems={[
-            {
-              threadRootId: 'thread-old',
-              label: 'Older thread',
-              turnCount: 2,
-              commitCount: 0,
-              updatedLabel: '1h ago',
-              runningCount: 0,
-              hidden: false,
-              done: false,
-              current: false,
-              lastUpdatedAt: 1,
-            },
-            {
-              threadRootId: 'thread-newer',
-              label: 'Newer but recently updated thread',
-              turnCount: 4,
-              commitCount: 1,
-              updatedLabel: 'now',
-              runningCount: 0,
-              hidden: false,
-              done: false,
-              current: false,
-              lastUpdatedAt: 100,
-            },
-          ]}
-          onThreadFocus={vi.fn()}
-          onThreadDoneChange={vi.fn()}
-          doneThreadsCollapsed={true}
-          onDoneThreadsCollapsedChange={vi.fn()}
-          onCreateThread={vi.fn()}
-        />
-      </TooltipProvider>
-    );
-
-    const tabs = screen.getAllByRole('tab');
-    expect(tabs.map((tab) => tab.getAttribute('aria-label'))).toEqual([
-      'Open thread Newer but recently updated thread',
-      'Open thread Older thread',
-    ]);
-  });
-
-  it('orders active thread tabs with the newest incoming thread first even when it is running', () => {
-    render(
-      <TooltipProvider>
-        <GraphThreadTabs
-          threadItems={[
-            {
-              threadRootId: 'thread-old',
-              label: 'Older idle thread',
-              turnCount: 2,
-              commitCount: 0,
-              updatedLabel: '1h ago',
-              runningCount: 0,
-              hidden: false,
-              done: false,
-              current: false,
-              lastUpdatedAt: 1,
-            },
-            {
-              threadRootId: 'thread-newer',
-              label: 'Newer running thread',
-              turnCount: 4,
-              commitCount: 1,
-              updatedLabel: 'now',
-              runningCount: 1,
-              hidden: false,
-              done: false,
-              current: false,
-              lastUpdatedAt: 100,
-            },
-          ]}
-          onThreadFocus={vi.fn()}
-          onThreadDoneChange={vi.fn()}
-          doneThreadsCollapsed={true}
-          onDoneThreadsCollapsedChange={vi.fn()}
-          onCreateThread={vi.fn()}
-        />
-      </TooltipProvider>
-    );
-
-    const tabs = screen.getAllByRole('tab');
-    expect(tabs.map((tab) => tab.getAttribute('aria-label'))).toEqual([
-      'Open thread Newer running thread',
-      'Open thread Older idle thread',
-    ]);
-  });
-
-  it('disables create-thread action while an empty thread already exists', () => {
-    const onCreateThread = vi.fn();
-
-    render(
-      <TooltipProvider>
-        <GraphThreadTabs
-          threadItems={[
-            {
-              threadRootId: 'empty-thread',
-              label: 'New thread',
-              turnCount: 0,
-              commitCount: 0,
-              updatedLabel: 'now',
-              runningCount: 0,
-              hidden: false,
-              done: false,
-              current: true,
-            },
-          ]}
-          onThreadFocus={vi.fn()}
-          onThreadDoneChange={vi.fn()}
-          doneThreadsCollapsed={true}
-          onDoneThreadsCollapsedChange={vi.fn()}
-          onCreateThread={onCreateThread}
-          createThreadDisabled={true}
-          createThreadDisabledReason="Finish the empty thread before starting another."
-        />
-      </TooltipProvider>
-    );
-
-    const button = screen.getByRole('button', { name: 'Start new thread' }) as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
-    expect(button.title).toBe('Finish the empty thread before starting another.');
-
-    fireEvent.click(button);
-    expect(onCreateThread).not.toHaveBeenCalled();
-  });
-
-  it('opens a two-action context menu for thread tabs', () => {
-    const onThreadDelete = vi.fn();
-    const onThreadDoneChange = vi.fn();
-
-    render(
-      <TooltipProvider>
-        <GraphThreadTabs
-          threadItems={[
-            {
-              threadRootId: 'thread-active',
-              label: 'Fix checkout race condition',
-              turnCount: 8,
-              commitCount: 3,
-              updatedLabel: '12m ago',
-              runningCount: 0,
-              hidden: false,
-              done: false,
-              current: true,
-            },
-          ]}
-          onThreadFocus={vi.fn()}
-          onThreadDoneChange={onThreadDoneChange}
-          onThreadDelete={onThreadDelete}
-          doneThreadsCollapsed={true}
-          onDoneThreadsCollapsedChange={vi.fn()}
-          onCreateThread={vi.fn()}
-        />
-      </TooltipProvider>
-    );
-
-    fireEvent.contextMenu(screen.getByRole('tab', { name: 'Open thread Fix checkout race condition' }), {
-      clientX: 120,
-      clientY: 80,
-    });
-
-    const items = screen.getAllByRole('menuitem').map((item) => item.textContent);
-    expect(items).toEqual(['Delete thread', 'Mark as done']);
-
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as done' }));
-    expect(onThreadDoneChange).toHaveBeenCalledWith('thread-active', true);
-
-    fireEvent.contextMenu(screen.getByRole('tab', { name: 'Open thread Fix checkout race condition' }), {
-      clientX: 120,
-      clientY: 80,
-    });
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete thread' }));
-    expect(onThreadDelete).toHaveBeenCalledWith('thread-active');
-  });
-
-  it('shows unread completed leaf counts on thread tabs', () => {
-    render(
-      <TooltipProvider>
-        <GraphThreadTabs
-          threadItems={[
-            {
-              threadRootId: 'thread-unread',
-              label: 'Review finished implementation',
-              turnCount: 5,
-              commitCount: 2,
-              updatedLabel: 'now',
-              runningCount: 0,
-              hidden: false,
-              done: false,
-              current: false,
-              unreadCompletedLeafCount: 3,
-            },
-          ]}
-          onThreadFocus={vi.fn()}
-          onThreadDoneChange={vi.fn()}
-          doneThreadsCollapsed={true}
-          onDoneThreadsCollapsedChange={vi.fn()}
-          onCreateThread={vi.fn()}
-        />
-      </TooltipProvider>
-    );
-
-    expect(screen.getByLabelText('3 completed leaf nodes since last visit').textContent).toBe('3');
-  });
-
-  it('hides unread completed leaf counts on done thread tabs', () => {
-    render(
-      <TooltipProvider>
-        <GraphThreadTabs
-          threadItems={[
-            {
-              threadRootId: 'thread-done-unread',
-              label: 'Archived implementation thread',
-              turnCount: 5,
-              commitCount: 2,
-              updatedLabel: 'now',
-              runningCount: 0,
-              hidden: false,
-              done: true,
-              current: false,
-              unreadCompletedLeafCount: 3,
-            },
-          ]}
-          onThreadFocus={vi.fn()}
-          onThreadDoneChange={vi.fn()}
-          doneThreadsCollapsed={false}
-          onDoneThreadsCollapsedChange={vi.fn()}
-          onCreateThread={vi.fn()}
-          orientation="vertical"
-        />
-      </TooltipProvider>
-    );
-
-    expect(screen.getByRole('tab', { name: 'Open thread Archived implementation thread' })).toBeTruthy();
-    expect(screen.queryByLabelText('3 completed leaf nodes since last visit')).toBeNull();
-  });
-
   it('switches leaf nodes between all threads and this thread', () => {
     const onLeafNodeFocus = vi.fn();
     render(
@@ -481,96 +204,7 @@ describe('GraphControls', () => {
     expect(onLeafNodeFocus).toHaveBeenCalledWith('current-leaf');
   });
 
-  it('places the vertical create-thread action below the thread header', () => {
-    render(
-      <TooltipProvider>
-        <GraphThreadTabs
-          orientation="vertical"
-          threadItems={[
-            {
-              threadRootId: 'thread-active',
-              label: 'Fix checkout race condition',
-              turnCount: 8,
-              commitCount: 3,
-              updatedLabel: '12m ago',
-              runningCount: 0,
-              hidden: false,
-              done: false,
-              current: true,
-            },
-          ]}
-          onThreadFocus={vi.fn()}
-          onThreadDoneChange={vi.fn()}
-          doneThreadsCollapsed={true}
-          onDoneThreadsCollapsedChange={vi.fn()}
-          onCreateThread={vi.fn()}
-        />
-      </TooltipProvider>
-    );
-
-    const railContent = screen.getByText('Threads').parentElement?.parentElement;
-    expect(railContent?.children[0]?.textContent).toContain('Threads');
-    expect(railContent?.children[1]?.getAttribute('aria-label')).toBe('Start new thread');
-    expect(railContent?.children[2]?.getAttribute('role')).toBe('tablist');
-  });
-
-  it('collapses vertical thread tabs into a compact rail control', () => {
-    const onThreadBarCollapsedChange = vi.fn();
-
-    render(
-      <TooltipProvider>
-        <GraphThreadTabs
-          orientation="vertical"
-          threadItems={[
-            {
-              threadRootId: 'thread-active',
-              label: 'Fix checkout race condition',
-              turnCount: 8,
-              commitCount: 3,
-              updatedLabel: '12m ago',
-              runningCount: 1,
-              hidden: false,
-              done: false,
-              current: true,
-            },
-            {
-              threadRootId: 'thread-done',
-              label: 'Old completed task',
-              turnCount: 2,
-              commitCount: 1,
-              updatedLabel: 'yesterday',
-              runningCount: 0,
-              hidden: false,
-              done: true,
-              current: false,
-            },
-          ]}
-          onThreadFocus={vi.fn()}
-          onThreadDoneChange={vi.fn()}
-          doneThreadsCollapsed={true}
-          onDoneThreadsCollapsedChange={vi.fn()}
-          threadBarCollapsed={true}
-          onThreadBarCollapsedChange={onThreadBarCollapsedChange}
-          onCreateThread={vi.fn()}
-        />
-      </TooltipProvider>
-    );
-
-    expect(screen.queryByRole('tablist', { name: 'Graph threads' })).toBeNull();
-    expect(screen.getByLabelText('Graph threads (2)')).toBeTruthy();
-    expect(screen.getByLabelText('Running threads (1)')).toBeTruthy();
-    expect(screen.getByLabelText('Done threads (1)')).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Expand threads bar' }));
-
-    expect(onThreadBarCollapsedChange).toHaveBeenCalledWith(false);
-  });
-
-  it('shows compact thread navigation in the toolbar dropdown', async () => {
-    const onThreadFocus = vi.fn();
-    const onThreadDoneChange = vi.fn();
-    const onDoneThreadsCollapsedChange = vi.fn();
-
+  it('does not expose a duplicate thread switcher in graph controls', () => {
     render(
       <TooltipProvider>
         <GraphControls
@@ -582,101 +216,19 @@ describe('GraphControls', () => {
                 turnCount: 8,
                 commitCount: 3,
                 updatedLabel: '12m ago',
-                runningCount: 1,
+                runningCount: 0,
                 hidden: false,
                 done: false,
                 current: true,
               },
-              {
-                threadRootId: 'thread-hidden',
-                label: 'Old prompt experiment',
-                turnCount: 2,
-                commitCount: 1,
-                updatedLabel: 'yesterday',
-                runningCount: 0,
-                hidden: true,
-                done: true,
-                current: false,
-              },
             ],
-            onThreadFocus,
-            onThreadDoneChange,
-            onDoneThreadsCollapsedChange,
           })}
         />
       </TooltipProvider>
     );
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Threads (2)' }), {
-      button: 0,
-      ctrlKey: false,
-    });
-
-    expect(await screen.findByText('Fix checkout race condition')).toBeTruthy();
-    expect(screen.getByText('8 turns · 3 commits · 12m ago')).toBeTruthy();
-    expect(screen.getByText('Current')).toBeTruthy();
-    expect(screen.getAllByText('Active').length).toBeGreaterThan(0);
-    expect(screen.getByText('Done threads')).toBeTruthy();
-    expect(screen.queryByText('Old prompt experiment')).toBeNull();
-    expect(screen.getByRole('button', { name: 'All 2' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Active 1' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Done 1' })).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Done 1' }));
+    expect(screen.queryByRole('button', { name: 'Threads (1)' })).toBeNull();
     expect(screen.queryByText('Fix checkout race condition')).toBeNull();
-    expect(screen.getByText('Old prompt experiment')).toBeTruthy();
-    expect(onThreadFocus).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Active 1' }));
-    expect(screen.getByText('Fix checkout race condition')).toBeTruthy();
-    expect(screen.queryByText('Old prompt experiment')).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: 'All 2' }));
-    expect(screen.getByText('Fix checkout race condition')).toBeTruthy();
-    expect(screen.queryByText('Old prompt experiment')).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show done threads' }));
-    expect(onDoneThreadsCollapsedChange).toHaveBeenCalledWith(false);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Mark done Fix checkout race condition' }));
-    expect(onThreadDoneChange).toHaveBeenCalledWith('thread-active', true);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Open thread Fix checkout race condition' }));
-    expect(onThreadFocus).toHaveBeenCalledWith('thread-active');
-    await waitFor(() => {
-      expect(screen.queryByText('Fix checkout race condition')).toBeNull();
-    });
-  });
-
-  it('does not lock background scroll while thread dropdown is open', async () => {
-    render(
-      <TooltipProvider>
-        <GraphControls
-          {...makeProps({
-            threadItems: [
-              {
-                threadRootId: 'thread-active',
-                label: 'Fix checkout race condition',
-                turnCount: 8,
-                commitCount: 3,
-                updatedLabel: '12m ago',
-                runningCount: 0,
-                hidden: false,
-                done: false,
-                current: true,
-              },
-            ],
-          })}
-        />
-      </TooltipProvider>
-    );
-
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Threads (1)' }), {
-      button: 0,
-      ctrlKey: false,
-    });
-
-    expect(await screen.findByText('Fix checkout race condition')).toBeTruthy();
     expect(document.body.hasAttribute('data-scroll-locked')).toBe(false);
     expect(document.body.style.pointerEvents).not.toBe('none');
   });
@@ -733,8 +285,7 @@ describe('GraphControls', () => {
     expect(screen.getByRole('button', { name: 'Merge panel (1 source)' })).toBeTruthy();
   });
 
-  it('groups done threads at the bottom and keeps running done threads visible', async () => {
-    const onThreadDoneChange = vi.fn();
+  it('leaves done thread grouping to the workspace navigator', () => {
     render(
       <TooltipProvider>
         <GraphControls
@@ -777,29 +328,14 @@ describe('GraphControls', () => {
                 lastUpdatedAt: 1,
               },
             ],
-            onThreadDoneChange,
           })}
         />
       </TooltipProvider>
     );
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Threads (3)' }), {
-      button: 0,
-      ctrlKey: false,
-    });
-
-    expect(await screen.findByText('Active checkout fix')).toBeTruthy();
-    expect(screen.getByText('Done but still running')).toBeTruthy();
-    expect(screen.getByText('Done threads')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Threads (3)' })).toBeNull();
+    expect(screen.queryByText('Active checkout fix')).toBeNull();
+    expect(screen.queryByText('Done but still running')).toBeNull();
     expect(screen.queryByText('Old completed task')).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show done threads' }));
-    expect(screen.getByText('Old completed task')).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Mark done Active checkout fix' }));
-    expect(onThreadDoneChange).toHaveBeenCalledWith('thread-open', true);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Reopen thread Old completed task' }));
-    expect(onThreadDoneChange).toHaveBeenCalledWith('thread-done', false);
   });
 });

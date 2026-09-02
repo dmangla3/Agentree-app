@@ -1,7 +1,7 @@
 import { Edge, Node, Position } from '@xyflow/react';
 import dagre from 'dagre';
 import { BranchPointer, Message, Summary } from '../stores/workspaceStore';
-import type { AgentStatus } from '@shared/agentStatus';
+import { isActiveAgentStatus, type AgentStatus } from '@shared/agentStatus';
 import { RuntimeCatalogModel } from '../stores/modelStore';
 import { getGraphParentId } from './graph/lineage';
 import { classifyMessageNodeKind, getAssistantCommitCount, getToolCallCount } from '../domain/nodes';
@@ -1097,6 +1097,7 @@ const addContextBoundaryAnchors = (nodes: Node<any>[], edges: Edge[]): Edge[] =>
 const curatedLlmColorMap: Record<string, string> = {
   'gpt-5.5': 'bg-gradient-to-br from-emerald-400 to-teal-500',
   'gpt-5.2-codex': 'bg-gradient-to-br from-emerald-400 to-teal-500',
+  'claude-fable-5': 'bg-gradient-to-br from-orange-600 to-rose-500',
   'claude-sonnet-4-6': 'bg-gradient-to-br from-amber-400 to-yellow-500',
   'claude-opus-4-8': 'bg-gradient-to-br from-orange-500 to-amber-600',
   'claude-haiku-4-5-20251001': 'bg-gradient-to-br from-yellow-300 to-amber-400',
@@ -1907,6 +1908,7 @@ export const mapMessagesToGraphElements = (
       const changedFilesCount = filesChanged.length || undefined;
       const displayEntity = commitCount !== entity.commitCount ? { ...entity, commitCount } : entity;
       if (renderMessageNode) {
+        const nodeState = resolveNodeState(msg, null);
         nodes.push({
           id: msg.id,
           type: nodeKind, // Use the canonical node kind as the type
@@ -1960,8 +1962,8 @@ export const mapMessagesToGraphElements = (
             toolCallCount,
             commitCount,
             changedFilesCount,
-            agentStatus: resolveNodeState(msg, null).status ?? (msg.agent_id ? 'pending' : null),
-            isAgentRunning: ['pending', 'running', 'streaming'].includes(String(resolveNodeState(msg, null).status ?? '')),
+            agentStatus: nodeState.status ?? (msg.agent_id ? 'pending' : null),
+            isAgentRunning: isActiveAgentStatus(nodeState.status),
             agentId: msg.agent_id ?? null,
             isContextActive,
           },

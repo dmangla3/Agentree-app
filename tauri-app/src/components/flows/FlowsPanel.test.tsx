@@ -82,6 +82,8 @@ run:
     args:
       request: input.input`;
 
+const modifiedEditableYaml = editableYaml.replace('Original prompt {{ request }}', 'Updated prompt {{ request }}');
+
 describe('FlowsPanel', () => {
   it('appends internal completion deltas without inserting line breaks', () => {
     let output = '';
@@ -119,13 +121,19 @@ describe('FlowsPanel', () => {
     const { container } = renderFlowsPanel(<FlowsPanel />);
 
     expect(screen.getByRole('heading', { name: 'Parallel Synthesis Review' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Existing flows' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Create flow' })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Draft/ }).hasAttribute('disabled')).toBe(true);
     expect(screen.getByText('Select a model before drafting a flow.')).toBeTruthy();
     expect(screen.getByText('parallel_review_until_satisfied')).toBeTruthy();
     expect(screen.getByText('global')).toBeTruthy();
-    expect(screen.getByText('predefined')).toBeTruthy();
+    expect(screen.getByText('App in-built')).toBeTruthy();
     expect(screen.getByText('version 1')).toBeTruthy();
+    expect(screen.getByText('Runnable')).toBeTruthy();
+    expect(screen.queryByText('Flow canvas')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Parallel Synthesis Review flow details' }));
+
     expect(screen.getByText('input')).toBeTruthy();
     expect(screen.getByText('count')).toBeTruthy();
     expect(screen.getByText('1 to 5')).toBeTruthy();
@@ -217,7 +225,7 @@ describe('FlowsPanel', () => {
     expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull();
   });
 
-  it('edits and saves prompts for user flow nodes', async () => {
+  it('modifies and saves user flows through AI review', async () => {
     saveUserFlowSource({
       id: 'editable_flow',
       label: 'Editable Flow',
@@ -229,16 +237,29 @@ describe('FlowsPanel', () => {
       createdAt: '2026-06-10T00:00:00.000Z',
       updatedAt: '2026-06-10T00:00:00.000Z',
     });
-    renderFlowsPanel(<FlowsPanel />);
+    renderFlowsPanel(
+      <FlowsPanel
+        authoringAgent={{
+          complete: async () => modifiedEditableYaml,
+        }}
+      />
+    );
 
-    fireEvent.click(screen.getAllByText('Worker')[0]);
-    fireEvent.click(screen.getByRole('button', { name: 'Edit Worker prompt' }));
-    fireEvent.change(screen.getByLabelText('Worker prompt editor'), {
-      target: { value: 'Updated prompt {{ request }}' },
+    expect(screen.getByText('User created')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Editable Flow flow details' }));
+    expect(screen.queryByRole('button', { name: 'Edit Worker prompt' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Modify with AI' }));
+    fireEvent.change(screen.getByLabelText('Describe AI modification for Editable Flow'), {
+      target: { value: 'Update the worker prompt wording.' },
     });
-    fireEvent.click(screen.getAllByRole('button', { name: 'Save' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Draft modification' }));
 
-    expect(await screen.findByText('Prompt saved')).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Approve changes' })).toBeTruthy();
+    expect(screen.getByText(/Updated prompt {{ request }}/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve changes' }));
+
+    expect(await screen.findByText('Flow updated and validated')).toBeTruthy();
     expect(screen.getByText('Updated prompt {{ request }}')).toBeTruthy();
     expect(screen.queryByText('Original prompt {{ request }}')).toBeNull();
   });

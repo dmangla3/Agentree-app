@@ -13,14 +13,13 @@ import { useGraphSnapshot } from './useGraphSnapshot';
 import { useLocalNodes, type LocalNodeMessage } from './useLocalNodes';
 import { applyLocalNodeMessages } from './useLiveMessages';
 import { useMessages } from './useMessages';
+import { isTerminalAgentStatus, normalizeAgentStatus } from '@shared/agentStatus';
 
 const emptyLocalCommitGraph = { commits: [], commitParents: [], commitObservations: [] };
-const terminalStatuses = new Set(['completed', 'failed', 'cancelled', 'error']);
 
 const cleanTerminalStatus = (status: unknown): Message['status'] | null => {
-  if (typeof status !== 'string') return null;
-  const normalized = status.trim();
-  return terminalStatuses.has(normalized) ? normalized as Message['status'] : null;
+  const normalized = normalizeAgentStatus(status);
+  return normalized && isTerminalAgentStatus(normalized) ? normalized as Message['status'] : null;
 };
 
 const terminalStatusFromExecutionData = (executionData: unknown): Message['status'] | null => {

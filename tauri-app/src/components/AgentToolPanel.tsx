@@ -234,7 +234,7 @@ export function AgentToolPanel({ annotations, reasoning, className }: AgentToolP
             {/* Expanded Content */}
             {isExpanded && (
                 <div className="mt-2 pl-2 border-l-2 border-amber-500/30 space-y-2 pr-2 max-h-[400px] overflow-y-auto">
-                    {/* Tool Calls Only - Reasoning is shown separately in MessageCard */}
+                    {/* Tool calls only; reasoning is rendered by the surrounding assistant card. */}
                     {toolCalls.length > 0 && (
                         <div className="space-y-1.5">
                             <div className="flex items-center gap-1.5">

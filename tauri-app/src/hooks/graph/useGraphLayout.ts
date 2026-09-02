@@ -1,5 +1,6 @@
 import { useMemo, useRef } from 'react';
 import { Node, Edge, Position } from '@xyflow/react';
+import { isActiveAgentStatus } from '@shared/agentStatus';
 import { BranchPointer, Message, Summary, Insight } from '../../stores/workspaceStore';
 import type { WorkspaceProjection } from '../../domain/workspaceProjection';
 import { collapseRenderedFocusRoute } from '../../domain/focusRoute';
@@ -794,7 +795,7 @@ function applyVisualProperties(
             ...(latestMessage ? {
                 message: latestMessage,
                 agentStatus: resolveNodeState(latestMessage, null).status ?? (latestMessage.agent_id ? 'pending' : null),
-                isAgentRunning: ['pending', 'running', 'streaming'].includes(String(resolveNodeState(latestMessage, null).status ?? '')),
+                isAgentRunning: isActiveAgentStatus(resolveNodeState(latestMessage, null).status),
                 agentId: latestMessage.agent_id ?? null,
                 collapsed: latestMessage.collapsed,
                 heightKey,

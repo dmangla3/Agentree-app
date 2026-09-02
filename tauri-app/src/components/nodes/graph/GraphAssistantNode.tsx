@@ -1,5 +1,6 @@
 import { memo, useState } from 'react';
 import { Bot, GitCommitHorizontal, Wrench, Zap } from 'lucide-react';
+import { isActiveAgentStatus } from '@shared/agentStatus';
 import { GraphNodeWrapper } from './GraphNodeWrapper';
 import type { AttentionBadgeItem, SharedNodeProps } from '../../../types/nodes';
 import { cn } from '../../../lib/utils';
@@ -11,17 +12,8 @@ import { getNodeFailureReason, isNodeFailureStatus } from '../../../lib/nodeFail
 import { shouldHydrateAgentRunHover } from '../../../lib/agentRunHoverHydrationPolicy';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../../@/components/ui/hover-card';
 
-// Compact status icon only - no text
-const ACTIVE_ASSISTANT_STATUSES = new Set<AgentStatus | 'creating' | 'initializing'>([
-  'pending',
-  'creating',
-  'initializing',
-  'running',
-  'streaming',
-]);
-
 const isActiveAssistantStatus = (status: AgentStatus | null | undefined): boolean => (
-  Boolean(status && ACTIVE_ASSISTANT_STATUSES.has(status as AgentStatus))
+  isActiveAgentStatus(status)
 );
 
 const StatusIcon = ({

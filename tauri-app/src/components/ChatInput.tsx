@@ -2,8 +2,8 @@ import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import { flushSync } from 'react-dom';
 import TextareaAutosize from 'react-textarea-autosize';
 import { Button } from '../../@/components/ui/button';
-import { Send, X, Reply, FileText, FileTextIcon, GitBranchIcon, Loader2, ChevronDown, Bot, Clipboard, Check, Pencil, AtSign, RotateCcw, Plus, Minus, Search, GitCommitHorizontal, Workflow } from 'lucide-react';
-import { useWorkspaceStore, AttachmentMetadata, Message, Workspace, CommitEntity } from '../stores/workspaceStore';
+import { Send, X, Reply, FileText, FileTextIcon, GitBranchIcon, Loader2, ChevronDown, Bot, Check, Pencil, AtSign, RotateCcw, Plus, Minus, Search, GitCommitHorizontal, Workflow } from 'lucide-react';
+import { buildComposerDraftKey, useWorkspaceStore, AttachmentMetadata, Message, Workspace, CommitEntity } from '../stores/workspaceStore';
 import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 import { useProviderLimitsStore } from '../stores/providerLimitsStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
@@ -33,7 +33,7 @@ import axios from 'axios';
 import { api } from '../lib/api';
 import { getAccessToken } from '../lib/authSession';
 import { getMessageById, resolveNodeCommit } from '../lib/gitNodeUtils';
-import { track, trackAgentRunCompleted, trackAgentRunFailed, trackAgentRunStarted } from '../lib/analytics';
+import { track, trackAgentRunFailed, trackAgentRunStarted } from '../lib/analytics';
 import {
     resolveProviderContextRouting,
     resolveProviderContinuation,
@@ -91,8 +91,6 @@ import { createSendFlowId, recordSendFlowEvent, recordSendFlowMark } from '../pe
 import { withRuntimeActivity } from '../perf/runtimeActivityContext';
 import {
     clearAgentRunVisibilityTrace,
-    recordAssistantTextProjected,
-    recordAssistantTextReceived,
     registerAgentRunVisibilityTrace,
 } from '../perf/agentRunVisibilityPerf';
 import { agentRunManager } from '../agent-runs/agentRunManager';
@@ -106,23 +104,9 @@ import {
     shouldClearPersistedOptimisticUserProjection,
 } from '../agent-runs/agentRunOptimisticProjectionCleanup';
 import {
-    dispatchAgentRunUsage,
-    dispatchProviderStreamEvent,
-    dispatchStreamingAssistantText,
-    deriveStreamingAppendText,
-    extractMessageText,
-    mergeStreamingOutput,
-    resolveProviderAssistantOutput,
-} from '../agent-runs/agentRunStreamDispatch';
-import {
-    parseStdoutAgentEvent,
-    shouldAcceptFinalizeAckForRun,
-    summarizeFinalizeAck,
-    summarizeProviderStop,
-} from '../agent-runs/agentRunEventIngestor';
-import { requestAgentWorkspaceRefresh } from '../agent-runs/agentRunWorkspaceRefresh';
-import { projectBackgroundAgentEvent } from '../agent-runs/agentRunBackgroundStream';
-import { createAgentRunStreamRegistry, type FullStreamHandler } from '../agent-runs/agentRunStreamRegistry';
+    trackAgentRunLiveStreamMessage,
+    untrackAgentRunLiveStreamNode,
+} from '../agent-runs/agentRunLiveStreamCoordinator';
 import { commands } from '../generated/tauri-bindings';
 
 
@@ -155,8 +139,6 @@ type PendingGeneratedCommitFocus = {
     queuedAt: number;
 };
 
-const REQUIRED_PROTOCOL_FALLBACK_NATIVE_EXIT_TERMINAL_EVENT = 'required-protocol:native-exit-terminal-event';
-
 const getAttachmentId = (attachment: Attachment) => {
     if ('id' in attachment) return attachment.id;
     return attachment.path;
@@ -176,6 +158,7 @@ interface QueuedComposerSend {
     contextIds: string[];
     editDraftSource: Message | null;
     parentMessageId: string | null;
+    draftTargetId: string | null;
     queuedAt: number;
 }
 
@@ -186,21 +169,11 @@ interface ActiveFileMention {
 }
 
 // --- Constants ---
-const STREAM_LOG_PREFIX = '[RCSTRM]';
 const FLOW_NONE_ID = '__none__';
 const FLOW_PARALLEL_MIN_COUNT = 1;
 const FLOW_PARALLEL_MAX_COUNT = 5;
-const FULL_STREAM_UNWATCHED_GRACE_MS = 5_000;
 const STREAM_DEBUG_ENABLED = ['1', 'true', 'yes'].includes(String(import.meta.env.VITE_STREAM_DEBUG || '').toLowerCase());
 const SEND_FLOW_DEBUG_ENABLED = ['1', 'true', 'yes'].includes(String(import.meta.env.VITE_SEND_FLOW_DEBUG || '').toLowerCase()) || STREAM_DEBUG_ENABLED;
-const streamDebug = (message: string, details?: Record<string, unknown>) => {
-    if (!STREAM_DEBUG_ENABLED) return;
-    if (details) {
-        console.log(`${STREAM_LOG_PREFIX} ${message}`, details);
-        return;
-    }
-    console.log(`${STREAM_LOG_PREFIX} ${message}`);
-};
 const UI_DEBUG_PREFIX = '[UIFLOW]';
 const UI_DEBUG_ENABLED = ['1', 'true', 'yes'].includes(String(import.meta.env.VITE_UI_FLOW_DEBUG || '').toLowerCase()) || STREAM_DEBUG_ENABLED;
 const uiDebug = (message: string, details?: Record<string, unknown>) => {
@@ -322,78 +295,15 @@ const resolveContextStartMessage = (
     return latestFreshStart ?? contextMessages[0] ?? null;
 };
 
-const DEFAULT_CODEX_AUTH_COMMAND = `CODEX_HOME=/Users/example/.codex codex -c 'cli_auth_credentials_store="file"' login --device-auth`;
-
-const extractRecommendedCommand = (message: string) => {
-    const commandMatch = message.match(/Run `([^`]+)`/i);
-    if (commandMatch?.[1]) return commandMatch[1].trim();
-    return null;
-};
-
-const getCodexAuthToastDetails = (message: string) => {
-    const normalized = message.toLowerCase();
-    const isAuthError =
-        normalized.includes('codex auth file not found') ||
-        normalized.includes('codex is not authenticated') ||
-        normalized.includes('token_expired') ||
-        normalized.includes('authentication token is expired') ||
-        normalized.includes('401 unauthorized') ||
-        normalized.includes('codex authentication is missing') ||
-        normalized.includes('auth.json is missing') ||
-        normalized.includes('device-auth');
-
-    if (!isAuthError) return null;
-
-    return {
-        title: 'Codex login required',
-        description: normalized.includes('app sandbox')
-            ? 'Agentree could not access your Codex login from the app sandbox. Run this command in Terminal, then retry.'
-            : 'Agentree could not use your current Codex login. Run this command in Terminal, then retry.',
-        command: extractRecommendedCommand(message) || DEFAULT_CODEX_AUTH_COMMAND,
-    };
-};
-
-function CopyToastCommand({ command }: { command: string }) {
-    const [copied, setCopied] = useState(false);
-
-    const handleCopy = useCallback(async () => {
-        try {
-            await navigator.clipboard.writeText(command);
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 2000);
-        } catch (error) {
-            console.error('Failed to copy command:', error);
-        }
-    }, [command]);
-
-    return (
-        <div className="mt-2 rounded-md border border-border/70 bg-background/80 p-2">
-            <div className="flex items-start gap-2">
-                <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-[11px] text-foreground">
-                    {command}
-                </code>
-                <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handleCopy}
-                    className="h-7 shrink-0 gap-1 px-2 text-[11px]"
-                >
-                    {copied ? <Check size={12} /> : <Clipboard size={12} />}
-                    {copied ? 'Copied' : 'Copy'}
-                </Button>
-            </div>
-        </div>
-    );
-}
-
 const hasConversationChild = (
     messageId: string | null | undefined,
     messages: Message[],
-    messageMap: Map<string, Message>
+    messageMap: Map<string, Message>,
+    excludedMessageIds: Set<string> = new Set()
 ): boolean => {
     if (!messageId) return false;
     return messages.some((message) => {
+        if (excludedMessageIds.has(message.id)) return false;
         if (message.parentId !== messageId) return false;
         return !isFirstClassCommitMessage(message, { messageMap });
     });
@@ -430,8 +340,7 @@ import { agentClient } from '../lib/agentClient';
 import { resolveComposerDefaultAgentId } from '../lib/composerModelDefaults';
 import { buildComposerContextManifest, buildComposerContextSelection, type ComposerContextManifest } from '../lib/composerContext';
 import { EMPTY_COMPOSER_CONTEXT_MANIFEST, buildAgentRunPrompt } from '../lib/prompts';
-import { AGENT_STATUS, TERMINAL_STATUSES } from '@shared/agentStatus';
-import type { TerminalStatus } from '@shared/agentStatus';
+import { AGENT_STATUS, isActiveAgentStatus, isTerminalAgentStatus } from '@shared/agentStatus';
 import { createOptimisticAssistantMessage, createOptimisticNodePair, categorizeError, formatErrorMessage, isOptimisticId } from '../lib/optimisticMessages';
 import {
     buildComposerAgentTurnTopology,
@@ -519,7 +428,7 @@ export function ChatInput({
         setSelectedAgentId,
         setComposerContextPreview,
         setComposerBaseCommitOverride,
-        getComposerDraft,
+        composerDraftByWorkspace,
         setComposerDraft,
         clearComposerDraft,
     } = useWorkspaceStore(
@@ -539,7 +448,7 @@ export function ChatInput({
             setSelectedAgentId: state.setSelectedAgentId,
             setComposerContextPreview: state.setComposerContextPreview,
             setComposerBaseCommitOverride: state.setComposerBaseCommitOverride,
-            getComposerDraft: state.getComposerDraft,
+            composerDraftByWorkspace: state.composerDraftByWorkspace,
             setComposerDraft: state.setComposerDraft,
             clearComposerDraft: state.clearComposerDraft,
         }))
@@ -561,9 +470,6 @@ export function ChatInput({
     }, []);
     const cleanupAgentRunProjection = useCallback((nodeId: string) => {
         agentRunManager.cleanup(nodeId);
-    }, []);
-    const clearAllAgentRunActors = useCallback(() => {
-        agentRunManager.clearAll();
     }, []);
     const replaceOptimisticNode = useCallback((optimisticId: string, realNode: Message) => {
         agentRunManager.replaceNode(optimisticId, realNode);
@@ -588,7 +494,6 @@ export function ChatInput({
         )
     );
     const { addToast } = useToast();
-    const codexAuthToastShownRef = useRef(false);
     const commitFocusHandledByFlowRef = useRef(new Set<string>());
 
     // Get workspaces to access folderPath for agent working directory
@@ -709,10 +614,6 @@ export function ChatInput({
 
     useEffect(() => registerAgentRunEffectsQueryClient(queryClient), [queryClient]);
 
-    const refreshPersistedAgentNode = useCallback((workspaceId: string, reason: string) => {
-        requestAgentWorkspaceRefresh(queryClient, workspaceId, { reason });
-    }, [queryClient]);
-
     const focusedCommitSha = useMemo(() => {
         if (lastFocusSource !== 'graph') return null;
         const metadataCommitSha = typeof lastFocusMetadata?.commitSha === 'string'
@@ -731,11 +632,15 @@ export function ChatInput({
     const replyParentMessageId = editDraftSource
         ? (editDraftSource.parentId ?? null)
         : parentMessageId;
+    const isRootComposerTarget = !replyParentMessageId;
     const selectedNodeId = editDraftSource
         ? replyParentMessageId
         : parentMessageIdOverride !== undefined
             ? parentMessageIdOverride
             : focusedMessageId;
+    const composerDraftTargetId = editDraftSource?.id ?? replyParentMessageId ?? selectedNodeId ?? null;
+    const composerDraftKey = buildComposerDraftKey(selectedWorkspaceId, composerDraftTargetId);
+    const composerDraft = composerDraftKey ? composerDraftByWorkspace[composerDraftKey] ?? '' : '';
     const selectedNodeMessage = useMemo(
         () => (selectedNodeId ? messageLookupMessages.find((m: Message) => m.id === selectedNodeId) || null : null),
         [messageLookupMessages, selectedNodeId]
@@ -769,11 +674,7 @@ export function ChatInput({
         )
     );
     const isInProgressStatus = useCallback((status: string | null | undefined) => (
-        status === 'pending' ||
-        status === 'creating' ||
-        status === 'initializing' ||
-        status === AGENT_STATUS.running ||
-        status === AGENT_STATUS.streaming
+        isActiveAgentStatus(status)
     ), []);
     const selectedNodeRole = selectedProjection?.role ?? selectedNodeMessage?.role ?? null;
     const isSelectedNodeRunning = useMemo(() => {
@@ -788,17 +689,6 @@ export function ChatInput({
     const [currentAbortController, setCurrentAbortController] = useState<AbortController | null>(null);
     const [activeComposerSend, setActiveComposerSend] = useState<ActiveComposerSend | null>(null);
     const composerSendStartGateRef = useRef(createComposerSendStartGate());
-    const activeAgentMessageByIdRef = useRef<Map<string, Message>>(new Map());
-    const promoteStreamForNodeRef = useRef<(node: Message, options: { reason: string }) => Promise<void>>(async () => undefined);
-    const streamRegistryRef = useRef(createAgentRunStreamRegistry({
-        background: projectBackgroundAgentEvent,
-        onTerminalHydration: (context) => {
-            const message = activeAgentMessageByIdRef.current.get(context.nodeId);
-            if (!message) return;
-            void promoteStreamForNodeRef.current(message, { reason: 'terminal-hydration' });
-        },
-    }));
-    const fullStreamDowngradeTimersRef = useRef<Map<string, number>>(new Map());
     const latencyTraceRef = useRef<Map<string, {
         traceId: string;
         nodeId: string | null;
@@ -809,16 +699,7 @@ export function ChatInput({
     const sendFlowByKeyRef = useRef<Map<string, string>>(new Map());
     const pendingGeneratedCommitFocusByTargetRef = useRef<Map<string, PendingGeneratedCommitFocus>>(new Map());
     const unregisterStreamHandler = useCallback((nodeId: string) => {
-        streamRegistryRef.current.unregister(nodeId);
-        activeAgentMessageByIdRef.current.delete(nodeId);
-    }, []);
-    const clearAllStreamHandlers = useCallback(() => {
-        streamRegistryRef.current.clear();
-        activeAgentMessageByIdRef.current.clear();
-        for (const timer of fullStreamDowngradeTimersRef.current.values()) {
-            window.clearTimeout(timer);
-        }
-        fullStreamDowngradeTimersRef.current.clear();
+        untrackAgentRunLiveStreamNode(nodeId);
     }, []);
     const assignSendFlowKey = useCallback((key: string | null | undefined, flowId: string | null | undefined) => {
         if (!key || !flowId) return;
@@ -946,13 +827,6 @@ export function ChatInput({
             queuedAt: Date.now(),
         });
     }, [getSendFlowIdForKey]);
-    const hasPendingCommitFocusForFlow = useCallback((flowId: string | null | undefined) => {
-        if (!flowId) return false;
-        for (const pending of pendingGeneratedCommitFocusByTargetRef.current.values()) {
-            if (pending.flowId === flowId) return true;
-        }
-        return false;
-    }, []);
     const finishSendFlowLifecycleFocus = useCallback((
         flowId: string | null | undefined,
         assistantMessageId: string,
@@ -1078,55 +952,6 @@ export function ChatInput({
         }
         return trace.traceId;
     }, [assignSendFlowKey, ensureLatencyTrace, getSendFlowIdForKey]);
-
-    const maybeShowCodexAuthToast = useCallback((message: string) => {
-        if (codexAuthToastShownRef.current) return;
-        if (!message) return;
-        const details = getCodexAuthToastDetails(message);
-        if (!details) return;
-        codexAuthToastShownRef.current = true;
-        addToast({
-            title: details.title,
-            description: details.description,
-            variant: 'error',
-            persistent: true,
-            action: {
-                component: <CopyToastCommand command={details.command} />,
-            },
-        });
-    }, [addToast]);
-
-    useEffect(() => {
-        return () => {
-            clearAllStreamHandlers();
-            clearAllAgentRunActors();
-        };
-    }, [clearAllStreamHandlers, clearAllAgentRunActors]);
-
-    useEffect(() => {
-        let unlisten: (() => void) | null = null;
-        let cancelled = false;
-
-        void agentClient.onEvent(({ nodeId, event }) => {
-            if (!nodeId || !event) return;
-            streamRegistryRef.current.receive(nodeId, event);
-        }).then((nextUnlisten) => {
-            if (cancelled) {
-                nextUnlisten();
-                return;
-            }
-            unlisten = nextUnlisten;
-        }).catch((error) => {
-            console.error('[ChatInput] Failed to subscribe to Tauri agent stream:', error);
-        });
-
-        return () => {
-            cancelled = true;
-            if (unlisten) {
-                unlisten();
-            }
-        };
-    }, []);
 
     const worktreeInfoRef = useRef<Map<string, WorktreeRuntimeInfo | null>>(new Map());
     const autoCheckoutPendingRef = useRef<Set<string>>(new Set());
@@ -1416,7 +1241,7 @@ export function ChatInput({
     useEffect(() => {
         for (const message of persistedMessages) {
             if (!autoCheckoutPendingRef.current.has(message.id)) continue;
-            if (!message.status || !TERMINAL_STATUSES.includes(message.status as TerminalStatus)) continue;
+            if (!isTerminalAgentStatus(message.status)) continue;
             if (message.status === AGENT_STATUS.completed) continue;
             autoCheckoutPendingRef.current.delete(message.id);
             autoCheckoutHandledRef.current.add(message.id);
@@ -1424,9 +1249,9 @@ export function ChatInput({
         }
     }, [notifyAutoCheckoutDidNotSucceed, persistedMessages]);
 
-    const startStreamForNode = useCallback(async (
+    const trackStreamForNode = useCallback(async (
         node: Message,
-        options?: { waitForReady?: boolean; authToken?: string; parentId?: string | null; reason?: string }
+        options?: { authToken?: string; parentId?: string | null }
     ) => {
         const nodeId = node.id;
         const workspaceId = node.workspaceId;
@@ -1443,882 +1268,31 @@ export function ChatInput({
             registerAgentRunVisibilityTrace({ nodeId, flowId });
         }
         recordLatencyMark(nodeId, 'tauri_stream_registered', { authToken, nodeId });
-
-        streamDebug(`tauri_stream_register node=${nodeId}`);
-        const streamStartedAt = performance.now();
-        unregisterStreamHandler(nodeId);
-        activeAgentMessageByIdRef.current.set(nodeId, node);
-        const projectedOutput = getAgentRunProjection(nodeId)?.content;
-        let output = typeof projectedOutput === 'string' ? projectedOutput : node.content || '';
-        let terminalFinalized = false;
-        let pendingContentFlushTimer: number | null = null;
-        let pendingContentFlushAgentId: string | null | undefined = node.agent_id;
-        let pendingContentFlushTimestamp: number | undefined = undefined;
-        let latestStreamSeq: number | null = null;
-        let activeProviderAssistantItemId: string | null = null;
-        const nodeExecution = (node.execution_data || {}) as Record<string, any>;
-        const resolveFullReplayAfterSeq = () => {
-            const currentProjection = getAgentRunProjection(nodeId);
-            const projectionExecution = (currentProjection?.execution_data || {}) as Record<string, any>;
-            if (typeof projectionExecution.last_agent_event_seq === 'number') {
-                return projectionExecution.last_agent_event_seq;
-            }
-            if (typeof nodeExecution.last_agent_event_seq === 'number') {
-                return nodeExecution.last_agent_event_seq;
-            }
-            return null;
-        };
-        let latestAgentEventSeq: number | null = resolveFullReplayAfterSeq();
-        let lastPersistedAgentEventSeq: number | null = latestAgentEventSeq;
-        let lastAgentEventSeqPersistedAt = 0;
-        let markedRunning = false;
-        const markRunningOnce = () => {
-            if (markedRunning) return;
-            markedRunning = true;
-            setNodeStatus(nodeId, 'running');
-        };
-        const persistLatestAgentEventSeq = (force = false) => {
-            if (typeof latestAgentEventSeq !== 'number') return;
-            if (!force) {
-                const now = Date.now();
-                if (latestAgentEventSeq === lastPersistedAgentEventSeq) return;
-                if (now - lastAgentEventSeqPersistedAt < 1000) return;
-                lastAgentEventSeqPersistedAt = now;
-            }
-            lastPersistedAgentEventSeq = latestAgentEventSeq;
-            mergeAgentRunExecutionData(nodeId, { last_agent_event_seq: latestAgentEventSeq });
-        };
-        const currentTraceId = () => latencyTraceRef.current.get(nodeId)?.traceId ?? null;
-        const currentFlowId = () => getSendFlowIdForKey(nodeId) ?? flowId ?? null;
-        const nativeEventTimestampMs = (value: unknown) => (
-            typeof value === 'number' && Number.isFinite(value) ? value : null
-        );
-        const recordFirstAssistantTextReceived = (
-            transport: string,
-            timestamp?: unknown,
-            streamSeq?: number | null,
-        ) => {
-            if (output.trim().length === 0) return;
-            const nativeTs = nativeEventTimestampMs(timestamp);
-            const detail = {
-                transport,
-                streamSeq: streamSeq ?? latestStreamSeq,
-                contentLength: output.length,
-                nativeToFrontendMs: nativeTs === null ? null : Math.max(0, Date.now() - nativeTs),
-            };
-            recordLatencyMark(nodeId, 'first_assistant_text_received', {
-                authToken,
-                nodeId,
-                detail,
-            });
-            recordAssistantTextReceived({
-                nodeId,
-                flowId: currentFlowId(),
-                traceId: currentTraceId(),
-                transport,
-                nativeEventTimestampMs: nativeTs,
-                streamSeq: streamSeq ?? latestStreamSeq,
-                contentLength: output.length,
-            });
-        };
-
-        const flushBufferedAssistantText = (options?: {
-            force?: boolean;
-            agentId?: string | null;
-            timestamp?: number;
-        }) => {
-            if (options?.agentId !== undefined) {
-                pendingContentFlushAgentId = options.agentId;
-            }
-            if (options?.timestamp !== undefined) {
-                pendingContentFlushTimestamp = options.timestamp;
-            }
-
-            if (options?.force && pendingContentFlushTimer !== null) {
-                window.clearTimeout(pendingContentFlushTimer);
-                pendingContentFlushTimer = null;
-            }
-
-            const current = getAgentRunProjection(nodeId);
-            const projectedContent = typeof current?.content === 'string' ? current.content : '';
-            const actorContent = agentRunManager.snapshot(nodeId)?.content;
-            if ((actorContent ?? projectedContent) === output) {
-                if (options?.force && projectedContent !== output) {
-                    agentRunManager.promoteProjection(nodeId);
-                }
-                return;
-            }
-
-            const appended = deriveStreamingAppendText(actorContent, projectedContent, output);
-            dispatchStreamingAssistantText(output, {
-                nodeId,
-                parentId,
-                workspaceId,
-                agentId: pendingContentFlushAgentId,
-                appendedText: appended,
-                timestamp: pendingContentFlushTimestamp ?? Date.now(),
-                streamSeq: latestStreamSeq,
-            });
-            if (output.trim().length > 0) {
-                recordLatencyMark(nodeId, 'first_assistant_text_projected', {
-                    authToken,
-                    nodeId,
-                    detail: {
-                        contentLength: output.length,
-                        streamSeq: latestStreamSeq,
-                    },
-                });
-                recordAssistantTextProjected({
-                    nodeId,
-                    flowId: currentFlowId(),
-                    traceId: currentTraceId(),
-                    contentLength: output.length,
-                    streamSeq: latestStreamSeq,
-                });
-            }
-            if (options?.force) {
-                uiDebug(`flush node=${nodeId}`, {
-                    nodeId,
-                    contentLength: output.length,
-                    appendedLength: appended.length,
-                    elapsedMs: Math.round(performance.now() - streamStartedAt),
-                });
-            }
-        };
-
-        const scheduleBufferedAssistantTextFlush = (options?: {
-            force?: boolean;
-            agentId?: string | null;
-            timestamp?: number;
-        }) => {
-            if (options?.force) {
-                flushBufferedAssistantText(options);
-                return;
-            }
-
-            if (options?.agentId !== undefined) {
-                pendingContentFlushAgentId = options.agentId;
-            }
-            if (options?.timestamp !== undefined) {
-                pendingContentFlushTimestamp = options.timestamp;
-            }
-            if (pendingContentFlushTimer !== null) return;
-
-            pendingContentFlushTimer = window.setTimeout(() => {
-                pendingContentFlushTimer = null;
-                flushBufferedAssistantText();
-            }, 32);
-        };
-
-        const finalizeAgentRunMessage = (
-            finalStatus: string = AGENT_STATUS.completed,
-            options?: { clearOverlay?: boolean }
-        ) => {
-            const shouldClearOverlay = options?.clearOverlay ?? false;
-            const isFirstTerminalFinalize = !terminalFinalized;
-            if (terminalFinalized && !shouldClearOverlay) return;
-            if (!terminalFinalized) {
-                terminalFinalized = true;
-            }
-            uiDebug(`finalize:start node=${nodeId}`, {
-                nodeId,
-                finalStatus,
-                elapsedMs: Math.round(performance.now() - streamStartedAt),
-                bufferedOutputLength: output.length,
-                currentProjectionLength: getAgentRunProjection(nodeId)?.content?.length || 0,
-            });
-            flushBufferedAssistantText({ force: true });
-            const currentProjection = getAgentRunProjection(nodeId);
-            const finalContent = (() => {
-                const bufferedOutput = typeof output === 'string' ? output : '';
-                const streamedContent = currentProjection?.content || '';
-                if (!streamedContent) return bufferedOutput;
-                if (!bufferedOutput) return streamedContent;
-                if (bufferedOutput.startsWith(streamedContent)) return bufferedOutput;
-                if (streamedContent.startsWith(bufferedOutput)) return streamedContent;
-                return streamedContent.length >= bufferedOutput.length ? streamedContent : bufferedOutput;
-            })();
-            streamDebug(`finalize node=${nodeId} status=${finalStatus}`, {
-                nodeId,
-                finalStatus,
-                bufferedOutputLength: output.length,
-                streamedContentLength: currentProjection?.content?.length || 0,
-                stream_seq: (currentProjection as any)?.execution_data?.last_stream_seq ?? null,
-            });
-            const finalExecutionData = {
-                ...(currentProjection?.execution_data || {}),
-                ...(typeof latestAgentEventSeq === 'number' ? { last_agent_event_seq: latestAgentEventSeq } : {}),
-                ...(typeof latestStreamSeq === 'number' ? { last_stream_seq: latestStreamSeq } : {}),
-                last_terminal_status: finalStatus,
-            };
-            agentRunManager.dispatch(nodeId, {
-                type: 'execution_data',
-                patch: finalExecutionData,
-            }, {
-                workspaceId,
-                parentId,
-                role: 'assistant',
-                agentId: currentProjection?.agent_id || node.agent_id || null,
-                content: finalContent,
-                executionData: finalExecutionData,
-            });
-            agentRunManager.dispatch(nodeId, {
-                type: 'terminal',
-                status: finalStatus as any,
-                content: finalContent,
-                reason: finalStatus,
-                holdMs: 3000,
-            }, {
-                workspaceId,
-                parentId,
-                role: 'assistant',
-                agentId: currentProjection?.agent_id || node.agent_id || null,
-                content: finalContent,
-                executionData: finalExecutionData,
-            });
-            refreshPersistedAgentNode(workspaceId, 'agent-terminal');
-            uiDebug(`finalize:overlay-updated node=${nodeId}`, {
-                nodeId,
-                finalStatus,
-                finalContentLength: finalContent.length,
-                elapsedMs: Math.round(performance.now() - streamStartedAt),
-            });
-            if (isFirstTerminalFinalize) {
-                if (flowId) {
-                    const lifecycleSuffix = finalStatus === AGENT_STATUS.completed
-                        ? 'lifecycle.completed'
-                        : finalStatus === AGENT_STATUS.cancelled
-                            ? 'lifecycle.cancelled'
-                            : 'lifecycle.failed';
-                    recordSendFlowEvent(lifecycleSuffix, {
-                        flowId,
-                        nodeId,
-                        workspaceId,
-                        parentId,
-                        finalStatus,
-                        elapsedMs: Math.round(performance.now() - streamStartedAt),
-                        finalContentLength: finalContent.length,
-                    }, { source: 'ChatInput' });
-                }
-                const finalEventProperties = {
-                    workspace_id: workspaceId,
-                    node_id: nodeId,
-                    parent_id: parentId || null,
-                    agent_id: currentProjection?.agent_id || node.agent_id || null,
-                    final_status: finalStatus,
-                    elapsed_ms: Math.round(performance.now() - streamStartedAt),
-                    final_content_chars: finalContent.length,
-                };
-                if (finalStatus === AGENT_STATUS.completed) {
-                    trackAgentRunCompleted(finalEventProperties);
-                } else {
-                    trackAgentRunFailed(finalEventProperties);
-                }
-                if (!shouldClearOverlay) {
-                    window.setTimeout(() => {
-                        finalizeAgentRunMessage(finalStatus, { clearOverlay: true });
-                    }, 3000);
-                }
-            }
-            if (shouldClearOverlay) {
-                if (pendingContentFlushTimer !== null) {
-                    window.clearTimeout(pendingContentFlushTimer);
-                    pendingContentFlushTimer = null;
-                }
-                agentRunManager.cleanup(nodeId);
-                worktreeInfoRef.current.delete(nodeId);
-                latencyTraceRef.current.delete(nodeId);
-                if (flowId) {
-                    if (hasPendingCommitFocusForFlow(flowId)) {
-                        recordSendFlowEvent('cleanup.focus-end-deferred', {
-                            flowId,
-                            nodeId,
-                            workspaceId,
-                            finalStatus,
-                        }, { source: 'ChatInput' });
-                    } else {
-                        finishSendFlowLifecycleFocus(flowId, nodeId, 'terminal-cleanup', {
-                            workspaceId,
-                            finalStatus,
-                        });
-                    }
-                } else {
-                    releaseSendFlowKey(nodeId);
-                }
-                uiDebug(`finalize:overlay-cleared node=${nodeId}`, {
-                    nodeId,
-                    elapsedMs: Math.round(performance.now() - streamStartedAt),
-                });
-            }
-        };
-
-        const dispatchStreamEvent = (eventData: any, agentId: string | null | undefined = undefined) => {
-            dispatchProviderStreamEvent(eventData, {
-                nodeId,
-                parentId,
-                workspaceId,
-                agentId: agentId ?? null,
-                currentOutput: output,
-                getProjection: getAgentRunProjection,
-                getAgents: () => agents,
-                setSetupProgress,
-            });
-        };
-
-        const dispatchUsage = (usage: any, agentId: string | null | undefined = undefined) => {
-            dispatchAgentRunUsage(usage, {
-                nodeId,
-                parentId,
-                workspaceId,
-                agentId: agentId ?? null,
-            });
-        };
-
-        const fullHandler: FullStreamHandler = (data: any) => {
-            try {
-                agentRunManager.ingest(nodeId, data, {
-                    workspaceId,
-                    parentId,
-                    role: 'assistant',
-                    agentId: data.agent_id ?? node.agent_id ?? null,
-                    content: output,
-                    executionData: (node.execution_data || {}) as Record<string, any>,
-                });
-                if (typeof data.seq === 'number') {
-                    if (latestAgentEventSeq !== null && data.seq <= latestAgentEventSeq) {
-                        return;
-                    }
-                    latestAgentEventSeq = data.seq;
-                    persistLatestAgentEventSeq();
-                }
-                if (typeof data.stream_seq === 'number') {
-                    latestStreamSeq = data.stream_seq;
-                }
-                {
-                    const nativeTs = nativeEventTimestampMs(data.timestamp);
-                    recordLatencyMark(nodeId, 'first_tauri_event_received', {
-                        authToken,
-                        nodeId,
-                        detail: {
-                            eventType: data.type ?? null,
-                            streamSeq: data.stream_seq ?? null,
-                            nativeToFrontendMs: nativeTs === null ? null : Math.max(0, Date.now() - nativeTs),
-                        },
-                    });
-                }
-                markRunningOnce();
-
-                if (
-                    data.type !== 'stdout' &&
-                    data.type !== 'stderr' &&
-                    data.type !== 'exit' &&
-                    data.type !== 'stop' &&
-                    data.type !== 'provider_stop'
-                ) {
-                    if (data.type === 'message_delta' && typeof data.delta === 'string') {
-                        const merged = resolveProviderAssistantOutput(output, data.delta, {
-                            kind: 'delta',
-                            currentProviderItemId: activeProviderAssistantItemId,
-                            nextProviderItemId: data.provider_item_id,
-                        });
-                        output = merged.output;
-                        activeProviderAssistantItemId = merged.providerItemId;
-                        recordLatencyMark(nodeId, 'first_assistant_delta', {
-                            authToken,
-                            nodeId,
-                            detail: { transport: 'tauri_message_delta' },
-                        });
-                        recordFirstAssistantTextReceived('tauri_message_delta', data.timestamp, data.stream_seq);
-                        scheduleBufferedAssistantTextFlush({
-                            agentId: data.agent_id,
-                            timestamp: data.timestamp,
-                        });
-                    } else if (data.type === 'message_completed' && typeof data.content === 'string') {
-                        const merged = resolveProviderAssistantOutput(output, data.content, {
-                            kind: 'snapshot',
-                            currentProviderItemId: activeProviderAssistantItemId,
-                            nextProviderItemId: data.provider_item_id,
-                        });
-                        output = merged.output;
-                        activeProviderAssistantItemId = merged.providerItemId;
-                        recordFirstAssistantTextReceived('tauri_message_completed', data.timestamp, data.stream_seq);
-                        scheduleBufferedAssistantTextFlush({
-                            force: true,
-                            agentId: data.agent_id,
-                            timestamp: data.timestamp,
-                        });
-                    } else if (data.type === 'message' && typeof data.content === 'string') {
-                        const nextOutput = mergeStreamingOutput(output, data.content);
-                        output = nextOutput;
-                        recordFirstAssistantTextReceived('tauri_message', data.timestamp, data.stream_seq);
-                        scheduleBufferedAssistantTextFlush({
-                            force: true,
-                            agentId: data.agent_id,
-                            timestamp: data.timestamp,
-                        });
-                    } else if (data.type === 'usage' && data.usage) {
-                        dispatchUsage(data.usage, data.agent_id);
-                    } else if (data.type === 'codex_event' && data.usage) {
-                        dispatchUsage(data.usage, data.agent_id);
-                    } else if (data.type === 'provider_meta' || data.type === 'thinking' || data.type === 'tool_use' || data.type === 'tool_result' || data.type === 'tool_output_delta' || data.type === 'error') {
-                        if (data.type === 'error' && typeof data.content === 'string') {
-                            maybeShowCodexAuthToast(data.content);
-                        }
-                        dispatchStreamEvent(data, data.agent_id);
-                    }
-                    return;
-                }
-
-                if (data.type === 'stdout') {
-                    const parsedStdout = parseStdoutAgentEvent(data.data);
-                    if (parsedStdout.kind === 'json') {
-                        const innerData = parsedStdout.event;
-                        if (innerData?.type === 'message') {
-                            maybeShowCodexAuthToast(extractMessageText(innerData));
-                        }
-                        if (innerData.type === 'message_delta' && typeof innerData.delta === 'string') {
-                            const merged = resolveProviderAssistantOutput(output, innerData.delta, {
-                                kind: 'delta',
-                                currentProviderItemId: activeProviderAssistantItemId,
-                                nextProviderItemId: innerData.provider_item_id,
-                            });
-                            output = merged.output;
-                            activeProviderAssistantItemId = merged.providerItemId;
-                            recordLatencyMark(nodeId, 'first_assistant_delta', {
-                                authToken,
-                                nodeId,
-                                detail: { transport: 'tauri_stdout_message_delta' },
-                            });
-                            recordFirstAssistantTextReceived('tauri_stdout_message_delta', innerData.timestamp ?? data.timestamp, data.stream_seq);
-                            scheduleBufferedAssistantTextFlush({
-                                agentId: data.agent_id,
-                                timestamp: innerData.timestamp ?? data.timestamp,
-                            });
-                            return;
-                        }
-                        if (innerData.type === 'message_completed' && typeof innerData.content === 'string') {
-                            const merged = resolveProviderAssistantOutput(output, innerData.content, {
-                                kind: 'snapshot',
-                                currentProviderItemId: activeProviderAssistantItemId,
-                                nextProviderItemId: innerData.provider_item_id,
-                            });
-                            output = merged.output;
-                            activeProviderAssistantItemId = merged.providerItemId;
-                            recordFirstAssistantTextReceived('tauri_stdout_message_completed', innerData.timestamp ?? data.timestamp, data.stream_seq);
-                            scheduleBufferedAssistantTextFlush({
-                                force: true,
-                                agentId: data.agent_id,
-                                timestamp: innerData.timestamp ?? data.timestamp,
-                            });
-                            return;
-                        }
-                        if (innerData.type === 'assistant' && innerData.message?.content) {
-                            const blocks = Array.isArray(innerData.message.content) ? innerData.message.content : [];
-                            for (const block of blocks) {
-                                if (!block) continue;
-                                if (block.type === 'text') {
-                                    const nextOutput = mergeStreamingOutput(output, block.text || '');
-                                    output = nextOutput;
-                                    scheduleBufferedAssistantTextFlush({
-                                        agentId: data.agent_id,
-                                        timestamp: innerData.timestamp ?? data.timestamp,
-                                    });
-                                } else if (block.type === 'tool_use') {
-                                    dispatchStreamEvent({
-                                        type: 'tool_use',
-                                        id: block.id,
-                                        name: block.name,
-                                        tool_input: block.input,
-                                        commandActions: (block as any).commandActions ?? (block as any).command_actions,
-                                        provider_item: (block as any).provider_item,
-                                        provider_item_id: (block as any).provider_item_id,
-                                    }, data.agent_id);
-                                } else if (block.type === 'tool_result') {
-                                    dispatchStreamEvent({ type: 'tool_result', toolName: block.name, tool_output: block.content ?? block.output, is_error: block.is_error }, data.agent_id);
-                                } else if (block.type === 'thinking') {
-                                    dispatchStreamEvent({ type: 'thinking', thinking: block.thinking || block.text || block.content }, data.agent_id);
-                                }
-                            }
-                            if (innerData.message?.usage) {
-                                dispatchUsage(innerData.message.usage, data.agent_id);
-                            }
-                            if (blocks.some((b: any) => b?.type === 'text') && output.trim().length > 0) {
-                                recordFirstAssistantTextReceived('tauri_stdout_assistant_block', innerData.timestamp ?? data.timestamp, data.stream_seq);
-                            }
-                            return;
-                        }
-                        if (innerData.type === 'user' && innerData.message?.content) {
-                            const blocks = Array.isArray(innerData.message.content) ? innerData.message.content : [];
-                            for (const block of blocks) {
-                                if (!block) continue;
-                                if (block.type === 'tool_result') {
-                                    dispatchStreamEvent({ type: 'tool_result', toolName: block.name, tool_output: block.content ?? block.output, is_error: block.is_error, tool_use_id: block.tool_use_id }, data.agent_id);
-                                }
-                            }
-                            return;
-                        }
-                        if (innerData.type === 'usage' && innerData.usage) {
-                            dispatchUsage(innerData.usage, data.agent_id);
-                            return;
-                        }
-                        if (innerData.type === 'result' && innerData.usage) {
-                            dispatchUsage(innerData.usage, data.agent_id);
-                        }
-                        if (innerData.type === 'message') {
-                            const inferredRole = innerData.role || innerData.message?.role || (innerData.payload?.item?.type === 'agent_message' ? 'assistant' : null);
-                            if (inferredRole === 'assistant' || inferredRole == null) {
-                                const nextOutput = mergeStreamingOutput(output, extractMessageText(innerData));
-                                output = nextOutput;
-                                recordFirstAssistantTextReceived('tauri_stdout_message', innerData.timestamp ?? data.timestamp, data.stream_seq);
-                                scheduleBufferedAssistantTextFlush({
-                                    force: true,
-                                    agentId: data.agent_id,
-                                    timestamp: innerData.timestamp ?? data.timestamp,
-                                });
-                            }
-                        }
-                        if (innerData.type === 'result' || innerData.type === 'stop' || innerData.type === 'provider_stop') {
-                            streamDebug(`stdout_inner_terminal node=${nodeId}`, { type: innerData.type, stream_seq: data.stream_seq ?? null });
-                        }
-                        dispatchStreamEvent(innerData, data.agent_id);
-                    } else if (parsedStdout.kind === 'text') {
-                        maybeShowCodexAuthToast(parsedStdout.text);
-                        dispatchStreamEvent({ type: 'error', content: parsedStdout.text }, data.agent_id);
-                    }
-                } else if (data.type === 'stderr') {
-                    if (typeof data.data === 'string') {
-                        maybeShowCodexAuthToast(data.data);
-                        dispatchStreamEvent({ type: 'error', content: data.data }, data.agent_id);
-                    }
-                } else if (data.type === 'finalize_ack') {
-                    const currentRunId = String((((getAgentRunProjection(nodeId)?.execution_data || {}) as any)?.current_run_id || nodeId));
-                    if (!shouldAcceptFinalizeAckForRun(data, currentRunId)) {
-                        return;
-                    }
-
-                    const finalizeAckSummary = summarizeFinalizeAck(data);
-                    const finalizedOutputCommitSha = finalizeAckSummary.outputCommitSha;
-                    const currentProjection = getAgentRunProjection(nodeId);
-                    const currentMeta = (((currentProjection?.execution_data || {}) as any)?.meta || {}) as Record<string, any>;
-                    agentRunManager.dispatch(nodeId, {
-                        type: 'finalize_ack',
-                        status: finalizeAckSummary.status as any,
-                        outputCommitSha: finalizedOutputCommitSha,
-                        gitBranchName: finalizeAckSummary.gitBranchName,
-                        commitCreated: finalizeAckSummary.commitCreated,
-                        persisted: finalizeAckSummary.persisted,
-                        serverAckAt: finalizeAckSummary.serverAckAt,
-                        meta: currentMeta,
-                    }, {
-                        workspaceId,
-                        parentId,
-                        role: 'assistant',
-                        agentId: currentProjection?.agent_id || node.agent_id || null,
-                        content: output,
-                        executionData: (currentProjection?.execution_data || node.execution_data || {}) as Record<string, any>,
-                    });
-
-                    uiDebug(`finalize-ack:received node=${nodeId}`, {
-                        nodeId,
-                        persisted: data.persisted,
-                        commitSha: finalizedOutputCommitSha,
-                        elapsedMs: Math.round(performance.now() - streamStartedAt),
-                    });
-                    const ackStatus = finalizeAckSummary.status || AGENT_STATUS.completed;
-                    if (finalizedOutputCommitSha) {
-                        const flowId = getSendFlowIdForKey(nodeId);
-                        if (flowId) {
-                            advanceSendFlowFocus({
-                                flowId,
-                                preferredMessageId: nodeId,
-                                addGuardedMessageIds: [nodeId],
-                                phase: 'commit',
-                            });
-                        }
-                        queueGeneratedCommitFocus({
-                            workspaceId,
-                            assistantMessageId: nodeId,
-                            targetMessageId: nodeId,
-                            commitSha: finalizedOutputCommitSha,
-                            flowId,
-                        });
-                    }
-                    if (!terminalFinalized) {
-                        finalizeAgentRunMessage(ackStatus);
-                    }
-                } else if (data.type === 'finalize_progress') {
-                    const progressText = typeof data.message === 'string' && data.message.trim()
-                        ? data.message.trim()
-                        : 'Generating commit...';
-                    agentRunManager.dispatch(nodeId, {
-                        type: 'finalize_progress',
-                        progress: progressText,
-                        phase: typeof data.phase === 'string' ? data.phase : null,
-                    }, {
-                        workspaceId,
-                        parentId,
-                        role: 'assistant',
-                        agentId: data.agent_id ?? node.agent_id ?? null,
-                        content: output,
-                        executionData: (getAgentRunProjection(nodeId)?.execution_data || node.execution_data || {}) as Record<string, any>,
-                    });
-                } else if (data.type === 'stop' || data.type === 'provider_stop') {
-                    const { providerTerminalStatus, providerStopReason } = summarizeProviderStop(data);
-                    uiDebug(`stop:received node=${nodeId}`, {
-                        nodeId,
-                        providerStatus: providerTerminalStatus,
-                        providerStopReason,
-                        finalContentLength: typeof data.final_content === 'string' ? data.final_content.length : 0,
-                        outputLength: output.length,
-                        elapsedMs: Math.round(performance.now() - streamStartedAt),
-                    });
-                    if (typeof data.final_content === 'string' && data.final_content.length > 0) {
-                        const merged = resolveProviderAssistantOutput(output, data.final_content, {
-                            kind: 'final',
-                            currentProviderItemId: activeProviderAssistantItemId,
-                            nextProviderItemId: data.provider_item_id,
-                        });
-                        output = merged.output;
-                        activeProviderAssistantItemId = merged.providerItemId;
-                        recordFirstAssistantTextReceived('tauri_stop_final_content', data.timestamp, data.stream_seq);
-                        scheduleBufferedAssistantTextFlush({
-                            force: true,
-                            agentId: data.agent_id,
-                            timestamp: data.timestamp,
-                        });
-                    } else {
-                        flushBufferedAssistantText({ force: true, agentId: data.agent_id, timestamp: data.timestamp });
-                    }
-                    if (data.usage) {
-                        dispatchUsage(data.usage, data.agent_id);
-                    }
-                    streamDebug(`terminal_stop node=${nodeId}`, {
-                        providerStatus: providerTerminalStatus,
-                        providerStopReason,
-                        stream_seq: data.stream_seq ?? null,
-                        output_len: output.length,
-                    });
-                    const projectionSnapshot = getAgentRunProjection(nodeId);
-                    let executionDataSnapshot = {
-                        ...((projectionSnapshot?.execution_data || {}) as Record<string, any>),
-                        ...(typeof latestStreamSeq === 'number' ? { last_stream_seq: latestStreamSeq } : {}),
-                        ...(typeof latestAgentEventSeq === 'number' ? { last_agent_event_seq: latestAgentEventSeq } : {}),
-                        provider_terminal_status: providerTerminalStatus,
-                        ...(providerStopReason
-                            ? { provider_stop_reason: providerStopReason }
-                            : {}),
-                        meta: {
-                            ...(((projectionSnapshot?.execution_data || {}) as any)?.meta || {}),
-                            ...(data.provider_thread_id ? { provider_thread_id: data.provider_thread_id } : {}),
-                            ...(data.provider_turn_id ? { provider_turn_id: data.provider_turn_id } : {}),
-                        },
-                    };
-                    mergeAgentRunExecutionData(nodeId, executionDataSnapshot);
-
-                    agentRunManager.dispatch(nodeId, {
-                        type: 'finalize_progress',
-                        progress: providerTerminalStatus === AGENT_STATUS.completed
-                            ? 'Finalizing changes...'
-                            : 'Finalizing run...',
-                        phase: 'provider_done',
-                    }, {
-                        workspaceId,
-                        parentId,
-                        role: 'assistant',
-                        agentId: data.agent_id ?? node.agent_id ?? null,
-                        content: output,
-                        executionData: executionDataSnapshot,
-                    });
-                } else if (data.type === 'exit') {
-                    streamDebug(`terminal_exit node=${nodeId}`, {
-                        stream_seq: data.stream_seq ?? null,
-                        output_len: output.length,
-                    });
-                    const exitStatus = typeof data.status === 'string'
-                        ? data.status
-                        : (getAgentRunProjection(nodeId)?._optimisticStatus === AGENT_STATUS.cancelled ? AGENT_STATUS.cancelled : AGENT_STATUS.failed);
-                    if (!terminalFinalized) {
-                        streamDebug(`exit_terminal_finalize node=${nodeId}`, {
-                            fallback: REQUIRED_PROTOCOL_FALLBACK_NATIVE_EXIT_TERMINAL_EVENT,
-                        });
-                        persistLatestAgentEventSeq(true);
-                        finalizeAgentRunMessage(exitStatus);
-                    }
-                    unregisterStreamHandler(nodeId);
-                }
-            } catch (err) {
-                console.error('Tauri Agent Stream Parse Error:', err);
-            }
-        };
-
-        // Future: add observer-driven backend fanout as a secondary stream path.
-        streamRegistryRef.current.beginPromotion({
-            nodeId,
-            workspaceId,
-            parentId,
-            role: 'assistant',
-            fullHandler,
-        });
-
-        const resolveRunIdForReplay = async () => {
-            const projectionExecution = (getAgentRunProjection(nodeId)?.execution_data || {}) as Record<string, any>;
-            const localRunId = projectionExecution.current_run_id || nodeExecution.current_run_id;
-            if (typeof localRunId === 'string' && localRunId) return localRunId;
-            const nativeState = await agentClient.getAgentRunState(nodeId).catch(() => null);
-            const nativeRunId = nativeState?.ledger?.runId ?? nativeState?.ledger?.run_id;
-            return typeof nativeRunId === 'string' && nativeRunId ? nativeRunId : null;
-        };
-
-        void (async () => {
-            const runId = await resolveRunIdForReplay();
-            if (!runId) {
-                streamRegistryRef.current.finishPromotion(nodeId);
-                return;
-            }
-            const afterSeq = latestAgentEventSeq ?? 0;
-            const replayedEvents = await agentClient.replayAgentRunEvents(runId, afterSeq).catch((error) => {
-                console.warn('[ChatInput] Failed to replay native agent events:', { nodeId, runId, error });
-                return [];
-            });
-            if (replayedEvents.length === 0) {
-                streamRegistryRef.current.finishPromotion(nodeId);
-                return;
-            }
-            for (const row of replayedEvents) {
-                let event: Record<string, any> | null = null;
-                try {
-                    event = JSON.parse(row.payload);
-                } catch (_err) {
-                    event = {
-                        type: row.eventType || 'agent:lifecycle',
-                        data: row.payload,
-                    };
-                }
-                streamRegistryRef.current.deliverReplayEvent(nodeId, {
-                    ...event,
-                    run_id: (event as any)?.run_id ?? row.runId,
-                    nodeId: (event as any)?.nodeId ?? row.assistantNodeId,
-                    seq: row.seq,
-                    timestamp: (event as any)?.timestamp ?? row.timestamp,
-                    status: (event as any)?.status ?? row.status,
-                    phase: (event as any)?.phase ?? row.phase,
-                });
-            }
-            streamRegistryRef.current.finishPromotion(nodeId);
-        })();
-    }, [
-        cleanupAgentRunProjection,
-        advanceSendFlowFocus,
-        extractMessageText,
-        finishSendFlowLifecycleFocus,
-        getAgentRunProjection,
-        getSendFlowIdForKey,
-        hasPendingCommitFocusForFlow,
-        maybeShowCodexAuthToast,
-        mergeStreamingOutput,
-        queueGeneratedCommitFocus,
-        queryClient,
-        recordLatencyMark,
-        refreshPersistedAgentNode,
-        releaseSendFlowKey,
-        seedAgentRunProjection,
-        mergeAgentRunExecutionData,
-        unregisterStreamHandler,
-        dispatchFocus,
-        setNodeStatus,
-        setSetupProgress,
-        agents,
-    ]);
-
-    const registerBackgroundStreamForNode = useCallback((message: Message) => {
-        activeAgentMessageByIdRef.current.set(message.id, message);
-        streamRegistryRef.current.registerBackground({
-            nodeId: message.id,
-            workspaceId: message.workspaceId ?? selectedWorkspaceId,
-            parentId: message.parentId ?? null,
-            role: message.role ?? 'assistant',
-        });
-        if (agentRunManager.projectionWatcherSnapshot(message.id).hasWatchers) {
-            void promoteStreamForNodeRef.current(message, { reason: 'existing-watcher' });
-        }
-    }, [selectedWorkspaceId]);
-
-    const clearFullStreamDowngrade = useCallback((nodeId: string) => {
-        const timer = fullStreamDowngradeTimersRef.current.get(nodeId);
-        if (timer !== undefined) {
-            window.clearTimeout(timer);
-            fullStreamDowngradeTimersRef.current.delete(nodeId);
-        }
-    }, []);
-
-    const scheduleFullStreamDowngrade = useCallback((nodeId: string) => {
-        clearFullStreamDowngrade(nodeId);
-        const timer = window.setTimeout(() => {
-            fullStreamDowngradeTimersRef.current.delete(nodeId);
-            const message = activeAgentMessageByIdRef.current.get(nodeId);
-            if (!message) return;
-            if (!isInProgressStatus(message.status)) return;
-            if (agentRunManager.projectionWatcherSnapshot(nodeId).hasWatchers) return;
-            registerBackgroundStreamForNode(message);
-        }, FULL_STREAM_UNWATCHED_GRACE_MS);
-        fullStreamDowngradeTimersRef.current.set(nodeId, timer);
-    }, [clearFullStreamDowngrade, isInProgressStatus, registerBackgroundStreamForNode]);
-
-    const promoteStreamForNode = useCallback(async (
-        nodeId: string,
-        node: Message,
-        options: { reason: string },
-    ) => {
-        clearFullStreamDowngrade(nodeId);
-        const mode = streamRegistryRef.current.mode(nodeId);
-        if (mode === 'full' || mode === 'promoting') return;
-        await startStreamForNode(node, {
-            waitForReady: false,
-            parentId: node.parentId ?? null,
-            reason: options.reason,
-        });
-    }, [clearFullStreamDowngrade, startStreamForNode]);
-
-    useEffect(() => {
-        promoteStreamForNodeRef.current = (node, options) => promoteStreamForNode(node.id, node, options);
-    }, [promoteStreamForNode]);
-
-    useEffect(() => {
-        return agentRunManager.subscribeProjectionWatchers((event) => {
-            if (event.hasWatchers) {
-                clearFullStreamDowngrade(event.nodeId);
-                const message = activeAgentMessageByIdRef.current.get(event.nodeId);
-                if (!message) return;
-                void promoteStreamForNode(event.nodeId, message, { reason: 'watcher' });
-                return;
-            }
-            scheduleFullStreamDowngrade(event.nodeId);
-        });
-    }, [clearFullStreamDowngrade, promoteStreamForNode, scheduleFullStreamDowngrade]);
+        trackAgentRunLiveStreamMessage(node);
+    }, [getSendFlowIdForKey, recordLatencyMark]);
 
     // --- NEW: State for Slash Command Popover ---
     const [isCommandPopoverOpen, setIsCommandPopoverOpen] = useState(false);
     const textareaRef = useRef<HTMLTextAreaElement>(null); // Ref for the textarea
 
-    const setComposerPrompt = useCallback((nextPrompt: string) => {
+    const setComposerPrompt = useCallback((nextPrompt: string, draftTargetId = composerDraftTargetId) => {
         promptRef.current = nextPrompt;
         setPrompt(nextPrompt);
         setPromptHasContent(nextPrompt.trim().length > 0);
-        setComposerDraft(selectedWorkspaceId, nextPrompt);
+        setComposerDraft(selectedWorkspaceId, nextPrompt, draftTargetId);
         if (textareaRef.current && textareaRef.current.value !== nextPrompt) {
             textareaRef.current.value = nextPrompt;
         }
-    }, [selectedWorkspaceId, setComposerDraft]);
+    }, [composerDraftTargetId, selectedWorkspaceId, setComposerDraft]);
 
     useEffect(() => {
-        const savedPrompt = getComposerDraft(selectedWorkspaceId);
-        promptRef.current = savedPrompt;
-        setPrompt(savedPrompt);
-        setPromptHasContent(savedPrompt.trim().length > 0);
-        if (textareaRef.current && textareaRef.current.value !== savedPrompt) {
-            textareaRef.current.value = savedPrompt;
+        promptRef.current = composerDraft;
+        setPrompt(composerDraft);
+        setPromptHasContent(composerDraft.trim().length > 0);
+        if (textareaRef.current && textareaRef.current.value !== composerDraft) {
+            textareaRef.current.value = composerDraft;
         }
-    }, [getComposerDraft, selectedWorkspaceId]);
+    }, [composerDraft]);
 
     const [isAgentPickerOpen, setIsAgentPickerOpen] = useState(false);
     const refreshProviderLimitsIfStale = useProviderLimitsStore((state) => state.refreshIfStale);
@@ -2384,7 +1358,7 @@ export function ChatInput({
                 selectedFromNodeId: null,
             }
             : resolveComposerDefaultBaseCommit({
-                targetMode: isNewThreadTarget ? 'new-thread' : 'reply',
+                targetMode: isRootComposerTarget ? 'new-thread' : isNewThreadTarget ? 'new-thread' : 'reply',
                 replyParentMessageId,
                 selectedNodeId,
                 messages: composerBaseMessages,
@@ -2397,6 +1371,7 @@ export function ChatInput({
         commitPickerRefs,
         focusedCommitSha,
         isNewThreadTarget,
+        isRootComposerTarget,
         liveTrackedRefs,
         replyParentMessageId,
         selectedNodeId,
@@ -2493,11 +1468,14 @@ export function ChatInput({
             });
         }
         if (defaultBaseCommitSha) {
+            const defaultBaseSubject = defaultBaseResolution.source === 'main-ref'
+                ? 'main'
+                : defaultBaseResolution.source === 'head-ref'
+                    ? 'HEAD'
+                    : branchParentMessage?.commit?.subject || branchParentMessage?.content || null;
             upsertCommit({
                 sha: defaultBaseCommitSha,
-                subject: defaultBaseResolution.source === 'main-ref'
-                    ? 'main'
-                    : branchParentMessage?.commit?.subject || branchParentMessage?.content || null,
+                subject: defaultBaseSubject,
                 produced_by_node_id: defaultBaseResolution.selectedFromNodeId,
             });
         }
@@ -2749,7 +1727,7 @@ export function ChatInput({
         branchParentMessage?.role === 'assistant' &&
         branchParentMessage?.parentId !== null &&
         !!parentStatus &&
-        !TERMINAL_STATUSES.includes(parentStatus as TerminalStatus);
+        !isTerminalAgentStatus(parentStatus);
     const parentStatusLabel = parentStatus === AGENT_STATUS.pending
         ? 'Parent pending'
         : parentStatus === AGENT_STATUS.streaming
@@ -2776,13 +1754,12 @@ export function ChatInput({
     ), [selectedNodeId, selectedNodeMessage, selectedProjection]);
     const startFlowStreamForNode = useCallback(
         (node: Message, options: { authToken: string; parentId: string | null }) => (
-            startStreamForNode(node, {
-                waitForReady: false,
+            trackStreamForNode(node, {
                 authToken: options.authToken,
                 parentId: options.parentId,
             })
         ),
-        [startStreamForNode]
+        [trackStreamForNode]
     );
     const flowRootParentNodeId = useMemo(
         () => resolvePersistedMessageId(replyParentMessageId) ?? replyParentMessageId ?? null,
@@ -2945,7 +1922,7 @@ export function ChatInput({
                 unregisterStreamHandler(nodeId);
                 continue;
             }
-            if (!persisted.status || !TERMINAL_STATUSES.includes(persisted.status as TerminalStatus)) continue;
+            if (!isTerminalAgentStatus(persisted.status)) continue;
             const expectedContentLength = projection._terminalContentLength ?? projection.content?.length ?? 0;
             if ((persisted.content?.length ?? 0) < expectedContentLength) continue;
             uiDebug(`persisted-terminal:clear-overlay node=${nodeId}`, {
@@ -2967,10 +1944,9 @@ export function ChatInput({
             if (message.workspaceId !== selectedWorkspaceId) continue;
             if (message.role !== 'assistant') continue;
             if (!isInProgressStatus(message.status)) continue;
-            if (streamRegistryRef.current.has(message.id)) continue;
-            registerBackgroundStreamForNode(message);
+            trackAgentRunLiveStreamMessage(message);
         }
-    }, [isInProgressStatus, persistedMessages, registerBackgroundStreamForNode, selectedWorkspaceId]);
+    }, [isInProgressStatus, persistedMessages, selectedWorkspaceId]);
 
     const uploadFile = useCallback(async (attachmentId: string, file: File) => {
         sendFlowDebug('Upload starting', { filename: file.name, attachmentId });
@@ -3087,7 +2063,7 @@ export function ChatInput({
             if (sourceMessage.workspaceId !== selectedWorkspaceId) return;
 
             setEditDraftSource(sourceMessage);
-            setComposerPrompt(sourceMessage.content || '');
+            setComposerPrompt(sourceMessage.content || '', sourceMessage.id);
             setAttachments(sourceMessage.attachments ? [...sourceMessage.attachments] : []);
             setContextIds([]);
             dispatchFocus({
@@ -3620,12 +2596,13 @@ export function ChatInput({
                 contextIds: [...contextIds],
                 editDraftSource,
                 parentMessageId: resolvePersistedMessageId(replyParentMessageId) ?? replyParentMessageId ?? null,
+                draftTargetId: composerDraftTargetId,
                 queuedAt: Date.now(),
             };
             queuedComposerSendsRef.current.push(queuedSend);
             setQueuedComposerSendCount(queuedComposerSendsRef.current.length);
             setComposerPrompt('');
-            clearComposerDraft(selectedWorkspaceId);
+            clearComposerDraft(selectedWorkspaceId, composerDraftTargetId);
             setAttachments([]);
             setContextIds([]);
             setEditDraftSource(null);
@@ -3654,7 +2631,7 @@ export function ChatInput({
                 workspaceId: selectedWorkspaceId,
             });
             setComposerPrompt('');
-            clearComposerDraft(selectedWorkspaceId);
+            clearComposerDraft(selectedWorkspaceId, composerDraftTargetId);
             setAttachments([]);
             setContextIds([]);
             setEditDraftSource(null);
@@ -3773,7 +2750,11 @@ export function ChatInput({
             const parentThreadMessage = messageById.get(sendParentMessageId) ?? null;
             sendThreadId = getMessageThreadSessionId(parentThreadMessage)
                 ?? (parentThreadMessage ? getLegacyThreadIdForMessage(parentThreadMessage, messageById) : null);
-        } else if (selectedWorkspaceId) {
+        } else if (savedEditDraftSource) {
+            sendThreadId = getMessageThreadSessionId(savedEditDraftSource)
+                ?? getLegacyThreadIdForMessage(savedEditDraftSource, messageById);
+        }
+        if (!sendThreadId && selectedWorkspaceId) {
             const thread = await createThreadSession.mutateAsync({
                 workspaceId: selectedWorkspaceId,
                 source: 'user',
@@ -3996,7 +2977,7 @@ export function ChatInput({
             seedAgentRunProjection(run.assistantMessageId, run.assistantMessage);
         }
         setComposerPrompt('');
-        clearComposerDraft(selectedWorkspaceId);
+        clearComposerDraft(selectedWorkspaceId, composerDraftTargetId);
         setAttachments([]);
         setContextIds([]);
         setEditDraftSource(null);
@@ -4199,8 +3180,7 @@ export function ChatInput({
                 });
                 assistantMessages.forEach((assistantMessage) => {
                     const run = assistantRunMessages.find((candidate) => candidate.assistantMessageId === assistantMessage.id);
-                    startStreamForNode(assistantMessage, {
-                        waitForReady: false,
+                    trackStreamForNode(assistantMessage, {
                         authToken: token,
                         parentId: run?.userMessageId ?? optimisticPair.userMessageId,
                     }).catch(err => {
@@ -4412,8 +3392,7 @@ export function ChatInput({
                     onSendComplete?.();
                     return;
                 }
-                startStreamForNode(realAssistant, {
-                    waitForReady: false,
+                trackStreamForNode(realAssistant, {
                     authToken: token,
                     parentId: response.userMessage!.id,
                 }).catch(err => {
@@ -4566,6 +3545,7 @@ export function ChatInput({
         contextIds,
         autoCheckoutOnAgentCommit,
         selectedWorkspaceId,
+        composerDraftTargetId,
         selectedWorkspace,
         effectiveContextParentId,
         effectiveContextStartId,
@@ -4606,7 +3586,7 @@ export function ChatInput({
         resetComposerTargetAfterSuccessfulSend,
         resolveWorkspaceWorkspace,
         expandRepoMentionContext,
-        startStreamForNode,
+        trackStreamForNode,
     ]);
 
     useEffect(() => {
@@ -4622,10 +3602,10 @@ export function ChatInput({
         queuedReplayInFlightRef.current = true;
         queuedReplayPendingSendRef.current = queuedSend;
         setQueuedComposerSendCount(queuedComposerSendsRef.current.length);
-        setComposerPrompt(queuedSend.prompt);
+        setEditDraftSource(queuedSend.editDraftSource);
+        setComposerPrompt(queuedSend.prompt, queuedSend.draftTargetId);
         setAttachments(queuedSend.attachments);
         setContextIds(queuedSend.contextIds);
-        setEditDraftSource(queuedSend.editDraftSource);
         if (queuedSend.parentMessageId) {
             dispatchFocus({
                 messageId: queuedSend.parentMessageId,
@@ -4865,7 +3845,16 @@ export function ChatInput({
                 });
                 return;
             }
-            const parentHasChildren = hasConversationChild(providerParentMessage?.id ?? baseMessageId, messageLookupMessages, messageById);
+            const currentSendMessageIds = new Set([
+                assistantMsg.parentId,
+                assistantMsg.id,
+            ].filter((id): id is string => Boolean(id)));
+            const parentHasChildren = hasConversationChild(
+                providerParentMessage?.id ?? baseMessageId,
+                messageLookupMessages,
+                messageById,
+                currentSendMessageIds
+            );
             const isBranchFromInterior = !!parentHasChildren;
             const providerContinuation = selectedProvider
                 ? resolveProviderContinuation({

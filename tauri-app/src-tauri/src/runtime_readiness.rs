@@ -200,6 +200,160 @@ pub fn check_all_runtime_readiness(
     Ok(vec![codex, claude])
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedRuntimeDoctorEntry {
+    pub component: String,
+    pub label: String,
+    pub pinned_version: String,
+    /// "ready" | "missing" | "unpublished"
+    pub status: String,
+    pub install_dir: Option<String>,
+    pub downloadable: bool,
+    pub detail: String,
+}
+
+fn doctor_entry(app: &AppHandle, component: &str, label: &str) -> ManagedRuntimeDoctorEntry {
+    let manifest = crate::managed_runtime::manifest();
+    let pinned_version = manifest
+        .ok()
+        .and_then(|manifest| manifest.components.get(component))
+        .map(|spec| spec.version.clone())
+        .unwrap_or_default();
+    let installed = crate::managed_runtime::installed_component_dir(app, component)
+        .ok()
+        .flatten();
+    let downloadable = crate::managed_runtime::component_available_for_download(component);
+
+    let (status, detail) = match (&installed, downloadable) {
+        (Some(dir), _) => (
+            "ready",
+            format!("{} {} installed at {}.", label, pinned_version, dir.display()),
+        ),
+        (None, true) => (
+            "missing",
+            format!(
+                "{} {} is not installed yet. It downloads automatically on first use, or install it now.",
+                label, pinned_version
+            ),
+        ),
+        (None, false) => (
+            "unpublished",
+            format!(
+                "{} {} has no published archive for {} (development build). Provider features fall back to tools found on PATH.",
+                label,
+                pinned_version,
+                crate::managed_runtime::current_platform_key()
+            ),
+        ),
+    };
+
+    let mut detail = detail;
+    if component == crate::managed_runtime::COMPONENT_CODEX && installed.is_none() {
+        detail.push_str(&codex_path_fallback_summary());
+    }
+
+    ManagedRuntimeDoctorEntry {
+        component: component.to_string(),
+        label: label.to_string(),
+        pinned_version,
+        status: status.to_string(),
+        install_dir: installed.map(|dir| dir.display().to_string()),
+        downloadable,
+        detail,
+    }
+}
+
+/// Describes what a PATH fallback would resolve to, so "missing" codex
+/// entries say precisely which binary would be used and whether it is new
+/// enough — the found/required/remediation triple.
+fn codex_path_fallback_summary() -> String {
+    let min_version = crate::managed_runtime::min_codex_cli_version();
+    let candidates = crate::cli_path::find_all_on_tool_path("codex");
+    if candidates.is_empty() {
+        return format!(
+            " No codex CLI found on PATH either; Codex runs need at least version {}.",
+            min_version
+        );
+    }
+    let mut best: Option<(String, String)> = None;
+    for candidate in candidates {
+        let mut probe = Command::new(&candidate);
+        probe.arg("--version").stdin(Stdio::null());
+        let Ok(output) =
+            command_output_with_timeout(&mut probe, Duration::from_secs(5), "codex version probe")
+        else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let version = String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .last()
+            .unwrap_or_default()
+            .to_string();
+        let is_better = best
+            .as_ref()
+            .map(|(_, best_version)| {
+                crate::managed_runtime::compare_dotted_versions(&version, best_version)
+                    == std::cmp::Ordering::Greater
+            })
+            .unwrap_or(true);
+        if is_better {
+            best = Some((candidate, version));
+        }
+    }
+    match best {
+        Some((path, version))
+            if crate::managed_runtime::compare_dotted_versions(&version, min_version)
+                != std::cmp::Ordering::Less =>
+        {
+            format!(" PATH fallback: codex {} at {} (meets minimum {}).", version, path, min_version)
+        }
+        Some((path, version)) => format!(
+            " PATH fallback codex {} at {} is too old (minimum {}); update it or install the managed runtime.",
+            version, path, min_version
+        ),
+        None => format!(
+            " No working codex CLI found on PATH; Codex runs need at least version {}.",
+            min_version
+        ),
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn check_managed_runtime_doctor(
+    app: AppHandle,
+) -> Result<Vec<ManagedRuntimeDoctorEntry>, String> {
+    Ok(vec![
+        doctor_entry(&app, crate::managed_runtime::COMPONENT_NODE, "Node runtime"),
+        doctor_entry(
+            &app,
+            crate::managed_runtime::COMPONENT_CLAUDE_SDK,
+            "Claude runtime",
+        ),
+        doctor_entry(&app, crate::managed_runtime::COMPONENT_CODEX, "Codex CLI"),
+    ])
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn repair_managed_runtime_component(
+    app: AppHandle,
+    component: String,
+) -> Result<ManagedRuntimeDoctorEntry, String> {
+    let label = match component.as_str() {
+        "node" => "Node runtime",
+        "claude-sdk" => "Claude runtime",
+        "codex" => "Codex CLI",
+        other => return Err(format!("Unknown managed runtime component: {}", other)),
+    };
+    crate::managed_runtime::reinstall_component(&app, &component)?;
+    Ok(doctor_entry(&app, &component, label))
+}
+
 fn read_codex_provider_limits(app: &AppHandle, profile_id: Option<&str>) -> Result<String, String> {
     let command_plan = crate::runtime_scripts::codex_adapter_command(app)?;
     let mut command = Command::new(&command_plan.program);

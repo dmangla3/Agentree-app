@@ -61,6 +61,8 @@ export interface ComposerContextPathParams {
 }
 
 const estimateTokens = (text: string) => Math.ceil((text || '').length / 4);
+const DEFAULT_TOOL_CONTEXT_TOKEN_BUDGET = 8000;
+const DEFAULT_TOOL_CONTEXT_MAX_ENTRY_TOKENS = 6000;
 
 const normalizeText = (value: string | null | undefined) => (value || '').replace(/\s+/g, ' ').trim();
 
@@ -253,6 +255,29 @@ const formatCombinedToolContext = (events: any[]): { summary: string; content: s
     };
 };
 
+const messageIdFromEntryId = (entryId: string): string => {
+    const suffixIndex = entryId.lastIndexOf(':');
+    return suffixIndex >= 0 ? entryId.slice(0, suffixIndex) : entryId;
+};
+
+const selectRecentToolContextByDefault = (
+    entries: ComposerContextEntry[],
+    activityById: Map<string, boolean>
+) => {
+    let selectedToolTokens = 0;
+
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const entry = entries[index];
+        if (entry.kind !== 'tool') continue;
+        if (activityById.get(messageIdFromEntryId(entry.id)) !== true) continue;
+        if (entry.tokens > DEFAULT_TOOL_CONTEXT_MAX_ENTRY_TOKENS) continue;
+        if (selectedToolTokens + entry.tokens > DEFAULT_TOOL_CONTEXT_TOKEN_BUDGET) continue;
+
+        entry.defaultSelected = true;
+        selectedToolTokens += entry.tokens;
+    }
+};
+
 export function buildComposerContextSelection(
     parentId: string | null,
     messages: Message[],
@@ -352,6 +377,7 @@ export function buildComposerContextSelection(
     }
 
     const entries = turns.flatMap((turn) => turn.entries);
+    selectRecentToolContextByDefault(entries, activityById);
     const defaultSelectedIds = entries.filter((entry) => entry.defaultSelected).map((entry) => entry.id);
     const defaultSelectedTokenEstimate = entries
         .filter((entry) => entry.defaultSelected)

@@ -6,20 +6,17 @@ const readChatInputSource = () => readFileSync(join(process.cwd(), 'src/componen
 const readAgentsSource = () => readFileSync(join(process.cwd(), 'src-tauri/src/agents.rs'), 'utf8');
 const readGeneratedBindingsSource = () => readFileSync(join(process.cwd(), 'src/generated/tauri-bindings.ts'), 'utf8');
 const readStreamDispatchSource = () => readFileSync(join(process.cwd(), 'src/agent-runs/agentRunStreamDispatch.ts'), 'utf8');
+const readLiveStreamCoordinatorSource = () => readFileSync(join(process.cwd(), 'src/agent-runs/agentRunLiveStreamCoordinator.ts'), 'utf8');
+const readHomePageSource = () => readFileSync(join(process.cwd(), 'src/pages/HomePage.tsx'), 'utf8');
+const readHoverHydrationSource = () => readFileSync(join(process.cwd(), 'src/hooks/useAgentRunHoverHydration.ts'), 'utf8');
 const readClaudeAdapterSource = () => readFileSync(join(process.cwd(), 'src-tauri/scripts/claude-agent-sdk-adapter.mjs'), 'utf8');
-const readCodexAdapterSource = () => readFileSync(join(process.cwd(), 'src-tauri/scripts/codex-app-server-adapter.py'), 'utf8');
+const readCodexAdapterSource = () => readFileSync(join(process.cwd(), 'src-tauri/src/codex_adapter.rs'), 'utf8');
 
 describe('agent lifecycle ownership boundaries', () => {
   it('does not persist terminal agent payloads directly from ChatInput', () => {
     const source = readChatInputSource();
-    const terminalRegionStart = source.indexOf('const finalizeAgentRunMessage =');
-    const terminalRegionEnd = source.indexOf('const resolveRunIdForReplay =');
-    expect(terminalRegionStart).toBeGreaterThan(-1);
-    expect(terminalRegionEnd).toBeGreaterThan(terminalRegionStart);
-
-    const terminalRegion = source.slice(terminalRegionStart, terminalRegionEnd);
-    expect(terminalRegion).not.toContain('upsertLocalNode');
-    expect(terminalRegion).not.toContain('patchPersistedMessageLocally');
+    expect(source).not.toContain('const finalizeAgentRunMessage =');
+    expect(source).not.toContain('patchPersistedMessageLocally');
   });
 
   it('limits ChatInput local-node writes to optimistic node creation', () => {
@@ -51,7 +48,8 @@ describe('agent lifecycle ownership boundaries', () => {
     expect(source).not.toContain('const processAgentEvent');
     expect(source).not.toContain('const addTimelineEvent');
     expect(source).not.toContain('const updateAgentRunUsage');
-    expect(source).toContain('agentRunStreamDispatch');
+    expect(source).not.toContain('agentRunStreamDispatch');
+    expect(source).not.toContain('dispatchProviderStreamEvent');
   });
 
   it('does not patch terminal finalize caches directly from ChatInput', () => {
@@ -127,7 +125,7 @@ describe('agent lifecycle ownership boundaries', () => {
 
     expect(claudeSource).toContain('createControlReader');
     expect(claudeSource).toContain("control.type !== 'steer'");
-    expect(codexSource).toContain('_ControlReader');
+    expect(codexSource).toContain('read_control_stdin');
     expect(codexSource).toContain('"method": "turn/steer"');
   });
 
@@ -167,46 +165,38 @@ describe('agent lifecycle ownership boundaries', () => {
     expect(releaseRegion).toContain('setCurrentAbortController((current) => current === controller ? null : current);');
   });
 
-  it('does not eagerly start full streams for restored active agents', () => {
+  it('tracks restored active agents through the shared stream coordinator', () => {
     const source = readChatInputSource();
-    expect(source).toContain('registerBackgroundStreamForNode(message)');
-    expect(source).not.toContain('void startStreamForNode(message, {\n                waitForReady: false');
+    expect(source).toContain('trackAgentRunLiveStreamMessage(message)');
+    expect(source).not.toContain('registerBackgroundStreamForNode(message)');
   });
 
-  it('promotes background streams from projection watcher transitions', () => {
-    const source = readChatInputSource();
-    expect(source).toContain('agentRunManager.subscribeProjectionWatchers');
-    expect(source).toContain('promoteStreamForNode(event.nodeId');
+  it('keeps native stream subscription ownership in the shared coordinator', () => {
+    const chatInputSource = readChatInputSource();
+    const coordinatorSource = readLiveStreamCoordinatorSource();
+    const homePageSource = readHomePageSource();
+    expect(chatInputSource).not.toContain('createAgentRunLiveStreamRuntime');
+    expect(chatInputSource).not.toContain('agentClient.onEvent');
+    expect(coordinatorSource).toContain('agentClient.onEvent');
+    expect(homePageSource).toContain('<AgentRunLiveStreamCoordinator />');
   });
 
-  it('uses projection or persisted cursor for full replay instead of actor status cursor', () => {
-    const source = readChatInputSource();
-    expect(source).toContain('resolveFullReplayAfterSeq');
-    expect(source).not.toContain('const actorSeq = agentRunManager.snapshot(nodeId)?.lastSeq');
+  it('keeps hover hydration one-shot instead of polling for live updates', () => {
+    const source = readHoverHydrationSource();
+    expect(source).toContain("ensureAgentRunHydrated(nodeId, 'hover')");
+    expect(source).not.toContain('setTimeout');
+    expect(source).not.toContain('hasAgentRunLiveStreamRuntimeSubscriber');
   });
 
-  it('downgrades full stream handlers after watcher grace when runs remain active', () => {
-    const source = readChatInputSource();
-    expect(source).toContain('FULL_STREAM_UNWATCHED_GRACE_MS');
-    expect(source).toContain('scheduleFullStreamDowngrade');
-    expect(source).toContain('registerBackgroundStreamForNode(message)');
+  it('seeds shared stream state from actor, projection, or tracked message content', () => {
+    const source = readLiveStreamCoordinatorSource();
+    expect(source).toContain("output: snapshot?.content ?? projection?.content ?? tracked?.content ?? ''");
+    expect(source).toContain('trackAgentRunLiveStreamMessage');
   });
 
-  it('seeds promoted full streams from the current projection content before persisted message content', () => {
-    const source = readChatInputSource();
-    expect(source).toContain("const projectedOutput = getAgentRunProjection(nodeId)?.content;");
-    expect(source).toContain("let output = typeof projectedOutput === 'string' ? projectedOutput : node.content || '';");
-  });
-
-  it('immediately promotes background streams that already have projection watchers', () => {
-    const source = readChatInputSource();
-    const registerStart = source.indexOf('const registerBackgroundStreamForNode = useCallback((message: Message) => {');
-    const registerEnd = source.indexOf('const clearFullStreamDowngrade', registerStart);
-    expect(registerStart).toBeGreaterThan(-1);
-    expect(registerEnd).toBeGreaterThan(registerStart);
-
-    const registerRegion = source.slice(registerStart, registerEnd);
-    expect(registerRegion).toContain('agentRunManager.projectionWatcherSnapshot(message.id).hasWatchers');
-    expect(registerRegion).toContain("void promoteStreamForNodeRef.current(message, { reason: 'existing-watcher' });");
+  it('ingests live stream events through the shared hydration semantics', () => {
+    const source = readLiveStreamCoordinatorSource();
+    expect(source).toContain('ingestAgentRunStreamEvent(nodeId, event, input, state)');
+    expect(source).toContain('agentRunManager.snapshot(nodeId)');
   });
 });

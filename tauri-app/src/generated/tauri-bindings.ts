@@ -101,6 +101,8 @@ export const commands = {
 	checkRuntimeReadiness: (provider: string) => __TAURI_INVOKE<RuntimeReadiness>("check_runtime_readiness", { provider }),
 	checkAllRuntimeReadiness: () => __TAURI_INVOKE<RuntimeReadiness[]>("check_all_runtime_readiness"),
 	refreshProviderLimits: (provider: string, profileId: string | null) => __TAURI_INVOKE<string>("refresh_provider_limits", { provider, profileId }),
+	checkManagedRuntimeDoctor: () => __TAURI_INVOKE<ManagedRuntimeDoctorEntry[]>("check_managed_runtime_doctor"),
+	repairManagedRuntimeComponent: (component: string) => __TAURI_INVOKE<ManagedRuntimeDoctorEntry>("repair_managed_runtime_component", { component }),
 	getAgentSandboxRoot: () => __TAURI_INVOKE<string>("get_agent_sandbox_root"),
 	getAgentWorktreeConfig: (repoPath: string) => __TAURI_INVOKE<AgentWorktreeConfigStatus>("get_agent_worktree_config", { repoPath }),
 	saveAgentWorktreeConfig: (repoPath: string, config: AgentWorktreeConfig) => __TAURI_INVOKE<AgentWorktreeConfigStatus>("save_agent_worktree_config", { repoPath, config }),
@@ -111,6 +113,13 @@ export const commands = {
 	createBaseBranch: (repoPath: string) => __TAURI_INVOKE<string>("create_base_branch", { repoPath }),
 	previewAgentWorktree: (repoPath: string, nodeId: string, parentCommit: string) => __TAURI_INVOKE<WorktreeInfo>("preview_agent_worktree", { repoPath, nodeId, parentCommit }),
 	checkoutCommitDetached: (repoPath: string, commitSha: string) => __TAURI_INVOKE<string>("checkout_commit_detached", { repoPath, commitSha }),
+	/**
+	 *  Whether a branch is currently checked out in a worktree and, if so, whether
+	 *  that worktree has uncommitted changes. Used by the AI-merge UI to gate the
+	 *  "also move <target> to the merged commit" option: it must stay disabled when
+	 *  advancing the branch would require a clean checked-out worktree.
+	 */
+	targetBranchCheckoutStatus: (repoPath: string, targetBranch: string) => __TAURI_INVOKE<TargetBranchCheckoutStatus>("target_branch_checkout_status", { repoPath, targetBranch }),
 	diffCommits: (repoPath: string, fromCommit: string, toCommit: string, includeContent: boolean) => __TAURI_INVOKE<DiffResult>("diff_commits", { repoPath, fromCommit, toCommit, includeContent }),
 	diffFileBetweenCommits: (repoPath: string, fromCommit: string, toCommit: string, filePath: string) => __TAURI_INVOKE<FileDiff>("diff_file_between_commits", { repoPath, fromCommit, toCommit, filePath }),
 	showFileAtCommit: (repoPath: string, commit: string, filePath: string) => __TAURI_INVOKE<string>("show_file_at_commit", { repoPath, commit, filePath }),
@@ -654,6 +663,17 @@ export type LoginProfile = {
 	lastCheckedAt: number | null,
 };
 
+export type ManagedRuntimeDoctorEntry = {
+	component: string,
+	label: string,
+	pinnedVersion: string,
+	/**  "ready" | "missing" | "unpublished" */
+	status: string,
+	installDir: string | null,
+	downloadable: boolean,
+	detail: string,
+};
+
 export type MergeReviewFileInput = {
 	path: string,
 	group: string,
@@ -804,6 +824,11 @@ export type SynthesizeMergeResolutionsResponse_Deserialize = {
 export type SynthesizeMergeResolutionsResponse_Serialize = {
 	summaryText: string,
 	resolutions: ConflictResolution_Serialize[],
+};
+
+export type TargetBranchCheckoutStatus = {
+	checked_out: boolean,
+	dirty: boolean,
 };
 
 export type TelemetryEventRow = {

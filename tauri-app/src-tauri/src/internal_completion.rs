@@ -147,16 +147,6 @@ pub async fn complete_internal_prompt(
             codex_home,
         );
     }
-    if let Some(claude_config_dir) = materialized.claude_config_dir.as_deref() {
-        let _ = crate::login_profiles::persist_claude_oauth_state(
-            &db,
-            &crate::login_profiles::KeyringCredentialVault,
-            &materialized.profile_id,
-            claude_config_dir,
-        );
-        crate::login_profiles::release_claude_oauth_activation(&materialized.profile_id);
-    }
-
     let output = match result {
         Ok(output) => output,
         Err(error) => {
@@ -315,11 +305,10 @@ fn run_claude_completion(
     cwd: &std::path::Path,
     cancel_flag: Option<Arc<AtomicBool>>,
 ) -> Result<Output, String> {
-    let script = crate::runtime_scripts::runtime_script_path(app, "claude-agent-sdk-adapter.mjs")?;
-    let node = crate::cli_path::find_on_tool_path("node").unwrap_or_else(|| "node".to_string());
-    let mut command = Command::new(node);
+    let invocation = crate::managed_runtime::claude_adapter_invocation(app)?;
+    let mut command = Command::new(&invocation.node_program);
     command
-        .arg(script)
+        .arg(&invocation.adapter_script)
         .arg("--deny-tools")
         .arg("--model")
         .arg(request.model.trim())
@@ -331,11 +320,6 @@ fn run_claude_completion(
         .filter(|value| !value.trim().is_empty())
     {
         command.arg("--effort").arg(reasoning_effort.trim());
-    }
-    if materialized.auth_type == "claude_oauth" {
-        if let Some(claude_config_dir) = materialized.claude_config_dir.as_deref() {
-            crate::login_profiles::apply_claude_oauth_command_env(&mut command, claude_config_dir);
-        }
     }
     for key in [
         "ANTHROPIC_API_KEY",

@@ -1627,6 +1627,18 @@ fn merge_target_branch_from_execution_data(execution_data: &JsonValue) -> Option
         .map(ToString::to_string)
 }
 
+/// Whether the AI merge was launched with the opt-in to advance the real target
+/// branch onto the merge commit. Defaults to false, so a merge never moves a
+/// branch or working tree unless the user explicitly asked for it.
+fn merge_update_target_branch_from_execution_data(execution_data: &JsonValue) -> bool {
+    execution_data
+        .get("meta")
+        .and_then(|value| value.as_object())
+        .and_then(|meta| meta.get("merge_update_target_branch"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
 fn record_output_commit_for_snapshot(
     app_handle: &AppHandle,
     snapshot: &mut AgentRunSnapshot,
@@ -1824,6 +1836,8 @@ fn finalize_run_snapshot(
                     merge_source_commits_from_execution_data(&snapshot.execution_data);
                 let target_branch =
                     merge_target_branch_from_execution_data(&snapshot.execution_data);
+                let update_target_branch =
+                    merge_update_target_branch_from_execution_data(&snapshot.execution_data);
                 emit_finalize_progress(
                     app_handle,
                     &snapshot.node_id,
@@ -1839,6 +1853,7 @@ fn finalize_run_snapshot(
                         &commit_message,
                         snapshot.author_name.as_deref(),
                         target_branch.as_deref(),
+                        update_target_branch,
                     )?;
                 if let Some(execution_object) = snapshot.execution_data.as_object_mut() {
                     let meta = execution_object
@@ -2067,6 +2082,10 @@ fn spawn_agent_internal(
     let mut args = args;
     let mut program_override: Option<String> = None;
     if agent_type.as_str() == "codex" {
+        crate::managed_runtime::ensure_component_best_effort(
+            &app,
+            crate::managed_runtime::COMPONENT_CODEX,
+        );
         let command = crate::runtime_scripts::codex_adapter_command(&app)?;
         for arg in command.args_prefix.into_iter().rev() {
             args.insert(0, arg);
@@ -2074,14 +2093,20 @@ fn spawn_agent_internal(
         program_override = Some(command.program);
     }
     if agent_type.as_str() == "claude" {
+        let invocation = crate::managed_runtime::claude_adapter_invocation(&app)?;
         args.insert(
             0,
-            crate::runtime_scripts::runtime_script_path(&app, "claude-agent-sdk-adapter.mjs")?
-                .to_string_lossy()
-                .into_owned(),
+            invocation.adapter_script.to_string_lossy().into_owned(),
         );
+        program_override = Some(invocation.node_program);
     }
     if agent_type.as_str() == "bash" {
+        // The bash adapter is a plain Node script; install the managed Node
+        // so it runs on machines with no host Node at all.
+        crate::managed_runtime::ensure_component_best_effort(
+            &app,
+            crate::managed_runtime::COMPONENT_NODE,
+        );
         args.insert(
             0,
             crate::runtime_scripts::runtime_script_path(&app, "bash-adapter.cjs")?
@@ -2114,11 +2139,12 @@ fn spawn_agent_internal(
     }
 
     let program = match agent_type.as_str() {
-        "claude" => "node".to_string(),
+        "claude" => program_override
+            .ok_or_else(|| "Claude adapter invocation was not resolved.".to_string())?,
         "codex" => {
             program_override.ok_or_else(|| "Codex adapter command was not resolved.".to_string())?
         }
-        "bash" => "node".to_string(),
+        "bash" => crate::managed_runtime::node_program(&app),
         "echo" => "echo".to_string(),
         _ => return Err(format!("Unknown agent type: {}", agent_type)),
     };
@@ -2160,7 +2186,6 @@ fn spawn_agent_internal(
     )?;
 
     let mut codex_auth_state_to_persist: Option<(String, std::path::PathBuf)> = None;
-    let mut claude_oauth_state_to_persist: Option<(String, std::path::PathBuf)> = None;
     if let Some(profile_id) = login_profile_id.as_deref() {
         let telemetry = app.state::<crate::db::TelemetryDb>();
         let cache_dir = app
@@ -2185,9 +2210,6 @@ fn spawn_agent_internal(
             }
         }
         if agent_type.as_str() == "claude" && materialized.auth_type == "claude_oauth" {
-            if let Some(claude_config_dir) = materialized.claude_config_dir.clone() {
-                claude_oauth_state_to_persist = Some((profile_id.to_string(), claude_config_dir));
-            }
             for key in [
                 "ANTHROPIC_API_KEY",
                 "ANTHROPIC_AUTH_TOKEN",
@@ -2242,9 +2264,6 @@ fn spawn_agent_internal(
                 program,
                 err
             );
-            if let Some((profile_id, _)) = claude_oauth_state_to_persist.as_ref() {
-                crate::login_profiles::release_claude_oauth_activation(profile_id);
-            }
             return Err(err.to_string());
         }
     };
@@ -2485,7 +2504,6 @@ fn spawn_agent_internal(
     let stdout_done_for_wait = Arc::clone(&stdout_done);
     let stderr_done_for_wait = Arc::clone(&stderr_done);
     let codex_auth_state_to_persist_for_wait = codex_auth_state_to_persist.clone();
-    let claude_oauth_state_to_persist_for_wait = claude_oauth_state_to_persist.clone();
     thread::spawn(move || {
         loop {
             let mut exited = None;
@@ -2556,26 +2574,6 @@ fn spawn_agent_internal(
                         );
                     }
                 }
-                if let Some((profile_id, claude_config_dir)) =
-                    claude_oauth_state_to_persist_for_wait.as_ref()
-                {
-                    let telemetry = app_handle.state::<crate::db::TelemetryDb>();
-                    if let Err(error) = crate::login_profiles::persist_claude_oauth_state(
-                        &telemetry,
-                        &crate::login_profiles::KeyringCredentialVault,
-                        profile_id,
-                        claude_config_dir,
-                    ) {
-                        crate::app_log!(
-                            "[AGENT_WORKTREE] event=claude_oauth_state_persist_failed node_id={} profile_id={} err={}",
-                            session_id_for_wait,
-                            profile_id,
-                            error
-                        );
-                    }
-                    crate::login_profiles::release_claude_oauth_activation(profile_id);
-                }
-
                 {
                     let app_state = app_handle.state::<AgentState>();
                     let mut children = app_state.children.lock().unwrap();

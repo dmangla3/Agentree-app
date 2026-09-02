@@ -78,6 +78,19 @@ describe('getToolSummary', () => {
 });
 
 describe('buildTimelineRows', () => {
+  it('coalesces adjacent thinking delta rows for display', () => {
+    const rows = buildTimelineRows([
+      { type: 'thinking', timestamp: 1, content: 'Reading ', isDelta: true } as any,
+      { type: 'thinking', timestamp: 2, content: 'files', is_delta: true } as any,
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      kind: 'thinking',
+      content: 'Reading files',
+    }));
+  });
+
   it('projects user steering events as user-visible steer rows', () => {
     const rows = buildTimelineRows([
       {

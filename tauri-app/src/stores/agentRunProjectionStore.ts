@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { AgentStatus } from '@shared/agentStatus';
 import type { Message } from './workspaceStore';
 
 /**
@@ -15,7 +16,7 @@ import type { Message } from './workspaceStore';
  */
 export interface AgentRunProjectedMessage extends Message {
   _optimistic?: boolean;
-  _optimisticStatus?: 'pending' | 'creating' | 'initializing' | 'running' | 'completed' | 'failed' | 'cancelled';
+  _optimisticStatus?: AgentStatus;
   _optimisticError?: string | null;
   _setupProgress?: string;
   _rollbackOnFail?: boolean;

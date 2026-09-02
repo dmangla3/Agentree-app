@@ -36,6 +36,7 @@ export type ComposerDefaultBaseSource =
   | 'reply-parent-base'
   | 'latest-ancestor-output'
   | 'main-ref'
+  | 'head-ref'
   | 'tracked-ref'
   | 'workspace-base'
   | 'none';
@@ -105,6 +106,10 @@ export const findLatestAncestorOutput = (
 
 const isMainRef = (ref: ComposerCommitPickerRef): boolean => (
   ref.git_ref === 'refs/heads/main' || ref.short_name === 'main'
+);
+
+const isHeadRef = (ref: ComposerCommitPickerRef): boolean => (
+  ref.git_ref === 'HEAD' || ref.short_name === 'HEAD'
 );
 
 export const isInternalAgentreeRefName = (name: string | null | undefined): boolean => {
@@ -188,12 +193,21 @@ export const resolveComposerDefaultBaseCommit = (input: {
     }
   }
 
-  if (input.targetMode === 'new-thread') {
+  if (input.targetMode === 'new-thread' || !input.replyParentMessageId) {
     const mainRef = input.refs.find(isMainRef);
     if (mainRef?.commit_sha) {
       return {
         sha: mainRef.commit_sha,
         source: 'main-ref',
+        selectedFromNodeId: null,
+      };
+    }
+
+    const headRef = input.refs.find(isHeadRef);
+    if (headRef?.commit_sha) {
+      return {
+        sha: headRef.commit_sha,
+        source: 'head-ref',
         selectedFromNodeId: null,
       };
     }

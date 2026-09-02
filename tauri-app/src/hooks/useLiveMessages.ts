@@ -1,7 +1,11 @@
 import { useMemo } from 'react';
 import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 import type { Message } from '../stores/workspaceStore';
-import type { AgentStatus } from '@shared/agentStatus';
+import {
+  isTerminalAgentStatus,
+  normalizeAgentStatus,
+  type AgentStatus,
+} from '@shared/agentStatus';
 import { resolveNodeState } from '../lib/runStateResolver';
 import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import type { LocalNodeMessage } from './useLocalNodes';
@@ -12,8 +16,6 @@ import type { LocalNodeMessage } from './useLocalNodes';
 
 const byCreatedAt = (left: { createdAt: string }, right: { createdAt: string }) =>
   new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
-
-const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'error']);
 
 const normalizeLocalTimestamp = (value: unknown, fallbackIso: string): string => {
   if (typeof value === 'string') {
@@ -97,21 +99,12 @@ export const applyLocalNodeMessages = (
 };
 
 const normalizeLiveStatus = (status: string | null | undefined): AgentStatus | null => {
-  if (status === 'creating' || status === 'initializing') return 'running';
-  return (
-    status === 'pending' ||
-    status === 'streaming' ||
-    status === 'running' ||
-    status === 'completed' ||
-    status === 'error' ||
-    status === 'failed' ||
-    status === 'cancelled'
-  ) ? status : null;
+  return normalizeAgentStatus(status);
 };
 
 const persistedHasCaughtTerminal = (base: Message | null, live: AgentRunProjectedMessage): boolean => {
   const liveStatus = normalizeLiveStatus(live._optimisticStatus ?? live.status ?? null);
-  if (!liveStatus || !TERMINAL_STATUSES.has(liveStatus)) return false;
+  if (!isTerminalAgentStatus(liveStatus)) return false;
   const baseStatus = normalizeLiveStatus(base?.status ?? null);
   if (baseStatus !== liveStatus) return false;
   const expectedLength = live._terminalContentLength ?? live.content?.length ?? 0;
@@ -136,7 +129,7 @@ const shouldUseGraphContent = (base: Message | null, live: AgentRunProjectedMess
   if (live.role === 'user') return true;
   if (shouldHoldTerminalOverlay(base, live)) return true;
   const liveStatus = normalizeLiveStatus(live._optimisticStatus ?? live.status ?? null);
-  return !!liveStatus && TERMINAL_STATUSES.has(liveStatus) && (live.content?.length ?? 0) > (base?.content?.length ?? 0);
+  return isTerminalAgentStatus(liveStatus) && (live.content?.length ?? 0) > (base?.content?.length ?? 0);
 };
 
 export function mergeLiveMessage(base: Message | null, live: AgentRunProjectedMessage): Message {
@@ -187,11 +180,11 @@ function toProjectedOnlyMessage(live: AgentRunProjectedMessage): Message {
 
   return {
     ...live,
-    content: live.role === 'user' || (nextStatus && TERMINAL_STATUSES.has(nextStatus)) ? (live.content ?? '') : '',
-    execution_data: live.role === 'user' || (nextStatus && TERMINAL_STATUSES.has(nextStatus)) ? (live.execution_data ?? null) : null,
-    promptTokens: live.role === 'user' || (nextStatus && TERMINAL_STATUSES.has(nextStatus)) ? (live.promptTokens ?? null) : null,
-    completionTokens: live.role === 'user' || (nextStatus && TERMINAL_STATUSES.has(nextStatus)) ? (live.completionTokens ?? null) : null,
-    totalTokens: live.role === 'user' || (nextStatus && TERMINAL_STATUSES.has(nextStatus)) ? (live.totalTokens ?? null) : null,
+    content: live.role === 'user' || isTerminalAgentStatus(nextStatus) ? (live.content ?? '') : '',
+    execution_data: live.role === 'user' || isTerminalAgentStatus(nextStatus) ? (live.execution_data ?? null) : null,
+    promptTokens: live.role === 'user' || isTerminalAgentStatus(nextStatus) ? (live.promptTokens ?? null) : null,
+    completionTokens: live.role === 'user' || isTerminalAgentStatus(nextStatus) ? (live.completionTokens ?? null) : null,
+    totalTokens: live.role === 'user' || isTerminalAgentStatus(nextStatus) ? (live.totalTokens ?? null) : null,
     status: nextStatus,
   };
 }
@@ -288,7 +281,7 @@ export function useGraphMessages(
       .filter((message) => message.workspaceId === workspaceId)
       .map((message) => {
         const status = normalizeLiveStatus(message._optimisticStatus ?? message.status ?? null);
-        const terminalContentLength = status && TERMINAL_STATUSES.has(status)
+        const terminalContentLength = isTerminalAgentStatus(status)
           ? (message.content?.length ?? 0)
           : 0;
         return [
@@ -302,7 +295,7 @@ export function useGraphMessages(
           message._optimisticStatus ?? '',
           message.aiLabel ?? '',
           terminalContentLength,
-          status && TERMINAL_STATUSES.has(status) ? (message._terminalHoldUntil ?? 0) : 0,
+          isTerminalAgentStatus(status) ? (message._terminalHoldUntil ?? 0) : 0,
           getMessageOutputCommitSha(message) ?? '',
           message.git_branch_name ?? '',
         ].join('|');

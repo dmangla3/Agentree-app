@@ -8,6 +8,7 @@ import { ROLE_COLORS } from '../../../lib/visualTokens';
 import { getAgentColorClass } from '../../../lib/graphUtils';
 import { useAgents } from '../../../hooks/useAgents';
 import type { AgentStatus } from '@shared/agentStatus';
+import { isActiveAgentStatus } from '@shared/agentStatus';
 import { getAgentVisualState } from '../../../lib/agentStateUI';
 import { AgentStateOverlay } from '../../AgentStateOverlay';
 import { useRunStatusStore } from '../../../stores/runStatusStore';
@@ -20,7 +21,6 @@ import type { Message } from '../../../stores/workspaceStore';
 import type { GraphSnapshot } from '../../../hooks/useGraphSnapshot';
 import { getAssistantIdentityLabel } from '../../../lib/assistantIdentity';
 
-const ACTIVE_STATUSES = new Set(['pending', 'creating', 'initializing', 'running', 'streaming']);
 const CACHE_REPAIR_LIST_ACTIVE_STATUS_REFRESH_COOLDOWN_MS = 15_000;
 const cacheRepairListRefreshAtByMessageId = new Map<string, number>();
 const cacheRepairListRefreshInFlightByMessageId = new Set<string>();
@@ -121,7 +121,7 @@ export const ListAssistantRow = memo(({
   useEffect(() => {
     if (!messageId || !workspaceId) return;
     if (liveMessage) return;
-    if (!displayStatus || !ACTIVE_STATUSES.has(String(displayStatus))) return;
+    if (!isActiveAgentStatus(displayStatus)) return;
 
     const now = Date.now();
     const lastRefreshAt = cacheRepairListRefreshAtByMessageId.get(messageId) ?? 0;

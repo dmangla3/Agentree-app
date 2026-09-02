@@ -8,7 +8,7 @@ import { useAgents, findDefaultCodexAgentId } from '../../hooks/useAgents';
 import { filterCommitsReachableFrom, useCommits, CommitWithRef } from '../../hooks/useCommits';
 import { useWorkspaces } from '../../hooks/useWorkspaces';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from '../../hooks/useLocalNodes';
-import { agentClient, GitMergePreview } from '../../lib/agentClient';
+import { agentClient, GitMergePreview, type TargetBranchCheckoutStatus } from '../../lib/agentClient';
 import { api } from '../../lib/api';
 import { getAccessToken } from '../../lib/authSession';
 import { cn } from '../../lib/utils';
@@ -18,6 +18,7 @@ import { buildMergeAgentArgs, buildMergeAgentPrompt, buildMergeAgentUserContent 
 import { persistMergeCommitGraph } from '../../lib/mergeCommitGraph';
 import { persistMergeResultNodeLocally } from './mergeResultNode';
 import { Button } from '../../../@/components/ui/button';
+import { Checkbox } from '../../../@/components/ui/checkbox';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../@/components/ui/card';
 import { Label } from '../../../@/components/ui/label';
 import { Badge } from '../../../@/components/ui/badge';
@@ -402,6 +403,8 @@ export function SetupStage() {
   const [isCheckingConflicts, setIsCheckingConflicts] = useState(false);
   const [isStartingAiMerge, setIsStartingAiMerge] = useState(false);
   const [isAgentPopoverOpen, setIsAgentPopoverOpen] = useState(false);
+  const [updateTargetBranch, setUpdateTargetBranch] = useState(false);
+  const [targetBranchStatus, setTargetBranchStatus] = useState<TargetBranchCheckoutStatus | null>(null);
   const previewRequestIdRef = useRef(0);
   const previewReadyKeyRef = useRef<string | null>(null);
   const { data: agents = [] } = useAgents();
@@ -489,6 +492,42 @@ export function SetupStage() {
     !session.preview.has_conflicts &&
     previewTotalFiles > 0
   );
+
+  // "Also move <target> to the merged commit" gating. Only offered when the
+  // target is a real named branch; locked when that branch is checked out with
+  // uncommitted changes, because advancing it then needs a clean worktree.
+  const targetBranchName = session.target?.branchName ?? null;
+  const canOfferTargetUpdate = Boolean(targetBranchName);
+  const targetBranchLocked = Boolean(targetBranchStatus?.checked_out && targetBranchStatus?.dirty);
+  const targetUpdateDisabled = !canOfferTargetUpdate || targetBranchLocked;
+  const shouldUpdateTargetBranch = updateTargetBranch && !targetUpdateDisabled;
+
+  useEffect(() => {
+    if (!repoPath || !targetBranchName) {
+      setTargetBranchStatus(null);
+      return;
+    }
+    let cancelled = false;
+    void agentClient
+      .targetBranchCheckoutStatus(repoPath, targetBranchName)
+      .then((status) => {
+        if (!cancelled) setTargetBranchStatus(status);
+      })
+      .catch(() => {
+        if (!cancelled) setTargetBranchStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [repoPath, targetBranchName]);
+
+  // Never leave the box ticked while it is disabled (target became dirty, or the
+  // target stopped being a branch).
+  useEffect(() => {
+    if (targetUpdateDisabled && updateTargetBranch) {
+      setUpdateTargetBranch(false);
+    }
+  }, [targetUpdateDisabled, updateTargetBranch]);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) || null;
   const displayName = selectedAgent?.name || 'Select model';
 
@@ -634,6 +673,7 @@ export function SetupStage() {
           workflow: 'merge_using_ai',
           merge_target_commit: session.target.commitSha,
           merge_target_branch: session.target.branchName ?? null,
+          merge_update_target_branch: shouldUpdateTargetBranch,
           merge_target_node_id: graphParentId,
           merge_source_commits: session.sources.map((source) => source.commitSha),
           merge_source_labels: sourceLabels,
@@ -1081,6 +1121,35 @@ export function SetupStage() {
                 />
               </PopoverContent>
             </Popover>
+
+            {canOfferTargetUpdate && (
+              <label
+                className={cn(
+                  'flex items-start gap-2 rounded-md px-1 py-1 text-[11px] leading-snug',
+                  targetUpdateDisabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+                )}
+                title={
+                  targetBranchLocked
+                    ? `'${targetBranchName}' has uncommitted changes in its checked-out folder. Commit or stash them to enable moving it.`
+                    : `Fast-forwards '${targetBranchName}' to the merge commit. Off by default — the merge commit is created either way.`
+                }
+              >
+                <Checkbox
+                  checked={shouldUpdateTargetBranch}
+                  onCheckedChange={(value) => setUpdateTargetBranch(value === true)}
+                  disabled={targetUpdateDisabled || isStartingAiMerge}
+                  className="mt-0.5"
+                />
+                <span className="text-muted-foreground">
+                  Also move <span className="font-medium text-foreground">{targetBranchName}</span> to the merged commit
+                  {targetBranchLocked && (
+                    <span className="block text-[10px] text-amber-600 dark:text-amber-500">
+                      Disabled: commit or stash changes in its checked-out folder first.
+                    </span>
+                  )}
+                </span>
+              </label>
+            )}
 
             <Button
               onClick={handleMergeUsingAi}

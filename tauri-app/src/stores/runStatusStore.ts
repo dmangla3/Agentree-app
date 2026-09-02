@@ -1,5 +1,9 @@
 import { create } from 'zustand';
-import type { AgentStatus } from '@shared/agentStatus';
+import {
+  isActiveAgentStatus,
+  isTerminalAgentStatus,
+  type AgentStatus,
+} from '@shared/agentStatus';
 import { recordPerfEvent } from '../lib/perfRecorder';
 import { resolveAgentRunStatus } from '../agent-runs/agentRun.machine';
 
@@ -11,16 +15,7 @@ import { resolveAgentRunStatus } from '../agent-runs/agentRun.machine';
  * subscribing to XState actors directly. Do not write run lifecycle transitions
  * here from UI code; dispatch AgentRunEvent through agentRunManager instead.
  */
-export type RunStatus =
-  | AgentStatus
-  | 'pending'
-  | 'creating'
-  | 'initializing'
-  | 'streaming'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'cancelled';
+export type RunStatus = AgentStatus;
 
 export interface RunStatusEntry {
   nodeId: string;
@@ -49,29 +44,14 @@ interface RunStatusState {
 export const TERMINAL_RUN_STATUS_RETENTION_MS = 60_000;
 export const MAX_TERMINAL_RUN_STATUS_ENTRIES = 500;
 
-const ACTIVE_STATUSES = new Set<RunStatus | string>([
-  'pending',
-  'creating',
-  'initializing',
-  'running',
-  'streaming',
-]);
-
-const TERMINAL_STATUSES = new Set<RunStatus | string>([
-  'completed',
-  'failed',
-  'cancelled',
-  'error',
-]);
-
 let terminalPruneTimer: ReturnType<typeof setTimeout> | null = null;
 
 const isTerminalRunStatus = (status: RunStatus | string | null | undefined) => (
-  Boolean(status) && TERMINAL_STATUSES.has(status as string)
+  isTerminalAgentStatus(status)
 );
 
 const isActiveRunStatus = (status: RunStatus | string | null | undefined) => (
-  Boolean(status) && ACTIVE_STATUSES.has(status as string)
+  isActiveAgentStatus(status)
 );
 
 const pruneTerminalRunStatusEntries = (
@@ -288,7 +268,7 @@ export const useRunStatusStore = create<RunStatusState>((set, get) => ({
     Object.values(get().byNodeId).filter((entry) => {
       if (workspaceId && entry.workspaceId !== workspaceId) return false;
       if (entry.role !== 'assistant') return false;
-      return entry.status ? ACTIVE_STATUSES.has(entry.status) : false;
+      return isActiveAgentStatus(entry.status);
     }).length,
 
   hasHotSendActivity: (workspaceId, terminalGraceMs) => {
@@ -298,7 +278,7 @@ export const useRunStatusStore = create<RunStatusState>((set, get) => ({
       if (entry.workspaceId !== workspaceId) return false;
       if (entry.role !== 'assistant') return false;
       if (!entry.status) return true;
-      if (!TERMINAL_STATUSES.has(entry.status)) return true;
+      if (!isTerminalAgentStatus(entry.status)) return true;
       const updatedAtMs = Date.parse(entry.updatedAt || '');
       return Number.isFinite(updatedAtMs) && now - updatedAtMs <= terminalGraceMs;
     });

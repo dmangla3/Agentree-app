@@ -1,6 +1,5 @@
 import type { ProjectedNodeEntity } from '../domain/workspaceProjection';
-
-const ACTIVE_AGENT_STATUSES = new Set(['pending', 'creating', 'initializing', 'running', 'streaming']);
+import { isActiveAgentStatus } from '@shared/agentStatus';
 
 export const resolveAgentRunHoverStatus = (
   entity: ProjectedNodeEntity | null | undefined,
@@ -19,5 +18,5 @@ export const shouldHydrateAgentRunHover = (
   if (entity.message.role !== 'assistant') return false;
 
   const status = resolveAgentRunHoverStatus(entity, liveStatus);
-  return ACTIVE_AGENT_STATUSES.has(status || '');
+  return isActiveAgentStatus(status);
 };

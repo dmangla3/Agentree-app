@@ -1,6 +1,7 @@
 import { agentRunManager } from './agentRunManager';
 import {
   dispatchAgentRunUsage,
+  dispatchFinalAssistantText,
   dispatchProviderStreamEvent,
   dispatchStreamingAssistantText,
   deriveIncrementalText,
@@ -8,7 +9,12 @@ import {
   mergeStreamingOutput,
   resolveProviderAssistantOutput,
 } from './agentRunStreamDispatch';
-import { parseStdoutAgentEvent, summarizeFinalizeAck, summarizeProviderStop } from './agentRunEventIngestor';
+import {
+  parseStdoutAgentEvent,
+  shouldAcceptFinalizeAckForRun,
+  summarizeFinalizeAck,
+  summarizeProviderStop,
+} from './agentRunEventIngestor';
 import type { AgentRunStatus } from './agentRun.types';
 import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
 import { agentClient, type AgentRunJournalEvent } from '../lib/agentClient';
@@ -29,7 +35,7 @@ export interface AgentRunHydrationResult {
   error?: unknown;
 }
 
-type HydrationInput = {
+export type AgentRunStreamIngestInput = {
   workspaceId: string | null;
   parentId: string | null;
   role: 'assistant';
@@ -37,6 +43,11 @@ type HydrationInput = {
   runId: string;
   status: AgentRunStatus | null;
   executionData: Record<string, any>;
+};
+
+export type AgentRunStreamIngestState = {
+  output: string;
+  providerItemId: string | null;
 };
 
 const inflightHydrations = new Map<string, Promise<AgentRunHydrationResult>>();
@@ -85,7 +96,7 @@ const withJournalMetadata = (row: AgentRunJournalEvent, payload: Record<string, 
   phase: payload.phase ?? row.phase ?? undefined,
 });
 
-const baseExecutionData = (input: HydrationInput) => ({
+const baseExecutionData = (input: AgentRunStreamIngestInput) => ({
   ...(input.executionData ?? {}),
   current_run_id: input.runId,
 });
@@ -94,11 +105,23 @@ const getProjection = (nodeId: string) => (
   useAgentRunProjectionStore.getState().projectionsById[nodeId] ?? null
 );
 
+const currentRunIdForNode = (
+  nodeId: string,
+  input: AgentRunStreamIngestInput,
+): string => {
+  const projection = getProjection(nodeId);
+  const snapshot = agentRunManager.snapshot(nodeId);
+  return cleanString((projection?.execution_data as any)?.current_run_id)
+    ?? cleanString((snapshot?.executionData as any)?.current_run_id)
+    ?? cleanString(snapshot?.runId)
+    ?? input.runId;
+};
+
 const dispatchHydratedStreamEvent = (
   nodeId: string,
   event: Record<string, any>,
-  input: HydrationInput,
-  state: { output: string; providerItemId: string | null },
+  input: AgentRunStreamIngestInput,
+  state: AgentRunStreamIngestState,
 ) => {
   const agentId = cleanString(event.agent_id) ?? input.agentId;
   const context = {
@@ -117,6 +140,13 @@ const dispatchHydratedStreamEvent = (
       }, input);
     },
   };
+
+  if (
+    event.type === 'finalize_ack' &&
+    !shouldAcceptFinalizeAckForRun(event, currentRunIdForNode(nodeId, input))
+  ) {
+    return;
+  }
 
   agentRunManager.ingest(nodeId, event, {
     ...input,
@@ -239,12 +269,57 @@ const dispatchHydratedStreamEvent = (
 
   if (event.type === 'stop' || event.type === 'provider_stop') {
     const { providerTerminalStatus, providerStopReason } = summarizeProviderStop(event);
+    if (typeof event.final_content === 'string') {
+      const merged = resolveProviderAssistantOutput(state.output, event.final_content, {
+        kind: 'final',
+        currentProviderItemId: state.providerItemId,
+        nextProviderItemId: cleanString(event.provider_item_id),
+      });
+      state.output = merged.output;
+      state.providerItemId = merged.providerItemId;
+      dispatchFinalAssistantText(state.output, {
+        nodeId,
+        parentId: input.parentId ?? '',
+        workspaceId: input.workspaceId ?? '',
+        agentId,
+        timestamp: numericSeq(event.timestamp) ?? Date.now(),
+        streamSeq: numericSeq(event.stream_seq),
+      });
+    }
+    if (event.usage) {
+      dispatchAgentRunUsage(event.usage, {
+        nodeId,
+        parentId: input.parentId ?? '',
+        workspaceId: input.workspaceId ?? '',
+        agentId,
+      });
+    }
+    const providerThreadId = cleanString(event.provider_thread_id);
+    const providerTurnId = cleanString(event.provider_turn_id);
+    agentRunManager.dispatch(nodeId, {
+      type: 'execution_data',
+      patch: {
+        provider_terminal_status: providerTerminalStatus,
+        ...(providerStopReason ? { provider_stop_reason: providerStopReason } : {}),
+        ...(event.usage ? { usage: event.usage } : {}),
+        ...((providerThreadId || providerTurnId) ? {
+          meta: {
+            ...(providerThreadId ? { provider_thread_id: providerThreadId } : {}),
+            ...(providerTurnId ? { provider_turn_id: providerTurnId } : {}),
+          },
+        } : {}),
+      },
+    }, {
+      ...input,
+      content: state.output,
+      executionData: baseExecutionData(input),
+    });
     agentRunManager.dispatch(nodeId, {
       type: 'finalize_progress',
       progress: providerTerminalStatus === AGENT_STATUS.completed
         ? 'Finalizing changes...'
         : 'Finalizing run...',
-      phase: providerStopReason,
+      phase: 'provider_done',
     }, {
       ...input,
       content: state.output,
@@ -259,12 +334,15 @@ const dispatchHydratedStreamEvent = (
     event.type === 'tool_use' ||
     event.type === 'tool_result' ||
     event.type === 'tool_output_delta' ||
+    event.type === 'user_steer_requested' ||
     event.type === 'error' ||
     event.type === 'stderr'
   ) {
     dispatchProviderStreamEvent(event, context);
   }
 };
+
+export const ingestAgentRunStreamEvent = dispatchHydratedStreamEvent;
 
 const hydrateAgentRun = async (
   assistantNodeId: string,
@@ -287,7 +365,7 @@ const hydrateAgentRun = async (
     return { status: 'already-current', assistantNodeId, runId, replayed: 0 };
   }
 
-  const input: HydrationInput = {
+  const input: AgentRunStreamIngestInput = {
     workspaceId: cleanString(readLedgerValue(ledger, 'workspaceId', 'workspace_id')),
     parentId: cleanString(readLedgerValue(ledger, 'userNodeId', 'user_node_id')),
     role: 'assistant',

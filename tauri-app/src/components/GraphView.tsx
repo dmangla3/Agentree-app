@@ -88,6 +88,7 @@ import { writeClipboardText } from '../lib/clipboard';
 import { useDiff } from '../contexts/DiffContext';
 import { useToastHelpers } from './Toast';
 import { useRunStatusStore } from '../stores/runStatusStore';
+import { isActiveAgentStatus } from '@shared/agentStatus';
 import { agentRunManager } from '../agent-runs/agentRunManager';
 import { flowRunManager } from '../flows/flowRunManager';
 import { resolveActiveFlowCancelTarget } from '../flows/flowRunSelectors';
@@ -99,7 +100,7 @@ import { HorizontalThenVerticalEdge } from './HorizontalThenVerticalEdge';
 import { ContextSmoothStepEdge } from './ContextSmoothStepEdge';
 
 // Components - Graph (extracted)
-import { GraphControls, GraphThreadTabs, type LeafNodeNavigationItem, type ThreadNavigationItem, ViewMode } from './graph/GraphControls';
+import { GraphControls, type LeafNodeNavigationItem, type ThreadNavigationItem, ViewMode } from './graph/GraphControls';
 import { GraphLegend } from './graph/GraphLegend';
 import { MiniMapPanel } from './graph/MiniMapPanel';
 import { GraphCanvasIndexPanel, type GraphEdgeLegendId, type GraphNodeSectionId } from './graph/GraphCanvasIndexPanel';
@@ -148,6 +149,7 @@ import type { AttentionBadgeItem, FocusTriggerMetrics } from '../types/nodes';
 import { graphNodeTypes } from './graph/graphNodeTypes';
 import { hasLayoutAnchoredGraphNodes, resolveAnchoredGraphWindowNodeIds } from './graph/graphRenderWindow';
 import { getGraphEdgeEndpointDotVariant, isInterTurnEndpointEdge, type EdgeEndpointDotVariant } from './graphEdgeEndpointDots';
+import type { WorkspaceThreadNavigationModel } from './navigation/WorkspaceNavigator';
 
 const GraphMergePanel = React.lazy(() => import('./MergePanel').then((module) => ({ default: module.MergePanel })));
 
@@ -192,7 +194,6 @@ const ACTIVE_GRAPH_WINDOW_UPDATE_THROTTLE_MS = 80;
 const ACTIVE_GRAPH_WINDOW_FALLBACK_NODE_WIDTH = 120;
 const ACTIVE_GRAPH_WINDOW_FALLBACK_NODE_HEIGHT = 120;
 const ACTIVE_GRAPH_WINDOW_SPATIAL_CELL_SIZE = 900;
-const ACTIVE_GRAPH_RUN_STATUSES = new Set(['pending', 'creating', 'initializing', 'running', 'streaming']);
 const EMPTY_GRAPH_INSIGHTS: any[] = [];
 const GRAPH_GEOMETRY_DIAGNOSTICS_ENABLED = import.meta.env.VITE_GRAPH_GEOMETRY_DIAGNOSTICS === 'true';
 
@@ -884,7 +885,7 @@ interface GraphViewInternalProps {
     hideLegend?: boolean;
     className?: string;
     forcedViewMode?: ViewMode;
-    threadNavigationOrientation?: 'horizontal' | 'vertical';
+    onThreadNavigationModelChange?: (model: WorkspaceThreadNavigationModel | null) => void;
 }
 
 const GRAPH_DIAGNOSTIC_MAX_OVERLAPS = 200;
@@ -974,7 +975,7 @@ function GraphViewInternal({
     hideLegend = false,
     className: propClassName,
     forcedViewMode,
-    threadNavigationOrientation = 'horizontal',
+    onThreadNavigationModelChange,
 }: GraphViewInternalProps) {
     const queryClient = useQueryClient();
     const sendFlowGraphDiagFlags = useMemo(() => getSendFlowGraphDiagnosticFlags(), []);
@@ -1014,7 +1015,7 @@ function GraphViewInternal({
                 if (selectedWorkspaceId && entry.workspaceId !== selectedWorkspaceId) return false;
                 if (entry.role !== 'assistant') return false;
                 if (!entry.status) return false;
-                return ACTIVE_GRAPH_RUN_STATUSES.has(entry.status);
+                return isActiveAgentStatus(entry.status);
             })
             .map((entry) => entry.nodeId)
             .sort()
@@ -1097,10 +1098,26 @@ function GraphViewInternal({
         queryKey: ['local-commit-graph', selectedWorkspaceId, localCommitGraphRepoPath],
         queryFn: async () => {
             if (!selectedWorkspaceId) return { commits: [], commitParents: [], commitObservations: [] };
+            const startedAt = performance.now();
+            let repaired = false;
             if (localCommitGraphRepoPath) {
                 await agentClient.repairLocalCommitGraph(selectedWorkspaceId, localCommitGraphRepoPath);
+                repaired = true;
             }
-            return agentClient.listLocalCommitGraph(selectedWorkspaceId);
+            const graph = await agentClient.listLocalCommitGraph(selectedWorkspaceId);
+            recordPerfEvent('query.local-commit-graph.read', {
+                elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
+                workspaceId: selectedWorkspaceId,
+                repoPathPresent: Boolean(localCommitGraphRepoPath),
+                repaired,
+                commitCount: graph.commits.length,
+                parentCount: graph.commitParents.length,
+                observationCount: graph.commitObservations.length,
+            }, {
+                source: 'GraphView',
+                durationMs: Number((performance.now() - startedAt).toFixed(2)),
+            });
+            return graph;
         },
         enabled: Boolean(selectedWorkspaceId && agentClient.hasRuntime()),
         staleTime: 5_000,
@@ -4820,6 +4837,85 @@ function GraphViewInternal({
         openBulkDeleteDialog(deletePlan.messageIds, [], deletePlan.threadRootId);
     }, [deleteThreadSessionMutation, openBulkDeleteDialog, selectedWorkspaceId, threadRootIndex.messageIdsByThreadRootId, toast]);
 
+    const threadNavigationModelSignature = useMemo(() => (
+        [
+            selectedWorkspaceId ?? 'none',
+            doneThreadsCollapsed ? 'done-collapsed' : 'done-open',
+            createThreadDisabled ? 'create-disabled' : 'create-enabled',
+            createThreadDisabledReason ?? '',
+            ...threadIndexItems.map((thread) => [
+                thread.threadRootId,
+                thread.label,
+                thread.turnCount,
+                thread.commitCount,
+                thread.baseCommitSha ?? '',
+                thread.updatedLabel,
+                thread.runningCount,
+                thread.done ? 'done' : 'open',
+                thread.current ? 'current' : 'idle',
+                thread.unreadCompletedLeafCount ?? 0,
+                thread.initialPreviewNodeId ?? '',
+                ...(thread.previewNodeIds ?? []),
+            ].join(':')),
+        ].join('|')
+    ), [
+        createThreadDisabled,
+        createThreadDisabledReason,
+        doneThreadsCollapsed,
+        selectedWorkspaceId,
+        threadIndexItems,
+    ]);
+    const lastPublishedThreadNavigationSignatureRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!onThreadNavigationModelChange) return;
+        if (lastPublishedThreadNavigationSignatureRef.current === threadNavigationModelSignature) return;
+        lastPublishedThreadNavigationSignatureRef.current = threadNavigationModelSignature;
+        recordPerfEvent('query.workspace-switch.thread-navigation-ready', {
+            elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
+            workspaceId: selectedWorkspaceId,
+            threadCount: threadIndexItems.length,
+            messageCount: (graphMessages as Message[]).length,
+            queryStatus: messagesQuery.status,
+        }, { source: 'GraphView' });
+        onThreadNavigationModelChange({
+            workspaceId: selectedWorkspaceId,
+            threadItems: threadIndexItems,
+            threadHoverProjectionInput,
+            doneThreadsCollapsed,
+            onThreadFocus: handleFocusThread,
+            onThreadDoneChange: handleThreadDoneChange,
+            onThreadDelete: handleThreadDelete,
+            onDoneThreadsCollapsedChange: handleDoneThreadsCollapsedChange,
+            onCreateThread: handleCreateThread,
+            createThreadDisabled,
+            createThreadDisabledReason,
+        });
+    }, [
+        createThreadDisabled,
+        createThreadDisabledReason,
+        doneThreadsCollapsed,
+        handleCreateThread,
+        handleDoneThreadsCollapsedChange,
+        handleFocusThread,
+        handleThreadDelete,
+        handleThreadDoneChange,
+        onThreadNavigationModelChange,
+        selectedWorkspaceId,
+        graphMessages.length,
+        messagesQuery.status,
+        threadHoverProjectionInput,
+        threadIndexItems,
+        threadNavigationModelSignature,
+    ]);
+
+    useEffect(() => {
+        return () => {
+            onThreadNavigationModelChange?.(null);
+        };
+    }, [
+        onThreadNavigationModelChange,
+    ]);
+
     const resetBulkDeleteDialog = useCallback(() => {
         setIsBulkDeleteAlertOpen(false);
         setBulkDeleteIds([]);
@@ -6018,53 +6114,14 @@ function GraphViewInternal({
                     />
                     <TrackedBranchesPanel
                         workspaceId={selectedWorkspaceId}
-                        repoPath={selectedWorkspace?.git_repo_path ?? selectedWorkspace?.folderPath ?? null}
+                        repoPath={repoPath}
                     />
-                    {threadNavigationOrientation === 'horizontal' ? (
-                        <GraphThreadTabs
-                            threadItems={threadIndexItems}
-                            threadHoverProjectionInput={threadHoverProjectionInput}
-                            onThreadFocus={handleFocusThread}
-                            onThreadDoneChange={handleThreadDoneChange}
-                            onThreadDelete={handleThreadDelete}
-                            doneThreadsCollapsed={doneThreadsCollapsed}
-                            onDoneThreadsCollapsedChange={handleDoneThreadsCollapsedChange}
-                            threadBarCollapsed={threadBarCollapsed}
-                            onThreadBarCollapsedChange={handleThreadBarCollapsedChange}
-                            onCreateThread={handleCreateThread}
-                            createThreadDisabled={createThreadDisabled}
-                            createThreadDisabledReason={createThreadDisabledReason}
-                        />
-                    ) : null}
                 </>
             )}
 
             {/* Content Area */}
-            <div className={cn(
-                "flex-1 overflow-hidden",
-                threadNavigationOrientation === 'vertical' ? 'flex min-h-0' : 'relative'
-            )}>
-                {!hideControls && threadNavigationOrientation === 'vertical' ? (
-                    <GraphThreadTabs
-                        orientation="vertical"
-                        threadItems={threadIndexItems}
-                        threadHoverProjectionInput={threadHoverProjectionInput}
-                        onThreadFocus={handleFocusThread}
-                        onThreadDoneChange={handleThreadDoneChange}
-                        onThreadDelete={handleThreadDelete}
-                        doneThreadsCollapsed={doneThreadsCollapsed}
-                        onDoneThreadsCollapsedChange={handleDoneThreadsCollapsedChange}
-                        threadBarCollapsed={threadBarCollapsed}
-                        onThreadBarCollapsedChange={handleThreadBarCollapsedChange}
-                        onCreateThread={handleCreateThread}
-                        createThreadDisabled={createThreadDisabled}
-                        createThreadDisabledReason={createThreadDisabledReason}
-                    />
-                ) : null}
-                <div className={cn(
-                    "relative",
-                    threadNavigationOrientation === 'vertical' ? 'min-w-0 flex-1 overflow-hidden' : 'h-full w-full'
-                )}>
+            <div className="relative flex-1 overflow-hidden">
+                <div className="relative h-full w-full">
                 {hiddenGraphFilterCount > 0 ? (
                     <div className="absolute right-4 top-4 z-40 flex items-center gap-2 rounded-full border border-amber-300/80 bg-amber-50/[0.94] px-3 py-2 text-xs text-amber-900 shadow-sm backdrop-blur-md dark:border-amber-700/80 dark:bg-amber-950/[0.88] dark:text-amber-100">
                         <span className="font-semibold tabular-nums">

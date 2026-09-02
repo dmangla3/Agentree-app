@@ -17,6 +17,10 @@ vi.mock('../../../hooks/useMessages', () => ({
   }),
 }));
 
+vi.mock('../../../hooks/useWorkspaces', () => ({
+  useWorkspaces: () => ({ data: [] }),
+}));
+
 vi.mock('../../../agent-runs/agentRunManager', () => ({
   agentRunManager: {
     snapshot: vi.fn(() => null),
@@ -145,6 +149,7 @@ describe('ChatAssistantCard identity', () => {
               timeline: [
                 { type: 'message', timestamp: 1, content: 'Interim progress update.' },
                 { type: 'thinking', timestamp: 2, content: 'Checking implementation details.' },
+                { type: 'user_steer_requested', timestamp: 2.5, content: 'stop' },
                 {
                   type: 'tool_use',
                   timestamp: 3,
@@ -153,6 +158,7 @@ describe('ChatAssistantCard identity', () => {
                   toolOutput: 'passed',
                   toolUseId: 'tool-1',
                 },
+                { type: 'message', timestamp: 4, content: 'Final answer only.' },
               ],
             },
           } as any,
@@ -169,6 +175,7 @@ describe('ChatAssistantCard identity', () => {
     expect(screen.getByText('Final answer only.')).toBeTruthy();
     expect(screen.queryByText('Interim progress update.')).toBeNull();
     expect(screen.queryByText('Checking implementation details.')).toBeNull();
+    expect(screen.queryByText('stop')).toBeNull();
 
     const workLogsButton = screen.getByRole('button', { name: /work logs/i });
     const finalOutput = screen.getByText('Final answer only.');
@@ -180,7 +187,10 @@ describe('ChatAssistantCard identity', () => {
 
     expect(screen.getByText('Interim progress update.')).toBeTruthy();
     expect(screen.getByText('Checking implementation details.')).toBeTruthy();
+    expect(screen.getByText('User Steer')).toBeTruthy();
+    expect(screen.getByText('stop')).toBeTruthy();
     expect(screen.getByText('npm test')).toBeTruthy();
+    expect(screen.getAllByText('Final answer only.')).toHaveLength(1);
   });
 
   it('copies only the final assistant output for completed structured runs', () => {
@@ -306,6 +316,49 @@ describe('ChatAssistantCard identity', () => {
 
     expect(screen.getByText('Agent running')).toBeTruthy();
     expect(screen.queryByText(/^working$/i)).toBeNull();
+  });
+
+  it('routes active tool-only timelines through open work logs before content and the running cue', () => {
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          status: 'running' as any,
+          message: {
+            status: 'running' as any,
+            content: 'Current streamed output.',
+            execution_data: {
+              timeline: [
+                { type: 'thinking', timestamp: 1, content: 'Inspecting the runtime.' },
+                {
+                  type: 'tool_use',
+                  timestamp: 2,
+                  toolName: 'bash',
+                  toolInput: { command: 'npm test' },
+                  toolUseId: 'tool-1',
+                },
+                { type: 'error', timestamp: 3, content: 'Retrying after transient failure.' },
+              ],
+            },
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    const content = screen.getByText('Current streamed output.');
+    const workLogs = screen.getByRole('button', { name: /work logs/i });
+    const runningCue = screen.getByText('Writing response');
+    expect(workLogs.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(workLogs.compareDocumentPosition(runningCue) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText(/Actions/i)).toBeNull();
+    expect(screen.getByText('Inspecting the runtime.')).toBeTruthy();
+    expect(screen.getByText('npm test')).toBeTruthy();
+    expect(screen.getByText('Retrying after transient failure.')).toBeTruthy();
   });
 
   it('uses theme foreground tokens for the running cue label', () => {

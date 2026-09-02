@@ -3,7 +3,7 @@ import TextareaAutosize from 'react-textarea-autosize';
 import { Bot, Check, ChevronDown, CornerDownRight, FileText, GitBranchIcon, GitCommitHorizontal, History, Loader2, Minus, Pencil, Plus, Puzzle, RotateCcw, Search, Send, Square, Workflow, X } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useShallow } from 'zustand/react/shallow';
-import { useWorkspaceStore, type Message, type Workspace } from '../stores/workspaceStore';
+import { buildComposerDraftKey, useWorkspaceStore, type Message, type Workspace } from '../stores/workspaceStore';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { isLoginProfileActive } from '../lib/loginProfiles';
@@ -40,6 +40,7 @@ import { resolveLocalWorkspaceRepoPath } from '../lib/workspaceRepoPath';
 import { dispatchGraphComposerDockExpand } from '../lib/graphComposerDockEvents';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
 import { cn } from '../lib/utils';
+import { getLegacyThreadIdForMessage, getMessageThreadSessionId } from '../lib/threadSessions';
 import {
   buildComposerAgentRuns,
   normalizeComposerAgentRunCounts,
@@ -191,6 +192,7 @@ const resolveContextStartMessage = (
 
 const baseSourceLabel = (source: string | undefined): string => {
   if (source === 'main-ref') return 'main';
+  if (source === 'head-ref') return 'HEAD';
   if (source === 'focused-commit') return 'Focused commit';
   if (source === 'reply-parent-output') return 'Parent output';
   if (source === 'reply-parent-base') return 'Parent base';
@@ -344,7 +346,7 @@ export function GraphDockComposer() {
     composerBaseCommitOverride,
     threadComposerTarget,
     clearThreadComposerTarget,
-    getComposerDraft,
+    composerDraftByWorkspace,
     setComposerDraft,
     clearComposerDraft,
   } = useWorkspaceStore(useShallow((state) => ({
@@ -358,7 +360,7 @@ export function GraphDockComposer() {
     composerBaseCommitOverride: state.composerBaseCommitOverride,
     threadComposerTarget: state.threadComposerTarget,
     clearThreadComposerTarget: state.clearThreadComposerTarget,
-    getComposerDraft: state.getComposerDraft,
+    composerDraftByWorkspace: state.composerDraftByWorkspace,
     setComposerDraft: state.setComposerDraft,
     clearComposerDraft: state.clearComposerDraft,
   })));
@@ -373,6 +375,14 @@ export function GraphDockComposer() {
     () => resolveLocalWorkspaceRepoPath(selectedWorkspace),
     [selectedWorkspace]
   );
+  const rawTarget = resolveGraphDockComposerTarget({
+    focusedMessageId,
+    lastFocusSource,
+    lastFocusMetadata,
+  });
+  const isRootComposerTarget = editDraftSource
+    ? !editDraftSource.parentId
+    : composerTargetMode === 'new-thread' || !rawTarget.parentMessageId;
   const installedSkillsQuery = useQuery({
     queryKey: ['skills', 'installed'],
     queryFn: () => agentClient.listInstalledSkills('graph-composer-skills-installed'),
@@ -393,7 +403,7 @@ export function GraphDockComposer() {
     enabled: Boolean(selectedWorkspaceRepoPath && selectedWorkspaceId),
     staleTime: 30_000,
   });
-  const shouldLoadBaseRefs = isBasePickerOpen || composerTargetMode === 'new-thread';
+  const shouldLoadBaseRefs = isBasePickerOpen || isRootComposerTarget;
   const trackedRefsQuery = useTrackedRefs(shouldLoadBaseRefs ? selectedWorkspaceId : null);
   const enabledTrackedGitRefs = useMemo(
     () => getEnabledTrackedGitRefs(trackedRefsQuery.data ?? []),
@@ -438,11 +448,6 @@ export function GraphDockComposer() {
     () => new Map(messages.map((message) => [message.id, message])),
     [messages]
   );
-  const rawTarget = resolveGraphDockComposerTarget({
-    focusedMessageId,
-    lastFocusSource,
-    lastFocusMetadata,
-  });
   const target = editDraftSource
     ? {
       parentMessageId: editDraftSource.parentId ?? null,
@@ -456,6 +461,9 @@ export function GraphDockComposer() {
       focusedCommitSha: null,
     }
     : rawTarget;
+  const composerDraftTargetId = editDraftSource?.id ?? target.parentMessageId ?? target.selectedNodeId ?? null;
+  const composerDraftKey = buildComposerDraftKey(selectedWorkspaceId, composerDraftTargetId);
+  const composerDraft = composerDraftKey ? composerDraftByWorkspace[composerDraftKey] ?? '' : '';
   const parentMessage = useMemo(
     () => target.parentMessageId
       ? messages.find((message) => message.id === target.parentMessageId) ?? null
@@ -542,7 +550,7 @@ export function GraphDockComposer() {
   ), [agents, normalizedSelectedAgentRunCounts]);
   const selectedRunTotal = selectedAgentRuns.length;
   const base = resolveGraphDockComposerBase({
-    targetMode: composerTargetMode,
+    targetMode: isRootComposerTarget ? 'new-thread' : composerTargetMode,
     replyParentMessageId: target.parentMessageId,
     selectedNodeId: target.selectedNodeId,
     focusedCommitSha: target.focusedCommitSha,
@@ -671,8 +679,7 @@ export function GraphDockComposer() {
       ? target.parentMessageId
       : effectiveBase && (isFlowSelected ? agent : selectedAgentRunItems.length > 0)
   ));
-  const rootTargetLabel = composerTargetMode === 'new-thread' ? 'Thread root' : 'Workspace root';
-  const targetLabel = previewText(parentMessage, target.parentMessageId ? 'Selected node' : rootTargetLabel);
+  const targetLabel = previewText(parentMessage, isRootComposerTarget ? 'Thread root' : 'Selected node');
   const baseCommitPickerCommits = useMemo<ComposerCommitPickerCommit[]>(() => {
     const commitsBySha = new Map<string, ComposerCommitPickerCommit>();
     const upsert = (commit: Partial<ComposerCommitPickerCommit> & { sha?: string | null }) => {
@@ -805,9 +812,13 @@ export function GraphDockComposer() {
     () => getMentionedRepoPathSet(promptRef.current, repoMentionFilePathSet),
     [promptHasContent, repoMentionFilePathSet]
   );
+  const installedSkillNames = useMemo(
+    () => installedSkills.map((skill: SkillSummary) => skill.name),
+    [installedSkills]
+  );
   const skillMentionNameSet = useMemo(
-    () => new Set(getSkillMentionNames(promptRef.current).filter((name) => installedSkills.some((skill: SkillSummary) => skill.name === name))),
-    [installedSkills, promptHasContent]
+    () => new Set(getSkillMentionNames(promptRef.current, installedSkillNames)),
+    [installedSkillNames, promptHasContent, activeSkillMention?.query]
   );
   const activeMentionFiles = useMemo(
     () => activeFileMention ? getRepoMentionMatches(repoMentionSearchIndex, activeFileMention.query, 8) : [],
@@ -833,12 +844,11 @@ export function GraphDockComposer() {
   );
 
   useEffect(() => {
-    const saved = getComposerDraft(selectedWorkspaceId);
-    promptRef.current = saved;
-    setPromptSeed(saved);
-    setPromptHasContent(saved.trim().length > 0);
+    promptRef.current = composerDraft;
+    setPromptSeed(composerDraft);
+    setPromptHasContent(composerDraft.trim().length > 0);
     setPromptResetVersion((version) => version + 1);
-  }, [getComposerDraft, selectedWorkspaceId]);
+  }, [composerDraft]);
 
   useEffect(() => {
     const handleEditUserMessage = (event: CustomEvent<EditUserMessageEventDetail>) => {
@@ -851,9 +861,12 @@ export function GraphDockComposer() {
       setPromptSeed(sourceMessage.content || '');
       setPromptHasContent(Boolean(sourceMessage.content?.trim()));
       setPromptResetVersion((version) => version + 1);
-      setComposerDraft(selectedWorkspaceId, sourceMessage.content || '');
+      setComposerDraft(selectedWorkspaceId, sourceMessage.content || '', sourceMessage.id);
       setComposerTargetMode('reply');
-      setPendingThreadId(null);
+      setPendingThreadId(sourceMessage.parentId
+        ? null
+        : getMessageThreadSessionId(sourceMessage) ?? getLegacyThreadIdForMessage(sourceMessage, messageById)
+      );
       setContextPolicy(sourceMessage.parentId ? 'continue' : 'fresh');
       setSelectedContextStartId(null);
       setSelectedMergeContextParentId(null);
@@ -866,7 +879,7 @@ export function GraphDockComposer() {
     return () => {
       window.removeEventListener('editUserMessage', handleEditUserMessage as EventListener);
     };
-  }, [selectedWorkspaceId, setComposerDraft]);
+  }, [messageById, selectedWorkspaceId, setComposerDraft]);
 
   useEffect(() => {
     const normalized = normalizeComposerAgentRunCounts(
@@ -1006,16 +1019,16 @@ export function GraphDockComposer() {
   }, []);
 
   const savePromptDraft = useCallback((value: string) => {
-    setComposerDraft(selectedWorkspaceId, value);
-  }, [selectedWorkspaceId, setComposerDraft]);
+    setComposerDraft(selectedWorkspaceId, value, composerDraftTargetId);
+  }, [composerDraftTargetId, selectedWorkspaceId, setComposerDraft]);
 
   const setPromptValue = useCallback((value: string) => {
     promptRef.current = value;
     setPromptSeed(value);
     setPromptHasContent(value.trim().length > 0);
     setPromptResetVersion((version) => version + 1);
-    setComposerDraft(selectedWorkspaceId, value);
-  }, [selectedWorkspaceId, setComposerDraft]);
+    setComposerDraft(selectedWorkspaceId, value, composerDraftTargetId);
+  }, [composerDraftTargetId, selectedWorkspaceId, setComposerDraft]);
 
   const clearPrompt = useCallback(() => {
     promptRef.current = '';
@@ -1029,9 +1042,9 @@ export function GraphDockComposer() {
   const handleCancelEditDraft = useCallback(() => {
     setEditDraftSource(null);
     clearPrompt();
-    clearComposerDraft(selectedWorkspaceId);
+    clearComposerDraft(selectedWorkspaceId, composerDraftTargetId);
     window.setTimeout(() => textareaRef.current?.focus(), 0);
-  }, [clearComposerDraft, clearPrompt, selectedWorkspaceId]);
+  }, [clearComposerDraft, clearPrompt, composerDraftTargetId, selectedWorkspaceId]);
 
   const handleAgentSelect = useCallback((agentId: string) => {
     if (isFlowSelected) {
@@ -1215,7 +1228,7 @@ export function GraphDockComposer() {
       setIsSteering(true);
       try {
         await agentClient.steerAgentRun(target.parentMessageId, trimmedPrompt, crypto.randomUUID());
-        clearComposerDraft(selectedWorkspaceId);
+        clearComposerDraft(selectedWorkspaceId, composerDraftTargetId);
         clearPrompt();
         window.setTimeout(() => textareaRef.current?.focus(), 0);
       } catch (caught) {
@@ -1287,7 +1300,7 @@ export function GraphDockComposer() {
         }, { source: 'GraphDockComposer' });
         setError(message);
       });
-      clearComposerDraft(selectedWorkspaceId);
+      clearComposerDraft(selectedWorkspaceId, composerDraftTargetId);
       setEditDraftSource(null);
       clearPrompt();
       resetComposerTargetAfterSuccessfulSend();
@@ -1372,7 +1385,7 @@ export function GraphDockComposer() {
           },
         });
       }
-      clearComposerDraft(selectedWorkspaceId);
+      clearComposerDraft(selectedWorkspaceId, composerDraftTargetId);
       setEditDraftSource(null);
       clearPrompt();
       resetComposerTargetAfterSuccessfulSend();
@@ -1399,6 +1412,7 @@ export function GraphDockComposer() {
     agent,
     clearComposerDraft,
     clearPrompt,
+    composerDraftTargetId,
     createThreadSession,
     effectiveBase,
     effectiveContextParentId,
@@ -1471,7 +1485,7 @@ export function GraphDockComposer() {
     }
   }, [isCancellingRun, messageById, parentMessage, queryClient, selectedWorkspaceId, target.parentMessageId]);
 
-  const targetModeLabel = composerTargetMode === 'new-thread' ? 'New thread' : 'Reply to';
+  const targetModeLabel = isRootComposerTarget ? 'New thread' : 'Reply to';
   const sendButtonLabel = isSteeringRunningAssistant ? 'Steer' : editDraftSource ? 'Edit and run' : selectedFlow ? 'Run Flow' : 'Send';
   const sendButtonBusyLabel = isCancellingRun ? 'Cancelling' : isSteeringRunningAssistant ? 'Steering' : 'Sending';
 
@@ -1487,7 +1501,7 @@ export function GraphDockComposer() {
       <div className="flex min-w-0 items-center justify-between gap-2 border-b border-[hsl(var(--app-border)/0.68)] bg-[linear-gradient(180deg,hsl(var(--app-bg-elevated)/0.78),hsl(var(--app-panel)/0.58))] px-2.5 py-1.5 text-[11px]">
         <div className="grid min-w-0 max-w-[min(28rem,calc(100vw-5rem))] grid-cols-[auto_minmax(0,1fr)] items-center gap-2 rounded-lg border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--background)/0.42)] px-2 py-1 shadow-[inset_0_1px_0_hsl(44_80%_99%/0.42)] sm:max-w-[30rem]">
           <span className="flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-[hsl(var(--app-accent-soft)/0.74)] px-1.5 text-[10px] font-semibold text-[hsl(var(--app-accent))] shadow-[inset_0_0_0_1px_hsl(var(--app-accent)/0.12)]">
-            {composerTargetMode === 'new-thread' ? <Plus className="h-3 w-3" /> : <CornerDownRight className="h-3 w-3" />}
+            {isRootComposerTarget ? <Plus className="h-3 w-3" /> : <CornerDownRight className="h-3 w-3" />}
             {targetModeLabel}
           </span>
           <div className="min-w-0 text-[11px] font-medium leading-5 text-foreground/86" title={targetLabel}>

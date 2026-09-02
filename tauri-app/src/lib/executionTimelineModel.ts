@@ -1,3 +1,4 @@
+import { isActiveAgentStatus } from '@shared/agentStatus';
 import type { WorkspaceProjection } from '../domain/workspaceProjection';
 import type { Message } from '../stores/workspaceStore';
 import { getMessageOutputCommitSha } from './graph/commitAccessors';
@@ -52,8 +53,6 @@ export type ExecutionTimelineModel = {
   minMs: number;
   maxMs: number;
 };
-
-const ACTIVE_RUN_STATUSES = new Set(['pending', 'creating', 'initializing', 'running', 'streaming', 'finalizing']);
 
 const terminalFallbackTimeMs = (message: Message): number | null => (
   parseTimelineMs((message.execution_data as any)?.ended_at) ??
@@ -123,7 +122,7 @@ export function parseTimelineMs(value: unknown): number | null {
 }
 
 export function isTimelineActiveStatus(status: unknown): boolean {
-  return typeof status === 'string' && ACTIVE_RUN_STATUSES.has(status);
+  return isActiveAgentStatus(status);
 }
 
 export function buildExecutionTimelineItems(
