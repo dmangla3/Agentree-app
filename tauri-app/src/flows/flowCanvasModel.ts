@@ -164,113 +164,74 @@ interface ContextCanvasItem {
   label: string;
   set: string;
   parentExpression: string;
-  parentKey: string;
   parentProducerId: string | null;
   loopLabel?: string;
   annotations: Pick<FlowCanvasNodeData, 'contextLabel' | 'outputs' | 'dataBindings' | 'outcomes' | 'groupLabel'>;
 }
 
-interface ContextParentGroup {
-  key: string;
-  label: string;
-  meta: string;
-  producerId: string | null;
-  depth: number;
-  items: ContextCanvasItem[];
-}
-
 interface ContextCollection {
   items: ContextCanvasItem[];
   producerByVariable: Map<string, string>;
-  labelByProducerId: Map<string, string>;
 }
 
-const CONTEXT_GROUP_WIDTH = 336;
-const CONTEXT_GROUP_HEADER = 74;
-const CONTEXT_NODE_HEIGHT = 116;
-const CONTEXT_NODE_GAP = 18;
-const CONTEXT_GROUP_X_GAP = 410;
-const CONTEXT_GROUP_Y_GAP = 96;
-const CONTEXT_GROUP_PADDING_X = 26;
-const CONTEXT_GROUP_PADDING_BOTTOM = 26;
+const CONTEXT_ROOT_ID = 'context:root';
+const CONTEXT_NODE_WIDTH = 256;
+const CONTEXT_NODE_X_GAP = 74;
+const CONTEXT_NODE_Y_GAP = 190;
 
 function flowDefinitionToContextCanvasModel(definition: FlowDefinition): FlowCanvasModel {
   const collection: ContextCollection = {
     items: [],
     producerByVariable: new Map(),
-    labelByProducerId: new Map(),
   };
   collectContextItems(definition, definition.run, [], [], collection);
 
-  const groups = buildContextParentGroups(collection.items, collection.labelByProducerId);
-  const nodes: Node<FlowCanvasNodeData>[] = [];
-  const groupsByDepth = new Map<number, ContextParentGroup[]>();
-  for (const group of groups) {
-    const current = groupsByDepth.get(group.depth) ?? [];
-    current.push(group);
-    groupsByDepth.set(group.depth, current);
-  }
+  const layout = buildContextTreeLayout(collection.items);
+  const nodes: Node<FlowCanvasNodeData>[] = [{
+    id: CONTEXT_ROOT_ID,
+    type: 'flowCanvasNode',
+    position: layout.positions.get(CONTEXT_ROOT_ID) ?? { x: 0, y: 0 },
+    data: { kind: 'start', label: 'Root', depth: 0, meta: 'root context' },
+    style: { width: CONTEXT_NODE_WIDTH },
+    selectable: false,
+    draggable: false,
+  }];
+  const edges: Edge[] = [];
 
-  for (const group of groups) {
-    const peers = groupsByDepth.get(group.depth) ?? [];
-    const peerIndex = peers.findIndex((candidate) => candidate.key === group.key);
-    const height = CONTEXT_GROUP_HEADER
-      + Math.max(1, group.items.length) * CONTEXT_NODE_HEIGHT
-      + Math.max(0, group.items.length - 1) * CONTEXT_NODE_GAP
-      + CONTEXT_GROUP_PADDING_BOTTOM;
-    const position = {
-      x: group.depth * CONTEXT_GROUP_X_GAP,
-      y: peerIndex * (height + CONTEXT_GROUP_Y_GAP),
-    };
+  for (const item of collection.items) {
+    const nodeKind = 'parallel' in item.statement ? 'parallel' : 'call';
+    const depth = layout.depths.get(item.id) ?? getContextParentDepth(item.parentProducerId, collection.items) + 1;
     nodes.push({
-      id: contextGroupNodeId(group.key),
+      id: item.id,
       type: 'flowCanvasNode',
-      position,
+      position: layout.positions.get(item.id) ?? { x: 0, y: depth * CONTEXT_NODE_Y_GAP },
       data: {
-        kind: 'group',
-        groupKind: 'context',
-        label: group.label,
-        depth: group.depth,
-        meta: group.meta,
+        kind: nodeKind,
+        label: item.label,
+        statementPath: item.statementPath,
+        statement: item.statement,
+        depth,
+        meta: [
+          `sets ${item.set}`,
+          item.loopLabel,
+        ].filter(Boolean).join(' · '),
+        contextLabel: item.parentExpression,
+        ...item.annotations,
       },
-      style: { width: CONTEXT_GROUP_WIDTH, height },
-      selectable: false,
+      style: { width: CONTEXT_NODE_WIDTH },
       draggable: false,
     });
-  }
-
-  for (const group of groups) {
-    group.items.forEach((item, itemIndex) => {
-      const nodeKind = 'parallel' in item.statement ? 'parallel' : 'call';
-      nodes.push({
-        id: item.id,
-        type: 'flowCanvasNode',
-        position: {
-          x: CONTEXT_GROUP_PADDING_X,
-          y: CONTEXT_GROUP_HEADER + itemIndex * (CONTEXT_NODE_HEIGHT + CONTEXT_NODE_GAP),
-        },
-        parentId: contextGroupNodeId(group.key),
-        extent: 'parent',
-        data: {
-          kind: nodeKind,
-          label: item.label,
-          statementPath: item.statementPath,
-          statement: item.statement,
-          depth: group.depth + 1,
-          meta: [
-            `sets ${item.set}`,
-            item.loopLabel,
-          ].filter(Boolean).join(' · '),
-          contextLabel: item.parentExpression,
-          ...item.annotations,
-        },
-        style: { width: CONTEXT_GROUP_WIDTH - CONTEXT_GROUP_PADDING_X * 2 },
-        draggable: false,
-      });
+    const parentId = item.parentProducerId ?? CONTEXT_ROOT_ID;
+    edges.push({
+      id: `${parentId}->${item.id}:context`,
+      source: parentId,
+      target: item.id,
+      type: 'smoothstep',
+      data: { kind: 'context' },
     });
   }
 
-  return { nodes, edges: [] };
+  return { nodes, edges };
 }
 
 function collectContextItems(
@@ -291,7 +252,7 @@ function collectContextItems(
       const set = statement.set;
       const parentExpression = getContextParentExpression(definition, statement);
       const parentProducerId = resolveContextParentProducer(parentExpression, collection);
-      const label = 'parallel' in statement ? statement.parallel.call : statement.call;
+      const label = 'parallel' in statement ? getParallelTemplateId(statement) : statement.call;
       const item: ContextCanvasItem = {
         id,
         statement,
@@ -300,13 +261,11 @@ function collectContextItems(
         set,
         parentExpression,
         parentProducerId,
-        parentKey: parentProducerId ? `producer:${parentProducerId}` : `expr:${parentExpression}`,
         loopLabel: loopStack[loopStack.length - 1],
         annotations: getStatementAnnotations(definition, statement),
       };
       collection.items.push(item);
       collection.producerByVariable.set(set, id);
-      collection.labelByProducerId.set(id, label);
       return;
     }
     if ('if' in statement) {
@@ -326,54 +285,71 @@ function collectContextItems(
   });
 }
 
-function buildContextParentGroups(
-  items: ContextCanvasItem[],
-  labelByProducerId: Map<string, string>
-): ContextParentGroup[] {
-  const groupMap = new Map<string, ContextParentGroup>();
-  const ensureGroup = (item: ContextCanvasItem): ContextParentGroup => {
-    const existing = groupMap.get(item.parentKey);
-    if (existing) return existing;
-    const depth = getContextParentDepth(item.parentProducerId, items);
-    const label = item.parentProducerId
-      ? `${labelByProducerId.get(item.parentProducerId) ?? 'Agent'} context`
-      : item.parentExpression;
-    const meta = item.parentProducerId
-      ? `parent ${item.parentExpression}`
-      : item.parentExpression === 'root'
-        ? 'root context'
-        : `external parent ${item.parentExpression}`;
-    const group: ContextParentGroup = {
-      key: item.parentKey,
-      label,
-      meta,
-      producerId: item.parentProducerId,
-      depth,
-      items: [],
-    };
-    groupMap.set(item.parentKey, group);
-    return group;
-  };
-
-  for (const item of items) {
-    ensureGroup(item).items.push(item);
-  }
-
-  return Array.from(groupMap.values()).sort((a, b) => (
-    a.depth - b.depth || firstContextItemIndex(a, items) - firstContextItemIndex(b, items)
-  ));
-}
-
-function firstContextItemIndex(group: ContextParentGroup, items: ContextCanvasItem[]): number {
-  const firstId = group.items[0]?.id;
-  return Math.max(0, items.findIndex((item) => item.id === firstId));
-}
-
 function getContextParentDepth(parentProducerId: string | null, items: ContextCanvasItem[]): number {
   if (!parentProducerId) return 0;
   const parentItem = items.find((item) => item.id === parentProducerId);
   if (!parentItem) return 1;
   return 1 + getContextParentDepth(parentItem.parentProducerId, items);
+}
+
+function buildContextTreeLayout(items: ContextCanvasItem[]): {
+  positions: Map<string, { x: number; y: number }>;
+  depths: Map<string, number>;
+} {
+  const itemIndex = new Map(items.map((item, index) => [item.id, index]));
+  const itemIds = new Set(items.map((item) => item.id));
+  const childrenByParent = new Map<string, string[]>();
+  for (const item of items) {
+    const parentId = item.parentProducerId && itemIds.has(item.parentProducerId)
+      ? item.parentProducerId
+      : CONTEXT_ROOT_ID;
+    const children = childrenByParent.get(parentId) ?? [];
+    children.push(item.id);
+    childrenByParent.set(parentId, children);
+  }
+  for (const children of childrenByParent.values()) {
+    children.sort((a, b) => (itemIndex.get(a) ?? 0) - (itemIndex.get(b) ?? 0) || a.localeCompare(b));
+  }
+
+  const subtreeLeaves = new Map<string, number>();
+  const computeLeaves = (nodeId: string, path = new Set<string>()): number => {
+    if (subtreeLeaves.has(nodeId)) return subtreeLeaves.get(nodeId)!;
+    if (path.has(nodeId)) return 1;
+    const nextPath = new Set(path);
+    nextPath.add(nodeId);
+    const children = childrenByParent.get(nodeId) ?? [];
+    const width = children.reduce((sum, childId) => sum + computeLeaves(childId, nextPath), 0);
+    const leaves = Math.max(1, width);
+    subtreeLeaves.set(nodeId, leaves);
+    return leaves;
+  };
+
+  computeLeaves(CONTEXT_ROOT_ID);
+  const positions = new Map<string, { x: number; y: number }>();
+  const depths = new Map<string, number>();
+  const laneWidth = CONTEXT_NODE_WIDTH + CONTEXT_NODE_X_GAP;
+
+  const assign = (nodeId: string, left: number, depth: number, path = new Set<string>()): void => {
+    if (path.has(nodeId)) return;
+    const leaves = computeLeaves(nodeId);
+    const center = left + leaves / 2;
+    depths.set(nodeId, depth);
+    positions.set(nodeId, {
+      x: center * laneWidth - CONTEXT_NODE_WIDTH / 2,
+      y: depth * CONTEXT_NODE_Y_GAP,
+    });
+
+    const nextPath = new Set(path);
+    nextPath.add(nodeId);
+    let cursor = left;
+    for (const childId of childrenByParent.get(nodeId) ?? []) {
+      assign(childId, cursor, depth + 1, nextPath);
+      cursor += computeLeaves(childId);
+    }
+  };
+
+  assign(CONTEXT_ROOT_ID, 0, 0);
+  return { positions, depths };
 }
 
 function getContextParentExpression(
@@ -384,8 +360,8 @@ function getContextParentExpression(
     const template = definition.nodes.find((node) => node.id === statement.call);
     return statement.parent ?? template?.parent ?? 'root';
   }
-  const template = definition.nodes.find((node) => node.id === statement.parallel.call);
-  return statement.parallel.parent ?? template?.parent ?? 'root';
+  const template = definition.nodes.find((node) => node.id === getParallelTemplateId(statement));
+  return getParallelParentExpression(statement) ?? template?.parent ?? 'root';
 }
 
 function resolveContextParentProducer(parentExpression: string, collection: ContextCollection): string | null {
@@ -400,10 +376,6 @@ function recordContextSetProducer(target: string, value: unknown, collection: Co
   if (producer) {
     collection.producerByVariable.set(target, producer);
   }
-}
-
-function contextGroupNodeId(key: string): string {
-  return `context:${key.replace(/[^a-zA-Z0-9:.-]+/g, '_')}`;
 }
 
 function appendDebugStatements(
@@ -601,9 +573,10 @@ function appendOverviewParallel(
 ): { next: EdgeTail[]; breaks: EdgeTail[] } {
   const groupId = statementNodeId(statementPath);
   const childId = `${groupId}:call`;
-  const template = context.definition.nodes.find((node) => node.id === statement.parallel.call);
+  const templateId = getParallelTemplateId(statement);
+  const template = context.definition.nodes.find((node) => node.id === templateId);
   const annotations = getStatementAnnotations(context.definition, statement);
-  const inputBindings = buildOverviewInputPorts(statement.parallel.args, context);
+  const inputBindings = buildOverviewInputPorts(getParallelArgsForOverview(statement), context);
   const childOutputPorts = getTemplateDataPorts(statement.set, template, false);
   const aggregateOutputPorts = getTemplateDataPorts(statement.set, template, true);
   const groupPosition = { x: depth * NODE_X_GAP, y: context.row * NODE_Y_GAP };
@@ -618,7 +591,7 @@ function appendOverviewParallel(
       statementPath,
       statement,
       depth,
-      meta: `${String(statement.parallel.count)} branches`,
+      meta: `${getParallelBranchCountLabel(statement)} branches`,
       dataPorts: aggregateOutputPorts,
       ...annotations,
     },
@@ -633,7 +606,7 @@ function appendOverviewParallel(
     extent: 'parent',
     data: {
       kind: 'call',
-      label: statement.parallel.call,
+      label: templateId,
       statementPath,
       statement,
       depth: depth + 1,
@@ -976,7 +949,7 @@ function getBounds(nodes: Node<FlowCanvasNodeData>[]): { minX: number; minY: num
 
 export function getStatementLabel(statement: FlowStatement): string {
   if ('call' in statement) return statement.call;
-  if ('parallel' in statement) return statement.parallel.call;
+  if ('parallel' in statement) return getParallelTemplateId(statement);
   if ('value' in statement) return `set ${statement.set}`;
   if ('if' in statement) return statement.if;
   if ('loop' in statement) return `loop max ${statement.loop.max_rounds}`;
@@ -987,7 +960,8 @@ export function getStatementLabel(statement: FlowStatement): string {
 function getStatementMeta(statement: FlowStatement): string | undefined {
   if ('call' in statement) return `set ${statement.set}${statement.parent ? ` · parent ${statement.parent}` : ''}`;
   if ('parallel' in statement) {
-    return `set ${statement.set} · ${String(statement.parallel.count)} branches${statement.parallel.parent ? ` · parent ${statement.parallel.parent}` : ''}`;
+    const parent = getParallelParentExpression(statement);
+    return `set ${statement.set} · ${getParallelBranchCountLabel(statement)} branches${parent ? ` · parent ${parent}` : ''}`;
   }
   if ('value' in statement) return formatScalar(statement.value);
   if ('if' in statement) return 'conditional branch';
@@ -996,7 +970,7 @@ function getStatementMeta(statement: FlowStatement): string | undefined {
 }
 
 function getOverviewStatementMeta(statement: FlowStatement): string | undefined {
-  if ('parallel' in statement) return `${String(statement.parallel.count)} branches`;
+  if ('parallel' in statement) return `${getParallelBranchCountLabel(statement)} branches`;
   if ('loop' in statement) return `${statement.loop.steps.length} steps · max ${statement.loop.max_rounds}`;
   if ('if' in statement) return 'decision';
   if ('call' in statement) return `sets ${statement.set}`;
@@ -1021,17 +995,41 @@ function getStatementAnnotations(
     };
   }
   if ('parallel' in statement) {
-    const template = definition.nodes.find((node) => node.id === statement.parallel.call);
+    const template = definition.nodes.find((node) => node.id === getParallelTemplateId(statement));
     return {
-      contextLabel: statement.parallel.parent ?? template?.parent ?? 'root',
+      contextLabel: getParallelParentExpression(statement) ?? template?.parent ?? 'root',
       outputs: getTemplateOutputs(statement.set, template, true),
-      dataBindings: argsToDataBindings(statement.parallel.args),
+      dataBindings: argsToDataBindings(getParallelArgsForOverview(statement)),
     };
   }
   if ('loop' in statement) {
     return { groupLabel: 'Loop group' };
   }
   return {};
+}
+
+function getParallelTemplateId(statement: Extract<FlowStatement, { parallel: unknown }>): string {
+  return 'branches' in statement.parallel
+    ? statement.parallel.branches[0]?.call ?? ''
+    : statement.parallel.call;
+}
+
+function getParallelParentExpression(statement: Extract<FlowStatement, { parallel: unknown }>): string | undefined {
+  return 'branches' in statement.parallel
+    ? statement.parallel.branches[0]?.parent
+    : statement.parallel.parent;
+}
+
+function getParallelArgsForOverview(statement: Extract<FlowStatement, { parallel: unknown }>): Record<string, string> | undefined {
+  return 'branches' in statement.parallel
+    ? statement.parallel.branches[0]?.args
+    : statement.parallel.args;
+}
+
+function getParallelBranchCountLabel(statement: Extract<FlowStatement, { parallel: unknown }>): string {
+  return 'branches' in statement.parallel
+    ? String(statement.parallel.branches.length)
+    : String(statement.parallel.count);
 }
 
 function getTemplateOutputs(

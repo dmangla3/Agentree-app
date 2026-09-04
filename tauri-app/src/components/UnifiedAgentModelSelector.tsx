@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { flushSync } from 'react-dom';
-import { Check, ChevronRight, CircleGauge, Minus, Plus, Sparkles, X } from 'lucide-react';
+import { Check, ChevronRight, CircleGauge, KeyRound, Minus, Plus, Sparkles, X } from 'lucide-react';
 import { useAgents, type Agent } from '../hooks/useAgents';
 import { runtimeModels, type RuntimeProvider } from '../lib/runtimeModels';
+import { dispatchOpenLoginProfiles } from '../lib/loginNavigationEvents';
 import { ScrollArea } from "../../@/components/ui/scroll-area";
 import { Checkbox } from "../../@/components/ui/checkbox";
 import { cn } from '../lib/utils';
@@ -56,6 +57,10 @@ type AgentFamily = {
 };
 
 const providerEffortNoun = (provider: string) => (provider === 'claude' ? 'Thinking' : 'Reasoning');
+
+const isRuntimeProvider = (provider: string): provider is RuntimeProvider => (
+    provider === 'codex' || provider === 'claude'
+);
 
 const providerAccentClasses = (provider: string) => {
     if (provider === 'claude') {
@@ -344,10 +349,21 @@ export function UnifiedAgentModelSelector({
                 title: 'Claude',
             };
         }
+        if (provider === 'codex') {
+            return {
+                badge: 'OpenAI',
+                title: 'Codex',
+            };
+        }
         return {
-            badge: 'OpenAI',
-            title: 'Codex',
+            badge: provider,
+            title: provider.charAt(0).toUpperCase() + provider.slice(1),
         };
+    };
+
+    const openLoginProfilesForProvider = (provider: string) => {
+        if (!isRuntimeProvider(provider)) return;
+        dispatchOpenLoginProfiles(provider);
     };
 
     return (
@@ -396,8 +412,7 @@ export function UnifiedAgentModelSelector({
                                         key={provider}
                                         data-login-provider-active={providerSelectable ? 'true' : 'false'}
                                         className={cn(
-                                            "rounded-lg bg-background/72 p-2 shadow-[0_12px_34px_-30px_rgba(15,23,42,0.45),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]",
-                                            !providerSelectable && "opacity-45 grayscale"
+                                            "rounded-lg bg-background/72 p-2 shadow-[0_12px_34px_-30px_rgba(15,23,42,0.45),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]"
                                         )}
                                     >
                                         <div className="mb-2 space-y-2 px-1">
@@ -420,10 +435,15 @@ export function UnifiedAgentModelSelector({
                                                         </div>
                                                     </div>
                                                 </div>
-                                                {!providerSelectable ? (
-                                                    <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.16)] dark:bg-amber-950/35 dark:text-amber-300">
-                                                        Login inactive
-                                                    </span>
+                                                {!providerSelectable && isRuntimeProvider(provider) ? (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => openLoginProfilesForProvider(provider)}
+                                                        className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-amber-50 px-2 text-[10.5px] font-semibold text-amber-800 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.18)] transition-[background-color,transform] duration-150 hover:bg-amber-100 active:scale-[0.96] dark:bg-amber-950/35 dark:text-amber-300 dark:hover:bg-amber-950/55"
+                                                    >
+                                                        <KeyRound className="h-3 w-3" />
+                                                        Login to {meta.title}
+                                                    </button>
                                                 ) : null}
                                             </div>
                                             {displayedLimitWindows.length > 0 ? (
@@ -453,7 +473,7 @@ export function UnifiedAgentModelSelector({
                                                 </div>
                                             ) : null}
                                         </div>
-                                        <div className="space-y-1">
+                                        <div className={cn("space-y-1", !providerSelectable && "opacity-45 grayscale")}>
                                             {families.map((family) => {
                                                 const isSelected = family.selectedAgentId != null;
                                                 const isActive = activeFamily?.key === family.key;
@@ -536,6 +556,37 @@ export function UnifiedAgentModelSelector({
                         {activeFamily ? (() => {
                             const provider = activeFamily.provider;
                             const accent = providerAccentClasses(provider);
+                            const providerSelectable = isProviderSelectable(provider);
+                            const meta = providerMeta(provider);
+                            if (!providerSelectable) {
+                                return (
+                                    <div
+                                        data-model-effort-panel={activeFamily.key}
+                                        data-login-provider-active="false"
+                                        className="flex h-full items-center justify-center rounded-lg bg-background/74 p-5 text-center shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72)]"
+                                    >
+                                        <div className="max-w-[24ch]">
+                                            <div className="mx-auto flex h-9 w-9 items-center justify-center rounded-lg bg-amber-50 text-amber-700 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.18)] dark:bg-amber-950/35 dark:text-amber-300">
+                                                <KeyRound className="h-4 w-4" />
+                                            </div>
+                                            <div className="mt-3 text-[13px] font-semibold text-foreground">{meta.title} login required</div>
+                                            <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
+                                                Connect a ready account before choosing effort.
+                                            </p>
+                                            {isRuntimeProvider(provider) ? (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openLoginProfilesForProvider(provider)}
+                                                    className="mt-4 inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-foreground px-3 text-[11px] font-semibold text-background shadow-[0_10px_24px_-18px_rgba(15,23,42,0.75)] transition-[background-color,transform] duration-150 hover:bg-foreground/88 active:scale-[0.96]"
+                                                >
+                                                    <KeyRound className="h-3.5 w-3.5" />
+                                                    Login to {meta.title}
+                                                </button>
+                                            ) : null}
+                                        </div>
+                                    </div>
+                                );
+                            }
                             return (
                                 <div
                                     data-model-effort-panel={activeFamily.key}

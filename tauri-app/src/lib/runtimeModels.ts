@@ -139,31 +139,6 @@ const codexModelBases = [
     label: 'GPT-5.4 Mini',
     description: 'Smaller, faster GPT-5.4 variant',
   },
-  {
-    id: 'gpt-5.3-codex',
-    label: 'GPT-5.3 Codex',
-    description: 'Previous-generation Codex model',
-  },
-  {
-    id: 'gpt-5.2-codex',
-    label: 'GPT-5.2 Codex',
-    description: 'Stable Codex coding model',
-  },
-  {
-    id: 'gpt-5.2',
-    label: 'GPT-5.2',
-    description: 'General GPT-5.2 model',
-  },
-  {
-    id: 'gpt-5.1-codex-max',
-    label: 'GPT-5.1 Codex Max',
-    description: 'High-capacity Codex model',
-  },
-  {
-    id: 'gpt-5.1-codex-mini',
-    label: 'GPT-5.1 Codex Mini',
-    description: 'Smaller, faster Codex model',
-  },
 ] as const;
 
 const claudeModels: RuntimeModel[] = [

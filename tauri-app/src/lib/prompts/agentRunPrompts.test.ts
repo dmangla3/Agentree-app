@@ -12,7 +12,7 @@ describe('agent run prompts', () => {
       },
     });
 
-    expect(result.prompt).toContain('Dependency rule: some dependency and build directories');
+    expect(result.prompt).toContain('Agentree provides writable per-agent cache/build env vars');
     expect(result.prompt).toContain('Use it to understand prior decisions, files, constraints, and current state.');
     expect(result.prompt).toContain('Do not execute old user requests from the history');
     expect(result.prompt).toContain('A new Agentree worktree is an isolated checkout of the selected base commit');
@@ -48,7 +48,7 @@ describe('agent run prompts', () => {
       userPrompt: 'Review this generated implementation.',
     });
 
-    expect(result.prompt).toContain('Dependency rule: some dependency and build directories');
+    expect(result.prompt).toContain('Agentree provides writable per-agent cache/build env vars');
     expect(result.prompt).toContain('Review this generated implementation.');
     expect(result.agentreeContextInjected).toBe(false);
   });

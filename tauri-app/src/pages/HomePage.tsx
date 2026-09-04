@@ -21,6 +21,7 @@ import { devLogLazy } from '../lib/appLogger';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 import { DEFAULT_GRAPH_CHAT_SPLIT, getGraphChatRestoreSplit, readRememberedGraphChatSplit, rememberGraphChatSplit } from '../lib/graphChatSplitLayout';
 import { resolveWorkspaceRouteState } from '../lib/workspaceRouteState';
+import { LOGIN_PROFILES_NAVIGATION_EVENT, type LoginProfilesNavigationDetail } from '../lib/loginNavigationEvents';
 import { useAppFontSizeHotkeys } from '../hotkeys/appFontSizeHotkeys';
 import { useOpenSearchHotkey } from '../hotkeys/searchHotkeys';
 import { PanelRightClose, PanelRightOpen, X } from 'lucide-react';
@@ -66,7 +67,9 @@ export function HomePage() {
 
   const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
   const [activeView, setActiveView] = useState<'chat' | 'flows' | 'tracking' | 'knowledge' | 'skills' | 'logins'>('chat');
+  const [loginProviderIntent, setLoginProviderIntent] = useState<'codex' | 'claude' | null>(null);
   const [threadNavigationModelsByWorkspace, setThreadNavigationModelsByWorkspace] = useState<Record<string, WorkspaceThreadNavigationModel>>({});
+  const [workspaceNavigatorThreadsFocused, setWorkspaceNavigatorThreadsFocused] = useState(false);
   const [isChatCollapsed, setIsChatCollapsed] = useState(true);
   const [worktreePolicyPromptRepoPath, setWorktreePolicyPromptRepoPath] = useState<string | null>(null);
   const shellReadyLoggedRef = useRef(false);
@@ -134,6 +137,18 @@ export function HomePage() {
       workspace_count: workspaces.length,
     });
   }, [activeView, hasCompletedOnboarding, selectedWorkspaceId, user, workspaces.length]);
+
+  useEffect(() => {
+    const handleOpenLoginProfiles = (event: Event) => {
+      const provider = (event as CustomEvent<LoginProfilesNavigationDetail>).detail?.provider;
+      if (provider !== 'codex' && provider !== 'claude') return;
+      setLoginProviderIntent(provider);
+      setActiveView('logins');
+    };
+
+    window.addEventListener(LOGIN_PROFILES_NAVIGATION_EVENT, handleOpenLoginProfiles);
+    return () => window.removeEventListener(LOGIN_PROFILES_NAVIGATION_EVENT, handleOpenLoginProfiles);
+  }, []);
 
   // Handle deep linking from URL
   useEffect(() => {
@@ -343,6 +358,8 @@ export function HomePage() {
             onCreateThread={handleNavigatorCreateThread}
             onRepositoryConnected={handleRepositoryConnected}
             threadNavigation={selectedThreadNavigationModel}
+            threadsFocused={workspaceNavigatorThreadsFocused}
+            onThreadsFocusedChange={setWorkspaceNavigatorThreadsFocused}
           />
         ) : null}
 
@@ -402,7 +419,10 @@ export function HomePage() {
                       {!isChatCollapsed && (
                         <div className="flex-1 min-w-0 overflow-hidden">
                           <Suspense fallback={<PanelLoading />}>
-                            <ChatInterface key={selectedWorkspaceId} />
+                            <ChatInterface
+                              key={selectedWorkspaceId}
+                              onMarkThreadDone={(threadRootId) => selectedThreadNavigationModel?.onThreadDoneChange(threadRootId, true)}
+                            />
                           </Suspense>
                         </div>
                       )}
@@ -447,7 +467,7 @@ export function HomePage() {
             </div>
           ) : activeView === 'logins' ? (
             <Suspense fallback={<PanelLoading />}>
-              <LoginProfilesPanel />
+              <LoginProfilesPanel initialProvider={loginProviderIntent} />
             </Suspense>
           ) : activeView === 'skills' ? (
             <div className="app-view-surface h-full w-full overflow-auto p-5">

@@ -13,6 +13,7 @@ const commit = (overrides: Partial<ProjectedCommitEntity>): ProjectedCommitEntit
   placement: overrides.placement ?? 'commit_lineage',
   producedByNodeId: overrides.producedByNodeId ?? null,
   visualOwnerNodeId: overrides.visualOwnerNodeId ?? null,
+  ownerThreadRootId: overrides.ownerThreadRootId ?? null,
   parentShas: overrides.parentShas ?? [],
   parentRows: overrides.parentRows ?? [],
   isMerge: overrides.isMerge ?? true,
@@ -29,7 +30,7 @@ const commit = (overrides: Partial<ProjectedCommitEntity>): ProjectedCommitEntit
     first_parent_sha: overrides.layoutParentSha ?? null,
   },
   sortTs: overrides.sortTs ?? 0,
-  owningThreadRootIds: overrides.owningThreadRootIds ?? [],
+  representedThreadRootIds: overrides.representedThreadRootIds ?? [],
 });
 
 const group = (commitShas: string[]): ProjectedCommitGroup => ({
@@ -46,10 +47,10 @@ const group = (commitShas: string[]): ProjectedCommitGroup => ({
 });
 
 describe('graph commit visibility', () => {
-  it('hides prominent external merges when all owning threads are hidden', () => {
+  it('hides prominent external merges when all represented threads are hidden', () => {
     const result = getVisibleCommitProjection({
       commitBySha: new Map([
-        ['merge-a', commit({ sha: 'merge-a', owningThreadRootIds: ['thread-a'] })],
+        ['merge-a', commit({ sha: 'merge-a', representedThreadRootIds: ['thread-a'] })],
       ]),
       commitLaneRows: [{ rowId: 'commit-row:merge-a', type: 'commit', commitSha: 'merge-a', sortTs: 1 }],
       layoutDerivedCommitGroups: [],
@@ -62,7 +63,7 @@ describe('graph commit visibility', () => {
     expect(result.visibleCommitLaneRows).toEqual([]);
   });
 
-  it('hides generated commits when all owning threads are hidden', () => {
+  it('hides generated commits when all represented threads are hidden', () => {
     const result = getVisibleCommitProjection({
       commitBySha: new Map([
         ['generated-a', commit({
@@ -71,7 +72,7 @@ describe('graph commit visibility', () => {
           placement: 'conversation_sidecar',
           isMerge: false,
           isProminentMerge: false,
-          owningThreadRootIds: ['thread-a'],
+          representedThreadRootIds: ['thread-a'],
         })],
       ]),
       commitLaneRows: [{ rowId: 'commit-row:generated-a', type: 'commit', commitSha: 'generated-a', sortTs: 1 }],
@@ -88,7 +89,7 @@ describe('graph commit visibility', () => {
   it('keeps hidden-owned direct dependencies as references', () => {
     const result = getVisibleCommitProjection({
       commitBySha: new Map([
-        ['merge-a', commit({ sha: 'merge-a', owningThreadRootIds: ['thread-a'] })],
+        ['merge-a', commit({ sha: 'merge-a', representedThreadRootIds: ['thread-a'] })],
       ]),
       commitLaneRows: [{ rowId: 'commit-row:merge-a', type: 'commit', commitSha: 'merge-a', sortTs: 1 }],
       layoutDerivedCommitGroups: [],
@@ -101,7 +102,7 @@ describe('graph commit visibility', () => {
     expect(result.visibleCommitLaneRows).toHaveLength(1);
   });
 
-  it('hides generated sidecar commits without a resolvable owning thread', () => {
+  it('hides generated sidecar commits without a resolvable represented thread', () => {
     const result = getVisibleCommitProjection({
       commitBySha: new Map([
         ['generated-orphan', commit({
@@ -110,7 +111,7 @@ describe('graph commit visibility', () => {
           placement: 'conversation_sidecar',
           isMerge: false,
           isProminentMerge: false,
-          owningThreadRootIds: [],
+          representedThreadRootIds: [],
         })],
       ]),
       commitLaneRows: [{ rowId: 'commit-row:generated-orphan', type: 'commit', commitSha: 'generated-orphan', sortTs: 1 }],
@@ -133,7 +134,7 @@ describe('graph commit visibility', () => {
           placement: 'conversation_sidecar',
           isMerge: false,
           isProminentMerge: false,
-          owningThreadRootIds: [],
+          representedThreadRootIds: [],
         })],
       ]),
       commitLaneRows: [{ rowId: 'commit-row:generated-base', type: 'commit', commitSha: 'generated-base', sortTs: 1 }],
@@ -150,10 +151,10 @@ describe('graph commit visibility', () => {
     ]);
   });
 
-  it('keeps merges visible when at least one owning thread remains visible', () => {
+  it('keeps merges visible when at least one represented thread remains visible', () => {
     const result = getVisibleCommitProjection({
       commitBySha: new Map([
-        ['merge-a', commit({ sha: 'merge-a', owningThreadRootIds: ['thread-a', 'thread-b'] })],
+        ['merge-a', commit({ sha: 'merge-a', representedThreadRootIds: ['thread-a', 'thread-b'] })],
       ]),
       commitLaneRows: [{ rowId: 'commit-row:merge-a', type: 'commit', commitSha: 'merge-a', sortTs: 1 }],
       layoutDerivedCommitGroups: [],
@@ -168,9 +169,9 @@ describe('graph commit visibility', () => {
   it('filters grouped imports by visible commit membership', () => {
     const result = getVisibleCommitProjection({
       commitBySha: new Map([
-        ['visible-a', commit({ sha: 'visible-a', isMerge: false, isProminentMerge: false, owningThreadRootIds: [] })],
-        ['hidden-merge', commit({ sha: 'hidden-merge', owningThreadRootIds: ['thread-a'] })],
-        ['visible-b', commit({ sha: 'visible-b', isMerge: false, isProminentMerge: false, owningThreadRootIds: [] })],
+        ['visible-a', commit({ sha: 'visible-a', isMerge: false, isProminentMerge: false, representedThreadRootIds: [] })],
+        ['hidden-merge', commit({ sha: 'hidden-merge', representedThreadRootIds: ['thread-a'] })],
+        ['visible-b', commit({ sha: 'visible-b', isMerge: false, isProminentMerge: false, representedThreadRootIds: [] })],
       ]),
       commitLaneRows: [{ rowId: 'group:visible-a-hidden-merge-visible-b', type: 'group', groupId: 'group:visible-a-hidden-merge-visible-b', sortTs: 1 }],
       layoutDerivedCommitGroups: [group(['visible-a', 'hidden-merge', 'visible-b'])],

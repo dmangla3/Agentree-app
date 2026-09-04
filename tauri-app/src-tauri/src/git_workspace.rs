@@ -3091,10 +3091,7 @@ pub async fn target_branch_checkout_status(
             break;
         }
     }
-    Ok(TargetBranchCheckoutStatus {
-        checked_out,
-        dirty,
-    })
+    Ok(TargetBranchCheckoutStatus { checked_out, dirty })
 }
 
 #[tauri::command]

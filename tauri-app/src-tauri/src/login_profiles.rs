@@ -573,7 +573,10 @@ fn browser_suppression_tool_path(app_cache_dir: &Path) -> Result<String, String>
 // `claude setup-token` only renders through a TTY, so wrap it in `script` to
 // allocate a pseudo terminal. The wide `stty` size keeps the login URL and the
 // minted token on single unwrapped lines so they can be parsed from the output.
-fn claude_setup_token_command(claude_binary: &str, app_cache_dir: &Path) -> Result<Command, String> {
+fn claude_setup_token_command(
+    claude_binary: &str,
+    app_cache_dir: &Path,
+) -> Result<Command, String> {
     let script_binary = crate::cli_path::find_on_tool_path("script").ok_or_else(|| {
         "the `script` command is missing; Claude login needs it to allocate a terminal. \
          Install it (Fedora: `sudo dnf install util-linux-script`, Debian/Ubuntu: part of \
@@ -1328,7 +1331,9 @@ fn is_diagnostic_noise_line(line: &str) -> bool {
         || trimmed.starts_with("node:internal")
         || trimmed.starts_with("Node.js v")
         || trimmed.starts_with("ErrorCaptureStackTrace")
-        || trimmed.chars().all(|character| matches!(character, '^' | '~' | '|' | ' '))
+        || trimmed
+            .chars()
+            .all(|character| matches!(character, '^' | '~' | '|' | ' '))
         || trimmed.starts_with("code:")
         || trimmed == "}"
         || trimmed == "{"
@@ -1389,7 +1394,10 @@ fn stderr_failure(stderr: &str) -> Option<LiveCheckFailure> {
         .find(|line| !line.is_empty() && !is_diagnostic_noise_line(line));
     let line = match meaningful {
         Some(line) => line,
-        None => stderr.lines().map(str::trim).find(|line| !line.is_empty())?,
+        None => stderr
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())?,
     };
     if line.contains("ERR_MODULE_NOT_FOUND") || line.contains("Cannot find package") {
         return Some(LiveCheckFailure {
@@ -1414,9 +1422,7 @@ fn extract_live_check_failure(stdout: &str, stderr: &str) -> LiveCheckFailure {
                 .find(|line| !line.is_empty() && !is_diagnostic_noise_line(line))
                 .map(LiveCheckFailure::uncoded)
         })
-        .unwrap_or_else(|| {
-            LiveCheckFailure::uncoded("Live check failed without provider output.")
-        });
+        .unwrap_or_else(|| LiveCheckFailure::uncoded("Live check failed without provider output."));
     LiveCheckFailure {
         code: failure.code,
         message: truncate_live_check_message(failure.message),
@@ -1534,7 +1540,10 @@ fn run_codex_live_check(
     profile: &LoginProfile,
     materialized: &MaterializedRuntimeCredentials,
 ) -> Result<String, LiveCheckFailure> {
-    crate::managed_runtime::ensure_component_best_effort(app, crate::managed_runtime::COMPONENT_CODEX);
+    crate::managed_runtime::ensure_component_best_effort(
+        app,
+        crate::managed_runtime::COMPONENT_CODEX,
+    );
     let command_plan = crate::runtime_scripts::codex_adapter_command(app)?;
     let mut command = Command::new(&command_plan.program);
     command
@@ -2212,7 +2221,10 @@ fn submit_claude_oauth_login_code_blocking(
             }
             let new_output = strip_ansi(&snapshot[submitted_at_output_len.min(snapshot.len())..]);
             if let Some(failure_line) = find_claude_login_failure_line(&new_output) {
-                return Err(format!("Claude sign in rejected the code: {}", failure_line));
+                return Err(format!(
+                    "Claude sign in rejected the code: {}",
+                    failure_line
+                ));
             }
             match pending.child.try_wait() {
                 Ok(Some(status)) => {

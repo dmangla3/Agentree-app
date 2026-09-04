@@ -85,6 +85,7 @@ const createLocalHeadlessMessages = (input: {
     ...(input.threadOriginId ? { thread_origin_id: input.threadOriginId } : {}),
     provider: input.agent.type,
     provider_model: input.agent.model_config?.model ?? null,
+    agent_id: input.agent.id,
   };
   const userPathIds = input.parentMessageId
     ? [input.parentMessageId, userMessageId]
@@ -291,12 +292,14 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
       ...(assistantMessage.execution_data ?? {}),
       current_run_id: runId,
       workspace_id: input.workspaceId,
+      agent_id: input.agent.id,
       parentId: assistantMessage.parentId,
       started_at: input.nowIso?.() ?? new Date().toISOString(),
       meta: {
         ...(((assistantMessage.execution_data as any)?.meta ?? {}) as Record<string, unknown>),
         base_commit_sha: input.base.commitSha,
         ...(input.meta ?? {}),
+        agent_id: input.agent.id,
         provider: input.agent.type,
         llmModel: input.agent.model_config?.model ?? null,
         provider_model: input.agent.model_config?.model ?? null,

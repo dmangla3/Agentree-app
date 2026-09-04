@@ -117,11 +117,11 @@ export const resolveProviderAssistantOutput = (
   if (!incoming) {
     return { output: currentOutput, providerItemId };
   }
-  if (providerItemChanged) {
-    return { output: incoming, providerItemId };
-  }
   if (options.kind === 'delta') {
     return { output: `${currentOutput}${incoming}`, providerItemId };
+  }
+  if (providerItemChanged) {
+    return { output: mergeStreamingOutput(currentOutput, incoming), providerItemId };
   }
   return { output: mergeStreamingOutput(currentOutput, incoming), providerItemId };
 };

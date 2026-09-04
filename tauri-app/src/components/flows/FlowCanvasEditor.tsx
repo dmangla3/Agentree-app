@@ -716,41 +716,50 @@ function ParallelEditor({
   onChange,
 }: {
   definition: FlowDefinition;
-  statement: Extract<FlowStatement, { parallel: { call: string } }>;
+  statement: Extract<FlowStatement, { parallel: unknown }>;
   onChange: (statement: FlowStatement) => void;
 }) {
-  const template = definition.nodes.find((node) => node.id === statement.parallel.call) ?? definition.nodes[0] ?? null;
-  const args = statement.parallel.args ?? {};
+  const parallel = statement.parallel;
+  if ('branches' in parallel) {
+    return (
+      <div className="space-y-2 rounded-lg border border-[hsl(var(--app-border)/0.62)] bg-background/52 px-3 py-2 text-xs text-muted-foreground">
+        <div className="font-semibold text-foreground">Branch parallel</div>
+        <div>{parallel.branches.length} branch-specific calls. Edit this flow in YAML for branch details.</div>
+      </div>
+    );
+  }
+  const template = definition.nodes.find((node) => node.id === parallel.call) ?? definition.nodes[0] ?? null;
+  const args = parallel.args ?? {};
   return (
     <>
       <TextField label="Set variable" value={statement.set} onChange={(value) => onChange({ ...statement, set: value })} />
       <TextField
         label="Count"
-        value={String(statement.parallel.count)}
+        value={String(parallel.count)}
         onChange={(value) => onChange({
           ...statement,
-          parallel: { ...statement.parallel, count: parseCountValue(value) },
+          parallel: { ...parallel, count: parseCountValue(value) },
         })}
       />
       <TemplateSelect
         definition={definition}
-        value={statement.parallel.call}
+        value={parallel.call}
         onChange={(call) => onChange({
           ...statement,
-          parallel: { ...statement.parallel, call, args: pruneArgsForTemplate(args, definition, call) },
+          parallel: { ...parallel, call, args: pruneArgsForTemplate(args, definition, call) },
         })}
       />
-      <TextField label="Parent" value={statement.parallel.parent ?? ''} placeholder="root or flow expression" onChange={(value) => {
+      <TextField label="Parent" value={parallel.parent ?? ''} placeholder="root or flow expression" onChange={(value) => {
         const trimmed = value.trim();
         onChange({
           ...statement,
-          parallel: { ...statement.parallel, ...(trimmed ? { parent: trimmed } : { parent: undefined }) },
+          parallel: { ...parallel, ...(trimmed ? { parent: trimmed } : { parent: undefined }) },
         });
       }} />
       <ArgsEditor
         params={template?.params ?? []}
         args={args}
-        onChange={(nextArgs) => onChange({ ...statement, parallel: { ...statement.parallel, args: nextArgs } })}
+        onChange={(nextArgs) => onChange({ ...statement, parallel: { ...parallel, args: nextArgs } })}
       />
     </>
   );

@@ -26,7 +26,7 @@ const definition: FlowDefinition = {
   ],
   run: [
     { set: 'workers', parallel: { count: 'input.count', call: 'Worker', parent: 'root', args: { request: 'input.input' } } },
-    { if: 'workers.commit == null', then: { stop: 'missing_commit' } },
+    { if: 'all(workers.commit == null)', then: { stop: 'missing_commit' } },
     {
       loop: {
         max_rounds: 2,
@@ -62,7 +62,7 @@ describe('flow canvas model', () => {
     expect(model.nodes.map((node) => [node.id, node.data.kind, node.data.label])).toEqual([
       ['start', 'start', 'Start'],
       ['statement:0', 'parallel', 'Worker'],
-      ['statement:1', 'if', 'workers.commit == null'],
+      ['statement:1', 'if', 'all(workers.commit == null)'],
       ['statement:1.0', 'stop', 'stop: missing_commit'],
       ['statement:2', 'loop', 'loop max 2'],
       ['statement:2.0', 'call', 'Reviewer'],
@@ -89,7 +89,7 @@ describe('flow canvas model', () => {
       ['start', 'start', 'Start'],
       ['statement:0', 'group', 'Parallel'],
       ['statement:0:call', 'call', 'Worker'],
-      ['statement:1', 'if', 'workers.commit == null'],
+      ['statement:1', 'if', 'all(workers.commit == null)'],
       ['statement:2', 'group', 'Loop'],
       ['statement:2.0', 'call', 'Reviewer'],
       ['statement:2.1', 'if', 'reviewer.verdict == pass'],
@@ -273,7 +273,7 @@ describe('flow canvas model', () => {
     ]);
   });
 
-  it('projects a context graph that buckets main nodes by resolved parent context', () => {
+  it('projects a tidy context tree from root through resolved parent nodes', () => {
     const contextDefinition: FlowDefinition = {
       ...definition,
       nodes: [
@@ -291,18 +291,27 @@ describe('flow canvas model', () => {
 
     const model = flowDefinitionToCanvasModel(contextDefinition, { mode: 'context' });
 
-    expect(model.edges).toEqual([]);
     expect(model.nodes.map((node) => [node.id, node.data.kind, node.data.label])).toEqual([
-      ['context:expr:root', 'group', 'root'],
-      ['context:producer:statement:2.0', 'group', 'Reviewer context'],
-      ['context:producer:statement:4', 'group', 'Fixer context'],
+      ['context:root', 'start', 'Root'],
       ['statement:0', 'parallel', 'Worker'],
       ['statement:2.0', 'call', 'Reviewer'],
       ['statement:4', 'call', 'Fixer'],
       ['statement:5', 'call', 'Handoff'],
     ]);
-    expect(model.nodes.find((node) => node.id === 'statement:4')?.parentId).toBe('context:producer:statement:2.0');
-    expect(model.nodes.find((node) => node.id === 'statement:5')?.parentId).toBe('context:producer:statement:4');
+    expect(model.edges.map((edge) => [edge.source, edge.target, edge.data?.kind])).toEqual([
+      ['context:root', 'statement:0', 'context'],
+      ['context:root', 'statement:2.0', 'context'],
+      ['statement:2.0', 'statement:4', 'context'],
+      ['statement:4', 'statement:5', 'context'],
+    ]);
+    const worker = model.nodes.find((node) => node.id === 'statement:0');
+    const reviewer = model.nodes.find((node) => node.id === 'statement:2.0');
+    const fixer = model.nodes.find((node) => node.id === 'statement:4');
+    const handoff = model.nodes.find((node) => node.id === 'statement:5');
+
+    expect(worker?.position.y).toBe(reviewer?.position.y);
+    expect(fixer?.position.y).toBeGreaterThan(reviewer?.position.y ?? 0);
+    expect(handoff?.position.y).toBeGreaterThan(fixer?.position.y ?? 0);
     expect(model.nodes.some((node) => node.data.kind === 'set')).toBe(false);
     expect(model.nodes.some((node) => node.data.kind === 'if')).toBe(false);
   });

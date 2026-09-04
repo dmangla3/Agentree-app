@@ -261,7 +261,7 @@ const fixtures: LifecycleFixture[] = [
       terminalStatus: 'completed',
       content: 'final answer',
       lastStreamSeq: 2,
-      timelineTypes: ['message', 'message'],
+      timelineTypes: ['message'],
       executionData: {
         last_stream_seq: 2,
         last_terminal_status: 'completed',

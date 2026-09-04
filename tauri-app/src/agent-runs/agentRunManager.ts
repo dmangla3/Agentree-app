@@ -40,6 +40,31 @@ const lastProjectionAt = new Map<string, number>();
 const recentSendProjectionTimers = new Map<string, number>();
 const terminalHoldProjectionTimers = new Map<string, number>();
 
+const timelineProjectionFingerprint = (timeline: any[]) => (
+  timeline
+    .slice(-8)
+    .map((event: any) => {
+      if (!event || typeof event !== 'object') return '';
+      const content = typeof event.content === 'string' ? event.content : '';
+      const toolOutput = typeof event.toolOutput === 'string' ? event.toolOutput : '';
+      const delta = typeof event.delta === 'string' ? event.delta : '';
+      const toolUseId = event.toolUseId ?? event.tool_use_id ?? event.id ?? '';
+      return [
+        event.type ?? '',
+        toolUseId,
+        content.length,
+        content.slice(-80),
+        toolOutput.length,
+        toolOutput.slice(-80),
+        delta.length,
+        delta.slice(-80),
+        event.durationMs ?? event.duration_ms ?? '',
+        event.isDelta || event.is_delta ? 'delta' : '',
+      ].join(':');
+    })
+    .join('|')
+);
+
 const snapshotProjectionKey = (snapshot: AgentRunSnapshot) => JSON.stringify({
   nodeId: snapshot.nodeId,
   workspaceId: snapshot.workspaceId,
@@ -53,6 +78,7 @@ const snapshotProjectionKey = (snapshot: AgentRunSnapshot) => JSON.stringify({
   contentLength: snapshot.content.length,
   contentTail: snapshot.content.slice(-160),
   timelineLength: snapshot.timeline.length,
+  timelineTail: timelineProjectionFingerprint(snapshot.timeline),
   usage: snapshot.usage,
   terminalStatus: snapshot.terminalStatus,
   terminalReason: snapshot.terminalReason,

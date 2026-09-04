@@ -44,6 +44,10 @@ import { RuntimeHealthCard } from './RuntimeHealthCard';
 
 type ProviderFilter = 'codex' | 'claude';
 
+interface LoginProfilesPanelProps {
+  initialProvider?: ProviderFilter | null;
+}
+
 const providerFilters: Array<{ id: ProviderFilter; label: string }> = [
   { id: 'codex', label: 'Codex' },
   { id: 'claude', label: 'Claude' },
@@ -89,7 +93,7 @@ const formatCheckedAt = (timestamp?: number | null) => {
   }).format(new Date(timestamp * 1000));
 };
 
-export function LoginProfilesPanel() {
+export function LoginProfilesPanel({ initialProvider }: LoginProfilesPanelProps = {}) {
   const {
     profiles,
     activeRunsByProfile,
@@ -111,7 +115,7 @@ export function LoginProfilesPanel() {
   } = useLoginProfilesStore();
   const providerLimits = useProviderLimitsStore((state) => state.byProvider);
   const refreshLimitsIfStale = useProviderLimitsStore((state) => state.refreshIfStale);
-  const [providerFilter, setProviderFilter] = useState<ProviderFilter>('codex');
+  const [providerFilter, setProviderFilter] = useState<ProviderFilter>(initialProvider ?? 'codex');
   const [editorProvider, setEditorProvider] = useState<'codex' | 'claude'>('codex');
   const [editingProfile, setEditingProfile] = useState<LoginProfileSummary | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -125,6 +129,12 @@ export function LoginProfilesPanel() {
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
 
   useEffect(() => startSync(), [startSync]);
+
+  useEffect(() => {
+    if (initialProvider) {
+      setProviderFilter(initialProvider);
+    }
+  }, [initialProvider]);
 
   const filteredProfiles = useMemo(
     () => profiles.filter((profile) => profile.provider === providerFilter),

@@ -198,6 +198,119 @@ describe('executeFlow', () => {
     expect(result.status).toBe('completed');
   });
 
+  it('breaks a loop when all parallel reviewer verdicts pass', async () => {
+    const definition: FlowDefinition = {
+      flow: { id: 'all_parallel_gate' },
+      nodes: [
+        {
+          id: 'Reviewer',
+          params: ['request'],
+          paramTypes: { request: ['string'] },
+          parent: 'root',
+          returns: { verdict: ['pass', 'fail'] },
+          prompt: 'review {{ request }}',
+        },
+        {
+          id: 'Fixer',
+          params: ['reviews'],
+          paramTypes: { reviews: ['agent[]'] },
+          parent: 'root',
+          prompt: 'fix {{ reviews }}',
+        },
+      ],
+      run: [{
+        loop: {
+          max_rounds: 3,
+          steps: [
+            {
+              set: 'reviewers',
+              parallel: {
+                count: 3,
+                call: 'Reviewer',
+                parent: 'root',
+                args: { request: 'input.input' },
+              },
+            },
+            { if: 'all(reviewers.verdict == pass)', then: { break: true } },
+            { set: 'fixer', call: 'Fixer', parent: 'root', args: { reviews: 'reviewers' } },
+          ],
+        },
+      }],
+    };
+    const calls: FlowNodeRunInput[] = [];
+    const runner: FlowNodeRunner = {
+      async runNode(input) {
+        calls.push(input);
+        if (input.templateId === 'Reviewer') {
+          return node({
+            id: `reviewer-${calls.length}`,
+            message: 'verdict: pass',
+          });
+        }
+        throw new Error(`Unexpected template ${input.templateId}`);
+      },
+    };
+
+    const result = await executeFlow({
+      definition,
+      inputs: { input: 'Review the plan' },
+      runner,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(calls.map((call) => call.templateId)).toEqual(['Reviewer', 'Reviewer', 'Reviewer']);
+  });
+
+  it('runs branch-specific parallel calls with distinct args', async () => {
+    const definition: FlowDefinition = {
+      flow: { id: 'branch_parallel_execution' },
+      nodes: [{
+        id: 'Check',
+        params: ['request', 'check_type'],
+        paramTypes: { request: ['string'], check_type: ['string'] },
+        parent: 'root',
+        returns: { verdict: ['pass', 'fail'] },
+        prompt: 'run {{ check_type }} for {{ request }}',
+      }],
+      run: [
+        {
+          set: 'checks',
+          parallel: {
+            branches: [
+              { call: 'Check', parent: 'root', args: { request: 'input.input', check_type: 'dependency audit check' } },
+              { call: 'Check', parent: 'root', args: { request: 'input.input', check_type: 'lint check' } },
+              { call: 'Check', parent: 'root', args: { request: 'input.input', check_type: 'targeted test check' } },
+            ],
+          },
+        },
+        { if: 'all(checks.verdict == pass)', then: { stop: 'all_passed' } },
+      ],
+    };
+    const calls: FlowNodeRunInput[] = [];
+    const runner: FlowNodeRunner = {
+      async runNode(input) {
+        calls.push(input);
+        return node({
+          id: `check-${calls.length}`,
+          message: 'verdict: pass',
+        });
+      },
+    };
+
+    const result = await executeFlow({
+      definition,
+      inputs: { input: 'Audit the repo' },
+      runner,
+    });
+
+    expect(result).toEqual(expect.objectContaining({ status: 'stopped', reason: 'all_passed' }));
+    expect(calls.map((call) => call.args.check_type)).toEqual([
+      'dependency audit check',
+      'lint check',
+      'targeted test check',
+    ]);
+  });
+
   it('stops with max_rounds_exhausted when review never passes', async () => {
     let fixerCount = 0;
     const runner: FlowNodeRunner = {

@@ -75,7 +75,11 @@ const shouldRefreshHeldChatMessage = (held: Message, incoming: Message): boolean
   return false;
 };
 
-export function ChatInterface() {
+interface ChatInterfaceProps {
+  onMarkThreadDone?: (threadRootId: string) => void;
+}
+
+export function ChatInterface({ onMarkThreadDone }: ChatInterfaceProps = {}) {
   const {
     selectedWorkspaceId,
     focusedMessageId,
@@ -911,6 +915,7 @@ export function ChatInterface() {
         onDeleteMessages={handleDeleteMessages}
         onAddCommitsToMergePanel={handleAddCommitsToMergePanel}
         onAddCommitToNode={setAddCommitTargetId}
+        onMarkThreadDone={onMarkThreadDone}
       />
       <AddCommitDialog
         open={!!addCommitTargetId}

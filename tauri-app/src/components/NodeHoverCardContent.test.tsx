@@ -647,10 +647,10 @@ describe('NodeHoverCardContent', () => {
 
       expect(scrollArea).toBeTruthy();
       expect(scrollArea!.scrollTop).toBe(900);
-      expect(rafCallbacks).toHaveLength(1);
+      expect(rafCallbacks.length).toBeGreaterThanOrEqual(1);
 
       scrollHeight = 1400;
-      rafCallbacks[0](performance.now());
+      rafCallbacks.forEach((callback) => callback(performance.now()));
 
       expect(scrollArea!.scrollTop).toBe(1400);
     } finally {

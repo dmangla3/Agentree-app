@@ -225,6 +225,64 @@ describe('FlowsPanel', () => {
     expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull();
   });
 
+  it('saves prompt edits on predefined flows as user versions', async () => {
+    renderFlowsPanel(
+      <FlowsPanel
+        sources={[{
+          id: 'editable_flow',
+          label: 'Editable Flow',
+          scope: 'global',
+          source: editableYaml,
+        }]}
+      />
+    );
+
+    expect(screen.getByText('App in-built')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Editable Flow flow details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Worker prompt' }));
+    fireEvent.change(screen.getByLabelText('Prompt for Worker'), {
+      target: { value: 'Directly updated prompt {{ request }}' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Worker prompt' }));
+
+    expect(await screen.findByText('Flow saved as user version')).toBeTruthy();
+    expect(await screen.findByText('User created')).toBeTruthy();
+    expect(screen.getByText('version 2')).toBeTruthy();
+    expect(screen.getByText('Directly updated prompt {{ request }}')).toBeTruthy();
+  });
+
+  it('modifies and saves predefined flows through AI review as user versions', async () => {
+    renderFlowsPanel(
+      <FlowsPanel
+        sources={[{
+          id: 'editable_flow',
+          label: 'Editable Flow',
+          scope: 'global',
+          source: editableYaml,
+        }]}
+        authoringAgent={{
+          complete: async () => modifiedEditableYaml,
+        }}
+      />
+    );
+
+    expect(screen.getByText('App in-built')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Editable Flow flow details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Modify with AI' }));
+    fireEvent.change(screen.getByLabelText('Describe AI modification for Editable Flow'), {
+      target: { value: 'Update the worker prompt wording.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Draft modification' }));
+
+    expect(await screen.findByRole('button', { name: 'Approve changes' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve changes' }));
+
+    expect(await screen.findByText('Flow saved as user version')).toBeTruthy();
+    expect(await screen.findByText('User created')).toBeTruthy();
+    expect(screen.getByText('version 2')).toBeTruthy();
+    expect(screen.getByText('Updated prompt {{ request }}')).toBeTruthy();
+  });
+
   it('modifies and saves user flows through AI review', async () => {
     saveUserFlowSource({
       id: 'editable_flow',
@@ -247,7 +305,7 @@ describe('FlowsPanel', () => {
 
     expect(screen.getByText('User created')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Expand Editable Flow flow details' }));
-    expect(screen.queryByRole('button', { name: 'Edit Worker prompt' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Edit Worker prompt' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Modify with AI' }));
     fireEvent.change(screen.getByLabelText('Describe AI modification for Editable Flow'), {

@@ -2,7 +2,7 @@
 import '../test/setup';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { NodeContextMenu } from './NodeContextMenu';
+import { NodeContextMenu, resolveNodeContextMenuActions } from './NodeContextMenu';
 import type { ProjectedCommitEntity, ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspaceProjection';
 
 const makeGeneratedCommit = (): ProjectedCommitEntity => ({
@@ -16,6 +16,7 @@ const makeGeneratedCommit = (): ProjectedCommitEntity => ({
   placement: 'commit_lineage',
   producedByNodeId: 'assistant-1',
   visualOwnerNodeId: 'assistant-1',
+  ownerThreadRootId: 'user-root',
   parentShas: ['parent123'],
   parentRows: [],
   isMerge: false,
@@ -24,7 +25,7 @@ const makeGeneratedCommit = (): ProjectedCommitEntity => ({
   secondaryParentShas: [],
   observations: [],
   sortTs: 0,
-  owningThreadRootIds: [],
+  representedThreadRootIds: [],
   commit: {
     sha: 'abc123456789',
     workspace_id: 'workspace-1',
@@ -32,29 +33,34 @@ const makeGeneratedCommit = (): ProjectedCommitEntity => ({
   } as ProjectedCommitEntity['commit'],
 });
 
-const makeProjection = (commit: ProjectedCommitEntity | null, entities: ProjectedNodeEntity[] = []): WorkspaceProjection => ({
-  messages: [],
-  summaries: [],
-  messageMap: new Map(),
-  summaryMap: new Map(),
-  entities,
-  entitiesById: new Map(entities.map((entity) => [entity.entityId, entity])),
-  entitiesByMessageId: new Map(entities.flatMap((entity) => entity.messageId ? [[entity.messageId, entity] as const] : [])),
-  entitiesBySummaryId: new Map(),
-  childEntityIdsByParentEntityId: new Map(),
-  commitEntityIdsByAssistantEntityId: new Map(),
-  commitBySha: new Map(commit ? [[commit.sha, commit]] : []),
-  commitLaneRows: [],
-  layoutDerivedCommitGroups: [],
-  groupIdByCommitSha: new Map(),
-  threadRootIds: [],
-  threadRootIdByMessageId: new Map(),
-  rootMessageIdByThreadRootId: new Map(),
-  turnGroups: [],
-  turnGroupById: new Map(),
-  originMessage: null,
-  originMessageId: null,
-} as unknown as WorkspaceProjection);
+const makeProjection = (commit: ProjectedCommitEntity | null, entities: ProjectedNodeEntity[] = []): WorkspaceProjection => {
+  const messages = entities.flatMap((entity) => entity.message ? [entity.message] : []);
+  return {
+    messages,
+    summaries: [],
+    messageMap: new Map(messages.map((message) => [message.id, message])),
+    summaryMap: new Map(),
+    entities,
+    entitiesById: new Map(entities.map((entity) => [entity.entityId, entity])),
+    entitiesByMessageId: new Map(entities.flatMap((entity) => entity.messageId ? [[entity.messageId, entity] as const] : [])),
+    entitiesBySummaryId: new Map(),
+    childEntityIdsByParentEntityId: new Map(),
+    commitEntityIdsByAssistantEntityId: new Map(),
+    commitBySha: new Map(commit ? [[commit.sha, commit]] : []),
+    commitLaneRows: [],
+    layoutDerivedCommitGroups: [],
+    groupIdByCommitSha: new Map(),
+    threadRootIds: [],
+    threadRootIdByMessageId: new Map(entities.flatMap((entity) => (
+      entity.messageId && entity.threadRootId ? [[entity.messageId, entity.threadRootId] as const] : []
+    ))),
+    rootMessageIdByThreadRootId: new Map(),
+    turnGroups: [],
+    turnGroupById: new Map(),
+    originMessage: null,
+    originMessageId: null,
+  } as unknown as WorkspaceProjection;
+};
 
 describe('NodeContextMenu', () => {
   it('adds a generated canonical commit sha to the merge panel', () => {
@@ -75,7 +81,7 @@ describe('NodeContextMenu', () => {
     expect(onAddCommitShasToMergePanel).toHaveBeenCalledWith([commit.sha]);
   });
 
-  it('marks the owning thread done by default when adding a graph commit to the merge panel', () => {
+  it('marks the action owner thread done by default when adding a graph commit to the merge panel', () => {
     const onAddCommitShasToMergePanel = vi.fn();
     const onMarkThreadDone = vi.fn();
     const commit = makeGeneratedCommit();
@@ -118,7 +124,7 @@ describe('NodeContextMenu', () => {
     expect(onMarkThreadDone).toHaveBeenCalledWith('user-root');
   });
 
-  it('keeps the owning thread open when the merge-panel mark-done option is unchecked', () => {
+  it('keeps the action owner thread open when the merge-panel mark-done option is unchecked', () => {
     const onAddCommitShasToMergePanel = vi.fn();
     const onMarkThreadDone = vi.fn();
     const commit = makeGeneratedCommit();
@@ -159,6 +165,61 @@ describe('NodeContextMenu', () => {
     expect(onMarkThreadDone).not.toHaveBeenCalled();
   });
 
+  it('does not infer a mark-done owner from represented merge threads', () => {
+    const onMarkThreadDone = vi.fn();
+    const externalMerge: ProjectedCommitEntity = {
+      ...makeGeneratedCommit(),
+      sha: 'merge123456789',
+      entityId: 'commit:merge123456789',
+      sourceKind: 'external',
+      ownerKind: 'external',
+      producedByNodeId: null,
+      visualOwnerNodeId: null,
+      ownerThreadRootId: null,
+      isMerge: true,
+      representedThreadRootIds: ['thread-a', 'thread-b'],
+    };
+
+    render(
+      <NodeContextMenu
+        contextMenu={{ x: 20, y: 30, targetIds: [`commit:${externalMerge.sha}`] }}
+        projection={makeProjection(externalMerge)}
+        onClose={() => {}}
+        onAddCommitShasToMergePanel={() => {}}
+        onMarkThreadDone={onMarkThreadDone}
+      />
+    );
+
+    expect(screen.queryByRole('menuitemcheckbox', { name: 'Mark thread done' })).toBeNull();
+  });
+
+  it('resolves commit-message merge ownership without a canonical commit row', () => {
+    const commitSha = '4b1a8a1ce0a05626fbe975b6de73770dcb9755a4';
+    const commitEntity: ProjectedNodeEntity = {
+      entityId: 'commit_message:assistant-commit',
+      kind: 'commit_message',
+      messageId: 'assistant-commit',
+      focusMessageId: 'assistant-commit',
+      sortTs: 0,
+      message: {
+        id: 'assistant-commit',
+        role: 'assistant',
+        content: 'Generated commit',
+        parentId: 'user-root',
+        output_commit_sha: commitSha,
+        createdAt: '2026-05-31T00:00:00.000Z',
+        updatedAt: '2026-05-31T00:00:00.000Z',
+      } as ProjectedNodeEntity['message'],
+      preview: 'Generated commit',
+      shortLabel: 'Commit',
+      threadRootId: 'user-root',
+      isThreadRoot: false,
+    };
+
+    expect(resolveNodeContextMenuActions(makeProjection(null, [commitEntity]), [`commit:${commitSha}`]).mergeThreadRootId)
+      .toBe('user-root');
+  });
+
   it('marks the visible commit-message thread done when the commit row is missing', () => {
     const onAddCommitShasToMergePanel = vi.fn();
     const onMarkThreadDone = vi.fn();
@@ -188,6 +249,92 @@ describe('NodeContextMenu', () => {
       <NodeContextMenu
         contextMenu={{ x: 20, y: 30, targetIds: [`commit:${commitSha}`] }}
         projection={makeProjection(null, [commitEntity])}
+        onClose={() => {}}
+        onAddCommitShasToMergePanel={onAddCommitShasToMergePanel}
+        onMarkThreadDone={onMarkThreadDone}
+      />
+    );
+
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Mark thread done' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add to merge panel' }));
+
+    expect(onAddCommitShasToMergePanel).toHaveBeenCalledWith([commitSha]);
+    expect(onMarkThreadDone).toHaveBeenCalledWith('user-root');
+  });
+
+  it('resolves synthetic assistant commit node ids to the assistant output commit', () => {
+    const onAddCommitShasToMergePanel = vi.fn();
+    const onMarkThreadDone = vi.fn();
+    const commitSha = '3f162b1234567890';
+    const assistantEntity: ProjectedNodeEntity = {
+      entityId: 'assistant_message:assistant-output',
+      kind: 'assistant_message',
+      messageId: 'assistant-output',
+      focusMessageId: 'assistant-output',
+      sortTs: 0,
+      message: {
+        id: 'assistant-output',
+        role: 'assistant',
+        content: 'Created a file.',
+        parentId: 'user-root',
+        output_commit_sha: commitSha,
+        createdAt: '2026-06-14T00:00:00.000Z',
+        updatedAt: '2026-06-14T00:00:00.000Z',
+      } as ProjectedNodeEntity['message'],
+      preview: 'Created a file.',
+      shortLabel: 'Assistant',
+      threadRootId: 'user-root',
+      isThreadRoot: false,
+    };
+
+    render(
+      <NodeContextMenu
+        contextMenu={{ x: 20, y: 30, targetIds: ['commit:assistant-output'] }}
+        projection={makeProjection(null, [assistantEntity])}
+        onClose={() => {}}
+        onAddCommitShasToMergePanel={onAddCommitShasToMergePanel}
+        onMarkThreadDone={onMarkThreadDone}
+      />
+    );
+
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Mark thread done' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add to merge panel' }));
+
+    expect(onAddCommitShasToMergePanel).toHaveBeenCalledWith([commitSha]);
+    expect(onMarkThreadDone).toHaveBeenCalledWith('user-root');
+  });
+
+  it('resolves output commit sha ownership from a visible assistant node without a canonical commit row', () => {
+    const onAddCommitShasToMergePanel = vi.fn();
+    const onMarkThreadDone = vi.fn();
+    const commitSha = '3f162b1234567890';
+    const assistantEntity: ProjectedNodeEntity = {
+      entityId: 'assistant_message:assistant-output',
+      kind: 'assistant_message',
+      messageId: 'assistant-output',
+      focusMessageId: 'assistant-output',
+      sortTs: 0,
+      message: {
+        id: 'assistant-output',
+        role: 'assistant',
+        content: 'Created a file.',
+        parentId: 'user-root',
+        output_commit_sha: commitSha,
+        createdAt: '2026-06-14T00:00:00.000Z',
+        updatedAt: '2026-06-14T00:00:00.000Z',
+      } as ProjectedNodeEntity['message'],
+      preview: 'Created a file.',
+      shortLabel: 'Assistant',
+      threadRootId: 'user-root',
+      isThreadRoot: false,
+    };
+
+    render(
+      <NodeContextMenu
+        contextMenu={{ x: 20, y: 30, targetIds: [`commit:${commitSha}`] }}
+        projection={makeProjection(null, [assistantEntity])}
         onClose={() => {}}
         onAddCommitShasToMergePanel={onAddCommitShasToMergePanel}
         onMarkThreadDone={onMarkThreadDone}

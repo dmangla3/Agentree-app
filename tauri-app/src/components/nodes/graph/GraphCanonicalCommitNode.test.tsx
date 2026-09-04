@@ -24,6 +24,7 @@ const makeImportedCommit = (): ProjectedCommitEntity => ({
   placement: 'commit_lineage',
   producedByNodeId: null,
   visualOwnerNodeId: null,
+  ownerThreadRootId: null,
   parentShas: [],
   parentRows: [],
   isMerge: false,
@@ -32,7 +33,7 @@ const makeImportedCommit = (): ProjectedCommitEntity => ({
   secondaryParentShas: [],
   observations: [{ commit_sha: 'imported0001abcdef', git_ref: 'refs/heads/main', source_kind: 'external' }],
   sortTs: 0,
-  owningThreadRootIds: [],
+  representedThreadRootIds: [],
   commit: {
     sha: 'imported0001abcdef',
     workspace_id: 'workspace-1',

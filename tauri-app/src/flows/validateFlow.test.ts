@@ -61,6 +61,20 @@ describe('validateFlowDefinition', () => {
     });
   });
 
+  it('rejects unsupported top-level fields', () => {
+    const result = validateFlowDefinition({
+      flow: { id: 'bad_top_level_key' },
+      nodes: [{ id: 'Worker', parent: 'root', prompt: 'work' }],
+      run: [],
+      returns: { route: 'route' },
+    });
+
+    expect(result.issues).toContainEqual({
+      path: 'returns',
+      message: 'Unsupported top-level field "returns". Flow YAML only supports flow, inputs, registry, nodes, and run at the top level.',
+    });
+  });
+
   it('rejects calls to missing node templates', () => {
     const result = validateFlowDefinition({
       flow: { id: 'missing_call' },
@@ -170,6 +184,177 @@ describe('validateFlowDefinition', () => {
     expect(result.issues).toEqual([]);
   });
 
+  it('accepts all conditions for parallel reviewer gates', () => {
+    const result = validateFlowDefinition({
+      flow: { id: 'parallel_gate' },
+      inputs: { input: { type: 'string' } },
+      nodes: [
+        {
+          id: 'Reviewer',
+          params: { request: 'string' },
+          parent: 'root',
+          returns: { verdict: ['pass', 'fail'] },
+          prompt: 'review {{ request }}',
+        },
+      ],
+      run: [
+        {
+          set: 'reviewers',
+          parallel: {
+            count: 3,
+            call: 'Reviewer',
+            args: { request: 'input.input' },
+          },
+        },
+        { if: 'all(reviewers.verdict == pass)', then: { stop: 'all_passed' } },
+      ],
+    });
+
+    expect(result.issues).toEqual([]);
+  });
+
+  it('accepts branch-specific parallel calls that share one template', () => {
+    const result = validateFlowDefinition({
+      flow: { id: 'branch_parallel' },
+      inputs: { input: { type: 'string' } },
+      nodes: [
+        {
+          id: 'Check',
+          params: { request: 'string', check_type: 'string' },
+          parent: 'root',
+          returns: { verdict: ['pass', 'fail'] },
+          prompt: 'run {{ check_type }} for {{ request }}',
+        },
+      ],
+      run: [
+        {
+          set: 'checks',
+          parallel: {
+            branches: [
+              { call: 'Check', parent: 'root', args: { request: 'input.input', check_type: 'dependency audit check' } },
+              { call: 'Check', parent: 'root', args: { request: 'input.input', check_type: 'lint check' } },
+              { call: 'Check', parent: 'root', args: { request: 'input.input', check_type: 'targeted test check' } },
+            ],
+          },
+        },
+        { if: 'all(checks.verdict == pass)', then: { stop: 'all_passed' } },
+      ],
+    });
+
+    expect(result.issues).toEqual([]);
+    expect(result.definition?.run[0]).toEqual({
+      set: 'checks',
+      parallel: {
+        branches: [
+          { call: 'Check', parent: 'root', args: { request: 'input.input', check_type: 'dependency audit check' } },
+          { call: 'Check', parent: 'root', args: { request: 'input.input', check_type: 'lint check' } },
+          { call: 'Check', parent: 'root', args: { request: 'input.input', check_type: 'targeted test check' } },
+        ],
+      },
+    });
+  });
+
+  it('rejects branch-specific parallel calls with mixed templates', () => {
+    const result = validateFlowDefinition({
+      flow: { id: 'bad_branch_parallel' },
+      nodes: [
+        { id: 'CheckA', parent: 'root', prompt: 'a' },
+        { id: 'CheckB', parent: 'root', prompt: 'b' },
+      ],
+      run: [
+        {
+          set: 'checks',
+          parallel: {
+            branches: [
+              { call: 'CheckA' },
+              { call: 'CheckB' },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(result.issues).toContainEqual({
+      path: 'run.0.parallel.branches',
+      message: 'Parallel branches must call the same node template so their array output has one static type.',
+    });
+  });
+
+  it('rejects parallel statements that mix count and branches syntax', () => {
+    const result = validateFlowDefinition({
+      flow: { id: 'mixed_parallel_syntax' },
+      nodes: [{ id: 'Check', parent: 'root', prompt: 'check' }],
+      run: [{
+        set: 'checks',
+        parallel: {
+          count: 2,
+          call: 'Check',
+          branches: [{ call: 'Check' }],
+        },
+      }],
+    });
+
+    expect(result.issues).toContainEqual({
+      path: 'run.0.parallel',
+      message: 'Parallel statement must use either count/call or branches, not both.',
+    });
+  });
+
+  it('rejects direct array equality in conditions', () => {
+    const result = validateFlowDefinition({
+      flow: { id: 'bad_parallel_gate' },
+      inputs: { input: { type: 'string' } },
+      nodes: [
+        {
+          id: 'Reviewer',
+          params: { request: 'string' },
+          parent: 'root',
+          returns: { verdict: ['pass', 'fail'] },
+          prompt: 'review {{ request }}',
+        },
+      ],
+      run: [
+        {
+          set: 'reviewers',
+          parallel: {
+            count: 3,
+            call: 'Reviewer',
+            args: { request: 'input.input' },
+          },
+        },
+        { if: 'reviewers.verdict == pass', then: { stop: 'all_passed' } },
+      ],
+    });
+
+    expect(result.issues).toContainEqual({
+      path: 'run.1.if',
+      message: 'Condition "reviewers.verdict == pass" compares verdict[] to a scalar. Use all(reviewers.verdict == pass) when every item must match.',
+    });
+  });
+
+  it('rejects all conditions over scalar expressions', () => {
+    const result = validateFlowDefinition({
+      flow: { id: 'bad_scalar_all' },
+      nodes: [
+        {
+          id: 'Reviewer',
+          parent: 'root',
+          returns: { verdict: ['pass', 'fail'] },
+          prompt: 'review',
+        },
+      ],
+      run: [
+        { set: 'reviewer', call: 'Reviewer' },
+        { if: 'all(reviewer.verdict == pass)', then: { stop: 'all_passed' } },
+      ],
+    });
+
+    expect(result.issues).toContainEqual({
+      path: 'run.1.if',
+      message: 'all(...) requires "reviewer.verdict" to resolve to an array, but it resolves to verdict.',
+    });
+  });
+
   it('accepts typed object params and normalizes them on compiled templates', () => {
     const result = validateFlowDefinition({
       flow: { id: 'typed_params' },
@@ -216,6 +401,34 @@ describe('validateFlowDefinition', () => {
     });
   });
 
+  it('rejects template interpolation inside flow run expressions', () => {
+    const result = validateFlowDefinition({
+      flow: { id: 'bad_run_template_interpolation' },
+      inputs: { input: { type: 'string' } },
+      nodes: [
+        { id: 'Brief', params: { request: 'string' }, parent: 'root', requiresFinalizedCommit: true, prompt: 'brief {{ request }}' },
+        { id: 'Implementer', params: { request: 'string' }, parent: 'root', requiresFinalizedCommit: true, prompt: 'implement {{ request }}' },
+      ],
+      run: [
+        { set: 'brief', call: 'Brief', args: { request: 'input.input' } },
+        { set: 'brief_commit', value: 'brief.commit' },
+        {
+          set: 'implementation',
+          call: 'Implementer',
+          parent: 'brief',
+          args: {
+            request: 'Implement {{ input.input }} using {{ brief_commit }}',
+          },
+        },
+      ],
+    });
+
+    expect(result.issues).toContainEqual({
+      path: 'run.2.args.request',
+      message: 'Flow run expressions do not support {{ }} interpolation. Pass variables as expression args such as input.input or brief_commit, and combine them inside the node prompt.',
+    });
+  });
+
   it('rejects non-positive loop max rounds', () => {
     const result = validateFlowDefinition({
       flow: { id: 'bad_loop' },
@@ -226,6 +439,19 @@ describe('validateFlowDefinition', () => {
     expect(result.issues).toContainEqual({
       path: 'run.0.loop.max_rounds',
       message: 'Loop max_rounds must be an integer from 1 to 8.',
+    });
+  });
+
+  it('rejects break statements outside loops', () => {
+    const result = validateFlowDefinition({
+      flow: { id: 'bad_break' },
+      nodes: [{ id: 'Worker', parent: 'root', prompt: 'work' }],
+      run: [{ break: true }],
+    });
+
+    expect(result.issues).toContainEqual({
+      path: 'run.0',
+      message: 'Break statements are only valid inside loop steps.',
     });
   });
 

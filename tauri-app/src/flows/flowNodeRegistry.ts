@@ -62,12 +62,14 @@ Finish by producing a commit. Do not end with structured flow returns.`,
     returns: {
       verdict: ['pass', 'fail'],
     },
-    prompt: `Review this implementation against the original request.
+    prompt: `Review this committed artifact against the original request.
+The artifact may be implementation work, a plan, documentation, tests, analysis, or another requested output. Infer the intended artifact from the request and review criteria.
+Do not convert a planning, documentation, testing, or analysis task into implementation expectations unless the request explicitly asks for implementation.
 
 Original request:
 {{ request }}
 
-Implementation commit:
+Artifact commit:
 {{ commit }}
 
 Latest fix commit, if any:
@@ -183,7 +185,7 @@ export function resolveFlowNodeReferences(
     if (!definition) {
       issues.push({
         path: `nodes.${index}.use`,
-        message: `Reusable node "${node.use}" is not registered.`,
+        message: `Reusable node "${node.use}" is not registered. Use a known registry id or define "${node.use}" under top-level registry in this YAML. Known registry ids: ${formatKnownRegistryIds(registry)}.`,
       });
       return node;
     }
@@ -202,6 +204,11 @@ export function resolveFlowNodeReferences(
     } satisfies FlowDefinition | MutableFlowDefinition,
     issues,
   };
+}
+
+function formatKnownRegistryIds(registry: FlowNodeRegistry): string {
+  const ids = Object.keys(registry).sort();
+  return ids.length ? ids.join(', ') : 'none';
 }
 
 function toFlowNodeTemplate(

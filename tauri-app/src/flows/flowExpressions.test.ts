@@ -52,6 +52,39 @@ const scope: Record<string, FlowRuntimeValue> = {
       message: 'Second implementation details',
     },
   ],
+  reviewers: [
+    {
+      kind: 'node',
+      id: 'reviewer-1',
+      label: 'Reviewer 1',
+      status: 'complete',
+      returns: { verdict: 'pass' },
+    },
+    {
+      kind: 'node',
+      id: 'reviewer-2',
+      label: 'Reviewer 2',
+      status: 'complete',
+      returns: { verdict: 'pass' },
+    },
+  ],
+  mixedReviewers: [
+    {
+      kind: 'node',
+      id: 'reviewer-1',
+      label: 'Reviewer 1',
+      status: 'complete',
+      returns: { verdict: 'pass' },
+    },
+    {
+      kind: 'node',
+      id: 'reviewer-2',
+      label: 'Reviewer 2',
+      status: 'complete',
+      returns: { verdict: 'fail' },
+    },
+  ],
+  emptyReviewers: [],
   noCommitImplementation: {
     kind: 'node',
     id: 'implementation-empty',
@@ -81,6 +114,29 @@ describe('flow expressions', () => {
   it('evaluates equality checks against null literals', () => {
     expect(evaluateFlowCondition('noCommitImplementation.commit == null', scope)).toEqual({ value: true, issues: [] });
     expect(evaluateFlowCondition('implementation.commit == null', scope)).toEqual({ value: false, issues: [] });
+  });
+
+  it('evaluates all conditions across projected arrays', () => {
+    expect(evaluateFlowCondition('all(reviewers.verdict == pass)', scope)).toEqual({ value: true, issues: [] });
+    expect(evaluateFlowCondition('all(mixedReviewers.verdict == pass)', scope)).toEqual({ value: false, issues: [] });
+    expect(evaluateFlowCondition('all(emptyReviewers.verdict == pass)', scope)).toEqual({ value: false, issues: [] });
+  });
+
+  it('rejects all conditions over scalar values', () => {
+    expect(evaluateFlowCondition('all(reviewer.verdict == pass)', scope)).toEqual({
+      value: false,
+      issues: [{ path: 'all(reviewer.verdict == pass)', message: 'all(...) requires "reviewer.verdict" to resolve to an array.' }],
+    });
+  });
+
+  it('rejects direct array equality in conditions', () => {
+    expect(evaluateFlowCondition('reviewers.verdict == pass', scope)).toEqual({
+      value: false,
+      issues: [{
+        path: 'reviewers.verdict == pass',
+        message: 'Condition "reviewers.verdict == pass" compares an array to a scalar. Use all(reviewers.verdict == pass) when every item must match.',
+      }],
+    });
   });
 
   it('evaluates node property access', () => {

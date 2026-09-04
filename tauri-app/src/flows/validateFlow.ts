@@ -1,6 +1,7 @@
 import type {
   FlowDefinition,
   FlowInputDefinition,
+  FlowParallelBranch,
   FlowNodeTemplate,
   FlowParamType,
   FlowStatement,
@@ -22,7 +23,11 @@ type MutableFlowDefinition = {
 
 const MAX_STATIC_ROUNDS = 8;
 const PATH_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
+const CONDITION_LITERAL_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+const ALL_CONDITION_PATTERN = /^all\((.*)\)$/;
+const TEMPLATE_INTERPOLATION_PATTERN = /{{|}}/;
 const FLOW_NODE_FIELDS = new Set(['kind', 'id', 'label', 'status', 'message', 'commit']);
+const TOP_LEVEL_KEYS = new Set(['flow', 'inputs', 'registry', 'nodes', 'run']);
 
 type StaticValueShape =
   | { kind: 'input'; fields: Map<string, StaticValueShape> }
@@ -43,6 +48,12 @@ interface ValidatedParams {
   paramTypes: Record<string, FlowParamType[]>;
 }
 
+interface ParsedConditionExpression {
+  quantifier: 'one' | 'all';
+  leftExpression: string;
+  expectedLiteral: string;
+}
+
 export function validateFlowDefinition(input: unknown): FlowValidationResult {
   const issues: FlowValidationIssue[] = [];
 
@@ -54,6 +65,7 @@ export function validateFlowDefinition(input: unknown): FlowValidationResult {
   }
 
   const candidate = input as MutableFlowDefinition;
+  validateTopLevelKeys(candidate, issues);
   const flow = validateFlow(candidate.flow, issues);
   const inputs = validateInputs(candidate.inputs, issues);
   const nodes = validateNodes(candidate.nodes, issues);
@@ -82,6 +94,16 @@ export function validateFlowDefinition(input: unknown): FlowValidationResult {
     },
     issues,
   };
+}
+
+function validateTopLevelKeys(input: Record<string, unknown>, issues: FlowValidationIssue[]): void {
+  for (const key of Object.keys(input)) {
+    if (TOP_LEVEL_KEYS.has(key)) continue;
+    issues.push({
+      path: key,
+      message: `Unsupported top-level field "${key}". Flow YAML only supports flow, inputs, registry, nodes, and run at the top level.`,
+    });
+  }
 }
 
 function validateFlow(input: unknown, issues: FlowValidationIssue[]): FlowDefinition['flow'] | null {
@@ -288,7 +310,7 @@ function validateRun(
   const statements: FlowStatement[] = [];
   input.forEach((statementInput, index) => {
     const path = `run.${index}`;
-    const statement = validateStatement(statementInput, path, templatesById, inputs, issues);
+    const statement = validateStatement(statementInput, path, templatesById, inputs, issues, false);
     if (!statement) return;
     validateStatementExpressions(statement, path, scope, templatesById, inputs, issues);
     applyStatementStaticEffects(statement, scope, templatesById);
@@ -302,7 +324,8 @@ function validateStatement(
   path: string,
   nodeTemplates: Map<string, FlowNodeTemplate>,
   inputs: Record<string, FlowInputDefinition> | undefined,
-  issues: FlowValidationIssue[]
+  issues: FlowValidationIssue[],
+  allowBreak: boolean
 ): FlowStatement | null {
   if (!isRecord(input)) {
     issues.push({ path, message: 'Statement must be an object.' });
@@ -338,7 +361,7 @@ function validateStatement(
         value: input.value as string | number | boolean | null,
       };
     case 'if':
-      return validateIfStatement(input, path, nodeTemplates, inputs, issues);
+      return validateIfStatement(input, path, nodeTemplates, inputs, issues, allowBreak);
     case 'loop':
       return validateLoopStatement(input, path, nodeTemplates, inputs, issues);
     case 'stop':
@@ -349,6 +372,9 @@ function validateStatement(
     case 'break':
       if (input.break !== true) {
         issues.push({ path: `${path}.break`, message: 'Break statement must be true.' });
+      }
+      if (!allowBreak) {
+        issues.push({ path, message: 'Break statements are only valid inside loop steps.' });
       }
       return { break: true };
   }
@@ -367,11 +393,22 @@ function validateParallelStatement(
   }
 
   const parallel = input.parallel;
+  const hasBranches = parallel.branches !== undefined;
+  const hasRepeatedCall = parallel.count !== undefined || parallel.call !== undefined;
+  if (hasBranches && hasRepeatedCall) {
+    issues.push({ path: `${path}.parallel`, message: 'Parallel statement must use either count/call or branches, not both.' });
+  }
+  if (hasBranches) {
+    const branches = validateParallelBranches(parallel.branches, `${path}.parallel.branches`, nodeTemplates, issues);
+    return {
+      set: typeof input.set === 'string' ? input.set : '',
+      parallel: { branches },
+    };
+  }
+
   validateCall(parallel.call, parallel.args, `${path}.parallel`, nodeTemplates, issues);
   validateParallelCount(parallel.count, `${path}.parallel.count`, inputs, issues);
-  if (parallel.parent !== undefined && !isNonEmptyString(parallel.parent)) {
-    issues.push({ path: `${path}.parallel.parent`, message: 'Parallel parent must be a non-empty string.' });
-  }
+  validateCallParent(parallel.parent, `${path}.parallel.parent`, issues);
 
   return {
     set: typeof input.set === 'string' ? input.set : '',
@@ -384,12 +421,55 @@ function validateParallelStatement(
   };
 }
 
+function validateParallelBranches(
+  input: unknown,
+  path: string,
+  nodeTemplates: Map<string, FlowNodeTemplate>,
+  issues: FlowValidationIssue[]
+): FlowParallelBranch[] {
+  if (!Array.isArray(input)) {
+    issues.push({ path, message: 'Parallel branches must be an array.' });
+    return [];
+  }
+  if (input.length < 1 || input.length > MAX_STATIC_ROUNDS) {
+    issues.push({ path, message: 'Parallel branches must include 1 to 8 branches.' });
+  }
+
+  const branches = input.map((branch, index): FlowParallelBranch => {
+    const branchPath = `${path}.${index}`;
+    if (!isRecord(branch)) {
+      issues.push({ path: branchPath, message: 'Parallel branch must be an object.' });
+      return { call: '' };
+    }
+    validateCall(branch.call, branch.args, branchPath, nodeTemplates, issues);
+    validateCallParent(branch.parent, `${branchPath}.parent`, issues);
+    return {
+      call: typeof branch.call === 'string' ? branch.call : '',
+      ...(isRecord(branch.args) ? { args: stringifyRecord(branch.args) } : {}),
+      ...(typeof branch.parent === 'string' ? { parent: branch.parent } : {}),
+    };
+  });
+
+  const callIds = new Set(branches.map((branch) => branch.call).filter(Boolean));
+  if (callIds.size > 1) {
+    issues.push({ path, message: 'Parallel branches must call the same node template so their array output has one static type.' });
+  }
+  return branches;
+}
+
+function validateCallParent(parent: unknown, path: string, issues: FlowValidationIssue[]): void {
+  if (parent !== undefined && !isNonEmptyString(parent)) {
+    issues.push({ path, message: 'Call parent must be a non-empty string.' });
+  }
+}
+
 function validateIfStatement(
   input: Record<string, unknown>,
   path: string,
   nodeTemplates: Map<string, FlowNodeTemplate>,
   inputs: Record<string, FlowInputDefinition> | undefined,
-  issues: FlowValidationIssue[]
+  issues: FlowValidationIssue[],
+  allowBreak: boolean
 ): FlowStatement | null {
   if (!isNonEmptyString(input.if)) {
     issues.push({ path: `${path}.if`, message: 'If condition must be a non-empty string.' });
@@ -400,11 +480,11 @@ function validateIfStatement(
     return {
       if: typeof input.if === 'string' ? input.if : '',
       then: thenInput
-        .map((statement, index) => validateStatement(statement, `${path}.then.${index}`, nodeTemplates, inputs, issues))
+        .map((statement, index) => validateStatement(statement, `${path}.then.${index}`, nodeTemplates, inputs, issues, allowBreak))
         .filter((statement): statement is FlowStatement => statement !== null),
     };
   }
-  const thenStatement = validateStatement(thenInput, `${path}.then`, nodeTemplates, inputs, issues);
+  const thenStatement = validateStatement(thenInput, `${path}.then`, nodeTemplates, inputs, issues, allowBreak);
   return {
     if: typeof input.if === 'string' ? input.if : '',
     then: thenStatement ?? [],
@@ -439,7 +519,7 @@ function validateLoopStatement(
       steps: Array.isArray(stepsInput)
         ? stepsInput
             .map((statement, index) =>
-              validateStatement(statement, `${path}.loop.steps.${index}`, nodeTemplates, inputs, issues)
+              validateStatement(statement, `${path}.loop.steps.${index}`, nodeTemplates, inputs, issues, true)
             )
             .filter((statement): statement is FlowStatement => statement !== null)
         : [],
@@ -504,6 +584,10 @@ function validateParallelCount(
     issues.push({ path, message: 'Parallel count must be an integer or input path.' });
     return;
   }
+  if (hasTemplateInterpolation(count)) {
+    issues.push({ path, message: flowExpressionTemplateMessage() });
+    return;
+  }
 
   const match = /^input\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(count);
   if (!match) {
@@ -566,6 +650,19 @@ function validateStatementExpressions(
   }
 
   if ('parallel' in statement) {
+    if ('branches' in statement.parallel) {
+      statement.parallel.branches.forEach((branch, index) => {
+        validateParentExpression(branch.parent, `${path}.parallel.branches.${index}.parent`, scope, issues);
+        validateArgExpressions(
+          branch.args,
+          `${path}.parallel.branches.${index}.args`,
+          scope,
+          issues,
+          nodeTemplates.get(branch.call)
+        );
+      });
+      return;
+    }
     validateParentExpression(statement.parallel.parent, `${path}.parallel.parent`, scope, issues);
     validateArgExpressions(
       statement.parallel.args,
@@ -644,9 +741,41 @@ function validateConditionExpression(
   scope: Map<string, StaticValueShape>,
   issues: FlowValidationIssue[]
 ): void {
-  const parts = condition.split(/\s+==\s+/);
-  if (parts.length !== 2) return;
-  validateFlowExpressionPath(parts[0], path, scope, issues);
+  const parsed = parseConditionExpression(condition);
+  if (!parsed) {
+    issues.push({ path, message: 'Only equality conditions and all(path == literal) conditions are supported.' });
+    return;
+  }
+  if (!PATH_PATTERN.test(parsed.leftExpression) || !CONDITION_LITERAL_PATTERN.test(parsed.expectedLiteral)) {
+    issues.push({ path, message: 'Condition must compare a variable path to a bare literal.' });
+    return;
+  }
+
+  const shape = validateFlowExpressionPath(parsed.leftExpression, path, scope, issues);
+  if (shape.kind === 'unknown') return;
+  if (parsed.quantifier === 'all') {
+    if (shape.kind !== 'array') {
+      issues.push({ path, message: `all(...) requires "${parsed.leftExpression}" to resolve to an array, but it resolves to ${describeStaticShape(shape)}.` });
+    }
+    return;
+  }
+  if (shape.kind === 'array') {
+    issues.push({ path, message: `Condition "${condition}" compares ${describeStaticShape(shape)} to a scalar. Use all(${parsed.leftExpression} == ${parsed.expectedLiteral}) when every item must match.` });
+  }
+}
+
+function parseConditionExpression(condition: string): ParsedConditionExpression | null {
+  const trimmed = condition.trim();
+  const allMatch = trimmed.match(ALL_CONDITION_PATTERN);
+  const body = allMatch ? allMatch[1].trim() : trimmed;
+  if (body.includes('!=') || body.includes('>=') || body.includes('<=')) return null;
+  const parts = body.split(/\s+==\s+/);
+  if (parts.length !== 2) return null;
+  return {
+    quantifier: allMatch ? 'all' : 'one',
+    leftExpression: parts[0].trim(),
+    expectedLiteral: parts[1].trim(),
+  };
 }
 
 function validateFlowExpressionPath(
@@ -668,6 +797,10 @@ function validateFlowExpressionPath(
     return { kind: 'scalar' };
   }
   const trimmed = expression.trim();
+  if (hasTemplateInterpolation(trimmed)) {
+    issues.push({ path, message: flowExpressionTemplateMessage() });
+    return { kind: 'unknown' };
+  }
   if (trimmed === 'root') {
     return { kind: 'scalar' };
   }
@@ -681,6 +814,14 @@ function validateFlowExpressionPath(
     return { kind: 'unknown' };
   }
   return result.shape;
+}
+
+function hasTemplateInterpolation(value: string): boolean {
+  return TEMPLATE_INTERPOLATION_PATTERN.test(value);
+}
+
+function flowExpressionTemplateMessage(): string {
+  return 'Flow run expressions do not support {{ }} interpolation. Pass variables as expression args such as input.input or brief_commit, and combine them inside the node prompt.';
 }
 
 function resolveStaticPath(
@@ -803,6 +944,16 @@ function staticShapeToParamType(shape: StaticValueShape): FlowParamType | null {
   return null;
 }
 
+function describeStaticShape(shape: StaticValueShape): string {
+  if (shape.kind === 'array') return `${describeStaticShape(shape.item)}[]`;
+  if (shape.kind === 'node') return 'agent';
+  if (shape.kind === 'commit') return 'commit';
+  if (shape.kind === 'verdict') return 'verdict';
+  if (shape.kind === 'input') return 'input';
+  if (shape.kind === 'object') return 'object';
+  return shape.kind;
+}
+
 function applyStatementStaticEffects(
   statement: FlowStatement,
   scope: Map<string, StaticValueShape>,
@@ -814,7 +965,7 @@ function applyStatementStaticEffects(
     return;
   }
   if ('parallel' in statement) {
-    const template = nodeTemplates.get(statement.parallel.call);
+    const template = nodeTemplates.get(getParallelTemplateId(statement));
     scope.set(statement.set, template ? { kind: 'array', item: { kind: 'node', template } } : { kind: 'unknown' });
     return;
   }
@@ -822,6 +973,12 @@ function applyStatementStaticEffects(
     const shape = validateFlowExpressionPath(statement.value, `run.${statement.set}.value`, scope, []);
     scope.set(statement.set, shape);
   }
+}
+
+function getParallelTemplateId(statement: Extract<FlowStatement, { parallel: unknown }>): string {
+  return 'branches' in statement.parallel
+    ? statement.parallel.branches[0]?.call ?? ''
+    : statement.parallel.call;
 }
 
 function cloneStaticScope(scope: Map<string, StaticValueShape>): Map<string, StaticValueShape> {

@@ -1,5 +1,6 @@
-import { Bot, CheckCircle2, ChevronDown, FileCode2, ListChecks, Loader2, Network, Plus, RotateCcw, Workflow, X } from 'lucide-react';
+import { Bot, CheckCircle2, ChevronDown, FileCode2, ListChecks, Loader2, Network, Pencil, Plus, RotateCcw, Save, Workflow, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { stringify } from 'yaml';
 import { UnifiedAgentModelSelector } from '../UnifiedAgentModelSelector';
 import { Popover, PopoverContent, PopoverTrigger } from '../../../@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../@/components/ui/tooltip';
@@ -15,7 +16,7 @@ import { agentClient } from '../../lib/agentClient';
 import { isLoginProfileActive } from '../../lib/loginProfiles';
 import { getRuntimeModelByKey } from '../../lib/runtimeModels';
 import { track } from '../../lib/analytics';
-import type { FlowInputDefinition, FlowNodeTemplate, FlowSource, FlowStatement, UserFlowSource } from '../../flows/types';
+import type { FlowDefinition, FlowInputDefinition, FlowNodeTemplate, FlowSource, FlowStatement, UserFlowSource } from '../../flows/types';
 import { cn } from '../../lib/utils';
 import { useLoginProfilesStore } from '../../stores/loginProfilesStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
@@ -134,7 +135,7 @@ export function FlowsPanel({
               <div className="space-y-3">
                 {flows.map((flow) => (
                   <FlowCatalogEntry
-                    key={`${flow.kind}:${flow.source.id}`}
+                    key={flow.source.id}
                     flow={flow}
                     registry={registry}
                     workspaceId={workspaceId}
@@ -592,6 +593,16 @@ function FlowCatalogEntry({
   const inputCount = Object.keys(definition?.inputs ?? {}).length;
   const returnCount = definition?.nodes.reduce((total, node) => total + Object.keys(node.returns ?? {}).length, 0) ?? 0;
   const maxLoopRounds = findMaxLoopRounds(definition?.run ?? []);
+  const toast = useToastHelpers();
+  const handleSaveDefinition = useCallback((nextDefinition: FlowDefinition) => {
+    const saved = saveFlowDefinitionAsUserSource({
+      flow,
+      definition: nextDefinition,
+      workspaceId,
+    });
+    toast.success(flow.kind === 'predefined' ? 'Flow saved as user version' : 'Flow updated and validated');
+    return saved;
+  }, [flow, toast, workspaceId]);
 
   return (
     <article
@@ -701,6 +712,14 @@ function FlowCatalogEntry({
                           key={node.id}
                           node={node}
                           index={index}
+                          onSavePrompt={(prompt) => {
+                            handleSaveDefinition({
+                              ...definition,
+                              nodes: definition.nodes.map((candidate) => (
+                                candidate.id === node.id ? { ...candidate, prompt } : candidate
+                              )),
+                            });
+                          }}
                         />
                       ))}
                     </div>
@@ -809,7 +828,7 @@ function FlowModificationPanel({
   authoringAgent?: FlowAuthoringAgent;
   authoringAgentLabel?: string | null;
 }) {
-  const userSource = flow.kind === 'user' && 'version' in flow.source ? flow.source : null;
+  const editableSource = flow.source;
   const selectedAgentId = useWorkspaceStore((state) => state.selectedAgentId);
   const { profiles, startSync } = useLoginProfilesStore();
   const toast = useToastHelpers();
@@ -897,18 +916,18 @@ function FlowModificationPanel({
 
   const handleDraftModification = useCallback(async () => {
     const trimmed = request.trim();
-    if (!trimmed || !userSource || !resolvedAuthoringAgent) return;
+    if (!trimmed || !resolvedAuthoringAgent) return;
     setStatus('drafting');
     setResult(null);
     setStreamOutput('');
     try {
       const authored = await authorFlowFromNaturalLanguage({
         request: buildFlowModificationRequest({
-          currentYaml: userSource.source,
-          flowId: userSource.id,
+          currentYaml: editableSource.source,
+          flowId: editableSource.id,
           changeRequest: trimmed,
         }),
-        workspaceId: userSource.workspaceId ?? workspaceId,
+        workspaceId: 'workspaceId' in editableSource ? editableSource.workspaceId ?? workspaceId : workspaceId,
         registry,
         agent: resolvedAuthoringAgent,
       });
@@ -919,14 +938,14 @@ function FlowModificationPanel({
       setResult({
         status: 'failed',
         source: {
-          id: userSource.id,
-          label: userSource.label,
-          scope: userSource.scope,
-          workspaceId: userSource.workspaceId,
-          source: userSource.source,
-          version: userSource.version,
+          id: editableSource.id,
+          label: editableSource.label,
+          scope: 'workspaceId' in editableSource && editableSource.workspaceId ? 'workspace' : editableSource.scope,
+          workspaceId: 'workspaceId' in editableSource ? editableSource.workspaceId : workspaceId,
+          source: editableSource.source,
+          version: 'version' in editableSource ? editableSource.version : 1,
           enabled: false,
-          createdAt: userSource.createdAt,
+          createdAt: 'createdAt' in editableSource ? editableSource.createdAt : new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         },
         issues: [{
@@ -940,7 +959,7 @@ function FlowModificationPanel({
       activeRequestIdRef.current = null;
       setActiveRequestId(null);
     }
-  }, [registry, request, resolvedAuthoringAgent, userSource, workspaceId]);
+  }, [editableSource, registry, request, resolvedAuthoringAgent, workspaceId]);
 
   const handleCancel = useCallback(() => {
     const requestId = activeRequestIdRef.current ?? activeRequestId;
@@ -949,24 +968,20 @@ function FlowModificationPanel({
   }, [activeRequestId]);
 
   const handleApproveModification = useCallback(() => {
-    if (!readyResult || !userSource) return;
+    if (!readyResult) return;
     saveUserFlowNodeDefinitions({ definitions: readyResult.registryAdditions });
-    saveUserFlowSource({
-      ...userSource,
-      label: readyResult.definition.flow.label ?? userSource.label,
-      source: readyResult.source.source,
-      version: userSource.version + 1,
-      enabled: true,
-      updatedAt: new Date().toISOString(),
+    saveFlowDefinitionAsUserSource({
+      flow,
+      definition: readyResult.definition,
+      sourceYaml: readyResult.source.source,
+      workspaceId,
     });
-    toast.success('Flow updated and validated');
+    toast.success(flow.kind === 'predefined' ? 'Flow saved as user version' : 'Flow updated and validated');
     setRequest('');
     setResult(null);
     setStreamOutput('');
     setStatus('idle');
-  }, [readyResult, toast, userSource]);
-
-  if (!userSource) return null;
+  }, [flow, readyResult, toast, workspaceId]);
 
   if (!isOpen) {
     return (
@@ -1011,7 +1026,7 @@ function FlowModificationPanel({
           value={request}
           onChange={(event) => setRequest(event.target.value)}
           placeholder="Example: Add a reviewer after the implementer and hand off only when the review passes."
-          aria-label={`Describe AI modification for ${userSource.label}`}
+          aria-label={`Describe AI modification for ${editableSource.label}`}
           className="min-h-20 w-full resize-y border-0 bg-transparent px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground/65"
         />
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[hsl(var(--app-border)/0.52)] bg-background/34 px-3 py-2">
@@ -1067,7 +1082,7 @@ function FlowModificationPanel({
           <div className="space-y-3 rounded-xl border border-emerald-500/24 bg-emerald-500/5 p-3">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-sm font-semibold text-foreground">{readyResult.definition.flow.label ?? userSource.label}</div>
+                <div className="text-sm font-semibold text-foreground">{readyResult.definition.flow.label ?? editableSource.label}</div>
                 <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
                   <span>{readyResult.definition.nodes.length} nodes</span>
                   <span>{readyResult.registryNodeIds.length} registry</span>
@@ -1098,11 +1113,20 @@ function FlowModificationPanel({
 function NodeTemplateRow({
   node,
   index,
+  onSavePrompt,
 }: {
   node: FlowNodeTemplate;
   index: number;
+  onSavePrompt?: (prompt: string) => void;
 }) {
   const returns = Object.entries(node.returns ?? {}).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`);
+  const [isEditingPrompt, setIsEditingPrompt] = useState(false);
+  const [promptDraft, setPromptDraft] = useState(node.prompt);
+
+  useEffect(() => {
+    setPromptDraft(node.prompt);
+    setIsEditingPrompt(false);
+  }, [node.prompt]);
 
   return (
     <details
@@ -1148,14 +1172,97 @@ function NodeTemplateRow({
             <span className="rounded-md bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
               {node.registryId ? `from ${node.registryId}` : 'inline'}
             </span>
+            {onSavePrompt ? (
+              <button
+                type="button"
+                onClick={() => setIsEditingPrompt((editing) => !editing)}
+                className="inline-flex h-6 items-center gap-1 rounded-md border border-[hsl(var(--app-border)/0.62)] bg-background/70 px-1.5 text-[10px] font-semibold text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                aria-label={`${isEditingPrompt ? 'Cancel' : 'Edit'} ${node.id} prompt`}
+              >
+                {isEditingPrompt ? <X className="h-3 w-3" /> : <Pencil className="h-3 w-3" />}
+                {isEditingPrompt ? 'Cancel' : 'Edit'}
+              </button>
+            ) : null}
           </div>
         </div>
-        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel-strong)/0.78)] px-3 py-2.5 font-mono text-[11px] leading-5 text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.42)]">
-          {node.prompt.trim()}
-        </pre>
+        {isEditingPrompt ? (
+          <div className="space-y-2">
+            <textarea
+              value={promptDraft}
+              onChange={(event) => setPromptDraft(event.target.value)}
+              aria-label={`Prompt for ${node.id}`}
+              className="min-h-40 w-full resize-y rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel-strong)/0.78)] px-3 py-2.5 font-mono text-[11px] leading-5 text-foreground outline-none shadow-[inset_0_1px_0_hsl(var(--app-border)/0.42)] focus:border-[hsl(var(--app-accent)/0.48)]"
+            />
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  const trimmed = promptDraft.trim();
+                  if (!trimmed) return;
+                  onSavePrompt?.(trimmed);
+                }}
+                disabled={!promptDraft.trim() || promptDraft.trim() === node.prompt.trim()}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-500/28 bg-emerald-500/10 px-3 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-500/15 disabled:pointer-events-none disabled:opacity-50 dark:text-emerald-300"
+                aria-label={`Save ${node.id} prompt`}
+              >
+                <Save className="h-3.5 w-3.5" />
+                Save prompt
+              </button>
+            </div>
+          </div>
+        ) : (
+          <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel-strong)/0.78)] px-3 py-2.5 font-mono text-[11px] leading-5 text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--app-border)/0.42)]">
+            {node.prompt.trim()}
+          </pre>
+        )}
       </div>
     </details>
   );
+}
+
+function saveFlowDefinitionAsUserSource(input: {
+  flow: FlowCatalogItem;
+  definition: FlowDefinition;
+  workspaceId: string | null;
+  sourceYaml?: string;
+}): UserFlowSource {
+  const now = new Date().toISOString();
+  const existingUserSource = input.flow.kind === 'user' && 'version' in input.flow.source ? input.flow.source : null;
+  const scope = existingUserSource?.scope ?? (input.workspaceId ? 'workspace' : input.flow.source.scope);
+  const workspaceId = existingUserSource?.workspaceId ?? (scope === 'workspace' ? input.workspaceId : null);
+  return saveUserFlowSource({
+    id: input.flow.source.id,
+    label: input.definition.flow.label ?? input.flow.source.label,
+    scope,
+    workspaceId,
+    source: input.sourceYaml ?? flowDefinitionToSourceYaml(input.definition),
+    version: (existingUserSource?.version ?? input.flow.sourceVersion) + 1,
+    enabled: true,
+    createdAt: existingUserSource?.createdAt ?? now,
+    updatedAt: now,
+  });
+}
+
+function flowDefinitionToSourceYaml(definition: FlowDefinition): string {
+  const source = {
+    flow: definition.flow,
+    ...(definition.inputs ? { inputs: definition.inputs } : {}),
+    nodes: definition.nodes.map((node) => ({
+      id: node.id,
+      ...(node.registryId ? { registryId: node.registryId } : {}),
+      ...(node.label ? { label: node.label } : {}),
+      parent: node.parent,
+      ...(node.params?.length ? { params: Object.fromEntries(node.params.map((param) => [
+        param,
+        formatFlowParamTypes(node.paramTypes?.[param] ?? ['scalar']),
+      ])) } : {}),
+      ...(node.returns ? { returns: node.returns } : {}),
+      prompt: node.prompt,
+      ...(node.requiresFinalizedCommit !== undefined ? { requiresFinalizedCommit: node.requiresFinalizedCommit } : {}),
+    })),
+    run: definition.run,
+  };
+  return stringify(source).trim();
 }
 
 function formatNodeParams(node: FlowNodeTemplate): string {

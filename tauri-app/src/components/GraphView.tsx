@@ -122,6 +122,7 @@ import { classifyMessageNodeKind } from '../domain/nodes';
 
 import { ChevronLeft, ChevronRight, ChevronsRight, GitBranch, X } from 'lucide-react';
 import { agentClient } from '../lib/agentClient';
+import { ensureLocalCommitGraphRepaired } from '../lib/localCommitGraphRepair';
 import { createProfilerOnRender, startFocusInteraction } from '../lib/interactionProfiler';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 import { recordFundamentalCounter } from '../perf/fundamentalCounters';
@@ -445,6 +446,16 @@ export const resolveFocusedThreadRootId = ({
     const lookup = focusedThreadRootLookup ?? buildFocusedThreadRootLookup({ messages, threadRootIndex });
     return lookup.get(focusedMessageId) ?? null;
 };
+
+export const resolveLeafNodeFocusThreadRootId = ({
+    leafNodeId,
+    focusedThreadRootLookup,
+}: {
+    leafNodeId: string;
+    focusedThreadRootLookup: Map<string, string>;
+}): string | null => (
+    focusedThreadRootLookup.get(leafNodeId) ?? null
+);
 
 const useStableGraphCallback = <Args extends unknown[], ReturnValue>(
     callback: (...args: Args) => ReturnValue
@@ -1096,20 +1107,18 @@ function GraphViewInternal({
     const snapshotSummaries = useMemo(() => graphSnapshotToSummaries(graphSnapshotQuery.data), [graphSnapshotQuery.data]);
     const localCommitGraphQuery = useQuery({
         queryKey: ['local-commit-graph', selectedWorkspaceId, localCommitGraphRepoPath],
+        // Read-only: render from cached/local state immediately. The heavy
+        // parent-closure repair runs in the background (see effect below) so it
+        // never blocks the graph from painting or stalls pan/zoom.
         queryFn: async () => {
             if (!selectedWorkspaceId) return { commits: [], commitParents: [], commitObservations: [] };
             const startedAt = performance.now();
-            let repaired = false;
-            if (localCommitGraphRepoPath) {
-                await agentClient.repairLocalCommitGraph(selectedWorkspaceId, localCommitGraphRepoPath);
-                repaired = true;
-            }
             const graph = await agentClient.listLocalCommitGraph(selectedWorkspaceId);
             recordPerfEvent('query.local-commit-graph.read', {
                 elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
                 workspaceId: selectedWorkspaceId,
                 repoPathPresent: Boolean(localCommitGraphRepoPath),
-                repaired,
+                repaired: false,
                 commitCount: graph.commits.length,
                 parentCount: graph.commitParents.length,
                 observationCount: graph.commitObservations.length,
@@ -1124,6 +1133,18 @@ function GraphViewInternal({
         gcTime: 5 * 60 * 1000,
     });
     const localCommitGraph = localCommitGraphQuery.data;
+    // Reconcile the local commit graph (parent-closure backfill) in the
+    // background. Keyed on dataUpdatedAt so it runs after the initial read and
+    // after every refresh trigger (workspace switch, agent finalize, manual
+    // refresh). The scheduler single-flights and only forces a re-read when it
+    // actually imported commits, so no-op passes cost no React work.
+    const localCommitGraphDataUpdatedAt = localCommitGraphQuery.dataUpdatedAt;
+    useEffect(() => {
+        if (!selectedWorkspaceId || !localCommitGraphRepoPath) return;
+        ensureLocalCommitGraphRepaired(queryClient, selectedWorkspaceId, localCommitGraphRepoPath, {
+            reason: 'graph-commit-reconcile',
+        });
+    }, [queryClient, selectedWorkspaceId, localCommitGraphRepoPath, localCommitGraphDataUpdatedAt]);
     const snapshotCommits = useMemo(() => {
         if (agentClient.hasRuntime()) {
             return (localCommitGraph?.commits ?? []).map((commit) => mapLocalCommitToCommitEntity(commit, selectedWorkspaceId ?? ''));
@@ -3741,6 +3762,52 @@ function GraphViewInternal({
         threadGraphScope.activeThreadRootId,
     ]);
 
+    const handleLeafNodeFocus = useCallback((leafNodeId: string) => {
+        const targetThreadRootId = resolveLeafNodeFocusThreadRootId({
+            leafNodeId,
+            focusedThreadRootLookup,
+        });
+        const activeThreadRootId = threadGraphScope.activeThreadRootId;
+        const shouldSwitchThread = Boolean(targetThreadRootId && targetThreadRootId !== activeThreadRootId);
+
+        if (shouldSwitchThread && targetThreadRootId) {
+            const switchStartedAt = performance.now();
+            threadSwitchStartedAtRef.current = switchStartedAt;
+            threadSwitchTargetRef.current = targetThreadRootId;
+            recordPerfEvent('graph.thread-switch.start', {
+                fromThreadRootId: activeThreadRootId,
+                toThreadRootId: targetThreadRootId,
+                reason: 'leaf-node-focus',
+            }, { source: 'GraphView' });
+            saveViewportForActiveThread();
+            if (activeThreadRootId) {
+                markThreadVisited(activeThreadRootId);
+            }
+            setActiveThreadRootId(targetThreadRootId);
+            markThreadVisited(targetThreadRootId);
+            setViewMode('branch');
+            nodeSelection.clearSelection();
+        }
+
+        handleFocus(leafNodeId, {
+            pointerDownAt: null,
+            clickAt: performance.now(),
+            metadata: {
+                via: 'leaf-node-dropdown',
+                action: 'focus-leaf-node',
+                targetThreadRootId,
+                switchedThread: shouldSwitchThread,
+            },
+        });
+    }, [
+        focusedThreadRootLookup,
+        handleFocus,
+        markThreadVisited,
+        nodeSelection.clearSelection,
+        saveViewportForActiveThread,
+        threadGraphScope.activeThreadRootId,
+    ]);
+
     const handleThreadDoneChange = useCallback((threadRootId: string, done: boolean) => {
         const nextDoneThreadRootIds = new Set(doneThreadRootIds);
         if (done) {
@@ -6102,7 +6169,7 @@ function GraphViewInternal({
                         onDoneThreadsCollapsedChange={handleDoneThreadsCollapsedChange}
                         leafNodes={leafNodeNavigationItems}
                         allLeafNodes={allLeafNodeNavigationItems}
-                        onLeafNodeFocus={handleFocus}
+                        onLeafNodeFocus={handleLeafNodeFocus}
                         mergeSourceCount={mergeSourceCount}
                         mergeRunIndicator={mergeRunIndicator}
                         mergeAttentionNonce={mergeAttentionNonce}
@@ -6435,6 +6502,7 @@ function GraphViewInternal({
                                 openBulkDeleteDialog(messageIds);
                             }}
                             onAddCommitsToMergePanel={handleAddCommitsToMergePanel}
+                            onMarkThreadDone={(threadRootId) => handleThreadDoneChange(threadRootId, true)}
                         />
                     </div>
                 )}

@@ -29,6 +29,12 @@ const AppHoverQuickReplyActions = lazy(() => import('./HoverQuickReplyActions').
   default: module.HoverQuickReplyActions,
 })));
 
+const HOVER_PREVIEW_BOTTOM_PIN_THRESHOLD_PX = 32;
+
+const isNearHoverPreviewBottom = (element: HTMLElement) => (
+  element.scrollHeight - element.scrollTop - element.clientHeight <= HOVER_PREVIEW_BOTTOM_PIN_THRESHOLD_PX
+);
+
 interface NodeHoverCardContentProps {
   entity?: ProjectedNodeEntity;
   projection?: WorkspaceProjection;
@@ -48,6 +54,7 @@ export function NodeHoverCardContent({
   const resolvedSurfaceMode = surfaceMode ?? surface.surfaceMode;
   const resolvedCapabilities = capabilities ?? surface.capabilities;
   const previewScrollRef = useRef<HTMLDivElement | null>(null);
+  const previewPinnedToBottomRef = useRef(true);
   const replyParentId = entity?.focusMessageId || entity?.messageId || null;
   const replyRunStatus = useRunStatusStore((state) => (
     replyParentId ? state.byNodeId[replyParentId]?.status ?? null : null
@@ -63,6 +70,7 @@ export function NodeHoverCardContent({
     let settledFrameId: number | null = null;
     const scrollToBottom = () => {
       scrollArea.scrollTop = scrollArea.scrollHeight;
+      previewPinnedToBottomRef.current = true;
     };
 
     scrollToBottom();
@@ -75,6 +83,52 @@ export function NodeHoverCardContent({
       window.cancelAnimationFrame(frameId);
       if (settledFrameId !== null) {
         window.cancelAnimationFrame(settledFrameId);
+      }
+    };
+  }, [replyParentId, shouldDefaultScrollPreviewToBottom]);
+
+  useLayoutEffect(() => {
+    if (!shouldDefaultScrollPreviewToBottom) return;
+    const scrollArea = previewScrollRef.current;
+    if (!scrollArea) return;
+
+    let frameId: number | null = null;
+    const scrollToBottomIfPinned = () => {
+      if (!previewPinnedToBottomRef.current) return;
+      scrollArea.scrollTop = scrollArea.scrollHeight;
+    };
+    const scheduleScrollToBottomIfPinned = () => {
+      if (frameId !== null) return;
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        scrollToBottomIfPinned();
+      });
+    };
+
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(scheduleScrollToBottomIfPinned);
+    resizeObserver?.observe(scrollArea);
+    Array.from(scrollArea.children).forEach((child) => {
+      resizeObserver?.observe(child);
+    });
+
+    const mutationObserver = typeof MutationObserver === 'undefined'
+      ? null
+      : new MutationObserver(scheduleScrollToBottomIfPinned);
+    mutationObserver?.observe(scrollArea, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+
+    scheduleScrollToBottomIfPinned();
+
+    return () => {
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
       }
     };
   }, [replyParentId, shouldDefaultScrollPreviewToBottom]);
@@ -93,6 +147,11 @@ export function NodeHoverCardContent({
         className="max-h-[calc(min(70vh,720px)-1.5rem)] w-full overflow-y-auto overscroll-contain"
         onWheelCapture={(event) => {
           event.stopPropagation();
+        }}
+        onScroll={() => {
+          const scrollArea = previewScrollRef.current;
+          if (!scrollArea || !shouldDefaultScrollPreviewToBottom) return;
+          previewPinnedToBottomRef.current = isNearHoverPreviewBottom(scrollArea);
         }}
       >
         <div className="min-w-0">

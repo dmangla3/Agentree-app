@@ -37,7 +37,7 @@ describe('user flow catalog persistence boundary', () => {
     }));
     expect(catalog[0].issues).toContainEqual({
       path: 'nodes.0.use',
-      message: 'Reusable node "core.unknown@1" is not registered.',
+      message: expect.stringContaining('Reusable node "core.unknown@1" is not registered. Use a known registry id or define "core.unknown@1" under top-level registry in this YAML.'),
     });
     expect(getRunnableFlowDescriptors(catalog)).toEqual([]);
   });

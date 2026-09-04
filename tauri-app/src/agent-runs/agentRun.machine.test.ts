@@ -382,9 +382,9 @@ describe('agentRun.machine', () => {
     ]);
 
     expect(snapshot.content).toBe('hello world');
-    expect(snapshot.timeline).toHaveLength(2);
-    expect(snapshot.timeline[0]).toMatchObject({ type: 'message', content: 'hello', timestamp: 10 });
-    expect(snapshot.executionData.timeline).toHaveLength(2);
+    expect(snapshot.timeline).toHaveLength(1);
+    expect(snapshot.timeline[0]).toMatchObject({ type: 'message', content: 'hello world', timestamp: 20 });
+    expect(snapshot.executionData.timeline).toHaveLength(1);
   });
 
   it('ignores stale content events after a terminal snapshot', () => {
@@ -424,7 +424,8 @@ describe('agentRun.machine', () => {
     expect(snapshot.phase).toBe('terminal');
     expect(snapshot.content).toBe('final answer');
     expect(snapshot.lastStreamSeq).toBe(2);
-    expect(snapshot.timeline).toHaveLength(2);
+    expect(snapshot.timeline).toHaveLength(1);
+    expect(snapshot.timeline[0]).toMatchObject({ type: 'message', content: 'final answer' });
   });
 
   it('keeps the actor-owned structured timeline through terminal finalization', () => {

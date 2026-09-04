@@ -263,6 +263,31 @@ describe('agentRun projection integration', () => {
     agentRunManager.unwatch('assistant-1', 'hover');
   });
 
+  it('projects in-place timeline updates for watched hover previews', () => {
+    agentRunManager.seed(message({ status: 'running', content: '' }), 'run-1');
+    agentRunManager.watch('assistant-1', 'hover');
+
+    agentRunManager.dispatch('assistant-1', {
+      type: 'timeline_event',
+      event: { type: 'thinking', content: 'Reading ', isDelta: true, timestamp: 1 },
+    });
+    expect(
+      (useAgentRunProjectionStore.getState().projectionsById['assistant-1']?.execution_data as any)?.timeline?.[0]?.content,
+    ).toBe('Reading ');
+
+    agentRunManager.dispatch('assistant-1', {
+      type: 'timeline_event',
+      event: { type: 'thinking', content: 'files', isDelta: true, timestamp: 2 },
+    });
+
+    expect(agentRunManager.snapshot('assistant-1')?.timeline).toHaveLength(1);
+    expect(
+      (useAgentRunProjectionStore.getState().projectionsById['assistant-1']?.execution_data as any)?.timeline?.[0]?.content,
+    ).toBe('Reading files');
+
+    agentRunManager.unwatch('assistant-1', 'hover');
+  });
+
   it('notifies when projection watchers transition between zero and nonzero', () => {
     const events: Array<{ nodeId: string; hasWatchers: boolean; reasons: string[] }> = [];
     const unsubscribe = agentRunManager.subscribeProjectionWatchers((event) => {

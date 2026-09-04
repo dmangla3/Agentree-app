@@ -104,6 +104,7 @@ vi.mock('./GraphDerivedCommitGroupNode', () => ({
         placement: 'commit_lineage',
         producedByNodeId: null,
         visualOwnerNodeId: null,
+        ownerThreadRootId: null,
         parentShas: [],
         parentRows: [],
         isMerge: false,
@@ -112,7 +113,7 @@ vi.mock('./GraphDerivedCommitGroupNode', () => ({
         secondaryParentShas: [],
         observations: [],
         sortTs: 0,
-        owningThreadRootIds: [],
+        representedThreadRootIds: [],
         commit: {
           sha: 'abc123456789',
           workspace_id: 'workspace-1',
@@ -182,6 +183,7 @@ const makeCommit = (): ProjectedCommitEntity => ({
   placement: 'commit_lineage',
   producedByNodeId: null,
   visualOwnerNodeId: null,
+  ownerThreadRootId: null,
   parentShas: [],
   parentRows: [],
   isMerge: false,
@@ -190,7 +192,7 @@ const makeCommit = (): ProjectedCommitEntity => ({
   secondaryParentShas: [],
   observations: [],
   sortTs: 0,
-  owningThreadRootIds: [],
+  representedThreadRootIds: [],
   commit: {
     sha: 'abc123456789',
     workspace_id: 'workspace-1',

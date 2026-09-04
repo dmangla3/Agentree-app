@@ -9,7 +9,7 @@ import { ROLE_COLORS } from '../../../lib/visualTokens';
 import { getAgentColorClass } from '../../../lib/graphUtils';
 import { useAgents } from '../../../hooks/useAgents';
 import type { AgentStatus } from '@shared/agentStatus';
-import { buildTimelineRows, getToolSummary, summarizeFileChangesPayload, ToolPayloadDisplay, type TimelineRow } from '../../ExecutionTimeline';
+import { buildTimelineRows, getToolSummary, isEmptyToolPayload, summarizeFileChangesPayload, ToolPayloadDisplay, type TimelineRow } from '../../ExecutionTimeline';
 import { useUpdateTags } from '../../../hooks/useMessages';
 import { mergeLiveMessage } from '../../../hooks/useLiveMessages';
 import { Badge } from '../../../../@/components/ui/badge';
@@ -288,7 +288,7 @@ function InterleavedToolCard({
   allowExpansion?: boolean;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const summary = getToolSummary(row.toolName, row.toolInput) || row.toolName;
+  const summary = getToolSummary(row.toolName, row.toolInput) || getToolSummary(row.toolName, row.toolOutput) || row.toolName;
   const fileChangesPayload = summarizeFileChangesPayload(row.toolInput)
     ? row.toolInput
     : summarizeFileChangesPayload(row.toolOutput)
@@ -350,7 +350,7 @@ function InterleavedToolCard({
 
       {allowExpansion && isExpanded ? (
         <div className="mt-1 ml-6 min-w-0 max-w-full space-y-2">
-          {row.toolInput !== undefined ? (
+          {!isEmptyToolPayload(row.toolInput) ? (
             <ToolPayloadDisplay payload={row.toolInput} className="max-h-40 min-w-0 max-w-full" variant="raw" />
           ) : null}
           {row.toolOutput !== undefined ? (

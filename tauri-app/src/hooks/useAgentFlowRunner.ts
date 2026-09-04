@@ -15,6 +15,8 @@ import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { localNodeKeys, parseLocalNode, type LocalNodeMessage } from './useLocalNodes';
 import { useAgentNodeLauncher, type UseAgentNodeLauncherOptions } from './useAgentNodeLauncher';
 
+const FLOW_ASSISTANT_NODE_WALL_CLOCK_TIMEOUT_MS = 60 * 60 * 1000;
+
 export interface UseAgentFlowRunnerInput extends UseAgentNodeLauncherOptions {
   workspaceId: string | null;
   selectedAgentId: string | null;
@@ -176,7 +178,7 @@ async function waitForAssistantNodeCompletion(input: {
   const startedAt = Date.now();
   let terminalObservedAt: number | null = null;
   let latestTerminalMessage: Message | null = null;
-  while (Date.now() - startedAt < 30 * 60 * 1000) {
+  while (Date.now() - startedAt < FLOW_ASSISTANT_NODE_WALL_CLOCK_TIMEOUT_MS) {
     throwIfFlowCancelled(input.signal);
     const message = readAssistantNode(input.assistantNodeId, input.workspaceId, input.queryClient);
     if (isTerminalAgentStatus(message?.status)) {

@@ -288,9 +288,7 @@ pub fn install_archive_from_reader(
         .map_err(|error| format!("Could not reopen download spool: {}", error))?;
     let decoder = flate2::read::GzDecoder::new(spool_file);
     let mut tar_archive = tar::Archive::new(decoder);
-    tar_archive
-        .unpack(staging.path())
-        .map_err(|error| format!("Could not unpack runtime archive: {}", error))?;
+    unpack_archive_skipping_apple_metadata(&mut tar_archive, staging.path())?;
 
     let staged = staging.keep();
     // The marker travels inside the staged tree so the swap below is the
@@ -352,11 +350,7 @@ pub fn ensure_component_best_effort(app: &AppHandle, component: &str) {
         return;
     }
     if let Err(error) = ensure_component(app, component) {
-        crate::app_log!(
-            "[MANAGED_RUNTIME] {} install failed: {}",
-            component,
-            error
-        );
+        crate::app_log!("[MANAGED_RUNTIME] {} install failed: {}", component, error);
     }
 }
 
@@ -470,6 +464,43 @@ pub fn claude_sdk_node_modules(install_dir: &Path) -> PathBuf {
     install_dir.join("node_modules")
 }
 
+/// True for macOS AppleDouble sidecar files (`._name`) and `.DS_Store`. Runtime
+/// tarballs packed on macOS smuggle these in; on Linux they are dead weight and
+/// a footgun for any code that globs a `bin/` dir (a stray `._node` must never be
+/// mistaken for the real `node` binary).
+fn is_apple_metadata_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy();
+        name.starts_with("._") || name == ".DS_Store"
+    })
+}
+
+/// Unpack a tar archive into `dest`, skipping macOS AppleDouble / `.DS_Store`
+/// entries. Behaves like `Archive::unpack` for everything else.
+fn unpack_archive_skipping_apple_metadata<R: Read>(
+    archive: &mut tar::Archive<R>,
+    dest: &Path,
+) -> Result<(), String> {
+    let entries = archive
+        .entries()
+        .map_err(|error| format!("Could not read runtime archive entries: {}", error))?;
+    for entry in entries {
+        let mut entry =
+            entry.map_err(|error| format!("Could not read runtime archive entry: {}", error))?;
+        let path = entry
+            .path()
+            .map_err(|error| format!("Invalid path in runtime archive: {}", error))?
+            .into_owned();
+        if is_apple_metadata_path(&path) {
+            continue;
+        }
+        entry
+            .unpack_in(dest)
+            .map_err(|error| format!("Could not unpack runtime archive: {}", error))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,6 +572,27 @@ mod tests {
     }
 
     #[test]
+    fn install_archive_skips_apple_double_files() {
+        let archive = build_archive(&[
+            ("bin/node", b"#!real".as_slice()),
+            ("bin/._node", b"applemeta".as_slice()),
+            ("._codex-resources", b"applemeta".as_slice()),
+            (".DS_Store", b"finder".as_slice()),
+        ]);
+        let checksum = sha256_hex(&archive);
+        let root = tempfile::tempdir().unwrap();
+        let install_dir = root.path().join("node").join("22.21.1");
+
+        install_archive_from_reader(archive.as_slice(), &checksum, &install_dir, &|_| {})
+            .expect("install should succeed");
+
+        assert!(install_dir.join("bin").join("node").is_file());
+        assert!(!install_dir.join("bin").join("._node").exists());
+        assert!(!install_dir.join("._codex-resources").exists());
+        assert!(!install_dir.join(".DS_Store").exists());
+    }
+
+    #[test]
     fn install_archive_replaces_existing_install_without_leaving_backups() {
         let first = build_archive(&[("bin/codex", b"old".as_slice())]);
         let second = build_archive(&[("bin/codex", b"new".as_slice())]);
@@ -549,8 +601,13 @@ mod tests {
 
         install_archive_from_reader(first.as_slice(), &sha256_hex(&first), &install_dir, &|_| {})
             .expect("first install should succeed");
-        install_archive_from_reader(second.as_slice(), &sha256_hex(&second), &install_dir, &|_| {})
-            .expect("reinstall should succeed");
+        install_archive_from_reader(
+            second.as_slice(),
+            &sha256_hex(&second),
+            &install_dir,
+            &|_| {},
+        )
+        .expect("reinstall should succeed");
 
         assert_eq!(
             std::fs::read(install_dir.join("bin").join("codex")).unwrap(),
@@ -571,13 +628,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let install_dir = root.path().join("node").join("22.21.1");
 
-        let error = install_archive_from_reader(
-            archive.as_slice(),
-            "deadbeef",
-            &install_dir,
-            &|_| {},
-        )
-        .expect_err("checksum mismatch must fail");
+        let error =
+            install_archive_from_reader(archive.as_slice(), "deadbeef", &install_dir, &|_| {})
+                .expect_err("checksum mismatch must fail");
 
         assert!(error.contains("Checksum mismatch"));
         assert!(!install_dir.exists());

@@ -64,12 +64,9 @@ pub fn runtime_script_path(app: &AppHandle, script_name: &str) -> Result<PathBuf
 mod tests {
     use super::RUNTIME_SCRIPTS;
 
-    /// Bundled resources must list exactly the runtime scripts — globs would
-    /// ship test files to users, and a missing entry breaks packaged builds.
-    #[test]
-    fn bundle_resources_match_runtime_scripts() {
-        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
-            .expect("tauri.conf.json should parse");
+    fn assert_bundle_resources_match_runtime_scripts(config_source: &str) {
+        let config: serde_json::Value =
+            serde_json::from_str(config_source).expect("Tauri config should parse");
         let resources = config["bundle"]["resources"]
             .as_array()
             .expect("bundle.resources should be an array")
@@ -81,5 +78,13 @@ mod tests {
             .map(|script| format!("scripts/{}", script))
             .collect::<Vec<_>>();
         assert_eq!(resources, expected);
+    }
+
+    /// Bundled resources must list exactly the runtime scripts — globs would
+    /// ship test files to users, and a missing entry breaks packaged builds.
+    #[test]
+    fn bundle_resources_match_runtime_scripts() {
+        assert_bundle_resources_match_runtime_scripts(include_str!("../tauri.conf.json"));
+        assert_bundle_resources_match_runtime_scripts(include_str!("../tauri.dev.conf.json"));
     }
 }

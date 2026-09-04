@@ -132,13 +132,19 @@ function appendParallel(
   statement: Extract<FlowStatement, { parallel: unknown }>,
   context: MermaidBuildContext
 ): EdgeTail[] {
-  const branchCount = resolveParallelBranchCount(definition, statement.parallel.count);
+  const parallel = statement.parallel;
+  const branchLabels = 'branches' in parallel
+    ? parallel.branches.map((branch, index) => `${branch.call} ${index + 1}`)
+    : Array.from(
+        { length: resolveParallelBranchCount(definition, parallel.count) },
+        (_, index) => `${parallel.call} ${index + 1}`,
+      );
   const subgraphId = `parallel_${nextId(context)}`;
   context.lines.push(`  subgraph ${subgraphId}["parallel"]`);
   context.lines.push('    direction TB');
-  const branchIds = Array.from({ length: branchCount }, (_, index) => {
+  const branchIds = branchLabels.map((label, index) => {
     const branchId = `${subgraphId}_branch_${index + 1}`;
-    context.lines.push(`    ${branchId}["${escapeMermaidLabel(`${statement.parallel.call} ${index + 1}`)}"]`);
+    context.lines.push(`    ${branchId}["${escapeMermaidLabel(label)}"]`);
     context.lines.push(`    class ${branchId} agentStep;`);
     return branchId;
   });

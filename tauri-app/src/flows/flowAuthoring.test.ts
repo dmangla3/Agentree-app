@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { authorFlowFromNaturalLanguage, type FlowAuthoringAgent } from './flowAuthoring';
-import { buildFlowAuthoringPrompt } from './flowAuthoringPrompt';
+import { buildFlowAuthoringPrompt, buildFlowAuthoringRepairPrompt } from './flowAuthoringPrompt';
 
 const validYaml = `flow:
   id: single_implementation
@@ -27,24 +27,47 @@ describe('flow authoring', () => {
     expect(prompt).toContain('core.implementer@1');
     expect(prompt).toContain('add it under top-level "registry:"');
     expect(prompt).toContain('Prefer nodes that use the registry');
-    expect(prompt).toContain('Set requiresFinalizedCommit: true only for implementation/fixer/synthesizer nodes');
-    expect(prompt).toContain('Leave requiresFinalizedCommit false or omit it for planning, review, analysis');
+    expect(prompt).toContain('Set requiresFinalizedCommit: true for any node that must save a file-backed artifact');
+    expect(prompt).toContain('Planning, documentation, analysis, testing, synthesis, and fixing nodes may require commits');
+    expect(prompt).toContain('Leave requiresFinalizedCommit false or omit it only for review, routing, handoff, decision, or prose-only nodes');
     expect(prompt).toContain('Prefer core.handoff@1 as the final step');
     expect(prompt).toContain('ask clarifying questions only when actually required');
     expect(prompt).toContain('Prefer core.synthesizer@1 for combining candidate commits across implementation, planning, documentation, tests, and analysis');
     expect(prompt).toContain('Use typed params object form');
     expect(prompt).toContain('request: string');
     expect(prompt).toContain('commit[] -> commit[]');
+    expect(prompt).toContain('If downstream logic reads a field such as node.verdict');
     expect(prompt).toContain('requiresFinalizedCommit: false');
     expect(prompt).toContain('Known working flow patterns to adapt instead of inventing from scratch');
     expect(prompt).toContain('parallel_review_until_satisfied');
     expect(prompt).toContain('if the label/request says "synthesis", include a synthesizer call');
     expect(prompt).toContain('candidate_commits: candidates.commit');
     expect(prompt).toContain('planners.commit, never planners.commits');
+    expect(prompt).toContain('Never compare an array projection directly to a scalar');
+    expect(prompt).toContain('all(reviewers.verdict == pass)');
+    expect(prompt).toContain('Use count/call parallel only for repeated copies');
+    expect(prompt).toContain('parallel.branches is for distinct branch args');
     expect(prompt).toContain('Every registry addition must be used by at least one node entry with "use:"');
-    expect(prompt).toContain('When a fixer produces a new commit, update the current commit variable');
+    expect(prompt).toContain('When an iteration node produces a revised artifact commit');
+    expect(prompt).toContain('Prompt wording must match the requested artifact');
     expect(prompt).toContain('core.handoff@1');
     expect(prompt).toContain('Run two implementers and review them.');
+  });
+
+  it('builds repair prompts with DSL and registry context', () => {
+    const prompt = buildFlowAuthoringRepairPrompt({
+      request: 'Create a planning review flow.',
+      previousYaml: 'flow:\n  id: broken',
+      issues: ['nodes.0.use: Reusable node "core.planner@1" is not registered.'],
+    });
+
+    expect(prompt).toContain('DSL contract');
+    expect(prompt).toContain('Registry capabilities');
+    expect(prompt).toContain('Every use: id must appear in Registry capabilities');
+    expect(prompt).toContain('Parallel set values are arrays; use all(array.field == literal)');
+    expect(prompt).toContain('Use parallel.branches for distinct branch args');
+    expect(prompt).toContain('core.implementer@1');
+    expect(prompt).toContain('core.planner@1');
   });
 
   it('returns compiled review artifacts for valid agent YAML', async () => {

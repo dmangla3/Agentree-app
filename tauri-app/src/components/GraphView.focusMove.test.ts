@@ -12,6 +12,7 @@ import {
   resolveThreadDeletePlan,
   resolveThreadScopedDefaultFocus,
   resolveThreadDropdownSelection,
+  resolveLeafNodeFocusThreadRootId,
   resolveReactFlowNodeClickFocusMessageId,
   resolveReactFlowNodeClickFocusTarget,
   shouldDispatchGraphFocusSynchronously,
@@ -532,6 +533,27 @@ describe('resolveThreadScopedDefaultFocus', () => {
       messageId: 'assistant-a',
       reason: 'default-workspace-focus',
     });
+  });
+});
+
+describe('resolveLeafNodeFocusThreadRootId', () => {
+  it('returns the owning thread for leaf nodes across the full graph', () => {
+    const lookup = new Map([
+      ['current-leaf', 'thread-current'],
+      ['other-leaf', 'thread-other'],
+    ]);
+
+    expect(resolveLeafNodeFocusThreadRootId({
+      leafNodeId: 'other-leaf',
+      focusedThreadRootLookup: lookup,
+    })).toBe('thread-other');
+  });
+
+  it('returns null when the leaf node is not in the thread lookup', () => {
+    expect(resolveLeafNodeFocusThreadRootId({
+      leafNodeId: 'missing-leaf',
+      focusedThreadRootLookup: new Map(),
+    })).toBeNull();
   });
 });
 

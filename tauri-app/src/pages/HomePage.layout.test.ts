@@ -60,6 +60,14 @@ describe('HomePage graph/chat split layout', () => {
     expect(source).not.toContain('WorkspaceSelectionDialog');
   });
 
+  it('keeps the workspace navigator thread focus preference across primary view switches', () => {
+    const source = readHomePageSource();
+
+    expect(source).toContain('const [workspaceNavigatorThreadsFocused, setWorkspaceNavigatorThreadsFocused] = useState(false)');
+    expect(source).toContain('threadsFocused={workspaceNavigatorThreadsFocused}');
+    expect(source).toContain('onThreadsFocusedChange={setWorkspaceNavigatorThreadsFocused}');
+  });
+
   it('keeps the app header as persistent workspace chrome across primary views', () => {
     const source = readHomePageSource();
 
@@ -138,14 +146,15 @@ describe('HomePage graph/chat split layout', () => {
     const source = readHomePageSource();
 
     expect(source).toContain('{!isChatCollapsed && (');
-    expect(source).toContain('<ChatInterface key={selectedWorkspaceId} />');
+    expect(source).toContain('<ChatInterface');
+    expect(source).toContain('onMarkThreadDone={(threadRootId) => selectedThreadNavigationModel?.onThreadDoneChange(threadRootId, true)}');
     expect(source).not.toContain('<ChatPanelHeader');
     expect(source).not.toContain('<MergePanel');
   });
 
   it('does not keep ChatInterface mounted behind a collapsed chat panel', () => {
     const source = readHomePageSource();
-    const chatInterfaceIndex = source.indexOf('<ChatInterface key={selectedWorkspaceId} />');
+    const chatInterfaceIndex = source.indexOf('<ChatInterface');
     const collapsedGuardIndex = source.lastIndexOf('{!isChatCollapsed && (', chatInterfaceIndex);
 
     expect(chatInterfaceIndex).toBeGreaterThan(0);

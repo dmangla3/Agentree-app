@@ -75,12 +75,24 @@ export interface FlowCallStatement {
 
 export interface FlowParallelStatement {
   set: string;
-  parallel: {
-    count: string | number;
-    call: string;
-    args?: Record<string, string>;
-    parent?: string;
-  };
+  parallel: FlowParallelDefinition;
+}
+
+export type FlowParallelDefinition =
+  | {
+      count: string | number;
+      call: string;
+      args?: Record<string, string>;
+      parent?: string;
+    }
+  | {
+      branches: FlowParallelBranch[];
+    };
+
+export interface FlowParallelBranch {
+  call: string;
+  args?: Record<string, string>;
+  parent?: string;
 }
 
 export interface FlowSetStatement {

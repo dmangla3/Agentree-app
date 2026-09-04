@@ -257,11 +257,6 @@ export const GraphAssistantNode = memo(({
             <div className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-500 dark:text-zinc-400">
               {assistantIdentityLabel}
             </div>
-            {entity.shortLabel && (
-              <div className="truncate text-[10px] font-medium text-zinc-500 dark:text-zinc-500">
-                {entity.shortLabel}
-              </div>
-            )}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">

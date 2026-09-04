@@ -4,7 +4,9 @@ import { agentClient, type LocalInsightCandidateRecord, type LocalInsightRecord 
 import { getAccessToken } from '../lib/authSession';
 import { appendBackgroundAttentionAuditEvent } from '../lib/backgroundAttentionAudit';
 import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
+import { isLoginProfileActive, type LoginProfileSummary } from '../lib/loginProfiles';
 import { INSIGHT_GENERATOR_PROMPT, INSIGHT_VALIDATOR_PROMPT } from '../lib/prompts';
+import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { useWorkspaceStore, type Insight, type Message, type Workspace } from '../stores/workspaceStore';
 import type { Agent } from './useAgents';
 
@@ -144,6 +146,16 @@ const chooseInsightAgent = (agents: Agent[], parent: Message | null): Agent | nu
     if (sameProvider) return sameProvider;
   }
   return agents.find((agent) => agent.type === 'codex') ?? agents[0] ?? null;
+};
+
+const chooseReadyLoginProfile = (
+  profiles: LoginProfileSummary[],
+  provider: string,
+): LoginProfileSummary | null => {
+  const compatibleReady = profiles.filter((profile) => (
+    profile.provider === provider && isLoginProfileActive(profile)
+  ));
+  return compatibleReady.find((profile) => profile.isDefault) ?? compatibleReady[0] ?? null;
 };
 
 const isCompletedAssistant = (message: Message): boolean => {
@@ -316,6 +328,7 @@ export function useInsights(
   const setInsightCandidates = useWorkspaceStore((state) => state.setInsightCandidates);
   const dismissInsightInStore = useWorkspaceStore((state) => state.dismissInsight);
   const setLoadingInsights = useWorkspaceStore((state) => state.setLoadingInsights);
+  const loginProfiles = useLoginProfilesStore((state) => state.profiles);
 
   const queuedParentIdsRef = useRef<string[]>([]);
   const queuedParentIdSetRef = useRef<Set<string>>(new Set());
@@ -385,6 +398,7 @@ export function useInsights(
   const startHiddenInsightRun = useCallback(async (input: {
     parent: Message;
     agent: Agent;
+    loginProfile: LoginProfileSummary;
     repoPath: string;
     parentCommit: string;
     authToken: string;
@@ -408,6 +422,11 @@ export function useInsights(
       insight_trigger_reason: 'light_assistant_completed',
       provider: input.agent.type,
       provider_model: input.agent.model_config?.model ?? null,
+      login_profile_id: input.loginProfile.id,
+      login_profile_name: input.loginProfile.displayName,
+      login_profile_provider: input.loginProfile.provider,
+      login_profile_auth_type: input.loginProfile.authType,
+      login_profile_redacted_hint: input.loginProfile.redactedHint ?? null,
       base_commit_sha: input.parentCommit,
     };
     const userMessage: Message = {
@@ -460,7 +479,7 @@ export function useInsights(
       args: buildAgentArgs(input.agent, input.prompt),
       authToken: input.authToken,
       traceId: null,
-      loginProfileId: null,
+      loginProfileId: input.loginProfile.id,
       runContext: {
         runId,
         executionData: assistantMessage.execution_data,
@@ -520,8 +539,9 @@ export function useInsights(
               const agent = chooseInsightAgent(agents, parent);
               const repoPath = workspace.git_repo_path ?? workspace.folderPath ?? null;
               const parentCommit = readCommitForInsightRun(parent, workspace);
+              const loginProfile = agent ? chooseReadyLoginProfile(loginProfiles, agent.type) : null;
               const authToken = await getAccessToken();
-              if (!agent || !repoPath || !parentCommit || !authToken || !workspaceId) {
+              if (!agent || !loginProfile || !repoPath || !parentCommit || !authToken || !workspaceId) {
                 recordBackgroundAttentionAudit({
                   workspaceId,
                   outcome: 'failed',
@@ -529,9 +549,10 @@ export function useInsights(
                   triggerClass: 'light',
                   parentNodeId,
                   runNodeId,
-                  message: 'Validator could not start because agent, repo, commit, auth, or workspace was missing.',
+                  message: 'Validator could not start because agent, login profile, repo, commit, auth, or workspace was missing.',
                   metadata: {
                     hasAgent: Boolean(agent),
+                    hasLoginProfile: Boolean(loginProfile),
                     hasRepoPath: Boolean(repoPath),
                     hasParentCommit: Boolean(parentCommit),
                     hasAuthToken: Boolean(authToken),
@@ -562,6 +583,7 @@ ${JSON.stringify(proposedCandidates, null, 2)}`;
                 const validatorNodeId = await startHiddenInsightRun({
                   parent,
                   agent,
+                  loginProfile,
                   repoPath,
                   parentCommit,
                   authToken,
@@ -672,7 +694,7 @@ ${JSON.stringify(proposedCandidates, null, 2)}`;
         });
     };
     window.setTimeout(tick, 3000);
-  }, [agents, loadLocalInsights, messageById, messages, setLoadingInsights, startHiddenInsightRun, workspace, workspaceId]);
+  }, [agents, loadLocalInsights, loginProfiles, messageById, messages, setLoadingInsights, startHiddenInsightRun, workspace, workspaceId]);
 
   const startInsightRunForParent = useCallback(async (parent: Message) => {
     if (!workspaceId || !agentClient.hasRuntime() || !workspace) {
@@ -711,6 +733,7 @@ ${JSON.stringify(proposedCandidates, null, 2)}`;
     const agent = chooseInsightAgent(agents, parent);
     const repoPath = workspace.git_repo_path ?? workspace.folderPath ?? null;
     const parentCommit = readCommitForInsightRun(parent, workspace);
+    const loginProfile = agent ? chooseReadyLoginProfile(loginProfiles, agent.type) : null;
     if (!agent || !repoPath || !parentCommit) {
       console.info('[useInsights] Skipping local insight generation:', {
         reason: 'missing-inputs',
@@ -731,6 +754,26 @@ ${JSON.stringify(proposedCandidates, null, 2)}`;
           hasAgent: Boolean(agent),
           hasRepoPath: Boolean(repoPath),
           hasParentCommit: Boolean(parentCommit),
+        },
+      });
+      return;
+    }
+    if (!loginProfile) {
+      console.info('[useInsights] Skipping local insight generation:', {
+        reason: 'missing-ready-login-profile',
+        workspaceId,
+        parentNodeId: parent.id,
+        agentType: agent.type,
+      });
+      recordBackgroundAttentionAudit({
+        workspaceId,
+        outcome: 'skipped',
+        reason: 'missing_ready_login_profile',
+        triggerClass: 'light',
+        parentNodeId: parent.id,
+        message: 'Skipped because the selected local agent has no ready login profile.',
+        metadata: {
+          agentType: agent.type,
         },
       });
       return;
@@ -788,6 +831,7 @@ ${branchContext(messages, parent)}`;
     const generatorNodeId = await startHiddenInsightRun({
       parent,
       agent,
+      loginProfile,
       repoPath,
       parentCommit,
       authToken,
@@ -809,7 +853,7 @@ ${branchContext(messages, parent)}`;
     });
     rememberProcessedInsightParentNodeId(workspaceId, parent.id);
     watchInsightRun(generatorNodeId);
-  }, [agents, messages, startHiddenInsightRun, watchInsightRun, workspace, workspaceId]);
+  }, [agents, loginProfiles, messages, startHiddenInsightRun, watchInsightRun, workspace, workspaceId]);
 
   useEffect(() => {
     processInsightQueueRef.current = () => {

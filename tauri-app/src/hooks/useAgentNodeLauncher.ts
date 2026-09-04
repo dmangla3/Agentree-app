@@ -62,6 +62,7 @@ export function createFlowNodeMessages(input: CreateFlowNodeMessagesInput): Flow
   const executionMeta = {
     context_parent_node_id: input.contextParentNodeId,
     context_base_node_id: input.baseNodeId,
+    agent_id: input.agentId,
     agentree_context_available_chars: contextTextChars,
     agentree_context_available_estimated_tokens: Math.ceil(contextTextChars / 4),
     agentree_context_manifest_version: contextManifest?.version ?? null,
@@ -203,10 +204,12 @@ export function useAgentNodeLauncher(options: UseAgentNodeLauncherOptions = {}) 
       ...(pair.assistantNode.execution_data ?? {}),
       current_run_id: runId,
       workspace_id: input.workspaceId,
+      agent_id: input.agentId,
       parentId: pair.assistantNode.parentId,
       started_at: new Date().toISOString(),
       meta: {
         ...((pair.assistantNode.execution_data?.meta ?? {}) as Record<string, unknown>),
+        agent_id: input.agentId,
         base_commit_sha: input.baseCommitSha,
         flow_id: input.flowId,
         flow_source_id: input.flowSourceId,

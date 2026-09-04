@@ -189,6 +189,68 @@ describe('agent run hydration', () => {
     });
   });
 
+  it('keeps provider item deltas and completions from duplicating live transcript rows', () => {
+    const input = {
+      workspaceId: 'workspace-1',
+      parentId: 'user-1',
+      role: 'assistant' as const,
+      agentId: 'codex',
+      runId: 'run-1',
+      status: 'running' as const,
+      executionData: { current_run_id: 'run-1' },
+    };
+    const streamState = {
+      output: '',
+      providerItemId: null,
+    };
+
+    ingestAgentRunStreamEvent('assistant-1', {
+      type: 'message_delta',
+      delta: 'First line.',
+      provider_item_id: 'msg-1',
+      stream_seq: 1,
+    }, input, streamState);
+    ingestAgentRunStreamEvent('assistant-1', {
+      type: 'message_completed',
+      content: 'First line.',
+      provider_item_id: 'msg-1',
+      stream_seq: 2,
+    }, input, streamState);
+    ingestAgentRunStreamEvent('assistant-1', {
+      type: 'tool_use',
+      id: 'tool-1',
+      name: 'commandExecution',
+      stream_seq: 3,
+    }, input, streamState);
+    ingestAgentRunStreamEvent('assistant-1', {
+      type: 'message_delta',
+      delta: 'I',
+      provider_item_id: 'msg-2',
+      stream_seq: 4,
+    }, input, streamState);
+    ingestAgentRunStreamEvent('assistant-1', {
+      type: 'message_delta',
+      delta: ' will continue.',
+      provider_item_id: 'msg-2',
+      stream_seq: 5,
+    }, input, streamState);
+    ingestAgentRunStreamEvent('assistant-1', {
+      type: 'message_completed',
+      content: 'I will continue.',
+      provider_item_id: 'msg-2',
+      stream_seq: 6,
+    }, input, streamState);
+
+    const snapshot = agentRunManager.snapshot('assistant-1');
+    const messageEvents = snapshot?.timeline.filter((event: any) => event?.type === 'message') ?? [];
+
+    expect(snapshot?.content).toBe('First line.I will continue.');
+    expect(messageEvents.map((event: any) => event.content)).toEqual([
+      'First line.',
+      'I will continue.',
+    ]);
+  });
+
   it('ignores stale finalize acks before they can mutate the current run', () => {
     agentRunManager.dispatch('assistant-1', {
       type: 'status',

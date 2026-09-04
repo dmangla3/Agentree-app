@@ -139,7 +139,21 @@ async function executeStatement(
   }
 
   if ('parallel' in statement) {
-    const countResult = evaluateFlowExpression(statement.parallel.count, scope);
+    const parallel = statement.parallel;
+    if ('branches' in parallel) {
+      const calls = parallel.branches.map((branch) =>
+        executeCall(branch.call, branch.args ?? {}, branch.parent, scope, context)
+      );
+      const results = await Promise.all(calls);
+      const stopped = results.find((result) => result.signal);
+      if (stopped?.signal) {
+        return stopped.signal;
+      }
+      scope[statement.set] = results.map((result) => result.node);
+      return { type: 'continue' };
+    }
+
+    const countResult = evaluateFlowExpression(parallel.count, scope);
     if (countResult.issues.length > 0) {
       return stopFromIssues(countResult.issues.map((issue) => issue.message));
     }
@@ -148,7 +162,7 @@ async function executeStatement(
     }
 
     const calls = Array.from({ length: countResult.value }, () =>
-      executeCall(statement.parallel.call, statement.parallel.args ?? {}, statement.parallel.parent, scope, context)
+      executeCall(parallel.call, parallel.args ?? {}, parallel.parent, scope, context)
     );
     const results = await Promise.all(calls);
     const stopped = results.find((result) => result.signal);

@@ -36,8 +36,11 @@ export function buildFlowCatalog(input?: {
   const predefinedSources = input?.predefinedSources ?? PREDEFINED_FLOW_SOURCES;
   const userSources = input?.userSources ?? [];
   const registry = input?.registry;
+  const overriddenPredefinedSourceIds = new Set(userSources.map((source) => source.id));
   return [
-    ...predefinedSources.map((source) => compileCatalogSource(source, 'predefined', registry)),
+    ...predefinedSources
+      .filter((source) => !overriddenPredefinedSourceIds.has(source.id))
+      .map((source) => compileCatalogSource(source, 'predefined', registry)),
     ...userSources.map((source) => compileCatalogSource(source, 'user', registry)),
   ].sort(compareCatalogItems);
 }

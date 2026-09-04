@@ -2,6 +2,7 @@ import { fireEvent, render } from '@testing-library/react';
 // @ts-expect-error jsdom ships without a project-local declaration in this workspace.
 import { JSDOM } from 'jsdom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { LOGIN_PROFILES_NAVIGATION_EVENT } from '../lib/loginNavigationEvents';
 import { UnifiedAgentModelSelector } from './UnifiedAgentModelSelector';
 
 vi.mock('../hooks/useAgents', () => ({
@@ -92,13 +93,33 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
 
   it('dims and blocks models whose provider lacks a ready selected profile', () => {
     const onSelectAgent = vi.fn();
+    const loginIntent = vi.fn();
+    window.addEventListener(LOGIN_PROFILES_NAVIGATION_EVENT, loginIntent);
 
     const { getByText } = render(<UnifiedAgentModelSelector selectedAgentId={null} onSelectAgent={onSelectAgent} />);
     expect(getByText('Opus 4.5').closest('section')?.getAttribute('data-login-provider-active')).toBe('false');
     fireEvent.click(getByText('Opus 4.5'));
 
-    expect(getByText('Login inactive')).toBeTruthy();
+    fireEvent.click(getByText('Login to Claude'));
+    expect(loginIntent).toHaveBeenCalled();
+    expect((loginIntent.mock.calls[0][0] as CustomEvent).detail).toEqual({ provider: 'claude' });
     expect(onSelectAgent).not.toHaveBeenCalled();
+    window.removeEventListener(LOGIN_PROFILES_NAVIGATION_EVENT, loginIntent);
+  });
+
+  it('hides the effort picker for inactive providers', () => {
+    const onSelectAgent = vi.fn();
+
+    const { queryByText, getByText, getAllByText } = render(
+      <UnifiedAgentModelSelector
+        selectedAgentId="claude:opus-4.5:high"
+        onSelectAgent={onSelectAgent}
+      />
+    );
+
+    expect(queryByText('Thinking effort')).toBeNull();
+    expect(getByText('Claude login required')).toBeTruthy();
+    expect(getAllByText('Login to Claude').length).toBeGreaterThan(0);
   });
 
   it('falls back to external runtime readiness when no managed profile exists', () => {

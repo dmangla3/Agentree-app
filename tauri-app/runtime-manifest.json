@@ -8,11 +8,11 @@
       "platforms": {
         "linux-x86_64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-node-22.21.1-linux-x86_64.tar.gz",
-          "sha256": "14d9f77d2ab6d37c27d38fa8b67f3d30941832dc1bee5bb16652f82a67279260"
+          "sha256": "46cc177da7686fbd90de606303b3c89fc3bc1b763e6bf100755e45f068c1612b"
         },
         "darwin-aarch64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-node-22.21.1-darwin-aarch64.tar.gz",
-          "sha256": ""
+          "sha256": "a003a31bbdbf635733c990398e11e651b4751f3988e2b63360bd30be5b7ac33d"
         }
       }
     },
@@ -21,11 +21,11 @@
       "platforms": {
         "linux-x86_64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-claude-sdk-0.2.107-linux-x86_64.tar.gz",
-          "sha256": "aefaf13af90a607798bd7e1cc0f63f705066afdce13fa9544f8030de6e645326"
+          "sha256": "e1f36abd65ddc61e147616c0935deb8b663f8685a1267ba95c7f5fff047d567e"
         },
         "darwin-aarch64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-claude-sdk-0.2.107-darwin-aarch64.tar.gz",
-          "sha256": ""
+          "sha256": "8bbbb4e5a95321de379e113ae1590df03853021ec1ffcf30b813fa3e9f435c4f"
         }
       }
     },
@@ -34,11 +34,11 @@
       "platforms": {
         "linux-x86_64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-codex-0.139.0-linux-x86_64.tar.gz",
-          "sha256": "a62abc29eb063051db5b9be2af3ff62ae1d52531682ba3e8fdd36499343d6b51"
+          "sha256": "780198f9e545d5cd4bacfafa218f4f766a18bb465eab5f38ce10e6bcf3adbb1b"
         },
         "darwin-aarch64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-codex-0.139.0-darwin-aarch64.tar.gz",
-          "sha256": ""
+          "sha256": "bbdf080ee0e83910eade633798251a974d9c452ef627dfe3143c198af694e793"
         }
       }
     }

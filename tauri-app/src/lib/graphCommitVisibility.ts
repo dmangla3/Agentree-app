@@ -16,19 +16,19 @@ interface VisibleCommitProjection {
   visibleCommitGroups: ProjectedCommitGroup[];
 }
 
-const isOwnedOnlyByHiddenThreads = (
+const isRepresentedOnlyByHiddenThreads = (
   commit: ProjectedCommitEntity,
   hiddenThreadRootIds: Set<string>,
 ): boolean => {
-  if (commit.owningThreadRootIds.length === 0) return false;
-  return commit.owningThreadRootIds.every((threadRootId) => hiddenThreadRootIds.has(threadRootId));
+  if (commit.representedThreadRootIds.length === 0) return false;
+  return commit.representedThreadRootIds.every((threadRootId) => hiddenThreadRootIds.has(threadRootId));
 };
 
 const shouldHideOwnedCommit = (
   commit: ProjectedCommitEntity,
   hiddenThreadRootIds: Set<string>,
 ): boolean => {
-  return isOwnedOnlyByHiddenThreads(commit, hiddenThreadRootIds);
+  return isRepresentedOnlyByHiddenThreads(commit, hiddenThreadRootIds);
 };
 
 const isBackgroundImportCommit = (commit: ProjectedCommitEntity): boolean => (
@@ -39,7 +39,7 @@ const isBackgroundImportCommit = (commit: ProjectedCommitEntity): boolean => (
 const isUnresolvedGeneratedSidecarCommit = (commit: ProjectedCommitEntity): boolean => (
   commit.ownerKind === 'agentree' &&
   commit.placement === 'conversation_sidecar' &&
-  commit.owningThreadRootIds.length === 0
+  commit.representedThreadRootIds.length === 0
 );
 
 export const getVisibleCommitProjection = ({

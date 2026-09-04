@@ -15,6 +15,11 @@ describe('Workspace navigator thread migration layout', () => {
     expect(source).toContain('WorkspaceThreadSection');
     expect(source).toContain('ThreadNodeHoverCard');
     expect(source).toContain('Done threads');
+    expect(source).toContain("aria-label={threadsFocused ? 'Show workspace hierarchy' : 'Focus threads'}");
+    expect(source).toContain('showFocusedThreads ? (');
+    expect(source).toContain('const threadsFocused = controlledThreadsFocused ?? localThreadsFocused');
+    expect(source).toContain('if (!selectedWorkspaceId) setThreadsFocused(false)');
+    expect(source).not.toContain('if (!showThreadSections || !selectedWorkspaceId) setThreadsFocused(false)');
   });
 
   it('removes graph-owned visible thread navigation paths', () => {

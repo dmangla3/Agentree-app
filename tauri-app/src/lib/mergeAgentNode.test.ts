@@ -36,7 +36,7 @@ describe('merge agent node helpers', () => {
   it('builds a merge prompt that asks the agent to inspect conflicts before applying', () => {
     const prompt = buildMergeAgentPrompt(input);
 
-    expect(prompt).toContain('Dependency rule: some dependency and build directories');
+    expect(prompt).toContain('Agentree provides writable per-agent cache/build env vars');
     expect(prompt).toContain('Target: main (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)');
     expect(prompt).toContain('sandbox config (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, branch: agentree/sandbox-config)');
     expect(prompt).toContain('test commands (cccccccccccccccccccccccccccccccccccccccc)');

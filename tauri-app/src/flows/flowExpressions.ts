@@ -11,6 +11,8 @@ export interface FlowConditionResult {
 }
 
 const PATH_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
+const CONDITION_LITERAL_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+const ALL_CONDITION_PATTERN = /^all\((.*)\)$/;
 
 export function evaluateFlowExpression(
   expression: string | number | boolean | null,
@@ -29,30 +31,70 @@ export function evaluateFlowExpression(
 }
 
 export function evaluateFlowCondition(condition: string, scope: Record<string, FlowRuntimeValue>): FlowConditionResult {
-  const parts = condition.split(/\s+==\s+/);
-  if (parts.length !== 2 || condition.includes('!=') || condition.includes('>=') || condition.includes('<=')) {
+  const parsed = parseFlowCondition(condition);
+  if (!parsed) {
     return {
       value: false,
       issues: [{ path: condition, message: 'Only equality conditions are supported.' }],
     };
   }
 
-  const [leftExpression, expectedLiteral] = parts;
-  if (!PATH_PATTERN.test(leftExpression) || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(expectedLiteral)) {
+  if (!PATH_PATTERN.test(parsed.leftExpression) || !CONDITION_LITERAL_PATTERN.test(parsed.expectedLiteral)) {
     return {
       value: false,
       issues: [{ path: condition, message: 'Only variable-path equality against bare literals is supported.' }],
     };
   }
 
-  const result = resolveFlowPath(leftExpression, scope);
+  const result = resolveFlowPath(parsed.leftExpression, scope);
   if (result.issues.length > 0) {
     return { value: false, issues: result.issues };
   }
 
+  const expectedValue = parseConditionLiteral(parsed.expectedLiteral);
+  if (parsed.quantifier === 'all') {
+    if (!Array.isArray(result.value)) {
+      return {
+        value: false,
+        issues: [{ path: condition, message: `all(...) requires "${parsed.leftExpression}" to resolve to an array.` }],
+      };
+    }
+    return {
+      value: result.value.length > 0 && result.value.every((entry) => entry === expectedValue),
+      issues: [],
+    };
+  }
+
+  if (Array.isArray(result.value)) {
+    return {
+      value: false,
+      issues: [{ path: condition, message: `Condition "${condition}" compares an array to a scalar. Use all(${parsed.leftExpression} == ${parsed.expectedLiteral}) when every item must match.` }],
+    };
+  }
+
   return {
-    value: result.value === parseConditionLiteral(expectedLiteral),
+    value: result.value === expectedValue,
     issues: [],
+  };
+}
+
+interface ParsedFlowCondition {
+  quantifier: 'one' | 'all';
+  leftExpression: string;
+  expectedLiteral: string;
+}
+
+function parseFlowCondition(condition: string): ParsedFlowCondition | null {
+  const trimmed = condition.trim();
+  const allMatch = trimmed.match(ALL_CONDITION_PATTERN);
+  const body = allMatch ? allMatch[1].trim() : trimmed;
+  if (body.includes('!=') || body.includes('>=') || body.includes('<=')) return null;
+  const parts = body.split(/\s+==\s+/);
+  if (parts.length !== 2) return null;
+  return {
+    quantifier: allMatch ? 'all' : 'one',
+    leftExpression: parts[0].trim(),
+    expectedLiteral: parts[1].trim(),
   };
 }
 

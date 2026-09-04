@@ -32,6 +32,170 @@ interface NodeContextMenuProps {
   onShareNode?: (messageId: string) => void;
 }
 
+export interface NodeContextMenuActions {
+  deletableMessageIds: string[];
+  deletableCommitShas: string[];
+  mergeableCommitIds: string[];
+  mergeableCommitShas: string[];
+  actionNodeId: string | null;
+  actionThreadRootId: string | null;
+  convertSubgraphNodeId: string | null;
+  mergeThreadRootId: string | null;
+}
+
+export function resolveNodeContextMenuActions(
+  projection: WorkspaceProjection,
+  targetIds: string[],
+): NodeContextMenuActions {
+  const deletableIds = new Set<string>();
+  const deletableShas = new Set<string>();
+  const mergeableIds = new Set<string>();
+  const mergeableShas = new Set<string>();
+  let singleActionId: string | null = null;
+  let singleThreadRootId: string | null = null;
+  let singleConvertSubgraphNodeId: string | null = null;
+  let singleMergeThreadRootId: string | null = null;
+  let hasMultipleMergeThreadRoots = false;
+
+  const addMessageId = (messageId: string | null | undefined) => {
+    if (messageId) deletableIds.add(messageId);
+  };
+
+  const recordMergeThreadRootId = (threadRootId: string | null | undefined) => {
+    if (!threadRootId || hasMultipleMergeThreadRoots) return;
+    if (!singleMergeThreadRootId) {
+      singleMergeThreadRootId = threadRootId;
+      return;
+    }
+    if (singleMergeThreadRootId !== threadRootId) {
+      singleMergeThreadRootId = null;
+      hasMultipleMergeThreadRoots = true;
+    }
+  };
+
+  const getThreadRootIdForMessageId = (messageId: string | null | undefined) => {
+    if (!messageId) return null;
+    return projection.entitiesByMessageId.get(messageId)?.threadRootId
+      ?? projection.threadRootIdByMessageId.get(messageId)
+      ?? null;
+  };
+
+  const getThreadRootIdForCommitSha = (commitSha: string | null | undefined) => {
+    if (!commitSha) return null;
+    const commit = projection.commitBySha.get(commitSha);
+    if (commit) return commit.ownerThreadRootId;
+
+    for (const entity of projection.entitiesByMessageId.values()) {
+      if (getMessageOutputCommitSha(entity.message) !== commitSha) continue;
+      const entityThreadRootId = entity.threadRootId ?? getThreadRootIdForMessageId(entity.messageId);
+      if (entityThreadRootId) return entityThreadRootId;
+    }
+
+    return null;
+  };
+
+  const resolveCommitToken = (token: string | null | undefined): { commitSha: string; threadRootId: string | null } | null => {
+    if (!token) return null;
+    const commit = projection.commitBySha.get(token);
+    if (commit) {
+      return {
+        commitSha: token,
+        threadRootId: getThreadRootIdForCommitSha(token),
+      };
+    }
+
+    const tokenEntity = projection.entitiesByMessageId.get(token) ?? projection.entitiesById.get(token);
+    const tokenMessage = tokenEntity?.message ?? projection.messageMap.get(token) ?? null;
+    const tokenOutputCommitSha = getMessageOutputCommitSha(tokenMessage);
+    if (tokenOutputCommitSha) {
+      return {
+        commitSha: tokenOutputCommitSha,
+        threadRootId: getThreadRootIdForCommitSha(tokenOutputCommitSha)
+          ?? tokenEntity?.threadRootId
+          ?? getThreadRootIdForMessageId(tokenEntity?.messageId ?? token),
+      };
+    }
+
+    for (const entity of projection.entitiesByMessageId.values()) {
+      if (getMessageOutputCommitSha(entity.message) !== token) continue;
+      return {
+        commitSha: token,
+        threadRootId: entity.threadRootId ?? getThreadRootIdForMessageId(entity.messageId),
+      };
+    }
+
+    return null;
+  };
+
+  const addMergeableCommitId = (messageId: string | null | undefined) => {
+    if (!messageId) return;
+    const entity = projection.entitiesByMessageId.get(messageId);
+    if (entity?.kind === 'commit_message' && getMessageOutputCommitSha(entity.message)) {
+      mergeableIds.add(messageId);
+      recordMergeThreadRootId(entity.threadRootId ?? getThreadRootIdForMessageId(messageId));
+    }
+  };
+
+  const addMergeableCommitSha = (commitToken: string | null | undefined, explicitCommitToken = false) => {
+    if (!commitToken) return;
+    const resolved = resolveCommitToken(commitToken);
+    if (resolved) {
+      mergeableShas.add(resolved.commitSha);
+      recordMergeThreadRootId(resolved.threadRootId);
+      return;
+    }
+    if (explicitCommitToken) {
+      mergeableShas.add(commitToken);
+    }
+  };
+
+  for (const id of targetIds) {
+    const entity = projection.entitiesByMessageId.get(id) ?? projection.entitiesById.get(id);
+
+    if (id.startsWith('commit:')) {
+      const sha = id.slice('commit:'.length);
+      if (projection.commitBySha.has(sha)) deletableShas.add(sha);
+      addMergeableCommitSha(sha, true);
+    } else if (!entity) {
+      addMergeableCommitSha(id);
+    }
+
+    if (!entity) continue;
+    if (targetIds.length === 1 && entity.messageId) {
+      singleActionId = entity.messageId;
+      singleThreadRootId = entity.kind === 'thread_link'
+        ? entity.threadLinkRootId ?? entity.threadRootId ?? null
+        : entity.threadRootId ?? null;
+      if (
+        entity.kind === 'user_message' &&
+        entity.message?.parentId &&
+        !entity.isThreadRoot
+      ) {
+        singleConvertSubgraphNodeId = entity.messageId;
+      }
+    }
+
+    if (entity.kind === 'user_message' || entity.kind === 'assistant_message' || entity.kind === 'commit_message') {
+      addMessageId(entity.messageId);
+    }
+
+    if (entity.kind === 'commit_message' && getMessageOutputCommitSha(entity.message)) {
+      addMergeableCommitId(entity.messageId);
+    }
+  }
+
+  return {
+    deletableMessageIds: Array.from(deletableIds),
+    deletableCommitShas: Array.from(deletableShas),
+    mergeableCommitIds: Array.from(mergeableIds),
+    mergeableCommitShas: Array.from(mergeableShas),
+    actionNodeId: singleActionId,
+    actionThreadRootId: singleThreadRootId,
+    convertSubgraphNodeId: singleConvertSubgraphNodeId,
+    mergeThreadRootId: hasMultipleMergeThreadRoots ? null : singleMergeThreadRootId,
+  };
+}
+
 export function NodeContextMenu({
   contextMenu,
   projection,
@@ -56,120 +220,10 @@ export function NodeContextMenu({
     if (contextMenu) setMarkThreadDoneAfterMerge(true);
   }, [contextMenu, targetKey]);
 
-  const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, mergeableCommitShas, actionNodeId, actionThreadRootId, convertSubgraphNodeId, mergeThreadRootId } = useMemo(() => {
-    const deletableIds = new Set<string>();
-    const deletableShas = new Set<string>();
-    const mergeableIds = new Set<string>();
-    const mergeableShas = new Set<string>();
-    let singleActionId: string | null = null;
-    let singleThreadRootId: string | null = null;
-    let singleConvertSubgraphNodeId: string | null = null;
-    let singleMergeThreadRootId: string | null = null;
-    let hasMultipleMergeThreadRoots = false;
-
-    const addMessageId = (messageId: string | null | undefined) => {
-      if (messageId) deletableIds.add(messageId);
-    };
-
-    const recordMergeThreadRootId = (threadRootId: string | null | undefined) => {
-      if (!threadRootId || hasMultipleMergeThreadRoots) return;
-      if (!singleMergeThreadRootId) {
-        singleMergeThreadRootId = threadRootId;
-        return;
-      }
-      if (singleMergeThreadRootId !== threadRootId) {
-        singleMergeThreadRootId = null;
-        hasMultipleMergeThreadRoots = true;
-      }
-    };
-
-    const getThreadRootIdForMessageId = (messageId: string | null | undefined) => {
-      if (!messageId) return null;
-      return projection.entitiesByMessageId.get(messageId)?.threadRootId
-        ?? projection.threadRootIdByMessageId.get(messageId)
-        ?? null;
-    };
-
-    const getThreadRootIdForCommitSha = (commitSha: string | null | undefined) => {
-      if (!commitSha) return null;
-      const commit = projection.commitBySha.get(commitSha);
-      const ownerNodeId = commit?.producedByNodeId ?? commit?.visualOwnerNodeId ?? null;
-      const ownerThreadRootId = getThreadRootIdForMessageId(ownerNodeId);
-      if (ownerThreadRootId) return ownerThreadRootId;
-
-      for (const entity of projection.entitiesByMessageId.values()) {
-        if (entity.kind !== 'commit_message') continue;
-        if (getMessageOutputCommitSha(entity.message) !== commitSha) continue;
-        const entityThreadRootId = entity.threadRootId ?? getThreadRootIdForMessageId(entity.messageId);
-        if (entityThreadRootId) return entityThreadRootId;
-      }
-
-      return null;
-    };
-
-    const addMergeableCommitId = (messageId: string | null | undefined) => {
-      if (!messageId) return;
-      const entity = projection.entitiesByMessageId.get(messageId);
-      if (entity?.kind === 'commit_message' && getMessageOutputCommitSha(entity.message)) {
-        mergeableIds.add(messageId);
-        recordMergeThreadRootId(entity.threadRootId ?? getThreadRootIdForMessageId(messageId));
-      }
-    };
-
-    const addMergeableCommitSha = (commitSha: string | null | undefined, explicitCommitToken = false) => {
-      if (!commitSha) return;
-      if (explicitCommitToken || projection.commitBySha.has(commitSha)) {
-        mergeableShas.add(commitSha);
-        recordMergeThreadRootId(getThreadRootIdForCommitSha(commitSha));
-      }
-    };
-
-    for (const id of targetIds) {
-      const entity = projection.entitiesByMessageId.get(id) ?? projection.entitiesById.get(id);
-
-      if (id.startsWith('commit:')) {
-        const sha = id.slice('commit:'.length);
-        if (projection.commitBySha.has(sha)) deletableShas.add(sha);
-        addMergeableCommitSha(sha, true);
-      } else if (!entity) {
-        addMergeableCommitSha(id);
-      }
-
-      if (!entity) continue;
-      if (targetIds.length === 1 && entity.messageId) {
-        singleActionId = entity.messageId;
-        singleThreadRootId = entity.kind === 'thread_link'
-          ? entity.threadLinkRootId ?? entity.threadRootId ?? null
-          : entity.threadRootId ?? null;
-        if (
-          entity.kind === 'user_message' &&
-          entity.message?.parentId &&
-          !entity.isThreadRoot
-        ) {
-          singleConvertSubgraphNodeId = entity.messageId;
-        }
-      }
-
-      if (entity.kind === 'user_message' || entity.kind === 'assistant_message' || entity.kind === 'commit_message') {
-        addMessageId(entity.messageId);
-      }
-
-      if (entity.kind === 'commit_message' && getMessageOutputCommitSha(entity.message)) {
-        addMergeableCommitId(entity.messageId);
-      }
-    }
-
-    return {
-      deletableMessageIds: Array.from(deletableIds),
-      deletableCommitShas: Array.from(deletableShas),
-      mergeableCommitIds: Array.from(mergeableIds),
-      mergeableCommitShas: Array.from(mergeableShas),
-      actionNodeId: singleActionId,
-      actionThreadRootId: singleThreadRootId,
-      convertSubgraphNodeId: singleConvertSubgraphNodeId,
-      mergeThreadRootId: hasMultipleMergeThreadRoots ? null : singleMergeThreadRootId,
-    };
-  }, [projection.commitBySha, projection.entitiesById, projection.entitiesByMessageId, projection.threadRootIdByMessageId, targetIds]);
+  const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, mergeableCommitShas, actionNodeId, actionThreadRootId, convertSubgraphNodeId, mergeThreadRootId } = useMemo(
+    () => resolveNodeContextMenuActions(projection, targetIds),
+    [projection, targetKey],
+  );
 
   if (!contextMenu) return null;
 

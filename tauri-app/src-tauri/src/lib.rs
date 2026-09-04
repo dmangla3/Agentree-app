@@ -267,7 +267,25 @@ pub fn run() {
     #[cfg(debug_assertions)]
     export_specta_bindings(&specta_builder);
 
-    let mut builder = tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // Must be registered before any other plugin: a second launch of the *same*
+    // build is folded into the already-running instance instead of starting a
+    // colliding process that shares the data dir, SQLite DBs and the MCP port.
+    // Dev and release use different identifiers (see tauri.dev.conf.json), so
+    // they are distinct apps and still run side by side.
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }));
+    }
+
+    builder = builder
         .plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("agentree-auth-callback-navigation-guard")
                 .on_navigation(|webview, url| {
@@ -385,6 +403,7 @@ pub fn run() {
                     );
                 }
                 app.manage(telemetry);
+                agents::start_agent_run_watchdog(app.handle().clone());
 
                 crate::app_log!("[PERF][Setup] Starting MCP server...");
                 mcp::start_mcp_server(app.handle().clone());

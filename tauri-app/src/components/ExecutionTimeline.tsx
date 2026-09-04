@@ -16,6 +16,9 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
 
+const MAX_TIMELINE_TEXT_CONTENT_CHARS = 6000;
+const TIMELINE_TEXT_TRUNCATION_NOTICE = '\n\n... [truncated for display]';
+
 export interface TimelineEvent {
     type: 'thinking' | 'tool_use' | 'tool_result' | 'message' | 'error' | 'user_steer_requested';
     timestamp: number;
@@ -387,7 +390,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                                             </span>
                                         ) : null}
                                     </div>
-                                    {call.toolInput !== undefined ? (
+                                    {!isEmptyToolPayload(call.toolInput) ? (
                                         <ToolPayloadDisplay payload={call.toolInput} className="max-h-32" variant="raw" />
                                     ) : null}
                                 </div>
@@ -399,7 +402,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
         );
     }
 
-    const summary = getToolSummary(row.toolName, row.toolInput);
+    const summary = getToolSummary(row.toolName, row.toolInput) || getToolSummary(row.toolName, row.toolOutput);
     const status = row.isError ? 'error' : row.toolOutput ? 'completed' : 'running';
 
     return (
@@ -475,7 +478,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
 
                 <Collapsible open={isDetailsOpen} onOpenChange={setIsDetailsOpen}>
                     <CollapsibleContent className="mt-2 space-y-2">
-                        {row.toolInput !== undefined && (
+                        {!isEmptyToolPayload(row.toolInput) && (
                             <div className="text-[10px]">
                                 <div className="flex items-center gap-1.5 mb-1">
                                     <div className="w-1 h-1 rounded-full bg-blue-400" />
@@ -531,28 +534,32 @@ export function buildTimelineRows(events: TimelineEvent[]): TimelineRow[] {
             if (!content) continue;
             const lastRow = rows[rows.length - 1];
             if (lastRow?.kind === 'message') {
-                lastRow.content = `${lastRow.content || ''}${content}`;
+                lastRow.content = appendTimelineText(lastRow.content, content);
             } else {
                 rows.push({
                     kind: 'message',
                     key: buildRowKey('message', event),
-                    content,
+                    content: truncateTimelineText(content),
                 });
             }
             continue;
         }
 
         if (event.type === 'thinking') {
-            const isDelta = Boolean((event as any).isDelta || (event as any).is_delta);
+            const eventLike = event as any;
+            const hasDeltaMarker =
+                Object.prototype.hasOwnProperty.call(eventLike, 'isDelta') ||
+                Object.prototype.hasOwnProperty.call(eventLike, 'is_delta');
+            const isDelta = Boolean(eventLike.isDelta || eventLike.is_delta);
             const lastRow = rows[rows.length - 1];
-            if (isDelta && lastRow?.kind === 'thinking') {
-                lastRow.content = `${lastRow.content || ''}${event.content || ''}`;
+            if ((isDelta || !hasDeltaMarker) && lastRow?.kind === 'thinking') {
+                lastRow.content = appendTimelineText(lastRow.content, event.content);
                 lastRow.durationMs = event.durationMs ?? lastRow.durationMs;
             } else {
                 rows.push({
                     kind: 'thinking',
                     key: buildRowKey('thinking', event),
-                    content: event.content,
+                    content: truncateTimelineText(event.content),
                     durationMs: event.durationMs,
                 });
             }
@@ -579,6 +586,22 @@ export function buildTimelineRows(events: TimelineEvent[]): TimelineRow[] {
 
         const toolName = extractToolName(event);
         if (event.type === 'tool_use') {
+            const toolUseId = extractToolUseId(event);
+            if (toolUseId && toolRowById.has(toolUseId)) {
+                const existingIndex = toolRowById.get(toolUseId)!;
+                const existing = rows[existingIndex] as Extract<TimelineRow, { kind: 'tool' }>;
+                existing.toolName = chooseSpecificToolName(existing.toolName, toolName || existing.toolName);
+                const nextInput = extractToolInput(event);
+                if (!isEmptyToolPayload(nextInput)) existing.toolInput = nextInput;
+                const nextOutput = extractToolOutput(event);
+                if (nextOutput !== undefined) existing.toolOutput = nextOutput;
+                existing.isError = existing.isError || extractIsError(event);
+                existing.commandActions = extractCommandActions(event) ?? existing.commandActions;
+                existing.startedAtMs = existing.startedAtMs ?? getTimestampMs(event.timestamp);
+                existing.durationMs = event.durationMs ?? event.duration_ms ?? existing.durationMs;
+                lastOpenToolIndex = existingIndex;
+                continue;
+            }
             const toolRow: TimelineRow = {
                 kind: 'tool',
                 key: buildRowKey(toolName || 'tool', event),
@@ -588,9 +611,9 @@ export function buildTimelineRows(events: TimelineEvent[]): TimelineRow[] {
                 isError: extractIsError(event),
                 durationMs: event.durationMs ?? event.duration_ms,
                 startedAtMs: getTimestampMs(event.timestamp),
+                commandActions: extractCommandActions(event),
             };
             const rowIndex = rows.push(toolRow) - 1;
-            const toolUseId = extractToolUseId(event);
             if (toolUseId) toolRowById.set(toolUseId, rowIndex);
             lastOpenToolIndex = rowIndex;
             continue;
@@ -652,6 +675,17 @@ export function buildTimelineRows(events: TimelineEvent[]): TimelineRow[] {
     return coalesceExplorationRows(rows);
 }
 
+function appendTimelineText(existing: string | undefined, addition: string | undefined): string {
+    if (!addition) return existing ?? '';
+    if ((existing ?? '').includes(TIMELINE_TEXT_TRUNCATION_NOTICE)) return existing ?? '';
+    return truncateTimelineText(`${existing ?? ''}${addition}`) ?? '';
+}
+
+function truncateTimelineText(content: string | undefined): string | undefined {
+    if (!content || content.length <= MAX_TIMELINE_TEXT_CONTENT_CHARS) return content;
+    return `${content.slice(0, MAX_TIMELINE_TEXT_CONTENT_CHARS).trimEnd()}${TIMELINE_TEXT_TRUNCATION_NOTICE}`;
+}
+
 function extractToolUseId(event: TimelineEvent): string | undefined {
     return event.toolUseId || event.tool_use_id || (event.id ? String(event.id) : undefined);
 }
@@ -660,10 +694,22 @@ function extractToolName(event: TimelineEvent): string | undefined {
     return event.toolName || event.tool || (event as any).tool_name || (event as any).name;
 }
 
+function chooseSpecificToolName(current: string, next: string): string {
+    const currentName = current || 'tool';
+    const nextName = next || 'tool';
+    if (currentName.toLowerCase() === 'tool' && nextName.toLowerCase() !== 'tool') return nextName;
+    return currentName;
+}
+
 function extractToolInput(event: TimelineEvent): any {
     if (event.toolInput !== undefined) return event.toolInput;
     if (event.input !== undefined) return event.input;
-    return (event as any).tool_input ?? (event as any).parameters ?? undefined;
+    const providerItem = (event as any).providerItem ?? (event as any).provider_item;
+    return (event as any).tool_input
+        ?? (event as any).parameters
+        ?? providerItem?.input
+        ?? providerItem?.arguments
+        ?? undefined;
 }
 
 function extractToolOutput(event: TimelineEvent): any {
@@ -702,6 +748,14 @@ export function formatToolPayload(payload: any): string {
     }
 }
 
+export function isEmptyToolPayload(payload: any): boolean {
+    if (payload === null || payload === undefined) return true;
+    if (typeof payload === 'object' && !Array.isArray(payload)) {
+        return Object.keys(payload).length === 0;
+    }
+    return false;
+}
+
 function isRecord(value: unknown): value is Record<string, any> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -716,6 +770,8 @@ function getChangeKind(change: Record<string, any>): string {
 function cleanChangePath(path: string): string {
     const worktreeMatch = path.match(/\/\.git\/agentree\/worktrees\/[^/]+\/(.+)$/);
     if (worktreeMatch?.[1]) return worktreeMatch[1];
+    const agentWorktreeMatch = path.match(/\/\.agentree\/worktrees\/[^/]+\/nodes\/[^/]+\/(.+)$/);
+    if (agentWorktreeMatch?.[1]) return agentWorktreeMatch[1];
     if (!path.startsWith('/')) return path;
     const parts = path.split('/').filter(Boolean);
     return parts.slice(-3).join('/') || path;
@@ -892,24 +948,27 @@ export function ToolPayloadDisplay({
 }
 
 export function getToolSummary(toolName: string, toolInput: any): string {
-    if (!toolInput) return '';
+    if (isEmptyToolPayload(toolInput)) return '';
     const name = toolName?.toLowerCase?.() ?? '';
     const fileChangesSummary = summarizeFileChangesPayload(toolInput);
     if (fileChangesSummary) return formatFileChangesSummaryLabel(fileChangesSummary);
 
-    if (typeof toolInput === 'string') return toolInput;
+    if (typeof toolInput === 'string') return summarizeToolText(name, toolInput);
     if (name === 'commandexecution') {
         const items = getCommandExecutionSummaryItems(toolInput);
         if (items.length > 0) return summarizeCommandItems(items);
     }
-    if (name === 'bash' && typeof toolInput.command === 'string') return toolInput.command;
+    if (name === 'bash' && typeof toolInput.command === 'string') return summarizeShellCommand(toolInput.command);
     if (name === 'glob' && typeof toolInput.pattern === 'string') return toolInput.pattern;
     if (name === 'grep' && typeof toolInput.pattern === 'string') {
         return toolInput.path ? `${toolInput.pattern} in ${toolInput.path}` : toolInput.pattern;
     }
-    if (name === 'read' && typeof toolInput.path === 'string') return toolInput.path;
-    if (name === 'write' && typeof toolInput.path === 'string') return toolInput.path;
-    if (name === 'edit' && typeof toolInput.file_path === 'string') return toolInput.file_path;
+    if (name === 'read') {
+        const path = toolInput.path || toolInput.file_path;
+        if (typeof path === 'string') return formatPathWithLineRange(cleanChangePath(path), lineRangeFromToolInput(toolInput));
+    }
+    if (name === 'write' && typeof toolInput.path === 'string') return cleanChangePath(toolInput.path);
+    if (name === 'edit' && typeof toolInput.file_path === 'string') return cleanChangePath(toolInput.file_path);
     if (name === 'apply_patch' && typeof toolInput.path === 'string') return toolInput.path;
     if (name === 'webfetch' && typeof toolInput.url === 'string') return toolInput.url;
     if (name === 'codesearch' && typeof toolInput.query === 'string') return toolInput.query;
@@ -923,6 +982,115 @@ export function getToolSummary(toolName: string, toolInput: any): string {
     } catch {
         return String(toolInput);
     }
+}
+
+function summarizeToolText(toolName: string, text: string): string {
+    const trimmed = text.trim();
+    if (!trimmed) return '';
+    const name = toolName.toLowerCase();
+
+    if (name === 'read') {
+        const range = lineRangeFromOutput(trimmed);
+        return range ? `lines ${range.start}-${range.end}` : firstNonEmptyLine(trimmed);
+    }
+
+    if (name === 'grep') {
+        const foundFiles = summarizeFoundFiles(trimmed);
+        if (foundFiles) return foundFiles;
+        const range = lineRangeFromOutput(trimmed);
+        if (range) return range.start === range.end ? `match at line ${range.start}` : `matches at lines ${range.start}-${range.end}`;
+    }
+
+    if (name === 'edit' || name === 'write' || name === 'multiedit') {
+        const updatedPath = extractUpdatedFilePath(trimmed);
+        if (updatedPath) return `Updated ${updatedPath}`;
+        const toolError = extractToolUseError(trimmed);
+        if (toolError) return toolError;
+    }
+
+    if (name === 'bash') {
+        const buildSummary = summarizeBuildOutput(trimmed);
+        if (buildSummary) return buildSummary;
+    }
+
+    if (name === 'todowrite') {
+        if (/todos? (?:have been )?modified successfully/i.test(trimmed)) return 'Updated todos';
+    }
+
+    return firstNonEmptyLine(trimmed);
+}
+
+function firstNonEmptyLine(text: string): string {
+    return text.split('\n').find((line) => line.trim().length > 0)?.trim() ?? text.trim();
+}
+
+function summarizeShellCommand(command: string): string {
+    const summaryItems = parseCommandSummaryFromShell(command);
+    if (summaryItems.length > 0) return summarizeCommandItems(summaryItems);
+    return stripShellWrapper(command).trim();
+}
+
+function numericValue(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
+    return null;
+}
+
+function lineRangeFromToolInput(input: Record<string, any>): { start: number; end: number } | null {
+    const start = numericValue(input.start)
+        ?? numericValue(input.start_line)
+        ?? numericValue(input.startLine)
+        ?? numericValue(input.offset);
+    const end = numericValue(input.end)
+        ?? numericValue(input.end_line)
+        ?? numericValue(input.endLine);
+    const limit = numericValue(input.limit);
+    if (start == null && end == null) return null;
+    const resolvedStart = start ?? end!;
+    const resolvedEnd = end ?? (limit != null ? resolvedStart + Math.max(0, limit - 1) : resolvedStart);
+    return { start: resolvedStart, end: resolvedEnd };
+}
+
+function formatPathWithLineRange(path: string, range: { start: number; end: number } | null): string {
+    if (!range) return path;
+    return range.start === range.end ? `${path}:${range.start}` : `${path}:${range.start}-${range.end}`;
+}
+
+function lineRangeFromOutput(text: string): { start: number; end: number } | null {
+    const numbers: number[] = [];
+    for (const line of text.split('\n')) {
+        const match = line.match(/^\s*(\d+)(?:\t|[:-])/);
+        if (match?.[1]) numbers.push(Number(match[1]));
+    }
+    if (numbers.length === 0) return null;
+    return { start: Math.min(...numbers), end: Math.max(...numbers) };
+}
+
+function summarizeFoundFiles(text: string): string | null {
+    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+    const header = lines[0]?.match(/^Found\s+(\d+)\s+files?$/i);
+    if (!header) return null;
+    const count = Number(header[1]);
+    const files = lines.slice(1, 4).map(cleanChangePath);
+    const suffix = count > files.length ? `, +${count - files.length} more` : '';
+    return files.length > 0 ? `Found ${count} ${count === 1 ? 'file' : 'files'}: ${files.join(', ')}${suffix}` : `Found ${count} ${count === 1 ? 'file' : 'files'}`;
+}
+
+function extractUpdatedFilePath(text: string): string | null {
+    const match = text.match(/^The file\s+(.+?)\s+has been updated successfully\.?$/i);
+    return match?.[1] ? cleanChangePath(match[1]) : null;
+}
+
+function extractToolUseError(text: string): string | null {
+    const match = text.match(/<tool_use_error>([\s\S]*?)<\/tool_use_error>/i);
+    return match?.[1] ? firstNonEmptyLine(match[1]).replace(/\s+/g, ' ') : null;
+}
+
+function summarizeBuildOutput(text: string): string | null {
+    if (!/\bFinished\s+`?[^`\n]+`?\s+profile/i.test(text)) return null;
+    const warningCount = (text.match(/\bwarning:/g) ?? []).length;
+    if (warningCount > 0) return `Build completed with ${warningCount} ${warningCount === 1 ? 'warning' : 'warnings'}`;
+    return 'Build completed';
 }
 
 function extractCommandActions(event: TimelineEvent): CommandAction[] | undefined {

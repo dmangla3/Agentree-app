@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTimelineRows, getToolSummary, summarizeFileChangesPayload } from './ExecutionTimeline';
+import { buildTimelineRows, getToolSummary, isEmptyToolPayload, summarizeFileChangesPayload } from './ExecutionTimeline';
 
 describe('summarizeFileChangesPayload', () => {
   it('summarizes file change payloads without exposing raw worktree paths', () => {
@@ -75,6 +75,41 @@ describe('getToolSummary', () => {
 
     expect(summary).toBe('Read package.json, tauri-app/package.json');
   });
+
+  it('does not summarize empty tool inputs as raw empty JSON', () => {
+    expect(isEmptyToolPayload({})).toBe(true);
+    expect(getToolSummary('Skill', {})).toBe('');
+    expect(getToolSummary('Skill', 'Launching skill: agentree-branchmind-debug-flow')).toBe('Launching skill: agentree-branchmind-debug-flow');
+  });
+
+  it('summarizes Claude Read outputs as line ranges instead of raw file content', () => {
+    const summary = getToolSummary('Read', '817\tfn normalize_timeline_event(event: &JsonValue) -> Option<JsonValue> {\n818\t    let event_type = event.get("type")?.as_str()?;\n915\t    };\n');
+
+    expect(summary).toBe('lines 817-915');
+  });
+
+  it('summarizes Read inputs with filenames and line ranges when Claude provides input', () => {
+    const summary = getToolSummary('Read', {
+      file_path: '/Users/example/.agentree/worktrees/07d85467cbd7b183/nodes/e9c72cb6-3696-485f-b6dc-f290bcbeb45b/tauri-app/src-tauri/src/agents.rs',
+      offset: 817,
+      limit: 99,
+    });
+
+    expect(summary).toBe('tauri-app/src-tauri/src/agents.rs:817-915');
+  });
+
+  it('summarizes Claude Grep file-list output compactly', () => {
+    const summary = getToolSummary('Grep', 'Found 4 files\ntauri-app/src/components/NodeHoverCardContent.tsx\ntauri-app/src/components/NodeHoverCardContent.test.tsx\ntauri-app/src/components/AppNodeHoverPreview.tsx\ntauri-app/src/components/AppNodeHoverPreview.test.tsx');
+
+    expect(summary).toBe('Found 4 files: tauri-app/src/components/NodeHoverCardContent.tsx, tauri-app/src/components/NodeHoverCardContent.test.tsx, tauri-app/src/components/AppNodeHoverPreview.tsx, +1 more');
+  });
+
+  it('summarizes Claude Edit and Bash outputs', () => {
+    expect(getToolSummary('Edit', 'The file tauri-app/src-tauri/src/agents.rs has been updated successfully.')).toBe('Updated tauri-app/src-tauri/src/agents.rs');
+    expect(getToolSummary('Edit', '<tool_use_error>File does not exist. Note: your current working directory is /tmp/project.</tool_use_error>')).toBe('File does not exist. Note: your current working directory is /tmp/project.');
+    expect(getToolSummary('Bash', 'warning: unused variable\nwarning: dead code\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.29s')).toBe('Build completed with 2 warnings');
+    expect(getToolSummary('TodoWrite', 'Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress.')).toBe('Updated todos');
+  });
 });
 
 describe('buildTimelineRows', () => {
@@ -88,6 +123,79 @@ describe('buildTimelineRows', () => {
     expect(rows[0]).toEqual(expect.objectContaining({
       kind: 'thinking',
       content: 'Reading files',
+    }));
+  });
+
+  it('coalesces adjacent legacy thinking fragments that lost delta markers', () => {
+    const rows = buildTimelineRows([
+      { type: 'thinking', timestamp: 1, content: 'The' } as any,
+      { type: 'thinking', timestamp: 2, content: ' user' } as any,
+      { type: 'thinking', timestamp: 3, content: ' asked' } as any,
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      kind: 'thinking',
+      content: 'The user asked',
+    }));
+  });
+
+  it('bounds very long coalesced thinking display content', () => {
+    const rows = buildTimelineRows(
+      Array.from({ length: 2000 }, (_, index) => ({
+        type: 'thinking',
+        timestamp: index + 1,
+        content: 'chunk ',
+      })) as any,
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(expect.objectContaining({ kind: 'thinking' }));
+    expect((rows[0] as any).content?.length).toBeLessThan(6100);
+    expect((rows[0] as any).content).toContain('[truncated for display]');
+  });
+
+  it('keeps explicit non-delta thinking snapshots separate', () => {
+    const rows = buildTimelineRows([
+      { type: 'thinking', timestamp: 1, content: 'First thought', isDelta: false } as any,
+      { type: 'thinking', timestamp: 2, content: 'Second thought', isDelta: false } as any,
+    ]);
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual(expect.objectContaining({ content: 'First thought' }));
+    expect(rows[1]).toEqual(expect.objectContaining({ content: 'Second thought' }));
+  });
+
+  it('merges duplicate Claude tool_use updates with later structured input', () => {
+    const rows = buildTimelineRows([
+      {
+        type: 'tool_use',
+        timestamp: 1,
+        toolName: 'Read',
+        toolUseId: 'tool-1',
+        toolInput: {},
+      } as any,
+      {
+        type: 'tool_use',
+        timestamp: 2,
+        toolName: 'Read',
+        toolUseId: 'tool-1',
+        toolInput: { file_path: 'tauri-app/src-tauri/src/agents.rs', offset: 10, limit: 3 },
+      } as any,
+      {
+        type: 'tool_result',
+        timestamp: 3,
+        toolUseId: 'tool-1',
+        toolOutput: '10\tlet a = 1;\n11\tlet b = 2;\n12\tlet c = 3;',
+      } as any,
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      kind: 'tool',
+      toolName: 'Read',
+      toolInput: { file_path: 'tauri-app/src-tauri/src/agents.rs', offset: 10, limit: 3 },
+      toolOutput: '10\tlet a = 1;\n11\tlet b = 2;\n12\tlet c = 3;',
     }));
   });
 

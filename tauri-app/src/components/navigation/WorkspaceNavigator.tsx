@@ -8,6 +8,7 @@ import {
   Eye,
   FolderGit,
   FolderOpen,
+  Focus,
   GitBranch,
   HardDrive,
   Loader2,
@@ -86,6 +87,8 @@ interface WorkspaceNavigatorProps {
   onCreateThread: () => void;
   onRepositoryConnected?: (repoPath: string, workspaceId: string) => void;
   threadNavigation: WorkspaceThreadNavigationModel | null;
+  threadsFocused?: boolean;
+  onThreadsFocusedChange?: (focused: boolean) => void;
 }
 
 interface RepoGroup {
@@ -322,10 +325,14 @@ function WorkspaceThreadSection({
   model,
   onOpenThread,
   onCreateThread,
+  threadsFocused = false,
+  onThreadsFocusedChange,
 }: {
   model: WorkspaceThreadNavigationModel | null;
   onOpenThread: (threadRootId: string) => void;
   onCreateThread: () => void;
+  threadsFocused?: boolean;
+  onThreadsFocusedChange?: (focused: boolean) => void;
 }) {
   const activeThreadItems = useMemo(
     () => model?.threadItems.filter((thread) => !thread.done || thread.runningCount > 0) ?? [],
@@ -342,14 +349,24 @@ function WorkspaceThreadSection({
 
   if (!model) {
     return (
-      <div className="ml-6 rounded-lg border border-dashed border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-bg)/0.34)] px-2.5 py-2 text-[11px] text-muted-foreground">
+      <div
+        className={cn(
+          'rounded-lg border border-dashed border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-bg)/0.34)] px-2.5 py-2 text-[11px] text-muted-foreground',
+          !threadsFocused && 'ml-6',
+        )}
+      >
         Loading thread index...
       </div>
     );
   }
 
   return (
-    <div className="ml-6 space-y-2 rounded-lg border border-[hsl(var(--app-border)/0.46)] bg-[hsl(var(--app-bg)/0.34)] p-2 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.025)]">
+    <div
+      className={cn(
+        'space-y-2 rounded-lg border border-[hsl(var(--app-border)/0.46)] bg-[hsl(var(--app-bg)/0.34)] p-2 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.025)]',
+        !threadsFocused && 'ml-6',
+      )}
+    >
       <div className="flex items-center justify-between gap-2 border-b border-[hsl(var(--app-border)/0.34)] pb-1.5">
         <div className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
           <ParallelThreadsIcon size={12} strokeWidth={2.1} />
@@ -358,22 +375,47 @@ function WorkspaceThreadSection({
             {runningCount} running
           </span>
         </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              aria-label="Start new thread"
-              disabled={model.createThreadDisabled}
-              onClick={onCreateThread}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-panel)/0.5)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.5)] hover:text-foreground active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100"
-            >
-              <Plus size={13} strokeWidth={2.3} />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" align="end">
-            {model.createThreadDisabled ? model.createThreadDisabledReason : 'Start new thread'}
-          </TooltipContent>
-        </Tooltip>
+        <div className="flex shrink-0 items-center gap-1">
+          {onThreadsFocusedChange ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={threadsFocused ? 'Show workspace hierarchy' : 'Focus threads'}
+                  aria-pressed={threadsFocused}
+                  onClick={() => onThreadsFocusedChange(!threadsFocused)}
+                  className={cn(
+                    'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.5)] hover:text-foreground active:scale-[0.96]',
+                    threadsFocused
+                      ? 'border-[hsl(var(--app-accent)/0.46)] bg-[hsl(var(--app-accent-soft)/0.58)] text-[hsl(var(--app-accent))]'
+                      : 'border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-panel)/0.5)] text-muted-foreground',
+                  )}
+                >
+                  <Focus size={13} strokeWidth={2.25} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" align="end">
+                {threadsFocused ? 'Show workspace hierarchy' : 'Focus threads'}
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label="Start new thread"
+                disabled={model.createThreadDisabled}
+                onClick={onCreateThread}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-panel)/0.5)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.5)] hover:text-foreground active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100"
+              >
+                <Plus size={13} strokeWidth={2.3} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" align="end">
+              {model.createThreadDisabled ? model.createThreadDisabledReason : 'Start new thread'}
+            </TooltipContent>
+          </Tooltip>
+        </div>
       </div>
       <div className="space-y-1">
         {[...activeThreadItems].reverse().map((thread) => (
@@ -429,6 +471,8 @@ function WorkspaceRow({
   onRequestDelete,
   onPrefetchWorkspace,
   showThreadSection,
+  threadsFocused,
+  onThreadsFocusedChange,
 }: {
   workspace: Workspace;
   selected: boolean;
@@ -440,6 +484,8 @@ function WorkspaceRow({
   onRequestDelete: (workspace: Workspace) => void;
   onPrefetchWorkspace: (workspaceId: string) => void;
   showThreadSection: boolean;
+  threadsFocused: boolean;
+  onThreadsFocusedChange: (focused: boolean) => void;
 }) {
   const [isOpen, setIsOpen] = useState(selected);
   const selectedWorkspaceKey = selected ? workspace.id : null;
@@ -537,6 +583,8 @@ function WorkspaceRow({
           model={threadModel}
           onOpenThread={onOpenThread}
           onCreateThread={onCreateThread}
+          threadsFocused={threadsFocused}
+          onThreadsFocusedChange={onThreadsFocusedChange}
         />
       ) : null}
     </div>
@@ -555,6 +603,8 @@ function RepoItem({
   onRequestDeleteWorkspace,
   onPrefetchWorkspace,
   showThreadSections,
+  threadsFocused,
+  onThreadsFocusedChange,
 }: {
   repo: RepoGroup;
   selectedWorkspaceId: string | null;
@@ -567,6 +617,8 @@ function RepoItem({
   onRequestDeleteWorkspace: (workspace: Workspace) => void;
   onPrefetchWorkspace: (workspaceId: string) => void;
   showThreadSections: boolean;
+  threadsFocused: boolean;
+  onThreadsFocusedChange: (focused: boolean) => void;
 }) {
   const hasSelectedWorkspace = repo.workspaces.some((workspace) => workspace.id === selectedWorkspaceId);
   const [isOpen, setIsOpen] = useState(hasSelectedWorkspace);
@@ -645,6 +697,8 @@ function RepoItem({
                 onRequestDelete={onRequestDeleteWorkspace}
                 onPrefetchWorkspace={onPrefetchWorkspace}
                 showThreadSection={showThreadSections}
+                threadsFocused={threadsFocused}
+                onThreadsFocusedChange={onThreadsFocusedChange}
               />
             ))}
           </div>
@@ -662,6 +716,8 @@ export function WorkspaceNavigator({
   onCreateThread,
   onRepositoryConnected,
   threadNavigation,
+  threadsFocused: controlledThreadsFocused,
+  onThreadsFocusedChange,
 }: WorkspaceNavigatorProps) {
   const queryClient = useQueryClient();
   const { selectWorkspace, dispatchFocus } = useWorkspaceStore();
@@ -676,9 +732,16 @@ export function WorkspaceNavigator({
   const [pendingFolderPath, setPendingFolderPath] = useState<string | null>(null);
   const [pendingPolicyPromptAfterSetup, setPendingPolicyPromptAfterSetup] = useState(false);
   const [checkpointMessage, setCheckpointMessage] = useState('WIP: pre-agentree checkpoint');
+  const [localThreadsFocused, setLocalThreadsFocused] = useState(false);
+  const threadsFocused = controlledThreadsFocused ?? localThreadsFocused;
+  const setThreadsFocused = onThreadsFocusedChange ?? setLocalThreadsFocused;
 
   const workspaces = useMemo(() => workspacesData ?? [], [workspacesData]);
   const repoGroups = useMemo(() => groupWorkspacesByRepo(workspaces), [workspaces]);
+  const selectedWorkspace = useMemo(
+    () => workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
+    [selectedWorkspaceId, workspaces],
+  );
   const existingRepoPaths = useMemo(() => (
     new Set(
       repoGroups
@@ -688,6 +751,11 @@ export function WorkspaceNavigator({
   ), [repoGroups]);
   const selectedThreadModel = threadNavigation?.workspaceId === selectedWorkspaceId ? threadNavigation : null;
   const showThreadSections = activeView === 'chat';
+  const showFocusedThreads = threadsFocused && showThreadSections && Boolean(selectedWorkspaceId);
+
+  useEffect(() => {
+    if (!selectedWorkspaceId) setThreadsFocused(false);
+  }, [selectedWorkspaceId, setThreadsFocused]);
 
   useEffect(() => {
     recordPerfEvent('query.workspace-switch.navigator-model-state', {
@@ -867,7 +935,14 @@ export function WorkspaceNavigator({
     })();
   }, [queryClient]);
 
-  const viewLabel = activeView === 'chat' ? 'Graph' : activeView[0].toUpperCase() + activeView.slice(1);
+  const viewLabel = showFocusedThreads
+    ? 'Focused workspace'
+    : activeView === 'chat'
+      ? 'Graph'
+      : activeView[0].toUpperCase() + activeView.slice(1);
+  const navigatorTitle = showFocusedThreads && selectedWorkspace
+    ? getWorkspaceDisplayName(selectedWorkspace)
+    : 'Workspaces';
 
   return (
     <aside className="flex h-full w-[19rem] shrink-0 flex-col border-r border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong)/0.46)] shadow-[inset_-1px_0_0_hsl(var(--foreground)/0.025)]">
@@ -876,24 +951,26 @@ export function WorkspaceNavigator({
           <div className="truncate text-[11px] font-semibold uppercase tracking-[0.14em] text-[hsl(var(--app-accent))]">
             {viewLabel}
           </div>
-          <div className="mt-0.5 truncate text-sm font-semibold text-foreground">Workspaces</div>
+          <div className="mt-0.5 truncate text-sm font-semibold text-foreground">{navigatorTitle}</div>
         </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              aria-label="Add repository"
-              disabled={createWorkspace.isPending}
-              onClick={handleCreateRepo}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.64)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-accent-soft)/0.56)] hover:text-foreground active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              {createWorkspace.isPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} strokeWidth={2.3} />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" align="end">
-            Add repository
-          </TooltipContent>
-        </Tooltip>
+        {!showFocusedThreads ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label="Add repository"
+                disabled={createWorkspace.isPending}
+                onClick={handleCreateRepo}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.64)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-accent-soft)/0.56)] hover:text-foreground active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                {createWorkspace.isPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} strokeWidth={2.3} />}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" align="end">
+              Add repository
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
       </div>
 
       {setupRequirement ? (
@@ -984,6 +1061,14 @@ export function WorkspaceNavigator({
               Add repository
             </Button>
           </div>
+        ) : showFocusedThreads ? (
+          <WorkspaceThreadSection
+            model={selectedThreadModel}
+            onOpenThread={onOpenThread}
+            onCreateThread={onCreateThread}
+            threadsFocused={threadsFocused}
+            onThreadsFocusedChange={setThreadsFocused}
+          />
         ) : (
           <div className="space-y-1.5">
             {repoGroups.map((repo) => (
@@ -1000,13 +1085,15 @@ export function WorkspaceNavigator({
                 onRequestDeleteWorkspace={setWorkspacePendingDelete}
                 onPrefetchWorkspace={handlePrefetchWorkspace}
                 showThreadSections={showThreadSections}
+                threadsFocused={threadsFocused}
+                onThreadsFocusedChange={setThreadsFocused}
               />
             ))}
           </div>
         )}
       </div>
 
-      {workspaces.length > 0 ? (
+      {workspaces.length > 0 && !showFocusedThreads ? (
         <div className="flex shrink-0 items-center justify-between border-t border-[hsl(var(--app-border)/0.56)] px-3 py-2 text-[11px] text-muted-foreground">
           <span>{repoGroups.filter((repo) => repo.id !== 'unassigned').length} repos</span>
           <span>{workspaces.length} workspaces</span>

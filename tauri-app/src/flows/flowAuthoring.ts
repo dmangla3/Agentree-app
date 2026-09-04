@@ -51,6 +51,7 @@ export async function authorFlowFromNaturalLanguage(input: AuthorFlowFromNatural
       request: input.request,
       previousYaml: yaml,
       issues: validation.issues.map((issue) => formatIssue(issue)),
+      registry: baseRegistry,
     })));
     attempts += 1;
     validation = validateDraftYaml(yaml, baseRegistry);

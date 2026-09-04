@@ -149,6 +149,9 @@ fn normalize_journal_timeline_event(event: &JsonValue) -> Option<JsonValue> {
             "content": event.get("thinking").cloned()
                 .or_else(|| event.get("content").cloned())
                 .unwrap_or(JsonValue::Null),
+            "isDelta": event.get("isDelta").cloned()
+                .or_else(|| event.get("is_delta").cloned())
+                .unwrap_or(JsonValue::Bool(false)),
         })),
         "user_steer_requested" => Some(serde_json::json!({
             "type": "user_steer_requested",
@@ -7439,6 +7442,24 @@ mod tests {
         db.append_agent_run_event(
             "run-assistant-journal",
             "assistant-journal",
+            "thinking",
+            None,
+            None,
+            r#"{"type":"thinking","content":"Reading ","is_delta":true,"timestamp":1778917767400}"#,
+        )
+        .expect("thinking delta 1");
+        db.append_agent_run_event(
+            "run-assistant-journal",
+            "assistant-journal",
+            "thinking",
+            None,
+            None,
+            r#"{"type":"thinking","content":"files","isDelta":true,"timestamp":1778917767450}"#,
+        )
+        .expect("thinking delta 2");
+        db.append_agent_run_event(
+            "run-assistant-journal",
+            "assistant-journal",
             "user_steer_requested",
             None,
             None,
@@ -7488,16 +7509,22 @@ mod tests {
         let timeline = payload["execution_data"]["timeline"]
             .as_array()
             .expect("timeline");
-        assert_eq!(timeline.len(), 4);
+        assert_eq!(timeline.len(), 6);
         assert_eq!(timeline[0]["type"], "message");
-        assert_eq!(timeline[1]["type"], "user_steer_requested");
-        assert_eq!(timeline[1]["content"], "please keep going");
-        assert_eq!(timeline[1]["idempotency_key"], "steer-1");
-        assert_eq!(timeline[2]["type"], "tool_use");
-        assert_eq!(timeline[2]["toolName"], "commandExecution");
-        assert_eq!(timeline[2]["toolOutput"], "partial ");
-        assert_eq!(timeline[3]["type"], "tool_result");
-        assert_eq!(timeline[3]["toolOutput"], "{\"name\":\"agentree\"}");
+        assert_eq!(timeline[1]["type"], "thinking");
+        assert_eq!(timeline[1]["content"], "Reading ");
+        assert_eq!(timeline[1]["isDelta"], true);
+        assert_eq!(timeline[2]["type"], "thinking");
+        assert_eq!(timeline[2]["content"], "files");
+        assert_eq!(timeline[2]["isDelta"], true);
+        assert_eq!(timeline[3]["type"], "user_steer_requested");
+        assert_eq!(timeline[3]["content"], "please keep going");
+        assert_eq!(timeline[3]["idempotency_key"], "steer-1");
+        assert_eq!(timeline[4]["type"], "tool_use");
+        assert_eq!(timeline[4]["toolName"], "commandExecution");
+        assert_eq!(timeline[4]["toolOutput"], "partial ");
+        assert_eq!(timeline[5]["type"], "tool_result");
+        assert_eq!(timeline[5]["toolOutput"], "{\"name\":\"agentree\"}");
     }
 
     #[test]

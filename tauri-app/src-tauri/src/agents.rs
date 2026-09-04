@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -13,6 +15,9 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
+
+const AGENT_RUN_WATCHDOG_IDLE_TIMEOUT_MS: i64 = 10 * 60 * 1000;
+const AGENT_RUN_WATCHDOG_POLL_INTERVAL_MS: u64 = 30 * 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +62,13 @@ struct AgentRunSnapshot {
     parent_commit: Option<String>,
     author_name: Option<String>,
     auth_user_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentRunWatchdogDecision {
+    timed_out: bool,
+    idle_ms: i64,
+    reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -123,10 +135,14 @@ pub(crate) struct AgentRunState {
     final_content_override: Option<String>,
     cancel_requested: bool,
     finalized: bool,
+    last_activity_at_ms: i64,
+    last_activity_label: String,
+    watchdog_timeout_requested: bool,
 }
 
 impl AgentRunState {
     fn new(context: AgentRunContext) -> Self {
+        let now_ms = unix_timestamp_millis();
         Self {
             context,
             content: String::new(),
@@ -143,6 +159,9 @@ impl AgentRunState {
             final_content_override: None,
             cancel_requested: false,
             finalized: false,
+            last_activity_at_ms: now_ms,
+            last_activity_label: "run_state_created".to_string(),
+            watchdog_timeout_requested: false,
         }
     }
 }
@@ -156,17 +175,6 @@ pub struct AgentState {
 }
 
 // AgentEvent struct removed - events are now constructed inline using serde_json::json!
-
-fn resolve_codex_home() -> Option<String> {
-    if let Ok(raw) = std::env::var("CODEX_HOME") {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-
-    dirs::home_dir().map(|home| home.join(".codex").to_string_lossy().into_owned())
-}
 
 fn record_local_trace_event(
     app_handle: &AppHandle,
@@ -259,6 +267,19 @@ fn llm_provider_from_execution_data(execution_data: &JsonValue) -> Option<String
     string_from_execution_meta(execution_data, "provider_selected_provider")
         .or_else(|| string_from_execution_meta(execution_data, "provider"))
         .or_else(|| string_from_execution_meta(execution_data, "llmProvider"))
+}
+
+fn agent_id_from_execution_data(execution_data: &JsonValue) -> Option<String> {
+    execution_data
+        .get("agent_id")
+        .or_else(|| execution_data.get("agentId"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.to_string())
+        .or_else(|| string_from_execution_meta(execution_data, "agent_id"))
+        .or_else(|| string_from_execution_meta(execution_data, "agentId"))
+        .or_else(|| string_from_execution_meta(execution_data, "selected_agent_id"))
+        .or_else(|| string_from_execution_meta(execution_data, "selectedAgentId"))
 }
 
 fn run_ledger_user_node_id_from_context(context: &AgentRunContext) -> Option<String> {
@@ -671,6 +692,178 @@ fn finalize_run_state_if_ready(
     terminal_status
 }
 
+fn terminate_agent_child(
+    state: &AgentState,
+    session_id: &str,
+    pid: u32,
+    wait_for_session_removal: bool,
+) -> Result<(), String> {
+    let mut children = state.children.lock().map_err(|e| e.to_string())?;
+    if let Some(child) = children.get_mut(&pid) {
+        let mut terminated = false;
+        #[cfg(unix)]
+        {
+            let pid_i32 = pid as i32;
+            unsafe {
+                if libc::kill(-pid_i32, libc::SIGTERM) != 0 {
+                    libc::kill(pid_i32, libc::SIGTERM);
+                }
+            }
+            for _ in 0..20 {
+                if let Ok(Some(_)) = child.try_wait() {
+                    terminated = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+        }
+        if !terminated {
+            if let Err(err) = child.kill() {
+                let _ = child.wait();
+                return Err(err.to_string());
+            }
+            let _ = child.wait();
+        }
+        drop(children);
+        if wait_for_session_removal {
+            for _ in 0..80 {
+                let active = state
+                    .sessions
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .contains_key(session_id);
+                if !active {
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            return Err(format!(
+                "Timed out waiting for agent {} to stop cleanly",
+                session_id
+            ));
+        }
+        Ok(())
+    } else {
+        Err(format!("No running process found for pid {}", pid))
+    }
+}
+
+pub fn start_agent_run_watchdog(app_handle: AppHandle) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(AGENT_RUN_WATCHDOG_POLL_INTERVAL_MS));
+        let now_ms = unix_timestamp_millis();
+        let sessions = {
+            let state = app_handle.state::<AgentState>();
+            let sessions = match state.sessions.lock() {
+                Ok(sessions) => sessions.clone(),
+                Err(err) => {
+                    crate::app_log!("[AGENT_WATCHDOG] event=sessions_lock_failed err={}", err);
+                    continue;
+                }
+            };
+            sessions
+        };
+
+        for (session_id, pid) in sessions {
+            let decision = {
+                let state = app_handle.state::<AgentState>();
+                let run_state = match state.run_states.lock() {
+                    Ok(run_states) => run_states.get(&session_id).cloned(),
+                    Err(err) => {
+                        crate::app_log!(
+                            "[AGENT_WATCHDOG] event=run_states_lock_failed node_id={} err={}",
+                            session_id,
+                            err
+                        );
+                        None
+                    }
+                };
+                let Some(run_state) = run_state else {
+                    continue;
+                };
+                let mut run_state = match run_state.lock() {
+                    Ok(run_state) => run_state,
+                    Err(err) => {
+                        crate::app_log!(
+                            "[AGENT_WATCHDOG] event=run_state_lock_failed node_id={} err={}",
+                            session_id,
+                            err
+                        );
+                        continue;
+                    }
+                };
+                let decision = decide_agent_run_watchdog_timeout(
+                    run_state.last_activity_at_ms,
+                    now_ms,
+                    AGENT_RUN_WATCHDOG_IDLE_TIMEOUT_MS,
+                    run_state.terminal_status.as_deref(),
+                    run_state.finalized,
+                    run_state.watchdog_timeout_requested,
+                    &run_state.last_activity_label,
+                );
+                if decision.timed_out {
+                    run_state.watchdog_timeout_requested = true;
+                    run_state.terminal_status = Some("failed_runtime".to_string());
+                    if let Some(reason) = decision.reason.as_deref().and_then(clean_failure_reason)
+                    {
+                        run_state.failure_reason = Some(reason.clone());
+                        run_state.stop_reason = Some(reason);
+                    }
+                    run_state
+                        .meta
+                        .insert("native_watchdog_timeout".to_string(), JsonValue::Bool(true));
+                    run_state.meta.insert(
+                        "native_watchdog_idle_ms".to_string(),
+                        JsonValue::from(decision.idle_ms),
+                    );
+                }
+                decision
+            };
+
+            if !decision.timed_out {
+                continue;
+            }
+            let reason = decision.reason.unwrap_or_else(|| {
+                "Agent run timed out after producing no runtime events.".to_string()
+            });
+            crate::app_log!(
+                "[AGENT_WATCHDOG] event=timeout node_id={} pid={} idle_ms={} reason={}",
+                session_id,
+                pid,
+                decision.idle_ms,
+                reason
+            );
+            let payload = serde_json::json!({
+                "type": "watchdog:timeout",
+                "status": "failed_runtime",
+                "phase": "timed_out",
+                "pid": pid,
+                "idle_ms": decision.idle_ms,
+                "reason": reason,
+                "timestamp": now_ms,
+                "stream_source": "tauri_watchdog",
+            });
+            emit_agent_event(&app_handle, &session_id, &payload);
+            let telemetry = app_handle.state::<crate::db::TelemetryDb>();
+            let _ = telemetry.update_agent_run_phase(
+                &session_id,
+                "failed_runtime",
+                "timed_out",
+                payload.get("reason").and_then(|value| value.as_str()),
+            );
+            let state = app_handle.state::<AgentState>();
+            if let Err(err) = terminate_agent_child(&*state, &session_id, pid, false) {
+                crate::app_log!(
+                    "[AGENT_WATCHDOG] event=terminate_failed node_id={} pid={} err={}",
+                    session_id,
+                    pid,
+                    err
+                );
+            }
+        }
+    });
+}
+
 fn merge_json_value(base: &mut JsonValue, patch: &JsonValue) {
     match (base, patch) {
         (JsonValue::Object(base_obj), JsonValue::Object(patch_obj)) => {
@@ -833,6 +1026,9 @@ fn normalize_timeline_event(event: &JsonValue) -> Option<JsonValue> {
             "content": event.get("thinking").cloned()
                 .or_else(|| event.get("content").cloned())
                 .unwrap_or(JsonValue::Null),
+            "isDelta": event.get("isDelta").cloned()
+                .or_else(|| event.get("is_delta").cloned())
+                .unwrap_or(JsonValue::Bool(false)),
         })),
         "user_steer_requested" => Some(serde_json::json!({
             "type": "user_steer_requested",
@@ -970,7 +1166,38 @@ fn clean_failure_reason(value: &str) -> Option<String> {
 }
 
 fn should_persist_failure_reason(status: &str) -> bool {
-    matches!(status, "failed" | "error" | "failed_setup" | "failed_spawn")
+    matches!(
+        status,
+        "failed" | "error" | "failed_setup" | "failed_spawn" | "failed_runtime"
+    )
+}
+
+fn decide_agent_run_watchdog_timeout(
+    last_activity_at_ms: i64,
+    now_ms: i64,
+    timeout_ms: i64,
+    terminal_status: Option<&str>,
+    finalized: bool,
+    timeout_requested: bool,
+    last_activity_label: &str,
+) -> AgentRunWatchdogDecision {
+    let idle_ms = now_ms.saturating_sub(last_activity_at_ms);
+    if terminal_status.is_some() || finalized || timeout_requested || idle_ms < timeout_ms {
+        return AgentRunWatchdogDecision {
+            timed_out: false,
+            idle_ms,
+            reason: None,
+        };
+    }
+    AgentRunWatchdogDecision {
+        timed_out: true,
+        idle_ms,
+        reason: Some(format!(
+            "Agent run produced no runtime events for {} seconds; last activity was {}.",
+            idle_ms / 1000,
+            last_activity_label
+        )),
+    }
 }
 
 fn update_run_state_from_event(run_state: &mut AgentRunState, event: &JsonValue) {
@@ -981,6 +1208,8 @@ fn update_run_state_from_event(run_state: &mut AgentRunState, event: &JsonValue)
     let Some(event_type) = event.get("type").and_then(|value| value.as_str()) else {
         return;
     };
+    run_state.last_activity_at_ms = unix_timestamp_millis();
+    run_state.last_activity_label = event_type.to_string();
     let timestamp = event
         .get("timestamp")
         .and_then(|value| value.as_i64())
@@ -1301,6 +1530,7 @@ fn local_node_payload_for_snapshot(snapshot: &AgentRunSnapshot, workspace_id: &s
         "aiLabel": ai_label_from_execution_data(&snapshot.execution_data),
         "llmModel": llm_model_from_execution_data(&snapshot.execution_data),
         "llmProvider": llm_provider_from_execution_data(&snapshot.execution_data),
+        "agent_id": agent_id_from_execution_data(&snapshot.execution_data),
         "status": snapshot.status,
         "execution_data": snapshot.execution_data,
         "promptTokens": snapshot.prompt_tokens,
@@ -2094,10 +2324,7 @@ fn spawn_agent_internal(
     }
     if agent_type.as_str() == "claude" {
         let invocation = crate::managed_runtime::claude_adapter_invocation(&app)?;
-        args.insert(
-            0,
-            invocation.adapter_script.to_string_lossy().into_owned(),
-        );
+        args.insert(0, invocation.adapter_script.to_string_lossy().into_owned());
         program_override = Some(invocation.node_program);
     }
     if agent_type.as_str() == "bash" {
@@ -2184,6 +2411,10 @@ fn spawn_agent_internal(
         Path::new(&cwd),
         &worktree_config,
     )?;
+    #[cfg(unix)]
+    {
+        command.process_group(0);
+    }
 
     let mut codex_auth_state_to_persist: Option<(String, std::path::PathBuf)> = None;
     if let Some(profile_id) = login_profile_id.as_deref() {
@@ -2227,9 +2458,10 @@ fn spawn_agent_internal(
             command.env(key, value);
         }
     } else if agent_type.as_str() == "codex" {
-        if let Some(codex_home) = resolve_codex_home() {
-            command.env("CODEX_HOME", codex_home);
-        }
+        return Err(
+            "Codex agent runs require an Agentree login profile; refusing to fall back to ~/.codex."
+                .to_string(),
+        );
     }
 
     if let Some(run_context) = run_context.as_ref() {
@@ -2628,6 +2860,12 @@ pub async fn start_agent_run(
         )?;
         intent.repo_path = trusted_repo_path;
     }
+    if intent.agent_type == "codex" && intent.login_profile_id.is_none() {
+        return Err(
+            "Codex agent runs require an Agentree login profile; refusing to fall back to ~/.codex."
+                .to_string(),
+        );
+    }
     let preview = crate::git_workspace::preview_agent_worktree(
         intent.repo_path.clone(),
         intent.assistant_node_id.clone(),
@@ -2961,49 +3199,7 @@ pub fn stop_agent(
         }
     }
 
-    let mut children = state.children.lock().map_err(|e| e.to_string())?;
-    if let Some(child) = children.get_mut(&pid) {
-        let mut terminated = false;
-        #[cfg(unix)]
-        {
-            let pid_i32 = pid as i32;
-            unsafe {
-                libc::kill(pid_i32, libc::SIGTERM);
-            }
-            for _ in 0..20 {
-                if let Ok(Some(_)) = child.try_wait() {
-                    terminated = true;
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(150));
-            }
-        }
-        if !terminated {
-            if let Err(err) = child.kill() {
-                let _ = child.wait();
-                return Err(err.to_string());
-            }
-            let _ = child.wait();
-        }
-        drop(children);
-        for _ in 0..80 {
-            let active = state
-                .sessions
-                .lock()
-                .map_err(|e| e.to_string())?
-                .contains_key(&session_id);
-            if !active {
-                return Ok(());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        Err(format!(
-            "Timed out waiting for agent {} to stop cleanly",
-            session_id
-        ))
-    } else {
-        Err(format!("No running process found for pid {}", pid))
-    }
+    terminate_agent_child(&*state, &session_id, pid, true)
 }
 
 #[tauri::command]
@@ -3036,8 +3232,9 @@ mod tests {
         ai_label_from_execution_data, build_finalize_snapshot,
         cleanup_requires_server_final_persisted, cleanup_terminal_status_allows_cleanup,
         commit_message_for_snapshot, commit_subject_from_execution_data,
-        local_node_payload_for_snapshot, run_ledger_user_node_id_from_context,
-        update_run_state_from_event, AgentRunContext, AgentRunSnapshot, AgentRunState,
+        decide_agent_run_watchdog_timeout, local_node_payload_for_snapshot,
+        run_ledger_user_node_id_from_context, update_run_state_from_event, AgentRunContext,
+        AgentRunSnapshot, AgentRunState,
     };
     use serde_json::json;
 
@@ -3081,6 +3278,7 @@ mod tests {
         ));
         assert!(cleanup_terminal_status_allows_cleanup("completed"));
         assert!(cleanup_terminal_status_allows_cleanup("failed_setup"));
+        assert!(cleanup_terminal_status_allows_cleanup("failed_runtime"));
     }
 
     #[test]
@@ -3098,6 +3296,7 @@ mod tests {
                 "workspace_id": "workspace-1",
                 "parentId": "user-1",
                 "meta": {
+                    "agent_id": "codex:gpt-5.5:high",
                     "llmModel": "openai/gpt-5.5-high",
                     "provider_model": "openai/gpt-5.5-high",
                     "provider_selected_provider": "codex"
@@ -3110,6 +3309,7 @@ mod tests {
 
         assert_eq!(payload["llmModel"], "openai/gpt-5.5-high");
         assert_eq!(payload["llmProvider"], "codex");
+        assert_eq!(payload["agent_id"], "codex:gpt-5.5:high");
         assert_eq!(
             payload["execution_data"]["meta"]["provider_model"],
             "openai/gpt-5.5-high"
@@ -3152,6 +3352,61 @@ mod tests {
             local_node_payload_for_snapshot(&snapshot, "workspace-1")["execution_data"]
                 ["failure_reason"],
             "ImportError: cannot import name 'ParamSpec' from 'typing'"
+        );
+    }
+
+    #[test]
+    fn watchdog_times_out_silent_non_terminal_runs() {
+        let decision = decide_agent_run_watchdog_timeout(
+            1_000,
+            601_000,
+            600_000,
+            None,
+            false,
+            false,
+            "thread_ready",
+        );
+
+        assert!(decision.timed_out);
+        assert_eq!(decision.idle_ms, 600_000);
+        assert!(decision
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("last activity was thread_ready"));
+    }
+
+    #[test]
+    fn watchdog_ignores_terminal_finalized_or_recent_runs() {
+        assert!(
+            !decide_agent_run_watchdog_timeout(
+                1_000,
+                601_000,
+                600_000,
+                Some("completed"),
+                false,
+                false,
+                "message"
+            )
+            .timed_out
+        );
+        assert!(
+            !decide_agent_run_watchdog_timeout(
+                1_000, 601_000, 600_000, None, true, false, "message"
+            )
+            .timed_out
+        );
+        assert!(
+            !decide_agent_run_watchdog_timeout(
+                1_000, 601_000, 600_000, None, false, true, "message"
+            )
+            .timed_out
+        );
+        assert!(
+            !decide_agent_run_watchdog_timeout(
+                1_000, 600_999, 600_000, None, false, false, "message"
+            )
+            .timed_out
         );
     }
 
@@ -3240,6 +3495,25 @@ mod tests {
         assert_eq!(state.content, "first\n\nsecond");
         assert_eq!(state.timeline.len(), 1);
         assert_eq!(state.timeline[0]["content"], "first\n\nsecond");
+    }
+
+    #[test]
+    fn thinking_deltas_preserve_delta_metadata_in_timeline() {
+        let mut state = test_run_state();
+        update_run_state_from_event(
+            &mut state,
+            &json!({"type": "thinking", "content": "Reading ", "is_delta": true, "timestamp": 1}),
+        );
+        update_run_state_from_event(
+            &mut state,
+            &json!({"type": "thinking", "content": "files", "isDelta": true, "timestamp": 2}),
+        );
+
+        assert_eq!(state.timeline.len(), 2);
+        assert_eq!(state.timeline[0]["content"], "Reading ");
+        assert_eq!(state.timeline[0]["isDelta"], true);
+        assert_eq!(state.timeline[1]["content"], "files");
+        assert_eq!(state.timeline[1]["isDelta"], true);
     }
 
     #[test]

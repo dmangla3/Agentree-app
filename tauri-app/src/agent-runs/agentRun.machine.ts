@@ -186,6 +186,21 @@ const failureReasonPatch = (value: unknown): Record<string, string> => {
 
 const appendTimelineEvent = (timeline: any[], nextEvent: any) => {
   const nextTimeline = [...timeline];
+  if (nextEvent?.type === 'message') {
+    const content = typeof nextEvent.content === 'string' ? nextEvent.content : '';
+    if (!content) return nextTimeline;
+    const lastIndex = nextTimeline.length - 1;
+    const prior = lastIndex >= 0 ? nextTimeline[lastIndex] : null;
+    if (prior?.type === 'message') {
+      const existingContent = typeof prior.content === 'string' ? prior.content : '';
+      nextTimeline[lastIndex] = {
+        ...prior,
+        content: `${existingContent}${content}`,
+        timestamp: nextEvent.timestamp ?? prior.timestamp,
+      };
+      return nextTimeline;
+    }
+  }
   if (nextEvent?.type === 'thinking' && (nextEvent.isDelta || nextEvent.is_delta)) {
     const lastIndex = nextTimeline.length - 1;
     const prior = lastIndex >= 0 ? nextTimeline[lastIndex] : null;
@@ -395,7 +410,9 @@ export const reduceAgentRunSnapshot = (
     case 'content':
       {
         if (!shouldAcceptContentEvent(snapshot, event)) return snapshot;
-        const timeline = appendAssistantTimelineMessage(snapshot.timeline, event.appendedText, event.timestamp);
+        const timeline = isTerminalAgentStatus(snapshot.status)
+          ? replaceAssistantTimelineMessage(snapshot.timeline, event.content, event.timestamp)
+          : appendAssistantTimelineMessage(snapshot.timeline, event.appendedText, event.timestamp);
         return {
         ...updateStatus(snapshot, 'streaming', snapshot.progress),
         content: event.content,

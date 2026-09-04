@@ -18,6 +18,7 @@ interface ListViewProps {
   onSelectionChange?: (params: { nodes: any[] }) => void;
   onRequestDeleteMessages?: (messageIds: string[]) => void;
   onAddCommitsToMergePanel?: (messageIds: string[]) => void;
+  onMarkThreadDone?: (threadRootId: string) => void;
 }
 
 const groupItemsByDay = (items: any[]) => {
@@ -98,6 +99,7 @@ export const ListView = memo(({
   onSelectionChange,
   onRequestDeleteMessages,
   onAddCommitsToMergePanel,
+  onMarkThreadDone,
 }: ListViewProps) => {
   const [contextMenu, setContextMenu] = useState<NodeContextMenuState | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -335,6 +337,7 @@ export const ListView = memo(({
         onClose={() => setContextMenu(null)}
         onDeleteMessages={onRequestDeleteMessages}
         onAddCommitsToMergePanel={onAddCommitsToMergePanel}
+        onMarkThreadDone={onMarkThreadDone}
       />
     </div>
   );

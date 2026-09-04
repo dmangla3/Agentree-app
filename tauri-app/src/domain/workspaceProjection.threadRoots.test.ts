@@ -286,8 +286,11 @@ describe('workspace projection thread roots', () => {
       ],
     });
 
+    expect(projection.commitBySha.get('agent-a')?.ownerThreadRootId).toBe('thread-a');
+    expect(projection.commitBySha.get('agent-a')?.representedThreadRootIds).toEqual(['thread-a']);
+    expect(projection.commitBySha.get('external-merge')?.ownerThreadRootId).toBeNull();
     expect(projection.commitBySha.get('external-merge')?.isProminentMerge).toBe(true);
     expect(projection.commitBySha.get('external-merge')?.layoutParentSha).toBe('agent-a');
-    expect(projection.commitBySha.get('external-merge')?.owningThreadRootIds).toEqual(['thread-a', 'thread-b']);
+    expect(projection.commitBySha.get('external-merge')?.representedThreadRootIds).toEqual(['thread-a', 'thread-b']);
   });
 });

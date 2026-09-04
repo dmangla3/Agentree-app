@@ -35,14 +35,14 @@ afterEach(() => {
 });
 
 describe('resolveProviderAssistantOutput', () => {
-  it('replaces prior Codex assistant item text when a later item completes', () => {
+  it('keeps later Codex assistant item text cumulative until final content arrives', () => {
     const result = resolveProviderAssistantOutput('I will inspect first.', 'I inspected and fixed it.', {
       kind: 'snapshot',
       currentProviderItemId: 'msg-initial',
       nextProviderItemId: 'msg-final',
     });
 
-    expect(result.output).toBe('I inspected and fixed it.');
+    expect(result.output).toBe('I will inspect first.I inspected and fixed it.');
     expect(result.providerItemId).toBe('msg-final');
   });
 

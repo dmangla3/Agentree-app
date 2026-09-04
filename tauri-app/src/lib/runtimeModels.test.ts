@@ -2,6 +2,27 @@ import { describe, expect, it } from 'vitest';
 import { runtimeModels } from './runtimeModels';
 
 describe('runtimeModels', () => {
+  it('only exposes current Codex model families in the selector catalog', () => {
+    const codexFamilyKeys = [
+      ...new Set(
+        runtimeModels
+          .filter((model) => model.provider === 'codex')
+          .map((model) => model.familyKey)
+      ),
+    ];
+
+    expect(codexFamilyKeys).toEqual([
+      'codex:gpt-5.5',
+      'codex:gpt-5.4',
+      'codex:gpt-5.4-mini',
+    ]);
+    expect(codexFamilyKeys).not.toContain('codex:gpt-5.3-codex');
+    expect(codexFamilyKeys).not.toContain('codex:gpt-5.2-codex');
+    expect(codexFamilyKeys).not.toContain('codex:gpt-5.2');
+    expect(codexFamilyKeys).not.toContain('codex:gpt-5.1-codex-max');
+    expect(codexFamilyKeys).not.toContain('codex:gpt-5.1-codex-mini');
+  });
+
   it('includes the current Claude model families exposed by Anthropic', () => {
     const claudeFamilies = new Map(
       runtimeModels

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import fs from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import readline from 'node:readline';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
@@ -31,6 +32,15 @@ const FINAL_RESULT_SCHEMA = {
 
 function nowMs() {
   return Date.now();
+}
+
+export function isDirectExecution(metaUrl, argvPath) {
+  if (!argvPath) return false;
+  try {
+    return fs.realpathSync(fileURLToPath(metaUrl)) === fs.realpathSync(argvPath);
+  } catch {
+    return metaUrl === pathToFileURL(argvPath).href;
+  }
 }
 
 function emit(event) {
@@ -406,24 +416,91 @@ function summarizeToolInput(input, maxLength = 400) {
   }
 }
 
-function emitToolStarted(block, seenToolUseIds) {
+function hasUsefulToolInput(input) {
+  return Boolean(
+    input
+    && typeof input === 'object'
+    && !Array.isArray(input)
+    && Object.keys(input).length > 0
+  );
+}
+
+function normalizedToolInput(block) {
+  return block?.input ?? block?.tool_input ?? block?.toolInput ?? block?.arguments ?? {};
+}
+
+export function toolStartedEventFromBlock(block) {
   if (!block || typeof block !== 'object') return;
   if (!['tool_use', 'server_tool_use', 'mcp_tool_use'].includes(block.type)) return;
   if (isStructuredOutputBlock(block)) return;
-  if (block.id && seenToolUseIds?.has(block.id)) return;
-  if (block.id) seenToolUseIds?.add(block.id);
-  const toolName = block.name ?? 'tool';
-  emit({
+  const toolName = block.name ?? block.tool_name ?? 'tool';
+  const input = normalizedToolInput(block);
+  return {
     type: 'tool_use',
-    id: block.id ?? null,
+    id: block.id ?? block.tool_use_id ?? null,
     name: toolName,
     toolName,
-    input: block.input ?? {},
-    tool_input: block.input ?? {},
-    detail: summarizeToolInput(block.input),
-    provider_item_id: block.id ?? null,
+    input,
+    tool_input: input,
+    detail: summarizeToolInput(input),
+    item_type: block.type,
+    provider_item_id: block.id ?? block.tool_use_id ?? null,
+    provider_item: block,
     timestamp: nowMs(),
-  });
+  };
+}
+
+function emitToolStarted(block, seenToolUseIds, options = {}) {
+  const event = toolStartedEventFromBlock(block);
+  if (!event) return;
+  const id = event.id ?? event.provider_item_id ?? null;
+  const alreadySeen = Boolean(id && seenToolUseIds?.has(id));
+  if (alreadySeen && !(options.forceUpdate && hasUsefulToolInput(event.input))) return;
+  if (id) seenToolUseIds?.add(id);
+  emit(event);
+}
+
+export function mergeToolInputDelta(previous, delta) {
+  if (!delta || typeof delta !== 'object') return previous;
+  if (delta.type !== 'input_json_delta' || typeof delta.partial_json !== 'string') return previous;
+  const json = `${previous?.json ?? ''}${delta.partial_json}`;
+  try {
+    return { json, input: JSON.parse(json) };
+  } catch {
+    return { json, input: previous?.input ?? null };
+  }
+}
+
+function rememberActiveToolBlock(event, activeToolBlocksByIndex) {
+  const block = event?.content_block;
+  if (!block || typeof block !== 'object') return;
+  if (!['tool_use', 'server_tool_use', 'mcp_tool_use'].includes(block.type)) return;
+  if (typeof event.index === 'number') {
+    activeToolBlocksByIndex.set(event.index, block);
+  }
+}
+
+function applyToolInputDelta(event, activeToolBlocksByIndex, toolInputDeltasById, seenToolUseIds) {
+  const delta = event?.delta;
+  if (delta?.type !== 'input_json_delta') return false;
+  const baseBlock = typeof event.index === 'number' ? activeToolBlocksByIndex.get(event.index) : null;
+  const id = event?.content_block?.id ?? baseBlock?.id ?? null;
+  if (!id) return true;
+  const next = mergeToolInputDelta(toolInputDeltasById.get(id), delta);
+  toolInputDeltasById.set(id, next);
+  if (next.input && typeof next.input === 'object') {
+    emitToolStarted(
+      {
+        ...(baseBlock ?? {}),
+        ...(event.content_block ?? {}),
+        id,
+        input: next.input,
+      },
+      seenToolUseIds,
+      { forceUpdate: true }
+    );
+  }
+  return true;
 }
 
 function sdkUserMessage(content, priority = 'now') {
@@ -438,6 +515,20 @@ function sdkUserMessage(content, priority = 'now') {
       content: [{ type: 'text', text: content }],
     },
   };
+}
+
+export function isSteerContinuationResult(message, pendingSteerContinuations) {
+  if (!message || pendingSteerContinuations <= 0 || message.type !== 'result' || message.is_error) {
+    return false;
+  }
+  const stopReason = typeof message.stop_reason === 'string' ? message.stop_reason.toLowerCase() : '';
+  const terminalReason = typeof message.terminal_reason === 'string' ? message.terminal_reason.toLowerCase() : '';
+  return (
+    stopReason.includes('interrupt') ||
+    stopReason.includes('abort') ||
+    terminalReason === 'aborted_streaming' ||
+    terminalReason === 'aborted_tools'
+  );
 }
 
 function createMessageQueue() {
@@ -514,6 +605,7 @@ async function main() {
   const seenToolUseIds = new Set();
   const structuredOutputToolUseIds = new Set();
   const rawMessageTypes = new Set();
+  let pendingSteerContinuations = 0;
 
   emitTrace('adapter_started', { node_id: args.nodeId, cwd: process.cwd() });
 
@@ -706,6 +798,7 @@ async function main() {
       return;
     }
     inputQueue.push(sdkUserMessage(content, 'now'));
+    pendingSteerContinuations += 1;
     emit({
       type: 'provider_steer_ack',
       idempotency_key: control.idempotency_key ?? null,
@@ -717,6 +810,8 @@ async function main() {
 
   try {
     const stream = query({ prompt: inputQueue, options });
+    const activeToolBlocksByIndex = new Map();
+    const toolInputDeltasById = new Map();
     for await (const message of stream) {
       rawMessageTypes.add(message.type);
       if (message.session_id && message.session_id !== activeSessionId) {
@@ -753,10 +848,14 @@ async function main() {
             if (event.content_block?.id) structuredOutputToolUseIds.add(event.content_block.id);
             continue;
           }
+          rememberActiveToolBlock(event, activeToolBlocksByIndex);
           emitToolStarted(event.content_block, seenToolUseIds);
           continue;
         }
         if (event?.type === 'content_block_delta') {
+          if (applyToolInputDelta(event, activeToolBlocksByIndex, toolInputDeltasById, seenToolUseIds)) {
+            continue;
+          }
           const delta = event.delta;
           const textDelta =
             delta?.type === 'text_delta'
@@ -804,7 +903,7 @@ async function main() {
           });
         }
         if (Array.isArray(content)) {
-          for (const block of content) emitToolStarted(block, seenToolUseIds);
+          for (const block of content) emitToolStarted(block, seenToolUseIds, { forceUpdate: true });
         }
         continue;
       }
@@ -847,6 +946,20 @@ async function main() {
         lastUsage = mapUsage(message.usage) ?? lastUsage;
         if (lastUsage) {
           emit({ type: 'usage', usage: lastUsage, timestamp: nowMs() });
+        }
+        if (isSteerContinuationResult(message, pendingSteerContinuations)) {
+          pendingSteerContinuations -= 1;
+          emit({
+            type: 'provider_meta',
+            meta: {
+              provider_steer_continuation: true,
+              provider_steer_interrupted_turn_id: message.uuid ?? lastAssistantUuid,
+              provider_steer_pending_continuations: pendingSteerContinuations,
+              provider_stop_reason: message.stop_reason ?? message.subtype ?? message.terminal_reason ?? 'interrupt',
+            },
+            timestamp: nowMs(),
+          });
+          continue;
         }
         const finalContent = typeof message.result === 'string' && message.result.length > 0
           ? message.result
@@ -965,7 +1078,7 @@ async function main() {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isDirectExecution(import.meta.url, process.argv[1])) {
   const exitCode = await main();
   process.exit(exitCode);
 }

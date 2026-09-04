@@ -13,6 +13,7 @@ const makeCommit = (): ProjectedCommitEntity => ({
   placement: 'commit_lineage',
   producedByNodeId: null,
   visualOwnerNodeId: null,
+  ownerThreadRootId: null,
   parentShas: ['parent123'],
   parentRows: [{ child_sha: 'abc123456789', parent_sha: 'parent123', parent_index: 0 }],
   isMerge: false,
@@ -23,7 +24,7 @@ const makeCommit = (): ProjectedCommitEntity => ({
     { commit_sha: 'abc123456789', git_ref: 'refs/heads/main', source_kind: 'external' },
   ],
   sortTs: Date.parse('2026-05-12T00:00:00.000Z'),
-  owningThreadRootIds: [],
+  representedThreadRootIds: [],
   commit: {
     sha: 'abc123456789',
     workspace_id: 'workspace-1',

@@ -76,6 +76,7 @@ export interface ProjectedCommitEntity {
   placement: CommitPlacement;
   producedByNodeId: string | null;
   visualOwnerNodeId: string | null;
+  ownerThreadRootId: string | null;
   parentShas: string[];
   parentRows: CommitParentEntity[];
   isMerge: boolean;
@@ -85,7 +86,7 @@ export interface ProjectedCommitEntity {
   observations: CommitObservationEntity[];
   commit: CommitEntity;
   sortTs: number;
-  owningThreadRootIds: string[];
+  representedThreadRootIds: string[];
 }
 
 export interface ProjectedCommitLaneRow {
@@ -650,6 +651,20 @@ const buildCommitProjection = (
 
   const commitBySha = new Map<string, ProjectedCommitEntity>();
 
+  const getOwnerThreadRootId = (
+    producedByNodeId: string | null,
+    outputOwnerNodeId: string | null,
+  ): string | null => {
+    const producedByThreadRootId = producedByNodeId
+      ? threadRootIndex.threadRootIdByMessageId.get(producedByNodeId) ?? null
+      : null;
+    if (producedByThreadRootId) return producedByThreadRootId;
+
+    return outputOwnerNodeId
+      ? threadRootIndex.threadRootIdByMessageId.get(outputOwnerNodeId) ?? null
+      : null;
+  };
+
   for (const commit of commits) {
     if (!commit.sha) continue;
     const parentRows: CommitParentEntity[] = (parentsByChildSha.get(commit.sha) ?? commit.parents ?? [])
@@ -682,6 +697,7 @@ const buildCommitProjection = (
       placement: visualOwnerNodeId ? 'conversation_sidecar' : 'commit_lineage',
       producedByNodeId,
       visualOwnerNodeId,
+      ownerThreadRootId: getOwnerThreadRootId(producedByNodeId, outputOwner?.id ?? null),
       parentShas: parentRows.map((parent) => parent.parent_sha),
       parentRows,
       isMerge,
@@ -691,7 +707,7 @@ const buildCommitProjection = (
       observations,
       commit,
       sortTs: getCommitSortTs(commit),
-      owningThreadRootIds: [],
+      representedThreadRootIds: [],
     };
     commitBySha.set(commit.sha, projected);
   }
@@ -739,13 +755,10 @@ const buildCommitProjection = (
     return commit.parentRows[0]?.parent_sha ?? commit.parentShas[0] ?? null;
   };
 
-  const getOwningThreadRootIds = (commit: ProjectedCommitEntity): string[] => {
+  const getRepresentedThreadRootIds = (commit: ProjectedCommitEntity): string[] => {
     const owners = new Set<string>();
 
-    if (commit.visualOwnerNodeId) {
-      const ownerThreadRootId = threadRootIndex.threadRootIdByMessageId.get(commit.visualOwnerNodeId);
-      if (ownerThreadRootId) owners.add(ownerThreadRootId);
-    }
+    if (commit.ownerThreadRootId) owners.add(commit.ownerThreadRootId);
 
     if (commit.isMerge) {
       commit.parentShas.forEach((parentSha) => {
@@ -767,7 +780,7 @@ const buildCommitProjection = (
       || commit.sourceKind === 'merge'
       || hasAgentreeParent
     );
-    commit.owningThreadRootIds = getOwningThreadRootIds(commit);
+    commit.representedThreadRootIds = getRepresentedThreadRootIds(commit);
   });
 
   const sortedCommits = Array.from(commitBySha.values()).sort((left, right) => {

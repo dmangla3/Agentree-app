@@ -46,6 +46,7 @@ describe('createFlowNodeMessages', () => {
     expect(pair.assistantNode.execution_data?.meta).toEqual(expect.objectContaining({
       context_parent_node_id: 'context-1',
       context_base_node_id: 'base-1',
+      agent_id: 'agent-1',
       flow_id: 'parallel_review_until_satisfied',
       flow_source_id: 'parallel_review_until_satisfied',
       flow_source_version: 1,

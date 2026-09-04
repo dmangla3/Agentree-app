@@ -10,7 +10,7 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::AppHandle;
@@ -18,6 +18,10 @@ use tauri::AppHandle;
 static MCP_STARTED: AtomicBool = AtomicBool::new(false);
 static MCP_AUTH_TOKEN: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 static MCP_WORKSPACE_ID: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+/// Port the MCP server actually bound to (0 until the server is up). When no
+/// explicit port override is configured the server binds to an OS-assigned free
+/// port, and this is how the rest of the app learns which one it got.
+static MCP_ACTUAL_PORT: AtomicU16 = AtomicU16::new(0);
 
 fn configured_mcp_bind_addr() -> String {
     env::var("AGENTREE_MCP_BIND").unwrap_or_else(|_| "127.0.0.1".to_string())
@@ -37,9 +41,23 @@ fn mcp_server_url_from_parts(bind_addr: Option<&str>, port: Option<&str>) -> Str
     format!("http://{}:{}/mcp", bind_addr, port)
 }
 
+/// Port string the rest of the app should connect to: an explicit override wins,
+/// otherwise the port we actually bound. `None` only before the server is up.
+fn resolved_mcp_port_string() -> Option<String> {
+    if let Some(port) = configured_mcp_port_string() {
+        return Some(port);
+    }
+    let actual = MCP_ACTUAL_PORT.load(Ordering::SeqCst);
+    if actual != 0 {
+        Some(actual.to_string())
+    } else {
+        None
+    }
+}
+
 pub fn mcp_server_url() -> String {
     let bind_addr = configured_mcp_bind_addr();
-    let port = configured_mcp_port_string();
+    let port = resolved_mcp_port_string();
     mcp_server_url_from_parts(Some(bind_addr.as_str()), port.as_deref())
 }
 
@@ -81,9 +99,42 @@ pub fn start_mcp_server(_app_handle: AppHandle) {
     }
 
     let bind_addr = configured_mcp_bind_addr();
-    let port = configured_mcp_port_string()
+    // An explicit port override is honored; otherwise bind to port 0 so the OS
+    // assigns a free port. This lets multiple Agentree builds (e.g. dev +
+    // release) run at once instead of colliding on one hardcoded port.
+    let requested_port = configured_mcp_port_string()
         .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(61337);
+        .unwrap_or(0);
+
+    let addr: SocketAddr = match format!("{}:{}", bind_addr, requested_port).parse() {
+        Ok(addr) => addr,
+        Err(err) => {
+            MCP_STARTED.store(false, Ordering::SeqCst);
+            crate::app_log!(
+                "[MCP] Invalid MCP bind address {}:{}: {}",
+                bind_addr,
+                requested_port,
+                err
+            );
+            return;
+        }
+    };
+
+    // Bind synchronously so the actual port is known before this function
+    // returns. Adapters spawned later read it via mcp_server_url().
+    let std_listener = match bind_mcp_listener(addr) {
+        Ok(listener) => listener,
+        Err(err) => {
+            MCP_STARTED.store(false, Ordering::SeqCst);
+            crate::app_log!("[MCP] Failed to bind MCP server on {}: {}", addr, err);
+            return;
+        }
+    };
+    let actual_port = std_listener
+        .local_addr()
+        .map(|addr| addr.port())
+        .unwrap_or(requested_port);
+    MCP_ACTUAL_PORT.store(actual_port, Ordering::SeqCst);
 
     let server_base_url = crate::config::server_base_url();
     let state = Arc::new(McpState {
@@ -95,29 +146,35 @@ pub fn start_mcp_server(_app_handle: AppHandle) {
         .route("/mcp", post(handle_rpc).get(handle_sse))
         .with_state(state);
 
-    let addr: SocketAddr = format!("{}:{}", bind_addr, port)
-        .parse()
-        .expect("Invalid MCP bind address");
-
     tauri::async_runtime::spawn(async move {
-        crate::app_log!("[MCP] Starting MCP server on http://{}:{}", bind_addr, port);
-        let listener = match bind_mcp_listener(addr).await {
+        crate::app_log!(
+            "[MCP] Starting MCP server on http://{}:{}",
+            bind_addr,
+            actual_port
+        );
+        let listener = match tokio::net::TcpListener::from_std(std_listener) {
             Ok(listener) => listener,
             Err(err) => {
+                MCP_ACTUAL_PORT.store(0, Ordering::SeqCst);
                 MCP_STARTED.store(false, Ordering::SeqCst);
-                crate::app_log!("[MCP] Failed to bind MCP server on {}: {}", addr, err);
+                crate::app_log!("[MCP] Failed to adopt MCP listener: {}", err);
                 return;
             }
         };
         if let Err(err) = axum::serve(listener, app).await {
             crate::app_log!("[MCP] Server error: {}", err);
         }
+        MCP_ACTUAL_PORT.store(0, Ordering::SeqCst);
         MCP_STARTED.store(false, Ordering::SeqCst);
     });
 }
 
-async fn bind_mcp_listener(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
-    tokio::net::TcpListener::bind(addr).await
+/// Bind the MCP listener. `set_nonblocking` is required so the std listener can
+/// later be adopted by tokio via `TcpListener::from_std`.
+fn bind_mcp_listener(addr: SocketAddr) -> std::io::Result<std::net::TcpListener> {
+    let listener = std::net::TcpListener::bind(addr)?;
+    listener.set_nonblocking(true)?;
+    Ok(listener)
 }
 
 #[tauri::command]
@@ -716,21 +773,43 @@ impl PendingError {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn bind_mcp_listener_returns_error_when_address_is_in_use() {
-        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("test listener should bind");
+    #[test]
+    fn bind_mcp_listener_returns_error_when_address_is_in_use() {
+        let occupied =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
         let addr = occupied
             .local_addr()
             .expect("test listener should have a local address");
 
-        let result = bind_mcp_listener(addr).await;
+        let result = bind_mcp_listener(addr);
 
         assert!(
             result.is_err(),
             "binding an already occupied MCP address should return an error"
         );
+    }
+
+    #[test]
+    fn bind_mcp_listener_assigns_free_port_for_port_zero() {
+        let listener = bind_mcp_listener("127.0.0.1:0".parse().expect("addr parses"))
+            .expect("binding to port 0 should succeed");
+        let port = listener
+            .local_addr()
+            .expect("listener should have a local address")
+            .port();
+        assert_ne!(port, 0, "OS should assign a concrete free port");
+    }
+
+    #[test]
+    fn resolved_port_reports_actual_bound_port_without_override() {
+        // Only meaningful when the environment sets no explicit port override.
+        if configured_mcp_port_string().is_some() {
+            return;
+        }
+        MCP_ACTUAL_PORT.store(54321, Ordering::SeqCst);
+        assert_eq!(resolved_mcp_port_string().as_deref(), Some("54321"));
+        assert_eq!(mcp_server_url(), "http://127.0.0.1:54321/mcp");
+        MCP_ACTUAL_PORT.store(0, Ordering::SeqCst);
     }
 
     #[test]
