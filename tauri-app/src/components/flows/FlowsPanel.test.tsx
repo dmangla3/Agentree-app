@@ -179,7 +179,7 @@ describe('FlowsPanel', () => {
     expect(nodePromptRows.every((row) => !(row as HTMLDetailsElement).open)).toBe(true);
     expect(nodePromptRows[1].querySelector('summary')?.textContent).toContain('Synthesizer');
     expect(screen.getByText(/Please implement:/)).toBeTruthy();
-    expect(screen.getByText(/Produce one finalized commit that best satisfies the request/)).toBeTruthy();
+    expect(screen.getByText(/Create or update the file-backed artifact that best satisfies the request/)).toBeTruthy();
     expect(screen.getByText(/You are an Agentree handoff checkpoint/)).toBeTruthy();
   });
 

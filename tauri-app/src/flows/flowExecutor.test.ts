@@ -261,6 +261,94 @@ describe('executeFlow', () => {
     expect(calls.map((call) => call.templateId)).toEqual(['Reviewer', 'Reviewer', 'Reviewer']);
   });
 
+  it('hydrates defaulted flow inputs before evaluating expressions', async () => {
+    const definition: FlowDefinition = {
+      flow: { id: 'default_review_count' },
+      inputs: {
+        input: { type: 'string' },
+        review_count: { type: 'integer', default: 3, min: 1, max: 8 },
+      },
+      nodes: [{
+        id: 'Reviewer',
+        params: ['request'],
+        paramTypes: { request: ['string'] },
+        parent: 'root',
+        prompt: 'review {{ request }}',
+      }],
+      run: [{
+        set: 'reviewers',
+        parallel: {
+          count: 'input.review_count',
+          call: 'Reviewer',
+          parent: 'root',
+          args: { request: 'input.input' },
+        },
+      }],
+    };
+    const calls: FlowNodeRunInput[] = [];
+    const runner: FlowNodeRunner = {
+      async runNode(input) {
+        calls.push(input);
+        return node({ id: `reviewer-${calls.length}` });
+      },
+    };
+
+    const result = await executeFlow({
+      definition,
+      inputs: { input: 'Review the synthesized plan' },
+      runner,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(calls).toHaveLength(3);
+    expect(result.scope.input).toEqual({
+      input: 'Review the synthesized plan',
+      review_count: 3,
+    });
+  });
+
+  it('stops before launching nodes when a required flow input is missing', async () => {
+    const definition: FlowDefinition = {
+      flow: { id: 'missing_input' },
+      inputs: {
+        input: { type: 'string' },
+        review_count: { type: 'integer', min: 1, max: 8 },
+      },
+      nodes: [{
+        id: 'Reviewer',
+        params: ['request'],
+        paramTypes: { request: ['string'] },
+        parent: 'root',
+        prompt: 'review {{ request }}',
+      }],
+      run: [{
+        set: 'reviewers',
+        parallel: {
+          count: 'input.review_count',
+          call: 'Reviewer',
+          parent: 'root',
+          args: { request: 'input.input' },
+        },
+      }],
+    };
+    const calls: FlowNodeRunInput[] = [];
+
+    const result = await executeFlow({
+      definition,
+      inputs: { input: 'Review the synthesized plan' },
+      runner: {
+        async runNode(input) {
+          calls.push(input);
+          return node({ id: 'reviewer' });
+        },
+      },
+    });
+
+    expect(result.status).toBe('stopped');
+    expect(result.reason).toBe('Flow input "review_count" is required.');
+    expect(calls).toHaveLength(0);
+  });
+
   it('runs branch-specific parallel calls with distinct args', async () => {
     const definition: FlowDefinition = {
       flow: { id: 'branch_parallel_execution' },

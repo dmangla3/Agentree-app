@@ -15,6 +15,12 @@ describe('Workspace navigator thread migration layout', () => {
     expect(source).toContain('WorkspaceThreadSection');
     expect(source).toContain('ThreadNodeHoverCard');
     expect(source).toContain('Done threads');
+    expect(source).toContain('aria-label="Collapse navigator"');
+    expect(source).toContain('Collapse navigator');
+    expect(source).toContain('CollapsedWorkspaceNavigator');
+    expect(source).toContain('aria-label="Expand threads bar"');
+    expect(source).toContain('repoCount={repoCount}');
+    expect(source).toContain('workspaceCount={workspaces.length}');
     expect(source).toContain("aria-label={threadsFocused ? 'Show workspace hierarchy' : 'Focus threads'}");
     expect(source).toContain('showFocusedThreads ? (');
     expect(source).toContain('const threadsFocused = controlledThreadsFocused ?? localThreadsFocused');
@@ -30,5 +36,7 @@ describe('Workspace navigator thread migration layout', () => {
     expect(graphViewSource).not.toContain('threadNavigationOrientation');
     expect(graphControlsSource).not.toContain('aria-label={`Threads (${threadItems.length})`}');
     expect(graphViewSource).toContain('onThreadNavigationModelChange');
+    expect(graphViewSource).toContain('threadBarCollapsed ? \'thread-bar-collapsed\' : \'thread-bar-open\'');
+    expect(graphViewSource).toContain('onThreadBarCollapsedChange: handleThreadBarCollapsedChange');
   });
 });

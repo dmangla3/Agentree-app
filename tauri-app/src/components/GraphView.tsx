@@ -75,6 +75,7 @@ import { collectDeleteBranchMessageIds, getDeleteBranchPreview, getTopLevelDelet
 import { getBranchPointerCommitSha, getMessageBaseCommitSha, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { shouldRefreshHeldGraphMessagesForStructuralChange } from '../lib/graph/graphComputationHold';
 import { reconcileTerminalAgentRunsFromMessages } from '../lib/agentRunTerminalReconciliation';
+import { isNoAgentSessionFoundError, markStalePrelaunchFlowNodeCancelled } from '../lib/localAgentRunTerminal';
 import { addDeletedGraphCommitShas, readDeletedGraphCommitShas } from '../lib/graph/commitGraphTombstones';
 import { getLeafMessagesByRecency, getLeafNavigationLabel } from '../lib/graph/leafNodes';
 import { getThreadAwarenessSummary } from '../lib/graph/threadAwareness';
@@ -4854,6 +4855,28 @@ function GraphViewInternal({
             });
             await scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'stop-agent' });
         } catch (error) {
+            if (isNoAgentSessionFoundError(error)) {
+                const message = messageMap.get(nodeId) ?? null;
+                const marked = await markStalePrelaunchFlowNodeCancelled({
+                    queryClient,
+                    workspaceId: selectedWorkspaceId,
+                    nodeId,
+                    node: message,
+                    reason: 'Flow cancelled after the app restarted before the native agent session was created.',
+                });
+                if (marked) {
+                    agentRunManager.dispatch(nodeId, {
+                        type: 'terminal',
+                        status: 'cancelled',
+                        reason: 'cancelled',
+                    }, {
+                        workspaceId: selectedWorkspaceId,
+                        role: 'assistant',
+                    });
+                    await scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'cancel-stale-flow-node' });
+                    return;
+                }
+            }
             console.error('[GraphView] Failed to stop agent from list:', error);
             toast.error('Unable to stop agent', 'The stop request did not complete.');
         }
@@ -4908,6 +4931,7 @@ function GraphViewInternal({
         [
             selectedWorkspaceId ?? 'none',
             doneThreadsCollapsed ? 'done-collapsed' : 'done-open',
+            threadBarCollapsed ? 'thread-bar-collapsed' : 'thread-bar-open',
             createThreadDisabled ? 'create-disabled' : 'create-enabled',
             createThreadDisabledReason ?? '',
             ...threadIndexItems.map((thread) => [
@@ -4930,6 +4954,7 @@ function GraphViewInternal({
         createThreadDisabledReason,
         doneThreadsCollapsed,
         selectedWorkspaceId,
+        threadBarCollapsed,
         threadIndexItems,
     ]);
     const lastPublishedThreadNavigationSignatureRef = useRef<string | null>(null);
@@ -4949,10 +4974,12 @@ function GraphViewInternal({
             threadItems: threadIndexItems,
             threadHoverProjectionInput,
             doneThreadsCollapsed,
+            threadBarCollapsed,
             onThreadFocus: handleFocusThread,
             onThreadDoneChange: handleThreadDoneChange,
             onThreadDelete: handleThreadDelete,
             onDoneThreadsCollapsedChange: handleDoneThreadsCollapsedChange,
+            onThreadBarCollapsedChange: handleThreadBarCollapsedChange,
             onCreateThread: handleCreateThread,
             createThreadDisabled,
             createThreadDisabledReason,
@@ -4964,6 +4991,7 @@ function GraphViewInternal({
         handleCreateThread,
         handleDoneThreadsCollapsedChange,
         handleFocusThread,
+        handleThreadBarCollapsedChange,
         handleThreadDelete,
         handleThreadDoneChange,
         onThreadNavigationModelChange,
@@ -4971,6 +4999,7 @@ function GraphViewInternal({
         graphMessages.length,
         messagesQuery.status,
         threadHoverProjectionInput,
+        threadBarCollapsed,
         threadIndexItems,
         threadNavigationModelSignature,
     ]);

@@ -57,7 +57,8 @@ describe('GraphDockComposer structure', () => {
   it('does not hold the graph dock send button for the whole selected flow run', () => {
     const source = readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
 
-    expect(source).toContain('void flowRunner.runFlow({ input: promptForAgent, count: flowParallelCount }).catch');
+    expect(source).toContain('void flowRunner.runFlow({ input: promptForAgent, count: flowParallelCount }).then');
+    expect(source).toContain('}).catch((caught) => {');
     expect(source).not.toContain('await flowRunner.runFlow({ input: promptForAgent, count: flowParallelCount })');
   });
 });

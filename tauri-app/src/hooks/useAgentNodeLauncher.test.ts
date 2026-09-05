@@ -16,6 +16,7 @@ describe('createFlowNodeMessages', () => {
       flowSourceId: 'parallel_review_until_satisfied',
       flowSourceVersion: 1,
       flowRunId: 'flow-run-1',
+      threadId: 'thread-1',
       threadOriginId: 'thread-origin-1',
       flowNodeTemplateId: 'Reviewer',
       flowNodeRegistryId: 'core.reviewer@1',
@@ -32,6 +33,8 @@ describe('createFlowNodeMessages', () => {
       content: 'Run the flow node',
       parentId: 'parent-1',
       workspaceId: 'workspace-1',
+      threadId: 'thread-1',
+      thread_id: 'thread-1',
     }));
     expect(pair.assistantNode).toEqual(expect.objectContaining({
       id: 'assistant-1',
@@ -42,6 +45,8 @@ describe('createFlowNodeMessages', () => {
       llmProvider: 'codex',
       llmModel: 'gpt-5.4-mini',
       base_commit_sha: 'abc123',
+      threadId: 'thread-1',
+      thread_id: 'thread-1',
     }));
     expect(pair.assistantNode.execution_data?.meta).toEqual(expect.objectContaining({
       context_parent_node_id: 'context-1',

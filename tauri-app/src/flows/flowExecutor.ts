@@ -3,6 +3,7 @@ import { interpolateFlowPrompt } from './interpolateFlowPrompt';
 import { parseFlowReturns } from './parseFlowReturns';
 import type {
   FlowDefinition,
+  FlowInputDefinition,
   FlowNodeTemplate,
   FlowNodeValue,
   FlowParamType,
@@ -57,8 +58,9 @@ export async function executeFlow(input: {
 }): Promise<FlowExecutionResult> {
   const templates = new Map(input.definition.nodes.map((template) => [template.id, template]));
   const events: FlowExecutionEvent[] = [];
+  const inputScope = buildInputScope(input.definition.inputs, input.inputs);
   const scope: Record<string, FlowRuntimeValue> = {
-    input: input.inputs,
+    input: inputScope.values,
   };
   const context: ExecutionContext = {
     templates,
@@ -72,6 +74,11 @@ export async function executeFlow(input: {
 
   try {
     throwIfFlowCancelled(context.signal);
+    if (inputScope.issues.length > 0) {
+      const reason = inputScope.issues.join(' ');
+      context.emit({ type: 'flow_stopped', message: reason });
+      return { status: 'stopped', reason, scope, events };
+    }
     const signal = await executeStatements(input.definition.run, scope, context);
     if (signal.type === 'stopped') {
       context.emit({ type: 'flow_stopped', message: signal.reason });
@@ -92,6 +99,49 @@ export async function executeFlow(input: {
     context.emit({ type: 'flow_stopped', message: reason });
     return { status: 'failed', reason, scope, events };
   }
+}
+
+function buildInputScope(
+  definitions: Record<string, FlowInputDefinition> | undefined,
+  provided: Record<string, FlowRuntimeValue>
+): { values: Record<string, FlowRuntimeValue>; issues: string[] } {
+  const values: Record<string, FlowRuntimeValue> = { ...provided };
+  const issues: string[] = [];
+  if (!definitions) {
+    return { values, issues };
+  }
+
+  for (const [name, definition] of Object.entries(definitions)) {
+    if (values[name] === undefined) {
+      if (definition.default !== undefined) {
+        values[name] = definition.default;
+      } else {
+        issues.push(`Flow input "${name}" is required.`);
+        continue;
+      }
+    }
+
+    const value = values[name];
+    if (definition.type === 'integer') {
+      if (!Number.isInteger(value)) {
+        issues.push(`Flow input "${name}" must be an integer.`);
+        continue;
+      }
+      if (definition.min !== undefined && typeof value === 'number' && value < definition.min) {
+        issues.push(`Flow input "${name}" must be at least ${definition.min}.`);
+      }
+      if (definition.max !== undefined && typeof value === 'number' && value > definition.max) {
+        issues.push(`Flow input "${name}" must be at most ${definition.max}.`);
+      }
+      continue;
+    }
+
+    if (typeof value !== 'string') {
+      issues.push(`Flow input "${name}" must be a string.`);
+    }
+  }
+
+  return { values, issues };
 }
 
 interface ExecutionContext {

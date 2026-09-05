@@ -28,12 +28,14 @@ export interface AgentreeFlowNodeRunnerInput {
   flowSourceId: string;
   flowSourceVersion: number;
   flowRunId: string;
+  threadId?: string | null;
   threadOriginId?: string | null;
   agentCliArgs?: string | null;
   agentPromptFlag?: string | null;
   agentName?: string | null;
   llmModel?: string | null;
   reasoningEffort?: string | null;
+  loginProfileId?: string | null;
   launchAgentNode: AgentreeFlowNodeLauncher;
   waitForAssistantNode: WaitForAgentreeNode;
   stopAgentNode?: StopAgentreeNode;
@@ -62,6 +64,7 @@ export function createAgentreeFlowNodeRunner(input: AgentreeFlowNodeRunnerInput)
         flowSourceId: input.flowSourceId,
         flowSourceVersion: input.flowSourceVersion,
         flowRunId: input.flowRunId,
+        threadId: input.threadId ?? null,
         threadOriginId: parentNodeId ? null : input.threadOriginId ?? null,
         flowNodeTemplateId: runInput.templateId,
         flowNodeRegistryId: runInput.registryId,
@@ -70,6 +73,7 @@ export function createAgentreeFlowNodeRunner(input: AgentreeFlowNodeRunnerInput)
         agentName: input.agentName,
         llmModel: input.llmModel,
         reasoningEffort: input.reasoningEffort,
+        loginProfileId: input.loginProfileId,
       });
       runInput.onNodeLaunched?.({
         templateId: runInput.templateId,
@@ -150,7 +154,14 @@ function mapMessageStatus(status: Message['status']): FlowNodeStatus {
   if (status === 'completed') {
     return 'complete';
   }
-  if (status === 'failed' || status === 'error') {
+  if (
+    status === 'failed'
+    || status === 'error'
+    || status === 'failed_setup'
+    || status === 'failed_spawn'
+    || status === 'failed_finalization'
+    || status === 'failed_runtime'
+  ) {
     return 'failed';
   }
   if (status === 'cancelled') {

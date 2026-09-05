@@ -14,7 +14,9 @@ describe('flow node registry', () => {
     ]));
     expect(FLOW_NODE_REGISTRY['core.implementer@1'].requiresFinalizedCommit).toBe(true);
     expect(FLOW_NODE_REGISTRY['core.synthesizer@1'].requiresFinalizedCommit).toBe(true);
-    expect(FLOW_NODE_REGISTRY['core.synthesizer@1'].prompt).toContain('Produce one finalized commit that best satisfies the request');
+    expect(FLOW_NODE_REGISTRY['core.synthesizer@1'].prompt).toContain('Create or update the file-backed artifact that best satisfies the request');
+    expect(FLOW_NODE_REGISTRY['core.synthesizer@1'].prompt).toContain('Agentree will record the finalized commit automatically');
+    expect(FLOW_NODE_REGISTRY['core.synthesizer@1'].prompt).not.toContain('Finish by producing a commit');
     expect(FLOW_NODE_REGISTRY['core.synthesizer@1'].prompt).toContain('plans, documentation, tests, analysis');
     expect(FLOW_NODE_REGISTRY['core.synthesizer@1'].prompt).toContain('Do not convert a planning, documentation, testing, or analysis task into implementation work');
     expect(FLOW_NODE_REGISTRY['core.synthesizer@1'].prompt).toContain('use one candidate unchanged');

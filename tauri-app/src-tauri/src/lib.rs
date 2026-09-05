@@ -361,6 +361,14 @@ pub fn run() {
                         reconciled_stale_runs
                     );
                 }
+                let reconciled_prelaunch_flow_nodes =
+                    telemetry.reconcile_stale_prelaunch_flow_local_nodes(60)?;
+                if reconciled_prelaunch_flow_nodes > 0 {
+                    crate::app_log!(
+                        "[AGENT_RECOVERY] event=startup_reconcile.prelaunch_flow_failed_setup count={}",
+                        reconciled_prelaunch_flow_nodes
+                    );
+                }
                 // Reclaim scratch worktrees/branches left behind by runs that are
                 // no longer live (crashes, force-quits, skipped cleanup). Runs that
                 // reconcile_agent_runs_on_startup just reclassified are now dead, so

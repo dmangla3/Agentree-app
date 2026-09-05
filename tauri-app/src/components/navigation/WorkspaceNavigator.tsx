@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { open as openFolderDialog } from '@tauri-apps/plugin-dialog';
 import {
   Check,
+  ChevronLeft,
   ChevronDown,
   ChevronRight,
   Eye,
@@ -70,10 +71,12 @@ export interface WorkspaceThreadNavigationModel {
   threadItems: ThreadNavigationItem[];
   threadHoverProjectionInput?: ThreadHoverProjectionInput;
   doneThreadsCollapsed: boolean;
+  threadBarCollapsed: boolean;
   onThreadFocus: (threadRootId: string) => void;
   onThreadDoneChange: (threadRootId: string, done: boolean) => void;
   onThreadDelete?: (threadRootId: string) => void;
   onDoneThreadsCollapsedChange: (collapsed: boolean) => void;
+  onThreadBarCollapsedChange: (collapsed: boolean) => void;
   onCreateThread: () => void;
   createThreadDisabled?: boolean;
   createThreadDisabledReason?: string;
@@ -708,6 +711,72 @@ function RepoItem({
   );
 }
 
+function CollapsedWorkspaceNavigator({
+  repoCount,
+  workspaceCount,
+  threadModel,
+  onExpand,
+}: {
+  repoCount: number;
+  workspaceCount: number;
+  threadModel: WorkspaceThreadNavigationModel | null;
+  onExpand: () => void;
+}) {
+  const activeThreadCount = threadModel?.threadItems.filter((thread) => !thread.done || thread.runningCount > 0).length ?? 0;
+  const doneThreadCount = threadModel?.threadItems.filter((thread) => thread.done && thread.runningCount === 0).length ?? 0;
+  const runningCount = threadModel?.threadItems.reduce((total, thread) => total + thread.runningCount, 0) ?? 0;
+
+  return (
+    <aside className="flex h-full w-14 shrink-0 flex-col items-center border-r border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong)/0.46)] py-2 shadow-[inset_-1px_0_0_hsl(var(--foreground)/0.025)]">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label="Expand threads bar"
+            onClick={onExpand}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.56)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.58)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+          >
+            <ChevronRight size={16} strokeWidth={2.2} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">Expand threads bar</TooltipContent>
+      </Tooltip>
+
+      <div className="mt-3 flex min-h-0 flex-1 flex-col items-center gap-2 overflow-hidden">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex h-10 w-10 flex-col items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.42)] bg-[hsl(var(--app-panel)/0.38)] text-muted-foreground">
+              <FolderGit size={14} strokeWidth={2.1} />
+              <span className="mt-0.5 font-mono text-[10px] font-semibold tabular-nums leading-none">{repoCount}</span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent side="right">{repoCount} repositories</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex h-10 w-10 flex-col items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.42)] bg-[hsl(var(--app-panel)/0.38)] text-muted-foreground">
+              <FolderOpen size={14} strokeWidth={2.1} />
+              <span className="mt-0.5 font-mono text-[10px] font-semibold tabular-nums leading-none">{workspaceCount}</span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent side="right">{workspaceCount} workspaces</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex h-10 w-10 flex-col items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.42)] bg-[hsl(var(--app-panel)/0.38)] text-muted-foreground">
+              <ParallelThreadsIcon size={14} strokeWidth={2.1} />
+              <span className="mt-0.5 font-mono text-[10px] font-semibold tabular-nums leading-none">{activeThreadCount}</span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent side="right">
+            {activeThreadCount} active threads, {doneThreadCount} done, {runningCount} running
+          </TooltipContent>
+        </Tooltip>
+      </div>
+    </aside>
+  );
+}
+
 export function WorkspaceNavigator({
   selectedWorkspaceId,
   activeView,
@@ -752,6 +821,8 @@ export function WorkspaceNavigator({
   const selectedThreadModel = threadNavigation?.workspaceId === selectedWorkspaceId ? threadNavigation : null;
   const showThreadSections = activeView === 'chat';
   const showFocusedThreads = threadsFocused && showThreadSections && Boolean(selectedWorkspaceId);
+  const repoCount = repoGroups.filter((repo) => repo.id !== 'unassigned').length;
+  const threadBarCollapsed = showThreadSections && Boolean(selectedThreadModel?.threadBarCollapsed);
 
   useEffect(() => {
     if (!selectedWorkspaceId) setThreadsFocused(false);
@@ -944,6 +1015,21 @@ export function WorkspaceNavigator({
     ? getWorkspaceDisplayName(selectedWorkspace)
     : 'Workspaces';
 
+  const handleThreadBarExpandedChange = useCallback((collapsed: boolean) => {
+    selectedThreadModel?.onThreadBarCollapsedChange(collapsed);
+  }, [selectedThreadModel]);
+
+  if (threadBarCollapsed) {
+    return (
+      <CollapsedWorkspaceNavigator
+        repoCount={repoCount}
+        workspaceCount={workspaces.length}
+        threadModel={selectedThreadModel}
+        onExpand={() => handleThreadBarExpandedChange(false)}
+      />
+    );
+  }
+
   return (
     <aside className="flex h-full w-[19rem] shrink-0 flex-col border-r border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong)/0.46)] shadow-[inset_-1px_0_0_hsl(var(--foreground)/0.025)]">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[hsl(var(--app-border)/0.56)] px-3 py-2">
@@ -953,24 +1039,43 @@ export function WorkspaceNavigator({
           </div>
           <div className="mt-0.5 truncate text-sm font-semibold text-foreground">{navigatorTitle}</div>
         </div>
-        {!showFocusedThreads ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                aria-label="Add repository"
-                disabled={createWorkspace.isPending}
-                onClick={handleCreateRepo}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.64)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-accent-soft)/0.56)] hover:text-foreground active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                {createWorkspace.isPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} strokeWidth={2.3} />}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" align="end">
-              Add repository
-            </TooltipContent>
-          </Tooltip>
-        ) : null}
+        <div className="flex shrink-0 items-center gap-1">
+          {selectedThreadModel ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Collapse navigator"
+                  onClick={() => handleThreadBarExpandedChange(true)}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.64)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-accent-soft)/0.56)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                >
+                  <ChevronLeft size={14} strokeWidth={2.2} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" align="end">
+                Collapse navigator
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
+          {!showFocusedThreads ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Add repository"
+                  disabled={createWorkspace.isPending}
+                  onClick={handleCreateRepo}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.64)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-accent-soft)/0.56)] hover:text-foreground active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {createWorkspace.isPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} strokeWidth={2.3} />}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" align="end">
+                Add repository
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
+        </div>
       </div>
 
       {setupRequirement ? (
@@ -1095,7 +1200,7 @@ export function WorkspaceNavigator({
 
       {workspaces.length > 0 && !showFocusedThreads ? (
         <div className="flex shrink-0 items-center justify-between border-t border-[hsl(var(--app-border)/0.56)] px-3 py-2 text-[11px] text-muted-foreground">
-          <span>{repoGroups.filter((repo) => repo.id !== 'unassigned').length} repos</span>
+          <span>{repoCount} repos</span>
           <span>{workspaces.length} workspaces</span>
         </div>
       ) : null}

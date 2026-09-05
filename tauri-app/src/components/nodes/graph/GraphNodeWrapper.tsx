@@ -38,7 +38,7 @@ export const GraphNodeWrapper = memo(({
   disableHoverCard,
   className,
   bodyClassName,
-  hoverOpenDelay = 500,
+  hoverOpenDelay = 200,
   style,
   heightKey,
   onMeasureHeight,

@@ -16,6 +16,7 @@ import { localNodeKeys, parseLocalNode, type LocalNodeMessage } from './useLocal
 import { useAgentNodeLauncher, type UseAgentNodeLauncherOptions } from './useAgentNodeLauncher';
 
 const FLOW_ASSISTANT_NODE_WALL_CLOCK_TIMEOUT_MS = 60 * 60 * 1000;
+const FLOW_ASSISTANT_REQUIRED_COMMIT_TIMEOUT_MS = 30_000;
 
 export interface UseAgentFlowRunnerInput extends UseAgentNodeLauncherOptions {
   workspaceId: string | null;
@@ -26,11 +27,13 @@ export interface UseAgentFlowRunnerInput extends UseAgentNodeLauncherOptions {
   rootParentNodeId?: string | null;
   rootContextParentNodeId?: string | null;
   rootContextManifest?: ComposerContextManifest | null;
+  threadId?: string | null;
   agentCliArgs?: string | null;
   agentPromptFlag?: string | null;
   agentName?: string | null;
   llmModel?: string | null;
   reasoningEffort?: string | null;
+  loginProfileId?: string | null;
 }
 
 export type AgentFlowDescriptor = RunnableFlowDescriptor;
@@ -56,7 +59,7 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
     })
   ), [input.workspaceId, queryClient]);
 
-  const runFlow = useCallback(async (runInput: { input: string; count: number; signal?: AbortSignal }): Promise<FlowExecutionResult> => {
+  const runFlow = useCallback(async (runInput: { input: string; count: number; signal?: AbortSignal; threadId?: string | null }): Promise<FlowExecutionResult> => {
     if (!input.workspaceId || !input.selectedAgentId || !input.selectedAgentType) {
       throw new Error('Workspace and selected agent are required to run a flow.');
     }
@@ -71,7 +74,8 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
 
     setEvents([]);
     const flowRunId = crypto.randomUUID();
-    const threadOriginId = crypto.randomUUID();
+    const threadId = runInput.threadId?.trim() || input.threadId?.trim() || null;
+    const threadOriginId = threadId ?? crypto.randomUUID();
     const controller = new AbortController();
     flowRunManager.start({
       flowRunId,
@@ -101,12 +105,14 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
       flowSourceId: selectedFlow.sourceId,
       flowSourceVersion: selectedFlow.sourceVersion,
       flowRunId,
+      threadId,
       threadOriginId,
       agentCliArgs: input.agentCliArgs,
       agentPromptFlag: input.agentPromptFlag,
       agentName: input.agentName,
       llmModel: input.llmModel,
       reasoningEffort: input.reasoningEffort,
+      loginProfileId: input.loginProfileId,
       launchAgentNode,
       waitForAssistantNode,
       stopAgentNode: agentClient.stopAgent,
@@ -140,12 +146,14 @@ export function useAgentFlowRunner(input: UseAgentFlowRunnerInput) {
     input.baseCommitSha,
     input.baseNodeId,
     input.llmModel,
+    input.loginProfileId,
     input.reasoningEffort,
     input.rootContextManifest,
     input.rootContextParentNodeId,
     input.rootParentNodeId,
     input.selectedAgentId,
     input.selectedAgentType,
+    input.threadId,
     input.workspaceId,
     launchAgentNode,
     selectedFlowId,
@@ -177,25 +185,42 @@ async function waitForAssistantNodeCompletion(input: {
 }): Promise<Message> {
   const startedAt = Date.now();
   let terminalObservedAt: number | null = null;
-  let latestTerminalMessage: Message | null = null;
   while (Date.now() - startedAt < FLOW_ASSISTANT_NODE_WALL_CLOCK_TIMEOUT_MS) {
     throwIfFlowCancelled(input.signal);
     const message = readAssistantNode(input.assistantNodeId, input.workspaceId, input.queryClient);
     if (isTerminalAgentStatus(message?.status)) {
-      latestTerminalMessage = message;
       if (!input.requireCommit || readMessageCommit(message)) {
         return message;
       }
       terminalObservedAt ??= Date.now();
       const persistedMessage = await readPersistedAssistantNode(input.assistantNodeId, input.workspaceId, input.queryClient);
       if (persistedMessage) {
-        latestTerminalMessage = persistedMessage;
         if (readMessageCommit(persistedMessage)) {
           return persistedMessage;
         }
       }
-      if (Date.now() - terminalObservedAt >= 45_000) {
-        return latestTerminalMessage;
+      const ledgerCommitSha = await readAgentRunLedgerCommit(input.assistantNodeId);
+      if (ledgerCommitSha) {
+        return {
+          ...message,
+          output_commit_sha: ledgerCommitSha,
+          execution_data: {
+            ...(typeof message.execution_data === 'object' && message.execution_data !== null ? message.execution_data : {}),
+            output_commit_sha: ledgerCommitSha,
+            meta: {
+              ...(typeof message.execution_data === 'object'
+                && message.execution_data !== null
+                && typeof message.execution_data.meta === 'object'
+                && message.execution_data.meta !== null
+                ? message.execution_data.meta
+                : {}),
+              output_commit_sha: ledgerCommitSha,
+            },
+          },
+        };
+      }
+      if (Date.now() - terminalObservedAt >= FLOW_ASSISTANT_REQUIRED_COMMIT_TIMEOUT_MS) {
+        throw new Error(`Assistant node "${input.assistantNodeId}" completed without a finalized commit.`);
       }
     }
     await waitForAssistantNodePoll(input.signal);
@@ -235,6 +260,19 @@ function waitForAssistantNodePoll(signal: AbortSignal | undefined): Promise<void
 
 function readMessageCommit(message: Message): string | null {
   return getMessageOutputCommitSha(message);
+}
+
+async function readAgentRunLedgerCommit(assistantNodeId: string): Promise<string | null> {
+  if (!agentClient.hasRuntime()) {
+    return null;
+  }
+  try {
+    const state = await agentClient.getAgentRunState(assistantNodeId);
+    const commitSha = state.ledger?.outputCommitSha;
+    return typeof commitSha === 'string' && commitSha.trim() ? commitSha.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 async function readPersistedAssistantNode(

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GraphDockComposer } from './GraphDockComposer';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { type Message, useWorkspaceStore, type Workspace } from '../stores/workspaceStore';
+import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { agentClient } from '../lib/agentClient';
 import { TooltipProvider } from '../../@/components/ui/tooltip';
 
@@ -181,12 +182,38 @@ describe('GraphDockComposer steering behavior', () => {
       composerContextPreview: null,
       threadComposerTarget: null,
     });
+    useLoginProfilesStore.setState({
+      profiles: [{
+        id: 'codex-profile-1',
+        provider: 'codex',
+        displayName: 'Codex Profile',
+        authType: 'codex_chatgpt_session',
+        redactedHint: null,
+        config: null,
+        status: 'ready',
+        statusMessage: null,
+        planType: null,
+        isDefault: true,
+        lastCheckedAt: null,
+      }],
+      activeRunsByProfile: {},
+      isLoading: false,
+      isMutating: false,
+      error: null,
+    });
   });
 
   afterEach(() => {
     vi.useRealTimers();
     useRunStatusStore.getState().clearAllRunStatus();
     useWorkspaceStore.getState().clearSelectedWorkspace();
+    useLoginProfilesStore.setState({
+      profiles: [],
+      activeRunsByProfile: {},
+      isLoading: false,
+      isMutating: false,
+      error: null,
+    });
   });
 
   it('debounces workspace draft writes while keeping textarea input immediate', async () => {
@@ -312,8 +339,8 @@ describe('GraphDockComposer steering behavior', () => {
     let finishFlow = () => {};
     hookMocks.flows = [{ id: 'parallel-review', label: 'Parallel Review', definition: {} }];
     hookMocks.selectedFlowId = 'parallel-review';
-    hookMocks.runFlow.mockReturnValue(new Promise<void>((resolve) => {
-      finishFlow = resolve;
+    hookMocks.runFlow.mockReturnValue(new Promise((resolve) => {
+      finishFlow = () => resolve({ status: 'completed', scope: {}, events: [] });
     }));
 
     renderComposer([
@@ -334,7 +361,7 @@ describe('GraphDockComposer steering behavior', () => {
     await user.click(sendButton);
 
     await waitFor(() => {
-      expect(hookMocks.runFlow).toHaveBeenCalledWith({ input: 'Run the review flow', count: 3 });
+      expect(hookMocks.runFlow).toHaveBeenCalledWith({ input: 'Run the review flow', count: 3, threadId: null });
     });
     expect(composer.value).toBe('');
 
@@ -342,6 +369,47 @@ describe('GraphDockComposer steering behavior', () => {
     expect(sendButton.disabled).toBe(false);
 
     finishFlow?.();
+  });
+
+  it('runs a selected flow in the graph-created thread target', async () => {
+    const user = userEvent.setup();
+    hookMocks.flows = [{ id: 'parallel-review', label: 'Parallel Review', definition: {} }];
+    hookMocks.selectedFlowId = 'parallel-review';
+    hookMocks.runFlow.mockResolvedValue({ status: 'completed', scope: {}, events: [] });
+
+    renderComposer([
+      message({
+        id: 'assistant-live',
+        role: 'assistant',
+        content: 'Previous assistant reply',
+        status: 'completed' as any,
+        output_commit_sha: 'parent-output',
+      }),
+    ]);
+
+    act(() => {
+      useWorkspaceStore.getState().setThreadComposerTarget({
+        workspaceId: 'workspace-1',
+        threadId: 'pending-thread',
+        reason: 'create-thread',
+        nonce: 1,
+      });
+    });
+
+    expect(await screen.findByText('New thread')).toBeTruthy();
+
+    const composer = screen.getByLabelText('Graph composer prompt');
+    await user.type(composer, 'Run this flow in the new thread');
+    await user.click(screen.getByTestId('graph-dock-send-button'));
+
+    await waitFor(() => {
+      expect(hookMocks.runFlow).toHaveBeenCalledWith({
+        input: 'Run this flow in the new thread',
+        count: 3,
+        threadId: 'pending-thread',
+      });
+    });
+    expect(hookMocks.createThreadSession).not.toHaveBeenCalled();
   });
 
   it('keeps Shift+Enter as a newline in the graph dock composer', async () => {

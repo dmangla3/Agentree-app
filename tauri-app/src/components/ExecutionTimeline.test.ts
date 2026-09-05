@@ -79,7 +79,7 @@ describe('getToolSummary', () => {
   it('does not summarize empty tool inputs as raw empty JSON', () => {
     expect(isEmptyToolPayload({})).toBe(true);
     expect(getToolSummary('Skill', {})).toBe('');
-    expect(getToolSummary('Skill', 'Launching skill: agentree-branchmind-debug-flow')).toBe('Launching skill: agentree-branchmind-debug-flow');
+    expect(getToolSummary('Skill', 'Launching skill: agentree-debug-flow')).toBe('Launching skill: agentree-debug-flow');
   });
 
   it('summarizes Claude Read outputs as line ranges instead of raw file content', () => {

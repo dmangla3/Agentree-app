@@ -5,6 +5,7 @@ import { agentRunManager } from '../agent-runs/agentRunManager';
 import { agentClient, type StartAgentRunIntent } from '../lib/agentClient';
 import { getAccessToken } from '../lib/authSession';
 import { buildAgentRunPrompt } from '../lib/prompts';
+import { markLocalAgentNodeTerminal } from '../lib/localAgentRunTerminal';
 import type { ComposerContextManifest } from '../lib/composerContext';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from './useLocalNodes';
 import { useWorkspaces } from './useWorkspaces';
@@ -26,6 +27,7 @@ export interface LaunchAgentNodeInput {
   flowNodeTemplateId: string;
   flowNodeRegistryId?: string | null;
   flowRunId?: string;
+  threadId?: string | null;
   threadOriginId?: string | null;
   agentCliArgs?: string | null;
   agentPromptFlag?: string | null;
@@ -33,6 +35,7 @@ export interface LaunchAgentNodeInput {
   llmModel?: string | null;
   reasoningEffort?: string | null;
   repoPath?: string | null;
+  loginProfileId?: string | null;
 }
 
 export interface LaunchAgentNodeResult {
@@ -79,6 +82,7 @@ export function createFlowNodeMessages(input: CreateFlowNodeMessagesInput): Flow
     ...(input.flowNodeRegistryId ? { flow_node_registry_id: input.flowNodeRegistryId } : {}),
     ...(input.llmModel ? { provider_model: input.llmModel } : {}),
     ...(input.reasoningEffort ? { provider_reasoning_effort: input.reasoningEffort } : {}),
+    ...(input.loginProfileId ? { login_profile_id: input.loginProfileId } : {}),
   };
 
   const userNode: Message = {
@@ -100,6 +104,10 @@ export function createFlowNodeMessages(input: CreateFlowNodeMessagesInput): Flow
       },
     },
   };
+  if (input.threadId) {
+    userNode.threadId = input.threadId;
+    userNode.thread_id = input.threadId;
+  }
 
   const assistantNode: Message = {
     id: input.assistantNodeId,
@@ -126,6 +134,10 @@ export function createFlowNodeMessages(input: CreateFlowNodeMessagesInput): Flow
       },
     },
   };
+  if (input.threadId) {
+    assistantNode.threadId = input.threadId;
+    assistantNode.thread_id = input.threadId;
+  }
 
   return { userNode, assistantNode };
 }
@@ -153,6 +165,7 @@ export function useAgentNodeLauncher(options: UseAgentNodeLauncherOptions = {}) 
       assistantNodeId,
       now,
     });
+    let persistedAssistantNode = pair.assistantNode;
 
     const workspace = workspaceById.get(input.workspaceId);
     const repoPath = input.repoPath?.trim() || workspace?.git_repo_path?.trim() || workspace?.folderPath?.trim() || null;
@@ -187,67 +200,90 @@ export function useAgentNodeLauncher(options: UseAgentNodeLauncherOptions = {}) 
     );
     void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(input.workspaceId) });
 
-    const authToken = await getAccessToken();
-    await options.startStreamForNode?.(pair.assistantNode, {
-      authToken,
-      parentId: pair.userNode.id,
-    });
+    try {
+      const authToken = await getAccessToken();
+      await options.startStreamForNode?.(pair.assistantNode, {
+        authToken,
+        parentId: pair.userNode.id,
+      });
 
-    const effectivePrompt = buildAgentRunPrompt({
-      mode: 'flow',
-      userPrompt: input.prompt,
-      contextManifest: input.contextManifest ?? undefined,
-      threadTitleMode: 'none',
-    }).prompt;
-    const runId = crypto.randomUUID();
-    const executionData = {
-      ...(pair.assistantNode.execution_data ?? {}),
-      current_run_id: runId,
-      workspace_id: input.workspaceId,
-      agent_id: input.agentId,
-      parentId: pair.assistantNode.parentId,
-      started_at: new Date().toISOString(),
-      meta: {
-        ...((pair.assistantNode.execution_data?.meta ?? {}) as Record<string, unknown>),
+      const effectivePrompt = buildAgentRunPrompt({
+        mode: 'flow',
+        userPrompt: input.prompt,
+        contextManifest: input.contextManifest ?? undefined,
+        threadTitleMode: 'none',
+      }).prompt;
+      const runId = crypto.randomUUID();
+      const executionData = {
+        ...(pair.assistantNode.execution_data ?? {}),
+        current_run_id: runId,
+        workspace_id: input.workspaceId,
         agent_id: input.agentId,
-        base_commit_sha: input.baseCommitSha,
-        flow_id: input.flowId,
-        flow_source_id: input.flowSourceId,
-        flow_source_version: input.flowSourceVersion,
-        flow_run_id: flowRunId,
-        flow_node_template_id: input.flowNodeTemplateId,
-        ...(input.flowNodeRegistryId ? { flow_node_registry_id: input.flowNodeRegistryId } : {}),
-      },
-    };
-    agentRunManager.dispatch(pair.assistantNode.id, { type: 'execution_data', patch: executionData });
+        parentId: pair.assistantNode.parentId,
+        started_at: new Date().toISOString(),
+        meta: {
+          ...((pair.assistantNode.execution_data?.meta ?? {}) as Record<string, unknown>),
+          agent_id: input.agentId,
+          base_commit_sha: input.baseCommitSha,
+          flow_id: input.flowId,
+          flow_source_id: input.flowSourceId,
+          flow_source_version: input.flowSourceVersion,
+          flow_run_id: flowRunId,
+          flow_node_template_id: input.flowNodeTemplateId,
+          ...(input.flowNodeRegistryId ? { flow_node_registry_id: input.flowNodeRegistryId } : {}),
+        },
+      };
+      agentRunManager.dispatch(pair.assistantNode.id, { type: 'execution_data', patch: executionData });
+      persistedAssistantNode = {
+        ...pair.assistantNode,
+        execution_data: executionData,
+      };
 
-    const startIntent: StartAgentRunIntent = {
-      runId,
-      assistantNodeId: pair.assistantNode.id,
-      workspaceId: input.workspaceId,
-      repoPath,
-      parentCommit: input.baseCommitSha,
-      agentType: input.agentType,
-      args: buildFlowAgentArgs({
-        agentType: input.agentType,
-        cliArgs: input.agentCliArgs,
-        promptFlag: input.agentPromptFlag,
-        prompt: effectivePrompt,
-      }),
-      authToken,
-      traceId: null,
-      runContext: {
+      const startIntent: StartAgentRunIntent = {
         runId,
-        executionData,
-        gitBranchName: `agentree/${pair.assistantNode.id}`,
+        assistantNodeId: pair.assistantNode.id,
+        workspaceId: input.workspaceId,
         repoPath,
         parentCommit: input.baseCommitSha,
-        authorName: input.agentName ?? null,
-        promptFallback: input.prompt,
-      },
-    };
-    await agentClient.startAgentRun(startIntent);
-    agentRunManager.dispatch(pair.assistantNode.id, { type: 'status', status: AGENT_STATUS.running });
+        agentType: input.agentType,
+        args: buildFlowAgentArgs({
+          agentType: input.agentType,
+          cliArgs: input.agentCliArgs,
+          promptFlag: input.agentPromptFlag,
+          prompt: effectivePrompt,
+        }),
+        authToken,
+        traceId: null,
+        loginProfileId: input.loginProfileId ?? null,
+        runContext: {
+          runId,
+          executionData,
+          gitBranchName: `agentree/${pair.assistantNode.id}`,
+          repoPath,
+          parentCommit: input.baseCommitSha,
+          authorName: input.agentName ?? null,
+          promptFallback: input.prompt,
+        },
+      };
+      await agentClient.startAgentRun(startIntent);
+      agentRunManager.dispatch(pair.assistantNode.id, { type: 'status', status: AGENT_STATUS.running });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Failed to start flow node.';
+      agentRunManager.dispatch(pair.assistantNode.id, {
+        type: 'terminal',
+        status: AGENT_STATUS.failed_setup,
+        reason,
+      });
+      await markLocalAgentNodeTerminal({
+        queryClient,
+        workspaceId: input.workspaceId,
+        nodeId: pair.assistantNode.id,
+        node: persistedAssistantNode,
+        status: AGENT_STATUS.failed_setup,
+        reason,
+      });
+      throw error;
+    }
 
     return {
       userNodeId: pair.userNode.id,

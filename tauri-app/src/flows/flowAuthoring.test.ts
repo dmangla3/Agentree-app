@@ -29,7 +29,9 @@ describe('flow authoring', () => {
     expect(prompt).toContain('Prefer nodes that use the registry');
     expect(prompt).toContain('Set requiresFinalizedCommit: true for any node that must save a file-backed artifact');
     expect(prompt).toContain('Planning, documentation, analysis, testing, synthesis, and fixing nodes may require commits');
+    expect(prompt).toContain('Never tell an agent to produce, create, finish with, or output a commit');
     expect(prompt).toContain('Leave requiresFinalizedCommit false or omit it only for review, routing, handoff, decision, or prose-only nodes');
+    expect(prompt).toContain('Any additional flow input must have a default');
     expect(prompt).toContain('Prefer core.handoff@1 as the final step');
     expect(prompt).toContain('ask clarifying questions only when actually required');
     expect(prompt).toContain('Prefer core.synthesizer@1 for combining candidate commits across implementation, planning, documentation, tests, and analysis');
@@ -64,6 +66,8 @@ describe('flow authoring', () => {
     expect(prompt).toContain('DSL contract');
     expect(prompt).toContain('Registry capabilities');
     expect(prompt).toContain('Every use: id must appear in Registry capabilities');
+    expect(prompt).toContain('Never ask a node to produce or finish with a commit');
+    expect(prompt).toContain('Additional inputs beyond input.input and input.count must include defaults');
     expect(prompt).toContain('Parallel set values are arrays; use all(array.field == literal)');
     expect(prompt).toContain('Use parallel.branches for distinct branch args');
     expect(prompt).toContain('core.implementer@1');

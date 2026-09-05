@@ -8,6 +8,7 @@ import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../st
 import { useProviderLimitsStore } from '../stores/providerLimitsStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { isLoginProfileActive } from '../lib/loginProfiles';
+import { isNoAgentSessionFoundError, markStalePrelaunchFlowNodeCancelled } from '../lib/localAgentRunTerminal';
 import { useQueryClient } from '@tanstack/react-query';
 import { UnifiedAgentModelSelector } from './UnifiedAgentModelSelector';
 import { AttachmentPreview } from './AttachmentPreview';
@@ -82,7 +83,7 @@ import {
 } from '../lib/composerRepoMentions';
 import { hasFreshContextBoundary } from '../lib/messageContext';
 import { getLegacyThreadIdForMessage, getMessageThreadSessionId } from '../lib/threadSessions';
-import { appendClaudeMcpConfigArgs, DEFAULT_MCP_SERVER_URL } from '../lib/mcpRuntime';
+import { appendClaudeMcpConfigArgs } from '../lib/mcpRuntime';
 import {
     scheduleMessagesRefreshWhenGraphIdle,
 } from '../lib/graphInteractionGate';
@@ -411,6 +412,7 @@ export function ChatInput({
     const [contextFetchError, _setContextFetchError] = useState<string | null>(null);
     const contextMode: ContextMode = 'active';
     const refreshLoginProfiles = useLoginProfilesStore((state) => state.refresh);
+    const loginProfiles = useLoginProfilesStore((state) => state.profiles);
 
     const {
         selectedWorkspaceId,
@@ -1797,6 +1799,14 @@ export function ChatInput({
         flowRootContextParentNodeId,
         flowRootContextStartId,
     ]);
+    const flowLoginProfile = useMemo(() => {
+        if (!selectedAgent?.type) return null;
+        const compatibleProfiles = loginProfiles.filter((profile) => profile.provider === selectedAgent.type);
+        const selectedLoginProfileId = compatibleProfiles.find((profile) => profile.isDefault)?.id
+            ?? compatibleProfiles[0]?.id
+            ?? null;
+        return compatibleProfiles.find((profile) => profile.id === selectedLoginProfileId) ?? null;
+    }, [loginProfiles, selectedAgent?.type]);
     const flowRunner = useAgentFlowRunner({
         workspaceId: selectedWorkspaceId,
         selectedAgentId,
@@ -1811,6 +1821,7 @@ export function ChatInput({
         agentName: selectedAgent?.name ?? null,
         llmModel: selectedFlowLlmModel,
         reasoningEffort: selectedFlowReasoningEffort,
+        loginProfileId: flowLoginProfile?.id ?? null,
         startStreamForNode: startFlowStreamForNode,
     });
     const selectedComposerFlow = useMemo(
@@ -1820,8 +1831,24 @@ export function ChatInput({
     const isFlowSelected = Boolean(selectedComposerFlow);
     const latestFlowEvent = flowRunner.events[flowRunner.events.length - 1] ?? null;
     const handleRunFlow = useCallback(async (input: { input: string; count: number }) => {
+        const flowProviderNeedsLoginProfile = selectedAgent?.type === 'codex' || selectedAgent?.type === 'claude';
+        if (flowProviderNeedsLoginProfile && (!flowLoginProfile || !isLoginProfileActive(flowLoginProfile))) {
+            addToast({
+                title: 'Login profile inactive',
+                description: `${selectedAgent?.name ?? selectedAgent?.type ?? 'Agent'} needs a ready login profile before it can run.`,
+                variant: 'error',
+            });
+            return;
+        }
         try {
-            await flowRunner.runFlow(input);
+            const result = await flowRunner.runFlow(input);
+            if (result.status === 'failed' || result.status === 'stopped') {
+                addToast({
+                    title: 'Flow failed',
+                    description: result.reason || 'Agentree could not run this flow.',
+                    variant: 'error',
+                });
+            }
         } catch (error) {
             addToast({
                 title: 'Flow failed',
@@ -1829,7 +1856,7 @@ export function ChatInput({
                 variant: 'error',
             });
         }
-    }, [addToast, flowRunner]);
+    }, [addToast, flowLoginProfile, flowRunner, selectedAgent?.name, selectedAgent?.type]);
     const codeParentCommit = effectiveBaseCommitSha;
     const codeParentBranchNames = selectedBasePickerItem?.refNames ?? [];
     const codeParentUsesBranchName = codeParentBranchNames.length > 0;
@@ -3814,9 +3841,10 @@ export function ChatInput({
                 if (!cliArgs.includes('--permission-mode')) {
                     cliArgs.push('--permission-mode', 'auto');
                 }
-                const mcpServerUrl = agentClient.hasRuntime()
-                    ? await agentClient.getMcpServerUrl().catch(() => DEFAULT_MCP_SERVER_URL)
-                    : DEFAULT_MCP_SERVER_URL;
+                if (!agentClient.hasRuntime()) {
+                    throw new Error('Agentree MCP server URL is unavailable. Restart Agentree and try again.');
+                }
+                const mcpServerUrl = await agentClient.getMcpServerUrl();
                 cliArgs = appendClaudeMcpConfigArgs(cliArgs, mcpServerUrl);
                 cliArgs.push('--session-id', agentSessionId);
                 cliArgs.push('--print', '--output-format', 'stream-json', '--verbose', '--no-session-persistence');
@@ -4408,12 +4436,37 @@ export function ChatInput({
                         nativeStatus: typeof runtimeState?.ledger?.status === 'string' ? runtimeState.ledger.status : null,
                         nativePhase: typeof runtimeState?.ledger?.phase === 'string' ? runtimeState.ledger.phase : null,
                     }, { source: 'ChatInput' });
+                    if (!runtimeState?.ledger) {
+                        const marked = await markStalePrelaunchFlowNodeCancelled({
+                            queryClient,
+                            workspaceId: targetWorkspaceId,
+                            nodeId: targetNodeId,
+                            node: targetMessage ?? targetProjection ?? null,
+                            reason: 'Flow cancelled after the app restarted before the native agent session was created.',
+                        });
+                        if (marked) {
+                            void scheduleMessagesRefreshWhenGraphIdle(queryClient, targetWorkspaceId, { reason: 'cancel-stale-flow-node' });
+                        }
+                    }
                     return;
                 }
                 let stopFailed = false;
                 try {
                     await agentClient.stopAgent(targetNodeId);
                 } catch (err) {
+                    if (isNoAgentSessionFoundError(err)) {
+                        const marked = await markStalePrelaunchFlowNodeCancelled({
+                            queryClient,
+                            workspaceId: targetWorkspaceId,
+                            nodeId: targetNodeId,
+                            node: targetMessage ?? targetProjection ?? null,
+                            reason: 'Flow cancelled after the app restarted before the native agent session was created.',
+                        });
+                        if (marked) {
+                            void scheduleMessagesRefreshWhenGraphIdle(queryClient, targetWorkspaceId, { reason: 'cancel-stale-flow-node' });
+                            return;
+                        }
+                    }
                     stopFailed = true;
                     console.warn('[ChatInput] Failed to stop agent process:', err);
                 }

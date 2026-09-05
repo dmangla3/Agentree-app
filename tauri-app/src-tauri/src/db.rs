@@ -2081,6 +2081,172 @@ impl TelemetryDb {
         Ok(updated)
     }
 
+    pub fn reconcile_stale_prelaunch_flow_local_nodes(
+        &self,
+        stale_after_secs: i64,
+    ) -> Result<usize, String> {
+        let now = unix_timestamp();
+        let cutoff = now.saturating_sub(stale_after_secs.max(0));
+        let updated_at = utc_iso_now();
+        let reason = "App restarted before this flow node was accepted by the native agent runner. No native session or ledger was found.";
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let stale_rows: Vec<(String, String, String, Option<String>)> = {
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                    SELECT id, workspace_id, COALESCE(payload_json, '{}'), execution_data_json
+                    FROM local_nodes AS node
+                    WHERE deleted_at IS NULL
+                      AND role = 'assistant'
+                      AND status IN ('pending', 'creating', 'initializing', 'preparing_worktree', 'running', 'streaming', 'finalizing')
+                      AND COALESCE(local_updated_at, 0) <= ?1
+                      AND (
+                        json_extract(CASE WHEN json_valid(COALESCE(execution_data_json, '')) THEN execution_data_json ELSE '{}' END, '$.flow_run_id') IS NOT NULL
+                        OR json_extract(CASE WHEN json_valid(COALESCE(execution_data_json, '')) THEN execution_data_json ELSE '{}' END, '$.meta.flow_run_id') IS NOT NULL
+                        OR json_extract(CASE WHEN json_valid(COALESCE(payload_json, '')) THEN payload_json ELSE '{}' END, '$.execution_data.flow_run_id') IS NOT NULL
+                        OR json_extract(CASE WHEN json_valid(COALESCE(payload_json, '')) THEN payload_json ELSE '{}' END, '$.execution_data.meta.flow_run_id') IS NOT NULL
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM agent_run_ledger AS ledger
+                        WHERE ledger.assistant_node_id = node.id
+                      )
+                    "#,
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![cutoff], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
+        };
+
+        let mut updated = 0;
+        for (node_id, workspace_id, payload_json, execution_data_json) in stale_rows {
+            let mut payload =
+                serde_json::from_str::<JsonValue>(&payload_json).unwrap_or_else(|_| {
+                    serde_json::json!({
+                        "id": node_id,
+                        "workspaceId": workspace_id,
+                        "role": "assistant",
+                        "content": ""
+                    })
+                });
+            if !payload.is_object() {
+                payload = serde_json::json!({
+                    "id": node_id,
+                    "workspaceId": workspace_id,
+                    "role": "assistant",
+                    "content": ""
+                });
+            }
+
+            let mut execution_data = payload
+                .get("execution_data")
+                .cloned()
+                .or_else(|| {
+                    execution_data_json
+                        .as_deref()
+                        .and_then(|value| serde_json::from_str::<JsonValue>(value).ok())
+                })
+                .unwrap_or_else(|| serde_json::json!({}));
+            if !execution_data.is_object() {
+                execution_data = serde_json::json!({});
+            }
+            if let Some(object) = execution_data.as_object_mut() {
+                object.insert(
+                    "last_terminal_status".to_string(),
+                    JsonValue::String("failed_setup".to_string()),
+                );
+                object.insert(
+                    "stop_reason".to_string(),
+                    JsonValue::String(reason.to_string()),
+                );
+                let meta = object
+                    .entry("meta".to_string())
+                    .or_insert_with(|| serde_json::json!({}));
+                if !meta.is_object() {
+                    *meta = serde_json::json!({});
+                }
+                if let Some(meta_object) = meta.as_object_mut() {
+                    meta_object.insert(
+                        "native_recovery_status".to_string(),
+                        JsonValue::String("failed_setup".to_string()),
+                    );
+                    meta_object.insert(
+                        "native_recovery_phase".to_string(),
+                        JsonValue::String("prelaunch_reconciliation".to_string()),
+                    );
+                    meta_object.insert(
+                        "provider_error_message".to_string(),
+                        JsonValue::String(reason.to_string()),
+                    );
+                    meta_object.insert(
+                        "failure_reason".to_string(),
+                        JsonValue::String(reason.to_string()),
+                    );
+                    meta_object.insert(
+                        "needs_user_action_reason".to_string(),
+                        JsonValue::String(
+                            "Review or rerun this flow node; no native agent session exists to resume."
+                                .to_string(),
+                        ),
+                    );
+                }
+            }
+
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("id".to_string(), JsonValue::String(node_id.clone()));
+                object.insert(
+                    "workspaceId".to_string(),
+                    JsonValue::String(workspace_id.clone()),
+                );
+                object.insert(
+                    "role".to_string(),
+                    JsonValue::String("assistant".to_string()),
+                );
+                object
+                    .entry("content".to_string())
+                    .or_insert_with(|| JsonValue::String(String::new()));
+                object.insert(
+                    "status".to_string(),
+                    JsonValue::String("failed_setup".to_string()),
+                );
+                object.insert(
+                    "updatedAt".to_string(),
+                    JsonValue::String(updated_at.clone()),
+                );
+                object.insert("execution_data".to_string(), execution_data.clone());
+            }
+            let next_execution_data =
+                serde_json::to_string(&execution_data).map_err(|e| e.to_string())?;
+            let next_payload = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+            updated += conn
+                .execute(
+                    r#"
+                    UPDATE local_nodes
+                    SET status = 'failed_setup',
+                        execution_data_json = ?2,
+                        payload_json = ?3,
+                        updated_at = ?4,
+                        local_updated_at = ?5
+                    WHERE id = ?1
+                      AND deleted_at IS NULL
+                    "#,
+                    params![node_id, next_execution_data, next_payload, updated_at, now],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(updated)
+    }
+
     pub fn get_agent_run_ledger_by_assistant(
         &self,
         assistant_node_id: &str,
@@ -7276,6 +7442,46 @@ mod tests {
         assert_eq!(
             payload["execution_data"]["meta"]["native_recovery_status"],
             "needs_user_action"
+        );
+    }
+
+    #[test]
+    fn startup_recovery_marks_stale_prelaunch_flow_nodes_failed_setup() {
+        let (_dir, db) = open_test_db();
+        db.upsert_local_node(
+            "assistant-prelaunch",
+            "workspace-1",
+            r#"{"id":"assistant-prelaunch","workspaceId":"workspace-1","role":"assistant","content":"","status":"pending","execution_data":{"meta":{"flow_run_id":"flow-run-1","flow_id":"flow-1"}}}"#,
+        )
+        .expect("prelaunch local node");
+
+        let updated = db
+            .reconcile_stale_prelaunch_flow_local_nodes(0)
+            .expect("reconcile prelaunch nodes");
+        assert_eq!(updated, 1);
+        assert!(db
+            .get_agent_run_ledger_by_assistant("assistant-prelaunch")
+            .expect("ledger lookup")
+            .is_none());
+
+        let rows = db
+            .list_local_nodes_for_workspace("workspace-1")
+            .expect("local nodes");
+        assert_eq!(rows.len(), 1);
+        let payload: serde_json::Value =
+            serde_json::from_str(&rows[0].payload).expect("payload json");
+        assert_eq!(payload["status"], "failed_setup");
+        assert_eq!(
+            payload["execution_data"]["last_terminal_status"],
+            "failed_setup"
+        );
+        assert_eq!(
+            payload["execution_data"]["meta"]["native_recovery_status"],
+            "failed_setup"
+        );
+        assert_eq!(
+            payload["execution_data"]["meta"]["flow_run_id"],
+            "flow-run-1"
         );
     }
 

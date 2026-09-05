@@ -492,7 +492,9 @@ fn run_turn(args: AdapterArgs) -> Result<i32, AdapterError> {
         ) {
             if let Some(delta) = payload.get("delta").and_then(JsonValue::as_str) {
                 if !delta.is_empty() {
-                    emit(json!({ "type": "thinking", "content": delta, "is_delta": true, "timestamp": now_ms() }));
+                    emit(
+                        json!({ "type": "thinking", "content": delta, "is_delta": true, "timestamp": now_ms() }),
+                    );
                 }
             }
             continue;

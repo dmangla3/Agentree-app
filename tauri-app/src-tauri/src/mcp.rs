@@ -57,8 +57,10 @@ fn resolved_mcp_port_string() -> Option<String> {
 
 pub fn mcp_server_url() -> String {
     let bind_addr = configured_mcp_bind_addr();
-    let port = resolved_mcp_port_string();
-    mcp_server_url_from_parts(Some(bind_addr.as_str()), port.as_deref())
+    let Some(port) = resolved_mcp_port_string() else {
+        return String::new();
+    };
+    mcp_server_url_from_parts(Some(bind_addr.as_str()), Some(port.as_str()))
 }
 
 #[derive(Clone)]
@@ -810,6 +812,15 @@ mod tests {
         assert_eq!(resolved_mcp_port_string().as_deref(), Some("54321"));
         assert_eq!(mcp_server_url(), "http://127.0.0.1:54321/mcp");
         MCP_ACTUAL_PORT.store(0, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn mcp_server_url_is_empty_before_dynamic_port_is_bound() {
+        if configured_mcp_port_string().is_some() {
+            return;
+        }
+        MCP_ACTUAL_PORT.store(0, Ordering::SeqCst);
+        assert_eq!(mcp_server_url(), "");
     }
 
     #[test]

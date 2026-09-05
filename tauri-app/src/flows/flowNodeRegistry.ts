@@ -41,7 +41,7 @@ export const FLOW_NODE_REGISTRY: FlowNodeRegistry = {
     parent: 'root',
     requiresFinalizedCommit: true,
     prompt: `Compare these candidate commits for the request.
-Produce one finalized commit that best satisfies the request. The commits may represent implementation work, plans, documentation, tests, analysis, or another requested artifact. Infer the intended artifact from the original request and preserve that intent.
+Create or update the file-backed artifact that best satisfies the request. The candidate commits may represent implementation work, plans, documentation, tests, analysis, or another requested artifact. Infer the intended artifact from the original request and preserve that intent.
 Do not convert a planning, documentation, testing, or analysis task into implementation work unless the request explicitly asks for implementation.
 You may use one candidate unchanged when it is already the best answer, or create a synthesized result that keeps the strongest candidate's strengths and applies useful ideas, fixes, risks, sequencing, validation details, or tradeoffs from the other candidate commits when they improve the result.
 Do not copy weaker, duplicated, vague, or conflicting changes just because they are present.
@@ -52,7 +52,7 @@ Request:
 Candidate commits:
 {{ candidate_commits }}
 
-Finish by producing a commit. Do not end with structured flow returns.`,
+Finish by making the artifact changes in files. Agentree will record the finalized commit automatically. Do not end with structured flow returns.`,
   },
   'core.reviewer@1': {
     id: 'core.reviewer@1',

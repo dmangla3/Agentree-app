@@ -752,6 +752,24 @@ pub fn start_agent_run_watchdog(app_handle: AppHandle) {
     thread::spawn(move || loop {
         thread::sleep(Duration::from_millis(AGENT_RUN_WATCHDOG_POLL_INTERVAL_MS));
         let now_ms = unix_timestamp_millis();
+        {
+            let telemetry = app_handle.state::<crate::db::TelemetryDb>();
+            match telemetry.reconcile_stale_prelaunch_flow_local_nodes(60) {
+                Ok(count) if count > 0 => {
+                    crate::app_log!(
+                        "[AGENT_WATCHDOG] event=prelaunch_flow_failed_setup count={}",
+                        count
+                    );
+                }
+                Err(err) => {
+                    crate::app_log!(
+                        "[AGENT_WATCHDOG] event=prelaunch_flow_reconcile_failed err={}",
+                        err
+                    );
+                }
+                _ => {}
+            }
+        }
         let sessions = {
             let state = app_handle.state::<AgentState>();
             let sessions = match state.sessions.lock() {

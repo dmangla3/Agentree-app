@@ -7,6 +7,7 @@ import { buildComposerDraftKey, useWorkspaceStore, type Message, type Workspace 
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { isLoginProfileActive } from '../lib/loginProfiles';
+import { isNoAgentSessionFoundError, markStalePrelaunchFlowNodeCancelled } from '../lib/localAgentRunTerminal';
 import { applyLocalNodeMessages } from '../hooks/useLiveMessages';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from '../hooks/useLocalNodes';
 import { useAgents, type Agent } from '../hooks/useAgents';
@@ -307,6 +308,7 @@ function GraphDockPromptTextarea({
 
 export function GraphDockComposer() {
   const queryClient = useQueryClient();
+  const loginProfiles = useLoginProfilesStore((state) => state.profiles);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const promptRef = useRef('');
   const assistantNodeIdRef = useRef<string | null>(null);
@@ -461,6 +463,12 @@ export function GraphDockComposer() {
       focusedCommitSha: null,
     }
     : rawTarget;
+  const targetParentMessage = target.parentMessageId
+    ? messageById.get(target.parentMessageId) ?? null
+    : null;
+  const effectiveThreadId = target.parentMessageId
+    ? getMessageThreadSessionId(targetParentMessage) ?? (targetParentMessage ? getLegacyThreadIdForMessage(targetParentMessage, messageById) : null)
+    : pendingThreadId;
   const composerDraftTargetId = editDraftSource?.id ?? target.parentMessageId ?? target.selectedNodeId ?? null;
   const composerDraftKey = buildComposerDraftKey(selectedWorkspaceId, composerDraftTargetId);
   const composerDraft = composerDraftKey ? composerDraftByWorkspace[composerDraftKey] ?? '' : '';
@@ -652,6 +660,14 @@ export function GraphDockComposer() {
     messages,
     target.parentMessageId,
   ]);
+  const flowLoginProfile = useMemo(() => {
+    if (!agent?.type) return null;
+    const compatibleProfiles = loginProfiles.filter((profile) => profile.provider === agent.type);
+    const selectedLoginProfileId = compatibleProfiles.find((profile) => profile.isDefault)?.id
+      ?? compatibleProfiles[0]?.id
+      ?? null;
+    return compatibleProfiles.find((profile) => profile.id === selectedLoginProfileId) ?? null;
+  }, [agent?.type, loginProfiles]);
   const flowRunner = useAgentFlowRunner({
     workspaceId: selectedWorkspaceId,
     selectedAgentId: agent?.id ?? null,
@@ -661,11 +677,13 @@ export function GraphDockComposer() {
     rootParentNodeId: target.parentMessageId,
     rootContextParentNodeId: effectiveContextParentId,
     rootContextManifest: contextManifest,
+    threadId: effectiveThreadId,
     agentCliArgs: agent?.cliArgs ?? null,
     agentPromptFlag: agent?.promptFlag ?? null,
     agentName: agent?.name ?? null,
     llmModel: agent?.model_config?.model ?? null,
     reasoningEffort: (agent?.model_config as any)?.reasoningEffort ?? null,
+    loginProfileId: flowLoginProfile?.id ?? null,
   });
   const selectedFlow = useMemo(
     () => flowRunner.flows.find((flow) => flow.id === flowRunner.selectedFlowId) ?? null,
@@ -1290,7 +1308,34 @@ export function GraphDockComposer() {
       baseCommitSha: effectiveBase.commitSha,
     }, { source: 'GraphDockComposer' });
     if (selectedFlow) {
-      void flowRunner.runFlow({ input: promptForAgent, count: flowParallelCount }).catch((caught) => {
+      const flowProviderNeedsLoginProfile = agent?.type === 'codex' || agent?.type === 'claude';
+      if (flowProviderNeedsLoginProfile && (!flowLoginProfile || !isLoginProfileActive(flowLoginProfile))) {
+        setError(`${agent?.name ?? agent?.type ?? 'Agent'} needs a ready login profile before it can run.`);
+        return;
+      }
+      let flowThreadId = effectiveThreadId;
+      if (!target.parentMessageId && selectedWorkspaceId && (!flowThreadId || flowThreadId.startsWith('workspace-empty-thread:'))) {
+        const thread = await createThreadSession.mutateAsync({
+          workspaceId: selectedWorkspaceId,
+          source: 'flow',
+          baseCommitSha: effectiveBase.commitSha,
+        });
+        flowThreadId = thread.id;
+        setPendingThreadId(thread.id);
+      }
+      void flowRunner.runFlow({ input: promptForAgent, count: flowParallelCount, threadId: flowThreadId }).then((result) => {
+        if (result.status !== 'failed' && result.status !== 'stopped') {
+          return;
+        }
+        const message = result.reason || 'Failed to run flow.';
+        recordSendFlowEvent('graph-dock.error', {
+          workspaceId: selectedWorkspaceId,
+          parentMessageId: target.parentMessageId,
+          selectedFlowId: selectedFlowIdForEvent,
+          message,
+        }, { source: 'GraphDockComposer' });
+        setError(message);
+      }).catch((caught) => {
         const message = caught instanceof Error ? caught.message : 'Failed to run flow.';
         recordSendFlowEvent('graph-dock.error', {
           workspaceId: selectedWorkspaceId,
@@ -1418,8 +1463,10 @@ export function GraphDockComposer() {
     effectiveContextParentId,
     effectiveContextPolicy,
     effectiveContextStartId,
+    effectiveThreadId,
     expandRepoMentionContext,
     flowParallelCount,
+    flowLoginProfile,
     flowRunner,
     isPrimaryActionBusy,
     isSteeringRunningAssistant,
@@ -1478,6 +1525,30 @@ export function GraphDockComposer() {
       });
       void scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'cancel-agent' });
     } catch (caught) {
+      if (isNoAgentSessionFoundError(caught)) {
+        const marked = await markStalePrelaunchFlowNodeCancelled({
+          queryClient,
+          workspaceId: selectedWorkspaceId,
+          nodeId,
+          node: parentMessage,
+          reason: 'Flow cancelled after the app restarted before the native agent session was created.',
+        });
+        if (marked) {
+          agentRunManager.dispatch(nodeId, {
+            type: 'cancel',
+            reason: 'cancelled',
+          }, {
+            workspaceId: selectedWorkspaceId,
+            parentId: parentMessage?.parentId ?? null,
+            role: 'assistant',
+            agentId: parentMessage?.agent_id ?? null,
+            content: parentMessage?.content ?? '',
+            executionData: (parentMessage?.execution_data ?? {}) as Record<string, any>,
+          });
+          void scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'cancel-stale-flow-node' });
+          return;
+        }
+      }
       console.error('[GraphDockComposer] Failed to stop agent:', caught);
       setError('Unable to cancel the running agent.');
     } finally {

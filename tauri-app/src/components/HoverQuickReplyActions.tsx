@@ -10,6 +10,7 @@ import { Button } from '../../@/components/ui/button';
 import { useHeadlessQuickReply } from '../hooks/useHeadlessQuickReply';
 import { agentClient } from '../lib/agentClient';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
+import { isNoAgentSessionFoundError, markStalePrelaunchFlowNodeCancelled } from '../lib/localAgentRunTerminal';
 import { getHoverReplyMode, stopQuickReplyControlEvent } from '../lib/quickReply';
 import { cn } from '../lib/utils';
 import { buildComposerDraftKey, useWorkspaceStore } from '../stores/workspaceStore';
@@ -129,6 +130,32 @@ export function HoverQuickReplyActions({
       clearComposerDraft(workspaceId, replyParentId);
       setDraftResetVersion((version) => version + 1);
     } catch (caught) {
+      if (isNoAgentSessionFoundError(caught)) {
+        const marked = await markStalePrelaunchFlowNodeCancelled({
+          queryClient,
+          workspaceId,
+          nodeId: replyParentId,
+          node: assistantMessage,
+          reason: 'Flow cancelled after the app restarted before the native agent session was created.',
+        });
+        if (marked) {
+          agentRunManager.dispatch(replyParentId, {
+            type: 'cancel',
+            reason: 'cancelled',
+          }, {
+            workspaceId,
+            parentId: assistantMessage?.parentId ?? null,
+            role: 'assistant',
+            agentId: assistantMessage?.agent_id ?? null,
+            content: assistantMessage?.content ?? '',
+            executionData: (assistantMessage?.execution_data ?? {}) as Record<string, any>,
+          });
+          void scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, { reason: 'cancel-stale-flow-node' });
+          clearComposerDraft(workspaceId, replyParentId);
+          setDraftResetVersion((version) => version + 1);
+          return;
+        }
+      }
       console.error('[NodeHoverCardContent] Failed to stop agent:', caught);
       setCancelError('Unable to cancel this run.');
     } finally {

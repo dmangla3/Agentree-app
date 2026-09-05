@@ -94,6 +94,7 @@ describe('createAgentreeFlowNodeRunner', () => {
       flowSourceId: 'parallel_review_until_satisfied',
       flowSourceVersion: 1,
       flowRunId: 'flow-run-1',
+      threadId: 'thread-1',
       threadOriginId: 'thread-origin-1',
       launchAgentNode: launcher,
       waitForAssistantNode: waitForNode,
@@ -122,6 +123,11 @@ describe('createAgentreeFlowNodeRunner', () => {
       'thread-origin-1',
       'thread-origin-1',
       null,
+    ]);
+    expect(launchCalls.map((call) => call.threadId)).toEqual([
+      'thread-1',
+      'thread-1',
+      'thread-1',
     ]);
   });
 
