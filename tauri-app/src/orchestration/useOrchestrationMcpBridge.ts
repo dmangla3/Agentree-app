@@ -210,6 +210,36 @@ const buildWaitSummary = (wait: PendingWait, messages: Message[]): Record<string
   }),
 });
 
+export const patchOrchestrationWaitMessagesIntoCaches = (
+  queryClient: QueryClient,
+  wait: Pick<PendingWait, 'assistantNodeIds'>,
+  currentMessages: Message[],
+) => {
+  const messagesByWorkspace = new Map<string, Message[]>();
+  for (const assistantNodeId of wait.assistantNodeIds) {
+    const message = currentMessages.find((candidate) => candidate.id === assistantNodeId);
+    if (!message?.workspaceId) continue;
+    const existing = messagesByWorkspace.get(message.workspaceId) ?? [];
+    existing.push(message);
+    messagesByWorkspace.set(message.workspaceId, existing);
+  }
+
+  for (const [workspaceId, waitedMessages] of messagesByWorkspace) {
+    const waitedIds = new Set(waitedMessages.map((message) => message.id));
+    queryClient.setQueryData<Message[]>(['messages', workspaceId], (current) => {
+      const existing = current ?? [];
+      return [...existing.filter((message) => !waitedIds.has(message.id)), ...waitedMessages]
+        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+    });
+    queryClient.setQueryData(
+      localNodeKeys.workspace(workspaceId),
+      (current) => upsertMessagesIntoLocalNodeCache(current as any, workspaceId, waitedMessages, {
+        finalizedAt: Math.floor(Date.now() / 1000),
+      }),
+    );
+  }
+};
+
 export function useOrchestrationMcpBridge({
   selectedWorkspaceId,
   messages,
@@ -239,9 +269,10 @@ export function useOrchestrationMcpBridge({
       'orchestration:wait_completed',
       buildWaitSummary(wait, currentMessages),
     );
+    patchOrchestrationWaitMessagesIntoCaches(queryClient, wait, currentMessages);
     await respond(wait.requestId, buildWaitSummary(wait, currentMessages), null);
     return true;
-  }, []);
+  }, [queryClient]);
 
   useEffect(() => {
     const currentMessages = getCurrentWaitMessages();
@@ -272,9 +303,10 @@ export function useOrchestrationMcpBridge({
 
   useEffect(() => {
     let unlisten: UnlistenFn | null = null;
+    let disposed = false;
 
     const install = async () => {
-      unlisten = await listen<OrchestrationMcpRequest>('agentree://orchestration-mcp-request', async (event) => {
+      const nextUnlisten = await listen<OrchestrationMcpRequest>('agentree://orchestration-mcp-request', async (event) => {
         const request = event.payload;
         const requestId = request?.requestId;
         if (!requestId) return;
@@ -415,6 +447,9 @@ export function useOrchestrationMcpBridge({
               const agentId = resolveAgentId(orchestrator, args, agentType);
               const authToken = await getAccessToken();
               const parentNodeId = readString(args, 'parent_node_id') ?? orchestratorNodeId;
+              const parentNode = latestMessagesRef.current.find((message) => message.id === parentNodeId) ?? null;
+              const parentNodeMeta = (parentNode?.execution_data as { meta?: Record<string, unknown> } | null | undefined)?.meta ?? null;
+              const parentHasChildren = latestMessagesRef.current.some((message) => message.parentId === parentNodeId);
               const result = await startOrchestrationChildRun({
                 orchestratorRunId,
                 orchestratorNodeId,
@@ -435,6 +470,8 @@ export function useOrchestrationMcpBridge({
                 loginProfileId: readString(args, 'login_profile_id') ?? readString(meta, 'login_profile_id'),
                 parentNodeId,
                 contextParentNodeId: readString(contextProfile, 'context_parent_node_id') ?? parentNodeId,
+                providerParentMeta: parentNodeMeta,
+                isBranchFromInterior: parentHasChildren,
                 baseNodeId: readString(contextProfile, 'base_node_id')
                   ?? (typeof orchestrator.base_selected_from_node_id === 'string' ? orchestrator.base_selected_from_node_id : null)
                   ?? parentNodeId,
@@ -488,6 +525,11 @@ export function useOrchestrationMcpBridge({
           await respond(requestId, null, error instanceof Error ? error.message : String(error));
         }
       });
+      if (disposed) {
+        nextUnlisten();
+        return;
+      }
+      unlisten = nextUnlisten;
     };
 
     void install().catch((error) => {
@@ -495,6 +537,7 @@ export function useOrchestrationMcpBridge({
     });
 
     return () => {
+      disposed = true;
       if (unlisten) unlisten();
     };
   }, [queryClient, selectedWorkspaceId, tryResolveWait, workspaces]);

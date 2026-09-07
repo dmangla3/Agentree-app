@@ -3,7 +3,6 @@ import type { Message } from '../stores/workspaceStore';
 import { isActiveAgentStatus, isFailureAgentStatus, isTerminalAgentStatus, type AgentStatus } from '@shared/agentStatus';
 
 export const orchestrationEventTypes = [
-  'orchestration:flow_diagram_created',
   'orchestration:child_requested',
   'orchestration:child_started',
   'orchestration:wait_started',
@@ -46,8 +45,6 @@ export interface OrchestrationEventPayload {
   waitGroupId?: string;
   decisionIds?: string[];
   condition?: OrchestrationWaitGroup['condition'];
-  mermaid?: string;
-  diagram?: string;
   plan?: unknown;
   reason?: string;
   [key: string]: unknown;

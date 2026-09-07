@@ -35,11 +35,7 @@ import { api } from '../lib/api';
 import { getAccessToken } from '../lib/authSession';
 import { getMessageById, resolveNodeCommit } from '../lib/gitNodeUtils';
 import { track, trackAgentRunFailed, trackAgentRunStarted } from '../lib/analytics';
-import {
-    resolveProviderContextRouting,
-    resolveProviderContinuation,
-    type RuntimeProvider,
-} from '../lib/providerContinuation';
+import { buildAgentRunLaunchContext } from '../lib/agentRunLaunchContext';
 import { ScrollArea } from "../../@/components/ui/scroll-area";
 import { Popover, PopoverContent, PopoverAnchor, PopoverTrigger } from '../../@/components/ui/popover'; // Added Popover components
 import { Checkbox } from '../../@/components/ui/checkbox';
@@ -83,7 +79,6 @@ import {
 } from '../lib/composerRepoMentions';
 import { hasFreshContextBoundary } from '../lib/messageContext';
 import { getLegacyThreadIdForMessage, getMessageThreadSessionId } from '../lib/threadSessions';
-import { appendClaudeMcpConfigArgs } from '../lib/mcpRuntime';
 import {
     applyComposerPermissionArgs,
     COMPOSER_PERMISSION_OPTIONS,
@@ -292,19 +287,6 @@ const resolveContextStartMessage = (
     return latestFreshStart ?? contextMessages[0] ?? null;
 };
 
-const hasConversationChild = (
-    messageId: string | null | undefined,
-    messages: Message[],
-    messageMap: Map<string, Message>,
-    excludedMessageIds: Set<string> = new Set()
-): boolean => {
-    if (!messageId) return false;
-    return messages.some((message) => {
-        if (excludedMessageIds.has(message.id)) return false;
-        if (message.parentId !== messageId) return false;
-        return !isFirstClassCommitMessage(message, { messageMap });
-    });
-};
 const parseCliArgs = (cliArgs: string | null | undefined) => {
     const tokens = String(cliArgs || '').split(/\s+/).filter(Boolean);
     let model: string | null = null;
@@ -335,8 +317,6 @@ import { useCommits } from '../hooks/useCommits';
 import { useTrackedRefs } from '../hooks/useTrackedRefs';
 import { agentClient } from '../lib/agentClient';
 import { resolveComposerDefaultAgentId } from '../lib/composerModelDefaults';
-import { buildComposerContextManifest, buildComposerContextSelection, type ComposerContextManifest } from '../lib/composerContext';
-import { EMPTY_COMPOSER_CONTEXT_MANIFEST, buildAgentRunPrompt } from '../lib/prompts';
 import { AGENT_STATUS, isActiveAgentStatus, isTerminalAgentStatus } from '@shared/agentStatus';
 import { createOptimisticAssistantMessage, createOptimisticNodePair, categorizeError, formatErrorMessage, isOptimisticId } from '../lib/optimisticMessages';
 import {
@@ -3560,46 +3540,19 @@ export function ChatInput({
             const resolvedRunMode = permissionMode;
             const resolvedModel = (selectedAgent as any)?.model_config?.model || parsedCliArgs.model || null;
             if (selectedAgent?.type === 'claude') {
-                agentSessionId = crypto.randomUUID();
-                const cleaned: string[] = [];
-                for (let i = 0; i < cliArgs.length; i++) {
-                    const arg = cliArgs[i];
-                    if (arg === '--permission-mode') {
-                        const mode = cliArgs[i + 1];
-                        if (mode === 'plan') {
-                            cleaned.push(arg, 'auto');
-                            i += 1;
-                            continue;
-                        }
-                    }
-                    if (arg === '--output-format' || arg === '--session-id') {
-                        i += 1;
-                        continue;
-                    }
-                    if (arg === '-p' || arg === '--print' || arg === '--verbose' || arg === '--no-session-persistence') {
-                        continue;
-                    }
-                    cleaned.push(arg);
+                const existingSessionIdIndex = cliArgs.indexOf('--session-id');
+                agentSessionId = existingSessionIdIndex >= 0
+                    ? cliArgs[existingSessionIdIndex + 1] ?? null
+                    : crypto.randomUUID();
+                if (existingSessionIdIndex < 0 && agentSessionId) {
+                    cliArgs.push('--session-id', agentSessionId);
                 }
-                cliArgs = cleaned;
-                if (!cliArgs.includes('--permission-mode')) {
-                    cliArgs.push('--permission-mode', 'auto');
-                }
-                if (!agentClient.hasRuntime()) {
-                    throw new Error('Agentree MCP server URL is unavailable. Restart Agentree and try again.');
-                }
-                const mcpServerUrl = await agentClient.getMcpServerUrl();
-                cliArgs = appendClaudeMcpConfigArgs(cliArgs, mcpServerUrl);
-                cliArgs.push('--session-id', agentSessionId);
-                cliArgs.push('--print', '--output-format', 'stream-json', '--verbose', '--no-session-persistence');
             }
             cliArgs = applyComposerPermissionArgs(cliArgs, selectedAgent?.type, permissionMode);
 
             const promptFlag = selectedAgent?.type === 'codex' ? null : selectedAgent?.promptFlag;
-            const providerParentMessage = contextParentMessage;
-            const parentExecutionMeta = (providerParentMessage?.execution_data as any)?.meta || {};
             const selectedProvider = selectedAgent?.type === 'claude' || selectedAgent?.type === 'codex'
-                ? selectedAgent.type as RuntimeProvider
+                ? selectedAgent.type
                 : null;
             const compatibleLoginProfiles = selectedProvider
                 ? useLoginProfilesStore.getState().profiles.filter((profile) => profile.provider === selectedProvider)
@@ -3618,111 +3571,33 @@ export function ChatInput({
                 });
                 return;
             }
-            const currentSendMessageIds = new Set([
-                assistantMsg.parentId,
-                assistantMsg.id,
-            ].filter((id): id is string => Boolean(id)));
-            const parentHasChildren = hasConversationChild(
-                providerParentMessage?.id ?? baseMessageId,
-                messageLookupMessages,
-                messageById,
-                currentSendMessageIds
-            );
-            const isBranchFromInterior = !!parentHasChildren;
-            const providerContinuation = selectedProvider
-                ? resolveProviderContinuation({
-                    selectedProvider,
-                    parentMeta: parentExecutionMeta,
-                    isBranchFromInterior,
-                })
-                : null;
-            const hasPotentialAgentreeContext = contextPolicy !== 'fresh' && Boolean(providerParentMessage?.id);
-            const providerRouting = resolveProviderContextRouting({
-                continuation: providerContinuation,
-                contextMode: contextPolicy === 'fresh' ? 'none' : contextMode,
-                contextPolicy,
-                hasSelectedAgentreeContext: hasPotentialAgentreeContext,
-            });
-            const providerThreadStrategy = providerRouting.providerThreadStrategy;
-            const providerThreadStrategyRequested = providerRouting.providerThreadStrategyRequested;
-            const parentProviderThreadId = providerContinuation?.sourceThreadId ?? null;
-            const parentProviderTurnId = providerContinuation?.sourceTurnId ?? null;
-            const parentProviderLineageId = providerContinuation?.sourceLineageId ?? null;
-            const parentProviderUserTurnCount = providerContinuation?.sourceUserTurnCount ?? null;
-            const sourceProviderThreadIdForSpawn = providerThreadStrategy === 'fresh_thread'
-                ? null
-                : providerContinuation?.sourceThreadId ?? null;
-            let selectedComposerContextManifest: ComposerContextManifest = EMPTY_COMPOSER_CONTEXT_MANIFEST;
-            const getSelectedComposerContextManifest = () => {
-                if (selectedComposerContextManifest !== EMPTY_COMPOSER_CONTEXT_MANIFEST) {
-                    return selectedComposerContextManifest;
-                }
-                if (!providerParentMessage?.id || contextPolicy === 'fresh') {
-                    return selectedComposerContextManifest;
-                }
-                const selection = buildComposerContextSelection(
-                    providerParentMessage.id,
-                    messageLookupMessages,
-                    null,
-                    'continue',
-                    contextStartMessageId
-                );
-                selectedComposerContextManifest = buildComposerContextManifest(
-                    selection.turns,
-                    new Set(selection.defaultSelectedIds)
-                );
-                return selectedComposerContextManifest;
-            };
-            if (providerRouting.shouldBuildCrossProviderPacket || providerRouting.shouldInjectAgentreeContext) {
-                selectedComposerContextManifest = getSelectedComposerContextManifest();
-            }
-            const explicitAgentreeContext = selectedComposerContextManifest.contextText.trim();
-            const promptMode = providerRouting.promptContextMode === 'cross_provider_packet' && providerContinuation && selectedProvider
-                ? 'cross_provider'
-                : providerRouting.promptContextMode === 'agentree_context'
-                    ? 'agentree_context'
-                    : 'plain';
-            const agentRunPrompt = buildAgentRunPrompt({
-                mode: promptMode,
+            const launchContext = buildAgentRunLaunchContext({
+                agentType: selectedAgent?.type,
                 userPrompt: prompt,
-                contextManifest: selectedComposerContextManifest,
+                messages: messageLookupMessages,
+                messageMap: messageById,
+                contextParentMessageId: contextParentMessage?.id ?? null,
+                baseMessageId,
+                contextPolicy,
+                contextMode,
+                contextStartMessageId,
+                excludedBranchMessageIds: new Set([
+                    assistantMsg.parentId,
+                    assistantMsg.id,
+                ].filter((id): id is string => Boolean(id))),
+                nodeId,
+                targetNodeId: baseMessageId,
                 threadTitleMode: !baseMessageId && threadId ? 'first_thread_message' : 'none',
             });
-            const shouldInjectAgentreeContext = agentRunPrompt.agentreeContextInjected;
-            const effectivePrompt = agentRunPrompt.prompt;
-
-            const providerInternalArgs = (selectedProvider
-                ? [
-                    '--provider-thread-strategy',
-                    providerThreadStrategy,
-                    ...((sourceProviderThreadIdForSpawn && providerThreadStrategy === 'resume') ? ['--provider-thread-id', sourceProviderThreadIdForSpawn] : []),
-                    ...((sourceProviderThreadIdForSpawn && providerThreadStrategy !== 'resume') ? ['--source-provider-thread-id', sourceProviderThreadIdForSpawn] : []),
-                    ...((parentProviderLineageId && providerThreadStrategy !== 'fresh_thread') ? ['--source-provider-lineage-id', parentProviderLineageId] : []),
-                    ...((providerThreadStrategy === 'fork_then_rollback' && parentProviderUserTurnCount != null)
-                        ? ['--target-provider-user-turn-count', String(parentProviderUserTurnCount)]
-                        : []),
-                    ...((providerThreadStrategy === 'fork' && parentProviderTurnId)
-                        ? ['--target-provider-turn-id', parentProviderTurnId]
-                        : []),
-                    ...(baseMessageId ? ['--target-node-id', baseMessageId] : []),
-                    '--node-id',
-                    nodeId,
-                ]
-                : []);
+            const providerThreadStrategy = launchContext.providerThreadStrategy;
+            const providerThreadStrategyRequested = launchContext.providerThreadStrategyRequested;
+            const effectivePrompt = launchContext.prompt;
+            const agentreeContextAvailableChars = launchContext.agentreeContextAvailableChars;
+            const agentreeContextInjectedChars = launchContext.agentreeContextInjectedChars;
+            const isBranchFromInterior = launchContext.isBranchFromInterior;
             const spawnArgs = promptFlag
-                ? [...cliArgs, ...providerInternalArgs, promptFlag, effectivePrompt]
-                : [...cliArgs, ...providerInternalArgs, effectivePrompt];
-
-            const agentreeContextAvailableChars = explicitAgentreeContext.length;
-            const agentreeContextInjectedChars = shouldInjectAgentreeContext
-                ? agentreeContextAvailableChars
-                : 0;
-            const sourceProviderLineageIdForSpawn = providerThreadStrategy === 'fresh_thread'
-                ? null
-                : parentProviderLineageId;
-            const sourceProviderTurnIdForSpawn = providerThreadStrategy === 'fresh_thread'
-                ? null
-                : parentProviderTurnId;
+                ? [...cliArgs, ...launchContext.providerInternalArgs, promptFlag, effectivePrompt]
+                : [...cliArgs, ...launchContext.providerInternalArgs, effectivePrompt];
 
             const traceId = attachLatencyTraceToNode(nodeId, nodeId, authToken);
             trackAgentRunStarted({
@@ -3736,7 +3611,7 @@ export function ChatInput({
                 auto_checkout_requested: autoCheckout,
                 explicit_context_chars: agentreeContextAvailableChars,
                 injected_context_chars: agentreeContextInjectedChars,
-                provider_context_routing_mode: providerRouting.promptContextMode,
+                provider_context_routing_mode: launchContext.providerContextRoutingMode,
             });
             recordLatencyMark(nodeId, 'spawn_requested', {
                 authToken,
@@ -3747,15 +3622,15 @@ export function ChatInput({
                     provider_thread_resume_enabled: providerThreadStrategy === 'resume',
                     provider_thread_strategy: providerThreadStrategy,
                     provider_thread_strategy_requested: providerThreadStrategyRequested,
-                    provider_cross_provider_fresh_thread: providerRouting.promptContextMode === 'cross_provider_packet',
-                    provider_context_routing_mode: providerRouting.promptContextMode,
-                    provider_context_routing_reason: providerRouting.reason,
-                    parent_provider: providerContinuation?.parentProvider ?? null,
+                    provider_cross_provider_fresh_thread: launchContext.providerContextRoutingMode === 'cross_provider_packet',
+                    provider_context_routing_mode: launchContext.providerContextRoutingMode,
+                    provider_context_routing_reason: launchContext.providerContextRoutingReason,
+                    parent_provider: launchContext.providerParentProvider,
                     selected_provider: selectedProvider,
-                    parent_provider_thread_id: parentProviderThreadId,
-                    parent_provider_turn_id: parentProviderTurnId,
-                    parent_provider_lineage_id: parentProviderLineageId,
-                    parent_provider_user_turn_count: parentProviderUserTurnCount,
+                    parent_provider_thread_id: launchContext.providerParentThreadId,
+                    parent_provider_turn_id: launchContext.providerParentTurnId,
+                    parent_provider_lineage_id: launchContext.providerParentLineageId,
+                    parent_provider_user_turn_count: launchContext.providerParentUserTurnCount,
                     branch_from_interior: isBranchFromInterior,
                 },
             });
@@ -3779,42 +3654,7 @@ export function ChatInput({
                 git_branch_name: plannedBranchName,
                 base_commit_sha: parentCommit,
                 auto_checkout_requested: autoCheckout,
-                context_cache_experiment: 'context_manifest_v1',
-                agentree_context_chars: agentreeContextAvailableChars,
-                agentree_context_available_chars: agentreeContextAvailableChars,
-                agentree_context_available_estimated_tokens: Math.ceil(agentreeContextAvailableChars / 4),
-                agentree_context_estimated_tokens: Math.ceil(agentreeContextAvailableChars / 4),
-                agentree_context_injected_chars: agentreeContextInjectedChars,
-                agentree_context_injected_estimated_tokens: Math.ceil(agentreeContextInjectedChars / 4),
-                agentree_context_injected: shouldInjectAgentreeContext,
-                agentree_context_manifest_version: selectedComposerContextManifest.version,
-                agentree_context_manifest_hash: selectedComposerContextManifest.manifestHash,
-                agentree_context_stable_prefix_hash: selectedComposerContextManifest.stablePrefixHash,
-                agentree_context_volatile_tail_hash: selectedComposerContextManifest.volatileTailHash,
-                agentree_context_stable_prefix_chars: selectedComposerContextManifest.stablePrefixText.length,
-                agentree_context_stable_prefix_estimated_tokens: Math.ceil(selectedComposerContextManifest.stablePrefixText.length / 4),
-                agentree_context_volatile_tail_chars: selectedComposerContextManifest.volatileTailText.length,
-                agentree_context_volatile_tail_estimated_tokens: Math.ceil(selectedComposerContextManifest.volatileTailText.length / 4),
-                agentree_context_block_count: selectedComposerContextManifest.blocks.length,
-                agentree_context_stable_block_count: selectedComposerContextManifest.stableBlocks.length,
-                agentree_context_volatile_block_count: selectedComposerContextManifest.volatileBlocks.length,
-                provider_thread_resume_enabled: providerThreadStrategy === 'resume',
-                provider_parent_provider: providerContinuation?.parentProvider ?? null,
-                provider_selected_provider: selectedProvider,
-                provider_cross_provider_fresh_thread: providerRouting.promptContextMode === 'cross_provider_packet',
-                provider_context_routing_mode: providerRouting.promptContextMode,
-                provider_context_routing_reason: providerRouting.reason,
-                provider_thread_strategy_requested: providerThreadStrategyRequested,
-                provider_thread_id: sourceProviderThreadIdForSpawn,
-                provider_source_thread_id: sourceProviderThreadIdForSpawn,
-                provider_source_turn_id: sourceProviderTurnIdForSpawn,
-                provider_parent_thread_id_available: parentProviderThreadId,
-                provider_parent_turn_id_available: parentProviderTurnId,
-                provider_parent_lineage_id_available: parentProviderLineageId,
-                provider_lineage_id: sourceProviderLineageIdForSpawn,
-                provider_target_user_turn_count: providerThreadStrategy === 'fork_then_rollback' ? parentProviderUserTurnCount : null,
-                provider_target_turn_id: providerThreadStrategy === 'fork' ? parentProviderTurnId : null,
-                provider_thread_strategy: providerThreadStrategy,
+                ...launchContext.meta,
                 composer_permission_mode: permissionMode,
                 ...(selectedProvider
                     ? {

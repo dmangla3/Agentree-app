@@ -1,12 +1,11 @@
 import { AGENT_STATUS } from '@shared/agentStatus';
-import { buildComposerContextManifest, buildComposerContextSelection } from '../lib/composerContext';
-import { buildAgentRunPrompt } from '../lib/prompts';
 import type { Message, Workspace } from '../stores/workspaceStore';
 import type { Agent } from '../hooks/useAgents';
 import type { StartAgentRunIntent, StartAgentRunResponse } from '../lib/agentClient';
 import { createSendFlowId, recordSendFlowEvent } from '../perf/sendFlow';
 import { getLegacyThreadIdForMessage, getMessageThreadSessionId } from '../lib/threadSessions';
 import { resolveLocalWorkspaceRepoPath } from '../lib/workspaceRepoPath';
+import { buildAgentRunLaunchContext } from '../lib/agentRunLaunchContext';
 import {
   applyComposerPermissionArgs,
   DEFAULT_COMPOSER_PERMISSION_MODE,
@@ -164,14 +163,15 @@ const createLocalHeadlessMessages = (input: {
 export const buildHeadlessComposerAgentArgs = (
   agent: Agent,
   prompt: string,
-  permissionMode: ComposerPermissionMode = DEFAULT_COMPOSER_PERMISSION_MODE
+  permissionMode: ComposerPermissionMode = DEFAULT_COMPOSER_PERMISSION_MODE,
+  providerInternalArgs: string[] = [],
 ): string[] => {
   const args = splitCliArgs(agent.cliArgs);
   const argsWithPermissions = applyComposerPermissionArgs(args, agent.type, permissionMode);
   if (agent.type === 'codex' || !agent.promptFlag) {
-    return [...argsWithPermissions, prompt];
+    return [...argsWithPermissions, ...providerInternalArgs, prompt];
   }
-  return [...argsWithPermissions, agent.promptFlag, prompt];
+  return [...argsWithPermissions, ...providerInternalArgs, agent.promptFlag, prompt];
 };
 
 export const resolveWorkspaceRepoPath = (workspace: Workspace | null | undefined): string | null => (
@@ -228,19 +228,24 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
     const contextParentId = input.contextPolicy === 'fresh'
       ? null
       : input.contextParentId ?? input.parentMessageId;
-    const contextSelection = input.contextPolicy === 'fresh' || !input.parentMessageId
-      ? { turns: [], defaultSelectedIds: [] }
-      : buildComposerContextSelection(
-        input.parentMessageId,
-        input.messages,
-        input.contextParentId ?? input.parentMessageId,
-        input.contextPolicy ?? 'continue',
-        input.contextStartId ?? null
-      );
-    const contextManifest = buildComposerContextManifest(
-      contextSelection.turns,
-      new Set(contextSelection.defaultSelectedIds)
-    );
+    const launchContext = buildAgentRunLaunchContext({
+      agentType: input.agent.type,
+      userPrompt: prompt,
+      messages: input.messages,
+      messageMap,
+      contextParentMessageId: contextParentId,
+      baseMessageId: input.parentMessageId,
+      contextPolicy: input.contextPolicy ?? 'continue',
+      contextStartMessageId: input.contextStartId ?? null,
+      targetNodeId: input.parentMessageId,
+      nodeId: assistantNodeId,
+      threadTitleMode: 'none',
+      orchestrationLabelMode: 'orchestrator',
+      orchestrationControl: {
+        orchestratorRunId: runId,
+        orchestratorNodeId: assistantNodeId,
+      },
+    });
     const authToken = await input.getAccessToken();
     const startResult = await startOrchestratorRun({
       workspaceId: input.workspaceId,
@@ -259,7 +264,9 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
       llmModel: input.agent.model_config?.model ?? null,
       permissionMode: input.permissionMode,
       loginProfileId: input.selectedLoginProfileId ?? null,
-      contextManifest,
+      contextManifest: launchContext.contextManifest,
+      providerParentMeta: (contextParentId ? (messageMap.get(contextParentId)?.execution_data as any)?.meta : null) ?? null,
+      isBranchFromInterior: launchContext.isBranchFromInterior,
       threadId: effectiveThreadId,
       threadOriginId: effectiveThreadOriginId,
       now: nowIso,
@@ -366,25 +373,22 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
 
     const authToken = await input.getAccessToken();
     const runId = input.createRunId?.() ?? crypto.randomUUID();
-    const contextSelection = input.contextPolicy === 'fresh' || !input.parentMessageId
-      ? { turns: [], defaultSelectedIds: [] }
-      : buildComposerContextSelection(
-        input.parentMessageId,
-        input.messages,
-        input.contextParentId ?? input.parentMessageId,
-        input.contextPolicy ?? 'continue',
-        input.contextStartId ?? null
-      );
-    const contextManifest = buildComposerContextManifest(
-      contextSelection.turns,
-      new Set(contextSelection.defaultSelectedIds)
-    );
-    const effectivePrompt = buildAgentRunPrompt({
-      mode: 'agentree_context',
+    const contextParentId = input.contextPolicy === 'fresh'
+      ? null
+      : input.contextParentId ?? input.parentMessageId;
+    const launchContext = buildAgentRunLaunchContext({
+      agentType: input.agent.type,
       userPrompt: prompt,
-      contextManifest,
+      messages: input.messages,
+      messageMap,
+      contextParentMessageId: contextParentId,
+      baseMessageId: input.parentMessageId,
+      contextPolicy: input.contextPolicy ?? 'continue',
+      contextStartMessageId: input.contextStartId ?? null,
+      targetNodeId: input.parentMessageId,
+      nodeId: assistantMessage.id,
       threadTitleMode: !input.parentMessageId && effectiveThreadId ? 'first_thread_message' : 'none',
-    }).prompt;
+    });
     const executionData = {
       ...(assistantMessage.execution_data ?? {}),
       current_run_id: runId,
@@ -396,8 +400,8 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
         ...(((assistantMessage.execution_data as any)?.meta ?? {}) as Record<string, unknown>),
         base_commit_sha: input.base.commitSha,
         ...(input.meta ?? {}),
+        ...launchContext.meta,
         agent_id: input.agent.id,
-        provider: input.agent.type,
         provider_run_mode: input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE,
         composer_permission_mode: input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE,
         llmModel: input.agent.model_config?.model ?? null,
@@ -428,8 +432,9 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
         agentType: input.agent.type,
         args: buildHeadlessComposerAgentArgs(
           input.agent,
-          effectivePrompt,
-          input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE
+          launchContext.prompt,
+          input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE,
+          launchContext.providerInternalArgs
         ),
         authToken,
         traceId: null,

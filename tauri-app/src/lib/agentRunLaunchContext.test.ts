@@ -1,0 +1,109 @@
+import { describe, expect, it } from 'vitest';
+import { EMPTY_COMPOSER_CONTEXT_MANIFEST } from './prompts';
+import { buildAgentRunLaunchContext } from './agentRunLaunchContext';
+import type { Message } from '../stores/workspaceStore';
+
+const message = (input: Partial<Message> & Pick<Message, 'id'>): Message => ({
+  id: input.id,
+  role: input.role ?? 'assistant',
+  content: input.content ?? '',
+  parentId: input.parentId ?? null,
+  workspaceId: input.workspaceId ?? 'workspace-1',
+  execution_data: input.execution_data ?? null,
+  createdAt: input.createdAt ?? '2026-06-01T00:00:00.000Z',
+  updatedAt: input.updatedAt ?? '2026-06-01T00:00:00.000Z',
+});
+
+describe('buildAgentRunLaunchContext', () => {
+  it('resumes same-provider Claude threads from the parent provider thread', () => {
+    const result = buildAgentRunLaunchContext({
+      agentType: 'claude',
+      userPrompt: 'Continue',
+      messages: [
+        message({
+          id: 'assistant-parent',
+          execution_data: {
+            meta: {
+              provider: 'claude',
+              provider_thread_id: 'claude-thread-1',
+              provider_turn_id: 'turn-1',
+            },
+          },
+        }),
+      ],
+      contextParentMessageId: 'assistant-parent',
+      baseMessageId: 'assistant-parent',
+      nodeId: 'assistant-new',
+      targetNodeId: 'assistant-parent',
+    });
+
+    expect(result.providerThreadStrategy).toBe('resume');
+    expect(result.providerInternalArgs).toEqual(expect.arrayContaining([
+      '--provider-thread-strategy',
+      'resume',
+      '--provider-thread-id',
+      'claude-thread-1',
+      '--node-id',
+      'assistant-new',
+    ]));
+    expect(result.meta.provider_thread_id).toBe('claude-thread-1');
+    expect(result.meta.provider_context_routing_mode).toBe('provider_native_only');
+  });
+
+  it('forks Claude from an interior parent turn when the parent already has children', () => {
+    const result = buildAgentRunLaunchContext({
+      agentType: 'claude',
+      userPrompt: 'Branch',
+      messages: [
+        message({
+          id: 'assistant-parent',
+          execution_data: {
+            meta: {
+              provider: 'claude',
+              provider_thread_id: 'claude-thread-1',
+              provider_turn_id: 'turn-1',
+            },
+          },
+        }),
+        message({ id: 'existing-child', role: 'user', parentId: 'assistant-parent' }),
+      ],
+      contextParentMessageId: 'assistant-parent',
+      baseMessageId: 'assistant-parent',
+      nodeId: 'assistant-branch',
+      targetNodeId: 'assistant-parent',
+    });
+
+    expect(result.providerThreadStrategy).toBe('fork');
+    expect(result.providerInternalArgs).toEqual(expect.arrayContaining([
+      '--source-provider-thread-id',
+      'claude-thread-1',
+      '--target-provider-turn-id',
+      'turn-1',
+    ]));
+    expect(result.meta.provider_target_turn_id).toBe('turn-1');
+  });
+
+  it('uses Agentree context for cross-provider starts instead of native continuation', () => {
+    const result = buildAgentRunLaunchContext({
+      agentType: 'codex',
+      userPrompt: 'Continue in Codex',
+      contextPolicy: 'continue',
+      contextManifest: {
+        ...EMPTY_COMPOSER_CONTEXT_MANIFEST,
+        contextText: 'Prior Claude work',
+      },
+      providerParentMeta: {
+        provider: 'claude',
+        provider_thread_id: 'claude-thread-1',
+        provider_turn_id: 'turn-1',
+      },
+      nodeId: 'assistant-new',
+    });
+
+    expect(result.providerThreadStrategy).toBe('fresh_thread');
+    expect(result.providerThreadStrategyRequested).toBe('cross_provider_fresh_thread');
+    expect(result.providerInternalArgs).not.toContain('--provider-thread-id');
+    expect(result.prompt).toContain('[Selected Workspace Context]');
+    expect(result.meta.provider_cross_provider_fresh_thread).toBe(true);
+  });
+});

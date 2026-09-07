@@ -148,6 +148,7 @@ export function buildAgentNodeArgs(input: {
   agentType: string;
   cliArgs?: string | null;
   permissionMode?: ComposerPermissionMode;
+  providerInternalArgs?: string[];
   promptFlag?: string | null;
   prompt: string;
 }): string[] {
@@ -158,9 +159,9 @@ export function buildAgentNodeArgs(input: {
     input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE,
   );
   if (input.agentType === 'codex' || !input.promptFlag) {
-    return [...argsWithPermissions, input.prompt];
+    return [...argsWithPermissions, ...(input.providerInternalArgs ?? []), input.prompt];
   }
-  return [...argsWithPermissions, input.promptFlag, input.prompt];
+  return [...argsWithPermissions, ...(input.providerInternalArgs ?? []), input.promptFlag, input.prompt];
 }
 
 export function buildAgentNodeStartIntent(input: {

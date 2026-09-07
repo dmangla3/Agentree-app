@@ -83,26 +83,23 @@ describe('orchestration domain helpers', () => {
     });
   });
 
-  it('replays diagram, child, wait, and completion events', () => {
+  it('replays child, wait, and completion events', () => {
     const parsed = [
-      journalEvent(1, 'orchestration:flow_diagram_created', {
-        mermaid: 'flowchart LR\n  A-->B',
-      }),
-      journalEvent(2, 'orchestration:child_requested', {
+      journalEvent(1, 'orchestration:child_requested', {
         decisionId: 'planner-1',
         childAssistantNodeId: 'assistant-planner',
       }),
-      journalEvent(3, 'orchestration:child_started', {
+      journalEvent(2, 'orchestration:child_started', {
         decisionId: 'planner-1',
         childAssistantNodeId: 'assistant-planner',
       }),
-      journalEvent(4, 'orchestration:wait_started', {
+      journalEvent(3, 'orchestration:wait_started', {
         waitGroupId: 'wait-planners',
         decisionIds: ['planner-1'],
         condition: 'all',
       }),
-      journalEvent(5, 'orchestration:wait_completed', { waitGroupId: 'wait-planners' }),
-      journalEvent(6, 'orchestration:completed', {}),
+      journalEvent(4, 'orchestration:wait_completed', { waitGroupId: 'wait-planners' }),
+      journalEvent(5, 'orchestration:completed', {}),
     ].map((event) => parseOrchestrationJournalEvent(event)!);
 
     const projection = replayOrchestrationEvents(parsed);

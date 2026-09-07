@@ -91,8 +91,8 @@ describe('agent run prompts', () => {
     expect(result.prompt).toContain('Prefer task or domain wording over model or child-run labels');
     expect(result.prompt).toContain('orchestrator_run_id: run-orch');
     expect(result.prompt).toContain('orchestrator_node_id: assistant-orch');
-    expect(result.prompt).toContain('First create a Mermaid flowchart');
-    expect(result.prompt).toContain('set_orchestration_diagram');
+    expect(result.prompt).toContain('Start by writing a concise Mermaid flowchart');
+    expect(result.prompt).toContain('normal assistant response');
     expect(result.prompt).toContain('Wait for children with wait_for_runs');
   });
 

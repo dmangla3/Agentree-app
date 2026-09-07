@@ -4,6 +4,7 @@ import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import { cn } from '../../../lib/utils';
 import { createMarkdownLinkClickHandler } from '../../../lib/linkActivation';
+import { ChatMermaidBlock } from './ChatMermaidBlock';
 
 const chatMarkdownPlugins = [remarkGfm, remarkBreaks];
 
@@ -16,6 +17,10 @@ export const createChatMarkdownComponents = (repoPath?: string | null) => {
     const codeContent = String(children).replace(/\n$/, '');
 
     if (!inline && match) {
+      if (match[1]?.toLowerCase() === 'mermaid') {
+        return <ChatMermaidBlock chart={codeContent} />;
+      }
+
       return (
         <pre className="my-2 min-w-0 max-w-full overflow-x-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-md border border-border/60 bg-muted/25 p-3 text-xs leading-[1.55]">
           <code className="font-mono" {...rest}>

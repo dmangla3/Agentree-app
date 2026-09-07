@@ -98,6 +98,60 @@ describe('sendHeadlessComposerReply', () => {
     });
   });
 
+  it('resumes same-provider Claude provider threads for quick replies', async () => {
+    const startAgentRun = vi.fn().mockResolvedValue(undefined);
+
+    await sendHeadlessComposerReply({
+      workspaceId: 'workspace-1',
+      replyParentId: 'parent-claude',
+      prompt: 'Continue natively',
+      messages: [
+        message({
+          id: 'parent-claude',
+          execution_data: {
+            meta: {
+              provider: 'claude',
+              provider_thread_id: 'claude-thread-1',
+              provider_turn_id: 'turn-1',
+            },
+          },
+        }),
+      ],
+      agent: {
+        id: 'claude-agent',
+        type: 'claude',
+        name: 'Claude',
+        cliArgs: '',
+        promptFlag: '--prompt',
+        model_config: { model: 'opus' },
+      },
+      base: {
+        commitSha: 'base-sha',
+        selectedFromNodeId: 'parent-claude',
+      },
+      workspaces: [{ id: 'workspace-1', local_repo_path: '/repo' } as Workspace],
+      startAgentRun,
+      getAccessToken: vi.fn().mockResolvedValue('token-1'),
+      seedAgentRun: vi.fn(),
+      dispatchAgentRun: vi.fn(),
+      createRunId: () => 'run-claude',
+      nowIso: () => '2026-05-27T01:02:03.000Z',
+    });
+
+    const intent = startAgentRun.mock.calls[0][0];
+    expect(intent.args).toEqual(expect.arrayContaining([
+      '--provider-thread-strategy',
+      'resume',
+      '--provider-thread-id',
+      'claude-thread-1',
+    ]));
+    expect(intent.runContext.executionData.meta).toEqual(expect.objectContaining({
+      provider_thread_strategy: 'resume',
+      provider_thread_id: 'claude-thread-1',
+      provider_context_routing_mode: 'provider_native_only',
+    }));
+  });
+
   it('supports fresh root sends without quick-reply metadata', async () => {
     const startAgentRun = vi.fn().mockResolvedValue(undefined);
     const dispatchAgentRun = vi.fn();

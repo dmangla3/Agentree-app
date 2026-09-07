@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { QueryClient } from '@tanstack/react-query';
+import { localNodeKeys, type LocalNodeMessage } from '../hooks/useLocalNodes';
 import type { Message } from '../stores/workspaceStore';
 import {
   getOrchestrationChildStartKey,
@@ -7,6 +9,7 @@ import {
   isOrchestrationWaitSatisfied,
   mergeMessagesWithLiveWaitProjections,
   ORCHESTRATION_WAIT_CONDITIONS,
+  patchOrchestrationWaitMessagesIntoCaches,
 } from './useOrchestrationMcpBridge';
 
 const message = (input: Partial<Message> & { id: string; role?: Message['role'] }): Message => ({
@@ -82,6 +85,47 @@ describe('orchestration MCP wait helpers', () => {
       assistantNodeIds: ['child'],
       condition: 'completed',
     }, merged)).toBe(true);
+  });
+
+  it('patches waited terminal child messages into graph-facing query caches', () => {
+    const queryClient = new QueryClient();
+    const staleChild = message({
+      id: 'child',
+      status: 'running' as any,
+      execution_data: { last_terminal_status: null },
+    });
+    const completedChild = message({
+      ...staleChild,
+      status: 'completed' as any,
+      content: 'done',
+      execution_data: { last_terminal_status: 'completed' },
+    });
+    queryClient.setQueryData<Message[]>(['messages', 'workspace-1'], [staleChild]);
+    queryClient.setQueryData<LocalNodeMessage[]>(localNodeKeys.workspace('workspace-1'), [{
+      nodeId: 'child',
+      workspaceId: 'workspace-1',
+      syncStatus: 'local_only',
+      finalizedAt: 1,
+      retryAttempt: 0,
+      message: staleChild,
+    }]);
+
+    patchOrchestrationWaitMessagesIntoCaches(queryClient, {
+      assistantNodeIds: ['child'],
+    }, [completedChild]);
+
+    expect(queryClient.getQueryData<Message[]>(['messages', 'workspace-1'])?.[0]).toMatchObject({
+      id: 'child',
+      status: 'completed',
+      content: 'done',
+      execution_data: { last_terminal_status: 'completed' },
+    });
+    expect(queryClient.getQueryData<LocalNodeMessage[]>(localNodeKeys.workspace('workspace-1'))?.[0].message).toMatchObject({
+      id: 'child',
+      status: 'completed',
+      content: 'done',
+      execution_data: { last_terminal_status: 'completed' },
+    });
   });
 });
 

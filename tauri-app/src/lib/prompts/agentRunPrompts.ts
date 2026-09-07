@@ -85,7 +85,7 @@ const orchestrationControlInstruction = (
     `orchestrator_run_id: ${control.orchestratorRunId}`,
     `orchestrator_node_id: ${control.orchestratorNodeId}`,
     '',
-    'You control this orchestration through Agentree MCP tools. First create a Mermaid flowchart of the intended work with set_orchestration_diagram so Agentree can render it in the orchestration hovercard. Then spawn child runs with start_orchestration_child.',
+    'You control this orchestration through Agentree MCP tools. Start by writing a concise Mermaid flowchart of the intended work in your normal assistant response, then spawn child runs with start_orchestration_child.',
     '',
     'When the user references a #template, use list_prompt_templates and get_prompt_template to read the actual prompt. Compose concrete child prompts yourself from the template and the user request; the app will not parse or expand orchestration text for you.',
     '',

@@ -3,9 +3,7 @@ import type { ReactNode } from 'react';
 import { Workflow } from 'lucide-react';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspaceProjection';
 import { useRunStatusStore } from '../stores/runStatusStore';
-import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
 import { isActiveAgentRunStatus } from '../lib/agentRunSteering';
-import MermaidDiagram from './MermaidDiagram';
 import {
   AgentreeSurfaceProvider,
   useAgentreeSurface,
@@ -72,21 +70,8 @@ function OrchestrationSummaryPanel({
   entity: ProjectedNodeEntity;
   projection: WorkspaceProjection;
 }) {
-  const messageId = entity.focusMessageId ?? entity.messageId ?? entity.message?.id ?? null;
-  const liveMessage = useAgentRunProjectionStore((state) => (
-    messageId ? state.projectionsById[messageId] ?? null : null
-  ));
   const summary = entity.nodeKind === 'orchestrator' ? entity.orchestrationSummary ?? null : null;
   if (!summary) return null;
-  const executionData = ((liveMessage?.execution_data ?? entity.message?.execution_data ?? {}) as Record<string, any>);
-  const orchestrationData = ((executionData.orchestration ?? {}) as Record<string, unknown>);
-  const flowDiagramMermaid = typeof orchestrationData.flowDiagramMermaid === 'string'
-    ? orchestrationData.flowDiagramMermaid.trim()
-    : '';
-  const flowDiagramSummary = typeof orchestrationData.flowDiagramSummary === 'string'
-    ? orchestrationData.flowDiagramSummary.trim()
-    : '';
-
   const childEntities = summary.childAssistantEntityIds
     .map((entityId) => projection.entitiesById.get(entityId))
     .filter((child): child is ProjectedNodeEntity => Boolean(child))
@@ -142,19 +127,6 @@ function OrchestrationSummaryPanel({
               +{hiddenChildCount} more controlled {hiddenChildCount === 1 ? 'run' : 'runs'}
             </div>
           ) : null}
-        </div>
-      ) : null}
-
-      {flowDiagramMermaid ? (
-        <div className="mt-2 overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.54)] bg-[hsl(var(--app-bg-muted)/0.42)] p-2">
-          {flowDiagramSummary ? (
-            <div className="mb-1.5 truncate text-[10px] font-medium text-muted-foreground">
-              {flowDiagramSummary}
-            </div>
-          ) : null}
-          <div className="max-h-64 overflow-auto rounded-lg bg-background/58 p-2">
-            <MermaidDiagram chart={flowDiagramMermaid} />
-          </div>
         </div>
       ) : null}
     </section>

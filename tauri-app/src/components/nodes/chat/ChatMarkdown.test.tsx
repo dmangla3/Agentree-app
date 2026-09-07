@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import '../../../test/setup';
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { ChatMarkdown } from './ChatMarkdown';
+import { ChatMarkdown, createChatMarkdownComponents } from './ChatMarkdown';
 
 const { markdownRenderSpy } = vi.hoisted(() => ({
   markdownRenderSpy: vi.fn(),
@@ -13,6 +13,12 @@ vi.mock('react-markdown', () => ({
     markdownRenderSpy(children);
     return children;
   },
+}));
+
+vi.mock('./ChatMermaidBlock', () => ({
+  ChatMermaidBlock: ({ chart }: { chart: string }) => (
+    <div data-testid="chat-mermaid-block">{chart}</div>
+  ),
 }));
 
 describe('ChatMarkdown', () => {
@@ -35,5 +41,17 @@ describe('ChatMarkdown', () => {
     rerender(<ChatMarkdown>Updated **content**</ChatMarkdown>);
 
     expect(markdownRenderSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('renders fenced mermaid code blocks with the diagram renderer', () => {
+    const components = createChatMarkdownComponents();
+
+    render(<>{components.code({
+      inline: false,
+      className: 'language-mermaid',
+      children: 'flowchart LR\n  A-->B\n',
+    })}</>);
+
+    expect(screen.getByTestId('chat-mermaid-block').textContent).toBe('flowchart LR\n  A-->B');
   });
 });

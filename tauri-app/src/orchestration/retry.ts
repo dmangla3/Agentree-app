@@ -131,6 +131,11 @@ export const buildOrchestrationChildRetryInput = (input: {
   }
 
   const parentNodeId = failedChildUser.parentId ?? null;
+  const parentNode = parentNodeId ? messageMap.get(parentNodeId) ?? null : null;
+  const parentNodeMeta = readRecord(readRecord(parentNode?.execution_data).meta);
+  const parentHasChildren = parentNodeId
+    ? input.messages.some((message) => message.parentId === parentNodeId)
+    : false;
   return {
     ok: true,
     input: {
@@ -142,6 +147,8 @@ export const buildOrchestrationChildRetryInput = (input: {
       decisionId: input.target.decisionId,
       parentNodeId,
       contextParentNodeId: readString(contextProfile, 'context_parent_node_id') ?? parentNodeId,
+      providerParentMeta: parentNodeMeta,
+      isBranchFromInterior: parentHasChildren,
       baseNodeId: failedChild.base_selected_from_node_id ?? readString(contextProfile, 'base_node_id'),
       baseCommitSha,
       prompt: failedChildUser.content,

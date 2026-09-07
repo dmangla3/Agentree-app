@@ -35,12 +35,6 @@ vi.mock('./NodePreviewRenderer', () => ({
   ),
 }));
 
-vi.mock('./MermaidDiagram', () => ({
-  default: ({ chart }: { chart: string }) => (
-    <div data-testid="mermaid-diagram">{chart}</div>
-  ),
-}));
-
 vi.mock('../hooks/useHeadlessQuickReply', () => ({
   useHeadlessQuickReply: () => ({
     sendQuickReply: quickReplyMocks.sendQuickReply,
@@ -468,49 +462,6 @@ describe('NodeHoverCardContent', () => {
     expect(screen.getByText('Running')).toBeTruthy();
     expect(screen.getByText('Completed')).toBeTruthy();
     expect(screen.getAllByText('Failed').length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('shows the hydrated orchestration Mermaid diagram in orchestrator hover cards', async () => {
-    const orchestratorMessage = makeMessage({
-      id: 'orchestrator-with-diagram',
-      role: 'assistant',
-      status: 'running' as any,
-    });
-    const orchestrator = makeEntity('assistant_message', {
-      entityId: 'assistant_message:orchestrator-with-diagram',
-      messageId: orchestratorMessage.id,
-      focusMessageId: orchestratorMessage.id,
-      message: orchestratorMessage,
-      nodeKind: 'orchestrator',
-      orchestrationSummary: {
-        controllerMessageId: orchestratorMessage.id,
-        controlledEntityIds: [],
-        childAssistantEntityIds: [],
-        totalChildRuns: 0,
-        activeChildRuns: 0,
-        terminalChildRuns: 0,
-        completedChildRuns: 0,
-        failedChildRuns: 0,
-        cancelledChildRuns: 0,
-      },
-    });
-
-    render(<NodeHoverCardContent entity={orchestrator} projection={makeProjection([orchestratorMessage])} />);
-
-    act(() => {
-      useAgentRunProjectionStore.getState().setProjectionForNode(orchestratorMessage.id, {
-        ...orchestratorMessage,
-        execution_data: {
-          orchestration: {
-            flowDiagramMermaid: 'flowchart LR\n  A-->B',
-            flowDiagramSummary: 'Initial orchestration plan',
-          },
-        },
-      });
-    });
-
-    expect(await screen.findByText('Initial orchestration plan')).toBeTruthy();
-    expect(screen.getByTestId('mermaid-diagram').textContent).toContain('flowchart LR');
   });
 
   it('uses the app action color when ready to send', () => {

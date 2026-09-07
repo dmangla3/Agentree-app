@@ -1,11 +1,10 @@
-import { memo, useState } from 'react';
+import { memo } from 'react';
 import type { CSSProperties } from 'react';
 import { ChevronDown, Workflow } from 'lucide-react';
 import { cn } from '../../../lib/utils';
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../../@/components/ui/hover-card';
 import { NodeHoverCardContent } from '../../NodeHoverCardContent';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../../../domain/workspaceProjection';
-import { useAgentRunHoverHydration } from '../../../hooks/useAgentRunHoverHydration';
+import { GraphNodeHoverCardShell } from './GraphNodeWrapper';
 
 interface GraphOrchestrationHullProps {
   data: {
@@ -24,9 +23,7 @@ interface GraphOrchestrationHullProps {
 }
 
 export const GraphOrchestrationHull = memo(({ data, style }: GraphOrchestrationHullProps) => {
-  const [controllerHoverOpen, setControllerHoverOpen] = useState(false);
   const controllerNodeId = data.controllerEntity?.focusMessageId ?? data.controllerEntity?.messageId ?? null;
-  useAgentRunHoverHydration(controllerNodeId, controllerHoverOpen && Boolean(data.controllerEntity && data.projection));
 
   const hull = (
     <div
@@ -80,22 +77,19 @@ export const GraphOrchestrationHull = memo(({ data, style }: GraphOrchestrationH
   }
 
   return (
-    <HoverCard open={controllerHoverOpen} onOpenChange={setControllerHoverOpen} openDelay={220} closeDelay={120}>
-      <HoverCardTrigger asChild>
-        {hull}
-      </HoverCardTrigger>
-      <HoverCardContent
-        side="right"
-        align="center"
-        sideOffset={8}
-        className="z-50 w-auto border-none bg-transparent p-0 shadow-none"
-      >
+    <GraphNodeHoverCardShell
+      nodeId={controllerNodeId ?? undefined}
+      hoverOpenDelay={220}
+      hoverHydrationEnabled
+      hoverCardContent={(
         <NodeHoverCardContent
           entity={data.controllerEntity}
           projection={data.projection}
         />
-      </HoverCardContent>
-    </HoverCard>
+      )}
+    >
+      {hull}
+    </GraphNodeHoverCardShell>
   );
 });
 

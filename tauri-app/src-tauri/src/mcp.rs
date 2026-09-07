@@ -467,20 +467,6 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                     }
                 },
                 {
-                    "name": "set_orchestration_diagram",
-                    "description": "Persist the orchestrator's Mermaid flowchart so Agentree can render it in the orchestration hovercard and recover it from the local journal.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "orchestrator_run_id": { "type": "string" },
-                            "orchestrator_node_id": { "type": "string" },
-                            "mermaid": { "type": "string" },
-                            "summary": { "type": "string" }
-                        },
-                        "required": ["orchestrator_run_id", "orchestrator_node_id", "mermaid"]
-                    }
-                },
-                {
                     "name": "complete_orchestration",
                     "description": "Mark an orchestrator run completed after child work is done.",
                     "inputSchema": {
@@ -691,10 +677,6 @@ async fn handle_tools_call(
         Some("control_run") => {
             let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
             handle_frontend_orchestration_tool(id, state, "control_run", args).await
-        }
-        Some("set_orchestration_diagram") => {
-            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
-            handle_set_orchestration_diagram(id, state, args)
         }
         Some("complete_orchestration") => {
             let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
@@ -1266,49 +1248,6 @@ fn missing_args_response(id: serde_json::Value, message: &str) -> JsonRpcRespons
     }
 }
 
-fn handle_set_orchestration_diagram(
-    id: serde_json::Value,
-    state: Arc<McpState>,
-    args: serde_json::Value,
-) -> JsonRpcResponse {
-    let Some(run_id) = read_arg_string(&args, "orchestrator_run_id") else {
-        return missing_args_response(id, "orchestrator_run_id is required");
-    };
-    let Some(orchestrator_node_id) = read_arg_string(&args, "orchestrator_node_id") else {
-        return missing_args_response(id, "orchestrator_node_id is required");
-    };
-    let Some(mermaid) = read_arg_string(&args, "mermaid") else {
-        return missing_args_response(id, "mermaid is required");
-    };
-    let payload = serde_json::json!({
-        "mermaid": mermaid,
-        "summary": read_arg_string(&args, "summary"),
-    });
-
-    let telemetry = state.app_handle.state::<crate::db::TelemetryDb>();
-    match telemetry.record_orchestration_event(
-        &run_id,
-        &orchestrator_node_id,
-        "orchestration:flow_diagram_created",
-        &payload.to_string(),
-    ) {
-        Ok(seq) => tool_text_response(id, serde_json::json!({
-            "recorded": true,
-            "seq": seq,
-            "eventType": "orchestration:flow_diagram_created",
-        }).to_string()),
-        Err(err) => JsonRpcResponse {
-            jsonrpc: "2.0",
-            id,
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32001,
-                message: err,
-            }),
-        },
-    }
-}
-
 fn handle_complete_orchestration(
     id: serde_json::Value,
     state: Arc<McpState>,
@@ -1556,7 +1495,6 @@ mod tests {
         assert!(names.contains(&"start_orchestration_child"));
         assert!(names.contains(&"wait_for_runs"));
         assert!(names.contains(&"control_run"));
-        assert!(names.contains(&"set_orchestration_diagram"));
         assert!(names.contains(&"complete_orchestration"));
         assert!(names.contains(&"list_thread_sessions"));
         assert!(names.contains(&"read_thread"));

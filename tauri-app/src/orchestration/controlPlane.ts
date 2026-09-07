@@ -10,7 +10,7 @@ import {
   DEFAULT_COMPOSER_PERMISSION_MODE,
   type ComposerPermissionMode,
 } from '../lib/composerPermissions';
-import { buildAgentRunPrompt } from '../lib/prompts';
+import { buildAgentRunLaunchContext } from '../lib/agentRunLaunchContext';
 import type { AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 import type { Message } from '../stores/workspaceStore';
 import { getSatisfiedActiveWaitGroup, type OrchestrationRecoveryProjection } from './domain';
@@ -37,6 +37,8 @@ export interface StartOrchestrationRunInput {
   permissionMode?: ComposerPermissionMode;
   loginProfileId?: string | null;
   contextManifest?: ComposerContextManifest | null;
+  providerParentMeta?: Record<string, unknown> | null;
+  isBranchFromInterior?: boolean;
   threadId?: string | null;
   threadOriginId?: string | null;
   orchestrationTemplateId?: string | null;
@@ -71,6 +73,8 @@ export interface StartOrchestratorRunInput {
   permissionMode?: ComposerPermissionMode;
   loginProfileId?: string | null;
   contextManifest?: ComposerContextManifest | null;
+  providerParentMeta?: Record<string, unknown> | null;
+  isBranchFromInterior?: boolean;
   threadId?: string | null;
   threadOriginId?: string | null;
   now?: string;
@@ -234,6 +238,24 @@ export async function startOrchestratorRun(
   const assistantNodeId = input.assistantNodeId ?? deps.newId();
   const runId = input.runId ?? deps.newId();
   const permissionMode = input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE;
+  const launchContext = buildAgentRunLaunchContext({
+    agentType: input.agentType,
+    userPrompt: input.prompt,
+    contextPolicy: input.contextParentNodeId ? 'continue' : 'fresh',
+    contextParentMessageId: input.contextParentNodeId,
+    baseMessageId: input.parentNodeId,
+    contextManifest: input.contextManifest ?? null,
+    providerParentMeta: input.providerParentMeta ?? null,
+    isBranchFromInterior: input.isBranchFromInterior,
+    targetNodeId: input.parentNodeId,
+    nodeId: assistantNodeId,
+    threadTitleMode: 'none',
+    orchestrationLabelMode: 'orchestrator',
+    orchestrationControl: {
+      orchestratorRunId: runId,
+      orchestratorNodeId: assistantNodeId,
+    },
+  });
 
   const pair = createAgentNodeMessages({
     workspaceId: input.workspaceId,
@@ -244,7 +266,7 @@ export async function startOrchestratorRun(
     baseNodeId: input.baseNodeId,
     baseCommitSha: input.baseCommitSha,
     prompt: input.prompt,
-    contextManifest: input.contextManifest ?? null,
+    contextManifest: launchContext.contextManifest,
     threadId: input.threadId ?? null,
     threadOriginId: input.threadOriginId ?? null,
     agentName: input.agentName ?? null,
@@ -270,17 +292,7 @@ export async function startOrchestratorRun(
     deps.persistLocalNode(input.workspaceId, pair.assistantNode.id, pair.assistantNode),
   ]);
 
-  const effectivePrompt = buildAgentRunPrompt({
-    mode: 'agentree_context',
-    userPrompt: input.prompt,
-    contextManifest: input.contextManifest ?? undefined,
-    threadTitleMode: 'none',
-    orchestrationLabelMode: 'orchestrator',
-    orchestrationControl: {
-      orchestratorRunId: runId,
-      orchestratorNodeId: pair.assistantNode.id,
-    },
-  }).prompt;
+  const effectivePrompt = launchContext.prompt;
 
   const executionData = {
     ...(pair.assistantNode.execution_data ?? {}),
@@ -293,6 +305,7 @@ export async function startOrchestratorRun(
     meta: {
       ...((pair.assistantNode.execution_data?.meta ?? {}) as Record<string, unknown>),
       base_commit_sha: input.baseCommitSha,
+      ...launchContext.meta,
       orchestrator_run_id: runId,
       ...(input.agentCliArgs ? { agent_cli_args: input.agentCliArgs } : {}),
       ...(input.agentPromptFlag ? { agent_prompt_flag: input.agentPromptFlag } : {}),
@@ -318,6 +331,7 @@ export async function startOrchestratorRun(
       agentType: input.agentType,
       cliArgs: input.agentCliArgs,
       permissionMode,
+      providerInternalArgs: launchContext.providerInternalArgs,
       promptFlag: input.agentPromptFlag,
       prompt: effectivePrompt,
     }),
@@ -386,6 +400,19 @@ export async function startOrchestrationChildRun(
   const assistantNodeId = input.assistantNodeId ?? deps.newId();
   const runId = input.runId ?? deps.newId();
   const permissionMode = input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE;
+  const launchContext = buildAgentRunLaunchContext({
+    agentType: input.agentType,
+    userPrompt: input.prompt,
+    contextPolicy: input.contextParentNodeId ? 'continue' : 'fresh',
+    contextParentMessageId: input.contextParentNodeId,
+    baseMessageId: input.parentNodeId,
+    contextManifest: input.contextManifest ?? null,
+    providerParentMeta: input.providerParentMeta ?? null,
+    isBranchFromInterior: input.isBranchFromInterior,
+    targetNodeId: input.parentNodeId,
+    nodeId: assistantNodeId,
+    threadTitleMode: 'none',
+  });
 
   const pair = createAgentNodeMessages({
     workspaceId: input.workspaceId,
@@ -396,7 +423,7 @@ export async function startOrchestrationChildRun(
     baseNodeId: input.baseNodeId,
     baseCommitSha: input.baseCommitSha,
     prompt: input.prompt,
-    contextManifest: input.contextManifest ?? null,
+    contextManifest: launchContext.contextManifest,
     threadId: input.threadId ?? null,
     threadOriginId: input.threadOriginId ?? null,
     agentName: input.agentName ?? null,
@@ -441,12 +468,7 @@ export async function startOrchestrationChildRun(
     deps.persistLocalNode(input.workspaceId, pair.assistantNode.id, pair.assistantNode),
   ]);
 
-  const effectivePrompt = buildAgentRunPrompt({
-    mode: 'agentree_context',
-    userPrompt: input.prompt,
-    contextManifest: input.contextManifest ?? undefined,
-    threadTitleMode: 'none',
-  }).prompt;
+  const effectivePrompt = launchContext.prompt;
 
   const executionData = {
     ...(pair.assistantNode.execution_data ?? {}),
@@ -459,6 +481,7 @@ export async function startOrchestrationChildRun(
     meta: {
       ...((pair.assistantNode.execution_data?.meta ?? {}) as Record<string, unknown>),
       base_commit_sha: input.baseCommitSha,
+      ...launchContext.meta,
       child_run_id: runId,
       ...(input.agentCliArgs ? { agent_cli_args: input.agentCliArgs } : {}),
       ...(input.agentPromptFlag ? { agent_prompt_flag: input.agentPromptFlag } : {}),
@@ -484,6 +507,7 @@ export async function startOrchestrationChildRun(
       agentType: input.agentType,
       cliArgs: input.agentCliArgs,
       permissionMode,
+      providerInternalArgs: launchContext.providerInternalArgs,
       promptFlag: input.agentPromptFlag,
       prompt: effectivePrompt,
     }),

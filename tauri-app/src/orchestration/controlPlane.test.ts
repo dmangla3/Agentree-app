@@ -126,6 +126,57 @@ describe('orchestration control plane', () => {
     );
   });
 
+  it('passes native provider continuation flags to orchestration child runs', async () => {
+    const recordOrchestrationEvent = vi.fn(async () => 1);
+    const persistLocalNode = vi.fn(async () => undefined);
+    const startAgentRun = vi.fn(async (intent: StartAgentRunIntent) => startAgentRunResponse(intent));
+
+    await startOrchestrationChildRun({
+      workspaceId: 'workspace-1',
+      repoPath: '/repo',
+      authToken: 'token',
+      orchestratorRunId: 'run-orchestrator',
+      orchestratorNodeId: 'assistant-orchestrator',
+      decisionId: 'planner-1',
+      parentNodeId: 'assistant-parent',
+      contextParentNodeId: 'assistant-parent',
+      providerParentMeta: {
+        provider: 'claude',
+        provider_thread_id: 'claude-thread-1',
+        provider_turn_id: 'turn-1',
+      },
+      baseNodeId: 'assistant-parent',
+      baseCommitSha: 'base-sha',
+      prompt: 'Plan carefully',
+      agentId: 'agent-1',
+      agentType: 'claude',
+      agentPromptFlag: '--prompt',
+      agentName: 'Claude',
+      now: '2026-06-01T00:00:00.000Z',
+      userNodeId: 'user-child',
+      assistantNodeId: 'assistant-child',
+      runId: 'run-child',
+    }, {
+      newId: () => 'unused',
+      persistLocalNode,
+      startAgentRun,
+      recordOrchestrationEvent,
+    });
+
+    const intent = startAgentRun.mock.calls[0][0];
+    expect(intent.args).toEqual(expect.arrayContaining([
+      '--provider-thread-strategy',
+      'resume',
+      '--provider-thread-id',
+      'claude-thread-1',
+    ]));
+    expect(intent.runContext.executionData.meta).toEqual(expect.objectContaining({
+      provider_thread_strategy: 'resume',
+      provider_thread_id: 'claude-thread-1',
+      provider_context_routing_mode: 'provider_native_only',
+    }));
+  });
+
   it('retries a child by starting a replacement and recording supersession', async () => {
     const recordOrchestrationEvent = vi.fn(async () => 1);
     const persistLocalNode = vi.fn(async () => undefined);

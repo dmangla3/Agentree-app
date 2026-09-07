@@ -36,6 +36,7 @@ describe('GraphOrchestrationNode', () => {
         data={{
           controllerMessageId: 'assistant-orchestrator',
           label: 'Orchestration',
+          totalChildRuns: 3,
           activeChildRuns: 1,
           completedChildRuns: 1,
           failedChildRuns: 1,
@@ -57,6 +58,7 @@ describe('GraphOrchestrationNode', () => {
     expect(screen.getByText('Done')).toBeTruthy();
     expect(screen.getByText('Failed')).toBeTruthy();
     expect(screen.getByText('Cancel')).toBeTruthy();
+    expect(screen.getByText('Total')).toBeTruthy();
     expect(screen.getByTitle('Plan result. (running)')).toBeTruthy();
     expect(screen.getByTitle('Review result. (completed)')).toBeTruthy();
     expect(screen.getByTitle('Fix failed. (failed_runtime)')).toBeTruthy();
@@ -68,6 +70,24 @@ describe('GraphOrchestrationNode', () => {
     fireEvent.click(screen.getByLabelText('Expand orchestration container'));
 
     expect(onToggleCollapse).toHaveBeenCalledWith('assistant-orchestrator', false);
+  });
+
+  it('uses shared active and failure status groups for mini child dot colors', () => {
+    render(
+      <GraphOrchestrationNode
+        data={{
+          controllerMessageId: 'assistant-orchestrator',
+          label: 'Orchestration',
+          miniChildren: [
+            { id: 'child-creating', label: 'Creating child.', status: 'creating' as any },
+            { id: 'child-error', label: 'Errored child.', status: 'error' as any },
+          ],
+        }}
+      />
+    );
+
+    expect(screen.getByTitle('Creating child. (creating)').className).toContain('bg-sky-500');
+    expect(screen.getByTitle('Errored child. (error)').className).toContain('bg-red-500');
   });
 
   it('uses the node hover card for mini child dots with projected assistant entities', () => {
@@ -101,5 +121,31 @@ describe('GraphOrchestrationNode', () => {
     expect(screen.getByLabelText('Cancelled child. (cancelled)')).toBeTruthy();
     expect(screen.getByTestId('mini-dot-hover-card')).toBeTruthy();
     expect(screen.getByText('hover entity: child-1')).toBeTruthy();
+  });
+
+  it('uses the orchestrator hover card for empty collapsed node area', () => {
+    render(
+      <GraphOrchestrationNode
+        data={{
+          controllerMessageId: 'assistant-orchestrator',
+          label: 'Orchestration',
+          controllerEntity: {
+            entityId: 'assistant_message:assistant-orchestrator',
+            kind: 'assistant_message',
+            messageId: 'assistant-orchestrator',
+            focusMessageId: 'assistant-orchestrator',
+            sortTs: 0,
+            preview: 'Orchestrator thinking with Mermaid.',
+            shortLabel: 'Orchestrator',
+            status: 'running',
+          } as any,
+          projection: {} as any,
+        }}
+      />
+    );
+
+    fireEvent.pointerEnter(screen.getByText('Orchestration').closest('[data-agentree-orchestration-node="true"]')!);
+
+    expect(screen.getByText('hover entity: assistant-orchestrator')).toBeTruthy();
   });
 });

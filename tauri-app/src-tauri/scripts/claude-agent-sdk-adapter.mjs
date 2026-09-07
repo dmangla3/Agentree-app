@@ -226,6 +226,17 @@ export function claudeOptionsForPermissionMode(permissionMode, cwd = process.cwd
   };
 }
 
+export function agentreeMcpServersFromEnv(env = process.env) {
+  const url = String(env.AGENTREE_MCP_URL || env.MCP_SERVER_URL || '').trim();
+  if (!url) return null;
+  return {
+    agentree: {
+      type: 'http',
+      url,
+    },
+  };
+}
+
 function parseArgs(argv) {
   const parsed = {
     prompt: '',
@@ -827,6 +838,7 @@ async function main() {
 
   const permissionMode = args.permissionMode || undefined;
   const permissionOptions = claudeOptionsForPermissionMode(permissionMode);
+  const mcpServers = args.mcpServers ?? agentreeMcpServersFromEnv();
   const options = {
     cwd: process.cwd(),
     env: {
@@ -837,7 +849,7 @@ async function main() {
     ...(args.model ? { model: args.model } : {}),
     ...(args.effort ? { effort: args.effort, thinking: { type: 'adaptive' } } : {}),
     ...permissionOptions,
-    ...(args.mcpServers ? { mcpServers: args.mcpServers } : {}),
+    ...(mcpServers ? { mcpServers } : {}),
     ...(process.cwd() ? { additionalDirectories: [process.cwd()] } : {}),
     ...(shouldResume ? {
       resume: sourceThreadId,

@@ -85,8 +85,7 @@ fn controlled_by_node_id_from_payload(payload: &JsonValue) -> Option<&str> {
 fn is_orchestration_event_type(event_type: &str) -> bool {
     matches!(
         event_type,
-        "orchestration:flow_diagram_created"
-            | "orchestration:child_requested"
+        "orchestration:child_requested"
             | "orchestration:child_started"
             | "orchestration:wait_started"
             | "orchestration:wait_completed"

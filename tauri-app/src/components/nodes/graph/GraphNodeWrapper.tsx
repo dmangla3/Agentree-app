@@ -1,5 +1,11 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import { cloneElement, isValidElement, memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type {
+  CSSProperties,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactElement,
+  ReactNode,
+} from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { cn } from '../../../lib/utils';
 import { CARD_TOKENS } from '../../../lib/visualTokens';
@@ -28,6 +34,151 @@ interface GraphNodeWrapperProps {
   onContextMenu: (e: React.MouseEvent) => void;
 }
 
+interface GraphNodeHoverCardShellProps {
+  nodeId?: string;
+  disabled?: boolean;
+  hoverOpenDelay?: number;
+  hoverHydrationEnabled?: boolean;
+  hoverCardContent?: ReactNode;
+  children: ReactNode;
+}
+
+export const GraphNodeHoverCardShell = ({
+  nodeId,
+  disabled,
+  hoverOpenDelay = 200,
+  hoverHydrationEnabled = false,
+  hoverCardContent,
+  children,
+}: GraphNodeHoverCardShellProps) => {
+  const hoverContentRef = useRef<HTMLDivElement | null>(null);
+  const pointerInsideHoverContentRef = useRef(false);
+  const pointerInsideTriggerRef = useRef(false);
+  const [hoverOpen, setHoverOpen] = useState(false);
+  const shouldDisableHoverCard = Boolean(disabled);
+
+  const closeHoverCard = () => {
+    pointerInsideHoverContentRef.current = false;
+    pointerInsideTriggerRef.current = false;
+    setHoverOpen(false);
+  };
+
+  const closeHoverCardUnlessFocusRemainsInside = () => {
+    if (pointerInsideTriggerRef.current) return;
+    const hoverContent = hoverContentRef.current;
+    if (hoverContent && hoverContent.contains(document.activeElement)) return;
+    closeHoverCard();
+  };
+
+  useEffect(() => {
+    if (shouldDisableHoverCard) {
+      closeHoverCard();
+    }
+  }, [shouldDisableHoverCard]);
+
+  useEffect(() => {
+    if (!hoverCardContent || !hoverOpen) return;
+    window.addEventListener('agentree:graph-viewport-interaction-start', closeHoverCard);
+    return () => {
+      window.removeEventListener('agentree:graph-viewport-interaction-start', closeHoverCard);
+    };
+  }, [hoverCardContent, hoverOpen]);
+
+  useEffect(() => {
+    if (!hoverCardContent || !hoverOpen) return;
+    const closeHoverCardForHiddenDocument = () => {
+      if (document.visibilityState === 'hidden') {
+        closeHoverCard();
+      }
+    };
+    document.addEventListener('visibilitychange', closeHoverCardForHiddenDocument);
+    window.addEventListener('blur', closeHoverCard);
+    return () => {
+      document.removeEventListener('visibilitychange', closeHoverCardForHiddenDocument);
+      window.removeEventListener('blur', closeHoverCard);
+    };
+  }, [hoverCardContent, hoverOpen]);
+
+  useAgentRunHoverHydration(nodeId, hoverOpen && !shouldDisableHoverCard && hoverHydrationEnabled);
+
+  if (!hoverCardContent) {
+    return <>{children}</>;
+  }
+
+  return (
+    <HoverCard
+      open={shouldDisableHoverCard ? false : hoverOpen}
+      onOpenChange={(open) => {
+        if (shouldDisableHoverCard) {
+          closeHoverCard();
+          return;
+        }
+        if (open) {
+          setHoverOpen(true);
+          return;
+        }
+        if (pointerInsideHoverContentRef.current || pointerInsideTriggerRef.current) {
+          setHoverOpen(true);
+          return;
+        }
+        setHoverOpen(false);
+      }}
+      openDelay={hoverOpenDelay}
+      closeDelay={120}
+    >
+      <HoverCardTrigger asChild>
+        {isValidElement(children)
+          ? cloneElement(children as ReactElement<any>, {
+            onPointerEnter: (event: ReactPointerEvent) => {
+              pointerInsideTriggerRef.current = true;
+              setHoverOpen(true);
+              (children as ReactElement<any>).props.onPointerEnter?.(event);
+            },
+            onPointerLeave: (event: ReactPointerEvent) => {
+              pointerInsideTriggerRef.current = false;
+              (children as ReactElement<any>).props.onPointerLeave?.(event);
+            },
+            onMouseEnter: (event: ReactMouseEvent) => {
+              pointerInsideTriggerRef.current = true;
+              setHoverOpen(true);
+              (children as ReactElement<any>).props.onMouseEnter?.(event);
+            },
+            onMouseLeave: (event: ReactMouseEvent) => {
+              pointerInsideTriggerRef.current = false;
+              (children as ReactElement<any>).props.onMouseLeave?.(event);
+            },
+          })
+          : children}
+      </HoverCardTrigger>
+      <HoverCardContent
+        ref={hoverContentRef}
+        side="right"
+        align="center"
+        sideOffset={8}
+        className="z-50 w-auto border-none bg-transparent p-0 shadow-none"
+        onPointerEnter={() => {
+          pointerInsideHoverContentRef.current = true;
+        }}
+        onPointerLeave={() => {
+          closeHoverCardUnlessFocusRemainsInside();
+        }}
+        onBlurCapture={(event) => {
+          const nextFocus = event.relatedTarget as Node | null;
+          if (nextFocus && event.currentTarget.contains(nextFocus)) return;
+          if (pointerInsideHoverContentRef.current) return;
+          closeHoverCard();
+        }}
+        onKeyDownCapture={(event) => {
+          if (event.key !== 'Escape') return;
+          closeHoverCard();
+        }}
+      >
+        {hoverOpen ? hoverCardContent : null}
+      </HoverCardContent>
+    </HoverCard>
+  );
+};
+
 export const GraphNodeWrapper = memo(({
   nodeId,
   children,
@@ -49,12 +200,9 @@ export const GraphNodeWrapper = memo(({
   onContextMenu
 }: GraphNodeWrapperProps) => {
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const hoverContentRef = useRef<HTMLDivElement | null>(null);
-  const pointerInsideHoverContentRef = useRef(false);
   const pointerDownAtRef = useRef<number | null>(null);
   const focusFeedbackTimeoutRef = useRef<number | null>(null);
   const [isFocusFeedbackActive, setIsFocusFeedbackActive] = useState(false);
-  const [hoverOpen, setHoverOpen] = useState(false);
   const [suppressFocusedHoverUntilLeave, setSuppressFocusedHoverUntilLeave] = useState(false);
   const isBaseCommitHighlighted = isComposerBaseCommit && !isFocused && !isFocusFeedbackActive;
 
@@ -227,102 +375,16 @@ export const GraphNodeWrapper = memo(({
 
   const shouldDisableHoverCard = Boolean(disableHoverCard || (isFocused && suppressFocusedHoverUntilLeave));
 
-  const closeHoverCard = () => {
-    pointerInsideHoverContentRef.current = false;
-    setHoverOpen(false);
-  };
-
-  const closeHoverCardUnlessFocusRemainsInside = () => {
-    const hoverContent = hoverContentRef.current;
-    if (hoverContent && hoverContent.contains(document.activeElement)) return;
-    closeHoverCard();
-  };
-
-  useEffect(() => {
-    if (shouldDisableHoverCard) {
-      closeHoverCard();
-    }
-  }, [shouldDisableHoverCard]);
-
-  useEffect(() => {
-    if (!hoverCardContent || !hoverOpen) return;
-    window.addEventListener('agentree:graph-viewport-interaction-start', closeHoverCard);
-    return () => {
-      window.removeEventListener('agentree:graph-viewport-interaction-start', closeHoverCard);
-    };
-  }, [hoverCardContent, hoverOpen]);
-
-  useEffect(() => {
-    if (!hoverCardContent || !hoverOpen) return;
-    const closeHoverCardForHiddenDocument = () => {
-      if (document.visibilityState === 'hidden') {
-        closeHoverCard();
-      }
-    };
-    document.addEventListener('visibilitychange', closeHoverCardForHiddenDocument);
-    window.addEventListener('blur', closeHoverCard);
-    return () => {
-      document.removeEventListener('visibilitychange', closeHoverCardForHiddenDocument);
-      window.removeEventListener('blur', closeHoverCard);
-    };
-  }, [hoverCardContent, hoverOpen]);
-
-  useAgentRunHoverHydration(nodeId, hoverOpen && !shouldDisableHoverCard && hoverHydrationEnabled);
-
-  if (!hoverCardContent) {
-    return nodeBody;
-  }
-
   return (
-    <HoverCard
-      open={shouldDisableHoverCard ? false : hoverOpen}
-      onOpenChange={(open) => {
-        if (shouldDisableHoverCard) {
-          closeHoverCard();
-          return;
-        }
-        if (open) {
-          setHoverOpen(true);
-          return;
-        }
-        if (pointerInsideHoverContentRef.current) {
-          setHoverOpen(true);
-          return;
-        }
-        setHoverOpen(false);
-      }}
-      openDelay={hoverOpenDelay}
-      closeDelay={120}
+    <GraphNodeHoverCardShell
+      nodeId={nodeId}
+      disabled={shouldDisableHoverCard}
+      hoverOpenDelay={hoverOpenDelay}
+      hoverHydrationEnabled={hoverHydrationEnabled}
+      hoverCardContent={hoverCardContent}
     >
-      <HoverCardTrigger asChild>
-        {nodeBody}
-      </HoverCardTrigger>
-      <HoverCardContent
-        ref={hoverContentRef}
-        side="right"
-        align="center"
-        sideOffset={8}
-        className="z-50 w-auto border-none bg-transparent p-0 shadow-none"
-        onPointerEnter={() => {
-          pointerInsideHoverContentRef.current = true;
-        }}
-        onPointerLeave={() => {
-          closeHoverCardUnlessFocusRemainsInside();
-        }}
-        onBlurCapture={(event) => {
-          const nextFocus = event.relatedTarget as Node | null;
-          if (nextFocus && event.currentTarget.contains(nextFocus)) return;
-          if (pointerInsideHoverContentRef.current) return;
-          closeHoverCard();
-        }}
-        onKeyDownCapture={(event) => {
-          if (event.key !== 'Escape') return;
-          closeHoverCard();
-        }}
-      >
-        {hoverOpen ? hoverCardContent : null}
-      </HoverCardContent>
-    </HoverCard>
+      {nodeBody}
+    </GraphNodeHoverCardShell>
   );
 });
 

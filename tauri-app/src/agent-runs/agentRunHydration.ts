@@ -149,24 +149,6 @@ const dispatchHydratedStreamEvent = (
     return;
   }
 
-  if (event.type === 'orchestration:flow_diagram_created') {
-    agentRunManager.dispatch(nodeId, {
-      type: 'execution_data',
-      patch: {
-        ...(typeof event.seq === 'number' ? { last_agent_event_seq: event.seq } : {}),
-        orchestration: {
-          flowDiagramMermaid: cleanString(event.mermaid),
-          flowDiagramSummary: cleanString(event.summary),
-        },
-      },
-    }, {
-      ...input,
-      content: state.output,
-      executionData: baseExecutionData(input),
-    });
-    return;
-  }
-
   agentRunManager.ingest(nodeId, event, {
     ...input,
     content: state.output,

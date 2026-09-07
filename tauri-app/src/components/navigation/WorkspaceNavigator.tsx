@@ -21,6 +21,14 @@ import {
 import { Button } from '../../../@/components/ui/button';
 import { Input } from '../../../@/components/ui/input';
 import { Alert, AlertDescription, AlertTitle } from '../../../@/components/ui/alert';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../../../@/components/ui/dialog';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../@/components/ui/tooltip';
 import {
   Collapsible,
@@ -962,6 +970,12 @@ export function WorkspaceNavigator({
     });
   }, [createWorkspaceForFolder, pendingFolderPath, pendingPolicyPromptAfterSetup]);
 
+  const clearSetupRequirement = useCallback(() => {
+    setSetupRequirement(null);
+    setPendingFolderPath(null);
+    setPendingPolicyPromptAfterSetup(false);
+  }, []);
+
   const handleConfirmDeleteWorkspace = useCallback(async () => {
     if (!workspacePendingDelete) return;
     await deleteWorkspace.mutateAsync(workspacePendingDelete.id);
@@ -1078,59 +1092,77 @@ export function WorkspaceNavigator({
         </div>
       </div>
 
-      {setupRequirement ? (
+      {setupRequirement?.type === 'git_init' ? (
         <div className="border-b border-[hsl(var(--app-border)/0.56)] p-3">
-          {setupRequirement.type === 'git_init' ? (
-            <Alert className="border-amber-300/70 bg-amber-50/80 text-amber-950 dark:border-amber-800/70 dark:bg-amber-950/50 dark:text-amber-100">
-              <GitBranch className="h-4 w-4" />
-              <AlertTitle>This folder is not a Git repository yet</AlertTitle>
-              <AlertDescription>
-                <p>Agentree needs a Git base commit before it can add a workspace here.</p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <Button size="sm" onClick={() => void continueAfterSetupRequirement({ allowGitInit: true })}>
-                    Initialize Git
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => setSetupRequirement(null)}>
-                    Cancel
-                  </Button>
-                </div>
-              </AlertDescription>
-            </Alert>
-          ) : (
-            <Alert className="border-amber-300/70 bg-amber-50/80 text-amber-950 dark:border-amber-800/70 dark:bg-amber-950/50 dark:text-amber-100">
-              <GitBranch className="h-4 w-4" />
-              <AlertTitle>This repository has local changes</AlertTitle>
-              <AlertDescription>
-                <p>Choose a base for the new workspace.</p>
+          <Alert className="border-amber-300/70 bg-amber-50/80 text-amber-950 dark:border-amber-800/70 dark:bg-amber-950/50 dark:text-amber-100">
+            <GitBranch className="h-4 w-4" />
+            <AlertTitle>This folder is not a Git repository yet</AlertTitle>
+            <AlertDescription>
+              <p>Agentree needs a Git base commit before it can add a workspace here.</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button size="sm" onClick={() => void continueAfterSetupRequirement({ allowGitInit: true })}>
+                  Initialize Git
+                </Button>
+                <Button size="sm" variant="outline" onClick={clearSetupRequirement}>
+                  Cancel
+                </Button>
+              </div>
+            </AlertDescription>
+          </Alert>
+        </div>
+      ) : null}
+
+      <Dialog
+        open={setupRequirement?.type === 'commit_checkpoint'}
+        onOpenChange={(open) => {
+          if (!open) clearSetupRequirement();
+        }}
+      >
+        <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-[min(34rem,calc(100vw-2rem))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-[34rem]">
+          <DialogHeader className="border-b border-border/70 px-5 py-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-500/12 text-amber-700 dark:text-amber-300">
+                <GitBranch className="h-5 w-5" />
+              </div>
+              <div className="min-w-0 text-left">
+                <DialogTitle>This repository has local changes</DialogTitle>
+                <DialogDescription>
+                  Choose a base for the new workspace.
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+          {setupRequirement?.type === 'commit_checkpoint' ? (
+            <>
+              <div className="min-h-0 overflow-y-auto px-5 py-4">
                 <ChangedFilesSummary files={setupRequirement.workspace.changed_files} />
                 <Input
                   value={checkpointMessage}
                   onChange={(event) => setCheckpointMessage(event.target.value)}
                   placeholder="Checkpoint commit message"
-                  className="mt-2 border-amber-200 bg-white dark:bg-background"
+                  className="mt-3"
                 />
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    onClick={() => void continueAfterSetupRequirement({
-                      dirtyStrategy: 'checkpoint',
-                      commitMessage: checkpointMessage,
-                    })}
-                  >
-                    Checkpoint
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => void continueAfterSetupRequirement({ dirtyStrategy: 'last-commit' })}>
-                    Use last commit
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setSetupRequirement(null)}>
-                    Cancel
-                  </Button>
-                </div>
-              </AlertDescription>
-            </Alert>
-          )}
-        </div>
-      ) : null}
+              </div>
+              <DialogFooter className="border-t border-border/70 px-5 py-4">
+                <Button variant="outline" onClick={clearSetupRequirement}>
+                  Cancel
+                </Button>
+                <Button variant="outline" onClick={() => void continueAfterSetupRequirement({ dirtyStrategy: 'last-commit' })}>
+                  Use last commit
+                </Button>
+                <Button
+                  onClick={() => void continueAfterSetupRequirement({
+                    dirtyStrategy: 'checkpoint',
+                    commitMessage: checkpointMessage,
+                  })}
+                >
+                  Checkpoint
+                </Button>
+              </DialogFooter>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
         {isLoading ? (

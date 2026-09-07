@@ -197,3 +197,25 @@ test('Claude mapper tolerates composer permission mode ids', async () => {
     allowDangerouslySkipPermissions: true,
   });
 });
+
+test('Claude adapter derives Agentree MCP server config from environment', async () => {
+  const adapter = await import('./claude-agent-sdk-adapter.mjs');
+
+  assert.deepEqual(adapter.agentreeMcpServersFromEnv({
+    AGENTREE_MCP_URL: ' http://127.0.0.1:61234/mcp ',
+  }), {
+    agentree: {
+      type: 'http',
+      url: 'http://127.0.0.1:61234/mcp',
+    },
+  });
+  assert.deepEqual(adapter.agentreeMcpServersFromEnv({
+    MCP_SERVER_URL: 'http://127.0.0.1:61235/mcp',
+  }), {
+    agentree: {
+      type: 'http',
+      url: 'http://127.0.0.1:61235/mcp',
+    },
+  });
+  assert.equal(adapter.agentreeMcpServersFromEnv({}), null);
+});
