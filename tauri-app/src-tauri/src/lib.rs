@@ -25,7 +25,6 @@ mod db;
 mod editors;
 mod git_workspace;
 mod graph_snapshot_cache;
-mod internal_completion;
 mod logging;
 mod login_profiles;
 mod managed_runtime;
@@ -138,11 +137,14 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             db::record_tool_call,
             db::kv_set,
             db::kv_get,
+            db::save_orchestration_user_templates,
+            db::get_orchestration_user_templates,
             db::add_message,
             db::update_session_status,
             db::get_session_snapshot,
             db::get_agent_run_ledger,
             db::replay_agent_run_events,
+            db::record_orchestration_event,
             db::list_local_nodes,
             db::list_local_insights,
             db::list_local_insight_candidates,
@@ -173,8 +175,6 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             agents::stop_agent,
             agents::steer_agent_run,
             agents::get_agent_run_state,
-            internal_completion::complete_internal_prompt,
-            internal_completion::cancel_internal_completion,
             login_profiles::list_login_profiles,
             login_profiles::upsert_login_profile,
             login_profiles::delete_login_profile,
@@ -241,6 +241,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             mcp::set_mcp_auth_token,
             mcp::set_mcp_workspace_id,
             mcp::get_mcp_server_url,
+            mcp::resolve_orchestration_mcp_request,
             auth_callback::ensure_auth_callback_server_started,
             auth_callback::get_auth_callback_base_url,
             graph_snapshot_cache::read_graph_snapshot_cache,
@@ -354,63 +355,75 @@ pub fn run() {
 
                 let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
                 let telemetry = TelemetryDb::open(&app_data_dir)?;
-                let reconciled_stale_runs = telemetry.reconcile_agent_runs_on_startup()?;
-                if reconciled_stale_runs > 0 {
-                    crate::app_log!(
-                        "[AGENT_RECOVERY] event=startup_reconcile classified_needs_user_action count={}",
-                        reconciled_stale_runs
-                    );
-                }
-                let reconciled_prelaunch_flow_nodes =
-                    telemetry.reconcile_stale_prelaunch_flow_local_nodes(60)?;
-                if reconciled_prelaunch_flow_nodes > 0 {
-                    crate::app_log!(
-                        "[AGENT_RECOVERY] event=startup_reconcile.prelaunch_flow_failed_setup count={}",
-                        reconciled_prelaunch_flow_nodes
-                    );
-                }
-                // Reclaim scratch worktrees/branches left behind by runs that are
-                // no longer live (crashes, force-quits, skipped cleanup). Runs that
-                // reconcile_agent_runs_on_startup just reclassified are now dead, so
-                // this must come after it; the clean-worktree guard preserves any
-                // run that crashed mid-edit with unsaved work.
-                match telemetry.list_agent_run_repo_paths() {
-                    Ok(repos) => {
-                        let mut reclaimed_total = 0usize;
-                        for repo in repos {
-                            match crate::git_workspace::reconcile_orphaned_agent_worktrees(
-                                &repo, &telemetry,
-                            ) {
-                                Ok(count) => reclaimed_total += count,
-                                Err(err) => crate::app_log!(
-                                    "[AGENT_WORKTREE] event=startup_reconcile.error repo={} err={}",
-                                    repo,
-                                    err
-                                ),
+                app.manage(telemetry);
+                {
+                    let recovered_terminal_runs =
+                        agents::recover_terminal_agent_runs_from_journal(app.handle())?;
+                    if recovered_terminal_runs > 0 {
+                        crate::app_log!(
+                            "[AGENT_RECOVERY] event=startup_terminal_journal_replay.recovered count={}",
+                            recovered_terminal_runs
+                        );
+                    }
+
+                    let telemetry = app.state::<TelemetryDb>();
+                    let reconciled_stale_runs = telemetry.reconcile_agent_runs_on_startup()?;
+                    if reconciled_stale_runs > 0 {
+                        crate::app_log!(
+                            "[AGENT_RECOVERY] event=startup_reconcile classified_needs_user_action count={}",
+                            reconciled_stale_runs
+                        );
+                    }
+                    let reconciled_prelaunch_local_nodes =
+                        telemetry.reconcile_stale_prelaunch_local_nodes(60)?;
+                    if reconciled_prelaunch_local_nodes > 0 {
+                        crate::app_log!(
+                            "[AGENT_RECOVERY] event=startup_reconcile.prelaunch_local_failed_setup count={}",
+                            reconciled_prelaunch_local_nodes
+                        );
+                    }
+                    // Reclaim scratch worktrees/branches left behind by runs that are
+                    // no longer live (crashes, force-quits, skipped cleanup). Runs that
+                    // reconcile_agent_runs_on_startup just reclassified are now dead, so
+                    // this must come after it; the clean-worktree guard preserves any
+                    // run that crashed mid-edit with unsaved work.
+                    match telemetry.list_agent_run_repo_paths() {
+                        Ok(repos) => {
+                            let mut reclaimed_total = 0usize;
+                            for repo in repos {
+                                match crate::git_workspace::reconcile_orphaned_agent_worktrees(
+                                    &repo, &telemetry,
+                                ) {
+                                    Ok(count) => reclaimed_total += count,
+                                    Err(err) => crate::app_log!(
+                                        "[AGENT_WORKTREE] event=startup_reconcile.error repo={} err={}",
+                                        repo,
+                                        err
+                                    ),
+                                }
+                            }
+                            if reclaimed_total > 0 {
+                                crate::app_log!(
+                                    "[AGENT_WORKTREE] event=startup_reconcile.reclaimed count={}",
+                                    reclaimed_total
+                                );
                             }
                         }
-                        if reclaimed_total > 0 {
-                            crate::app_log!(
-                                "[AGENT_WORKTREE] event=startup_reconcile.reclaimed count={}",
-                                reclaimed_total
-                            );
-                        }
+                        Err(err) => crate::app_log!(
+                            "[AGENT_WORKTREE] event=startup_reconcile.list_repos_error err={}",
+                            err
+                        ),
                     }
-                    Err(err) => crate::app_log!(
-                        "[AGENT_WORKTREE] event=startup_reconcile.list_repos_error err={}",
-                        err
-                    ),
-                }
 
-                let reconciled_stale_logins =
-                    login_profiles::reconcile_login_profiles_on_startup(&telemetry)?;
-                if reconciled_stale_logins > 0 {
-                    crate::app_log!(
-                        "[LOGIN_PROFILE] event=startup_reconcile reset_orphaned_checking count={}",
-                        reconciled_stale_logins
-                    );
+                    let reconciled_stale_logins =
+                        login_profiles::reconcile_login_profiles_on_startup(&telemetry)?;
+                    if reconciled_stale_logins > 0 {
+                        crate::app_log!(
+                            "[LOGIN_PROFILE] event=startup_reconcile reset_orphaned_checking count={}",
+                            reconciled_stale_logins
+                        );
+                    }
                 }
-                app.manage(telemetry);
                 agents::start_agent_run_watchdog(app.handle().clone());
 
                 crate::app_log!("[PERF][Setup] Starting MCP server...");

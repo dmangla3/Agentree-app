@@ -247,11 +247,6 @@ fn parent_id_from_execution_data(execution_data: &JsonValue) -> Option<String> {
     execution_data
         .get("parentId")
         .or_else(|| execution_data.get("parent_id"))
-        .or_else(|| {
-            execution_data
-                .get("meta")
-                .and_then(|value| value.get("context_parent_node_id"))
-        })
         .and_then(|value| value.as_str())
         .filter(|value| !value.trim().is_empty())
         .map(|value| value.to_string())
@@ -753,17 +748,32 @@ pub fn start_agent_run_watchdog(app_handle: AppHandle) {
         thread::sleep(Duration::from_millis(AGENT_RUN_WATCHDOG_POLL_INTERVAL_MS));
         let now_ms = unix_timestamp_millis();
         {
-            let telemetry = app_handle.state::<crate::db::TelemetryDb>();
-            match telemetry.reconcile_stale_prelaunch_flow_local_nodes(60) {
+            match recover_terminal_agent_runs_from_journal(&app_handle) {
                 Ok(count) if count > 0 => {
                     crate::app_log!(
-                        "[AGENT_WATCHDOG] event=prelaunch_flow_failed_setup count={}",
+                        "[AGENT_WATCHDOG] event=terminal_journal_replay.recovered count={}",
                         count
                     );
                 }
                 Err(err) => {
                     crate::app_log!(
-                        "[AGENT_WATCHDOG] event=prelaunch_flow_reconcile_failed err={}",
+                        "[AGENT_WATCHDOG] event=terminal_journal_replay.failed err={}",
+                        err
+                    );
+                }
+                _ => {}
+            }
+            let telemetry = app_handle.state::<crate::db::TelemetryDb>();
+            match telemetry.reconcile_stale_prelaunch_local_nodes(60) {
+                Ok(count) if count > 0 => {
+                    crate::app_log!(
+                        "[AGENT_WATCHDOG] event=prelaunch_local_failed_setup count={}",
+                        count
+                    );
+                }
+                Err(err) => {
+                    crate::app_log!(
+                        "[AGENT_WATCHDOG] event=prelaunch_local_reconcile_failed err={}",
                         err
                     );
                 }
@@ -1480,6 +1490,198 @@ fn build_finalize_snapshot(
         author_name: run_state.context.author_name.clone(),
         auth_user_id: run_state.context.auth_user_id.clone(),
     })
+}
+
+fn execution_data_from_local_payload(payload: Option<String>) -> JsonValue {
+    let Some(payload) = payload else {
+        return JsonValue::Object(JsonMap::new());
+    };
+    let Ok(payload) = serde_json::from_str::<JsonValue>(&payload) else {
+        return JsonValue::Object(JsonMap::new());
+    };
+    payload
+        .get("execution_data")
+        .cloned()
+        .filter(JsonValue::is_object)
+        .unwrap_or_else(|| JsonValue::Object(JsonMap::new()))
+}
+
+fn ensure_context_recovery_fields(
+    execution_data: &mut JsonValue,
+    workspace_id: Option<&str>,
+    parent_id: Option<&str>,
+) {
+    if !execution_data.is_object() {
+        *execution_data = JsonValue::Object(JsonMap::new());
+    }
+    let has_workspace_id = workspace_id_from_execution_data(execution_data).is_some();
+    let has_parent_id = parent_id_from_execution_data(execution_data).is_some();
+    let object = execution_data
+        .as_object_mut()
+        .expect("execution_data must be object");
+    if !has_workspace_id {
+        if let Some(workspace_id) = workspace_id.filter(|value| !value.trim().is_empty()) {
+            object.insert(
+                "workspace_id".to_string(),
+                JsonValue::String(workspace_id.to_string()),
+            );
+        }
+    }
+    if !has_parent_id {
+        if let Some(parent_id) = parent_id.filter(|value| !value.trim().is_empty()) {
+            object.insert(
+                "parentId".to_string(),
+                JsonValue::String(parent_id.to_string()),
+            );
+        }
+    }
+}
+
+fn snapshot_from_replayed_journal(
+    ledger: &crate::db::AgentRunLedgerRow,
+    events: &[crate::db::AgentRunJournalEvent],
+    execution_data: JsonValue,
+    prompt_fallback: Option<String>,
+) -> Option<AgentRunSnapshot> {
+    let mut run_state = AgentRunState::new(AgentRunContext {
+        run_id: ledger.run_id.clone(),
+        execution_data,
+        git_branch_name: ledger.branch_name.clone(),
+        repo_path: ledger.repo_path.clone(),
+        parent_commit: ledger.parent_commit.clone(),
+        author_name: None,
+        prompt_fallback,
+        auth_user_id: None,
+    });
+    for event in events {
+        if let Ok(payload) = serde_json::from_str::<JsonValue>(&event.payload) {
+            update_run_state_from_event(&mut run_state, &payload);
+        }
+    }
+    run_state.terminal_status.as_ref()?;
+    build_finalize_snapshot(&mut run_state, &ledger.assistant_node_id)
+}
+
+pub fn recover_terminal_agent_runs_from_journal(app_handle: &AppHandle) -> Result<usize, String> {
+    let telemetry = app_handle.state::<crate::db::TelemetryDb>();
+    let candidates = telemetry.list_terminal_journal_recovery_candidates()?;
+    let mut recovered = 0usize;
+
+    for ledger in candidates {
+        let agent_state = app_handle.state::<AgentState>();
+        let sessions = agent_state.sessions.lock();
+        if sessions
+            .as_ref()
+            .map(|sessions| sessions.contains_key(&ledger.assistant_node_id))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        drop(sessions);
+
+        let mut execution_data = execution_data_from_local_payload(
+            telemetry.get_local_node_payload(&ledger.assistant_node_id)?,
+        );
+        ensure_context_recovery_fields(
+            &mut execution_data,
+            ledger.workspace_id.as_deref(),
+            ledger.user_node_id.as_deref(),
+        );
+        let prompt_fallback = ledger.user_node_id.as_deref().and_then(|user_node_id| {
+            telemetry
+                .get_local_node_payload(user_node_id)
+                .ok()
+                .flatten()
+                .and_then(|payload| serde_json::from_str::<JsonValue>(&payload).ok())
+                .and_then(|payload| {
+                    payload
+                        .get("content")
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.trim().is_empty())
+                        .map(|value| value.to_string())
+                })
+        });
+        let events = telemetry.list_agent_run_events_after(&ledger.run_id, 0)?;
+        let Some(mut snapshot) =
+            snapshot_from_replayed_journal(&ledger, &events, execution_data, prompt_fallback)
+        else {
+            continue;
+        };
+
+        crate::app_log!(
+            "[AGENT_RECOVERY] event=terminal_journal_replay.start node_id={} run_id={} status={}",
+            ledger.assistant_node_id,
+            ledger.run_id,
+            snapshot.status
+        );
+        let _ = telemetry.increment_agent_run_finalize_attempt(&ledger.assistant_node_id);
+        let _ = telemetry.update_agent_run_phase(
+            &ledger.assistant_node_id,
+            "finalizing",
+            "finalizing_recovered_terminal_journal",
+            None,
+        );
+        match finalize_run_snapshot(app_handle, &mut snapshot, "") {
+            Ok(FinalizeRunSnapshotOutcome::QueuedForRetry {
+                finalize_ack,
+                upload_error,
+            }) => {
+                telemetry.mark_agent_run_finalized(
+                    &ledger.assistant_node_id,
+                    &finalize_ack.status,
+                    false,
+                    finalize_ack.output_commit_sha.as_deref(),
+                )?;
+                cleanup_worktree_after_finalize(
+                    app_handle,
+                    &ledger.assistant_node_id,
+                    snapshot.repo_path.clone(),
+                    "cleanup_after_terminal_journal_recovery",
+                );
+                emit_finalize_ack(app_handle, &ledger.assistant_node_id, &finalize_ack);
+                update_local_session_status(
+                    app_handle,
+                    &ledger.assistant_node_id,
+                    &snapshot.status,
+                    snapshot.repo_path.as_deref(),
+                );
+                recovered += 1;
+                crate::app_log!(
+                    "[AGENT_RECOVERY] event=terminal_journal_replay.recovered node_id={} run_id={} err={}",
+                    ledger.assistant_node_id,
+                    ledger.run_id,
+                    upload_error
+                );
+            }
+            Err(err) => {
+                if let Err(persist_err) = persist_local_node_snapshot(app_handle, &snapshot) {
+                    crate::app_log!(
+                        "[AGENT_RECOVERY] event=terminal_journal_replay.snapshot_persist_failed node_id={} err={}",
+                        ledger.assistant_node_id,
+                        persist_err
+                    );
+                }
+                let _ = telemetry.update_agent_run_phase(
+                    &ledger.assistant_node_id,
+                    "failed_finalization",
+                    "failed_finalization",
+                    Some(&err),
+                );
+                let _ = telemetry.mark_agent_run_needs_user_action(
+                    &ledger.assistant_node_id,
+                    "Recovered terminal journal, but native finalization failed; cleanup is blocked.",
+                );
+                crate::app_log!(
+                    "[AGENT_RECOVERY] event=terminal_journal_replay.failed node_id={} run_id={} err={}",
+                    ledger.assistant_node_id,
+                    ledger.run_id,
+                    err
+                );
+            }
+        }
+    }
+
+    Ok(recovered)
 }
 
 fn post_json_with_retry(
@@ -2406,7 +2608,7 @@ fn spawn_agent_internal(
     let mcp_url = crate::mcp::mcp_server_url();
     let mut command = Command::new(&program);
     command
-        .args(args)
+        .args(&args)
         .current_dir(&cwd)
         .env("AGENTREE_MCP_URL", &mcp_url)
         .env("MCP_SERVER_URL", &mcp_url)
@@ -2422,13 +2624,17 @@ fn spawn_agent_internal(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    crate::command_guards::apply_agent_command_env_with_config(
-        &mut command,
-        &app,
-        &session_id,
-        Path::new(&cwd),
-        &worktree_config,
-    )?;
+    if agent_args_request_full_access(&args) {
+        command.env("PATH", crate::command_guards::build_agent_path());
+    } else {
+        crate::command_guards::apply_agent_command_env_with_config(
+            &mut command,
+            &app,
+            &session_id,
+            Path::new(&cwd),
+            &worktree_config,
+        )?;
+    }
     #[cfg(unix)]
     {
         command.process_group(0);
@@ -2857,6 +3063,13 @@ fn spawn_agent_internal(
     Ok(child_id)
 }
 
+fn agent_args_request_full_access(args: &[String]) -> bool {
+    args.windows(2).any(|window| {
+        window[0] == "--permission-mode"
+            && (window[1] == "full-access" || window[1] == "bypassPermissions")
+    })
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn start_agent_run(
@@ -3250,8 +3463,9 @@ mod tests {
         ai_label_from_execution_data, build_finalize_snapshot,
         cleanup_requires_server_final_persisted, cleanup_terminal_status_allows_cleanup,
         commit_message_for_snapshot, commit_subject_from_execution_data,
-        decide_agent_run_watchdog_timeout, local_node_payload_for_snapshot,
-        run_ledger_user_node_id_from_context, update_run_state_from_event, AgentRunContext,
+        decide_agent_run_watchdog_timeout, ensure_context_recovery_fields,
+        local_node_payload_for_snapshot, run_ledger_user_node_id_from_context,
+        snapshot_from_replayed_journal, update_run_state_from_event, AgentRunContext,
         AgentRunSnapshot, AgentRunState,
     };
     use serde_json::json;
@@ -3453,6 +3667,26 @@ mod tests {
     }
 
     #[test]
+    fn run_ledger_user_node_id_ignores_context_parent_metadata() {
+        let context = AgentRunContext {
+            run_id: "run-1".to_string(),
+            execution_data: json!({
+                "meta": {
+                    "context_parent_node_id": "assistant-before-user"
+                }
+            }),
+            git_branch_name: None,
+            repo_path: None,
+            parent_commit: None,
+            author_name: None,
+            prompt_fallback: None,
+            auth_user_id: None,
+        };
+
+        assert_eq!(run_ledger_user_node_id_from_context(&context), None);
+    }
+
+    #[test]
     fn commit_subject_comes_from_runtime_metadata() {
         let execution_data = json!({
             "meta": {
@@ -3560,6 +3794,155 @@ mod tests {
         assert_eq!(
             message_events[0]["content"],
             "Implemented.\n\nVerification passed."
+        );
+    }
+
+    #[test]
+    fn replayed_terminal_journal_builds_completed_snapshot() {
+        let ledger = crate::db::AgentRunLedgerRow {
+            run_id: "run-1".to_string(),
+            user_node_id: Some("user-1".to_string()),
+            assistant_node_id: "assistant-1".to_string(),
+            workspace_id: Some("workspace-1".to_string()),
+            repo_path: Some("/tmp/repo".to_string()),
+            worktree_path: Some("/tmp/worktree".to_string()),
+            branch_name: Some("agentree/assistant-1".to_string()),
+            parent_commit: Some("base-sha".to_string()),
+            pid: Some(123),
+            agent_type: Some("codex".to_string()),
+            status: "running".to_string(),
+            phase: "running".to_string(),
+            last_seq: 2,
+            started_at: 1,
+            updated_at: 2,
+            terminal_status: None,
+            finalize_attempt_count: 0,
+            cleanup_attempt_count: 0,
+            server_start_persisted: false,
+            server_final_persisted: false,
+            output_commit_sha: None,
+            failure_reason: None,
+            needs_user_action_reason: None,
+            cleanup_completed: false,
+            login_profile_id: None,
+        };
+        let events = vec![
+            crate::db::AgentRunJournalEvent {
+                run_id: "run-1".to_string(),
+                assistant_node_id: "assistant-1".to_string(),
+                seq: 1,
+                event_type: "message_delta".to_string(),
+                status: None,
+                phase: None,
+                payload: json!({"type": "message_delta", "delta": "draft", "timestamp": 1})
+                    .to_string(),
+                timestamp: 1,
+            },
+            crate::db::AgentRunJournalEvent {
+                run_id: "run-1".to_string(),
+                assistant_node_id: "assistant-1".to_string(),
+                seq: 2,
+                event_type: "provider_stop".to_string(),
+                status: None,
+                phase: None,
+                payload: json!({
+                    "type": "provider_stop",
+                    "provider_status": "completed",
+                    "provider_stop_reason": "end_turn",
+                    "final_content": "final answer",
+                    "usage": {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8},
+                    "timestamp": 2
+                })
+                .to_string(),
+                timestamp: 2,
+            },
+        ];
+
+        let snapshot = snapshot_from_replayed_journal(
+            &ledger,
+            &events,
+            json!({"workspace_id": "workspace-1", "parentId": "user-1"}),
+            Some("prompt".to_string()),
+        )
+        .expect("terminal snapshot");
+
+        assert_eq!(snapshot.status, "completed");
+        assert_eq!(snapshot.final_content, "final answer");
+        assert_eq!(
+            snapshot.execution_data["last_terminal_status"],
+            json!("completed")
+        );
+        assert_eq!(snapshot.prompt_tokens, Some(3));
+        assert_eq!(snapshot.completion_tokens, Some(5));
+        assert_eq!(snapshot.total_tokens, Some(8));
+    }
+
+    #[test]
+    fn replayed_terminal_journal_repairs_missing_parent_from_ledger_user_node() {
+        let ledger = crate::db::AgentRunLedgerRow {
+            run_id: "run-1".to_string(),
+            user_node_id: Some("user-1".to_string()),
+            assistant_node_id: "assistant-1".to_string(),
+            workspace_id: Some("workspace-1".to_string()),
+            repo_path: Some("/tmp/repo".to_string()),
+            worktree_path: Some("/tmp/worktree".to_string()),
+            branch_name: Some("agentree/assistant-1".to_string()),
+            parent_commit: Some("base-sha".to_string()),
+            pid: Some(123),
+            agent_type: Some("codex".to_string()),
+            status: "running".to_string(),
+            phase: "running".to_string(),
+            last_seq: 1,
+            started_at: 1,
+            updated_at: 2,
+            terminal_status: None,
+            finalize_attempt_count: 0,
+            cleanup_attempt_count: 0,
+            server_start_persisted: false,
+            server_final_persisted: false,
+            output_commit_sha: None,
+            failure_reason: None,
+            needs_user_action_reason: None,
+            cleanup_completed: false,
+            login_profile_id: None,
+        };
+        let events = vec![crate::db::AgentRunJournalEvent {
+            run_id: "run-1".to_string(),
+            assistant_node_id: "assistant-1".to_string(),
+            seq: 1,
+            event_type: "provider_stop".to_string(),
+            status: None,
+            phase: None,
+            payload: json!({
+                "type": "provider_stop",
+                "provider_status": "completed",
+                "final_content": "final answer",
+                "timestamp": 1
+            })
+            .to_string(),
+            timestamp: 1,
+        }];
+        let mut execution_data = json!({
+            "workspace_id": "workspace-1",
+            "meta": {
+                "context_parent_node_id": "assistant-before-user"
+            }
+        });
+
+        ensure_context_recovery_fields(
+            &mut execution_data,
+            ledger.workspace_id.as_deref(),
+            ledger.user_node_id.as_deref(),
+        );
+        let snapshot = snapshot_from_replayed_journal(&ledger, &events, execution_data, None)
+            .expect("terminal snapshot");
+        let payload = local_node_payload_for_snapshot(&snapshot, "workspace-1");
+
+        assert_eq!(snapshot.execution_data["parentId"], json!("user-1"));
+        assert_eq!(payload["parentId"], json!("user-1"));
+        assert_eq!(
+            payload["execution_data"]["meta"]["context_parent_node_id"],
+            json!("assistant-before-user")
         );
     }
 

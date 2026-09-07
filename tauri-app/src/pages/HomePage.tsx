@@ -29,11 +29,11 @@ import { PanelRightClose, PanelRightOpen, X } from 'lucide-react';
 const AdvancedSearchPanel = lazy(() => import('../components/AdvancedSearchPanel').then((module) => ({ default: module.AdvancedSearchPanel })));
 const ChatInterface = lazy(() => import('../components/ChatInterface').then((module) => ({ default: module.ChatInterface })));
 const FirstRunExperience = lazy(() => import('../components/onboarding/FirstRunExperience').then((module) => ({ default: module.FirstRunExperience })));
-const FlowsPanel = lazy(() => import('../components/flows/FlowsPanel').then((module) => ({ default: module.FlowsPanel })));
 const GraphComposerDock = lazy(() => import('../components/GraphComposerDock').then((module) => ({ default: module.GraphComposerDock })));
 const GraphView = lazy(() => import('../components/GraphView').then((module) => ({ default: module.GraphView })));
 const KnowledgeBase = lazy(() => import('../components/KnowledgeBase/KnowledgeBase').then((module) => ({ default: module.KnowledgeBase })));
 const LoginProfilesPanel = lazy(() => import('../components/logins/LoginProfilesPanel').then((module) => ({ default: module.LoginProfilesPanel })));
+const OrchestrationPanel = lazy(() => import('../components/orchestration/OrchestrationPanel').then((module) => ({ default: module.OrchestrationPanel })));
 const SkillsPanel = lazy(() => import('../components/SkillsPanel').then((module) => ({ default: module.SkillsPanel })));
 const TrackingDashboard = lazy(() => import('../components/TrackingDashboard').then((module) => ({ default: module.TrackingDashboard })));
 
@@ -66,7 +66,7 @@ export function HomePage() {
   const messageId = searchParams.get('messageId');
 
   const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
-  const [activeView, setActiveView] = useState<'chat' | 'flows' | 'tracking' | 'knowledge' | 'skills' | 'logins'>('chat');
+  const [activeView, setActiveView] = useState<'chat' | 'orchestration' | 'tracking' | 'knowledge' | 'skills' | 'logins'>('chat');
   const [loginProviderIntent, setLoginProviderIntent] = useState<'codex' | 'claude' | null>(null);
   const [threadNavigationModelsByWorkspace, setThreadNavigationModelsByWorkspace] = useState<Record<string, WorkspaceThreadNavigationModel>>({});
   const [workspaceNavigatorThreadsFocused, setWorkspaceNavigatorThreadsFocused] = useState(false);
@@ -440,21 +440,21 @@ export function HomePage() {
                 </div>
               </div>
             )
-          ) : activeView === 'flows' ? (
-            <div className="app-view-surface h-full w-full p-5">
+          ) : activeView === 'orchestration' ? (
+            <div className="app-view-surface h-full w-full overflow-auto p-5">
               <div className="app-view-frame mx-auto flex h-full w-full max-w-6xl flex-col">
                 <header className="app-view-header">
                   <div className="min-w-0">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[hsl(var(--app-accent))]">Workspace automation</p>
-                    <h1 className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-foreground">Flows</h1>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[hsl(var(--app-accent))]">Workspace orchestration</p>
+                    <h1 className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-foreground">Orchestration</h1>
                     <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                      Inspect predefined agent flows, their node templates, inputs, and execution shape.
+                      Manage reusable node prompts and natural-language orchestration prompts for the graph composer.
                     </p>
                   </div>
                 </header>
                 <div className="min-h-0 flex-1 overflow-hidden">
                   <Suspense fallback={<PanelLoading />}>
-                    <FlowsPanel workspaceId={selectedWorkspaceId} />
+                    <OrchestrationPanel />
                   </Suspense>
                 </div>
               </div>

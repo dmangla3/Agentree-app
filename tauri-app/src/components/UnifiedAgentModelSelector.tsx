@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { flushSync } from 'react-dom';
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronRight, CircleGauge, KeyRound, Minus, Plus, Sparkles, X } from 'lucide-react';
 import { useAgents, type Agent } from '../hooks/useAgents';
 import { runtimeModels, type RuntimeProvider } from '../lib/runtimeModels';
@@ -54,6 +54,49 @@ type AgentFamily = {
     models: AgentWithMeta[];
     defaultAgentId: string | null;
     selectedAgentId: string | null;
+};
+
+type PointerLocation = {
+    x: number;
+    y: number;
+};
+
+type MenuAimDebugState = {
+    activeFamilyKey: string | null;
+    candidateFamilyKey: string | null;
+    delayMs: number;
+    points: [PointerLocation, PointerLocation, PointerLocation] | null;
+    pointer: PointerLocation | null;
+};
+
+const MENU_AIM_LOCATIONS_TRACKED = 3;
+const MENU_AIM_ACTIVATION_DELAY_MS = 300;
+const MENU_AIM_TOLERANCE_PX = 75;
+const MENU_AIM_DEBUG_STORAGE_KEY = 'agentree.debug.model-menu-aim';
+
+const isModelMenuAimDebugEnabled = () => {
+    if (!import.meta.env.DEV || typeof window === 'undefined') return false;
+    try {
+        return window.localStorage.getItem(MENU_AIM_DEBUG_STORAGE_KEY) === 'true';
+    } catch {
+        return false;
+    }
+};
+
+const isPointInTriangle = (
+    point: PointerLocation,
+    triangle: [PointerLocation, PointerLocation, PointerLocation]
+) => {
+    const [a, b, c] = triangle;
+    const sign = (left: PointerLocation, right: PointerLocation, target: PointerLocation) => (
+        (left.x - target.x) * (right.y - target.y) - (right.x - target.x) * (left.y - target.y)
+    );
+    const d1 = sign(point, a, b);
+    const d2 = sign(point, b, c);
+    const d3 = sign(point, c, a);
+    const hasNegative = d1 < 0 || d2 < 0 || d3 < 0;
+    const hasPositive = d1 > 0 || d2 > 0 || d3 > 0;
+    return !(hasNegative && hasPositive);
 };
 
 const providerEffortNoun = (provider: string) => (provider === 'claude' ? 'Thinking' : 'Reasoning');
@@ -224,6 +267,15 @@ export function UnifiedAgentModelSelector({
     const providerLimits = useProviderLimitsStore((state) => state.byProvider);
     const loginProfiles = useLoginProfilesStore((state) => state.profiles);
     const [hoveredFamilyKey, setHoveredFamilyKey] = useState<string | null>(null);
+    const hoveredFamilyKeyRef = useRef<string | null>(null);
+    const activeFamilyKeyRef = useRef<string | null>(null);
+    const familyListRef = useRef<HTMLDivElement | null>(null);
+    const effortPanelRef = useRef<HTMLDivElement | null>(null);
+    const pointerLocationsRef = useRef<PointerLocation[]>([]);
+    const lastDelayLocationRef = useRef<PointerLocation | null>(null);
+    const activationTimeoutRef = useRef<number | null>(null);
+    const isMenuAimDebugEnabledRef = useRef(isModelMenuAimDebugEnabled());
+    const [menuAimDebugState, setMenuAimDebugState] = useState<MenuAimDebugState | null>(null);
     const supportsMultiRun = Boolean(onAgentRunCountChange);
     const totalSelectedRuns = useMemo(() => (
         Object.values(agentRunCounts ?? {}).reduce((total, count) => total + Math.max(0, count || 0), 0)
@@ -254,11 +306,114 @@ export function UnifiedAgentModelSelector({
         return compatible.length === 0 && externallyReady;
     };
 
+    const clearPendingFamilyActivation = () => {
+        if (activationTimeoutRef.current == null) return;
+        window.clearTimeout(activationTimeoutRef.current);
+        activationTimeoutRef.current = null;
+    };
+
     const activateFamily = (familyKey: string) => {
-        if (hoveredFamilyKey === familyKey) return;
+        if (activeFamilyKeyRef.current === familyKey) return;
+        hoveredFamilyKeyRef.current = familyKey;
+        activeFamilyKeyRef.current = familyKey;
         flushSync(() => {
             setHoveredFamilyKey(familyKey);
         });
+    };
+
+    const updateMenuAimDebugState = (state: MenuAimDebugState | null) => {
+        if (!isMenuAimDebugEnabledRef.current) return;
+        setMenuAimDebugState(state);
+    };
+
+    const trackPointerLocation = (event: ReactPointerEvent<HTMLElement>) => {
+        const locations = pointerLocationsRef.current;
+        const nextLocation = { x: event.clientX, y: event.clientY };
+        const previousLocation = locations[locations.length - 1];
+        if (previousLocation && previousLocation.x === nextLocation.x && previousLocation.y === nextLocation.y) {
+            return;
+        }
+        locations.push(nextLocation);
+        if (locations.length > MENU_AIM_LOCATIONS_TRACKED) {
+            locations.shift();
+        }
+    };
+
+    const familyActivationDelay = (candidateFamilyKey: string) => {
+        if (!activeFamilyKeyRef.current) return 0;
+
+        const familyListRect = familyListRef.current?.getBoundingClientRect();
+        const effortPanelRect = effortPanelRef.current?.getBoundingClientRect();
+        if (!familyListRect || !effortPanelRect || effortPanelRect.left <= familyListRect.right) return 0;
+
+        const locations = pointerLocationsRef.current;
+        const location = locations[locations.length - 1];
+        const previousLocation = locations[0] ?? location;
+        if (!location || !previousLocation) return 0;
+
+        const panelUpperLeft = {
+            x: effortPanelRect.left,
+            y: effortPanelRect.top - MENU_AIM_TOLERANCE_PX,
+        };
+        const panelLowerLeft = {
+            x: effortPanelRect.left,
+            y: effortPanelRect.bottom + MENU_AIM_TOLERANCE_PX,
+        };
+        const previousWasOutsideFamilyList =
+            previousLocation.x < familyListRect.left
+            || previousLocation.x > effortPanelRect.left
+            || previousLocation.y < familyListRect.top
+            || previousLocation.y > familyListRect.bottom;
+        if (previousWasOutsideFamilyList) return 0;
+
+        const lastDelayLocation = lastDelayLocationRef.current;
+        if (lastDelayLocation && location.x === lastDelayLocation.x && location.y === lastDelayLocation.y) {
+            return MENU_AIM_ACTIVATION_DELAY_MS;
+        }
+
+        const triangle: [PointerLocation, PointerLocation, PointerLocation] = [previousLocation, panelUpperLeft, panelLowerLeft];
+        const isMovingTowardPanel = location.x > previousLocation.x + 4;
+        const shouldDelay = isMovingTowardPanel && isPointInTriangle(location, triangle);
+        const delay = shouldDelay ? MENU_AIM_ACTIVATION_DELAY_MS : 0;
+        updateMenuAimDebugState({
+            activeFamilyKey: activeFamilyKeyRef.current,
+            candidateFamilyKey,
+            delayMs: delay,
+            points: triangle,
+            pointer: location,
+        });
+
+        if (shouldDelay) {
+            lastDelayLocationRef.current = location;
+            return delay;
+        }
+
+        lastDelayLocationRef.current = null;
+        return 0;
+    };
+
+    const requestFamilyActivation = (familyKey: string, event: ReactPointerEvent<HTMLElement>) => {
+        trackPointerLocation(event);
+        if (activeFamilyKeyRef.current === familyKey) return;
+
+        clearPendingFamilyActivation();
+        const delay = familyActivationDelay(familyKey);
+        if (delay <= 0) {
+            activateFamily(familyKey);
+            return;
+        }
+
+        activationTimeoutRef.current = window.setTimeout(() => {
+            activationTimeoutRef.current = null;
+            activateFamily(familyKey);
+        }, delay);
+    };
+
+    const activateFamilyImmediately = (familyKey: string) => {
+        clearPendingFamilyActivation();
+        lastDelayLocationRef.current = null;
+        updateMenuAimDebugState(null);
+        activateFamily(familyKey);
     };
 
     const groupedAgents = useMemo(() => {
@@ -335,12 +490,29 @@ export function UnifiedAgentModelSelector({
 
     useEffect(() => {
         if (familyList.length === 0) {
+            hoveredFamilyKeyRef.current = null;
+            activeFamilyKeyRef.current = null;
             setHoveredFamilyKey(null);
             return;
         }
         if (hoveredFamilyKey && familyList.some((family) => family.key === hoveredFamilyKey)) return;
-        setHoveredFamilyKey((familyList.find((family) => family.selectedAgentId != null) ?? familyList[0]).key);
+        const nextFamilyKey = (familyList.find((family) => family.selectedAgentId != null) ?? familyList[0]).key;
+        hoveredFamilyKeyRef.current = nextFamilyKey;
+        activeFamilyKeyRef.current = nextFamilyKey;
+        setHoveredFamilyKey(nextFamilyKey);
     }, [familyList, hoveredFamilyKey]);
+
+    useEffect(() => {
+        hoveredFamilyKeyRef.current = hoveredFamilyKey;
+    }, [hoveredFamilyKey]);
+
+    useEffect(() => {
+        activeFamilyKeyRef.current = activeFamily?.key ?? null;
+    }, [activeFamily?.key]);
+
+    useEffect(() => () => {
+        clearPendingFamilyActivation();
+    }, []);
 
     const providerMeta = (provider: string) => {
         if (provider === 'claude') {
@@ -394,7 +566,18 @@ export function UnifiedAgentModelSelector({
             ) : (
                 <div className="flex min-h-0 flex-1">
                     <ScrollArea className="w-[312px] shrink-0 border-r border-[hsl(var(--app-border)/0.62)]">
-                        <div className="space-y-3 p-2.5">
+                        <div
+                            ref={familyListRef}
+                            data-model-family-list="true"
+                            className="space-y-3 p-2.5"
+                            onPointerMove={trackPointerLocation}
+                            onPointerLeave={() => {
+                                pointerLocationsRef.current = [];
+                                lastDelayLocationRef.current = null;
+                                clearPendingFamilyActivation();
+                                updateMenuAimDebugState(null);
+                            }}
+                        >
                             {groupedAgents.map(({ provider, families }) => {
                                 const meta = providerMeta(provider);
                                 const accent = providerAccentClasses(provider);
@@ -477,34 +660,30 @@ export function UnifiedAgentModelSelector({
                                             {families.map((family) => {
                                                 const isSelected = family.selectedAgentId != null;
                                                 const isActive = activeFamily?.key === family.key;
+                                                const isSelectedActive = isSelected && isActive;
                                                 return (
                                                     <button
                                                         key={family.key}
                                                         type="button"
-                                                        onPointerEnter={() => {
-                                                            if (providerSelectable) activateFamily(family.key);
+                                                        data-model-family-key={family.key}
+                                                        onPointerEnter={(event) => {
+                                                            if (providerSelectable) requestFamilyActivation(family.key, event);
                                                         }}
-                                                        onPointerOver={() => {
-                                                            if (providerSelectable) activateFamily(family.key);
-                                                        }}
-                                                        onPointerMove={() => {
-                                                            if (providerSelectable) activateFamily(family.key);
-                                                        }}
-                                                        onMouseEnter={() => {
-                                                            if (providerSelectable) activateFamily(family.key);
+                                                        onPointerMove={(event) => {
+                                                            if (providerSelectable) requestFamilyActivation(family.key, event);
                                                         }}
                                                         onFocus={() => {
-                                                            if (providerSelectable) activateFamily(family.key);
+                                                            if (providerSelectable) activateFamilyImmediately(family.key);
                                                         }}
                                                         onClick={() => {
-                                                            if (providerSelectable) activateFamily(family.key);
+                                                            if (providerSelectable) activateFamilyImmediately(family.key);
                                                         }}
                                                         className={cn(
                                                             "group relative flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-2.5 text-left outline-none transition-[background-color,box-shadow,transform] duration-150 ease-out",
                                                             "focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1 focus-visible:ring-offset-background active:scale-[0.96]",
                                                             accent.hoverSurface,
                                                             isActive ? accent.selectedSurface : "bg-transparent",
-                                                            isSelected && "shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.4)]"
+                                                            isSelectedActive && "shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.4)]"
                                                         )}
                                                         aria-pressed={isActive}
                                                         aria-disabled={!providerSelectable}
@@ -513,7 +692,7 @@ export function UnifiedAgentModelSelector({
                                                             className={cn(
                                                                 "absolute left-0 top-2 bottom-2 w-0.5 rounded-full opacity-0 transition-opacity duration-150",
                                                                 accent.rail,
-                                                                (isSelected || isActive) && "opacity-100"
+                                                                isActive && "opacity-100"
                                                             )}
                                                             aria-hidden="true"
                                                         />
@@ -552,7 +731,7 @@ export function UnifiedAgentModelSelector({
                             })}
                         </div>
                     </ScrollArea>
-                    <div className="min-w-0 flex-1 bg-[hsl(var(--app-bg-elevated))] p-2.5">
+                    <div ref={effortPanelRef} data-model-effort-column="true" className="min-w-0 flex-1 bg-[hsl(var(--app-bg-elevated))] p-2.5">
                         {activeFamily ? (() => {
                             const provider = activeFamily.provider;
                             const accent = providerAccentClasses(provider);
@@ -743,6 +922,51 @@ export function UnifiedAgentModelSelector({
                     </div>
                 </div>
             )}
+            {isMenuAimDebugEnabledRef.current && menuAimDebugState?.points && typeof document !== 'undefined' ? createPortal((
+                <svg
+                    className="pointer-events-none fixed inset-0 z-[2147483647] h-screen w-screen"
+                    aria-hidden="true"
+                >
+                    <polygon
+                        points={menuAimDebugState.points.map((point) => `${point.x},${point.y}`).join(' ')}
+                        fill={menuAimDebugState.delayMs > 0 ? 'rgba(16, 185, 129, 0.16)' : 'rgba(239, 68, 68, 0.12)'}
+                        stroke={menuAimDebugState.delayMs > 0 ? 'rgba(5, 150, 105, 0.9)' : 'rgba(220, 38, 38, 0.75)'}
+                        strokeWidth="2"
+                        strokeDasharray={menuAimDebugState.delayMs > 0 ? undefined : '6 5'}
+                    />
+                    {menuAimDebugState.points.map((point, index) => (
+                        <circle
+                            key={`${point.x}:${point.y}:${index}`}
+                            cx={point.x}
+                            cy={point.y}
+                            r="4"
+                            fill={index === 0 ? 'rgba(15, 23, 42, 0.95)' : 'rgba(5, 150, 105, 0.95)'}
+                        />
+                    ))}
+                    {menuAimDebugState.pointer ? (
+                        <circle
+                            cx={menuAimDebugState.pointer.x}
+                            cy={menuAimDebugState.pointer.y}
+                            r="5"
+                            fill={menuAimDebugState.delayMs > 0 ? 'rgb(16, 185, 129)' : 'rgb(239, 68, 68)'}
+                            stroke="white"
+                            strokeWidth="2"
+                        />
+                    ) : null}
+                    {menuAimDebugState.pointer ? (
+                        <text
+                            x={menuAimDebugState.pointer.x + 10}
+                            y={menuAimDebugState.pointer.y - 10}
+                            fill={menuAimDebugState.delayMs > 0 ? 'rgb(4, 120, 87)' : 'rgb(185, 28, 28)'}
+                            fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
+                            fontSize="11"
+                            fontWeight="700"
+                        >
+                            {menuAimDebugState.delayMs > 0 ? 'menu aim: delay' : 'menu aim: switch'}
+                        </text>
+                    ) : null}
+                </svg>
+            ), document.body) : null}
         </div>
     );
 }

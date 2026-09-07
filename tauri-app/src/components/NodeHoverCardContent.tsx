@@ -1,8 +1,11 @@
 import { lazy, Suspense, useLayoutEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
+import { Workflow } from 'lucide-react';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspaceProjection';
 import { useRunStatusStore } from '../stores/runStatusStore';
+import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
 import { isActiveAgentRunStatus } from '../lib/agentRunSteering';
+import MermaidDiagram from './MermaidDiagram';
 import {
   AgentreeSurfaceProvider,
   useAgentreeSurface,
@@ -35,12 +38,136 @@ const isNearHoverPreviewBottom = (element: HTMLElement) => (
   element.scrollHeight - element.scrollTop - element.clientHeight <= HOVER_PREVIEW_BOTTOM_PIN_THRESHOLD_PX
 );
 
+const ORCHESTRATION_CHILD_PREVIEW_LIMIT = 4;
+
+const getChildRunStatusLabel = (entity: ProjectedNodeEntity): string => {
+  if (entity.status === 'completed') return 'Completed';
+  if (entity.status === 'failed') return 'Failed';
+  if (entity.status === 'cancelled') return 'Cancelled';
+  if (entity.status === 'running' || entity.status === 'streaming') return 'Running';
+  if (entity.status === 'pending') return 'Pending';
+  return 'Unknown';
+};
+
+const getChildRunStatusClassName = (entity: ProjectedNodeEntity): string => {
+  if (entity.status === 'completed') {
+    return 'border-emerald-500/24 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
+  }
+  if (entity.status === 'failed') {
+    return 'border-red-500/24 bg-red-500/10 text-red-700 dark:text-red-300';
+  }
+  if (entity.status === 'cancelled') {
+    return 'border-amber-500/24 bg-amber-500/10 text-amber-700 dark:text-amber-300';
+  }
+  if (entity.status === 'running' || entity.status === 'streaming' || entity.status === 'pending') {
+    return 'border-sky-500/24 bg-sky-500/10 text-sky-700 dark:text-sky-300';
+  }
+  return 'border-[hsl(var(--app-border)/0.64)] bg-[hsl(var(--app-bg-muted)/0.52)] text-muted-foreground';
+};
+
+function OrchestrationSummaryPanel({
+  entity,
+  projection,
+}: {
+  entity: ProjectedNodeEntity;
+  projection: WorkspaceProjection;
+}) {
+  const messageId = entity.focusMessageId ?? entity.messageId ?? entity.message?.id ?? null;
+  const liveMessage = useAgentRunProjectionStore((state) => (
+    messageId ? state.projectionsById[messageId] ?? null : null
+  ));
+  const summary = entity.nodeKind === 'orchestrator' ? entity.orchestrationSummary ?? null : null;
+  if (!summary) return null;
+  const executionData = ((liveMessage?.execution_data ?? entity.message?.execution_data ?? {}) as Record<string, any>);
+  const orchestrationData = ((executionData.orchestration ?? {}) as Record<string, unknown>);
+  const flowDiagramMermaid = typeof orchestrationData.flowDiagramMermaid === 'string'
+    ? orchestrationData.flowDiagramMermaid.trim()
+    : '';
+  const flowDiagramSummary = typeof orchestrationData.flowDiagramSummary === 'string'
+    ? orchestrationData.flowDiagramSummary.trim()
+    : '';
+
+  const childEntities = summary.childAssistantEntityIds
+    .map((entityId) => projection.entitiesById.get(entityId))
+    .filter((child): child is ProjectedNodeEntity => Boolean(child))
+    .slice(0, ORCHESTRATION_CHILD_PREVIEW_LIMIT);
+  const hiddenChildCount = Math.max(0, summary.totalChildRuns - childEntities.length);
+
+  return (
+    <section
+      data-testid="orchestration-hover-summary"
+      className="mt-2 rounded-[16px] border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel-strong)/0.62)] px-3 py-2.5"
+      aria-label="Orchestration summary"
+    >
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.64)] bg-[hsl(var(--app-bg-muted)/0.56)] text-[hsl(var(--app-accent))]">
+            <Workflow size={15} aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <div className="truncate text-[12px] font-semibold text-foreground">Orchestration</div>
+            <div className="truncate text-[11px] text-muted-foreground">
+              {summary.totalChildRuns} controlled {summary.totalChildRuns === 1 ? 'run' : 'runs'}
+            </div>
+          </div>
+        </div>
+        <div className="grid shrink-0 grid-cols-5 gap-1 text-center tabular-nums">
+          {[
+            ['Active', summary.activeChildRuns],
+            ['Done', summary.completedChildRuns],
+            ['Failed', summary.failedChildRuns],
+            ['Cancelled', summary.cancelledChildRuns],
+            ['Total', summary.totalChildRuns],
+          ].map(([label, count]) => (
+            <div key={label} className="min-w-10 rounded-lg bg-[hsl(var(--app-bg-muted)/0.46)] px-1.5 py-1">
+              <div className="text-[11px] font-semibold leading-none text-foreground">{count}</div>
+              <div className="mt-0.5 text-[9px] leading-none text-muted-foreground">{label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {childEntities.length > 0 ? (
+        <div className="mt-2 space-y-1">
+          {childEntities.map((child) => (
+            <div key={child.entityId} className="flex min-w-0 items-center justify-between gap-2 text-[11px]">
+              <span className="min-w-0 truncate text-muted-foreground">{child.preview || child.shortLabel}</span>
+              <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] leading-none ${getChildRunStatusClassName(child)}`}>
+                {getChildRunStatusLabel(child)}
+              </span>
+            </div>
+          ))}
+          {hiddenChildCount > 0 ? (
+            <div className="text-[10px] text-muted-foreground">
+              +{hiddenChildCount} more controlled {hiddenChildCount === 1 ? 'run' : 'runs'}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {flowDiagramMermaid ? (
+        <div className="mt-2 overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.54)] bg-[hsl(var(--app-bg-muted)/0.42)] p-2">
+          {flowDiagramSummary ? (
+            <div className="mb-1.5 truncate text-[10px] font-medium text-muted-foreground">
+              {flowDiagramSummary}
+            </div>
+          ) : null}
+          <div className="max-h-64 overflow-auto rounded-lg bg-background/58 p-2">
+            <MermaidDiagram chart={flowDiagramMermaid} />
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 interface NodeHoverCardContentProps {
   entity?: ProjectedNodeEntity;
   projection?: WorkspaceProjection;
   headerAccessory?: ReactNode;
   surfaceMode?: AgentreeSurfaceMode;
   capabilities?: AgentreeSurfaceCapabilities;
+  showOrchestrationSummary?: boolean;
 }
 
 export function NodeHoverCardContent({
@@ -49,6 +176,7 @@ export function NodeHoverCardContent({
   headerAccessory,
   surfaceMode,
   capabilities,
+  showOrchestrationSummary = true,
 }: NodeHoverCardContentProps) {
   const surface = useAgentreeSurface();
   const resolvedSurfaceMode = surfaceMode ?? surface.surfaceMode;
@@ -160,6 +288,9 @@ export function NodeHoverCardContent({
               <AppNodeHoverPreview entity={entity} projection={projection} />
             </Suspense>
           </div>
+          {showOrchestrationSummary ? (
+            <OrchestrationSummaryPanel entity={entity} projection={projection} />
+          ) : null}
         </div>
       </div>
       {(resolvedCapabilities.canReply || resolvedCapabilities.canSteer) && replyParentId ? (

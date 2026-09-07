@@ -88,6 +88,7 @@ const parseJournalPayload = (row: AgentRunJournalEvent): Record<string, any> => 
 
 const withJournalMetadata = (row: AgentRunJournalEvent, payload: Record<string, any>) => ({
   ...payload,
+  type: cleanString(payload.type) ?? row.eventType,
   run_id: cleanString(payload.run_id) ?? row.runId,
   nodeId: cleanString(payload.nodeId) ?? row.assistantNodeId,
   seq: numericSeq(payload.seq) ?? row.seq,
@@ -145,6 +146,24 @@ const dispatchHydratedStreamEvent = (
     event.type === 'finalize_ack' &&
     !shouldAcceptFinalizeAckForRun(event, currentRunIdForNode(nodeId, input))
   ) {
+    return;
+  }
+
+  if (event.type === 'orchestration:flow_diagram_created') {
+    agentRunManager.dispatch(nodeId, {
+      type: 'execution_data',
+      patch: {
+        ...(typeof event.seq === 'number' ? { last_agent_event_seq: event.seq } : {}),
+        orchestration: {
+          flowDiagramMermaid: cleanString(event.mermaid),
+          flowDiagramSummary: cleanString(event.summary),
+        },
+      },
+    }, {
+      ...input,
+      content: state.output,
+      executionData: baseExecutionData(input),
+    });
     return;
   }
 

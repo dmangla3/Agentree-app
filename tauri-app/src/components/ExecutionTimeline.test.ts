@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTimelineRows, getToolSummary, isEmptyToolPayload, summarizeFileChangesPayload } from './ExecutionTimeline';
+import { buildTimelineRows, formatToolPayload, getToolSummary, isEmptyToolPayload, summarizeExplorationItems, summarizeFileChangesPayload } from './ExecutionTimeline';
 
 describe('summarizeFileChangesPayload', () => {
   it('summarizes file change payloads without exposing raw worktree paths', () => {
@@ -109,6 +109,70 @@ describe('getToolSummary', () => {
     expect(getToolSummary('Edit', '<tool_use_error>File does not exist. Note: your current working directory is /tmp/project.</tool_use_error>')).toBe('File does not exist. Note: your current working directory is /tmp/project.');
     expect(getToolSummary('Bash', 'warning: unused variable\nwarning: dead code\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.29s')).toBe('Build completed with 2 warnings');
     expect(getToolSummary('TodoWrite', 'Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress.')).toBe('Updated todos');
+  });
+
+  it('unwraps MCP text tool results before summarizing or formatting payloads', () => {
+    const payload = {
+      _meta: null,
+      content: [
+        {
+          type: 'text',
+          text: 'Workspace Graph Overview\nTotal: 62 nodes | Branch points: 0',
+        },
+      ],
+    };
+
+    expect(getToolSummary('get_workspace_graph', payload)).toBe('Workspace Graph Overview');
+    expect(formatToolPayload(payload)).toBe('Workspace Graph Overview\nTotal: 62 nodes | Branch points: 0');
+    expect(formatToolPayload(payload)).not.toContain('"_meta"');
+    expect(formatToolPayload(payload)).not.toContain('"content"');
+  });
+
+  it('keeps MCP server and tool names available on timeline rows', () => {
+    const rows = buildTimelineRows([
+      {
+        type: 'tool_use',
+        timestamp: 1,
+        toolName: 'agentree.get_graph_overview',
+        toolInput: {},
+        toolUseId: 'call-1',
+      } as any,
+      {
+        type: 'tool_result',
+        timestamp: 2,
+        toolName: 'agentree.get_graph_overview',
+        toolUseId: 'call-1',
+        toolOutput: {
+          _meta: null,
+          content: [{ type: 'text', text: 'Workspace Graph Overview\nTotal: 62 nodes' }],
+        },
+      } as any,
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      kind: 'tool',
+      toolName: 'agentree.get_graph_overview',
+    }));
+    expect(getToolSummary((rows[0] as any).toolName, (rows[0] as any).toolOutput)).toBe('Workspace Graph Overview');
+  });
+});
+
+describe('summarizeExplorationItems', () => {
+  it('compacts repeated exploration actions by type', () => {
+    expect(summarizeExplorationItems([
+      { label: 'Search', text: 'layout in tauri-app' },
+      { label: 'Read', text: 'GraphView.tsx' },
+      { label: 'Search', text: 'position in GraphView.tsx' },
+      { label: 'Read', text: 'useGraphLayout.ts' },
+      { label: 'Search', text: 'localStorage in lib' },
+    ])).toBe('3 searches • 2 reads');
+  });
+
+  it('keeps a single exploration action descriptive', () => {
+    expect(summarizeExplorationItems([
+      { label: 'Read', text: 'GraphView.tsx' },
+    ])).toBe('Read GraphView.tsx');
   });
 });
 

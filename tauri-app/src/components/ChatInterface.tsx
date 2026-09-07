@@ -17,6 +17,7 @@ import { useRunStatusStore } from '../stores/runStatusStore';
 import { useToastHelpers } from './Toast';
 import { agentClient } from '../lib/agentClient';
 import { reconcileTerminalAgentRunsFromMessages } from '../lib/agentRunTerminalReconciliation';
+import { useOrchestrationStartupRecovery } from '../orchestration/useOrchestrationStartupRecovery';
 
 import { ChatNodeDispatcher } from './nodes/chat/ChatNodeDispatcher';
 import { ChatTurnGroupLayout } from './nodes/chat/ChatTurnGroupLayout';
@@ -129,6 +130,7 @@ export function ChatInterface({ onMarkThreadDone }: ChatInterfaceProps = {}) {
   useEffect(() => {
     reconcileTerminalAgentRunsFromMessages(messages);
   }, [messages]);
+  useOrchestrationStartupRecovery(selectedWorkspaceId, messages);
   const branchPointers = useMemo(() => branchPointersData ?? [], [branchPointersData]);
   const summaries = useMemo(() => (summariesQuery.data ?? snapshotSummaries) as Summary[], [snapshotSummaries, summariesQuery.data]);
 

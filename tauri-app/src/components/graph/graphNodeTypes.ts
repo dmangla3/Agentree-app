@@ -1,5 +1,7 @@
 import { GraphNodeDispatcher } from '../nodes/graph/GraphNodeDispatcher';
 import { GraphTurnGroupHull } from '../nodes/graph/GraphTurnGroupHull';
+import { GraphOrchestrationHull } from '../nodes/graph/GraphOrchestrationHull';
+import { GraphOrchestrationNode } from '../nodes/graph/GraphOrchestrationNode';
 
 export const graphNodeTypes = {
   thread_origin: GraphNodeDispatcher,
@@ -11,4 +13,6 @@ export const graphNodeTypes = {
   layout_derived_commit_group: GraphNodeDispatcher,
   summary_block: GraphNodeDispatcher,
   turn_group_hull: GraphTurnGroupHull,
+  orchestration_hull: GraphOrchestrationHull,
+  orchestration_node: GraphOrchestrationNode,
 };

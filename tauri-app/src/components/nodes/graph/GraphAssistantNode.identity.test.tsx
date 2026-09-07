@@ -72,6 +72,64 @@ describe('GraphAssistantNode identity', () => {
     expect(screen.queryByText('Assistant')).toBeNull();
   });
 
+  it('shows the Codex icon for Codex assistant nodes', () => {
+    render(
+      <GraphAssistantNode
+        entity={makeAssistantEntity({
+          message: {
+            llmProvider: 'codex',
+            llmModel: 'gpt-5.5-high',
+          },
+        } as any)}
+        isFocused={false}
+        isSelected={false}
+        layout="graph"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByLabelText('Codex icon')).toBeTruthy();
+  });
+
+  it('shows the Claude icon for Claude assistant nodes', () => {
+    render(
+      <GraphAssistantNode
+        entity={makeAssistantEntity({
+          message: {
+            llmProvider: 'claude',
+            llmModel: 'claude-sonnet-4-6',
+          },
+        } as any)}
+        isFocused={false}
+        isSelected={false}
+        layout="graph"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByLabelText('Claude icon')).toBeTruthy();
+  });
+
+  it('keeps the generic assistant icon for unknown providers', () => {
+    render(
+      <GraphAssistantNode
+        entity={makeAssistantEntity()}
+        isFocused={false}
+        isSelected={false}
+        layout="graph"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByLabelText('Assistant icon')).toBeTruthy();
+  });
+
   it('includes the persisted failure reason in the status tooltip', () => {
     const reason = "ImportError: cannot import name 'ParamSpec' from 'typing'";
     render(
@@ -147,4 +205,5 @@ describe('GraphAssistantNode identity', () => {
     expect(screen.getByText('Please hover to check progress.')).toBeTruthy();
     expect(screen.queryByText('Assistant message')).toBeNull();
   });
+
 });

@@ -23,6 +23,17 @@ type TokenResponse = {
   refresh_token?: string;
 };
 
+type DesktopAuthUser = {
+  id: string;
+  email: string;
+  name: string;
+  pictureUrl?: string;
+};
+
+type DesktopAuthSessionLike = {
+  idToken: string;
+};
+
 const DEFAULT_AUTH_CALLBACK_URL = 'http://127.0.0.1:34117/kinde/callback';
 const DESKTOP_AUTH_PENDING_KEY = 'agentree.desktop-auth.pending';
 const DESKTOP_AUTH_MAX_AGE_MS = 10 * 60 * 1000;
@@ -113,18 +124,30 @@ const isKindeRedirectUrl = (url: string) => (
   url.startsWith(getKindeRedirectUri()) && hasAuthCallbackParams(url)
 );
 
+export const readDesktopUserFromSession = (session: DesktopAuthSessionLike | null | undefined): DesktopAuthUser | null => {
+  if (!session?.idToken) return null;
+  const payload = decodeJwtPayload<{
+    email?: string;
+    given_name?: string;
+    picture?: string;
+    sub?: string;
+  }>(session.idToken);
+  if (!payload?.sub) return null;
+  return {
+    id: payload.sub,
+    email: payload.email || '',
+    name: payload.given_name || payload.email || '',
+    pictureUrl: payload.picture || undefined,
+  };
+};
+
 const persistDesktopSession = (tokens: {
   accessToken: string;
   expiresAt: number | null;
   idToken: string;
   refreshToken: string;
 }) => {
-  const payload = decodeJwtPayload<{
-    email?: string;
-    given_name?: string;
-    picture?: string;
-    sub?: string;
-  }>(tokens.idToken);
+  const user = readDesktopUserFromSession(tokens);
 
   useAuthStore.getState().setDesktopSession({
     accessToken: tokens.accessToken,
@@ -132,12 +155,7 @@ const persistDesktopSession = (tokens: {
     refreshToken: tokens.refreshToken,
     expiresAt: tokens.expiresAt,
   });
-  useAuthStore.getState().setUser({
-    id: payload?.sub || '',
-    email: payload?.email || '',
-    name: payload?.given_name || payload?.email || '',
-    pictureUrl: payload?.picture || undefined,
-  });
+  useAuthStore.getState().setUser(user);
   useAuthStore.getState().clearAuthErrorReason();
 };
 

@@ -37,3 +37,35 @@ export const getAssistantIdentityLabel = ({
   const providerLabel = formatAssistantModelLabel(llmProvider);
   return providerLabel || 'Assistant';
 };
+
+export type AssistantProviderIconKind = 'codex' | 'claude' | 'generic';
+
+const normalizeIdentityPart = (value: string | null | undefined): string => (
+  value?.trim().toLowerCase() ?? ''
+);
+
+export const getAssistantProviderIconKind = ({
+  llmModel,
+  llmProvider,
+}: {
+  llmModel?: string | null;
+  llmProvider?: string | null;
+}): AssistantProviderIconKind => {
+  const provider = normalizeIdentityPart(llmProvider);
+  const model = normalizeIdentityPart(llmModel);
+
+  if (provider === 'codex' || model.startsWith('codex/') || model.startsWith('codex:')) {
+    return 'codex';
+  }
+
+  if (
+    provider === 'claude' ||
+    provider === 'anthropic' ||
+    model.includes('claude') ||
+    model.startsWith('anthropic/')
+  ) {
+    return 'claude';
+  }
+
+  return 'generic';
+};

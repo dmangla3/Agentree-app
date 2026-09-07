@@ -84,7 +84,7 @@ export interface WorkspaceThreadNavigationModel {
 
 interface WorkspaceNavigatorProps {
   selectedWorkspaceId: string | null;
-  activeView: 'chat' | 'flows' | 'tracking' | 'knowledge' | 'skills' | 'logins';
+  activeView: 'chat' | 'orchestration' | 'tracking' | 'knowledge' | 'skills' | 'logins';
   onSelectWorkspace: (workspaceId: string, options?: { replace?: boolean }) => void;
   onOpenThread: (threadRootId: string) => void;
   onCreateThread: () => void;

@@ -113,3 +113,87 @@ test('Claude input_json_delta chunks reconstruct tool input', async () => {
     limit: 99,
   });
 });
+
+test('Claude default permission mode enables isolated sandbox', async () => {
+  const adapter = await import('./claude-agent-sdk-adapter.mjs');
+
+  const options = adapter.claudeOptionsForPermissionMode('default', '/repo/worktree', {
+    AGENT_SANDBOX: '/tmp/agent-sandbox',
+    XDG_CACHE_HOME: '/tmp/agent-sandbox/cache',
+    CARGO_TARGET_DIR: '/tmp/agent-sandbox/cargo-target',
+  });
+
+  assert.equal(options.permissionMode, 'default');
+  assert.equal(options.sandbox.enabled, true);
+  assert.equal(options.sandbox.failIfUnavailable, true);
+  assert.equal(options.sandbox.allowUnsandboxedCommands, false);
+  assert.deepEqual(options.sandbox.network, {
+    allowedDomains: [],
+    deniedDomains: ['*'],
+  });
+  assert.deepEqual(options.sandbox.filesystem.denyRead, ['/']);
+  assert.deepEqual(options.sandbox.filesystem.allowRead, [
+    '/repo/worktree',
+    '/tmp/agent-sandbox',
+    '/tmp/agent-sandbox/cache',
+    '/tmp/agent-sandbox/cargo-target',
+  ]);
+  assert.deepEqual(options.sandbox.filesystem.allowWrite, [
+    '/repo/worktree',
+    '/tmp/agent-sandbox',
+    '/tmp/agent-sandbox/cache',
+    '/tmp/agent-sandbox/cargo-target',
+  ]);
+});
+
+test('Claude acceptEdits permission mode keeps network and full reads but sandboxes writes', async () => {
+  const adapter = await import('./claude-agent-sdk-adapter.mjs');
+
+  const options = adapter.claudeOptionsForPermissionMode('acceptEdits', '/repo/worktree', {
+    AGENTREE_AGENT_SANDBOX: '/tmp/agent-sandbox',
+    TMPDIR: '/tmp/agent-sandbox/tmp',
+    npm_config_cache: '/tmp/agent-sandbox/npm-cache',
+  });
+
+  assert.equal(options.permissionMode, 'acceptEdits');
+  assert.equal(options.sandbox.enabled, true);
+  assert.equal(options.sandbox.failIfUnavailable, true);
+  assert.equal(options.sandbox.allowUnsandboxedCommands, false);
+  assert.equal(options.sandbox.network, undefined);
+  assert.equal(options.sandbox.filesystem.denyRead, undefined);
+  assert.equal(options.sandbox.filesystem.allowRead, undefined);
+  assert.deepEqual(options.sandbox.filesystem.allowWrite, [
+    '/repo/worktree',
+    '/tmp/agent-sandbox',
+    '/tmp/agent-sandbox/tmp',
+    '/tmp/agent-sandbox/npm-cache',
+  ]);
+});
+
+test('Claude bypassPermissions skips sandbox and opts into dangerous permission bypass', async () => {
+  const adapter = await import('./claude-agent-sdk-adapter.mjs');
+
+  assert.deepEqual(adapter.claudeOptionsForPermissionMode('bypassPermissions', '/repo/worktree', {
+    AGENT_SANDBOX: '/tmp/agent-sandbox',
+  }), {
+    permissionMode: 'bypassPermissions',
+    allowDangerouslySkipPermissions: true,
+  });
+});
+
+test('Claude mapper tolerates composer permission mode ids', async () => {
+  const adapter = await import('./claude-agent-sdk-adapter.mjs');
+
+  assert.equal(
+    adapter.claudeOptionsForPermissionMode('fully-isolated', '/repo/worktree', {}).permissionMode,
+    'default',
+  );
+  assert.equal(
+    adapter.claudeOptionsForPermissionMode('safe-write', '/repo/worktree', {}).permissionMode,
+    'acceptEdits',
+  );
+  assert.deepEqual(adapter.claudeOptionsForPermissionMode('full-access', '/repo/worktree', {}), {
+    permissionMode: 'bypassPermissions',
+    allowDangerouslySkipPermissions: true,
+  });
+});

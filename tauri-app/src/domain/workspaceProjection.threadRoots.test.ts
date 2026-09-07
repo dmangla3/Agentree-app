@@ -95,6 +95,127 @@ describe('workspace projection thread roots', () => {
       .toBe("ImportError: cannot import name 'ParamSpec' from 'typing'");
   });
 
+  it('indexes orchestrator-controlled children separately from graph parentage', () => {
+    const projection = buildWorkspaceProjection({
+      messages: [
+        makeMessage('root-user', 'user', null, '2026-05-28T00:00:00.000Z'),
+        makeMessage('orchestrator', 'assistant', 'root-user', '2026-05-28T00:01:00.000Z', {
+          execution_data: { meta: { node_kind: 'orchestrator' } },
+        }),
+        makeMessage('child-user', 'user', 'root-user', '2026-05-28T00:02:00.000Z', {
+          controlled_by_node_id: 'orchestrator',
+        }),
+        makeMessage('child-assistant', 'assistant', 'child-user', '2026-05-28T00:03:00.000Z', {
+          controlledByNodeId: 'orchestrator',
+        }),
+      ],
+      summaries: [],
+      focusedMessageId: 'child-assistant',
+    });
+
+    expect(projection.entitiesByMessageId.get('orchestrator')).toEqual(expect.objectContaining({
+      nodeKind: 'orchestrator',
+      controlledByNodeId: null,
+    }));
+    expect(projection.controlledEntityIdsByControllerMessageId.get('orchestrator')).toEqual([
+      'user_message:child-user',
+      'assistant_message:child-assistant',
+    ]);
+    expect(projection.childEntityIdsByParentEntityId.get('assistant_message:orchestrator')).toBeUndefined();
+  });
+
+  it('derives orchestration child run status counts on orchestrator entities', () => {
+    const projection = buildWorkspaceProjection({
+      messages: [
+        makeMessage('root-user', 'user', null, '2026-05-28T00:00:00.000Z'),
+        makeMessage('orchestrator', 'assistant', 'root-user', '2026-05-28T00:01:00.000Z', {
+          execution_data: { meta: { node_kind: 'orchestrator' } },
+        }),
+        makeMessage('child-user-1', 'user', 'root-user', '2026-05-28T00:02:00.000Z', {
+          controlled_by_node_id: 'orchestrator',
+        }),
+        makeMessage('child-assistant-1', 'assistant', 'child-user-1', '2026-05-28T00:03:00.000Z', {
+          status: 'running' as any,
+          controlled_by_node_id: 'orchestrator',
+        }),
+        makeMessage('child-user-2', 'user', 'root-user', '2026-05-28T00:04:00.000Z', {
+          controlled_by_node_id: 'orchestrator',
+        }),
+        makeMessage('child-assistant-2', 'assistant', 'child-user-2', '2026-05-28T00:05:00.000Z', {
+          status: 'completed' as any,
+          controlled_by_node_id: 'orchestrator',
+        }),
+        makeMessage('child-user-3', 'user', 'root-user', '2026-05-28T00:06:00.000Z', {
+          controlled_by_node_id: 'orchestrator',
+        }),
+        makeMessage('child-assistant-3', 'assistant', 'child-user-3', '2026-05-28T00:07:00.000Z', {
+          status: 'failed_runtime' as any,
+          controlled_by_node_id: 'orchestrator',
+        }),
+        makeMessage('child-user-4', 'user', 'root-user', '2026-05-28T00:08:00.000Z', {
+          controlled_by_node_id: 'orchestrator',
+        }),
+        makeMessage('child-assistant-4', 'assistant', 'child-user-4', '2026-05-28T00:09:00.000Z', {
+          status: 'cancelled' as any,
+          controlled_by_node_id: 'orchestrator',
+        }),
+      ],
+      summaries: [],
+      focusedMessageId: 'orchestrator',
+    });
+
+    expect(projection.entitiesByMessageId.get('orchestrator')?.orchestrationSummary).toEqual({
+      controllerMessageId: 'orchestrator',
+      controlledEntityIds: [
+        'user_message:child-user-1',
+        'assistant_message:child-assistant-1',
+        'user_message:child-user-2',
+        'assistant_message:child-assistant-2',
+        'user_message:child-user-3',
+        'assistant_message:child-assistant-3',
+        'user_message:child-user-4',
+        'assistant_message:child-assistant-4',
+      ],
+      childAssistantEntityIds: [
+        'assistant_message:child-assistant-1',
+        'assistant_message:child-assistant-2',
+        'assistant_message:child-assistant-3',
+        'assistant_message:child-assistant-4',
+      ],
+      totalChildRuns: 4,
+      activeChildRuns: 1,
+      terminalChildRuns: 3,
+      completedChildRuns: 1,
+      failedChildRuns: 1,
+      cancelledChildRuns: 1,
+    });
+  });
+
+  it('derives an empty orchestration summary before children are created', () => {
+    const projection = buildWorkspaceProjection({
+      messages: [
+        makeMessage('root-user', 'user', null, '2026-05-28T00:00:00.000Z'),
+        makeMessage('orchestrator', 'assistant', 'root-user', '2026-05-28T00:01:00.000Z', {
+          execution_data: { meta: { node_kind: 'orchestrator' } },
+        }),
+      ],
+      summaries: [],
+      focusedMessageId: 'orchestrator',
+    });
+
+    expect(projection.entitiesByMessageId.get('orchestrator')?.orchestrationSummary).toEqual({
+      controllerMessageId: 'orchestrator',
+      controlledEntityIds: [],
+      childAssistantEntityIds: [],
+      totalChildRuns: 0,
+      activeChildRuns: 0,
+      terminalChildRuns: 0,
+      completedChildRuns: 0,
+      failedChildRuns: 0,
+      cancelledChildRuns: 0,
+    });
+  });
+
   it('projects an empty workspace thread origin when there are no messages', () => {
     const projection = buildWorkspaceProjection({
       messages: [],

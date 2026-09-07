@@ -2,6 +2,7 @@
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import readline from 'node:readline';
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -138,6 +139,91 @@ export function probeClaudeAuth() {
     return stderr || stdout || 'Claude Code is not authenticated. Run `claude auth login` in a terminal, then retry from Agentree.';
   }
   return null;
+}
+
+const AGENTREE_SANDBOX_PATH_ENV_KEYS = [
+  'AGENT_SANDBOX',
+  'AGENTREE_AGENT_SANDBOX',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'XDG_CACHE_HOME',
+  'XDG_STATE_HOME',
+  'npm_config_cache',
+  'YARN_CACHE_FOLDER',
+  'PNPM_HOME',
+  'TURBO_CACHE_DIR',
+  'NX_CACHE_DIRECTORY',
+  'PLAYWRIGHT_BROWSERS_PATH',
+  'CYPRESS_CACHE_FOLDER',
+  'PIP_CACHE_DIR',
+  'UV_CACHE_DIR',
+  'PYTHONPYCACHEPREFIX',
+  'GOCACHE',
+  'CARGO_HOME',
+  'CARGO_TARGET_DIR',
+];
+
+function normalizeAllowPath(value, cwd) {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  if (!trimmed) return null;
+  return path.resolve(cwd, trimmed);
+}
+
+function uniquePaths(paths) {
+  return [...new Set(paths.filter(Boolean))];
+}
+
+function agentreeSandboxPaths(cwd, env) {
+  return uniquePaths([
+    normalizeAllowPath(cwd, cwd),
+    ...AGENTREE_SANDBOX_PATH_ENV_KEYS.map((key) => normalizeAllowPath(env[key], cwd)),
+  ]);
+}
+
+function normalizeClaudePermissionMode(permissionMode) {
+  if (permissionMode === 'full-access') return 'bypassPermissions';
+  if (permissionMode === 'safe-write') return 'acceptEdits';
+  if (permissionMode === 'fully-isolated') return 'default';
+  return permissionMode;
+}
+
+export function claudeOptionsForPermissionMode(permissionMode, cwd = process.cwd(), env = process.env) {
+  const sdkPermissionMode = normalizeClaudePermissionMode(permissionMode);
+  if (!sdkPermissionMode) return {};
+  if (sdkPermissionMode === 'bypassPermissions') {
+    return {
+      permissionMode: sdkPermissionMode,
+      allowDangerouslySkipPermissions: true,
+    };
+  }
+
+  const sandboxPaths = agentreeSandboxPaths(cwd, env);
+  const sandbox = {
+    enabled: true,
+    failIfUnavailable: true,
+    allowUnsandboxedCommands: false,
+    filesystem: {
+      allowWrite: sandboxPaths,
+    },
+  };
+
+  if (sdkPermissionMode === 'default') {
+    sandbox.network = {
+      allowedDomains: [],
+      deniedDomains: ['*'],
+    };
+    sandbox.filesystem = {
+      ...sandbox.filesystem,
+      denyRead: ['/'],
+      allowRead: sandboxPaths,
+    };
+  }
+
+  return {
+    permissionMode: sdkPermissionMode,
+    sandbox,
+  };
 }
 
 function parseArgs(argv) {
@@ -740,6 +826,7 @@ async function main() {
   });
 
   const permissionMode = args.permissionMode || undefined;
+  const permissionOptions = claudeOptionsForPermissionMode(permissionMode);
   const options = {
     cwd: process.cwd(),
     env: {
@@ -749,8 +836,7 @@ async function main() {
     includePartialMessages: true,
     ...(args.model ? { model: args.model } : {}),
     ...(args.effort ? { effort: args.effort, thinking: { type: 'adaptive' } } : {}),
-    ...(permissionMode ? { permissionMode } : {}),
-    ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
+    ...permissionOptions,
     ...(args.mcpServers ? { mcpServers: args.mcpServers } : {}),
     ...(process.cwd() ? { additionalDirectories: [process.cwd()] } : {}),
     ...(shouldResume ? {

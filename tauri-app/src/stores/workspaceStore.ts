@@ -153,6 +153,8 @@ export interface Message {
   role: 'user' | 'assistant';
   content: string;
   parentId: string | null;
+  controlled_by_node_id?: string | null;
+  controlledByNodeId?: string | null;
   workspaceId: string;
   llmProvider?: string | null;
   llmModel?: string | null;

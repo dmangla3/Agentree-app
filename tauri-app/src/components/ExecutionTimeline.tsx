@@ -316,6 +316,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
         const isRunning = row.status === 'running';
         const isError = row.status === 'error';
         const title = isRunning ? 'Exploring' : 'Explored';
+        const compactSummary = summarizeExplorationItems(row.items);
         return (
             <div className="flex gap-3 group/item" onClick={stopCardFocus} onMouseDown={stopCardFocus}>
                 <div className="flex flex-col items-center">
@@ -348,16 +349,11 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                         <div className="flex items-center justify-between gap-2">
                             <div className="min-w-0">
                                 <div className="text-[11px] font-semibold text-foreground/85">{title}</div>
-                                <div className="mt-1 space-y-1">
-                                    {row.items.map((item, index) => (
-                                        <div key={`${item.label}_${item.text}_${index}`} className="flex min-w-0 items-start gap-2 text-[11px]">
-                                            <span className="shrink-0 rounded-md border border-amber-200/70 bg-amber-50 px-1.5 py-0.5 font-medium text-amber-700 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-400">
-                                                {item.label}
-                                            </span>
-                                            <span className="min-w-0 break-words text-muted-foreground/85">{item.text}</span>
-                                        </div>
-                                    ))}
-                                </div>
+                                {compactSummary ? (
+                                    <div className="mt-1 truncate text-[11px] text-muted-foreground/85" title={compactSummary}>
+                                        {compactSummary}
+                                    </div>
+                                ) : null}
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
                                 {row.durationMs ? (
@@ -739,6 +735,8 @@ function formatDuration(durationMs: number): string {
 }
 
 export function formatToolPayload(payload: any): string {
+    const displayPayload = normalizeToolPayloadForDisplay(payload);
+    if (displayPayload !== payload) return formatToolPayload(displayPayload);
     if (payload === null || payload === undefined) return '';
     if (typeof payload === 'string') return payload;
     try {
@@ -758,6 +756,36 @@ export function isEmptyToolPayload(payload: any): boolean {
 
 function isRecord(value: unknown): value is Record<string, any> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isMcpContentBlock(value: unknown): value is Record<string, any> {
+    return isRecord(value) && typeof value.type === 'string';
+}
+
+function formatMcpContentBlock(block: Record<string, any>): string {
+    if (block.type === 'text' && typeof block.text === 'string') return block.text;
+    if (typeof block.text === 'string') return block.text;
+    if (typeof block.data === 'string') return `[${block.type}] ${block.data}`;
+    if (typeof block.url === 'string') return `[${block.type}] ${block.url}`;
+    try {
+        return `[${block.type}] ${JSON.stringify(block)}`;
+    } catch {
+        return `[${block.type}]`;
+    }
+}
+
+function normalizeToolPayloadForDisplay(payload: unknown): unknown {
+    if (!isRecord(payload)) return payload;
+    if (!Array.isArray(payload.content)) return payload;
+    if (!payload.content.every(isMcpContentBlock)) return payload;
+
+    const renderedBlocks = payload.content
+        .map(formatMcpContentBlock)
+        .map((block) => block.trim())
+        .filter(Boolean);
+
+    if (renderedBlocks.length === 0) return payload;
+    return renderedBlocks.join('\n\n');
 }
 
 function getChangeKind(change: Record<string, any>): string {
@@ -948,6 +976,8 @@ export function ToolPayloadDisplay({
 }
 
 export function getToolSummary(toolName: string, toolInput: any): string {
+    const displayInput = normalizeToolPayloadForDisplay(toolInput);
+    if (displayInput !== toolInput) return getToolSummary(toolName, displayInput);
     if (isEmptyToolPayload(toolInput)) return '';
     const name = toolName?.toLowerCase?.() ?? '';
     const fileChangesSummary = summarizeFileChangesPayload(toolInput);
@@ -1193,6 +1223,28 @@ function buildExplorationRow(rows: Extract<TimelineRow, { kind: 'tool' }>[]): Ex
             commandActions: row.commandActions,
         })),
     };
+}
+
+function pluralizeCommandLabel(label: string, count: number): string {
+    const normalized = label.toLowerCase();
+    if (count === 1) return normalized;
+    if (normalized.endsWith('ch') || normalized.endsWith('sh')) return `${normalized}es`;
+    if (normalized.endsWith('s')) return `${normalized}es`;
+    return `${normalized}s`;
+}
+
+export function summarizeExplorationItems(items: Array<{ label: string; text: string }>): string {
+    if (items.length === 0) return '';
+    if (items.length === 1) return `${items[0].label} ${items[0].text}`.trim();
+
+    const countsByLabel = new Map<string, number>();
+    for (const item of items) {
+        countsByLabel.set(item.label, (countsByLabel.get(item.label) ?? 0) + 1);
+    }
+
+    return Array.from(countsByLabel.entries())
+        .map(([label, count]) => `${count} ${pluralizeCommandLabel(label, count)}`)
+        .join(' • ');
 }
 
 function mapCommandActionsToItems(actions: CommandAction[]): CommandSummaryItem[] {

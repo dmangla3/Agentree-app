@@ -8,16 +8,21 @@ use axum::{
 use once_cell::sync::Lazy;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::AppHandle;
+use std::time::Duration;
+use tauri::{AppHandle, Emitter, Manager};
 
 static MCP_STARTED: AtomicBool = AtomicBool::new(false);
 static MCP_AUTH_TOKEN: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 static MCP_WORKSPACE_ID: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+static MCP_ORCHESTRATION_PENDING: Lazy<
+    Mutex<HashMap<String, tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>>>,
+> = Lazy::new(|| Mutex::new(HashMap::new()));
 /// Port the MCP server actually bound to (0 until the server is up). When no
 /// explicit port override is configured the server binds to an OS-assigned free
 /// port, and this is how the rest of the app learns which one it got.
@@ -65,6 +70,7 @@ pub fn mcp_server_url() -> String {
 
 #[derive(Clone)]
 struct McpState {
+    app_handle: AppHandle,
     server_base_url: String,
     http: reqwest::Client,
 }
@@ -95,7 +101,7 @@ struct JsonRpcResponse {
     error: Option<JsonRpcError>,
 }
 
-pub fn start_mcp_server(_app_handle: AppHandle) {
+pub fn start_mcp_server(app_handle: AppHandle) {
     if MCP_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -140,6 +146,7 @@ pub fn start_mcp_server(_app_handle: AppHandle) {
 
     let server_base_url = crate::config::server_base_url();
     let state = Arc::new(McpState {
+        app_handle,
         server_base_url,
         http: reqwest::Client::new(),
     });
@@ -229,6 +236,36 @@ pub(crate) fn set_mcp_current_context(
 #[specta::specta]
 pub fn get_mcp_server_url() -> String {
     mcp_server_url()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn resolve_orchestration_mcp_request(
+    request_id: String,
+    response_json: Option<String>,
+    error: Option<String>,
+) -> Result<(), String> {
+    let sender = MCP_ORCHESTRATION_PENDING
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&request_id)
+        .ok_or_else(|| format!("Unknown orchestration MCP request {}", request_id))?;
+
+    let result = if let Some(error) = error.filter(|value| !value.trim().is_empty()) {
+        Err(error)
+    } else {
+        let parsed = response_json
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| serde_json::from_str::<serde_json::Value>(value))
+            .transpose()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| serde_json::json!({}));
+        Ok(parsed)
+    };
+    sender
+        .send(result)
+        .map_err(|_| "Orchestration MCP requester is no longer waiting.".to_string())
 }
 
 async fn handle_rpc(
@@ -337,6 +374,128 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
         id,
         result: Some(serde_json::json!({
             "tools": [
+                {
+                    "name": "list_prompt_templates",
+                    "description": "List prompt templates available to the orchestrator. Use this to discover #template labels before spawning child runs.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {
+                                "type": "string",
+                                "description": "Optional filter: node or orchestration"
+                            }
+                        },
+                        "required": []
+                    }
+                },
+                {
+                    "name": "get_prompt_template",
+                    "description": "Read one prompt template by id or #label. Use this before composing a child run prompt from a #template mention.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "template_id": {
+                                "type": "string",
+                                "description": "Template id or label, for example #planner or @planner"
+                            }
+                        },
+                        "required": ["template_id"]
+                    }
+                },
+                {
+                    "name": "start_orchestration_child",
+                    "description": "Start one child agent run controlled by the current orchestrator. This delegates to Agentree's composer/control-plane launch path so graph nodes, local cache, runtime metadata, and orchestration journal events stay consistent.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "orchestrator_run_id": { "type": "string" },
+                            "orchestrator_node_id": { "type": "string" },
+                            "decision_id": { "type": "string" },
+                            "prompt": { "type": "string" },
+                            "parent_node_id": { "type": "string" },
+                            "template_id": { "type": "string" },
+                            "agent_id": { "type": "string" },
+                            "agent_type": { "type": "string" },
+                            "agent_name": { "type": "string" },
+                            "model": { "type": "string" },
+                            "cli_args": { "type": "string" },
+                            "prompt_flag": { "type": "string" },
+                            "permission_mode": { "type": "string" },
+                            "login_profile_id": { "type": "string" }
+                        },
+                        "required": ["orchestrator_run_id", "orchestrator_node_id", "decision_id", "prompt"]
+                    }
+                },
+                {
+                    "name": "wait_for_runs",
+                    "description": "Wait for child assistant runs without polling from the model. Agentree records wait_started, resolves this tool when the app observes the requested condition, then records wait_completed.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "orchestrator_run_id": { "type": "string" },
+                            "orchestrator_node_id": { "type": "string" },
+                            "wait_group_id": { "type": "string" },
+                            "assistant_node_ids": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                            },
+                            "decision_ids": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                            },
+                            "condition": {
+                                "type": "string",
+                                "description": "terminal, all, any, completed, failed, commit_available, any_terminal, or any_failed"
+                            },
+                            "timeout_ms": { "type": "number" }
+                        },
+                        "required": ["orchestrator_run_id", "orchestrator_node_id", "assistant_node_ids"]
+                    }
+                },
+                {
+                    "name": "control_run",
+                    "description": "Control a running assistant node. Use action=steer with content to guide it, or action=stop to cancel it. This uses the same app runtime controls as normal user steering.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "assistant_node_id": { "type": "string" },
+                            "action": { "type": "string", "description": "steer or stop" },
+                            "content": { "type": "string" },
+                            "idempotency_key": { "type": "string" }
+                        },
+                        "required": ["assistant_node_id", "action"]
+                    }
+                },
+                {
+                    "name": "set_orchestration_diagram",
+                    "description": "Persist the orchestrator's Mermaid flowchart so Agentree can render it in the orchestration hovercard and recover it from the local journal.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "orchestrator_run_id": { "type": "string" },
+                            "orchestrator_node_id": { "type": "string" },
+                            "mermaid": { "type": "string" },
+                            "summary": { "type": "string" }
+                        },
+                        "required": ["orchestrator_run_id", "orchestrator_node_id", "mermaid"]
+                    }
+                },
+                {
+                    "name": "complete_orchestration",
+                    "description": "Mark an orchestrator run completed after child work is done.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "orchestrator_run_id": { "type": "string" },
+                            "orchestrator_node_id": { "type": "string" },
+                            "terminal_child_assistant_node_ids": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                            }
+                        },
+                        "required": ["orchestrator_run_id", "orchestrator_node_id"]
+                    }
+                },
                 {
                     "name": "get_graph_overview",
                     "description": "Get a visual overview of the current workspace node graph with thread and branch statistics. The workspace_id is auto-detected from current context; do not pass it unless querying a different workspace.",
@@ -496,6 +655,51 @@ async fn handle_tools_call(
     let arguments = params.get("arguments");
 
     match name {
+        Some("list_prompt_templates") => {
+            let kind = arguments
+                .and_then(|args| args.get("kind"))
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string());
+            handle_list_prompt_templates(id, state, kind)
+        }
+        Some("get_prompt_template") => {
+            let template_id = arguments
+                .and_then(|args| args.get("template_id"))
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string());
+            if template_id.is_none() {
+                return JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: "Missing template_id".to_string(),
+                    }),
+                };
+            }
+            handle_get_prompt_template(id, state, template_id.unwrap())
+        }
+        Some("start_orchestration_child") => {
+            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
+            handle_frontend_orchestration_tool(id, state, "start_orchestration_child", args).await
+        }
+        Some("wait_for_runs") => {
+            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
+            handle_frontend_orchestration_tool(id, state, "wait_for_runs", args).await
+        }
+        Some("control_run") => {
+            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
+            handle_frontend_orchestration_tool(id, state, "control_run", args).await
+        }
+        Some("set_orchestration_diagram") => {
+            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
+            handle_set_orchestration_diagram(id, state, args)
+        }
+        Some("complete_orchestration") => {
+            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
+            handle_complete_orchestration(id, state, args)
+        }
         Some("get_graph_overview") => {
             let workspace_id = get_workspace_id(arguments);
             if let Err(resp) = workspace_id {
@@ -751,6 +955,497 @@ async fn handle_tools_call(
     }
 }
 
+fn tool_text_response(id: serde_json::Value, text: String) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        id,
+        result: Some(serde_json::json!({ "content": [ { "type": "text", "text": text } ] })),
+        error: None,
+    }
+}
+
+fn default_prompt_templates() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({
+            "id": "#planner",
+            "kind": "node",
+            "label": "#planner",
+            "prompt": "Create a concrete implementation plan for {{request}}. Include validation steps and key risks.",
+            "source": "built_in"
+        }),
+        serde_json::json!({
+            "id": "#synthesizer",
+            "kind": "node",
+            "label": "#synthesizer",
+            "prompt": "Synthesize the relevant prior node outputs into one clear recommendation for {{request}}.",
+            "source": "built_in"
+        }),
+        serde_json::json!({
+            "id": "#reviewer",
+            "kind": "node",
+            "label": "#reviewer",
+            "prompt": "Review the current result for correctness, regressions, missing tests, and unclear assumptions.",
+            "source": "built_in"
+        }),
+        serde_json::json!({
+            "id": "#fixer",
+            "kind": "node",
+            "label": "#fixer",
+            "prompt": "Apply focused fixes for the reviewed issues while preserving the requested behavior.",
+            "requiresCommit": true,
+            "source": "built_in"
+        }),
+        serde_json::json!({
+            "id": "#security_reviewer",
+            "kind": "node",
+            "label": "#security_reviewer",
+            "prompt": "Review the change for plausible security issues, privilege boundaries, and unsafe data handling.",
+            "source": "built_in"
+        }),
+        serde_json::json!({
+            "id": "#ui_polish_reviewer",
+            "kind": "node",
+            "label": "#ui_polish_reviewer",
+            "prompt": "Review the UI for layout, responsiveness, visual clarity, and interaction polish.",
+            "source": "built_in"
+        }),
+        serde_json::json!({
+            "id": "#parallel_planners",
+            "kind": "orchestration",
+            "label": "#parallel_planners",
+            "prompt": "Create three parallel #planner for {{request}}. Create a #synthesizer sibling to combine the plans.",
+            "source": "built_in"
+        }),
+        serde_json::json!({
+            "id": "#review_fix_chain",
+            "kind": "orchestration",
+            "label": "#review_fix_chain",
+            "prompt": "Create a #reviewer for {{request}}. Create a #fixer as child of reviewer to apply focused fixes.",
+            "source": "built_in"
+        }),
+    ]
+}
+
+fn normalize_template_id(value: &str) -> Option<String> {
+    let mut normalized = String::new();
+    let mut last_was_separator = false;
+    for ch in value.trim().trim_start_matches(|ch| ch == '@' || ch == '#').chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() || lower == '-' || lower == '_' {
+            normalized.push(lower);
+            last_was_separator = false;
+        } else if !last_was_separator {
+            normalized.push('_');
+            last_was_separator = true;
+        }
+    }
+    let normalized = normalized.trim_matches('_').to_string();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(format!("@{}", normalized))
+    }
+}
+
+fn normalize_prompt_template(value: serde_json::Value) -> Option<serde_json::Value> {
+    let object = value.as_object()?;
+    let kind = object
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .filter(|value| *value == "node" || *value == "orchestration")?;
+    let prompt = object.get("prompt")?.as_str()?.trim();
+    if prompt.is_empty() {
+        return None;
+    }
+    let id_source = object
+        .get("id")
+        .and_then(|value| value.as_str())
+        .or_else(|| object.get("label").and_then(|value| value.as_str()))?;
+    let id = normalize_template_id(id_source)?;
+    let label = object
+        .get("label")
+        .and_then(|value| value.as_str())
+        .map(|value| {
+            let trimmed = value.trim();
+            if trimmed.starts_with('#') {
+                trimmed.to_string()
+            } else {
+                format!("#{}", trimmed.trim_start_matches('@'))
+            }
+        })
+        .unwrap_or_else(|| format!("#{}", id.trim_start_matches('@')));
+
+    let mut normalized = serde_json::Map::new();
+    normalized.insert("id".to_string(), serde_json::json!(id));
+    normalized.insert("kind".to_string(), serde_json::json!(kind));
+    normalized.insert("label".to_string(), serde_json::json!(label));
+    normalized.insert("prompt".to_string(), serde_json::json!(prompt));
+    for key in [
+        "requiresCommit",
+        "defaultAgentId",
+        "defaultModel",
+        "source",
+        "updatedAt",
+    ] {
+        if let Some(field_value) = object.get(key) {
+            normalized.insert(key.to_string(), field_value.clone());
+        }
+    }
+    Some(serde_json::Value::Object(normalized))
+}
+
+fn load_prompt_templates(state: &McpState) -> Result<Vec<serde_json::Value>, String> {
+    let mut templates: Vec<serde_json::Value> = default_prompt_templates()
+        .into_iter()
+        .filter_map(normalize_prompt_template)
+        .collect();
+    let mut index_by_id: HashMap<String, usize> = templates
+        .iter()
+        .enumerate()
+        .filter_map(|(index, template)| {
+            template
+                .get("id")
+                .and_then(|value| value.as_str())
+                .map(|id| (id.to_string(), index))
+        })
+        .collect();
+
+    let telemetry = state.app_handle.state::<crate::db::TelemetryDb>();
+    if let Some(raw) = telemetry.local_app_kv_get("orchestration_user_templates")? {
+        let parsed: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| format!("Failed to parse orchestration user templates: {}", e))?;
+        if let Some(user_templates) = parsed.as_array() {
+            for template in user_templates.iter().cloned().filter_map(normalize_prompt_template) {
+                let Some(id) = template.get("id").and_then(|value| value.as_str()) else {
+                    continue;
+                };
+                if let Some(index) = index_by_id.get(id).copied() {
+                    templates[index] = template;
+                } else {
+                    index_by_id.insert(id.to_string(), templates.len());
+                    templates.push(template);
+                }
+            }
+        }
+    }
+
+    Ok(templates)
+}
+
+fn handle_list_prompt_templates(
+    id: serde_json::Value,
+    state: Arc<McpState>,
+    kind: Option<String>,
+) -> JsonRpcResponse {
+    let kind = kind.map(|value| value.trim().to_ascii_lowercase());
+    if let Some(kind) = kind.as_deref() {
+        if kind != "node" && kind != "orchestration" && !kind.is_empty() {
+            return JsonRpcResponse {
+                jsonrpc: "2.0",
+                id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32602,
+                    message: "kind must be node or orchestration".to_string(),
+                }),
+            };
+        }
+    }
+
+    match load_prompt_templates(&state) {
+        Ok(templates) => {
+            let templates: Vec<serde_json::Value> = templates
+                .into_iter()
+                .filter(|template| {
+                    kind.as_deref().filter(|value| !value.is_empty()).map_or(true, |kind| {
+                        template.get("kind").and_then(|value| value.as_str()) == Some(kind)
+                    })
+                })
+                .collect();
+            let body = serde_json::json!({
+                "count": templates.len(),
+                "templates": templates,
+            });
+            tool_text_response(
+                id,
+                serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
+            )
+        }
+        Err(err) => JsonRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32001,
+                message: err,
+            }),
+        },
+    }
+}
+
+fn handle_get_prompt_template(
+    id: serde_json::Value,
+    state: Arc<McpState>,
+    template_id: String,
+) -> JsonRpcResponse {
+    let Some(normalized_id) = normalize_template_id(&template_id) else {
+        return JsonRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "template_id is invalid".to_string(),
+            }),
+        };
+    };
+
+    match load_prompt_templates(&state) {
+        Ok(templates) => {
+            if let Some(template) = templates.into_iter().find(|template| {
+                template.get("id").and_then(|value| value.as_str()) == Some(normalized_id.as_str())
+            }) {
+                let body = serde_json::json!({ "template": template });
+                return tool_text_response(
+                    id,
+                    serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
+                );
+            }
+            JsonRpcResponse {
+                jsonrpc: "2.0",
+                id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32602,
+                    message: format!("Unknown template {}", template_id),
+                }),
+            }
+        }
+        Err(err) => JsonRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32001,
+                message: err,
+            }),
+        },
+    }
+}
+
+fn read_arg_string(args: &serde_json::Value, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(|value| value.as_str())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn read_arg_string_array(args: &serde_json::Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn missing_args_response(id: serde_json::Value, message: &str) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        id,
+        result: None,
+        error: Some(JsonRpcError {
+            code: -32602,
+            message: message.to_string(),
+        }),
+    }
+}
+
+fn handle_set_orchestration_diagram(
+    id: serde_json::Value,
+    state: Arc<McpState>,
+    args: serde_json::Value,
+) -> JsonRpcResponse {
+    let Some(run_id) = read_arg_string(&args, "orchestrator_run_id") else {
+        return missing_args_response(id, "orchestrator_run_id is required");
+    };
+    let Some(orchestrator_node_id) = read_arg_string(&args, "orchestrator_node_id") else {
+        return missing_args_response(id, "orchestrator_node_id is required");
+    };
+    let Some(mermaid) = read_arg_string(&args, "mermaid") else {
+        return missing_args_response(id, "mermaid is required");
+    };
+    let payload = serde_json::json!({
+        "mermaid": mermaid,
+        "summary": read_arg_string(&args, "summary"),
+    });
+
+    let telemetry = state.app_handle.state::<crate::db::TelemetryDb>();
+    match telemetry.record_orchestration_event(
+        &run_id,
+        &orchestrator_node_id,
+        "orchestration:flow_diagram_created",
+        &payload.to_string(),
+    ) {
+        Ok(seq) => tool_text_response(id, serde_json::json!({
+            "recorded": true,
+            "seq": seq,
+            "eventType": "orchestration:flow_diagram_created",
+        }).to_string()),
+        Err(err) => JsonRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32001,
+                message: err,
+            }),
+        },
+    }
+}
+
+fn handle_complete_orchestration(
+    id: serde_json::Value,
+    state: Arc<McpState>,
+    args: serde_json::Value,
+) -> JsonRpcResponse {
+    let Some(run_id) = read_arg_string(&args, "orchestrator_run_id") else {
+        return missing_args_response(id, "orchestrator_run_id is required");
+    };
+    let Some(orchestrator_node_id) = read_arg_string(&args, "orchestrator_node_id") else {
+        return missing_args_response(id, "orchestrator_node_id is required");
+    };
+    let terminal_child_assistant_node_ids =
+        read_arg_string_array(&args, "terminal_child_assistant_node_ids");
+    let payload = serde_json::json!({
+        "terminalChildAssistantNodeIds": terminal_child_assistant_node_ids,
+        "terminalChildRunCount": terminal_child_assistant_node_ids.len(),
+    });
+    let telemetry = state.app_handle.state::<crate::db::TelemetryDb>();
+    match telemetry.record_orchestration_event(
+        &run_id,
+        &orchestrator_node_id,
+        "orchestration:completed",
+        &payload.to_string(),
+    ) {
+        Ok(seq) => tool_text_response(id, serde_json::json!({
+            "completed": true,
+            "seq": seq,
+            "terminalChildAssistantNodeIds": terminal_child_assistant_node_ids,
+        }).to_string()),
+        Err(err) => JsonRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32001,
+                message: err,
+            }),
+        },
+    }
+}
+
+async fn handle_frontend_orchestration_tool(
+    id: serde_json::Value,
+    state: Arc<McpState>,
+    tool_name: &str,
+    arguments: serde_json::Value,
+) -> JsonRpcResponse {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    if let Err(err) = MCP_ORCHESTRATION_PENDING
+        .lock()
+        .map_err(|e| e.to_string())
+        .map(|mut pending| pending.insert(request_id.clone(), sender))
+    {
+        return JsonRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32001,
+                message: err,
+            }),
+        };
+    }
+
+    let payload = serde_json::json!({
+        "requestId": request_id,
+        "toolName": tool_name,
+        "arguments": arguments.clone(),
+    });
+    if let Err(err) = state.app_handle.emit("agentree://orchestration-mcp-request", payload) {
+        let _ = MCP_ORCHESTRATION_PENDING
+            .lock()
+            .map(|mut pending| pending.remove(&request_id));
+        return JsonRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32002,
+                message: format!("Failed to dispatch orchestration request to app: {}", err),
+            }),
+        };
+    }
+
+    let timeout = if tool_name == "wait_for_runs" {
+        let timeout_ms = arguments
+            .get("timeout_ms")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(10 * 60 * 1000)
+            .clamp(1_000, 30 * 60 * 1000);
+        Duration::from_millis(timeout_ms + 5_000)
+    } else {
+        Duration::from_secs(120)
+    };
+
+    match tokio::time::timeout(timeout, receiver).await {
+        Ok(Ok(Ok(value))) => tool_text_response(
+            id,
+            serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+        ),
+        Ok(Ok(Err(err))) => JsonRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32003,
+                message: err,
+            }),
+        },
+        Ok(Err(_)) => JsonRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32004,
+                message: "Orchestration request responder was dropped.".to_string(),
+            }),
+        },
+        Err(_) => {
+            let _ = MCP_ORCHESTRATION_PENDING
+                .lock()
+                .map(|mut pending| pending.remove(&request_id));
+            JsonRpcResponse {
+                jsonrpc: "2.0",
+                id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32005,
+                    message: "Timed out waiting for Agentree app to handle orchestration request."
+                        .to_string(),
+                }),
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 struct PendingError {
     code: i64,
@@ -774,6 +1469,8 @@ impl PendingError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static MCP_TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     #[test]
     fn bind_mcp_listener_returns_error_when_address_is_in_use() {
@@ -804,6 +1501,7 @@ mod tests {
 
     #[test]
     fn resolved_port_reports_actual_bound_port_without_override() {
+        let _guard = MCP_TEST_LOCK.lock().expect("mcp test lock");
         // Only meaningful when the environment sets no explicit port override.
         if configured_mcp_port_string().is_some() {
             return;
@@ -816,6 +1514,7 @@ mod tests {
 
     #[test]
     fn mcp_server_url_is_empty_before_dynamic_port_is_bound() {
+        let _guard = MCP_TEST_LOCK.lock().expect("mcp test lock");
         if configured_mcp_port_string().is_some() {
             return;
         }
@@ -852,6 +1551,13 @@ mod tests {
             .filter_map(|tool| tool.get("name").and_then(|name| name.as_str()))
             .collect();
 
+        assert!(names.contains(&"list_prompt_templates"));
+        assert!(names.contains(&"get_prompt_template"));
+        assert!(names.contains(&"start_orchestration_child"));
+        assert!(names.contains(&"wait_for_runs"));
+        assert!(names.contains(&"control_run"));
+        assert!(names.contains(&"set_orchestration_diagram"));
+        assert!(names.contains(&"complete_orchestration"));
         assert!(names.contains(&"list_thread_sessions"));
         assert!(names.contains(&"read_thread"));
         assert!(names.contains(&"query_commits"));

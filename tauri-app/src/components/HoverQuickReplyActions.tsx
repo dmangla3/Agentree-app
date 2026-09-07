@@ -4,13 +4,12 @@ import TextareaAutosize from 'react-textarea-autosize';
 import { Loader2, Reply, Square } from 'lucide-react';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspaceProjection';
 import { agentRunManager } from '../agent-runs/agentRunManager';
-import { flowRunManager } from '../flows/flowRunManager';
-import { resolveActiveFlowCancelTarget } from '../flows/flowRunSelectors';
 import { Button } from '../../@/components/ui/button';
 import { useHeadlessQuickReply } from '../hooks/useHeadlessQuickReply';
 import { agentClient } from '../lib/agentClient';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
-import { isNoAgentSessionFoundError, markStalePrelaunchFlowNodeCancelled } from '../lib/localAgentRunTerminal';
+import { isNoAgentSessionFoundError, markStaleLocalAgentNodeCancelled } from '../lib/localAgentRunTerminal';
+import { cancelOrchestrationTargetIfNeeded } from '../orchestration/cancel';
 import { getHoverReplyMode, stopQuickReplyControlEvent } from '../lib/quickReply';
 import { cn } from '../lib/utils';
 import { buildComposerDraftKey, useWorkspaceStore } from '../stores/workspaceStore';
@@ -53,13 +52,9 @@ export function HoverQuickReplyActions({
       ? null
       : rawReplyMode;
   const isSteeringReply = replyMode === 'steer';
-  const activeFlowCancelTarget = resolveActiveFlowCancelTarget({
-    nodeId: replyParentId,
-    node: projection.messageMap.get(replyParentId) ?? entity.message ?? null,
-  });
   const canCancelRunningAgent = isSteeringReply && !isCancelling;
-  const cancelActionLabel = activeFlowCancelTarget ? 'Cancel flow' : 'Cancel';
-  const cancelActionAriaLabel = activeFlowCancelTarget ? 'Cancel running flow' : 'Cancel running agent';
+  const cancelActionLabel = 'Cancel';
+  const cancelActionAriaLabel = 'Cancel running agent';
   const inputLabel = isSteeringReply ? 'Steering prompt' : 'Quick reply prompt';
   const actionLabel = isSteeringReply ? 'Steer' : 'Quick Reply';
   const sendingLabel = isSteeringReply ? 'Steering' : 'Sending';
@@ -89,32 +84,19 @@ export function HoverQuickReplyActions({
     setCancelError(null);
     setIsCancelling(true);
     try {
-      const flowCancelTarget = resolveActiveFlowCancelTarget({
-        nodeId: replyParentId,
-        node: assistantMessage,
+      const orchestrationCancel = await cancelOrchestrationTargetIfNeeded({
+        targetNodeId: replyParentId,
+        messages: Array.from(projection.messageMap.values()),
+        reason: 'cancelled',
+      }, {
+        recordOrchestrationEvent: (runId, assistantNodeId, eventType, payload) => (
+          agentClient.recordOrchestrationEvent(runId, assistantNodeId, eventType, payload)
+        ),
+        stopAgent: (assistantNodeId) => agentClient.stopAgent(assistantNodeId),
       });
-      if (flowCancelTarget) {
-        for (const activeNodeId of flowCancelTarget.activeNodeIds) {
-          const activeMessage = projection.messageMap.get(activeNodeId) ?? null;
-          agentRunManager.dispatch(activeNodeId, {
-            type: 'cancel',
-            reason: 'cancelled',
-          }, {
-            workspaceId: activeMessage?.workspaceId ?? workspaceId,
-            parentId: activeMessage?.parentId ?? null,
-            role: 'assistant',
-            agentId: activeMessage?.agent_id ?? null,
-            content: activeMessage?.content ?? '',
-            executionData: (activeMessage?.execution_data ?? {}) as Record<string, any>,
-          });
-        }
-        await flowRunManager.cancel(flowCancelTarget.flowRunId, 'cancelled');
-        void scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, { reason: 'cancel-flow' });
-        clearComposerDraft(workspaceId, replyParentId);
-        setDraftResetVersion((version) => version + 1);
-        return;
+      if (!orchestrationCancel.handled) {
+        await agentClient.stopAgent(replyParentId);
       }
-      await agentClient.stopAgent(replyParentId);
       agentRunManager.dispatch(replyParentId, {
         type: 'cancel',
         reason: 'cancelled',
@@ -131,12 +113,12 @@ export function HoverQuickReplyActions({
       setDraftResetVersion((version) => version + 1);
     } catch (caught) {
       if (isNoAgentSessionFoundError(caught)) {
-        const marked = await markStalePrelaunchFlowNodeCancelled({
+        const marked = await markStaleLocalAgentNodeCancelled({
           queryClient,
           workspaceId,
           nodeId: replyParentId,
           node: assistantMessage,
-          reason: 'Flow cancelled after the app restarted before the native agent session was created.',
+          reason: 'Run cancelled after the app restarted before the native agent session was created.',
         });
         if (marked) {
           agentRunManager.dispatch(replyParentId, {
@@ -150,7 +132,7 @@ export function HoverQuickReplyActions({
             content: assistantMessage?.content ?? '',
             executionData: (assistantMessage?.execution_data ?? {}) as Record<string, any>,
           });
-          void scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, { reason: 'cancel-stale-flow-node' });
+          void scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, { reason: 'cancel-stale-local-node' });
           clearComposerDraft(workspaceId, replyParentId);
           setDraftResetVersion((version) => version + 1);
           return;

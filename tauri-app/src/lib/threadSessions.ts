@@ -1,7 +1,7 @@
 import type { Message } from '../stores/workspaceStore';
 
 export type ThreadSessionStatus = 'active' | 'done' | 'archived';
-export type ThreadSessionSource = 'workspace_default' | 'user' | 'flow' | 'legacy';
+export type ThreadSessionSource = 'workspace_default' | 'user' | 'legacy';
 
 export interface ThreadSession {
   id: string;
@@ -35,7 +35,7 @@ export const normalizeThreadSession = (input: Record<string, unknown> | null | u
   const updatedAt = readString(input, 'updatedAt', 'updated_at') || createdAt;
   if (!id || !workspaceId || !createdAt) return null;
   const status = input.status === 'done' || input.status === 'archived' ? input.status : 'active';
-  const source = input.source === 'workspace_default' || input.source === 'flow' || input.source === 'legacy'
+  const source = input.source === 'workspace_default' || input.source === 'legacy'
     ? input.source
     : 'user';
   return {

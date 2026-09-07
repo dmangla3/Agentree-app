@@ -8,6 +8,7 @@ import {
 } from '../../@/components/ui/dropdown-menu';
 import type { WorkspaceProjection } from '../domain/workspaceProjection';
 import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
+import { resolveOrchestrationChildRetryTarget } from '../orchestration/retry';
 
 export interface NodeContextMenuState {
   x: number;
@@ -30,6 +31,7 @@ interface NodeContextMenuProps {
   onViewSubgraph?: (messageId: string) => void;
   onConvertSubgraphToThread?: (messageId: string) => void;
   onShareNode?: (messageId: string) => void;
+  onRetryOrchestrationChild?: (assistantNodeId: string) => void;
 }
 
 export interface NodeContextMenuActions {
@@ -41,6 +43,7 @@ export interface NodeContextMenuActions {
   actionThreadRootId: string | null;
   convertSubgraphNodeId: string | null;
   mergeThreadRootId: string | null;
+  retryOrchestrationChildNodeId: string | null;
 }
 
 export function resolveNodeContextMenuActions(
@@ -55,6 +58,7 @@ export function resolveNodeContextMenuActions(
   let singleThreadRootId: string | null = null;
   let singleConvertSubgraphNodeId: string | null = null;
   let singleMergeThreadRootId: string | null = null;
+  let singleRetryOrchestrationChildNodeId: string | null = null;
   let hasMultipleMergeThreadRoots = false;
 
   const addMessageId = (messageId: string | null | undefined) => {
@@ -173,6 +177,10 @@ export function resolveNodeContextMenuActions(
       ) {
         singleConvertSubgraphNodeId = entity.messageId;
       }
+      const retryTarget = resolveOrchestrationChildRetryTarget(projection.messages, entity.messageId);
+      if (retryTarget.ok) {
+        singleRetryOrchestrationChildNodeId = retryTarget.target.assistantNodeId;
+      }
     }
 
     if (entity.kind === 'user_message' || entity.kind === 'assistant_message' || entity.kind === 'commit_message') {
@@ -193,6 +201,7 @@ export function resolveNodeContextMenuActions(
     actionThreadRootId: singleThreadRootId,
     convertSubgraphNodeId: singleConvertSubgraphNodeId,
     mergeThreadRootId: hasMultipleMergeThreadRoots ? null : singleMergeThreadRootId,
+    retryOrchestrationChildNodeId: singleRetryOrchestrationChildNodeId,
   };
 }
 
@@ -211,6 +220,7 @@ export function NodeContextMenu({
   onViewSubgraph,
   onConvertSubgraphToThread,
   onShareNode,
+  onRetryOrchestrationChild,
 }: NodeContextMenuProps) {
   const targetIds = contextMenu?.targetIds ?? [];
   const targetKey = targetIds.join('\u0000');
@@ -220,7 +230,7 @@ export function NodeContextMenu({
     if (contextMenu) setMarkThreadDoneAfterMerge(true);
   }, [contextMenu, targetKey]);
 
-  const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, mergeableCommitShas, actionNodeId, actionThreadRootId, convertSubgraphNodeId, mergeThreadRootId } = useMemo(
+  const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, mergeableCommitShas, actionNodeId, actionThreadRootId, convertSubgraphNodeId, mergeThreadRootId, retryOrchestrationChildNodeId } = useMemo(
     () => resolveNodeContextMenuActions(projection, targetIds),
     [projection, targetKey],
   );
@@ -237,8 +247,9 @@ export function NodeContextMenu({
   const canViewSubgraph = !!actionNodeId && !!onViewSubgraph;
   const canConvertSubgraphToThread = !!convertSubgraphNodeId && !!onConvertSubgraphToThread;
   const canShareNode = !!actionNodeId && !!onShareNode;
+  const canRetryOrchestrationChild = !!retryOrchestrationChildNodeId && !!onRetryOrchestrationChild;
 
-  if (!canDelete && !canAddToMergePanel && !canAddCommit && !canFocusThread && !canMarkThreadDone && !canHideSubgraph && !canViewSubgraph && !canConvertSubgraphToThread && !canShareNode) {
+  if (!canDelete && !canAddToMergePanel && !canAddCommit && !canFocusThread && !canMarkThreadDone && !canHideSubgraph && !canViewSubgraph && !canConvertSubgraphToThread && !canShareNode && !canRetryOrchestrationChild) {
     return null;
   }
 
@@ -306,6 +317,17 @@ export function NodeContextMenu({
             }}
           >
             Share node subgraph
+          </DropdownMenuItem>
+        ) : null}
+
+        {canRetryOrchestrationChild ? (
+          <DropdownMenuItem
+            onClick={() => {
+              onRetryOrchestrationChild?.(retryOrchestrationChildNodeId!);
+              onClose();
+            }}
+          >
+            Retry orchestration child
           </DropdownMenuItem>
         ) : null}
 

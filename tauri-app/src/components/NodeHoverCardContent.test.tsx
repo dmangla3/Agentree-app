@@ -35,6 +35,12 @@ vi.mock('./NodePreviewRenderer', () => ({
   ),
 }));
 
+vi.mock('./MermaidDiagram', () => ({
+  default: ({ chart }: { chart: string }) => (
+    <div data-testid="mermaid-diagram">{chart}</div>
+  ),
+}));
+
 vi.mock('../hooks/useHeadlessQuickReply', () => ({
   useHeadlessQuickReply: () => ({
     sendQuickReply: quickReplyMocks.sendQuickReply,
@@ -107,6 +113,7 @@ const makeProjection = (messages: Message[] = []): WorkspaceProjection => ({
   entitiesByMessageId: new Map(),
   entitiesBySummaryId: new Map(),
   childEntityIdsByParentEntityId: new Map(),
+  controlledEntityIdsByControllerMessageId: new Map(),
   commitEntityIdsByAssistantEntityId: new Map(),
   commitBySha: new Map(),
   commitLaneRows: [],
@@ -369,6 +376,141 @@ describe('NodeHoverCardContent', () => {
     expect(shell.className).toContain('border-[hsl(var(--app-border)/0.76)]');
     expect(shell.className).not.toContain('rgba(255,255,255');
     expect(shell.className).not.toContain('linear-gradient(180deg,rgba');
+  });
+
+  it('shows orchestration child-run summary for orchestrator hover cards', () => {
+    const orchestratorMessage = makeMessage({
+      id: 'orchestrator-1',
+      role: 'assistant',
+      status: 'running' as any,
+    });
+    const runningChildMessage = makeMessage({
+      id: 'child-running',
+      role: 'assistant',
+      status: 'running' as any,
+      parentId: 'orchestrator-1',
+    });
+    const completedChildMessage = makeMessage({
+      id: 'child-completed',
+      role: 'assistant',
+      status: 'completed' as any,
+      parentId: 'orchestrator-1',
+    });
+    const failedChildMessage = makeMessage({
+      id: 'child-failed',
+      role: 'assistant',
+      status: 'failed' as any,
+      parentId: 'orchestrator-1',
+    });
+    const runningChild = makeEntity('assistant_message', {
+      entityId: 'assistant_message:child-running',
+      messageId: runningChildMessage.id,
+      focusMessageId: runningChildMessage.id,
+      message: runningChildMessage,
+      preview: 'Compare implementation options',
+      status: 'running' as any,
+    });
+    const completedChild = makeEntity('assistant_message', {
+      entityId: 'assistant_message:child-completed',
+      messageId: completedChildMessage.id,
+      focusMessageId: completedChildMessage.id,
+      message: completedChildMessage,
+      preview: 'Write migration notes',
+      status: 'completed' as any,
+    });
+    const failedChild = makeEntity('assistant_message', {
+      entityId: 'assistant_message:child-failed',
+      messageId: failedChildMessage.id,
+      focusMessageId: failedChildMessage.id,
+      message: failedChildMessage,
+      preview: 'Run verification',
+      status: 'failed' as any,
+    });
+    const orchestrator = makeEntity('assistant_message', {
+      entityId: 'assistant_message:orchestrator-1',
+      messageId: orchestratorMessage.id,
+      focusMessageId: orchestratorMessage.id,
+      message: orchestratorMessage,
+      nodeKind: 'orchestrator',
+      orchestrationSummary: {
+        controllerMessageId: orchestratorMessage.id,
+        controlledEntityIds: [runningChild.entityId, completedChild.entityId, failedChild.entityId],
+        childAssistantEntityIds: [runningChild.entityId, completedChild.entityId, failedChild.entityId],
+        totalChildRuns: 3,
+        activeChildRuns: 1,
+        terminalChildRuns: 2,
+        completedChildRuns: 1,
+        failedChildRuns: 1,
+        cancelledChildRuns: 0,
+      },
+    });
+    const projection = makeProjection([
+      orchestratorMessage,
+      runningChildMessage,
+      completedChildMessage,
+      failedChildMessage,
+    ]);
+    projection.entitiesById = new Map([
+      [orchestrator.entityId, orchestrator],
+      [runningChild.entityId, runningChild],
+      [completedChild.entityId, completedChild],
+      [failedChild.entityId, failedChild],
+    ]);
+
+    render(<NodeHoverCardContent entity={orchestrator} projection={projection} />);
+
+    expect(screen.getByTestId('orchestration-hover-summary')).toBeTruthy();
+    expect(screen.getByText('Orchestration')).toBeTruthy();
+    expect(screen.getByText('3 controlled runs')).toBeTruthy();
+    expect(screen.getByText('Compare implementation options')).toBeTruthy();
+    expect(screen.getByText('Write migration notes')).toBeTruthy();
+    expect(screen.getByText('Run verification')).toBeTruthy();
+    expect(screen.getByText('Running')).toBeTruthy();
+    expect(screen.getByText('Completed')).toBeTruthy();
+    expect(screen.getAllByText('Failed').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('shows the hydrated orchestration Mermaid diagram in orchestrator hover cards', async () => {
+    const orchestratorMessage = makeMessage({
+      id: 'orchestrator-with-diagram',
+      role: 'assistant',
+      status: 'running' as any,
+    });
+    const orchestrator = makeEntity('assistant_message', {
+      entityId: 'assistant_message:orchestrator-with-diagram',
+      messageId: orchestratorMessage.id,
+      focusMessageId: orchestratorMessage.id,
+      message: orchestratorMessage,
+      nodeKind: 'orchestrator',
+      orchestrationSummary: {
+        controllerMessageId: orchestratorMessage.id,
+        controlledEntityIds: [],
+        childAssistantEntityIds: [],
+        totalChildRuns: 0,
+        activeChildRuns: 0,
+        terminalChildRuns: 0,
+        completedChildRuns: 0,
+        failedChildRuns: 0,
+        cancelledChildRuns: 0,
+      },
+    });
+
+    render(<NodeHoverCardContent entity={orchestrator} projection={makeProjection([orchestratorMessage])} />);
+
+    act(() => {
+      useAgentRunProjectionStore.getState().setProjectionForNode(orchestratorMessage.id, {
+        ...orchestratorMessage,
+        execution_data: {
+          orchestration: {
+            flowDiagramMermaid: 'flowchart LR\n  A-->B',
+            flowDiagramSummary: 'Initial orchestration plan',
+          },
+        },
+      });
+    });
+
+    expect(await screen.findByText('Initial orchestration plan')).toBeTruthy();
+    expect(screen.getByTestId('mermaid-diagram').textContent).toContain('flowchart LR');
   });
 
   it('uses the app action color when ready to send', () => {

@@ -5,7 +5,10 @@ import { useQueryClient } from '@tanstack/react-query';
 import { agentRunManager } from '../agent-runs/agentRunManager';
 import { agentClient } from '../lib/agentClient';
 import { getAccessToken } from '../lib/authSession';
+import { isLoginProfileActive, type LoginProfileSummary } from '../lib/loginProfiles';
+import { markLocalAgentNodeTerminal } from '../lib/localAgentRunTerminal';
 import { resolveQuickReplyAgent, resolveQuickReplyBase } from '../lib/quickReply';
+import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import type { Message, Workspace } from '../stores/workspaceStore';
 import { sendHeadlessComposerReply } from '../composer/headlessComposerSend';
 import { useAgents } from './useAgents';
@@ -13,6 +16,20 @@ import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage 
 import { useWorkspaces } from './useWorkspaces';
 
 type QuickReplyStatus = 'idle' | 'sending' | 'error';
+
+const providerRequiresLoginProfile = (provider?: string | null): boolean =>
+  provider === 'codex' || provider === 'claude';
+
+export const selectQuickReplyLoginProfile = (
+  profiles: LoginProfileSummary[],
+  provider?: string | null,
+): LoginProfileSummary | null => {
+  if (!provider) return null;
+  const compatibleProfiles = profiles.filter((profile) => profile.provider === provider);
+  const defaultProfile = compatibleProfiles.find((profile) => profile.isDefault) ?? null;
+  if (defaultProfile && isLoginProfileActive(defaultProfile)) return defaultProfile;
+  return compatibleProfiles.find((profile) => isLoginProfileActive(profile)) ?? null;
+};
 
 export const materializeHeadlessQuickReplyMessages = (
   queryClient: QueryClient,
@@ -42,6 +59,7 @@ export function useHeadlessQuickReply() {
   const queryClient = useQueryClient();
   const { data: agents = [] } = useAgents();
   const { data: workspaces = [] } = useWorkspaces();
+  const loginProfiles = useLoginProfilesStore((state) => state.profiles);
   const [status, setStatus] = useState<QuickReplyStatus>('idle');
   const [error, setError] = useState<string | null>(null);
 
@@ -98,11 +116,18 @@ export function useHeadlessQuickReply() {
       setError('The parent does not have an ancestor output commit to run from.');
       return;
     }
+    const selectedLoginProfile = selectQuickReplyLoginProfile(loginProfiles, agent.type);
+    if (providerRequiresLoginProfile(agent.type) && !selectedLoginProfile) {
+      setStatus('error');
+      setError(`${agent.name ?? agent.type} needs a ready login profile before it can run.`);
+      return;
+    }
 
     setStatus('sending');
     setError(null);
 
     let assistantNodeId: string | null = null;
+    let assistantMessage: Message | null = null;
     try {
       const response = await sendHeadlessComposerReply({
         workspaceId: input.workspaceId,
@@ -112,6 +137,7 @@ export function useHeadlessQuickReply() {
         agent,
         base,
         workspaces: workspaces as Workspace[],
+        selectedLoginProfileId: selectedLoginProfile?.id ?? null,
         startAgentRun: (payload) => agentClient.startAgentRun(payload as any),
         getAccessToken,
         seedAgentRun: (message) => agentRunManager.seed(message),
@@ -122,6 +148,7 @@ export function useHeadlessQuickReply() {
         },
         onAssistantMessageCreated: (message) => {
           assistantNodeId = message.id;
+          assistantMessage = message;
         },
       });
 
@@ -135,12 +162,22 @@ export function useHeadlessQuickReply() {
           status: AGENT_STATUS.failed,
           reason: message,
         });
+        if (assistantMessage) {
+          await markLocalAgentNodeTerminal({
+            queryClient,
+            workspaceId: input.workspaceId,
+            nodeId: assistantNodeId,
+            node: assistantMessage,
+            status: AGENT_STATUS.failed,
+            reason: message,
+          }).catch(() => undefined);
+        }
       }
       setStatus('error');
       setError(message);
       throw caught;
     }
-  }, [agents, queryClient, workspaces]);
+  }, [agents, loginProfiles, queryClient, workspaces]);
 
   return {
     sendQuickReply,

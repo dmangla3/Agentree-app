@@ -42,8 +42,19 @@ describe('GraphDockComposer structure', () => {
     expect(source).toContain('activeMentionSkills');
     expect(source).toContain('agentClient.listInstalledSkills');
     expect(source).toContain('agentClient.listFilesAtCommit');
-    expect(source).toContain('Type @ for files or $ for skills');
+    expect(source).toContain('Type @ for files, # for orchestration, or $ for skills');
     expect(source).toContain('expandRepoMentionContext');
+  });
+
+  it('describes # templates as orchestration prompts instead of executable flows', () => {
+    const source = readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
+
+    expect(source).toContain('Select reusable node prompts or orchestration prompts.');
+    expect(source).toContain("'Orchestration' : 'Node'");
+    expect(source).toContain('promptIncludesOrchestrationTemplate');
+    expect(source).not.toContain('Select pre-defined nodes or flows');
+    expect(source).not.toContain("'Flow' : 'Node'");
+    expect(source).not.toContain('promptIncludesFlowTemplate');
   });
 
   it('does not clip mention selectors at the composer frame', () => {
@@ -54,11 +65,4 @@ describe('GraphDockComposer structure', () => {
     expect(source).not.toContain('max-w-4xl overflow-hidden rounded-xl');
   });
 
-  it('does not hold the graph dock send button for the whole selected flow run', () => {
-    const source = readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
-
-    expect(source).toContain('void flowRunner.runFlow({ input: promptForAgent, count: flowParallelCount }).then');
-    expect(source).toContain('}).catch((caught) => {');
-    expect(source).not.toContain('await flowRunner.runFlow({ input: promptForAgent, count: flowParallelCount })');
-  });
 });

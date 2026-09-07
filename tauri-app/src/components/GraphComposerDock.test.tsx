@@ -95,16 +95,17 @@ describe('GraphComposerDock', () => {
     expect(composerSource).not.toContain('<textarea');
   });
 
-  it('keeps the graph composer control surface for flow, model, code base, and context', async () => {
+  it('keeps the graph composer control surface for model, code base, context, and permissions', async () => {
     const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
     const composerSource = readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
 
-    expect(composerSource).toContain('aria-label="Select flow"');
+    expect(composerSource).not.toContain('aria-label="Select flow"');
     expect(composerSource).toContain('aria-label="Select model"');
     expect(composerSource).toContain('aria-label="Select code base commit"');
     expect(composerSource).toContain('aria-label="Select context"');
-    expect(composerSource).toContain('useAgentFlowRunner');
+    expect(composerSource).toContain('aria-label="Select permissions"');
+    expect(composerSource).not.toContain(['useAgent', 'FlowRunner'].join(''));
     expect(composerSource).toContain('UnifiedAgentModelSelector');
   });
 
@@ -143,7 +144,9 @@ describe('GraphComposerDock', () => {
     const { join } = await import('node:path');
     const composerSource = readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
 
-    expect(composerSource).toContain('const footerStatusText = error ?? (isSteeringRunningAssistant ?');
+    expect(composerSource).toContain('const footerStatusText = error ?? (');
+    expect(composerSource).toContain('pendingOrchestration');
+    expect(composerSource).toContain('child runs planned');
     expect(composerSource).not.toContain("selectedFlow ? `${selectedFlow.label} · ${flowParallelCount} parallel runs` : modelSelectorLabel");
   });
 

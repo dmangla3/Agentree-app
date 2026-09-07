@@ -1,22 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { Bot, Check, ChevronDown, CornerDownRight, FileText, GitBranchIcon, GitCommitHorizontal, History, Loader2, Minus, Pencil, Plus, Puzzle, RotateCcw, Search, Send, Square, Workflow, X } from 'lucide-react';
+import { Bot, Check, ChevronDown, CornerDownRight, FileText, GitBranchIcon, GitCommitHorizontal, History, Loader2, Minus, Pencil, Plus, Puzzle, RotateCcw, Search, Send, Shield, Square, Workflow, X } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useShallow } from 'zustand/react/shallow';
 import { buildComposerDraftKey, useWorkspaceStore, type Message, type Workspace } from '../stores/workspaceStore';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
+import { useOrchestrationTemplateStore } from '../stores/orchestrationTemplateStore';
+import { normalizeTemplateId, type OrchestrationPromptTemplate } from '../orchestration/templates';
 import { isLoginProfileActive } from '../lib/loginProfiles';
-import { isNoAgentSessionFoundError, markStalePrelaunchFlowNodeCancelled } from '../lib/localAgentRunTerminal';
+import { isNoAgentSessionFoundError, markStaleLocalAgentNodeCancelled } from '../lib/localAgentRunTerminal';
 import { applyLocalNodeMessages } from '../hooks/useLiveMessages';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from '../hooks/useLocalNodes';
 import { useAgents, type Agent } from '../hooks/useAgents';
 import { useWorkspaces } from '../hooks/useWorkspaces';
 import { useCommitAncestors, useCommitDescendants } from '../hooks/useMessages';
 import { useCreateThreadSession } from '../hooks/useThreadSessions';
-import { useAgentFlowRunner } from '../hooks/useAgentFlowRunner';
-import { flowRunManager } from '../flows/flowRunManager';
-import { resolveActiveFlowCancelTarget } from '../flows/flowRunSelectors';
 import { getEnabledTrackedGitRefs, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
 import { useTrackedRefs } from '../hooks/useTrackedRefs';
 import { agentRunManager } from '../agent-runs/agentRunManager';
@@ -31,7 +30,6 @@ import {
   type ComposerCommitPickerCommit,
 } from '../lib/composerBaseCommit';
 import { buildLiveGitRefs, getComposerBaseSnapshotGitRefs } from '../lib/liveGitRefs';
-import { buildComposerContextManifest, buildComposerContextSelection } from '../lib/composerContext';
 import { reconstructContext } from '../lib/contextUtils';
 import { getMergeVisualParentEntries, isMergeResultNode } from '../lib/graph/lineage';
 import { isFirstClassCommitMessage } from '../lib/graph/turnUtils';
@@ -62,6 +60,12 @@ import {
   insertSkillMention,
   type ActiveSkillMention,
 } from '../lib/composerSkillMentions';
+import {
+  COMPOSER_PERMISSION_OPTIONS,
+  DEFAULT_COMPOSER_PERMISSION_MODE,
+  getComposerPermissionOption,
+  type ComposerPermissionMode,
+} from '../lib/composerPermissions';
 import { UnifiedAgentModelSelector } from '../components/UnifiedAgentModelSelector';
 import {
   DropdownMenu,
@@ -72,7 +76,9 @@ import {
   DropdownMenuTrigger,
 } from '../../@/components/ui/dropdown-menu';
 import { Popover, PopoverContent, PopoverTrigger } from '../../@/components/ui/popover';
-import { sendHeadlessComposerMessage } from './headlessComposerSend';
+import {
+  sendHeadlessComposerMessage,
+} from './headlessComposerSend';
 import { resolveComposerTargetModeAfterSuccessfulSend } from '../lib/composerSendParent';
 import {
   resolveGraphDockComposerAgent,
@@ -83,9 +89,6 @@ import {
   shouldSubmitGraphDockComposerKey,
 } from './graphDockComposerLogic';
 
-const FLOW_NONE_ID = '__none__';
-const FLOW_PARALLEL_MIN_COUNT = 2;
-const FLOW_PARALLEL_MAX_COUNT = 8;
 const GRAPH_DOCK_PROMPT_DRAFT_DEBOUNCE_MS = 300;
 
 type ContextPolicy = 'continue' | 'fresh';
@@ -97,15 +100,17 @@ interface ActiveFileMention {
   query: string;
 }
 
+interface ActiveTemplateMention {
+  start: number;
+  end: number;
+  query: string;
+}
+
 interface SelectedGraphBaseCommit {
   sha: string;
   label: string;
   selectedFromNodeId: string | null;
 }
-
-const clampFlowParallelCount = (value: number): number => (
-  Math.max(FLOW_PARALLEL_MIN_COUNT, Math.min(FLOW_PARALLEL_MAX_COUNT, Number.isFinite(value) ? Math.round(value) : FLOW_PARALLEL_MIN_COUNT))
-);
 
 const trimToWholeWords = (value: string, maxLength: number): string => {
   const normalized = value.replace(/\s+/g, ' ').trim();
@@ -228,6 +233,39 @@ const getActiveFileMention = (
   };
 };
 
+const getActiveTemplateMention = (
+  value: string,
+  cursorPosition: number | null | undefined,
+): ActiveTemplateMention | null => {
+  if (cursorPosition == null) return null;
+  const beforeCursor = value.slice(0, cursorPosition);
+  const mentionMatch = beforeCursor.match(/(^|\s)#([^\s#]*)$/);
+  if (!mentionMatch) return null;
+
+  const query = mentionMatch[2] ?? '';
+  return {
+    start: beforeCursor.length - query.length - 1,
+    end: cursorPosition,
+    query,
+  };
+};
+
+const getTemplateMentionText = (template: OrchestrationPromptTemplate): string => (
+  `#${template.id.replace(/^@/, '')}`
+);
+
+const promptIncludesOrchestrationTemplate = (
+  value: string,
+  templates: OrchestrationPromptTemplate[],
+): boolean => {
+  const templatesById = new Map(templates.map((template) => [normalizeTemplateId(template.id), template]));
+  for (const match of value.matchAll(/#([a-zA-Z0-9_-]+)/g)) {
+    const template = templatesById.get(normalizeTemplateId(match[1]));
+    if (template?.kind === 'orchestration') return true;
+  }
+  return false;
+};
+
 function GraphDockPromptTextarea({
   textareaRef,
   initialValue,
@@ -292,7 +330,7 @@ function GraphDockPromptTextarea({
           onSubmit();
         }
       }}
-      placeholder="Ask anything... Type @ for files or $ for skills"
+      placeholder="Ask anything... Type @ for files, # for orchestration, or $ for skills"
       className="max-h-[216px] min-h-[58px] w-full resize-none overflow-y-auto rounded-lg bg-[hsl(var(--background)/0.44)] px-2.5 py-2 text-[13px] leading-5 text-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.54)] outline-none transition-[background-color,box-shadow] duration-150 placeholder:text-muted-foreground/68 focus:bg-[hsl(var(--background)/0.64)] focus:shadow-[inset_0_0_0_1px_hsl(var(--app-focus)/0.48),0_0_0_3px_hsl(var(--app-focus)/0.08)]"
       disabled={disabled}
       minRows={2}
@@ -308,13 +346,14 @@ function GraphDockPromptTextarea({
 
 export function GraphDockComposer() {
   const queryClient = useQueryClient();
-  const loginProfiles = useLoginProfilesStore((state) => state.profiles);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const promptRef = useRef('');
   const assistantNodeIdRef = useRef<string | null>(null);
   const [composerTargetMode, setComposerTargetMode] = useState<ComposerTargetMode>('reply');
   const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
   const [contextPolicy, setContextPolicy] = useState<ContextPolicy>('continue');
+  const [permissionMode, setPermissionMode] = useState<ComposerPermissionMode>(DEFAULT_COMPOSER_PERMISSION_MODE);
+  const [orchestrationMode, setOrchestrationMode] = useState(false);
   const [selectedBaseCommit, setSelectedBaseCommit] = useState<SelectedGraphBaseCommit | null>(null);
   const [baseCommitSearch, setBaseCommitSearch] = useState('');
   const [isBasePickerOpen, setIsBasePickerOpen] = useState(false);
@@ -322,17 +361,20 @@ export function GraphDockComposer() {
   const [selectedMergeContextParentId, setSelectedMergeContextParentId] = useState<string | null>(null);
   const [selectedContextStartId, setSelectedContextStartId] = useState<string | null>(null);
   const [selectedAgentRunCounts, setSelectedAgentRunCounts] = useState<ComposerAgentRunCounts>({});
-  const [flowParallelCount, setFlowParallelCount] = useState(3);
   const [promptSeed, setPromptSeed] = useState('');
+  const [promptText, setPromptText] = useState('');
   const [promptResetVersion, setPromptResetVersion] = useState(0);
   const [promptHasContent, setPromptHasContent] = useState(false);
   const [editDraftSource, setEditDraftSource] = useState<Message | null>(null);
+  const orchestrationTemplates = useOrchestrationTemplateStore((state) => state.templates);
   const [repoMentionFiles, setRepoMentionFiles] = useState<RepoMentionFile[]>([]);
   const [repoMentionCommit, setRepoMentionCommit] = useState<string | null>(null);
   const [activeFileMention, setActiveFileMention] = useState<ActiveFileMention | null>(null);
   const [activeFileMentionIndex, setActiveFileMentionIndex] = useState(0);
   const [activeSkillMention, setActiveSkillMention] = useState<ActiveSkillMention | null>(null);
   const [activeSkillMentionIndex, setActiveSkillMentionIndex] = useState(0);
+  const [activeTemplateMention, setActiveTemplateMention] = useState<ActiveTemplateMention | null>(null);
+  const [activeTemplateMentionIndex, setActiveTemplateMentionIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [isSteering, setIsSteering] = useState(false);
@@ -463,12 +505,6 @@ export function GraphDockComposer() {
       focusedCommitSha: null,
     }
     : rawTarget;
-  const targetParentMessage = target.parentMessageId
-    ? messageById.get(target.parentMessageId) ?? null
-    : null;
-  const effectiveThreadId = target.parentMessageId
-    ? getMessageThreadSessionId(targetParentMessage) ?? (targetParentMessage ? getLegacyThreadIdForMessage(targetParentMessage, messageById) : null)
-    : pendingThreadId;
   const composerDraftTargetId = editDraftSource?.id ?? target.parentMessageId ?? target.selectedNodeId ?? null;
   const composerDraftKey = buildComposerDraftKey(selectedWorkspaceId, composerDraftTargetId);
   const composerDraft = composerDraftKey ? composerDraftByWorkspace[composerDraftKey] ?? '' : '';
@@ -487,12 +523,6 @@ export function GraphDockComposer() {
     status: parentMessage?.status ?? null,
     runStatus: targetRunStatus,
   });
-  const activeFlowCancelTarget = useMemo(() => (
-    resolveActiveFlowCancelTarget({
-      nodeId: target.parentMessageId,
-      node: parentMessage,
-    })
-  ), [parentMessage, target.parentMessageId]);
   const defaultContextParentMessage = useMemo(
     () => resolveConversationContextMessage(target.parentMessageId, messageById),
     [messageById, target.parentMessageId]
@@ -641,61 +671,13 @@ export function GraphDockComposer() {
     : selectedMergeContextOption
       ? formatContextParentLabel(messageById.get(selectedMergeContextOption.id), selectedMergeContextOption.label)
       : formatContextParentLabel(effectiveContextParentMessage, 'No prior conversation');
-  const contextManifest = useMemo(() => {
-    if (!target.parentMessageId || effectiveContextPolicy === 'fresh') {
-      return buildComposerContextManifest([], new Set());
-    }
-    const selection = buildComposerContextSelection(
-      target.parentMessageId,
-      messages,
-      effectiveContextParentId,
-      effectiveContextPolicy,
-      effectiveContextStartId
-    );
-    return buildComposerContextManifest(selection.turns, new Set(selection.defaultSelectedIds));
-  }, [
-    effectiveContextParentId,
-    effectiveContextPolicy,
-    effectiveContextStartId,
-    messages,
-    target.parentMessageId,
-  ]);
-  const flowLoginProfile = useMemo(() => {
-    if (!agent?.type) return null;
-    const compatibleProfiles = loginProfiles.filter((profile) => profile.provider === agent.type);
-    const selectedLoginProfileId = compatibleProfiles.find((profile) => profile.isDefault)?.id
-      ?? compatibleProfiles[0]?.id
-      ?? null;
-    return compatibleProfiles.find((profile) => profile.id === selectedLoginProfileId) ?? null;
-  }, [agent?.type, loginProfiles]);
-  const flowRunner = useAgentFlowRunner({
-    workspaceId: selectedWorkspaceId,
-    selectedAgentId: agent?.id ?? null,
-    selectedAgentType: agent?.type ?? null,
-    baseNodeId: effectiveBase?.selectedFromNodeId ?? target.parentMessageId,
-    baseCommitSha: effectiveBase?.commitSha ?? null,
-    rootParentNodeId: target.parentMessageId,
-    rootContextParentNodeId: effectiveContextParentId,
-    rootContextManifest: contextManifest,
-    threadId: effectiveThreadId,
-    agentCliArgs: agent?.cliArgs ?? null,
-    agentPromptFlag: agent?.promptFlag ?? null,
-    agentName: agent?.name ?? null,
-    llmModel: agent?.model_config?.model ?? null,
-    reasoningEffort: (agent?.model_config as any)?.reasoningEffort ?? null,
-    loginProfileId: flowLoginProfile?.id ?? null,
-  });
-  const selectedFlow = useMemo(
-    () => flowRunner.flows.find((flow) => flow.id === flowRunner.selectedFlowId) ?? null,
-    [flowRunner.flows, flowRunner.selectedFlowId]
-  );
-  const isFlowSelected = Boolean(selectedFlow);
+  const selectedPermissionOption = getComposerPermissionOption(permissionMode);
   const isPrimaryActionBusy = isSending || isSteering || isCancellingRun;
   const isComposerConfigurationDisabled = isPrimaryActionBusy || isSteeringRunningAssistant;
-  const canSend = Boolean(selectedWorkspaceId && promptHasContent && !isPrimaryActionBusy && (
+  const canSend = Boolean(selectedWorkspaceId && !isPrimaryActionBusy && promptHasContent && (
     isSteeringRunningAssistant
       ? target.parentMessageId
-      : effectiveBase && (isFlowSelected ? agent : selectedAgentRunItems.length > 0)
+      : effectiveBase && selectedAgentRunItems.length > 0
   ));
   const targetLabel = previewText(parentMessage, isRootComposerTarget ? 'Thread root' : 'Selected node');
   const baseCommitPickerCommits = useMemo<ComposerCommitPickerCommit[]>(() => {
@@ -827,16 +809,16 @@ export function GraphDockComposer() {
     [repoMentionFiles]
   );
   const repoMentionPathSet = useMemo(
-    () => getMentionedRepoPathSet(promptRef.current, repoMentionFilePathSet),
-    [promptHasContent, repoMentionFilePathSet]
+    () => getMentionedRepoPathSet(promptText, repoMentionFilePathSet),
+    [promptText, repoMentionFilePathSet]
   );
   const installedSkillNames = useMemo(
     () => installedSkills.map((skill: SkillSummary) => skill.name),
     [installedSkills]
   );
   const skillMentionNameSet = useMemo(
-    () => new Set(getSkillMentionNames(promptRef.current, installedSkillNames)),
-    [installedSkillNames, promptHasContent, activeSkillMention?.query]
+    () => new Set(getSkillMentionNames(promptText, installedSkillNames)),
+    [installedSkillNames, promptText]
   );
   const activeMentionFiles = useMemo(
     () => activeFileMention ? getRepoMentionMatches(repoMentionSearchIndex, activeFileMention.query, 8) : [],
@@ -846,11 +828,21 @@ export function GraphDockComposer() {
     () => activeSkillMention ? getSkillMentionSuggestions(installedSkills, activeSkillMention.query, 8) : [],
     [activeSkillMention, installedSkills]
   );
+  const activeMentionTemplates = useMemo(() => {
+    if (!activeTemplateMention) return [];
+    const query = activeTemplateMention.query.trim().toLowerCase();
+    return orchestrationTemplates
+      .filter((template) => {
+        const mention = getTemplateMentionText(template).toLowerCase();
+        return !query || mention.includes(query) || template.label.toLowerCase().includes(query);
+      })
+      .slice(0, 8);
+  }, [activeTemplateMention, orchestrationTemplates]);
   const isBaseChoicesLoading = localRefsQuery.isLoading || trackedRefsQuery.isLoading || gitRefSnapshotQuery.isLoading || lazyCommitsQuery.isLoading || baseCommitCandidatesQuery.isLoading || baseCommitAncestorsQuery.isLoading;
-  const modelSelectorLabel = !isFlowSelected && selectedRunTotal > 1
+  const modelSelectorLabel = selectedRunTotal > 1
     ? `${selectedRunTotal} runs`
     : agent?.name ?? 'Choose model';
-  const footerStatusText = error ?? (isSteeringRunningAssistant ? 'Steer the running agent' : selectedFlow ? `${selectedFlow.label} · ${flowParallelCount} parallel runs` : '');
+  const footerStatusText = error ?? (isSteeringRunningAssistant ? 'Steer the running agent' : '');
   const dockControlButtonClass = cn(
     'group/control flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-[hsl(var(--app-border)/0.78)]',
     'bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-panel)/0.82))]',
@@ -864,6 +856,7 @@ export function GraphDockComposer() {
   useEffect(() => {
     promptRef.current = composerDraft;
     setPromptSeed(composerDraft);
+    setPromptText(composerDraft);
     setPromptHasContent(composerDraft.trim().length > 0);
     setPromptResetVersion((version) => version + 1);
   }, [composerDraft]);
@@ -877,6 +870,7 @@ export function GraphDockComposer() {
       setEditDraftSource(sourceMessage);
       promptRef.current = sourceMessage.content || '';
       setPromptSeed(sourceMessage.content || '');
+      setPromptText(sourceMessage.content || '');
       setPromptHasContent(Boolean(sourceMessage.content?.trim()));
       setPromptResetVersion((version) => version + 1);
       setComposerDraft(selectedWorkspaceId, sourceMessage.content || '', sourceMessage.id);
@@ -913,14 +907,6 @@ export function GraphDockComposer() {
       setSelectedAgentRunCounts(normalized);
     }
   }, [agents, effectiveSelectedAgentId, selectedAgentId, selectedAgentRunCounts]);
-
-  useEffect(() => {
-    if (!isFlowSelected || !effectiveSelectedAgentId) return;
-    const nextCounts = { [effectiveSelectedAgentId]: 1 };
-    if (!areAgentRunCountsEqual(normalizedSelectedAgentRunCounts, nextCounts)) {
-      setSelectedAgentRunCounts(nextCounts);
-    }
-  }, [effectiveSelectedAgentId, isFlowSelected, normalizedSelectedAgentRunCounts]);
 
   useEffect(() => {
     let cancelled = false;
@@ -963,9 +949,14 @@ export function GraphDockComposer() {
   }, [activeSkillMention?.query]);
 
   useEffect(() => {
+    setActiveTemplateMentionIndex(0);
+  }, [activeTemplateMention?.query]);
+
+  useEffect(() => {
     if (selectedWorkspaceId) return;
     setActiveFileMention(null);
     setActiveSkillMention(null);
+    setActiveTemplateMention(null);
   }, [selectedWorkspaceId]);
 
   useEffect(() => {
@@ -1032,9 +1023,13 @@ export function GraphDockComposer() {
 
   const updatePrompt = useCallback((value: string) => {
     promptRef.current = value;
+    setPromptText(value);
     const nextHasContent = value.trim().length > 0;
     setPromptHasContent((current) => (current === nextHasContent ? current : nextHasContent));
-  }, []);
+    if (promptIncludesOrchestrationTemplate(value, orchestrationTemplates)) {
+      setOrchestrationMode(true);
+    }
+  }, [orchestrationTemplates]);
 
   const savePromptDraft = useCallback((value: string) => {
     setComposerDraft(selectedWorkspaceId, value, composerDraftTargetId);
@@ -1043,6 +1038,7 @@ export function GraphDockComposer() {
   const setPromptValue = useCallback((value: string) => {
     promptRef.current = value;
     setPromptSeed(value);
+    setPromptText(value);
     setPromptHasContent(value.trim().length > 0);
     setPromptResetVersion((version) => version + 1);
     setComposerDraft(selectedWorkspaceId, value, composerDraftTargetId);
@@ -1051,10 +1047,12 @@ export function GraphDockComposer() {
   const clearPrompt = useCallback(() => {
     promptRef.current = '';
     setPromptSeed('');
+    setPromptText('');
     setPromptHasContent(false);
     setPromptResetVersion((version) => version + 1);
     setActiveFileMention(null);
     setActiveSkillMention(null);
+    setActiveTemplateMention(null);
   }, []);
 
   const handleCancelEditDraft = useCallback(() => {
@@ -1065,11 +1063,8 @@ export function GraphDockComposer() {
   }, [clearComposerDraft, clearPrompt, composerDraftTargetId, selectedWorkspaceId]);
 
   const handleAgentSelect = useCallback((agentId: string) => {
-    if (isFlowSelected) {
-      setSelectedAgentRunCounts({ [agentId]: 1 });
-    }
     setSelectedAgentId(agentId);
-  }, [isFlowSelected, setSelectedAgentId]);
+  }, [setSelectedAgentId]);
 
   const handleAgentRunCountChange = useCallback((agentId: string, count: number) => {
     const updated = updateComposerAgentRunCount(normalizedSelectedAgentRunCounts, agentId, count);
@@ -1094,29 +1089,24 @@ export function GraphDockComposer() {
     });
   }, []);
 
-  const handleFlowSelection = useCallback((flowId: string) => {
-    flowRunner.setSelectedFlowId(flowId === FLOW_NONE_ID ? '' : flowId);
-  }, [flowRunner]);
-
   const resetComposerTargetAfterSuccessfulSend = useCallback(() => {
     setComposerTargetMode((current) => resolveComposerTargetModeAfterSuccessfulSend(current));
     setPendingThreadId(null);
-  }, []);
-
-  const updateFlowParallelCount = useCallback((value: number) => {
-    setFlowParallelCount(clampFlowParallelCount(value));
   }, []);
 
   const syncActiveMentions = useCallback((value: string, cursorPosition: number | null | undefined) => {
     if (!selectedWorkspaceId || cursorPosition == null) {
       setActiveFileMention(null);
       setActiveSkillMention(null);
+      setActiveTemplateMention(null);
       return;
     }
 
     const nextFileMention = getActiveFileMention(value, cursorPosition);
-    const nextSkillMention = nextFileMention ? null : getActiveSkillMention(value, cursorPosition);
+    const nextTemplateMention = nextFileMention ? null : getActiveTemplateMention(value, cursorPosition);
+    const nextSkillMention = nextFileMention || nextTemplateMention ? null : getActiveSkillMention(value, cursorPosition);
     setActiveFileMention(nextFileMention);
+    setActiveTemplateMention(nextTemplateMention);
     setActiveSkillMention(nextSkillMention);
   }, [selectedWorkspaceId]);
 
@@ -1146,6 +1136,25 @@ export function GraphDockComposer() {
       textareaRef.current?.setSelectionRange(replacement.cursor, replacement.cursor);
     }, 80);
   }, [activeSkillMention, setPromptValue]);
+
+  const handleTemplateMentionSelect = useCallback((template: OrchestrationPromptTemplate) => {
+    if (!activeTemplateMention) return;
+
+    const mentionText = getTemplateMentionText(template);
+    const currentPrompt = promptRef.current;
+    const nextPrompt = `${currentPrompt.slice(0, activeTemplateMention.start)}${mentionText} ${currentPrompt.slice(activeTemplateMention.end)}`;
+    const nextCursor = activeTemplateMention.start + mentionText.length + 1;
+
+    setPromptValue(nextPrompt);
+    if (template.kind === 'orchestration') {
+      setOrchestrationMode(true);
+    }
+    setActiveTemplateMention(null);
+    window.setTimeout(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+    }, 80);
+  }, [activeTemplateMention, setPromptValue]);
 
   const handlePromptKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (activeFileMention) {
@@ -1204,15 +1213,47 @@ export function GraphDockComposer() {
         setActiveSkillMention(null);
       }
     }
+
+    if (activeTemplateMention) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        if (activeMentionTemplates.length > 0) {
+          setActiveTemplateMentionIndex((current) => (current + 1) % activeMentionTemplates.length);
+        }
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (activeMentionTemplates.length > 0) {
+          setActiveTemplateMentionIndex((current) => (current - 1 + activeMentionTemplates.length) % activeMentionTemplates.length);
+        }
+        return;
+      }
+      if ((event.key === 'Enter' || event.key === 'Tab') && !event.shiftKey) {
+        event.preventDefault();
+        const selectedTemplate = activeMentionTemplates[activeTemplateMentionIndex] ?? null;
+        if (selectedTemplate) handleTemplateMentionSelect(selectedTemplate);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setActiveTemplateMention(null);
+      }
+    }
   }, [
     activeFileMention,
     activeFileMentionIndex,
     activeMentionFiles,
     activeMentionSkills,
+    activeMentionTemplates,
     activeSkillMention,
     activeSkillMentionIndex,
+    activeTemplateMention,
+    activeTemplateMentionIndex,
     handleFileMentionSelect,
     handleSkillMentionSelect,
+    handleTemplateMentionSelect,
   ]);
 
   const expandRepoMentionContext = useCallback(async (rawPrompt: string) => {
@@ -1268,11 +1309,10 @@ export function GraphDockComposer() {
           agent,
         }]
         : [];
-    if (!agent || (!selectedFlow && runsToSend.length === 0)) {
+    if (!agent || runsToSend.length === 0) {
       recordSendFlowEvent('graph-dock.blocked', {
         workspaceId: selectedWorkspaceId,
         reason: 'missing-agent',
-        selectedFlowId: selectedFlow?.id ?? null,
         runCount: runsToSend.length,
       }, { source: 'GraphDockComposer' });
       setError('Select an agent before sending.');
@@ -1282,7 +1322,6 @@ export function GraphDockComposer() {
       recordSendFlowEvent('graph-dock.blocked', {
         workspaceId: selectedWorkspaceId,
         reason: 'missing-base',
-        selectedFlowId: selectedFlow?.id ?? null,
         runCount: runsToSend.length,
       }, { source: 'GraphDockComposer' });
       setError('No base commit is available for this workspace.');
@@ -1297,60 +1336,19 @@ export function GraphDockComposer() {
     }
 
     setError(null);
-    const selectedFlowIdForEvent = selectedFlow?.id ?? null;
+    const runsToLaunch = orchestrationMode
+      ? runsToSend.slice(0, 1).map((run) => ({ ...run, ordinal: 1, totalForAgent: 1 }))
+      : runsToSend;
+
     recordSendFlowEvent('graph-dock.submit', {
       workspaceId: selectedWorkspaceId,
       promptLength: promptForAgent.length,
       parentMessageId: target.parentMessageId,
-      selectedFlowId: selectedFlowIdForEvent,
-      runCount: selectedFlow ? flowParallelCount : runsToSend.length,
+      runCount: runsToLaunch.length,
       agentId: agent?.id ?? null,
       baseCommitSha: effectiveBase.commitSha,
+      orchestrationMode,
     }, { source: 'GraphDockComposer' });
-    if (selectedFlow) {
-      const flowProviderNeedsLoginProfile = agent?.type === 'codex' || agent?.type === 'claude';
-      if (flowProviderNeedsLoginProfile && (!flowLoginProfile || !isLoginProfileActive(flowLoginProfile))) {
-        setError(`${agent?.name ?? agent?.type ?? 'Agent'} needs a ready login profile before it can run.`);
-        return;
-      }
-      let flowThreadId = effectiveThreadId;
-      if (!target.parentMessageId && selectedWorkspaceId && (!flowThreadId || flowThreadId.startsWith('workspace-empty-thread:'))) {
-        const thread = await createThreadSession.mutateAsync({
-          workspaceId: selectedWorkspaceId,
-          source: 'flow',
-          baseCommitSha: effectiveBase.commitSha,
-        });
-        flowThreadId = thread.id;
-        setPendingThreadId(thread.id);
-      }
-      void flowRunner.runFlow({ input: promptForAgent, count: flowParallelCount, threadId: flowThreadId }).then((result) => {
-        if (result.status !== 'failed' && result.status !== 'stopped') {
-          return;
-        }
-        const message = result.reason || 'Failed to run flow.';
-        recordSendFlowEvent('graph-dock.error', {
-          workspaceId: selectedWorkspaceId,
-          parentMessageId: target.parentMessageId,
-          selectedFlowId: selectedFlowIdForEvent,
-          message,
-        }, { source: 'GraphDockComposer' });
-        setError(message);
-      }).catch((caught) => {
-        const message = caught instanceof Error ? caught.message : 'Failed to run flow.';
-        recordSendFlowEvent('graph-dock.error', {
-          workspaceId: selectedWorkspaceId,
-          parentMessageId: target.parentMessageId,
-          selectedFlowId: selectedFlowIdForEvent,
-          message,
-        }, { source: 'GraphDockComposer' });
-        setError(message);
-      });
-      clearComposerDraft(selectedWorkspaceId, composerDraftTargetId);
-      setEditDraftSource(null);
-      clearPrompt();
-      resetComposerTargetAfterSuccessfulSend();
-      return;
-    }
 
     setIsSending(true);
     assistantNodeIdRef.current = null;
@@ -1365,7 +1363,7 @@ export function GraphDockComposer() {
         threadId = thread.id;
         setPendingThreadId(thread.id);
       }
-      for (const run of runsToSend) {
+      for (const run of runsToLaunch) {
         const compatibleLoginProfiles = useLoginProfilesStore.getState().profiles
           .filter((profile) => profile.provider === run.agent.type);
         const selectedLoginProfileId =
@@ -1420,10 +1418,13 @@ export function GraphDockComposer() {
           perfSource: 'GraphDockComposer',
           setupProgress: 'Starting graph composer run...',
           selectedLoginProfileId: selectedLoginProfile?.id ?? null,
+          permissionMode,
           threadId,
           threadOriginId: threadId,
+          orchestrationMode,
           meta: {
             composer_surface: 'graph-dock',
+            composer_permission_mode: permissionMode,
             base_source: effectiveBase.source,
             agent_run_ordinal: run.ordinal,
             agent_run_total_for_agent: run.totalForAgent,
@@ -1439,7 +1440,6 @@ export function GraphDockComposer() {
       recordSendFlowEvent('graph-dock.error', {
         workspaceId: selectedWorkspaceId,
         parentMessageId: target.parentMessageId,
-        selectedFlowId: selectedFlowIdForEvent,
         message,
       }, { source: 'GraphDockComposer' });
       if (assistantNodeIdRef.current) {
@@ -1463,20 +1463,17 @@ export function GraphDockComposer() {
     effectiveContextParentId,
     effectiveContextPolicy,
     effectiveContextStartId,
-    effectiveThreadId,
     expandRepoMentionContext,
-    flowParallelCount,
-    flowLoginProfile,
-    flowRunner,
     isPrimaryActionBusy,
     isSteeringRunningAssistant,
     messages,
     pendingThreadId,
+    permissionMode,
+    orchestrationMode,
     queryClient,
     resetComposerTargetAfterSuccessfulSend,
     selectedWorkspaceId,
     selectedAgentRunItems,
-    selectedFlow,
     target.parentMessageId,
     workspaces,
   ]);
@@ -1488,29 +1485,6 @@ export function GraphDockComposer() {
     setError(null);
     setIsCancellingRun(true);
     try {
-      const flowCancelTarget = resolveActiveFlowCancelTarget({
-        nodeId,
-        node: parentMessage,
-      });
-      if (flowCancelTarget) {
-        for (const activeNodeId of flowCancelTarget.activeNodeIds) {
-          const activeMessage = messageById.get(activeNodeId) ?? null;
-          agentRunManager.dispatch(activeNodeId, {
-            type: 'cancel',
-            reason: 'cancelled',
-          }, {
-            workspaceId: activeMessage?.workspaceId ?? selectedWorkspaceId,
-            parentId: activeMessage?.parentId ?? null,
-            role: 'assistant',
-            agentId: activeMessage?.agent_id ?? null,
-            content: activeMessage?.content ?? '',
-            executionData: (activeMessage?.execution_data ?? {}) as Record<string, any>,
-          });
-        }
-        await flowRunManager.cancel(flowCancelTarget.flowRunId, 'cancelled');
-        void scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'cancel-flow' });
-        return;
-      }
       await agentClient.stopAgent(nodeId);
       agentRunManager.dispatch(nodeId, {
         type: 'cancel',
@@ -1526,12 +1500,12 @@ export function GraphDockComposer() {
       void scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'cancel-agent' });
     } catch (caught) {
       if (isNoAgentSessionFoundError(caught)) {
-        const marked = await markStalePrelaunchFlowNodeCancelled({
+        const marked = await markStaleLocalAgentNodeCancelled({
           queryClient,
           workspaceId: selectedWorkspaceId,
           nodeId,
           node: parentMessage,
-          reason: 'Flow cancelled after the app restarted before the native agent session was created.',
+          reason: 'Run cancelled after the app restarted before the native agent session was created.',
         });
         if (marked) {
           agentRunManager.dispatch(nodeId, {
@@ -1545,7 +1519,7 @@ export function GraphDockComposer() {
             content: parentMessage?.content ?? '',
             executionData: (parentMessage?.execution_data ?? {}) as Record<string, any>,
           });
-          void scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'cancel-stale-flow-node' });
+          void scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'cancel-stale-local-node' });
           return;
         }
       }
@@ -1554,10 +1528,10 @@ export function GraphDockComposer() {
     } finally {
       setIsCancellingRun(false);
     }
-  }, [isCancellingRun, messageById, parentMessage, queryClient, selectedWorkspaceId, target.parentMessageId]);
+  }, [isCancellingRun, parentMessage, queryClient, selectedWorkspaceId, target.parentMessageId]);
 
   const targetModeLabel = isRootComposerTarget ? 'New thread' : 'Reply to';
-  const sendButtonLabel = isSteeringRunningAssistant ? 'Steer' : editDraftSource ? 'Edit and run' : selectedFlow ? 'Run Flow' : 'Send';
+  const sendButtonLabel = isSteeringRunningAssistant ? 'Steer' : editDraftSource ? 'Edit and run' : 'Send';
   const sendButtonBusyLabel = isCancellingRun ? 'Cancelling' : isSteeringRunningAssistant ? 'Steering' : 'Sending';
 
   return (
@@ -1731,6 +1705,71 @@ export function GraphDockComposer() {
               </div>
             </div>
           ) : null}
+          {activeTemplateMention ? (
+            <div className="absolute inset-x-0 bottom-[calc(100%+8px)] z-50 overflow-hidden rounded-xl border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong)/0.98)] shadow-[0_20px_60px_-28px_rgba(15,23,42,0.45)] backdrop-blur-xl">
+              <div className="flex items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 text-[11px] font-semibold text-foreground">
+                    <span className="flex h-5 w-5 items-center justify-center rounded-md bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))]">
+                      <Workflow className="h-3 w-3" />
+                    </span>
+                    Orchestration
+                  </div>
+                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                    Select reusable node prompts or orchestration prompts.
+                  </p>
+                </div>
+                {activeTemplateMention.query ? (
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                    {activeTemplateMention.query}
+                  </span>
+                ) : null}
+              </div>
+              <div className="max-h-72 overflow-y-auto p-2">
+                {activeMentionTemplates.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-border/70 px-3 py-6 text-center text-[12px] text-muted-foreground">
+                    No orchestration items match this query.
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    {activeMentionTemplates.map((template, index) => {
+                      const isHighlighted = index === activeTemplateMentionIndex;
+                      const mentionText = getTemplateMentionText(template);
+                      return (
+                        <button
+                          key={`${template.kind}:${template.id}`}
+                          type="button"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => handleTemplateMentionSelect(template)}
+                          className={cn(
+                            'flex w-full items-start justify-between gap-3 rounded-xl px-3 py-2 text-left transition-colors',
+                            isHighlighted ? 'bg-[hsl(var(--app-accent-soft))] text-foreground shadow-sm' : 'hover:bg-muted/60'
+                          )}
+                        >
+                          <span className="min-w-0">
+                            <span className="flex items-center gap-2 text-sm font-medium">
+                              {template.kind === 'orchestration' ? (
+                                <Workflow className="mt-0.5 h-4 w-4 shrink-0 text-[hsl(var(--app-accent))]" />
+                              ) : (
+                                <Puzzle className="mt-0.5 h-4 w-4 shrink-0 text-[hsl(var(--app-accent))]" />
+                              )}
+                              <span className="truncate">{mentionText}</span>
+                            </span>
+                            <span className="mt-1 block truncate pl-6 text-[11px] text-muted-foreground">
+                              {template.prompt}
+                            </span>
+                          </span>
+                          <span className="shrink-0 rounded-full border border-border/70 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                            {template.kind === 'orchestration' ? 'Orchestration' : 'Node'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
           <GraphDockPromptTextarea
             textareaRef={textareaRef}
             initialValue={promptSeed}
@@ -1744,63 +1783,6 @@ export function GraphDockComposer() {
           />
         </div>
         <div data-testid="graph-dock-control-row" className="mt-1.5 grid min-w-0 grid-cols-2 gap-1.5 border-t border-[hsl(var(--app-border)/0.52)] px-0.5 pt-1.5 md:grid-cols-4">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label="Select flow"
-                title="Select a flow to run multiple agents in a predefined flow."
-                disabled={isComposerConfigurationDisabled || !selectedWorkspaceId}
-                className={cn(
-                  dockControlButtonClass,
-                  'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
-                  'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
-                  'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]',
-                  isFlowSelected && 'border-[hsl(var(--app-accent)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-accent-soft)/0.58),hsl(var(--app-panel-strong)/0.94))] shadow-[inset_0_1px_0_hsl(44_80%_99%/0.54),inset_0_-1px_0_hsl(var(--app-accent)/0.16),0_11px_24px_-18px_hsl(34_28%_18%/0.62)]'
-                )}
-              >
-                <Workflow className="h-3 w-3 shrink-0 text-muted-foreground" />
-                <span className="truncate">{selectedFlow?.label ?? 'No flow'}</span>
-                <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" side="top" sideOffset={8} className="w-[min(21rem,calc(100vw-1.5rem))] rounded-xl border border-border/70 bg-popover/95 p-1.5 shadow-xl backdrop-blur-xl">
-              <DropdownMenuLabel className="px-1.5 py-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Flow</DropdownMenuLabel>
-              <DropdownMenuItem onClick={() => handleFlowSelection(FLOW_NONE_ID)} className="min-h-9 gap-2 rounded-lg px-2 py-1.5">
-                {!isFlowSelected ? <Check className="h-3.5 w-3.5" /> : <X className="h-3.5 w-3.5" />}
-                <div className="min-w-0">
-                  <div className="text-[12px] font-semibold">None</div>
-                  <div className="truncate text-[10.5px] text-muted-foreground">Send a normal agent request</div>
-                </div>
-              </DropdownMenuItem>
-              {flowRunner.flows.length > 0 ? <DropdownMenuSeparator /> : null}
-              {flowRunner.flows.map((flow) => (
-                <DropdownMenuItem key={flow.id} onClick={() => handleFlowSelection(flow.id)} className="min-h-10 gap-2 rounded-lg px-2 py-1.5">
-                  {flow.id === flowRunner.selectedFlowId ? <Check className="h-3.5 w-3.5" /> : <Workflow className="h-3.5 w-3.5" />}
-                  <div className="min-w-0">
-                    <div className="truncate text-[12px] font-semibold">{flow.label}</div>
-                    <div className="truncate text-[10.5px] text-muted-foreground">Run a predefined multi-agent flow</div>
-                  </div>
-                </DropdownMenuItem>
-              ))}
-              {isFlowSelected ? (
-                <div className="mt-1 rounded-lg border border-border/65 bg-background/72 px-2 py-2" onClick={(event) => event.stopPropagation()}>
-                  <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Parallel count</div>
-                  <input
-                    aria-label="Parallel count"
-                    type="number"
-                    min={FLOW_PARALLEL_MIN_COUNT}
-                    max={FLOW_PARALLEL_MAX_COUNT}
-                    value={flowParallelCount}
-                    onChange={(event) => updateFlowParallelCount(Number(event.target.value))}
-                    onKeyDown={(event) => event.stopPropagation()}
-                    className="h-7 w-16 rounded-md border border-[hsl(var(--app-border))] bg-transparent text-center text-xs font-semibold outline-none"
-                  />
-                </div>
-              ) : null}
-            </DropdownMenuContent>
-          </DropdownMenu>
-
           <Popover open={isAgentPickerOpen} onOpenChange={setIsAgentPickerOpen}>
             <PopoverTrigger
               type="button"
@@ -1822,8 +1804,8 @@ export function GraphDockComposer() {
               <UnifiedAgentModelSelector
                 onSelectAgent={handleAgentSelect}
                 selectedAgentId={agent?.id ?? selectedAgentId}
-                agentRunCounts={!isFlowSelected ? normalizedSelectedAgentRunCounts : undefined}
-                onAgentRunCountChange={!isFlowSelected ? handleAgentRunCountChange : undefined}
+                agentRunCounts={normalizedSelectedAgentRunCounts}
+                onAgentRunCountChange={handleAgentRunCountChange}
               />
             </PopoverContent>
           </Popover>
@@ -2007,13 +1989,51 @@ export function GraphDockComposer() {
               ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Select permissions"
+                title={selectedPermissionOption.description}
+                disabled={isComposerConfigurationDisabled}
+                className={cn(
+                  dockControlButtonClass,
+                  'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
+                  'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
+                  'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]',
+                  permissionMode === 'full-access' && 'border-[hsl(var(--app-warning)/0.36)]'
+                )}
+              >
+                <Shield className="h-3 w-3 shrink-0 text-muted-foreground" />
+                <span className="truncate">{selectedPermissionOption.label}</span>
+                <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" side="top" sideOffset={8} className="w-[min(20rem,calc(100vw-1.5rem))] rounded-xl border border-border/70 bg-popover/95 p-1.5 shadow-xl backdrop-blur-xl">
+              <DropdownMenuLabel className="px-1.5 py-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Permissions</DropdownMenuLabel>
+              {COMPOSER_PERMISSION_OPTIONS.map((option) => (
+                <DropdownMenuItem
+                  key={option.id}
+                  onClick={() => setPermissionMode(option.id)}
+                  className="min-h-11 gap-2 rounded-lg px-2 py-1.5"
+                >
+                  {permissionMode === option.id ? <Check className="h-3.5 w-3.5" /> : <Shield className="h-3.5 w-3.5" />}
+                  <div className="min-w-0">
+                    <div className="truncate text-[12px] font-semibold">{option.label}</div>
+                    <div className="truncate text-[10.5px] text-muted-foreground">{option.description}</div>
+                  </div>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
         <div className="mt-1.5 flex items-center justify-between gap-2 px-0.5 pb-0.5">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <div className="min-w-0 shrink truncate text-[11px] text-muted-foreground">
               {footerStatusText}
             </div>
-            {!isFlowSelected && selectedAgentRunChips.length > 0 ? (
+            {selectedAgentRunChips.length > 0 ? (
               <div data-testid="graph-dock-selected-model-chips" className="hidden min-w-0 flex-1 items-center gap-1 sm:flex">
                 {selectedAgentRunChips.slice(0, 3).map(({ agent: chipAgent, count }) => {
                   const canRemove = selectedRunTotal > count;
@@ -2068,6 +2088,29 @@ export function GraphDockComposer() {
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
+            {!isSteeringRunningAssistant ? (
+              <label
+                className={cn(
+                  'flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-[hsl(var(--app-border)/0.72)] bg-background/58 px-2 text-[11px] font-semibold text-muted-foreground transition-[background-color,border-color,color,opacity]',
+                  'hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-background/80 hover:text-foreground',
+                  isComposerConfigurationDisabled && 'cursor-not-allowed opacity-50 hover:border-[hsl(var(--app-border)/0.72)] hover:bg-background/58 hover:text-muted-foreground',
+                  orchestrationMode && 'border-[hsl(var(--app-accent)/0.42)] bg-[hsl(var(--app-accent-soft)/0.28)] text-foreground'
+                )}
+                title="Run is controlled through the orchestrator when enabled."
+              >
+                <input
+                  type="checkbox"
+                  checked={orchestrationMode}
+                  disabled={isComposerConfigurationDisabled}
+	                  onChange={(event) => {
+	                    setOrchestrationMode(event.target.checked);
+	                  }}
+                  className="h-3.5 w-3.5 accent-[hsl(var(--app-accent))]"
+                  aria-label="Enable orchestration"
+                />
+                <span className="hidden whitespace-nowrap sm:inline">Orchestration</span>
+              </label>
+            ) : null}
             {isSteeringRunningAssistant ? (
               <button
                 type="button"
@@ -2081,11 +2124,11 @@ export function GraphDockComposer() {
                   'hover:-translate-y-0.5 hover:border-destructive/35 hover:bg-destructive/10 hover:text-destructive active:translate-y-0',
                   'disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:translate-y-0 disabled:hover:border-[hsl(var(--app-border)/0.78)] disabled:hover:text-muted-foreground'
                 )}
-                aria-label={activeFlowCancelTarget ? 'Cancel running flow' : 'Cancel running agent'}
-                title={activeFlowCancelTarget ? 'Cancel flow' : 'Cancel running agent'}
+                aria-label="Cancel running agent"
+                title="Cancel running agent"
               >
                 {isCancellingRun ? <Loader2 className="h-3 w-3 animate-spin" /> : <Square className="h-2.5 w-2.5 fill-current" />}
-                <span className="hidden sm:inline">{isCancellingRun ? 'Stopping' : activeFlowCancelTarget ? 'Cancel flow' : 'Cancel'}</span>
+                <span className="hidden sm:inline">{isCancellingRun ? 'Stopping' : 'Cancel'}</span>
               </button>
             ) : null}
             <button

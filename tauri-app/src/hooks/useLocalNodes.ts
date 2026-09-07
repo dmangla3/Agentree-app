@@ -77,6 +77,11 @@ export const parseLocalNode = (row: LocalNodeRecord): LocalNodeMessage | null =>
   try {
     const payload = JSON.parse(row.payload);
     if (!payload || typeof payload.id !== 'string') return null;
+    const controlledByNodeId = row.controlledByNodeId ?? payload.controlledByNodeId ?? payload.controlled_by_node_id ?? null;
+    if (controlledByNodeId && typeof controlledByNodeId === 'string') {
+      payload.controlledByNodeId = controlledByNodeId;
+      payload.controlled_by_node_id = controlledByNodeId;
+    }
     return {
       nodeId: row.nodeId,
       workspaceId: row.workspaceId,

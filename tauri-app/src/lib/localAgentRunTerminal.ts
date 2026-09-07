@@ -9,9 +9,13 @@ export const isNoAgentSessionFoundError = (error: unknown): boolean => {
   return message.includes('No agent session found');
 };
 
-export const isStalePrelaunchFlowNode = (node: Pick<Message, 'status' | 'execution_data'> | null | undefined): boolean => (
-  Boolean(readFlowRunId(node)) && isActiveAgentStatus(node?.status)
-);
+type StaleLocalAgentNodeCandidate = Pick<Message, 'status' | 'execution_data'> & Partial<Pick<Message, 'role'>>;
+
+export const isStalePrelaunchLocalAgentNode = (node: StaleLocalAgentNodeCandidate | null | undefined): boolean => {
+  if (!isActiveAgentStatus(node?.status)) return false;
+  if (node?.role && node.role !== 'assistant') return false;
+  return Boolean(readQuickReplyFlag(node) || !readCurrentRunId(node));
+};
 
 export async function markLocalAgentNodeTerminal(input: {
   queryClient: QueryClient;
@@ -55,14 +59,14 @@ export async function markLocalAgentNodeTerminal(input: {
   return nextMessage;
 }
 
-export async function markStalePrelaunchFlowNodeCancelled(input: {
+export async function markStaleLocalAgentNodeCancelled(input: {
   queryClient: QueryClient;
   workspaceId: string;
   nodeId: string;
   node?: Partial<Message> | null;
   reason?: string;
 }): Promise<boolean> {
-  if (!isStalePrelaunchFlowNode(input.node as Message | null | undefined)) {
+  if (!isStalePrelaunchLocalAgentNode(input.node as Message | null | undefined)) {
     return false;
   }
   await markLocalAgentNodeTerminal({
@@ -71,7 +75,7 @@ export async function markStalePrelaunchFlowNodeCancelled(input: {
     nodeId: input.nodeId,
     node: input.node,
     status: AGENT_STATUS.cancelled,
-    reason: input.reason ?? 'Flow cancelled before the native agent session was created.',
+    reason: input.reason ?? 'Run cancelled before the native agent session was created.',
   });
   return true;
 }
@@ -99,13 +103,17 @@ function buildTerminalExecutionData(
   };
 }
 
-function readFlowRunId(node: Pick<Message, 'execution_data'> | null | undefined): string | null {
+function readCurrentRunId(node: Pick<Message, 'execution_data'> | null | undefined): string | null {
   const executionData = node?.execution_data;
   if (!executionData || typeof executionData !== 'object') return null;
-  const direct = (executionData as Record<string, unknown>).flow_run_id;
-  if (typeof direct === 'string' && direct.trim()) return direct.trim();
+  const currentRunId = (executionData as Record<string, unknown>).current_run_id;
+  return typeof currentRunId === 'string' && currentRunId.trim() ? currentRunId.trim() : null;
+}
+
+function readQuickReplyFlag(node: Pick<Message, 'execution_data'> | null | undefined): boolean {
+  const executionData = node?.execution_data;
+  if (!executionData || typeof executionData !== 'object') return false;
   const meta = (executionData as Record<string, unknown>).meta;
-  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null;
-  const nested = (meta as Record<string, unknown>).flow_run_id;
-  return typeof nested === 'string' && nested.trim() ? nested.trim() : null;
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return false;
+  return (meta as Record<string, unknown>).quick_reply === true;
 }

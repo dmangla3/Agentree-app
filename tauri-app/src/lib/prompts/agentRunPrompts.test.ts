@@ -42,13 +42,17 @@ describe('agent run prompts', () => {
     expect(result.agentreeContextInjected).toBe(true);
   });
 
-  it('keeps the dependency guard on flow prompts', () => {
+  it('keeps the dependency guard on plain prompts', () => {
     const result = buildAgentRunPrompt({
-      mode: 'flow',
+      mode: 'plain',
       userPrompt: 'Review this generated implementation.',
     });
 
     expect(result.prompt).toContain('Agentree provides writable per-agent cache/build env vars');
+    expect(result.prompt).toContain('when you create or revise repository files that may be committed');
+    expect(result.prompt).toContain('write file references as repo-relative paths');
+    expect(result.prompt).toContain('Do not write absolute Agentree worktree paths');
+    expect(result.prompt).toContain('Absolute clickable local file links are acceptable only in your final chat response');
     expect(result.prompt).toContain('Review this generated implementation.');
     expect(result.agentreeContextInjected).toBe(false);
   });
@@ -70,10 +74,32 @@ describe('agent run prompts', () => {
     expect(laterThreadPrompt.prompt).toContain('set thread_title to null');
   });
 
-  it('wraps selected Agentree context for flow prompts when provided', () => {
+  it('asks orchestrator runs for an orchestration ai label', () => {
     const result = buildAgentRunPrompt({
-      mode: 'flow',
-      userPrompt: 'Run the selected flow.',
+      mode: 'agentree_context',
+      userPrompt: '#security_reviewer',
+      orchestrationLabelMode: 'orchestrator',
+      orchestrationControl: {
+        orchestratorRunId: 'run-orch',
+        orchestratorNodeId: 'assistant-orch',
+      },
+      threadTitleMode: 'none',
+    });
+
+    expect(result.prompt).toContain('[Agentree Orchestrator]');
+    expect(result.prompt).toContain('set ai_label to a concise 2-5 word task label');
+    expect(result.prompt).toContain('Prefer task or domain wording over model or child-run labels');
+    expect(result.prompt).toContain('orchestrator_run_id: run-orch');
+    expect(result.prompt).toContain('orchestrator_node_id: assistant-orch');
+    expect(result.prompt).toContain('First create a Mermaid flowchart');
+    expect(result.prompt).toContain('set_orchestration_diagram');
+    expect(result.prompt).toContain('Wait for children with wait_for_runs');
+  });
+
+  it('wraps selected Agentree context for orchestration child prompts when provided', () => {
+    const result = buildAgentRunPrompt({
+      mode: 'agentree_context',
+      userPrompt: 'Run the selected orchestration child.',
       contextManifest: {
         ...EMPTY_COMPOSER_CONTEXT_MANIFEST,
         contextText: '[Turn 3] ASSISTANT (a3:assistant)\nImportant prior decision',
@@ -81,7 +107,7 @@ describe('agent run prompts', () => {
     });
 
     expect(result.prompt).toContain('[Selected Workspace Context]\n[Turn 3] ASSISTANT (a3:assistant)\nImportant prior decision');
-    expect(result.prompt).toContain('[Latest User Request]\nRun the selected flow.');
+    expect(result.prompt).toContain('[Latest User Request]\nRun the selected orchestration child.');
     expect(result.agentreeContextInjected).toBe(true);
   });
 });

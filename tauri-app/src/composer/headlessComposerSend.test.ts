@@ -189,6 +189,43 @@ describe('sendHeadlessComposerReply', () => {
     expect(intent.runContext.executionData.meta.login_profile_id).toBe('profile-codex-work');
   });
 
+  it('lets the composer permission mode override stored agent cli permission flags', async () => {
+    const startAgentRun = vi.fn().mockResolvedValue(undefined);
+    await sendHeadlessComposerMessage({
+      workspaceId: 'workspace-1',
+      parentMessageId: null,
+      contextParentId: null,
+      contextPolicy: 'fresh',
+      prompt: 'Use isolated permissions',
+      messages: [],
+      agent: {
+        id: 'codex-agent',
+        type: 'codex',
+        name: 'Codex',
+        cliArgs: '--model gpt-5.5 --permission-mode auto',
+        promptFlag: null,
+        model_config: { model: 'gpt-5.5' },
+      },
+      base: {
+        commitSha: 'workspace-base',
+        selectedFromNodeId: null,
+      },
+      workspaces: [{ id: 'workspace-1', local_repo_path: '/repo' } as Workspace],
+      startAgentRun,
+      getAccessToken: vi.fn().mockResolvedValue('token-1'),
+      seedAgentRun: vi.fn(),
+      dispatchAgentRun: vi.fn(),
+      permissionMode: 'fully-isolated',
+      createRunId: () => 'run-permissions',
+      nowIso: () => '2026-05-27T01:02:03.000Z',
+    });
+
+    const intent = startAgentRun.mock.calls[0][0];
+    expect(intent.args).toEqual(expect.arrayContaining(['--permission-mode', 'fully-isolated']));
+    expect(intent.args).not.toContain('auto');
+    expect(intent.runContext.executionData.meta.composer_permission_mode).toBe('fully-isolated');
+  });
+
   it('sends the first-class thread id and legacy thread origin for new graph threads', async () => {
     const response = await sendHeadlessComposerMessage({
       workspaceId: 'workspace-1',
@@ -450,5 +487,164 @@ describe('sendHeadlessComposerReply', () => {
     expect(runtimePrompt).toContain('new answer');
     expect(runtimePrompt).not.toContain('old context');
     expect(runtimePrompt).toContain('Continue from here');
+  });
+
+  it('starts orchestration sends as persisted orchestrator runs and records a preview', async () => {
+    const order: string[] = [];
+    const startAgentRun = vi.fn(async () => {
+      order.push('startAgentRun');
+      return undefined;
+    });
+    const persistLocalNode = vi.fn(async () => undefined);
+    const onMessagesCreated = vi.fn();
+
+    const response = await sendHeadlessComposerMessage({
+      workspaceId: 'workspace-1',
+      parentMessageId: 'parent-1',
+      contextParentId: 'parent-1',
+      contextPolicy: 'continue',
+      prompt: 'Create three parallel #planner.',
+      messages: [message({ id: 'parent-1', output_commit_sha: 'base-sha' })],
+      agent: {
+        id: 'codex-agent',
+        type: 'codex',
+        name: 'Codex',
+        cliArgs: '',
+        promptFlag: null,
+        model_config: { model: 'gpt-5.5' },
+      },
+      base: {
+        commitSha: 'base-sha',
+        selectedFromNodeId: 'parent-1',
+      },
+      workspaces: [{ id: 'workspace-1', local_repo_path: '/repo' } as Workspace],
+      startAgentRun,
+      getAccessToken: vi.fn().mockResolvedValue('token-1'),
+      seedAgentRun: vi.fn(),
+      dispatchAgentRun: vi.fn(),
+      persistLocalNode,
+      onMessagesCreated,
+      orchestrationMode: true,
+      createRunId: () => 'run-orchestrator',
+      nowIso: () => '2026-05-27T01:02:03.000Z',
+    });
+
+    const assistantMessage = response.assistantMessages?.[0];
+    expect(assistantMessage).toBeDefined();
+    expect(assistantMessage?.controlled_by_node_id).toBeNull();
+    expect(assistantMessage?.execution_data?.meta).toEqual(expect.objectContaining({
+      node_kind: 'orchestrator',
+      orchestrator_run_id: 'run-orchestrator',
+      base_commit_sha: 'base-sha',
+    }));
+    expect((assistantMessage?.execution_data?.meta as Record<string, unknown>).controlled_by_node_id).toBeUndefined();
+    expect(startAgentRun).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run-orchestrator',
+      assistantNodeId: assistantMessage?.id,
+      parentCommit: 'base-sha',
+      runContext: expect.objectContaining({
+        promptFallback: 'Create three parallel #planner.',
+      }),
+    }));
+    expect(onMessagesCreated).toHaveBeenCalledWith([response.userMessage, assistantMessage]);
+    expect(order).toEqual(['startAgentRun']);
+    expect(response).not.toHaveProperty('orchestrationPreview');
+    expect(response).not.toHaveProperty('orchestrationExecutionContext');
+    expect(response).not.toHaveProperty('orchestrationExecutionResult');
+  });
+
+  it('passes saved orchestration template mentions through to the orchestrator without app-side expansion', async () => {
+    const startAgentRun = vi.fn(async () => undefined);
+
+    const response = await sendHeadlessComposerMessage({
+      workspaceId: 'workspace-1',
+      parentMessageId: 'parent-1',
+      contextParentId: 'parent-1',
+      contextPolicy: 'continue',
+      prompt: '#migration_review Agentree orchestration migration',
+      messages: [message({ id: 'parent-1', output_commit_sha: 'base-sha' })],
+      agent: {
+        id: 'codex-agent',
+        type: 'codex',
+        name: 'Codex',
+        cliArgs: '',
+        promptFlag: null,
+        model_config: { model: 'gpt-5.5' },
+      },
+      base: {
+        commitSha: 'base-sha',
+        selectedFromNodeId: 'parent-1',
+      },
+      workspaces: [{ id: 'workspace-1', local_repo_path: '/repo' } as Workspace],
+      startAgentRun,
+      getAccessToken: vi.fn().mockResolvedValue('token-1'),
+      seedAgentRun: vi.fn(),
+      dispatchAgentRun: vi.fn(),
+      persistLocalNode: vi.fn().mockResolvedValue(undefined),
+      orchestrationMode: true,
+      createRunId: () => 'run-orchestrator',
+      nowIso: () => '2026-05-27T01:02:03.000Z',
+    });
+
+    expect(startAgentRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: 'run-orchestrator',
+        assistantNodeId: response.assistantMessages?.[0]?.id,
+        runContext: expect.objectContaining({
+          promptFallback: '#migration_review Agentree orchestration migration',
+        }),
+      }),
+    );
+    expect(response).not.toHaveProperty('orchestrationPreview');
+  });
+
+  it('does not execute simple orchestration children from the composer', async () => {
+    const order: string[] = [];
+    const startAgentRun = vi.fn(async (intent: any) => {
+      order.push(`startAgentRun:${intent.assistantNodeId}`);
+      return {
+        runId: intent.runId,
+        assistantNodeId: intent.assistantNodeId,
+        worktreePath: `/repo/.agentree/worktrees/${intent.assistantNodeId}`,
+        branchName: `agentree/${intent.assistantNodeId}`,
+        pid: 123,
+        initialStatus: 'running',
+      };
+    });
+
+    const response = await sendHeadlessComposerMessage({
+      workspaceId: 'workspace-1',
+      parentMessageId: 'parent-1',
+      contextParentId: 'parent-1',
+      contextPolicy: 'continue',
+      prompt: 'Create a node that checks validation steps',
+      messages: [message({ id: 'parent-1', output_commit_sha: 'base-sha' })],
+      agent: {
+        id: 'codex-agent',
+        type: 'codex',
+        name: 'Codex',
+        cliArgs: '',
+        promptFlag: null,
+        model_config: { model: 'gpt-5.5' },
+      },
+      base: {
+        commitSha: 'base-sha',
+        selectedFromNodeId: 'parent-1',
+      },
+      workspaces: [{ id: 'workspace-1', local_repo_path: '/repo' } as Workspace],
+      startAgentRun,
+      getAccessToken: vi.fn().mockResolvedValue('token-1'),
+      seedAgentRun: vi.fn(),
+      dispatchAgentRun: vi.fn(),
+      persistLocalNode: vi.fn().mockResolvedValue(undefined),
+      orchestrationMode: true,
+      createRunId: () => 'run-orchestrator',
+      nowIso: () => '2026-05-27T01:02:03.000Z',
+    });
+
+    expect(order).toEqual([
+      `startAgentRun:${response.assistantMessages?.[0]?.id}`,
+    ]);
+    expect(response).not.toHaveProperty('orchestrationExecutionResult');
   });
 });

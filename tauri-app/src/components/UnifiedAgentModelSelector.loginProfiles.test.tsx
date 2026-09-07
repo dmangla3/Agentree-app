@@ -1,7 +1,7 @@
 import { fireEvent, render } from '@testing-library/react';
 // @ts-expect-error jsdom ships without a project-local declaration in this workspace.
 import { JSDOM } from 'jsdom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LOGIN_PROFILES_NAVIGATION_EVENT } from '../lib/loginNavigationEvents';
 import { UnifiedAgentModelSelector } from './UnifiedAgentModelSelector';
 
@@ -18,6 +18,18 @@ vi.mock('../hooks/useAgents', () => ({
           familyLabel: 'GPT-5.5',
           reasoningEffort: 'high',
           effortLabel: 'High',
+        },
+      },
+      {
+        id: 'codex:gpt-6:low',
+        type: 'codex',
+        name: 'Codex Low',
+        model_config: {
+          model: 'gpt-6',
+          familyKey: 'codex:gpt-6',
+          familyLabel: 'GPT-6',
+          reasoningEffort: 'low',
+          effortLabel: 'Low',
         },
       },
       {
@@ -48,6 +60,8 @@ const profileState = {
   isLoading: false,
 };
 
+let dom: JSDOM;
+
 vi.mock('../stores/loginProfilesStore', () => ({
   useLoginProfilesStore: (selector: any) => selector(profileState),
 }));
@@ -65,7 +79,7 @@ vi.mock('../lib/agentClient', () => ({
 
 describe('UnifiedAgentModelSelector login profile gating', () => {
   beforeEach(() => {
-    const dom = new JSDOM('<!doctype html><html><body></body></html>');
+    dom = new JSDOM('<!doctype html><html><body></body></html>');
     vi.stubGlobal('window', dom.window);
     vi.stubGlobal('document', dom.window.document);
     vi.stubGlobal('HTMLElement', dom.window.HTMLElement);
@@ -79,6 +93,11 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
       { id: 'codex-ready', provider: 'codex', displayName: 'Codex Work', authType: 'codex_api_key', status: 'ready', isDefault: true },
       { id: 'claude-expired', provider: 'claude', displayName: 'Claude Old', authType: 'claude_api_key', status: 'expired', isDefault: true },
     ];
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('allows selecting models for providers with a ready selected profile', () => {
@@ -139,5 +158,87 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
     fireEvent.click(getAllByText('High')[0]);
 
     expect(onSelectAgent).toHaveBeenCalledWith('codex:gpt-5.5:high');
+  });
+
+  it('delays switching families while the pointer is moving diagonally toward the effort panel', () => {
+    vi.useFakeTimers();
+    const onSelectAgent = vi.fn();
+
+    vi.spyOn(dom.window.HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getRect(this: HTMLElement) {
+      const element = this;
+      if (element.getAttribute('data-model-family-list') === 'true') {
+        return {
+          x: 0,
+          y: 0,
+          left: 0,
+          top: 0,
+          right: 300,
+          bottom: 220,
+          width: 300,
+          height: 220,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      if (element.getAttribute('data-model-effort-column') === 'true') {
+        return {
+          x: 320,
+          y: 0,
+          left: 320,
+          top: 0,
+          right: 560,
+          bottom: 220,
+          width: 240,
+          height: 220,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      return {
+        x: 0,
+        y: 0,
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ({}),
+      } as DOMRect;
+    });
+
+    const { getAllByText, getByText, queryByText } = render(
+      <UnifiedAgentModelSelector selectedAgentId="codex:gpt-5.5:high" onSelectAgent={onSelectAgent} />
+    );
+
+    const activeFamily = getAllByText('GPT-5.5')[0].closest('button')!;
+    const nextFamily = getByText('GPT-6').closest('button')!;
+
+    fireEvent.pointerEnter(activeFamily, { clientX: 120, clientY: 72 });
+    fireEvent.pointerEnter(nextFamily, { clientX: 170, clientY: 118 });
+    fireEvent.pointerMove(nextFamily, { clientX: 170, clientY: 118 });
+
+    expect(queryByText('Low')).toBeNull();
+    expect(getByText('High')).toBeTruthy();
+
+    vi.advanceTimersByTime(300);
+
+    expect(getByText('Low')).toBeTruthy();
+  });
+
+  it('does not draw selection chrome on the selected family while another family is active', () => {
+    const onSelectAgent = vi.fn();
+
+    const { getAllByText, getByText } = render(
+      <UnifiedAgentModelSelector selectedAgentId="codex:gpt-5.5:high" onSelectAgent={onSelectAgent} />
+    );
+
+    const selectedFamily = getAllByText('GPT-5.5')[0].closest('button')!;
+    const previewFamily = getByText('GPT-6').closest('button')!;
+
+    fireEvent.pointerEnter(previewFamily, { clientX: 120, clientY: 118 });
+
+    expect(selectedFamily.getAttribute('aria-pressed')).toBe('false');
+    expect(previewFamily.getAttribute('aria-pressed')).toBe('true');
+    expect(selectedFamily.className).not.toContain('shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.4)]');
+    expect(selectedFamily.querySelector('span[aria-hidden="true"]')?.className).not.toContain('opacity-100');
   });
 });

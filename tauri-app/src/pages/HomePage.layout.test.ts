@@ -103,16 +103,17 @@ describe('HomePage graph/chat split layout', () => {
     expect(sidebarSource).toContain("id: 'tracking'");
   });
 
-  it('wires flows as a primary shell view for inspecting predefined flows', () => {
+  it('does not expose executable flows as a primary shell view', () => {
     const homePageSource = readHomePageSource();
     const sidebarSource = readSidebarSource();
 
-    expect(homePageSource).toContain("const FlowsPanel = lazy");
-    expect(homePageSource).toContain("activeView === 'flows'");
-    expect(homePageSource).toContain('<FlowsPanel workspaceId={selectedWorkspaceId} />');
-    expect(sidebarSource).toContain("label: 'Flows'");
-    expect(sidebarSource).toContain("id: 'flows'");
-    expect(sidebarSource).toContain('Workflow');
+    expect(homePageSource).not.toContain("const FlowsPanel = lazy");
+    expect(homePageSource).not.toContain("activeView === 'flows'");
+    expect(homePageSource).not.toContain('<FlowsPanel workspaceId={selectedWorkspaceId} />');
+    expect(homePageSource).toContain('Manage reusable node prompts and natural-language orchestration prompts for the graph composer.');
+    expect(homePageSource).not.toContain('Manage pre-defined nodes and flows');
+    expect(sidebarSource).not.toContain("label: 'Flows'");
+    expect(sidebarSource).not.toContain("id: 'flows'");
     expect(sidebarSource).not.toContain('GitBranch');
   });
 

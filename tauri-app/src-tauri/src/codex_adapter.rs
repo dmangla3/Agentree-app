@@ -270,10 +270,12 @@ fn run_turn(args: AdapterArgs) -> Result<i32, AdapterError> {
     let failed_fork_discarded = false;
     let mut thread_strategy = "fresh_thread".to_string();
 
+    let permission_mode = normalize_permission_mode(args.permission_mode.as_deref());
+    let sandbox_policy = codex_sandbox_policy(&args.cwd, permission_mode);
     let mut thread_params = json!({
         "model": args.model,
         "cwd": args.cwd,
-        "sandbox": "workspace-write",
+        "sandbox": codex_sandbox_name(permission_mode),
     });
     if let Some(effort) = args.reasoning_effort.as_deref() {
         thread_params["config"] = json!({ "model_reasoning_effort": effort });
@@ -432,7 +434,7 @@ fn run_turn(args: AdapterArgs) -> Result<i32, AdapterError> {
             "model": args.model,
             "cwd": args.cwd,
             "outputSchema": final_result_schema(),
-            "sandboxPolicy": workspace_write_sandbox_policy(&args.cwd),
+            "sandboxPolicy": sandbox_policy,
         }),
     )?;
     state.active_turn_id = extract_turn_id(&turn_response);
@@ -1865,13 +1867,41 @@ fn final_result_schema() -> JsonValue {
     })
 }
 
-fn workspace_write_sandbox_policy(cwd: &str) -> JsonValue {
-    json!({
-        "type": "workspaceWrite",
-        "writableRoots": [cwd],
-        "networkAccess": false,
-        "readOnlyAccess": { "type": "fullAccess" },
-    })
+fn normalize_permission_mode(mode: Option<&str>) -> &str {
+    match mode {
+        Some("fully-isolated") => "fully-isolated",
+        Some("safe-write") => "safe-write",
+        Some("full-access") => "full-access",
+        Some("bypassPermissions") => "full-access",
+        _ => "full-access",
+    }
+}
+
+fn codex_sandbox_name(permission_mode: &str) -> &str {
+    if permission_mode == "full-access" {
+        "danger-full-access"
+    } else {
+        "workspace-write"
+    }
+}
+
+fn codex_sandbox_policy(cwd: &str, permission_mode: &str) -> JsonValue {
+    match permission_mode {
+        "full-access" => json!({
+            "type": "dangerFullAccess",
+        }),
+        "safe-write" => json!({
+            "type": "workspaceWrite",
+            "writableRoots": [cwd],
+            "networkAccess": true,
+            "readOnlyAccess": { "type": "fullAccess" },
+        }),
+        _ => json!({
+            "type": "workspaceWrite",
+            "writableRoots": [cwd],
+            "networkAccess": false,
+        }),
+    }
 }
 
 fn codex_environment_detail(codex_bin: &str, codex_home: &str) -> JsonValue {

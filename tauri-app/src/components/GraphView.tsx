@@ -29,7 +29,7 @@ import { branchKeys } from '../hooks/useBranches';
 import { trackedRefKeys, useTrackedRefs } from '../hooks/useTrackedRefs';
 import { useGitSync } from '../hooks/useGitSync';
 import { getEnabledTrackedGitRefs, getTrackedRefsNeedingSync, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
-import { useLocalNodes } from '../hooks/useLocalNodes';
+import { localNodeKeys, upsertMessagesIntoLocalNodeCache, useLocalNodes } from '../hooks/useLocalNodes';
 import { useGraphMessages } from '../hooks/useLiveMessages';
 import { useInsights } from '../hooks/useInsights';
 import { getPublicShareUrl, useCreateNodePublicShare } from '../hooks/useWorkspacePublicShare';
@@ -75,7 +75,14 @@ import { collectDeleteBranchMessageIds, getDeleteBranchPreview, getTopLevelDelet
 import { getBranchPointerCommitSha, getMessageBaseCommitSha, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { shouldRefreshHeldGraphMessagesForStructuralChange } from '../lib/graph/graphComputationHold';
 import { reconcileTerminalAgentRunsFromMessages } from '../lib/agentRunTerminalReconciliation';
-import { isNoAgentSessionFoundError, markStalePrelaunchFlowNodeCancelled } from '../lib/localAgentRunTerminal';
+import { isNoAgentSessionFoundError, markStaleLocalAgentNodeCancelled } from '../lib/localAgentRunTerminal';
+import { cancelOrchestrationTargetIfNeeded } from '../orchestration/cancel';
+import { retryOrchestrationChildRun } from '../orchestration/controlPlane';
+import { useOrchestrationMcpBridge } from '../orchestration/useOrchestrationMcpBridge';
+import {
+    buildOrchestrationChildRetryInput,
+    resolveOrchestrationChildRetryTarget,
+} from '../orchestration/retry';
 import { addDeletedGraphCommitShas, readDeletedGraphCommitShas } from '../lib/graph/commitGraphTombstones';
 import { getLeafMessagesByRecency, getLeafNavigationLabel } from '../lib/graph/leafNodes';
 import { getThreadAwarenessSummary } from '../lib/graph/threadAwareness';
@@ -91,8 +98,6 @@ import { useToastHelpers } from './Toast';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { isActiveAgentStatus } from '@shared/agentStatus';
 import { agentRunManager } from '../agent-runs/agentRunManager';
-import { flowRunManager } from '../flows/flowRunManager';
-import { resolveActiveFlowCancelTarget } from '../flows/flowRunSelectors';
 import { useGraphViewHotkeys, type GraphNavigationDirection } from '../hotkeys/graphHotkeys';
 
 // Components - Nodes/Edges
@@ -123,6 +128,7 @@ import { classifyMessageNodeKind } from '../domain/nodes';
 
 import { ChevronLeft, ChevronRight, ChevronsRight, GitBranch, X } from 'lucide-react';
 import { agentClient } from '../lib/agentClient';
+import { getAccessToken } from '../lib/authSession';
 import { ensureLocalCommitGraphRepaired } from '../lib/localCommitGraphRepair';
 import { createProfilerOnRender, startFocusInteraction } from '../lib/interactionProfiler';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
@@ -1199,8 +1205,14 @@ function GraphViewInternal({
         graphFocusedMessageIdRef.current = storeFocusedMessageId;
     }, [canUseLiveFocusedMessageId, runningCount, storeFocusedMessageId]);
 
-    const messages = messagesOverride ?? storeMessages;
-    const completedAssistantInsightSignal = useMemo(() => (
+	    const messages = messagesOverride ?? storeMessages;
+	    useOrchestrationMcpBridge({
+	        selectedWorkspaceId,
+	        messages: messages as Message[],
+	        workspaces,
+	        queryClient,
+	    });
+	    const completedAssistantInsightSignal = useMemo(() => (
         (messages as Message[]).filter((message) => (
             message.role === 'assistant' &&
             (
@@ -1849,6 +1861,8 @@ function GraphViewInternal({
     const [bulkDeleteExplicitCommitShas, setBulkDeleteExplicitCommitShas] = useState<string[]>([]);
     const [removeCommitsFromGraph, setRemoveCommitsFromGraph] = useState(false);
     const [deletedGraphCommitShas, setDeletedGraphCommitShas] = useState<Set<string>>(() => new Set());
+    const [collapsedOrchestrationControllerIds, setCollapsedOrchestrationControllerIds] = useState<Set<string>>(() => new Set());
+    const manuallyExpandedOrchestrationControllerIdsRef = useRef<Set<string>>(new Set());
     const [bulkDeletePhase, setBulkDeletePhase] = useState<DeleteBranchDialogPhase>('idle');
     const [nodeContextMenu, setNodeContextMenu] = useState<NodeContextMenuState | null>(null);
     const [addCommitTargetId, setAddCommitTargetId] = useState<string | null>(null);
@@ -1857,7 +1871,23 @@ function GraphViewInternal({
 
     useEffect(() => {
         setDeletedGraphCommitShas(readDeletedGraphCommitShas(selectedWorkspaceId));
+        setCollapsedOrchestrationControllerIds(new Set());
+        manuallyExpandedOrchestrationControllerIdsRef.current = new Set();
     }, [selectedWorkspaceId]);
+
+    const handleToggleOrchestrationCollapse = useCallback((controllerMessageId: string, collapsed: boolean) => {
+        setCollapsedOrchestrationControllerIds((current) => {
+            const next = new Set(current);
+            if (collapsed) {
+                next.add(controllerMessageId);
+                manuallyExpandedOrchestrationControllerIdsRef.current.delete(controllerMessageId);
+            } else {
+                next.delete(controllerMessageId);
+                manuallyExpandedOrchestrationControllerIdsRef.current.add(controllerMessageId);
+            }
+            return next;
+        });
+    }, []);
 
     useEffect(() => {
         const handleDockState = (event: Event) => {
@@ -2700,6 +2730,30 @@ function GraphViewInternal({
         syntheticThreadRoots,
         threadSessions,
     );
+    useEffect(() => {
+        const defaultCollapsedControllerIds = workspaceProjection.entities
+            .filter((entity) => (
+                entity.kind === 'assistant_message'
+                && entity.nodeKind === 'orchestrator'
+                && !entity.controlledByNodeId
+                && entity.messageId
+                && !manuallyExpandedOrchestrationControllerIdsRef.current.has(entity.messageId)
+            ))
+            .map((entity) => entity.messageId!);
+        if (defaultCollapsedControllerIds.length === 0) return;
+
+        setCollapsedOrchestrationControllerIds((current) => {
+            let changed = false;
+            const next = new Set(current);
+            defaultCollapsedControllerIds.forEach((controllerId) => {
+                if (next.has(controllerId)) return;
+                next.add(controllerId);
+                changed = true;
+            });
+            return changed ? next : current;
+        });
+    }, [workspaceProjection]);
+
     const executionTimelineModel = useMemo(() => {
         const items = buildExecutionTimelineItems(executionTimelineProjection);
         return packExecutionTimelineItems(items);
@@ -3969,6 +4023,7 @@ function GraphViewInternal({
         constrainedCommitFiltering: Boolean(subgraphRootNodeId),
         pinnedCommitShas,
         hiddenThreadRootIds: hiddenThreadRootIdsForLayout,
+        collapsedOrchestrationControllerIds,
         layoutCacheScopeKey: graphLayoutCacheScopeKey,
         visibleNodeSections,
         insights: graphLayoutInsights,
@@ -3978,6 +4033,7 @@ function GraphViewInternal({
         resetNonce: graphResetNonce,
         onToggleSummary: toggleSummaryDisabled,
         onToggleCollapse: handleToggleCollapse,
+        onToggleOrchestrationCollapse: handleToggleOrchestrationCollapse,
         onFocus: handleFocus,
         onOpenThread: handleFocusThread,
         onSelect: handleSelect,
@@ -4820,31 +4876,19 @@ function GraphViewInternal({
 
         try {
             const message = messageMap.get(nodeId) ?? null;
-            const flowCancelTarget = resolveActiveFlowCancelTarget({
-                nodeId,
-                node: message,
+            const orchestrationCancel = await cancelOrchestrationTargetIfNeeded({
+                targetNodeId: nodeId,
+                messages: messages as Message[],
+                reason: 'cancelled',
+            }, {
+                recordOrchestrationEvent: (runId, assistantNodeId, eventType, payload) => (
+                    agentClient.recordOrchestrationEvent(runId, assistantNodeId, eventType, payload)
+                ),
+                stopAgent: (assistantNodeId) => agentClient.stopAgent(assistantNodeId),
             });
-            if (flowCancelTarget) {
-                for (const activeNodeId of flowCancelTarget.activeNodeIds) {
-                    const activeMessage = messageMap.get(activeNodeId) ?? null;
-                    agentRunManager.dispatch(activeNodeId, {
-                        type: 'terminal',
-                        status: 'cancelled',
-                        reason: 'cancelled',
-                    }, {
-                        workspaceId: activeMessage?.workspaceId ?? selectedWorkspaceId,
-                        parentId: activeMessage?.parentId ?? null,
-                        role: 'assistant',
-                        agentId: activeMessage?.agent_id ?? null,
-                        content: activeMessage?.content ?? '',
-                        executionData: (activeMessage?.execution_data ?? {}) as Record<string, any>,
-                    });
-                }
-                await flowRunManager.cancel(flowCancelTarget.flowRunId, 'cancelled');
-                await scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'cancel-flow' });
-                return;
+            if (!orchestrationCancel.handled) {
+                await agentClient.stopAgent(nodeId);
             }
-            await agentClient.stopAgent(nodeId);
             agentRunManager.dispatch(nodeId, {
                 type: 'terminal',
                 status: 'cancelled',
@@ -4857,12 +4901,12 @@ function GraphViewInternal({
         } catch (error) {
             if (isNoAgentSessionFoundError(error)) {
                 const message = messageMap.get(nodeId) ?? null;
-                const marked = await markStalePrelaunchFlowNodeCancelled({
+                const marked = await markStaleLocalAgentNodeCancelled({
                     queryClient,
                     workspaceId: selectedWorkspaceId,
                     nodeId,
                     node: message,
-                    reason: 'Flow cancelled after the app restarted before the native agent session was created.',
+                    reason: 'Run cancelled after the app restarted before the native agent session was created.',
                 });
                 if (marked) {
                     agentRunManager.dispatch(nodeId, {
@@ -4873,14 +4917,73 @@ function GraphViewInternal({
                         workspaceId: selectedWorkspaceId,
                         role: 'assistant',
                     });
-                    await scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'cancel-stale-flow-node' });
+                    await scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'cancel-stale-local-node' });
                     return;
                 }
             }
             console.error('[GraphView] Failed to stop agent from list:', error);
             toast.error('Unable to stop agent', 'The stop request did not complete.');
         }
-    }, [messageMap, queryClient, selectedWorkspaceId, toast]);
+    }, [messageMap, messages, queryClient, selectedWorkspaceId, toast]);
+
+    const handleRetryOrchestrationChild = useCallback(async (assistantNodeId: string) => {
+        if (!selectedWorkspaceId) return;
+
+        const retryTarget = resolveOrchestrationChildRetryTarget(messages as Message[], assistantNodeId);
+        if (!retryTarget.ok) {
+            toast.error('Cannot retry child', 'This node is not a failed orchestration child.');
+            return;
+        }
+
+        try {
+            const [authToken, journalEvents] = await Promise.all([
+                getAccessToken(),
+                agentClient.replayAgentRunEvents(retryTarget.target.orchestratorRunId, 0),
+            ]);
+            const retryInput = buildOrchestrationChildRetryInput({
+                messages: messages as Message[],
+                target: retryTarget.target,
+                journalEvents,
+                authToken,
+                retryReason: 'manual_retry',
+            });
+            if (!retryInput.ok) {
+                toast.error('Cannot retry child', `Retry context is unavailable: ${retryInput.reason}.`);
+                return;
+            }
+
+            const retryResult = await retryOrchestrationChildRun(retryInput.input, {
+                newId: () => crypto.randomUUID(),
+                persistLocalNode: (workspaceId, nodeId, message) => agentClient.upsertLocalNode(workspaceId, nodeId, message),
+                startAgentRun: (payload) => agentClient.startAgentRun(payload as any),
+                recordOrchestrationEvent: (runId, assistantNodeIdForEvent, eventType, payload) => (
+                    agentClient.recordOrchestrationEvent(runId, assistantNodeIdForEvent, eventType, payload)
+                ),
+                seedAgentRun: (message) => agentRunManager.seed(message),
+                dispatchAgentRun: (nodeId, event) => agentRunManager.dispatch(nodeId, event as any),
+            });
+            const createdMessages = [retryResult.userNode, retryResult.assistantNode];
+            queryClient.setQueryData<Message[]>(['messages', selectedWorkspaceId], (current) => {
+                const existing = current ?? [];
+                const createdIds = new Set(createdMessages.map((message) => message.id));
+                return [...existing.filter((message) => !createdIds.has(message.id)), ...createdMessages]
+                    .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+            });
+            queryClient.setQueryData(
+                localNodeKeys.workspace(selectedWorkspaceId),
+                (current) => upsertMessagesIntoLocalNodeCache(current as any, selectedWorkspaceId, createdMessages, {
+                    syncStatus: 'local_only',
+                    finalizedAt: Math.floor(Date.now() / 1000),
+                })
+            );
+            void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(selectedWorkspaceId) });
+            void scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'retry-orchestration-child' });
+            toast.success('Retry started', 'A replacement orchestration child run was created.');
+        } catch (error) {
+            console.error('[GraphView] Failed to retry orchestration child:', error);
+            toast.error('Unable to retry child', error instanceof Error ? error.message : 'The retry request did not complete.');
+        }
+    }, [messages, queryClient, selectedWorkspaceId, toast]);
 
     const getBulkDeleteTargets = useCallback((selectedIds: Set<string>) => {
         if (selectedIds.size === 0) return [] as string[];
@@ -6557,6 +6660,7 @@ function GraphViewInternal({
                 onViewSubgraph={handleViewSubgraph}
                 onConvertSubgraphToThread={handleConvertSubgraphToThread}
                 onShareNode={handleShareNode}
+                onRetryOrchestrationChild={handleRetryOrchestrationChild}
             />
             <AddCommitDialog
                 open={!!addCommitTargetId}

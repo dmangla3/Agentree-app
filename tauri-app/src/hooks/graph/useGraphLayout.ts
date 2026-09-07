@@ -45,6 +45,7 @@ export interface UseGraphLayoutOptions {
     constrainedCommitFiltering?: boolean;
     pinnedCommitShas?: Set<string>;
     hiddenThreadRootIds?: Set<string>;
+    collapsedOrchestrationControllerIds?: Set<string>;
     layoutCacheScopeKey?: string;
     visibleNodeSections: Set<GraphNodeSectionId>;
     insights: Insight[];
@@ -54,6 +55,7 @@ export interface UseGraphLayoutOptions {
     resetNonce?: number;
     onToggleSummary: (id: string) => void;
     onToggleCollapse: (id: string, collapsed: boolean) => void;
+    onToggleOrchestrationCollapse?: (controllerMessageId: string, collapsed: boolean) => void;
     onFocus: (id: string) => void;
     onOpenThread?: (threadRootId: string) => void;
     onSelect: (id: string, multi: boolean) => void;
@@ -72,6 +74,7 @@ export interface UseGraphLayoutResult {
 
 const HEIGHT_FINGERPRINT_TEXT_BUCKET_SIZE = 36;
 const MAX_LAYOUT_SCOPE_CACHE_ENTRIES = 8;
+const EMPTY_COLLAPSED_ORCHESTRATION_CONTROLLER_IDS = new Set<string>();
 
 const getRenderedNodeWidth = (node: Node<any>): number => {
     if (typeof node.style?.width === 'number') return node.style.width;
@@ -243,6 +246,7 @@ interface LayoutCacheKey {
     constrainedCommitFiltering: boolean;
     pinnedCommitShasFingerprint: string;
     hiddenThreadRootIdsFingerprint: string;
+    collapsedOrchestrationFingerprint: string;
     visibleNodeSectionsFingerprint: string;
     layoutMode: string;
     laneStrategy: string;
@@ -290,6 +294,7 @@ const cacheKeysEqual = (a: LayoutCacheKey, b: LayoutCacheKey): boolean => {
         a.constrainedCommitFiltering === b.constrainedCommitFiltering &&
         a.pinnedCommitShasFingerprint === b.pinnedCommitShasFingerprint &&
         a.hiddenThreadRootIdsFingerprint === b.hiddenThreadRootIdsFingerprint &&
+        a.collapsedOrchestrationFingerprint === b.collapsedOrchestrationFingerprint &&
         a.visibleNodeSectionsFingerprint === b.visibleNodeSectionsFingerprint &&
         a.layoutMode === b.layoutMode &&
         a.laneStrategy === b.laneStrategy &&
@@ -358,6 +363,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         constrainedCommitFiltering = false,
         pinnedCommitShas = new Set<string>(),
         hiddenThreadRootIds = new Set<string>(),
+        collapsedOrchestrationControllerIds = EMPTY_COLLAPSED_ORCHESTRATION_CONTROLLER_IDS,
         layoutCacheScopeKey = 'default',
         visibleNodeSections,
         insights,
@@ -367,6 +373,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         resetNonce = 0,
         onToggleSummary,
         onToggleCollapse,
+        onToggleOrchestrationCollapse,
         onFocus,
         onOpenThread,
         onSelect,
@@ -412,6 +419,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             constrainedCommitFiltering,
             pinnedCommitShasFingerprint: Array.from(pinnedCommitShas).sort().join(','),
             hiddenThreadRootIdsFingerprint: Array.from(hiddenThreadRootIds).sort().join(','),
+            collapsedOrchestrationFingerprint: Array.from(collapsedOrchestrationControllerIds).sort().join(','),
             visibleNodeSectionsFingerprint: Array.from(visibleNodeSections).sort().join(','),
             layoutMode,
             laneStrategy,
@@ -551,7 +559,9 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 constrainedCommitFiltering,
                 pinnedCommitShas,
                 hiddenThreadRootIds,
-                onOpenThread
+                onOpenThread,
+                onToggleOrchestrationCollapse,
+                collapsedOrchestrationControllerIds,
         );
 
         if (mappedNodes.length === 0) {
@@ -655,9 +665,9 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         return visualResult;
     }, [
         messages, summaries, projection, measuredNodeHeights, layoutMode, laneStrategy, disabledSummaryIds,
-        focusedMessageId, contextPathMessageIds, composerBaseCommitSha, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, constrainedCommitFiltering, pinnedCommitShas, hiddenThreadRootIds, insights, showInsightsInGraph,
+        focusedMessageId, contextPathMessageIds, composerBaseCommitSha, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, constrainedCommitFiltering, pinnedCommitShas, hiddenThreadRootIds, collapsedOrchestrationControllerIds, insights, showInsightsInGraph,
         visibleNodeSections,
-        workspaceRepoMap, branchPointersByNodeId, onToggleSummary, onToggleCollapse,
+        workspaceRepoMap, branchPointersByNodeId, onToggleSummary, onToggleCollapse, onToggleOrchestrationCollapse,
         onFocus, onOpenThread, onSelect, onContextMenu, onMeasureNodeHeight, resetNonce, layoutCacheScopeKey
     ]);
 
@@ -751,8 +761,8 @@ function applyVisualProperties(
     let reusedEdgeCount = 0;
 
     const updatedNodes = cachedNodes.map(node => {
-        // Handle hulls separately or just pass through
-        if (node.type === 'turn_group_hull') return node;
+        // Synthetic containers do not have message/entity visuals to refresh.
+        if (node.type === 'turn_group_hull' || node.type === 'orchestration_hull' || node.type === 'orchestration_node') return node;
 
         const data = node.data;
         const focusId = data.entity?.focusMessageId ?? data.entity?.messageId ?? node.id;

@@ -9,7 +9,7 @@ import { ROLE_COLORS } from '../../../lib/visualTokens';
 import { getAgentColorClass } from '../../../lib/graphUtils';
 import { useAgents } from '../../../hooks/useAgents';
 import type { AgentStatus } from '@shared/agentStatus';
-import { buildTimelineRows, getToolSummary, isEmptyToolPayload, summarizeFileChangesPayload, ToolPayloadDisplay, type TimelineRow } from '../../ExecutionTimeline';
+import { buildTimelineRows, getToolSummary, isEmptyToolPayload, summarizeExplorationItems, summarizeFileChangesPayload, ToolPayloadDisplay, type TimelineRow } from '../../ExecutionTimeline';
 import { useUpdateTags } from '../../../hooks/useMessages';
 import { mergeLiveMessage } from '../../../hooks/useLiveMessages';
 import { Badge } from '../../../../@/components/ui/badge';
@@ -288,7 +288,8 @@ function InterleavedToolCard({
   allowExpansion?: boolean;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const summary = getToolSummary(row.toolName, row.toolInput) || getToolSummary(row.toolName, row.toolOutput) || row.toolName;
+  const rawSummary = getToolSummary(row.toolName, row.toolInput) || getToolSummary(row.toolName, row.toolOutput);
+  const summary = rawSummary && rawSummary !== row.toolName ? rawSummary : '';
   const fileChangesPayload = summarizeFileChangesPayload(row.toolInput)
     ? row.toolInput
     : summarizeFileChangesPayload(row.toolOutput)
@@ -330,10 +331,22 @@ function InterleavedToolCard({
         </div>
         <div className="min-w-0 flex-1">
           {fileChangesPayload ? (
-            <ToolPayloadDisplay payload={fileChangesPayload} className="shadow-none" />
+            <div className="min-w-0 space-y-1">
+              <code className="inline-flex max-w-full rounded border border-amber-200/70 bg-amber-50 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-400">
+                <span className="truncate">{row.toolName}</span>
+              </code>
+              <ToolPayloadDisplay payload={fileChangesPayload} className="shadow-none" />
+            </div>
           ) : (
-            <div className="break-all font-mono text-[11px] leading-relaxed text-muted-foreground/55" title={summary}>
-              {summary}
+            <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1" title={summary || row.toolName}>
+              <code className="inline-flex max-w-full rounded border border-amber-200/70 bg-amber-50 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-400">
+                <span className="truncate">{row.toolName}</span>
+              </code>
+              {summary ? (
+                <span className="min-w-0 break-words font-mono text-[11px] leading-relaxed text-muted-foreground/55">
+                  {summary}
+                </span>
+              ) : null}
             </div>
           )}
         </div>
@@ -371,6 +384,7 @@ function InterleavedExplorationCard({
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const title = row.status === 'running' ? 'Exploring' : 'Explored';
+  const compactSummary = summarizeExplorationItems(row.items);
   const duration = row.durationMs ? (row.durationMs < 1000 ? `${row.durationMs}ms` : `${(row.durationMs / 1000).toFixed(1)}s`) : null;
   const stopCardFocus = (event: React.MouseEvent) => {
     event.stopPropagation();
@@ -406,16 +420,11 @@ function InterleavedExplorationCard({
         </div>
         <div className="min-w-0 flex-1">
           <div className="font-medium text-[11px] text-foreground/80">{title}</div>
-          <div className="mt-1 space-y-1">
-            {row.items.map((item, index) => (
-              <div key={`${item.label}_${item.text}_${index}`} className="flex min-w-0 items-start gap-2">
-                <span className="rounded border border-amber-200/70 bg-amber-50 px-1 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-400">
-                  {item.label}
-                </span>
-                <span className="min-w-0 text-[11px] text-muted-foreground/70 break-words">{item.text}</span>
-              </div>
-            ))}
-          </div>
+          {compactSummary ? (
+            <div className="mt-1 truncate text-[11px] text-muted-foreground/70" title={compactSummary}>
+              {compactSummary}
+            </div>
+          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2 pt-0.5">
           {duration ? <span className="text-[10px] font-mono text-muted-foreground/45">{duration}</span> : null}

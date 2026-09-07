@@ -58,6 +58,47 @@ fn thread_title_from_payload(payload: &JsonValue) -> Option<String> {
         .and_then(normalize_thread_title)
 }
 
+fn clean_payload_string(value: Option<&JsonValue>) -> Option<&str> {
+    value
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn controlled_by_node_id_from_payload(payload: &JsonValue) -> Option<&str> {
+    clean_payload_string(payload.get("controlled_by_node_id"))
+        .or_else(|| clean_payload_string(payload.get("controlledByNodeId")))
+        .or_else(|| {
+            payload
+                .get("execution_data")
+                .or_else(|| payload.get("executionData"))
+                .and_then(|value| value.get("meta"))
+                .and_then(|meta| {
+                    clean_payload_string(meta.get("controlled_by_node_id"))
+                        .or_else(|| clean_payload_string(meta.get("controlledByNodeId")))
+                        .or_else(|| clean_payload_string(meta.get("controlled_by")))
+                        .or_else(|| clean_payload_string(meta.get("controlledBy")))
+                })
+        })
+}
+
+fn is_orchestration_event_type(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "orchestration:flow_diagram_created"
+            | "orchestration:child_requested"
+            | "orchestration:child_started"
+            | "orchestration:wait_started"
+            | "orchestration:wait_completed"
+            | "orchestration:retry_requested"
+            | "orchestration:child_superseded"
+            | "orchestration:cancel_requested"
+            | "orchestration:cancelled"
+            | "orchestration:completed"
+            | "orchestration:needs_user_action"
+    )
+}
+
 fn is_structured_timeline_event_type(event_type: &str) -> bool {
     matches!(
         event_type,
@@ -339,6 +380,7 @@ pub struct AgentRunJournalEvent {
 pub struct LocalNodeRow {
     pub node_id: String,
     pub workspace_id: String,
+    pub controlled_by_node_id: Option<String>,
     pub payload: String,
     pub sync_status: String,
     pub finalized_at: i64,
@@ -922,6 +964,7 @@ impl TelemetryDb {
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
                 parent_id TEXT,
+                controlled_by_node_id TEXT,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL DEFAULT '',
                 status TEXT,
@@ -1224,7 +1267,15 @@ impl TelemetryDb {
         );
         let _ = conn.execute("ALTER TABLE local_nodes ADD COLUMN thread_id TEXT", []);
         let _ = conn.execute(
+            "ALTER TABLE local_nodes ADD COLUMN controlled_by_node_id TEXT",
+            [],
+        );
+        let _ = conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_local_nodes_thread ON local_nodes(workspace_id, thread_id)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_local_nodes_controlled_by ON local_nodes(controlled_by_node_id)",
             [],
         );
         let _ = conn.execute(
@@ -1247,7 +1298,7 @@ impl TelemetryDb {
         conn.execute(
             r#"
             INSERT OR IGNORE INTO local_nodes (
-                id, workspace_id, parent_id, role, content, status, thread_id,
+                id, workspace_id, parent_id, controlled_by_node_id, role, content, status, thread_id,
                 execution_data_json, payload_json, prompt_tokens, completion_tokens, total_tokens,
                 base_commit_sha, output_commit_sha, base_selected_from_node_id, git_branch_name, created_at, updated_at,
                 deleted_at, local_updated_at, server_ack_at
@@ -1256,6 +1307,14 @@ impl TelemetryDb {
                 node_id,
                 workspace_id,
                 json_extract(payload, '$.parentId'),
+                COALESCE(
+                    json_extract(payload, '$.controlled_by_node_id'),
+                    json_extract(payload, '$.controlledByNodeId'),
+                    json_extract(payload, '$.execution_data.meta.controlled_by_node_id'),
+                    json_extract(payload, '$.execution_data.meta.controlledByNodeId'),
+                    json_extract(payload, '$.execution_data.meta.controlled_by'),
+                    json_extract(payload, '$.execution_data.meta.controlledBy')
+                ),
                 COALESCE(json_extract(payload, '$.role'), 'assistant'),
                 COALESCE(json_extract(payload, '$.content'), ''),
                 json_extract(payload, '$.status'),
@@ -1375,6 +1434,34 @@ impl TelemetryDb {
         conn.query_row(
             "SELECT value FROM session_kv WHERE session_id = ?1 AND key = ?2",
             params![session_id, key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn local_app_kv_set(&self, key: &str, value: &str) -> Result<(), String> {
+        let now = unix_timestamp();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            r#"
+            INSERT INTO local_app_kv (key, value, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?3)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            "#,
+            params![key, value, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn local_app_kv_get(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT value FROM local_app_kv WHERE key = ?1",
+            params![key],
             |row| row.get::<_, String>(0),
         )
         .optional()
@@ -2081,14 +2168,14 @@ impl TelemetryDb {
         Ok(updated)
     }
 
-    pub fn reconcile_stale_prelaunch_flow_local_nodes(
+    pub fn reconcile_stale_prelaunch_local_nodes(
         &self,
         stale_after_secs: i64,
     ) -> Result<usize, String> {
         let now = unix_timestamp();
         let cutoff = now.saturating_sub(stale_after_secs.max(0));
         let updated_at = utc_iso_now();
-        let reason = "App restarted before this flow node was accepted by the native agent runner. No native session or ledger was found.";
+        let reason = "App restarted before this run was accepted by the native agent runner. No native session or ledger was found.";
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let stale_rows: Vec<(String, String, String, Option<String>)> = {
             let mut stmt = conn
@@ -2101,10 +2188,10 @@ impl TelemetryDb {
                       AND status IN ('pending', 'creating', 'initializing', 'preparing_worktree', 'running', 'streaming', 'finalizing')
                       AND COALESCE(local_updated_at, 0) <= ?1
                       AND (
-                        json_extract(CASE WHEN json_valid(COALESCE(execution_data_json, '')) THEN execution_data_json ELSE '{}' END, '$.flow_run_id') IS NOT NULL
-                        OR json_extract(CASE WHEN json_valid(COALESCE(execution_data_json, '')) THEN execution_data_json ELSE '{}' END, '$.meta.flow_run_id') IS NOT NULL
-                        OR json_extract(CASE WHEN json_valid(COALESCE(payload_json, '')) THEN payload_json ELSE '{}' END, '$.execution_data.flow_run_id') IS NOT NULL
-                        OR json_extract(CASE WHEN json_valid(COALESCE(payload_json, '')) THEN payload_json ELSE '{}' END, '$.execution_data.meta.flow_run_id') IS NOT NULL
+                        json_extract(CASE WHEN json_valid(COALESCE(execution_data_json, '')) THEN execution_data_json ELSE '{}' END, '$.current_run_id') IS NULL
+                        OR json_extract(CASE WHEN json_valid(COALESCE(execution_data_json, '')) THEN execution_data_json ELSE '{}' END, '$.meta.quick_reply') = 1
+                        OR json_extract(CASE WHEN json_valid(COALESCE(payload_json, '')) THEN payload_json ELSE '{}' END, '$.execution_data.current_run_id') IS NULL
+                        OR json_extract(CASE WHEN json_valid(COALESCE(payload_json, '')) THEN payload_json ELSE '{}' END, '$.execution_data.meta.quick_reply') = 1
                       )
                       AND NOT EXISTS (
                         SELECT 1
@@ -2195,7 +2282,7 @@ impl TelemetryDb {
                     meta_object.insert(
                         "needs_user_action_reason".to_string(),
                         JsonValue::String(
-                            "Review or rerun this flow node; no native agent session exists to resume."
+                            "Review or rerun this node; no native agent session exists to resume."
                                 .to_string(),
                         ),
                     );
@@ -2299,6 +2386,95 @@ impl TelemetryDb {
         .map_err(|e| e.to_string())
     }
 
+    pub fn list_terminal_journal_recovery_candidates(
+        &self,
+    ) -> Result<Vec<AgentRunLedgerRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT
+                    run_id, user_node_id, assistant_node_id, workspace_id, repo_path,
+                    worktree_path, branch_name, parent_commit, pid, agent_type,
+                    status, phase, last_seq, started_at, updated_at, terminal_status,
+                    finalize_attempt_count, cleanup_attempt_count, server_start_persisted,
+                    server_final_persisted, output_commit_sha, failure_reason,
+                    needs_user_action_reason, cleanup_completed, login_profile_id
+                FROM agent_run_ledger
+                WHERE cleanup_completed = 0
+                  AND server_final_persisted = 0
+                  AND terminal_status IS NULL
+                  AND status NOT IN (
+                    'completed',
+                    'failed',
+                    'cancelled',
+                    'error',
+                    'failed_setup',
+                    'failed_spawn',
+                    'failed_finalization',
+                    'failed_runtime',
+                    'needs_user_action'
+                  )
+                  AND EXISTS (
+                    SELECT 1
+                    FROM agent_run_events e
+                    WHERE e.run_id = agent_run_ledger.run_id
+                      AND e.assistant_node_id = agent_run_ledger.assistant_node_id
+                      AND e.event_type IN ('stop', 'provider_stop')
+                      AND COALESCE(
+                        json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END, '$.provider_status'),
+                        json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END, '$.status')
+                      ) IN (
+                        'completed',
+                        'failed',
+                        'cancelled',
+                        'error',
+                        'failed_setup',
+                        'failed_spawn',
+                        'failed_finalization',
+                        'failed_runtime'
+                      )
+                  )
+                ORDER BY updated_at ASC
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(AgentRunLedgerRow {
+                    run_id: row.get(0)?,
+                    user_node_id: row.get(1)?,
+                    assistant_node_id: row.get(2)?,
+                    workspace_id: row.get(3)?,
+                    repo_path: row.get(4)?,
+                    worktree_path: row.get(5)?,
+                    branch_name: row.get(6)?,
+                    parent_commit: row.get(7)?,
+                    pid: row.get(8)?,
+                    agent_type: row.get(9)?,
+                    status: row.get(10)?,
+                    phase: row.get(11)?,
+                    last_seq: row.get(12)?,
+                    started_at: row.get(13)?,
+                    updated_at: row.get(14)?,
+                    terminal_status: row.get(15)?,
+                    finalize_attempt_count: row.get(16)?,
+                    cleanup_attempt_count: row.get(17)?,
+                    server_start_persisted: row.get::<_, i64>(18)? != 0,
+                    server_final_persisted: row.get::<_, i64>(19)? != 0,
+                    output_commit_sha: row.get(20)?,
+                    failure_reason: row.get(21)?,
+                    needs_user_action_reason: row.get(22)?,
+                    cleanup_completed: row.get::<_, i64>(23)? != 0,
+                    login_profile_id: row.get(24)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
     pub fn append_agent_run_event(
         &self,
         run_id: &str,
@@ -2344,6 +2520,23 @@ impl TelemetryDb {
         .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(next_seq)
+    }
+
+    pub fn record_orchestration_event(
+        &self,
+        run_id: &str,
+        assistant_node_id: &str,
+        event_type: &str,
+        payload: &str,
+    ) -> Result<i64, String> {
+        if !is_orchestration_event_type(event_type) {
+            return Err(format!(
+                "unsupported orchestration event type: {event_type}"
+            ));
+        }
+        serde_json::from_str::<JsonValue>(payload)
+            .map_err(|error| format!("invalid orchestration event payload: {error}"))?;
+        self.append_agent_run_event(run_id, assistant_node_id, event_type, None, None, payload)
     }
 
     pub fn list_agent_run_events_after(
@@ -2517,6 +2710,7 @@ impl TelemetryDb {
         let parent_id = payload_value
             .get("parentId")
             .and_then(|value| value.as_str());
+        let controlled_by_node_id = controlled_by_node_id_from_payload(&payload_value);
         let role = payload_value
             .get("role")
             .and_then(|value| value.as_str())
@@ -2570,15 +2764,16 @@ impl TelemetryDb {
         conn.execute(
             r#"
             INSERT INTO local_nodes (
-                id, workspace_id, parent_id, role, content, status, thread_id,
+                id, workspace_id, parent_id, controlled_by_node_id, role, content, status, thread_id,
                 execution_data_json, payload_json, prompt_tokens, completion_tokens, total_tokens,
                 base_commit_sha, output_commit_sha, base_selected_from_node_id, git_branch_name, created_at, updated_at,
                 deleted_at, local_updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, ?19)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, NULL, ?20)
             ON CONFLICT(id) DO UPDATE SET
                 workspace_id = excluded.workspace_id,
                 parent_id = excluded.parent_id,
+                controlled_by_node_id = excluded.controlled_by_node_id,
                 role = excluded.role,
                 content = excluded.content,
                 status = excluded.status,
@@ -2600,6 +2795,7 @@ impl TelemetryDb {
                 node_id,
                 workspace_id,
                 parent_id,
+                controlled_by_node_id,
                 role,
                 content,
                 status,
@@ -2753,6 +2949,7 @@ impl TelemetryDb {
             let parent_id = payload_value
                 .get("parentId")
                 .and_then(|value| value.as_str());
+            let controlled_by_node_id = controlled_by_node_id_from_payload(&payload_value);
             let role = payload_value
                 .get("role")
                 .and_then(|value| value.as_str())
@@ -2806,18 +3003,19 @@ impl TelemetryDb {
             let changed = tx.execute(
                 r#"
                 INSERT INTO local_nodes (
-                    id, workspace_id, parent_id, role, content, status, thread_id,
+                    id, workspace_id, parent_id, controlled_by_node_id, role, content, status, thread_id,
                     execution_data_json, payload_json, prompt_tokens, completion_tokens, total_tokens,
                     base_commit_sha, output_commit_sha, base_selected_from_node_id, git_branch_name, created_at, updated_at,
                     deleted_at, local_updated_at, server_ack_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, ?19, ?20)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, NULL, ?20, ?21)
                 ON CONFLICT(id) DO NOTHING
                 "#,
                 params![
                     node_id,
                     workspace_id,
                     parent_id,
+                    controlled_by_node_id,
                     role,
                     content,
                     status,
@@ -2870,6 +3068,7 @@ impl TelemetryDb {
                 SELECT
                     n.id,
                     n.workspace_id,
+                    n.controlled_by_node_id,
                     CASE
                         WHEN n.output_commit_sha IS NOT NULL THEN json_set(
                             COALESCE(n.payload_json, json_object(
@@ -2877,6 +3076,8 @@ impl TelemetryDb {
                                 'role', n.role,
                                 'workspaceId', n.workspace_id,
                                 'parentId', n.parent_id,
+                                'controlled_by_node_id', n.controlled_by_node_id,
+                                'controlledByNodeId', n.controlled_by_node_id,
                                 'content', n.content,
                                 'status', n.status,
                                 'threadId', n.thread_id,
@@ -2899,13 +3100,19 @@ impl TelemetryDb {
                             '$.threadId',
                             n.thread_id,
                             '$.thread_id',
-                            n.thread_id
+                            n.thread_id,
+                            '$.controlled_by_node_id',
+                            n.controlled_by_node_id,
+                            '$.controlledByNodeId',
+                            n.controlled_by_node_id
                         )
                         ELSE json_set(COALESCE(n.payload_json, json_object(
                         'id', n.id,
                         'role', n.role,
                         'workspaceId', n.workspace_id,
                         'parentId', n.parent_id,
+                        'controlled_by_node_id', n.controlled_by_node_id,
+                        'controlledByNodeId', n.controlled_by_node_id,
                         'content', n.content,
                         'status', n.status,
                         'threadId', n.thread_id,
@@ -2927,7 +3134,11 @@ impl TelemetryDb {
                             '$.threadId',
                             n.thread_id,
                             '$.thread_id',
-                            n.thread_id
+                            n.thread_id,
+                            '$.controlled_by_node_id',
+                            n.controlled_by_node_id,
+                            '$.controlledByNodeId',
+                            n.controlled_by_node_id
                         )
                     END AS payload,
                     CASE
@@ -2985,13 +3196,14 @@ impl TelemetryDb {
                 Ok(LocalNodeRow {
                     node_id: row.get(0)?,
                     workspace_id: row.get(1)?,
-                    payload: row.get(2)?,
-                    sync_status: row.get(3)?,
-                    finalized_at: row.get(4)?,
-                    server_ack_at: row.get(5)?,
-                    retry_attempt: row.get(6)?,
-                    next_retry_at: row.get(7)?,
-                    last_upload_error: row.get(8)?,
+                    controlled_by_node_id: row.get(2)?,
+                    payload: row.get(3)?,
+                    sync_status: row.get(4)?,
+                    finalized_at: row.get(5)?,
+                    server_ack_at: row.get(6)?,
+                    retry_attempt: row.get(7)?,
+                    next_retry_at: row.get(8)?,
+                    last_upload_error: row.get(9)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -3047,7 +3259,7 @@ impl TelemetryDb {
             _ => "active".to_string(),
         };
         let source = match payload.source.as_str() {
-            "workspace_default" | "flow" | "legacy" => payload.source,
+            "workspace_default" | "legacy" => payload.source,
             _ => "user".to_string(),
         };
         let normalized = ThreadSessionPayload {
@@ -5688,6 +5900,28 @@ pub fn kv_get(
 
 #[tauri::command]
 #[specta::specta]
+pub fn save_orchestration_user_templates(
+    telemetry: State<TelemetryDb>,
+    templates_json: String,
+) -> Result<(), String> {
+    let parsed: JsonValue = serde_json::from_str(&templates_json)
+        .map_err(|e| format!("Invalid orchestration templates JSON: {}", e))?;
+    if !parsed.is_array() {
+        return Err("Orchestration templates JSON must be an array.".to_string());
+    }
+    telemetry.local_app_kv_set("orchestration_user_templates", &templates_json)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_orchestration_user_templates(
+    telemetry: State<TelemetryDb>,
+) -> Result<Option<String>, String> {
+    telemetry.local_app_kv_get("orchestration_user_templates")
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn add_message(
     telemetry: State<TelemetryDb>,
     session_id: String,
@@ -5734,6 +5968,18 @@ pub fn replay_agent_run_events(
     after_seq: Option<i64>,
 ) -> Result<Vec<AgentRunJournalEvent>, String> {
     telemetry.list_agent_run_events_after(&run_id, after_seq.unwrap_or(0))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn record_orchestration_event(
+    telemetry: State<TelemetryDb>,
+    run_id: String,
+    assistant_node_id: String,
+    event_type: String,
+    payload: String,
+) -> Result<i64, String> {
+    telemetry.record_orchestration_event(&run_id, &assistant_node_id, &event_type, &payload)
 }
 
 #[tauri::command]
@@ -6437,6 +6683,9 @@ mod tests {
         let has_thread_id = conn
             .prepare("SELECT thread_id FROM local_nodes LIMIT 0")
             .is_ok();
+        let has_controlled_by_node_id = conn
+            .prepare("SELECT controlled_by_node_id FROM local_nodes LIMIT 0")
+            .is_ok();
         let has_thread_index: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_local_nodes_thread'",
@@ -6444,8 +6693,17 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("index count");
+        let has_controlled_by_index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_local_nodes_controlled_by'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("controlled_by index count");
         assert!(has_thread_id);
+        assert!(has_controlled_by_node_id);
         assert_eq!(has_thread_index, 1);
+        assert_eq!(has_controlled_by_index, 1);
     }
 
     #[test]
@@ -7446,17 +7704,17 @@ mod tests {
     }
 
     #[test]
-    fn startup_recovery_marks_stale_prelaunch_flow_nodes_failed_setup() {
+    fn startup_recovery_marks_stale_prelaunch_local_nodes_failed_setup() {
         let (_dir, db) = open_test_db();
         db.upsert_local_node(
             "assistant-prelaunch",
             "workspace-1",
-            r#"{"id":"assistant-prelaunch","workspaceId":"workspace-1","role":"assistant","content":"","status":"pending","execution_data":{"meta":{"flow_run_id":"flow-run-1","flow_id":"flow-1"}}}"#,
+            r#"{"id":"assistant-prelaunch","workspaceId":"workspace-1","role":"assistant","content":"","status":"pending","execution_data":{"meta":{}}}"#,
         )
         .expect("prelaunch local node");
 
         let updated = db
-            .reconcile_stale_prelaunch_flow_local_nodes(0)
+            .reconcile_stale_prelaunch_local_nodes(0)
             .expect("reconcile prelaunch nodes");
         assert_eq!(updated, 1);
         assert!(db
@@ -7479,10 +7737,43 @@ mod tests {
             payload["execution_data"]["meta"]["native_recovery_status"],
             "failed_setup"
         );
+    }
+
+    #[test]
+    fn startup_recovery_marks_stale_quick_reply_placeholders_failed_setup() {
+        let (_dir, db) = open_test_db();
+        db.upsert_local_node(
+            "assistant-quick-reply",
+            "workspace-1",
+            r#"{"id":"assistant-quick-reply","workspaceId":"workspace-1","role":"assistant","content":"","status":"pending","execution_data":{"meta":{"quick_reply":true}}}"#,
+        )
+        .expect("quick reply local node");
+
+        let updated = db
+            .reconcile_stale_prelaunch_local_nodes(0)
+            .expect("reconcile prelaunch nodes");
+        assert_eq!(updated, 1);
+        assert!(db
+            .get_agent_run_ledger_by_assistant("assistant-quick-reply")
+            .expect("ledger lookup")
+            .is_none());
+
+        let rows = db
+            .list_local_nodes_for_workspace("workspace-1")
+            .expect("local nodes");
+        assert_eq!(rows.len(), 1);
+        let payload: serde_json::Value =
+            serde_json::from_str(&rows[0].payload).expect("payload json");
+        assert_eq!(payload["status"], "failed_setup");
         assert_eq!(
-            payload["execution_data"]["meta"]["flow_run_id"],
-            "flow-run-1"
+            payload["execution_data"]["last_terminal_status"],
+            "failed_setup"
         );
+        assert_eq!(
+            payload["execution_data"]["meta"]["native_recovery_status"],
+            "failed_setup"
+        );
+        assert_eq!(payload["execution_data"]["meta"]["quick_reply"], true);
     }
 
     #[test]
@@ -7564,6 +7855,105 @@ mod tests {
         assert_eq!(payload["content"], "server content");
         assert_eq!(payload["aiLabel"], "Preserved label");
         assert_eq!(payload["execution_data"]["meta"]["run_id"], "run-1");
+    }
+
+    #[test]
+    fn local_nodes_persist_controlled_by_as_first_class_relationship() {
+        let (_dir, db) = open_test_db();
+        db.upsert_local_node(
+            "assistant-child",
+            "workspace-1",
+            r#"{"id":"assistant-child","workspaceId":"workspace-1","role":"assistant","parentId":"root-user","controlled_by_node_id":"assistant-orchestrator","content":"child","createdAt":"2026-05-08T00:00:00Z","updatedAt":"2026-05-08T00:00:01Z"}"#,
+        )
+        .expect("local upsert");
+
+        let rows = db
+            .list_local_nodes_for_workspace("workspace-1")
+            .expect("local nodes");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].controlled_by_node_id.as_deref(),
+            Some("assistant-orchestrator")
+        );
+        let payload: serde_json::Value =
+            serde_json::from_str(&rows[0].payload).expect("payload json");
+        assert_eq!(payload["controlled_by_node_id"], "assistant-orchestrator");
+        assert_eq!(payload["controlledByNodeId"], "assistant-orchestrator");
+
+        let controlled_count: i64 = db
+            .conn
+            .lock()
+            .expect("lock db")
+            .query_row(
+                "SELECT COUNT(*) FROM local_nodes WHERE controlled_by_node_id = ?1",
+                params!["assistant-orchestrator"],
+                |row| row.get(0),
+            )
+            .expect("controlled_by query");
+        assert_eq!(controlled_count, 1);
+    }
+
+    #[test]
+    fn record_orchestration_event_validates_event_family_and_payload() {
+        let (_dir, db) = open_test_db();
+        db.upsert_agent_run_ledger(&AgentRunLedgerUpsert {
+            run_id: "run-orchestrator".to_string(),
+            user_node_id: Some("user-orchestrator".to_string()),
+            assistant_node_id: "assistant-orchestrator".to_string(),
+            workspace_id: Some("workspace-1".to_string()),
+            repo_path: Some("/repo".to_string()),
+            worktree_path: None,
+            branch_name: None,
+            parent_commit: None,
+            pid: None,
+            agent_type: Some("codex".to_string()),
+            status: "running".to_string(),
+            phase: "running".to_string(),
+            login_profile_id: None,
+        })
+        .expect("ledger");
+
+        let seq = db
+            .record_orchestration_event(
+                "run-orchestrator",
+                "assistant-orchestrator",
+                "orchestration:child_requested",
+                r#"{"decisionId":"planner-1"}"#,
+            )
+            .expect("record orchestration event");
+        assert_eq!(seq, 1);
+        let cancel_seq = db
+            .record_orchestration_event(
+                "run-orchestrator",
+                "assistant-orchestrator",
+                "orchestration:cancelled",
+                r#"{"reason":"cancelled"}"#,
+            )
+            .expect("record cancelled orchestration event");
+        assert_eq!(cancel_seq, 2);
+        assert!(db
+            .record_orchestration_event(
+                "run-orchestrator",
+                "assistant-orchestrator",
+                "tool_use",
+                r#"{}"#,
+            )
+            .is_err());
+        assert!(db
+            .record_orchestration_event(
+                "run-orchestrator",
+                "assistant-orchestrator",
+                "orchestration:child_requested",
+                "not json",
+            )
+            .is_err());
+
+        let events = db
+            .list_agent_run_events_after("run-orchestrator", 0)
+            .expect("events");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "orchestration:child_requested");
+        assert_eq!(events[1].event_type, "orchestration:cancelled");
     }
 
     #[test]

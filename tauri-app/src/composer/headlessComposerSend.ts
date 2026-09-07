@@ -3,9 +3,18 @@ import { buildComposerContextManifest, buildComposerContextSelection } from '../
 import { buildAgentRunPrompt } from '../lib/prompts';
 import type { Message, Workspace } from '../stores/workspaceStore';
 import type { Agent } from '../hooks/useAgents';
+import type { StartAgentRunIntent, StartAgentRunResponse } from '../lib/agentClient';
 import { createSendFlowId, recordSendFlowEvent } from '../perf/sendFlow';
 import { getLegacyThreadIdForMessage, getMessageThreadSessionId } from '../lib/threadSessions';
 import { resolveLocalWorkspaceRepoPath } from '../lib/workspaceRepoPath';
+import {
+  applyComposerPermissionArgs,
+  DEFAULT_COMPOSER_PERMISSION_MODE,
+  type ComposerPermissionMode,
+} from '../lib/composerPermissions';
+import {
+  startOrchestratorRun,
+} from '../orchestration/controlPlane';
 
 export interface HeadlessComposerBase {
   commitSha: string;
@@ -35,6 +44,7 @@ export interface HeadlessComposerReplyInput {
   onMessagesCreated?: (messages: Message[]) => void;
   createRunId?: () => string;
   nowIso?: () => string;
+  selectedLoginProfileId?: string | null;
 }
 
 export interface HeadlessComposerMessageInput extends Omit<HeadlessComposerReplyInput, 'replyParentId'> {
@@ -47,8 +57,10 @@ export interface HeadlessComposerMessageInput extends Omit<HeadlessComposerReply
   setupProgress?: string;
   meta?: Record<string, unknown>;
   selectedLoginProfileId?: string | null;
+  permissionMode?: ComposerPermissionMode;
   threadId?: string | null;
   threadOriginId?: string | null;
+  orchestrationMode?: boolean;
 }
 
 const splitCliArgs = (value: string | null | undefined): string[] => (
@@ -65,6 +77,7 @@ const createLocalHeadlessMessages = (input: {
   agent: Agent;
   base: HeadlessComposerBase;
   meta?: Record<string, unknown>;
+  permissionMode?: ComposerPermissionMode;
   threadId?: string | null;
   threadOriginId?: string | null;
   nowIso: string;
@@ -84,6 +97,8 @@ const createLocalHeadlessMessages = (input: {
     base_commit_sha: input.base.commitSha,
     ...(input.threadOriginId ? { thread_origin_id: input.threadOriginId } : {}),
     provider: input.agent.type,
+    provider_run_mode: input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE,
+    composer_permission_mode: input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE,
     provider_model: input.agent.model_config?.model ?? null,
     agent_id: input.agent.id,
   };
@@ -146,12 +161,17 @@ const createLocalHeadlessMessages = (input: {
   return { userMessage, assistantMessage };
 };
 
-export const buildHeadlessComposerAgentArgs = (agent: Agent, prompt: string): string[] => {
+export const buildHeadlessComposerAgentArgs = (
+  agent: Agent,
+  prompt: string,
+  permissionMode: ComposerPermissionMode = DEFAULT_COMPOSER_PERMISSION_MODE
+): string[] => {
   const args = splitCliArgs(agent.cliArgs);
+  const argsWithPermissions = applyComposerPermissionArgs(args, agent.type, permissionMode);
   if (agent.type === 'codex' || !agent.promptFlag) {
-    return [...args, prompt];
+    return [...argsWithPermissions, prompt];
   }
-  return [...args, agent.promptFlag, prompt];
+  return [...argsWithPermissions, agent.promptFlag, prompt];
 };
 
 export const resolveWorkspaceRepoPath = (workspace: Workspace | null | undefined): string | null => (
@@ -191,6 +211,82 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
     optimisticAssistantMessageId: null,
   }, { source: perfSource });
 
+  if (input.orchestrationMode) {
+    if (!input.persistLocalNode) {
+      throw new Error('Local node persistence is required for orchestration sends.');
+    }
+    const workspace = input.workspaces.find((candidate) => candidate.id === input.workspaceId) ?? null;
+    const repoPath = resolveWorkspaceRepoPath(workspace);
+    if (!repoPath) {
+      throw new Error('Workspace repository path is required for composer sends.');
+    }
+
+    const nowIso = input.nowIso?.() ?? new Date().toISOString();
+    const runId = input.createRunId?.() ?? crypto.randomUUID();
+    const userNodeId = crypto.randomUUID();
+    const assistantNodeId = crypto.randomUUID();
+    const contextParentId = input.contextPolicy === 'fresh'
+      ? null
+      : input.contextParentId ?? input.parentMessageId;
+    const contextSelection = input.contextPolicy === 'fresh' || !input.parentMessageId
+      ? { turns: [], defaultSelectedIds: [] }
+      : buildComposerContextSelection(
+        input.parentMessageId,
+        input.messages,
+        input.contextParentId ?? input.parentMessageId,
+        input.contextPolicy ?? 'continue',
+        input.contextStartId ?? null
+      );
+    const contextManifest = buildComposerContextManifest(
+      contextSelection.turns,
+      new Set(contextSelection.defaultSelectedIds)
+    );
+    const authToken = await input.getAccessToken();
+    const startResult = await startOrchestratorRun({
+      workspaceId: input.workspaceId,
+      repoPath,
+      authToken: authToken ?? '',
+      parentNodeId: input.parentMessageId,
+      contextParentNodeId: contextParentId,
+      baseNodeId: input.base.selectedFromNodeId,
+      baseCommitSha: input.base.commitSha,
+      prompt,
+      agentId: input.agent.id,
+      agentType: input.agent.type,
+      agentCliArgs: input.agent.cliArgs,
+      agentPromptFlag: input.agent.promptFlag,
+      agentName: input.agent.name,
+      llmModel: input.agent.model_config?.model ?? null,
+      permissionMode: input.permissionMode,
+      loginProfileId: input.selectedLoginProfileId ?? null,
+      contextManifest,
+      threadId: effectiveThreadId,
+      threadOriginId: effectiveThreadOriginId,
+      now: nowIso,
+      userNodeId,
+      assistantNodeId,
+      runId,
+    }, {
+      newId: () => crypto.randomUUID(),
+      persistLocalNode: async (workspaceId, nodeId, message) => {
+        await input.persistLocalNode?.(workspaceId, nodeId, message);
+      },
+      startAgentRun: async (intent: StartAgentRunIntent): Promise<StartAgentRunResponse> => (
+        input.startAgentRun(intent as unknown as Record<string, unknown>) as Promise<StartAgentRunResponse>
+      ),
+      seedAgentRun: input.seedAgentRun,
+      dispatchAgentRun: input.dispatchAgentRun,
+    });
+    const createdMessages = [startResult.userNode, startResult.assistantNode];
+    input.onMessagesCreated?.(createdMessages);
+    input.onAssistantMessageCreated?.(startResult.assistantNode);
+
+    return {
+      userMessage: startResult.userNode,
+      assistantMessages: [startResult.assistantNode],
+    };
+  }
+
   const nowIso = input.nowIso?.() ?? new Date().toISOString();
   const localPair = createLocalHeadlessMessages({
     workspaceId: input.workspaceId,
@@ -202,6 +298,7 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
     agent: input.agent,
     base: input.base,
     meta: input.meta,
+    permissionMode: input.permissionMode,
     threadId: effectiveThreadId,
     threadOriginId: effectiveThreadOriginId,
     nowIso,
@@ -301,6 +398,8 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
         ...(input.meta ?? {}),
         agent_id: input.agent.id,
         provider: input.agent.type,
+        provider_run_mode: input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE,
+        composer_permission_mode: input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE,
         llmModel: input.agent.model_config?.model ?? null,
         provider_model: input.agent.model_config?.model ?? null,
         login_profile_id: input.selectedLoginProfileId ?? null,
@@ -327,7 +426,11 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
         repoPath,
         parentCommit: input.base.commitSha,
         agentType: input.agent.type,
-        args: buildHeadlessComposerAgentArgs(input.agent, effectivePrompt),
+        args: buildHeadlessComposerAgentArgs(
+          input.agent,
+          effectivePrompt,
+          input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE
+        ),
         authToken,
         traceId: null,
         loginProfileId: input.selectedLoginProfileId ?? null,

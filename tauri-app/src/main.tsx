@@ -10,7 +10,7 @@ import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { initAnalytics } from './lib/analytics';
 import { applyStoredAppFontSizePreference } from './lib/appFontSizePreference';
 import { devLogLazy } from './lib/appLogger';
-import { getKindeRedirectUri, initKindeDeepLinkHandler } from './lib/kindeDesktopAuth';
+import { getKindeRedirectUri, initKindeDeepLinkHandler, shouldUseDesktopBrowserAuth } from './lib/kindeDesktopAuth';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from './lib/perfRecorder';
 
 const ReactQueryDevtools = lazy(() =>
@@ -118,6 +118,7 @@ const bootstrap = async () => {
           <KindeProvider
             clientId={import.meta.env.VITE_KINDE_CLIENT_ID}
             domain={import.meta.env.VITE_KINDE_DOMAIN}
+            forceChildrenRender={shouldUseDesktopBrowserAuth()}
             logoutUri={kindeLogoutUri}
             redirectUri={kindeRedirectUri}
           >

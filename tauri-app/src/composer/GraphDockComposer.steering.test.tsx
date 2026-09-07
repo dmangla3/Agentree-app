@@ -6,8 +6,9 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GraphDockComposer } from './GraphDockComposer';
 import { useRunStatusStore } from '../stores/runStatusStore';
-import { type Message, useWorkspaceStore, type Workspace } from '../stores/workspaceStore';
+import { buildComposerDraftKey, type Message, useWorkspaceStore, type Workspace } from '../stores/workspaceStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
+import { useOrchestrationTemplateStore } from '../stores/orchestrationTemplateStore';
 import { agentClient } from '../lib/agentClient';
 import { TooltipProvider } from '../../@/components/ui/tooltip';
 
@@ -18,10 +19,7 @@ const hookMocks = vi.hoisted(() => ({
   upsertLocalNode: vi.fn(),
   createThreadSession: vi.fn(),
   listInstalledSkills: vi.fn(),
-  setSelectedFlowId: vi.fn(),
-  runFlow: vi.fn(),
-  flows: [] as Array<{ id: string; label: string; definition: unknown }>,
-  selectedFlowId: '',
+  listFilesAtCommit: vi.fn(),
   scheduleRefresh: vi.fn(),
 }));
 
@@ -33,6 +31,7 @@ vi.mock('../lib/agentClient', () => ({
     startAgentRun: hookMocks.startAgentRun,
     upsertLocalNode: hookMocks.upsertLocalNode,
     listInstalledSkills: hookMocks.listInstalledSkills,
+    listFilesAtCommit: hookMocks.listFilesAtCommit,
     listLocalRefs: vi.fn(async () => []),
     listAllCommits: vi.fn(async () => []),
   },
@@ -78,15 +77,6 @@ vi.mock('../hooks/useMessages', () => ({
 vi.mock('../hooks/useThreadSessions', () => ({
   useCreateThreadSession: () => ({
     mutateAsync: hookMocks.createThreadSession,
-  }),
-}));
-
-vi.mock('../hooks/useAgentFlowRunner', () => ({
-  useAgentFlowRunner: () => ({
-    flows: hookMocks.flows,
-    selectedFlowId: hookMocks.selectedFlowId,
-    setSelectedFlowId: hookMocks.setSelectedFlowId,
-    runFlow: hookMocks.runFlow,
   }),
 }));
 
@@ -152,6 +142,8 @@ describe('GraphDockComposer steering behavior', () => {
     hookMocks.upsertLocalNode.mockResolvedValue(undefined);
     hookMocks.listInstalledSkills.mockReset();
     hookMocks.listInstalledSkills.mockResolvedValue([]);
+    hookMocks.listFilesAtCommit.mockReset();
+    hookMocks.listFilesAtCommit.mockResolvedValue([]);
     hookMocks.createThreadSession.mockReset();
     hookMocks.createThreadSession.mockResolvedValue({
       id: 'created-thread',
@@ -164,13 +156,10 @@ describe('GraphDockComposer steering behavior', () => {
       firstMessageId: null,
       source: 'user',
     });
-    hookMocks.setSelectedFlowId.mockReset();
-    hookMocks.runFlow.mockReset();
-    hookMocks.flows = [];
-    hookMocks.selectedFlowId = '';
     hookMocks.scheduleRefresh.mockReset();
     hookMocks.scheduleRefresh.mockResolvedValue(undefined);
     useRunStatusStore.getState().clearAllRunStatus();
+    useOrchestrationTemplateStore.getState().clearUserTemplates();
     useWorkspaceStore.setState({
       selectedWorkspaceId: 'workspace-1',
       focusedMessageId: 'assistant-live',
@@ -206,6 +195,7 @@ describe('GraphDockComposer steering behavior', () => {
   afterEach(() => {
     vi.useRealTimers();
     useRunStatusStore.getState().clearAllRunStatus();
+    useOrchestrationTemplateStore.getState().clearUserTemplates();
     useWorkspaceStore.getState().clearSelectedWorkspace();
     useLoginProfilesStore.setState({
       profiles: [],
@@ -225,13 +215,14 @@ describe('GraphDockComposer steering behavior', () => {
     fireEvent.change(composer, { target: { value: 'Local draft' } });
 
     expect(composer.value).toBe('Local draft');
-    expect(useWorkspaceStore.getState().composerDraftByWorkspace['workspace-1']).toBeUndefined();
+    const draftKey = buildComposerDraftKey('workspace-1', 'assistant-live')!;
+    expect(useWorkspaceStore.getState().composerDraftByWorkspace[draftKey]).toBeUndefined();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
     });
 
-    expect(useWorkspaceStore.getState().composerDraftByWorkspace['workspace-1']).toBe('Local draft');
+    expect(useWorkspaceStore.getState().composerDraftByWorkspace[draftKey]).toBe('Local draft');
   });
 
   it('routes live-running assistant submissions through steering even when persisted status is stale', async () => {
@@ -306,6 +297,32 @@ describe('GraphDockComposer steering behavior', () => {
     );
   });
 
+  it('inserts orchestration prompt mentions from # suggestions and enables orchestration', async () => {
+    const user = userEvent.setup();
+    useOrchestrationTemplateStore.getState().upsertUserTemplate({
+      id: '#migration_review',
+      kind: 'orchestration',
+      label: '#migration_review',
+      prompt: 'Create two parallel #planner for {{request}}.',
+      source: 'user',
+    });
+    renderComposer([
+      message({
+        id: 'assistant-live',
+        role: 'assistant',
+        content: 'Previous assistant reply',
+        status: 'completed' as any,
+      }),
+    ]);
+
+    const promptInput = screen.getByLabelText('Graph composer prompt') as HTMLTextAreaElement;
+    await user.type(promptInput, '#migration');
+    await user.click(screen.getByRole('button', { name: /#migration_review/i }));
+
+    expect(promptInput.value).toBe('#migration_review ');
+    expect((screen.getByLabelText('Enable orchestration') as HTMLInputElement).checked).toBe(true);
+  });
+
   it('sends the graph dock composer message on Enter', async () => {
     const user = userEvent.setup();
     renderComposer([
@@ -332,84 +349,6 @@ describe('GraphDockComposer steering behavior', () => {
     const userMessage = hookMocks.upsertLocalNode.mock.calls[0][2] as Message;
     expect(userMessage.content).toBe('Send from keyboard');
     expect(userMessage.parentId).toBe('assistant-live');
-  });
-
-  it('does not hold the graph dock send button while a selected flow is running', async () => {
-    const user = userEvent.setup();
-    let finishFlow = () => {};
-    hookMocks.flows = [{ id: 'parallel-review', label: 'Parallel Review', definition: {} }];
-    hookMocks.selectedFlowId = 'parallel-review';
-    hookMocks.runFlow.mockReturnValue(new Promise((resolve) => {
-      finishFlow = () => resolve({ status: 'completed', scope: {}, events: [] });
-    }));
-
-    renderComposer([
-      message({
-        id: 'assistant-live',
-        role: 'assistant',
-        content: 'Previous assistant reply',
-        status: 'completed' as any,
-        output_commit_sha: 'parent-output',
-      }),
-    ]);
-
-    const composer = screen.getByLabelText('Graph composer prompt') as HTMLTextAreaElement;
-    const sendButton = screen.getByTestId('graph-dock-send-button') as HTMLButtonElement;
-
-    await user.type(composer, 'Run the review flow');
-    expect(sendButton.disabled).toBe(false);
-    await user.click(sendButton);
-
-    await waitFor(() => {
-      expect(hookMocks.runFlow).toHaveBeenCalledWith({ input: 'Run the review flow', count: 3, threadId: null });
-    });
-    expect(composer.value).toBe('');
-
-    await user.type(composer, 'Run another flow');
-    expect(sendButton.disabled).toBe(false);
-
-    finishFlow?.();
-  });
-
-  it('runs a selected flow in the graph-created thread target', async () => {
-    const user = userEvent.setup();
-    hookMocks.flows = [{ id: 'parallel-review', label: 'Parallel Review', definition: {} }];
-    hookMocks.selectedFlowId = 'parallel-review';
-    hookMocks.runFlow.mockResolvedValue({ status: 'completed', scope: {}, events: [] });
-
-    renderComposer([
-      message({
-        id: 'assistant-live',
-        role: 'assistant',
-        content: 'Previous assistant reply',
-        status: 'completed' as any,
-        output_commit_sha: 'parent-output',
-      }),
-    ]);
-
-    act(() => {
-      useWorkspaceStore.getState().setThreadComposerTarget({
-        workspaceId: 'workspace-1',
-        threadId: 'pending-thread',
-        reason: 'create-thread',
-        nonce: 1,
-      });
-    });
-
-    expect(await screen.findByText('New thread')).toBeTruthy();
-
-    const composer = screen.getByLabelText('Graph composer prompt');
-    await user.type(composer, 'Run this flow in the new thread');
-    await user.click(screen.getByTestId('graph-dock-send-button'));
-
-    await waitFor(() => {
-      expect(hookMocks.runFlow).toHaveBeenCalledWith({
-        input: 'Run this flow in the new thread',
-        count: 3,
-        threadId: 'pending-thread',
-      });
-    });
-    expect(hookMocks.createThreadSession).not.toHaveBeenCalled();
   });
 
   it('keeps Shift+Enter as a newline in the graph dock composer', async () => {

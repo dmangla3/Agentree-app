@@ -65,6 +65,15 @@ const timelineProjectionFingerprint = (timeline: any[]) => (
     .join('|')
 );
 
+const orchestrationDiagramProjectionFingerprint = (executionData: Record<string, any>) => {
+  const orchestration = executionData.orchestration;
+  if (!orchestration || typeof orchestration !== 'object') return '';
+  return [
+    typeof orchestration.flowDiagramMermaid === 'string' ? orchestration.flowDiagramMermaid : '',
+    typeof orchestration.flowDiagramSummary === 'string' ? orchestration.flowDiagramSummary : '',
+  ].join('\u001f');
+};
+
 const snapshotProjectionKey = (snapshot: AgentRunSnapshot) => JSON.stringify({
   nodeId: snapshot.nodeId,
   workspaceId: snapshot.workspaceId,
@@ -79,6 +88,7 @@ const snapshotProjectionKey = (snapshot: AgentRunSnapshot) => JSON.stringify({
   contentTail: snapshot.content.slice(-160),
   timelineLength: snapshot.timeline.length,
   timelineTail: timelineProjectionFingerprint(snapshot.timeline),
+  orchestrationDiagram: orchestrationDiagramProjectionFingerprint(snapshot.executionData),
   usage: snapshot.usage,
   terminalStatus: snapshot.terminalStatus,
   terminalReason: snapshot.terminalReason,

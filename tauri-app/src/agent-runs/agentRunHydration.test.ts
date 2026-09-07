@@ -374,6 +374,50 @@ describe('agent run hydration', () => {
     );
   });
 
+  it('hydrates orchestration flow diagrams as execution data without timeline events', async () => {
+    agentRunManager.watch('assistant-orchestrator', 'hover');
+    mockAgentClient.getAgentRunState.mockResolvedValue({
+      running: true,
+      pid: 123,
+      ledger: {
+        runId: 'run-orchestrator',
+        userNodeId: 'user-orchestrator',
+        assistantNodeId: 'assistant-orchestrator',
+        workspaceId: 'workspace-1',
+        status: 'running',
+        phase: 'running',
+        lastSeq: 1,
+      },
+    });
+    mockAgentClient.replayAgentRunEvents.mockResolvedValue([
+      {
+        runId: 'run-orchestrator',
+        assistantNodeId: 'assistant-orchestrator',
+        seq: 1,
+        eventType: 'orchestration:flow_diagram_created',
+        status: null,
+        phase: null,
+        payload: JSON.stringify({
+          mermaid: 'flowchart LR\n  A-->B',
+          summary: 'Initial orchestration plan',
+        }),
+        timestamp: 1_779_867_200,
+      },
+    ]);
+
+    await ensureAgentRunHydrated('assistant-orchestrator', 'hover');
+
+    const snapshot = agentRunManager.snapshot('assistant-orchestrator');
+    expect(snapshot?.timeline).toEqual([]);
+    expect(snapshot?.executionData.orchestration).toEqual({
+      flowDiagramMermaid: 'flowchart LR\n  A-->B',
+      flowDiagramSummary: 'Initial orchestration plan',
+    });
+    expect(useAgentRunProjectionStore.getState().projectionsById['assistant-orchestrator']?.execution_data?.orchestration).toEqual(
+      snapshot?.executionData.orchestration,
+    );
+  });
+
   it('does not replay when the existing actor is already caught up to the ledger', async () => {
     agentRunManager.dispatch('assistant-1', {
       type: 'native_event',

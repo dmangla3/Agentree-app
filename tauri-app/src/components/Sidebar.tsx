@@ -1,4 +1,4 @@
-import { BarChart3, MessageSquare, LogOut, Puzzle, Workflow, KeyRound } from 'lucide-react';
+import { BarChart3, MessageSquare, LogOut, Puzzle, KeyRound, Workflow } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from "../../@/components/ui/avatar";
 import { useAuthStore } from '../stores/authStore';
@@ -9,8 +9,8 @@ import { DiagnosticsButton } from './DiagnosticsButton';
 
 
 interface SidebarProps {
-    activeView: 'chat' | 'flows' | 'tracking' | 'knowledge' | 'skills' | 'logins';
-    onViewChange: (view: 'chat' | 'flows' | 'tracking' | 'knowledge' | 'skills' | 'logins') => void;
+    activeView: 'chat' | 'orchestration' | 'tracking' | 'knowledge' | 'skills' | 'logins';
+    onViewChange: (view: 'chat' | 'orchestration' | 'tracking' | 'knowledge' | 'skills' | 'logins') => void;
     selectedWorkspaceId: string | null;
     selectedWorkspaceName: string | null;
     selectedWorkspaceRepoPath: string | null;
@@ -30,7 +30,7 @@ export function Sidebar({
     const { user } = useAuthStore();
     const navItems = [
         { id: 'chat' as const, label: 'Workspace', icon: MessageSquare },
-        { id: 'flows' as const, label: 'Flows', icon: Workflow },
+        { id: 'orchestration' as const, label: 'Orchestration', icon: Workflow },
         { id: 'tracking' as const, label: 'Tracking', icon: BarChart3 },
         { id: 'logins' as const, label: 'Logins', icon: KeyRound },
         { id: 'skills' as const, label: 'Skills', icon: Puzzle },

@@ -6,7 +6,7 @@ import { ToastProvider } from './components/Toast';
 import { DiffProvider } from './contexts/DiffContext';
 import { MergeSelectionOverlay } from './components/SyncButton';
 import { configureAuthSession } from './lib/authSession';
-import { isDesktopBrowserAuthenticated, shouldUseDesktopBrowserAuth } from './lib/kindeDesktopAuth';
+import { isDesktopBrowserAuthenticated, readDesktopUserFromSession, shouldUseDesktopBrowserAuth } from './lib/kindeDesktopAuth';
 import { TooltipProvider } from '../@/components/ui/tooltip';
 import { UpdateManager } from './components/updates/UpdateManager';
 import { DevLocalSyncAlert } from './components/DevLocalSyncAlert';
@@ -90,12 +90,13 @@ function ProtectedRoute({ children }: { children: React.JSX.Element }) {
   const desktopSession = useAuthStore((state) => state.desktopSession);
   const devBypass = import.meta.env.VITE_DEV_AUTH_BYPASS === 'true';
   const useDesktopAuth = shouldUseDesktopBrowserAuth();
+  const authLoading = useDesktopAuth ? false : isLoading;
   const isDesktopAuthenticated = useDesktopAuth && !!desktopUser && !!desktopSession;
   devLogLazy(() => [
-    `[ROUTE][ProtectedRoute] desktop=${useDesktopAuth} devBypass=${devBypass} isLoading=${isLoading} kindeAuth=${isAuthenticated} desktopUser=${!!desktopUser} desktopSession=${!!desktopSession}`
+    `[ROUTE][ProtectedRoute] desktop=${useDesktopAuth} devBypass=${devBypass} isLoading=${authLoading} kindeAuth=${isAuthenticated} desktopUser=${!!desktopUser} desktopSession=${!!desktopSession}`
   ]);
 
-  if (isLoading) {
+  if (authLoading) {
     devLogLazy(() => ['[ROUTE][ProtectedRoute] Rendering loading state']);
     return <AppShellSkeleton label="Checking session" />;
   }
@@ -134,13 +135,14 @@ function AppContent() {
   const appReadyLoggedRef = React.useRef(false);
   const devBypass = import.meta.env.VITE_DEV_AUTH_BYPASS === 'true';
   const useDesktopAuth = shouldUseDesktopBrowserAuth();
+  const authLoading = useDesktopAuth ? false : isLoading;
 
   useEffect(() => {
-    if (!isLoading && !isAuthenticated && !devBypass && !authScreenTrackedRef.current) {
+    if (!useDesktopAuth && !authLoading && !isAuthenticated && !devBypass && !authScreenTrackedRef.current) {
       trackScreenViewed('login');
       authScreenTrackedRef.current = true;
     }
-  }, [devBypass, isAuthenticated, isLoading]);
+  }, [authLoading, devBypass, isAuthenticated, useDesktopAuth]);
 
   useEffect(() => {
     configureAuthSession({ getToken, logout });
@@ -174,6 +176,20 @@ function AppContent() {
           return;
         }
 
+        if (useDesktopAuth && desktopSession) {
+          const sessionUser = readDesktopUserFromSession(desktopSession);
+          if (sessionUser && (
+            desktopUser?.id !== sessionUser.id ||
+            desktopUser?.email !== sessionUser.email ||
+            desktopUser?.name !== sessionUser.name ||
+            desktopUser?.pictureUrl !== sessionUser.pictureUrl
+          )) {
+            setUser(sessionUser);
+          }
+          identifyUser(sessionUser ? { id: sessionUser.id, email: sessionUser.email || null } : null);
+          return;
+        }
+
         if (useDesktopAuth) {
           if (desktopUser && desktopSession) {
             identifyUser({ id: desktopUser.id, email: desktopUser.email || null });
@@ -193,7 +209,7 @@ function AppContent() {
             pictureUrl: kindeUser.picture || undefined
           });
           identifyUser({ id: kindeUser.id || '', email: kindeUser.email || null });
-        } else if (!isLoading && !isAuthenticated) {
+        } else if (!authLoading && !isAuthenticated) {
           setUser(null);
           identifyUser(null);
         }
@@ -207,16 +223,16 @@ function AppContent() {
       }
     };
 
-    if (!isLoading) {
+    if (!authLoading) {
       devLogLazy(() => ['[PERF][App] isLoading=false, calling syncAuth']);
       syncAuth();
     } else {
       devLogLazy(() => ['[PERF][App] isLoading=true, waiting for Kinde...']);
     }
-  }, [desktopSession, desktopUser, devBypass, getToken, isAuthenticated, isLoading, kindeUser, setUser, useDesktopAuth]);
+  }, [authLoading, desktopSession, desktopUser, devBypass, getToken, isAuthenticated, kindeUser, setUser, useDesktopAuth]);
 
-  if (isLoading || isSyncing) {
-    devLogLazy(() => [`[ROUTE][AppContent] Rendering initializing state isLoading=${isLoading} isSyncing=${isSyncing}`]);
+  if (authLoading || isSyncing) {
+    devLogLazy(() => [`[ROUTE][AppContent] Rendering initializing state isLoading=${authLoading} isSyncing=${isSyncing}`]);
     return <AppShellSkeleton label="Synchronizing session" />;
   }
 

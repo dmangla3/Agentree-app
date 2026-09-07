@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '../stores/workspaceStore';
 import type { LocalNodeMessage } from './useLocalNodes';
-import { upsertMessagesIntoLocalNodeCache } from './useLocalNodes';
+import { parseLocalNode, upsertMessagesIntoLocalNodeCache } from './useLocalNodes';
 
 const message = (overrides: Partial<Message> & Pick<Message, 'id' | 'role'>): Message => {
   const { id, role, ...rest } = overrides;
@@ -39,6 +39,27 @@ const localNode = (
     updatedAt: overrides.message?.updatedAt ?? '2026-05-19T00:00:00.000Z',
     ...overrides.message,
   },
+});
+
+describe('parseLocalNode', () => {
+  it('mirrors the durable controlled_by row field into the message payload', () => {
+    const parsed = parseLocalNode({
+      nodeId: 'assistant-child',
+      workspaceId: 'workspace-1',
+      controlledByNodeId: 'assistant-orchestrator',
+      payload: JSON.stringify({
+        id: 'assistant-child',
+        workspaceId: 'workspace-1',
+        role: 'assistant',
+      }),
+      syncStatus: 'local_only',
+      finalizedAt: 1779199000,
+      retryAttempt: 0,
+    });
+
+    expect(parsed?.message.controlled_by_node_id).toBe('assistant-orchestrator');
+    expect(parsed?.message.controlledByNodeId).toBe('assistant-orchestrator');
+  });
 });
 
 describe('upsertMessagesIntoLocalNodeCache', () => {

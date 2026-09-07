@@ -13,6 +13,8 @@ export const commands = {
 	recordToolCall: (sessionId: string, name: string, parameters: string | null, result: string | null, error: string | null, startedAt: number, completedAt: number) => __TAURI_INVOKE<number>("record_tool_call", { sessionId, name, parameters, result, error, startedAt, completedAt }),
 	kvSet: (sessionId: string, key: string, value: string) => __TAURI_INVOKE<null>("kv_set", { sessionId, key, value }),
 	kvGet: (sessionId: string, key: string) => __TAURI_INVOKE<string | null>("kv_get", { sessionId, key }),
+	saveOrchestrationUserTemplates: (templatesJson: string) => __TAURI_INVOKE<null>("save_orchestration_user_templates", { templatesJson }),
+	getOrchestrationUserTemplates: () => __TAURI_INVOKE<string | null>("get_orchestration_user_templates"),
 	addMessage: (sessionId: string, role: string, content: string, metadata: string | null) => __TAURI_INVOKE<number>("add_message", { sessionId, role, content, metadata }),
 	updateSessionStatus: (sessionId: string, status: string) => __TAURI_INVOKE<null>("update_session_status", { sessionId, status }),
 	getSessionSnapshot: (sessionId: string) => __TAURI_INVOKE<{
@@ -52,6 +54,7 @@ export const commands = {
 	loginProfileId: string | null,
 } | null>("get_agent_run_ledger", { assistantNodeId }),
 	replayAgentRunEvents: (runId: string, afterSeq: number | null) => __TAURI_INVOKE<AgentRunJournalEvent[]>("replay_agent_run_events", { runId, afterSeq }),
+	recordOrchestrationEvent: (runId: string, assistantNodeId: string, eventType: string, payload: string) => __TAURI_INVOKE<number>("record_orchestration_event", { runId, assistantNodeId, eventType, payload }),
 	listLocalNodes: (workspaceId: string) => __TAURI_INVOKE<LocalNodeRow[]>("list_local_nodes", { workspaceId }),
 	listLocalInsights: (workspaceId: string) => __TAURI_INVOKE<LocalInsightRow[]>("list_local_insights", { workspaceId }),
 	listLocalInsightCandidates: (workspaceId: string) => __TAURI_INVOKE<LocalInsightCandidateRow[]>("list_local_insight_candidates", { workspaceId }),
@@ -82,8 +85,6 @@ export const commands = {
 	stopAgent: (sessionId: string) => __TAURI_INVOKE<null>("stop_agent", { sessionId }),
 	steerAgentRun: (assistantNodeId: string, content: string, idempotencyKey: string) => __TAURI_INVOKE<null>("steer_agent_run", { assistantNodeId, content, idempotencyKey }),
 	getAgentRunState: (assistantNodeId: string) => __TAURI_INVOKE<AgentRunStateResponse>("get_agent_run_state", { assistantNodeId }),
-	completeInternalPrompt: (request: InternalCompletionRequest) => __TAURI_INVOKE<InternalCompletionResponse_Serialize>("complete_internal_prompt", { request }),
-	cancelInternalCompletion: (requestId: string) => __TAURI_INVOKE<null>("cancel_internal_completion", { requestId }),
 	listLoginProfiles: () => __TAURI_INVOKE<LoginProfile[]>("list_login_profiles"),
 	upsertLoginProfile: (request: UpsertLoginProfileRequest) => __TAURI_INVOKE<LoginProfile>("upsert_login_profile", { request }),
 	deleteLoginProfile: (profileId: string) => __TAURI_INVOKE<null>("delete_login_profile", { profileId }),
@@ -156,6 +157,7 @@ export const commands = {
 	setMcpAuthToken: (token: string) => __TAURI_INVOKE<null>("set_mcp_auth_token", { token }),
 	setMcpWorkspaceId: (workspaceId: string) => __TAURI_INVOKE<null>("set_mcp_workspace_id", { workspaceId }),
 	getMcpServerUrl: () => __TAURI_INVOKE<string>("get_mcp_server_url"),
+	resolveOrchestrationMcpRequest: (requestId: string, responseJson: string | null, error: string | null) => __TAURI_INVOKE<null>("resolve_orchestration_mcp_request", { requestId, responseJson, error }),
 	ensureAuthCallbackServerStarted: () => __TAURI_INVOKE<string>("ensure_auth_callback_server_started"),
 	getAuthCallbackBaseUrl: () => __TAURI_INVOKE<string>("get_auth_callback_base_url"),
 	readGraphSnapshotCache: (workspaceId: string) => __TAURI_INVOKE<string | null>("read_graph_snapshot_cache", { workspaceId }),
@@ -444,32 +446,6 @@ export type ImportLoginCandidateRequest = {
 	makeDefault: boolean | null,
 };
 
-export type InternalCompletionRequest = {
-	purpose: string,
-	provider: string,
-	model: string,
-	reasoningEffort?: string | null,
-	loginProfileId?: string | null,
-	requestId?: string | null,
-	prompt: string,
-};
-
-export type InternalCompletionResponse = InternalCompletionResponse_Serialize | InternalCompletionResponse_Deserialize;
-
-export type InternalCompletionResponse_Deserialize = {
-	text: string,
-	provider: string,
-	model: string,
-	usage: unknown,
-};
-
-export type InternalCompletionResponse_Serialize = {
-	text: string,
-	provider: string,
-	model: string,
-	usage?: unknown,
-};
-
 export type LocalCommitGraphSnapshot = {
 	commits: LocalCommitRow[],
 	commitParents: LocalCommitParentRow[],
@@ -574,6 +550,7 @@ export type LocalInsightRow = {
 export type LocalNodeRow = {
 	nodeId: string,
 	workspaceId: string,
+	controlledByNodeId: string | null,
 	payload: string,
 	syncStatus: string,
 	finalizedAt: number,

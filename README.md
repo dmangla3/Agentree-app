@@ -2,4 +2,4 @@
 
 Version control for AI agent conversations.
 
-This is a sanitized, app-only historical snapshot based on source commit `f8ca6e11c41d8751f262e97ec5388fa39477536e`. The publication README and reconstruction notes are available at the tip of this repository.
+This is a sanitized, app-only historical snapshot based on source commit `11b0908872f14be39bcbe5bb12f6858124210c89`. The publication README and reconstruction notes are available at the tip of this repository.

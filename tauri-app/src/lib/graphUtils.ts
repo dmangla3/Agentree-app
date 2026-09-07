@@ -171,8 +171,12 @@ const TURN_STACK_GAP = 2;
 const TURN_CONVERSATION_NODE_WIDTH = 200;
 const TURN_COMMIT_NODE_WIDTH = 120;
 const TURN_COMMIT_NODE_HEIGHT = 112;
+const ORCHESTRATION_NODE_WIDTH = 260;
+const ORCHESTRATION_NODE_HEIGHT = 190;
 
-const isHullNodeType = (type?: string | null) => type === 'turn_group_hull';
+const isHullNodeType = (type?: string | null) => type === 'turn_group_hull' || type === 'orchestration_hull';
+const isTurnHullNodeType = (type?: string | null) => type === 'turn_group_hull';
+const isOrchestrationHullNodeType = (type?: string | null) => type === 'orchestration_hull';
 const isSummaryNodeType = (type?: string | null) => CANONICAL_SUMMARY_NODE_TYPES.has(type || '');
 const isMessageNodeType = (type?: string | null) => CANONICAL_MESSAGE_NODE_TYPES.has(type || '');
 const isPrimaryLayoutNodeType = (type?: string | null) => !isHullNodeType(type) && type !== 'default';
@@ -184,6 +188,7 @@ const getNodeWidth = (node: Node<any>): number => {
   if (node.type === 'thread_link') return TURN_CONVERSATION_NODE_WIDTH;
   if (node.type === 'assistant_message') return TURN_CONVERSATION_NODE_WIDTH;
   if (node.type === 'user_message') return TURN_CONVERSATION_NODE_WIDTH;
+  if (node.type === 'orchestration_node') return ORCHESTRATION_NODE_WIDTH;
   if (node.type === 'commit_message') return TURN_COMMIT_NODE_WIDTH;
   if (node.type === 'canonical_commit') return TURN_COMMIT_NODE_WIDTH;
   if (node.type === 'layout_derived_commit_group') return TURN_COMMIT_NODE_WIDTH;
@@ -201,6 +206,7 @@ const getNodeHeight = (node: Node<any>): number => {
   if (node.type === 'thread_link') return 64;
   if (node.type === 'assistant_message') return 112;
   if (node.type === 'user_message') return 82;
+  if (node.type === 'orchestration_node') return ORCHESTRATION_NODE_HEIGHT;
   return NODE_HEIGHT;
 };
 
@@ -547,10 +553,11 @@ const buildLayoutModel = (
   const membersByUnitId = new Map<string, Node<any>[]>();
   const layoutUnits = new Map<string, LayoutUnit>();
   const hasVisibleConversationLayer = nodes.some((node) => {
+    if (node.hidden) return false;
     const kind = getNodeEntityKind(node);
     return kind === 'thread_origin' || kind === 'thread_link' || kind === 'user_message' || kind === 'assistant_message';
   });
-  const hasVisibleCommitLayer = nodes.some(isCommitLaneLayoutMember);
+  const hasVisibleCommitLayer = nodes.some((node) => !node.hidden && isCommitLaneLayoutMember(node));
   const reserveEmptyLanes = hasVisibleConversationLayer && hasVisibleCommitLayer;
 
   const registerUnitNode = (unitId: string, node: Node<any>) => {
@@ -561,6 +568,7 @@ const buildLayoutModel = (
   };
 
   nodes.forEach((node) => {
+    if (node.hidden) return;
     if (node.parentId || isHullNodeType(node.type)) return;
     if (typeof (node.data as any)?.layoutAnchorNodeId === 'string') return;
 
@@ -572,6 +580,7 @@ const buildLayoutModel = (
   });
 
   nodes.forEach((node) => {
+    if (node.hidden) return;
     if (node.parentId || isHullNodeType(node.type)) return;
     const layoutAnchorNodeId = (node.data as any)?.layoutAnchorNodeId;
     if (typeof layoutAnchorNodeId !== 'string') return;
@@ -1008,7 +1017,7 @@ const applyTurnGroupHullBounds = <T extends Node<any>>(nodes: T[]): T[] => {
   const fullTurnSlotWidth = TURN_CONVERSATION_NODE_WIDTH + TURN_LANE_GAP + TURN_COMMIT_NODE_WIDTH;
 
   result.forEach((node) => {
-    if (node.type !== 'turn_group_hull' || !(node.data as any)?.memberIds) return;
+    if (!isTurnHullNodeType(node.type) || !(node.data as any)?.memberIds) return;
 
     const memberIds = (node.data as any).memberIds as string[];
     const slotKind = (node.data as any)?.slotKind;
@@ -1049,6 +1058,56 @@ const applyTurnGroupHullBounds = <T extends Node<any>>(nodes: T[]): T[] => {
       width: maxX - minX,
       height: maxY - minY,
       zIndex: -1,
+    };
+  });
+
+  return result;
+};
+
+const applyOrchestrationHullBounds = <T extends Node<any>>(nodes: T[]): T[] => {
+  const result = nodes.map(node => ({ ...node })) as T[];
+  const nodesById = new Map(result.map(node => [node.id, node]));
+
+  result.forEach((node) => {
+    if (!isOrchestrationHullNodeType(node.type) || !(node.data as any)?.memberIds) return;
+
+    const memberIds = (node.data as any).memberIds as string[];
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    memberIds.forEach((memberId) => {
+      const memberNode = nodesById.get(memberId);
+      if (!memberNode || isHullNodeType(memberNode.type)) return;
+      const width = getNodeWidth(memberNode);
+      const height = getNodeHeight(memberNode);
+      minX = Math.min(minX, memberNode.position.x);
+      minY = Math.min(minY, memberNode.position.y);
+      maxX = Math.max(maxX, memberNode.position.x + width);
+      maxY = Math.max(maxY, memberNode.position.y + height);
+    });
+
+    if (minX === Infinity) return;
+
+    const paddingX = 38;
+    const paddingTop = 42;
+    const paddingBottom = 30;
+    const minWidth = 280;
+    const minHeight = 160;
+    const width = Math.max(minWidth, (maxX - minX) + paddingX * 2);
+    const height = Math.max(minHeight, (maxY - minY) + paddingTop + paddingBottom);
+    const centerX = (minX + maxX) / 2;
+
+    node.position = {
+      x: centerX - width / 2,
+      y: minY - paddingTop,
+    };
+    node.style = {
+      ...node.style,
+      width,
+      height,
+      zIndex: 0,
     };
   });
 
@@ -1354,7 +1413,9 @@ export const mapMessagesToGraphElements = (
   constrainedCommitFiltering: boolean = false,
   pinnedCommitShas: Set<string> = new Set(),
   hiddenThreadRootIds: Set<string> = new Set(),
-  onOpenThread: (threadRootId: string) => void = () => { }
+  onOpenThread: (threadRootId: string) => void = () => { },
+  onToggleOrchestrationCollapse: (controllerMessageId: string, collapsed: boolean) => void = () => { },
+  collapsedOrchestrationControllerIds: Set<string> = new Set()
 ): { nodes: Node<LlmNodeData | SummaryNodeData | Record<string, unknown> | any>[]; edges: Edge[] } => {
   if ((!messages || messages.length === 0) && projection.threadRootIds.length === 0) {
     return { nodes: [], edges: [] };
@@ -2728,7 +2789,7 @@ export const mapMessagesToGraphElements = (
     if (showCommitNodes) {
       const hullMemberIds = new Set<string>();
       nodes.forEach((node) => {
-        if (node.type !== 'turn_group_hull') return;
+        if (!isTurnHullNodeType(node.type)) return;
         ((node.data as any)?.memberIds as string[] | undefined)?.forEach((memberId) => {
           hullMemberIds.add(memberId);
         });
@@ -2752,6 +2813,259 @@ export const mapMessagesToGraphElements = (
             style: { zIndex: -1 },
           } as Node<any>);
         });
+    }
+
+    if (showConversationNodes) {
+      const renderedNodeIds = new Set(nodes.map((node) => node.id));
+      projection.entities.forEach((entity) => {
+        if (entity.nodeKind !== 'orchestrator' || !entity.messageId || !entity.orchestrationSummary) return;
+        if (entity.kind !== 'assistant_message') return;
+        if (entity.controlledByNodeId) return;
+        if (!renderedNodeIds.has(entity.messageId)) return;
+
+        const summary = entity.orchestrationSummary;
+        const collapsed = collapsedOrchestrationControllerIds.has(entity.messageId);
+        const controlledEntities = summary.controlledEntityIds
+          .map((entityId) => projection.entitiesById.get(entityId) ?? null)
+          .filter((child): child is ProjectedNodeEntity => Boolean(child?.messageId));
+        const childEntities = summary.childAssistantEntityIds
+          .map((entityId) => projection.entitiesById.get(entityId) ?? null)
+          .filter((child): child is ProjectedNodeEntity => Boolean(child?.messageId));
+
+        const visibleControlledMessageIds = controlledEntities
+          .map((child) => child.messageId!)
+          .filter((messageId) => renderedNodeIds.has(messageId));
+        const expandedMemberIds = Array.from(new Set([entity.messageId, ...visibleControlledMessageIds]));
+        if (expandedMemberIds.length === 0) return;
+
+        const miniChildEntities = childEntities;
+        const miniMessageIdToDotId = new Map<string, string>();
+        miniChildEntities.forEach((child) => {
+          if (child.messageId) miniMessageIdToDotId.set(child.messageId, child.entityId);
+        });
+        const miniEdges = miniChildEntities.flatMap((child) => {
+          const messageId = child.messageId;
+          if (!messageId) return [];
+          const message = messageMap.get(messageId);
+          const graphParentId = message ? getGraphParentId(message, messageMap) : null;
+          const graphParent = graphParentId ? messageMap.get(graphParentId) ?? null : null;
+          const sourceMessageId = graphParent?.role === 'user'
+            ? getGraphParentId(graphParent, messageMap)
+            : graphParentId;
+          const sourceId = sourceMessageId ? miniMessageIdToDotId.get(sourceMessageId) : null;
+          return sourceId ? [{ sourceId, targetId: child.entityId }] : [];
+        });
+
+        const orchestrationNodeId = `orchestration:${entity.messageId}`;
+        const miniChildren = miniChildEntities.map((child) => ({
+          id: child.entityId,
+          label: child.message?.content?.trim() || child.preview || child.shortLabel || 'Child run',
+          status: child.status ?? null,
+          entity: child,
+        }));
+        const orchestrationLabel = entity.message?.aiLabel?.trim() || 'Orchestration';
+        const miniRunCounts = {
+          total: summary.totalChildRuns,
+          active: summary.activeChildRuns,
+          completed: summary.completedChildRuns,
+          failed: summary.failedChildRuns,
+          cancelled: summary.cancelledChildRuns,
+        };
+
+        if (collapsed) {
+          nodes.push({
+            id: orchestrationNodeId,
+            type: 'orchestration_node',
+            position: { x: 0, y: 0 },
+            data: {
+              controllerMessageId: entity.messageId,
+              label: orchestrationLabel,
+              sortTs: entity.sortTs,
+              collapsedMemberIds: expandedMemberIds,
+              totalChildRuns: miniRunCounts.total,
+              activeChildRuns: miniRunCounts.active,
+              failedChildRuns: miniRunCounts.failed,
+              completedChildRuns: miniRunCounts.completed,
+              cancelledChildRuns: miniRunCounts.cancelled,
+              miniChildren,
+              miniEdges,
+              controllerEntity: entity,
+              projection,
+              onToggleCollapse: onToggleOrchestrationCollapse,
+            },
+            draggable: false,
+            selectable: true,
+            style: { width: ORCHESTRATION_NODE_WIDTH, height: ORCHESTRATION_NODE_HEIGHT, zIndex: 1 },
+          } as Node<any>);
+
+          const memberIdSet = new Set(expandedMemberIds);
+          const routedEdges: Edge[] = [];
+          edges.forEach((edge) => {
+            const sourceIsMember = memberIdSet.has(edge.source);
+            const targetIsMember = memberIdSet.has(edge.target);
+            if (sourceIsMember === targetIsMember) return;
+
+            const source = sourceIsMember ? orchestrationNodeId : edge.source;
+            const target = targetIsMember ? orchestrationNodeId : edge.target;
+            if (source === target) return;
+
+            const relationship = (edge.data as any)?.relationship ?? 'conversation';
+            if (edges.some((candidate) => (
+              candidate.source === source
+              && candidate.target === target
+              && (candidate.data as any)?.relationship === relationship
+            )) || routedEdges.some((candidate) => (
+              candidate.source === source
+              && candidate.target === target
+              && (candidate.data as any)?.relationship === relationship
+            ))) return;
+
+            routedEdges.push({
+              ...edge,
+              id: `${source}->${target}:orchestration-collapsed:${edge.id}`,
+              source,
+              target,
+              sourceHandle: 'bottom-source',
+              targetHandle: 'top-target',
+              type: edge.type ?? 'compactLineage',
+              data: {
+                ...((edge.data as Record<string, unknown> | undefined) ?? {}),
+                relationship,
+                edgeRole: (edge.data as any)?.edgeRole ?? 'conversation',
+                routedThroughOrchestration: true,
+                orchestrationControllerMessageId: entity.messageId,
+              },
+            });
+          });
+          edges.push(...routedEdges);
+
+          const controllerMessage = messageMap.get(entity.messageId);
+          const controllerGraphParentId = controllerMessage ? getGraphParentId(controllerMessage, messageMap) : null;
+          if (
+            controllerGraphParentId
+            && !memberIdSet.has(controllerGraphParentId)
+            && renderedNodeIds.has(controllerGraphParentId)
+            && !edges.some((edge) => (
+              edge.source === controllerGraphParentId
+              && edge.target === orchestrationNodeId
+              && (edge.data as any)?.relationship === 'conversation'
+            ))
+          ) {
+            edges.push({
+              id: `${controllerGraphParentId}->${orchestrationNodeId}:orchestration-collapsed-controller`,
+              source: controllerGraphParentId,
+              target: orchestrationNodeId,
+              sourceHandle: 'bottom-source',
+              targetHandle: 'top-target',
+              type: 'compactLineage',
+              animated: false,
+              data: {
+                edgeLegendType: 'conversation',
+                relationship: 'conversation',
+                edgeRole: 'conversation',
+                routedThroughOrchestration: true,
+                orchestrationControllerMessageId: entity.messageId,
+              },
+              style: {
+                stroke: INACTIVE_EDGE_STROKE,
+                strokeWidth: DEFAULT_EDGE_STROKE_WIDTH,
+              },
+              className: 'dark:[stroke:#94a3b8]',
+              zIndex: 0,
+            });
+          }
+          return;
+        }
+
+        nodes.push({
+          id: orchestrationNodeId,
+          type: 'orchestration_hull',
+          position: { x: 0, y: 0 },
+          data: {
+            controllerMessageId: entity.messageId,
+            label: orchestrationLabel,
+            memberIds: expandedMemberIds,
+            totalChildRuns: miniRunCounts.total,
+            activeChildRuns: miniRunCounts.active,
+            failedChildRuns: miniRunCounts.failed,
+            completedChildRuns: miniRunCounts.completed,
+            cancelledChildRuns: miniRunCounts.cancelled,
+            controllerEntity: entity,
+            projection,
+            onToggleCollapse: onToggleOrchestrationCollapse,
+          },
+          draggable: false,
+          selectable: false,
+          style: { zIndex: 0 },
+        } as Node<any>);
+
+        childEntities.forEach((child) => {
+          const childMessageId = child.messageId;
+          if (!childMessageId || !renderedNodeIds.has(childMessageId)) return;
+          const edgeId = `orchestration:${entity.messageId}->${childMessageId}:control`;
+          if (edges.some((edge) => edge.id === edgeId)) return;
+          edges.push({
+            id: edgeId,
+            source: entity.messageId!,
+            target: childMessageId,
+            sourceHandle: 'bottom-source',
+            targetHandle: 'top-target',
+            type: 'smoothstep',
+            animated: child.status === 'running' || child.status === 'streaming',
+            data: {
+              edgeLegendType: 'orchestration-control',
+              relationship: 'orchestration-control',
+              edgeRole: 'control',
+              layout: false,
+              isReference: true,
+            },
+            style: {
+              stroke: '#7c3aed',
+              strokeWidth: 2,
+              strokeDasharray: '3 5',
+              opacity: 0.58,
+            },
+            className: 'dark:[stroke:#a78bfa]',
+            zIndex: -1,
+          });
+        });
+      });
+    }
+
+    const collapsedOrchestrationMemberIds = new Set<string>();
+    nodes.forEach((node) => {
+      if (node.type !== 'orchestration_node') return;
+      ((node.data as any)?.collapsedMemberIds as string[] | undefined)?.forEach((memberId) => {
+        collapsedOrchestrationMemberIds.add(memberId);
+      });
+    });
+    if (collapsedOrchestrationMemberIds.size > 0) {
+      const updatedNodes = nodes.map((node) => {
+        if (isTurnHullNodeType(node.type)) {
+          const memberIds = ((node.data as any)?.memberIds as string[] | undefined) ?? [];
+          if (memberIds.length > 0 && memberIds.every((memberId) => collapsedOrchestrationMemberIds.has(memberId))) {
+            return {
+              ...node,
+              hidden: true,
+              selectable: false,
+              draggable: false,
+            };
+          }
+        }
+        if (!collapsedOrchestrationMemberIds.has(node.id) || isHullNodeType(node.type)) return node;
+        return {
+          ...node,
+          hidden: true,
+          selectable: false,
+          draggable: false,
+        };
+      });
+      nodes.splice(0, nodes.length, ...updatedNodes);
+      const visibleOrchestrationEdges = edges.filter((edge) => (
+        !collapsedOrchestrationMemberIds.has(edge.source)
+        && !collapsedOrchestrationMemberIds.has(edge.target)
+      ));
+      edges.splice(0, edges.length, ...visibleOrchestrationEdges);
     }
 
     const renderedNodeIds = new Set(nodes.map((node) => node.id));
@@ -2931,7 +3245,7 @@ export const getLayoutedElements = (nodes: Node<LlmNodeData | SummaryNodeData | 
     });
   }
 
-  layoutedNodes = applyTurnGroupHullBounds(layoutedNodes);
+  layoutedNodes = applyOrchestrationHullBounds(applyTurnGroupHullBounds(layoutedNodes));
 
   return { nodes: layoutedNodes, edges: addContextBoundaryAnchors(layoutedNodes, edges) };
 
@@ -3280,7 +3594,7 @@ export const getLaneLayoutedElements = (
     }
   });
 
-  finalNodes = applyTurnGroupHullBounds(finalNodes);
+  finalNodes = applyOrchestrationHullBounds(applyTurnGroupHullBounds(finalNodes));
 
   return { nodes: finalNodes, edges: addContextBoundaryAnchors(finalNodes, edges) };
 };
@@ -3665,7 +3979,7 @@ export const getTidyTreeLayoutedElements = (
     }
   });
 
-  finalNodes = applyTurnGroupHullBounds(finalNodes);
+  finalNodes = applyOrchestrationHullBounds(applyTurnGroupHullBounds(finalNodes));
 
   return { nodes: finalNodes, edges: addContextBoundaryAnchors(finalNodes, edges) };
 };
@@ -3936,7 +4250,7 @@ export const getSugiyamaLayoutedElements = (
     }
   });
 
-  finalNodes = applyTurnGroupHullBounds(finalNodes);
+  finalNodes = applyOrchestrationHullBounds(applyTurnGroupHullBounds(finalNodes));
 
   return { nodes: finalNodes, edges: addContextBoundaryAnchors(finalNodes, edges) };
 };
