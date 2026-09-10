@@ -5,6 +5,8 @@ import {
   hasActiveLoginProfileForProvider,
   isLoginProfileActive,
   isLoginProfileCompatibleWithProvider,
+  resolveLoginProfileSelection,
+  selectLoginProfileForProvider,
 } from './loginProfiles';
 
 describe('loginProfiles helpers', () => {
@@ -38,5 +40,28 @@ describe('loginProfiles helpers', () => {
 
     expect(hasActiveLoginProfileForProvider(profiles, 'codex')).toBe(false);
     expect(hasActiveLoginProfileForProvider(profiles, 'claude')).toBe(true);
+  });
+
+  it('selects a ready compatible profile before a non-ready default', () => {
+    const profiles = [
+      { id: 'c1', provider: 'codex', displayName: 'Codex expired', authType: 'codex_api_key', status: 'expired', isDefault: true },
+      { id: 'c2', provider: 'codex', displayName: 'Codex ready', authType: 'codex_api_key', status: 'ready', isDefault: false },
+    ];
+
+    expect(selectLoginProfileForProvider(profiles, 'codex')?.id).toBe('c2');
+  });
+
+  it('reports readiness failures for providers that require profiles', () => {
+    const selection = resolveLoginProfileSelection({
+      profiles: [
+        { id: 'c1', provider: 'codex', displayName: 'Codex expired', authType: 'codex_api_key', status: 'expired', isDefault: true },
+      ],
+      provider: 'codex',
+      agentName: 'Codex',
+    });
+
+    expect(selection.selectedProfile?.id).toBe('c1');
+    expect(selection.isReady).toBe(false);
+    expect(selection.failureMessage).toBe('Codex needs a ready login profile before it can run.');
   });
 });

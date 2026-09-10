@@ -7,7 +7,7 @@ import { buildComposerDraftKey, useWorkspaceStore, AttachmentMetadata, Message, 
 import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 import { useProviderLimitsStore } from '../stores/providerLimitsStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
-import { isLoginProfileActive } from '../lib/loginProfiles';
+import { isLoginProfileActive, resolveLoginProfileSelection } from '../lib/loginProfiles';
 import { isNoAgentSessionFoundError, markStaleLocalAgentNodeCancelled } from '../lib/localAgentRunTerminal';
 import { useQueryClient } from '@tanstack/react-query';
 import { UnifiedAgentModelSelector } from './UnifiedAgentModelSelector';
@@ -80,12 +80,12 @@ import {
 import { hasFreshContextBoundary } from '../lib/messageContext';
 import { getLegacyThreadIdForMessage, getMessageThreadSessionId } from '../lib/threadSessions';
 import {
-    applyComposerPermissionArgs,
     COMPOSER_PERMISSION_OPTIONS,
     DEFAULT_COMPOSER_PERMISSION_MODE,
     getComposerPermissionOption,
     type ComposerPermissionMode,
 } from '../lib/composerPermissions';
+import { buildAgentRuntimeArgs, parseRuntimeCliArgs } from '../lib/agentRuntimeArgs';
 import {
     scheduleMessagesRefreshWhenGraphIdle,
 } from '../lib/graphInteractionGate';
@@ -287,22 +287,18 @@ const resolveContextStartMessage = (
     return latestFreshStart ?? contextMessages[0] ?? null;
 };
 
-const parseCliArgs = (cliArgs: string | null | undefined) => {
-    const tokens = String(cliArgs || '').split(/\s+/).filter(Boolean);
-    let model: string | null = null;
-    let permissionMode: string | null = null;
-    for (let i = 0; i < tokens.length; i += 1) {
-        const token = tokens[i];
-        const next = tokens[i + 1];
-        if (token === '--model' && next) {
-            model = next;
-            i += 1;
-        } else if (token === '--permission-mode' && next) {
-            permissionMode = next;
-            i += 1;
-        }
-    }
-    return { model, permissionMode };
+const hasConversationChild = (
+    messageId: string | null | undefined,
+    messages: Message[],
+    messageMap: Map<string, Message>,
+    excludedMessageIds: Set<string> = new Set()
+): boolean => {
+    if (!messageId) return false;
+    return messages.some((message) => {
+        if (excludedMessageIds.has(message.id)) return false;
+        if (message.parentId !== messageId) return false;
+        return !isFirstClassCommitMessage(message, { messageMap });
+    });
 };
 
 import { useMessages, useSendMessage, useCommitDescendants, useCommitAncestors } from '../hooks/useMessages';
@@ -2414,17 +2410,17 @@ export function ChatInput({
         const loginProfilesAtSend = useLoginProfilesStore.getState().profiles;
         const loginReadinessFailures = hasLocalAgentRuntime
             ? agentTypesForReadiness.map((agentType) => {
-                const compatibleProfiles = loginProfilesAtSend.filter((profile) => profile.provider === agentType);
-                const selectedProfileId = compatibleProfiles.find((profile) => profile.isDefault)?.id
-                    ?? compatibleProfiles[0]?.id
-                    ?? null;
-                const selectedProfile = compatibleProfiles.find((profile) => profile.id === selectedProfileId) ?? null;
-                if (selectedProfile && isLoginProfileActive(selectedProfile)) return null;
                 const label = agentType === 'codex' ? 'Codex' : 'Claude';
+                const selection = resolveLoginProfileSelection({
+                    profiles: loginProfilesAtSend,
+                    provider: agentType,
+                    agentName: label,
+                });
+                if (selection.isReady) return null;
                 return {
                     agentType,
-                    status: selectedProfile?.status ?? 'auth_missing',
-                    message: selectedProfile?.statusMessage || `${label} needs a ready active login profile before it can run.`,
+                    status: selection.selectedProfile?.status ?? 'auth_missing',
+                    message: selection.selectedProfile?.statusMessage || selection.failureMessage || `${label} needs a ready login profile before it can run.`,
                 };
             }).filter((failure): failure is { agentType: 'codex' | 'claude'; status: string; message: string } => failure != null)
             : [];
@@ -2460,7 +2456,11 @@ export function ChatInput({
         });
         const getSelectedLlmModel = (agent: typeof primarySelectedAgent) =>
             (agent as any)?.model_config?.model ||
-            parseCliArgs(agent?.cliArgs).model ||
+            parseRuntimeCliArgs(agent?.cliArgs).model ||
+            null;
+        const getSelectedReasoningEffort = (agent: typeof primarySelectedAgent) =>
+            (agent as any)?.model_config?.reasoningEffort ||
+            parseRuntimeCliArgs(agent?.cliArgs).reasoningEffort ||
             null;
         const selectedLlmModel = getSelectedLlmModel(primarySelectedAgent);
 
@@ -2536,6 +2536,7 @@ export function ChatInput({
                     id: hasLocalAgentRuntime ? crypto.randomUUID() : undefined,
                     llmModel: getSelectedLlmModel(run.agent),
                     llmProvider: run.agent.type || null,
+                    reasoningEffort: getSelectedReasoningEffort(run.agent),
                     agentId: run.agentId,
                     status: 'pending',
                 }
@@ -2580,6 +2581,7 @@ export function ChatInput({
                         role: 'assistant',
                         llmModel: getSelectedLlmModel(run.agent),
                         llmProvider: run.agent.type || null,
+                        reasoningEffort: getSelectedReasoningEffort(run.agent),
                         agentId: run.agentId,
                         status: 'pending',
                     },
@@ -3532,41 +3534,24 @@ export function ChatInput({
 
             setSetupProgress(nodeId, isCodexAgent ? 'Starting Codex...' : 'Starting agent...');
 
-            // Prepare CLI args
             const cliArgsStr = selectedAgent?.cliArgs || '--permission-mode plan';
-            let cliArgs = cliArgsStr.split(/\s+/).filter(arg => arg.length > 0);
-            let agentSessionId: string | null = null;
-            const parsedCliArgs = parseCliArgs(cliArgsStr);
+            const parsedCliArgs = parseRuntimeCliArgs(cliArgsStr);
             const resolvedRunMode = permissionMode;
             const resolvedModel = (selectedAgent as any)?.model_config?.model || parsedCliArgs.model || null;
-            if (selectedAgent?.type === 'claude') {
-                const existingSessionIdIndex = cliArgs.indexOf('--session-id');
-                agentSessionId = existingSessionIdIndex >= 0
-                    ? cliArgs[existingSessionIdIndex + 1] ?? null
-                    : crypto.randomUUID();
-                if (existingSessionIdIndex < 0 && agentSessionId) {
-                    cliArgs.push('--session-id', agentSessionId);
-                }
-            }
-            cliArgs = applyComposerPermissionArgs(cliArgs, selectedAgent?.type, permissionMode);
-
-            const promptFlag = selectedAgent?.type === 'codex' ? null : selectedAgent?.promptFlag;
+            const resolvedReasoningEffort = (selectedAgent as any)?.model_config?.reasoningEffort || parsedCliArgs.reasoningEffort || null;
             const selectedProvider = selectedAgent?.type === 'claude' || selectedAgent?.type === 'codex'
                 ? selectedAgent.type
                 : null;
-            const compatibleLoginProfiles = selectedProvider
-                ? useLoginProfilesStore.getState().profiles.filter((profile) => profile.provider === selectedProvider)
-                : [];
-            const selectedLoginProfileId = selectedProvider
-                ? compatibleLoginProfiles.find((profile) => profile.isDefault)?.id
-                    ?? compatibleLoginProfiles[0]?.id
-                    ?? null
-                : null;
-            const selectedLoginProfile = compatibleLoginProfiles.find((profile) => profile.id === selectedLoginProfileId) ?? null;
-            if (selectedProvider && (!selectedLoginProfile || !isLoginProfileActive(selectedLoginProfile))) {
+            const loginProfileSelection = resolveLoginProfileSelection({
+                profiles: useLoginProfilesStore.getState().profiles,
+                provider: selectedProvider,
+                agentName: selectedAgent?.name ?? selectedProvider,
+            });
+            const selectedLoginProfile = loginProfileSelection.selectedProfile;
+            if (!loginProfileSelection.isReady) {
                 addToast({
                     title: 'Login profile inactive',
-                    description: `${selectedAgent?.name ?? selectedProvider} needs a ready login profile before it can run.`,
+                    description: loginProfileSelection.failureMessage ?? `${selectedAgent?.name ?? selectedProvider} needs a ready login profile before it can run.`,
                     variant: 'error',
                 });
                 return;
@@ -3595,9 +3580,17 @@ export function ChatInput({
             const agentreeContextAvailableChars = launchContext.agentreeContextAvailableChars;
             const agentreeContextInjectedChars = launchContext.agentreeContextInjectedChars;
             const isBranchFromInterior = launchContext.isBranchFromInterior;
-            const spawnArgs = promptFlag
-                ? [...cliArgs, ...launchContext.providerInternalArgs, promptFlag, effectivePrompt]
-                : [...cliArgs, ...launchContext.providerInternalArgs, effectivePrompt];
+            const runtimeArgs = buildAgentRuntimeArgs({
+                agentType: selectedAgent?.type,
+                cliArgs: cliArgsStr,
+                promptFlag: selectedAgent?.promptFlag,
+                prompt: effectivePrompt,
+                permissionMode,
+                providerInternalArgs: launchContext.providerInternalArgs,
+                createClaudeSessionId: () => crypto.randomUUID(),
+            });
+            const agentSessionId = runtimeArgs.claudeSessionId;
+            const spawnArgs = runtimeArgs.args;
 
             const traceId = attachLatencyTraceToNode(nodeId, nodeId, authToken);
             trackAgentRunStarted({
@@ -3662,6 +3655,7 @@ export function ChatInput({
                         llmModel: resolvedModel,
                         provider_run_mode: resolvedRunMode,
                         provider_model: resolvedModel,
+                        provider_reasoning_effort: resolvedReasoningEffort,
                         login_profile_id: selectedLoginProfile?.id ?? null,
                         login_profile_name: selectedLoginProfile?.displayName ?? null,
                         login_profile_provider: selectedLoginProfile?.provider ?? null,

@@ -2946,7 +2946,7 @@ mod tests {
                 codex_home.join("auth.json"),
                 "test auth.json".to_string(),
             )],
-            false,
+            true,
         );
 
         assert!(candidates
@@ -2962,6 +2962,9 @@ mod tests {
         assert!(!candidates
             .iter()
             .any(|candidate| candidate.id.starts_with("file:codex:")));
+        assert!(!candidates
+            .iter()
+            .any(|candidate| candidate.id == "cli:claude"));
         assert!(!candidates
             .iter()
             .any(|candidate| format!("{candidate:?}").contains("1234567890abcdef")));
@@ -3037,12 +3040,12 @@ mod tests {
     }
 
     #[test]
-    fn importing_external_cli_candidate_reuses_existing_profile() {
+    fn importing_external_cli_candidate_is_not_supported() {
         let (_dir, db) = open_test_db();
         let vault = MemoryVault::new();
         let env = HashMap::new();
 
-        let first = import_discovered_login_profile_with_vault_and_sources(
+        let error = import_discovered_login_profile_with_vault_and_sources(
             &db,
             &vault,
             &env,
@@ -3053,22 +3056,10 @@ mod tests {
                 make_default: Some(false),
             },
         )
-        .expect("import cli profile");
-        let second = import_discovered_login_profile_with_vault_and_sources(
-            &db,
-            &vault,
-            &env,
-            &[],
-            ImportLoginCandidateRequest {
-                candidate_id: "cli:claude".to_string(),
-                display_name: Some("Claude CLI again".to_string()),
-                make_default: Some(false),
-            },
-        )
-        .expect("reuse cli profile");
+        .expect_err("Claude CLI import should be removed");
 
-        assert_eq!(first.id, second.id);
-        assert_eq!(db.list_login_profiles().expect("profiles").len(), 1);
+        assert!(error.contains("managed Claude profile"));
+        assert_eq!(db.list_login_profiles().expect("profiles").len(), 0);
     }
 
     #[test]
@@ -3110,6 +3101,18 @@ mod tests {
                 .expect_err("Codex runtime import should be removed");
 
         assert!(error.contains("managed Codex profile"));
+    }
+
+    #[test]
+    fn importing_existing_runtime_claude_login_is_not_supported() {
+        let (_dir, db) = open_test_db();
+        let vault = MemoryVault::new();
+
+        let error =
+            import_existing_runtime_login_with_vault(&db, &vault, "claude", "Current Claude login")
+                .expect_err("Claude runtime import should be removed");
+
+        assert!(error.contains("managed Claude profile"));
     }
 
     #[test]

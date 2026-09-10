@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '../stores/workspaceStore';
 import {
-  buildOrchestrationChildRetryInput,
-  resolveOrchestrationChildRetryTarget,
+  buildOrchestrationRunRetryInput,
+  resolveOrchestrationRunRetryTarget,
 } from './retry';
 
 const message = (input: Partial<Message> & { id: string; role: Message['role'] }): Message => ({
@@ -14,7 +14,7 @@ const message = (input: Partial<Message> & { id: string; role: Message['role'] }
   ...input,
 } as Message);
 
-describe('orchestration child retry resolution', () => {
+describe('orchestration run retry resolution', () => {
   it('builds replacement retry input from the failed child user prompt and metadata', () => {
     const messages = [
       message({ id: 'root-user', role: 'user' }),
@@ -66,7 +66,7 @@ describe('orchestration child retry resolution', () => {
       }),
     ];
 
-    const target = resolveOrchestrationChildRetryTarget(messages, 'child-assistant');
+    const target = resolveOrchestrationRunRetryTarget(messages, 'child-assistant');
     expect(target).toEqual({
       ok: true,
       target: {
@@ -78,7 +78,7 @@ describe('orchestration child retry resolution', () => {
     });
     if (!target.ok) throw new Error('expected retry target');
 
-    const result = buildOrchestrationChildRetryInput({
+    const result = buildOrchestrationRunRetryInput({
       messages,
       target: target.target,
       authToken: 'token',
@@ -143,10 +143,10 @@ describe('orchestration child retry resolution', () => {
       }),
     ];
 
-    const target = resolveOrchestrationChildRetryTarget(messages, 'child-assistant');
+    const target = resolveOrchestrationRunRetryTarget(messages, 'child-assistant');
     if (!target.ok) throw new Error('expected retry target');
 
-    const result = buildOrchestrationChildRetryInput({
+    const result = buildOrchestrationRunRetryInput({
       messages,
       target: target.target,
       authToken: 'token',
@@ -154,7 +154,7 @@ describe('orchestration child retry resolution', () => {
         runId: 'run-orchestrator',
         assistantNodeId: 'assistant-orchestrator',
         seq: 1,
-        eventType: 'orchestration:child_superseded',
+        eventType: 'orchestration:run_superseded',
         payload: JSON.stringify({
           decisionId: 'planner-1',
           supersededAssistantNodeId: 'child-assistant',
@@ -164,6 +164,6 @@ describe('orchestration child retry resolution', () => {
       }],
     });
 
-    expect(result).toEqual({ ok: false, reason: 'child_already_superseded' });
+    expect(result).toEqual({ ok: false, reason: 'run_already_superseded' });
   });
 });

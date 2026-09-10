@@ -50,13 +50,13 @@ export interface ProjectedNodeEntity extends CanonicalNodeEntity {
 export interface ProjectedOrchestrationSummary {
   controllerMessageId: string;
   controlledEntityIds: string[];
-  childAssistantEntityIds: string[];
-  totalChildRuns: number;
-  activeChildRuns: number;
-  terminalChildRuns: number;
-  completedChildRuns: number;
-  failedChildRuns: number;
-  cancelledChildRuns: number;
+  orchestrationRunAssistantEntityIds: string[];
+  totalOrchestrationRuns: number;
+  activeOrchestrationRuns: number;
+  terminalOrchestrationRuns: number;
+  completedOrchestrationRuns: number;
+  failedOrchestrationRuns: number;
+  cancelledOrchestrationRuns: number;
 }
 
 export interface ProjectedTurnGroup {
@@ -592,20 +592,20 @@ const buildProjectedOrchestrationSummary = (
   controlledEntityIds: string[],
   entitiesById: Map<string, ProjectedNodeEntity>,
 ): ProjectedOrchestrationSummary => {
-  const childAssistantEntities = controlledEntityIds
+  const runAssistantEntities = controlledEntityIds
     .map((entityId) => entitiesById.get(entityId) ?? null)
     .filter((entity): entity is ProjectedNodeEntity => entity?.kind === 'assistant_message');
 
   return {
     controllerMessageId,
     controlledEntityIds,
-    childAssistantEntityIds: childAssistantEntities.map((entity) => entity.entityId),
-    totalChildRuns: childAssistantEntities.length,
-    activeChildRuns: childAssistantEntities.filter((entity) => isActiveAgentStatus(entity.status)).length,
-    terminalChildRuns: childAssistantEntities.filter((entity) => isTerminalAgentStatus(entity.status)).length,
-    completedChildRuns: childAssistantEntities.filter((entity) => entity.status === 'completed').length,
-    failedChildRuns: childAssistantEntities.filter((entity) => isFailureAgentStatus(entity.status)).length,
-    cancelledChildRuns: childAssistantEntities.filter((entity) => entity.status === 'cancelled').length,
+    orchestrationRunAssistantEntityIds: runAssistantEntities.map((entity) => entity.entityId),
+    totalOrchestrationRuns: runAssistantEntities.length,
+    activeOrchestrationRuns: runAssistantEntities.filter((entity) => isActiveAgentStatus(entity.status)).length,
+    terminalOrchestrationRuns: runAssistantEntities.filter((entity) => isTerminalAgentStatus(entity.status)).length,
+    completedOrchestrationRuns: runAssistantEntities.filter((entity) => entity.status === 'completed').length,
+    failedOrchestrationRuns: runAssistantEntities.filter((entity) => isFailureAgentStatus(entity.status)).length,
+    cancelledOrchestrationRuns: runAssistantEntities.filter((entity) => entity.status === 'cancelled').length,
   };
 };
 

@@ -3,7 +3,7 @@ import type { AgentRunJournalEvent } from '../lib/agentClient';
 import type { Message } from '../stores/workspaceStore';
 import {
   getControlledByNodeId,
-  findExistingOrchestrationChildLaunch,
+  findExistingOrchestrationRunLaunch,
   getNodeKind,
   getOrchestrationDecisionKey,
   getSatisfiedActiveWaitGroup,
@@ -52,8 +52,8 @@ describe('orchestration domain helpers', () => {
     expect(getOrchestrationDecisionKey('run-1', 'planner-1')).toBe('run-1:planner-1');
   });
 
-  it('finds an existing controlled child by orchestrator and decision id for replay-safe child starts', () => {
-    const existing = findExistingOrchestrationChildLaunch([
+  it('finds an existing orchestration run by orchestrator and decision id for replay-safe orchestration run starts', () => {
+    const existing = findExistingOrchestrationRunLaunch([
       message({
         id: 'user-child',
         role: 'user',
@@ -83,15 +83,15 @@ describe('orchestration domain helpers', () => {
     });
   });
 
-  it('replays child, wait, and completion events', () => {
+  it('replays run, wait, and completion events', () => {
     const parsed = [
-      journalEvent(1, 'orchestration:child_requested', {
+      journalEvent(1, 'orchestration:run_requested', {
         decisionId: 'planner-1',
-        childAssistantNodeId: 'assistant-planner',
+        runAssistantNodeId: 'assistant-planner',
       }),
-      journalEvent(2, 'orchestration:child_started', {
+      journalEvent(2, 'orchestration:run_started', {
         decisionId: 'planner-1',
-        childAssistantNodeId: 'assistant-planner',
+        runAssistantNodeId: 'assistant-planner',
       }),
       journalEvent(3, 'orchestration:wait_started', {
         waitGroupId: 'wait-planners',
@@ -106,33 +106,33 @@ describe('orchestration domain helpers', () => {
 
     expect(projection.status).toBe('completed');
     expect(projection.requestedDecisionIds.has('planner-1')).toBe(true);
-    expect(projection.childAssistantNodeIdByDecisionId.get('planner-1')).toBe('assistant-planner');
+    expect(projection.runAssistantNodeIdByDecisionId.get('planner-1')).toBe('assistant-planner');
     expect(projection.activeWaitGroup).toBeNull();
   });
 
-  it('detects satisfied wait groups from controlled child statuses', () => {
+  it('detects satisfied wait groups from orchestration run statuses', () => {
     const waitGroup = {
       waitGroupId: 'wait-planners',
       decisionIds: ['planner-1', 'planner-2'],
       condition: 'all',
     };
-    const children = [
+    const runs = [
       { assistantNodeId: 'assistant-1', decisionId: 'planner-1', status: 'completed' as const, active: false, terminal: true, outputCommitSha: null },
       { assistantNodeId: 'assistant-2', decisionId: 'planner-2', status: 'completed' as const, active: false, terminal: true, outputCommitSha: null },
     ];
 
-    expect(isOrchestrationWaitGroupSatisfied(waitGroup, children)).toBe(true);
+    expect(isOrchestrationWaitGroupSatisfied(waitGroup, runs)).toBe(true);
     expect(getSatisfiedActiveWaitGroup({
       status: 'running',
       requestedDecisionIds: new Set(),
-      childAssistantNodeIdByDecisionId: new Map(),
-      supersededChildIds: new Set(),
+      runAssistantNodeIdByDecisionId: new Map(),
+      supersededRunIds: new Set(),
       activeWaitGroup: waitGroup,
       needsUserActionReason: null,
       lastSeq: 1,
-      controlledChildren: children,
-      activeControlledAssistantNodeIds: [],
-      terminalChildren: children,
+      orchestrationRuns: runs,
+      activeOrchestrationRunAssistantNodeIds: [],
+      terminalOrchestrationRuns: runs,
       missingDecisionIds: [],
     })).toEqual(waitGroup);
   });
@@ -157,17 +157,17 @@ describe('orchestration domain helpers', () => {
     });
 
     expect(planOrchestrationRecoveryAction(projection)).toEqual({
-      type: 'stop_active_children',
+      type: 'stop_active_runs',
       assistantNodeIds: ['assistant-child'],
       reason: 'cancel_recovery',
     });
   });
 
-  it('marks missing requested children as needing user action instead of replaying a preview', () => {
+  it('marks missing requested runs as needing user action instead of replaying a preview', () => {
     const projection = recoverOrchestrationProjection({
       orchestratorNodeId: 'assistant-orchestrator',
       events: [
-        parseOrchestrationJournalEvent(journalEvent(1, 'orchestration:child_requested', {
+        parseOrchestrationJournalEvent(journalEvent(1, 'orchestration:run_requested', {
           decisionId: 'planner-1',
         }))!,
       ],
@@ -177,7 +177,7 @@ describe('orchestration domain helpers', () => {
     expect(projection.status).toBe('needs_user_action');
     expect(planOrchestrationRecoveryAction(projection)).toEqual({
       type: 'needs_user_action',
-      reason: 'Requested child run is missing for decision planner-1.',
+      reason: 'Requested orchestration run is missing for decision planner-1.',
     });
   });
 });

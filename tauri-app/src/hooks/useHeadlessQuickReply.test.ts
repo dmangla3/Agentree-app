@@ -3,9 +3,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createTestQueryClient } from '../test/queryTestUtils';
 import { localNodeKeys, type LocalNodeMessage } from './useLocalNodes';
-import { materializeHeadlessQuickReplyMessages, selectQuickReplyLoginProfile } from './useHeadlessQuickReply';
+import { materializeHeadlessQuickReplyMessages } from './useHeadlessQuickReply';
 import type { Message } from '../stores/workspaceStore';
-import type { LoginProfileSummary } from '../lib/loginProfiles';
 
 const makeMessage = (input: Partial<Message> & Pick<Message, 'id' | 'role'>): Message => ({
   id: input.id,
@@ -18,39 +17,7 @@ const makeMessage = (input: Partial<Message> & Pick<Message, 'id' | 'role'>): Me
   updatedAt: input.updatedAt ?? '2026-05-28T00:00:00.000Z',
 });
 
-const makeProfile = (input: Partial<LoginProfileSummary> & Pick<LoginProfileSummary, 'id' | 'provider'>): LoginProfileSummary => ({
-  id: input.id,
-  provider: input.provider,
-  displayName: input.displayName ?? input.id,
-  authType: input.authType ?? 'codex_chatgpt_session',
-  status: input.status ?? 'ready',
-  isDefault: input.isDefault ?? false,
-  redactedHint: input.redactedHint ?? null,
-  config: input.config ?? null,
-  statusMessage: input.statusMessage ?? null,
-  planType: input.planType ?? null,
-  lastCheckedAt: input.lastCheckedAt ?? null,
-});
-
 describe('useHeadlessQuickReply', () => {
-  it('selects the ready default login profile for quick replies', () => {
-    const selected = selectQuickReplyLoginProfile([
-      makeProfile({ id: 'claude-1', provider: 'claude', isDefault: true }),
-      makeProfile({ id: 'codex-1', provider: 'codex', status: 'expired', isDefault: true }),
-      makeProfile({ id: 'codex-2', provider: 'codex', status: 'ready' }),
-    ], 'codex');
-
-    expect(selected?.id).toBe('codex-2');
-  });
-
-  it('does not select an inactive quick-reply login profile', () => {
-    const selected = selectQuickReplyLoginProfile([
-      makeProfile({ id: 'codex-1', provider: 'codex', status: 'usage_limited', isDefault: true }),
-    ], 'codex');
-
-    expect(selected).toBeNull();
-  });
-
   it('materializes local fallback quick-reply nodes into query caches', () => {
     const queryClient = createTestQueryClient();
     const createdMessages = [

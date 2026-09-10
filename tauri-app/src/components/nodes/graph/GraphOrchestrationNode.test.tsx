@@ -21,8 +21,8 @@ vi.mock('../../../../@/components/ui/hover-card', () => ({
   HoverCardContent: ({ children }: { children: ReactNode }) => <div data-testid="mini-dot-hover-card">{children}</div>,
 }));
 
-vi.mock('../../NodeHoverCardContent', () => ({
-  NodeHoverCardContent: ({ entity }: { entity?: { messageId?: string | null } }) => (
+vi.mock('./GraphNodeHoverCardContent', () => ({
+  GraphNodeHoverCardContent: ({ entity }: { entity?: { messageId?: string | null } }) => (
     <div>hover entity: {entity?.messageId}</div>
   ),
 }));
@@ -31,21 +31,23 @@ describe('GraphOrchestrationNode', () => {
   it('renders child turn dots, status counts, and graph edge handles', () => {
     const onToggleCollapse = vi.fn();
 
-    render(
+    const { container } = render(
       <GraphOrchestrationNode
         data={{
           controllerMessageId: 'assistant-orchestrator',
           label: 'Orchestration',
-          totalChildRuns: 3,
-          activeChildRuns: 1,
-          completedChildRuns: 1,
-          failedChildRuns: 1,
+          totalOrchestrationRuns: 3,
+          activeOrchestrationRuns: 1,
+          completedOrchestrationRuns: 1,
+          failedOrchestrationRuns: 1,
           miniChildren: [
             { id: 'child-1', label: 'Plan result.', status: 'running' },
             { id: 'child-2', label: 'Review result.', status: 'completed' },
             { id: 'child-3', label: 'Fix failed.', status: 'failed_runtime' },
           ],
+          miniAnchors: [{ id: 'root' }],
           miniEdges: [
+            { sourceId: 'root', targetId: 'child-1' },
             { sourceId: 'child-1', targetId: 'child-2' },
             { sourceId: 'child-2', targetId: 'child-3' },
           ],
@@ -62,6 +64,7 @@ describe('GraphOrchestrationNode', () => {
     expect(screen.getByTitle('Plan result. (running)')).toBeTruthy();
     expect(screen.getByTitle('Review result. (completed)')).toBeTruthy();
     expect(screen.getByTitle('Fix failed. (failed_runtime)')).toBeTruthy();
+    expect(container.querySelectorAll('.agentree-orchestration-edge')).toHaveLength(3);
     expect(screen.getByTestId('handle-top-target')).toBeTruthy();
     expect(screen.getByTestId('handle-bottom-source')).toBeTruthy();
     expect(screen.getByTestId('handle-left-target')).toBeTruthy();
@@ -119,6 +122,8 @@ describe('GraphOrchestrationNode', () => {
     );
 
     expect(screen.getByLabelText('Cancelled child. (cancelled)')).toBeTruthy();
+    fireEvent.pointerEnter(screen.getByLabelText('Cancelled child. (cancelled)'));
+
     expect(screen.getByTestId('mini-dot-hover-card')).toBeTruthy();
     expect(screen.getByText('hover entity: child-1')).toBeTruthy();
   });

@@ -132,6 +132,7 @@ pub(crate) struct AgentRunState {
     failure_reason: Option<String>,
     provider_thread_id: Option<String>,
     provider_turn_id: Option<String>,
+    active_message_item_id: Option<String>,
     final_content_override: Option<String>,
     cancel_requested: bool,
     finalized: bool,
@@ -156,6 +157,7 @@ impl AgentRunState {
             failure_reason: None,
             provider_thread_id: None,
             provider_turn_id: None,
+            active_message_item_id: None,
             final_content_override: None,
             cancel_requested: false,
             finalized: false,
@@ -963,12 +965,34 @@ fn derive_incremental_text(previous: &str, next: &str) -> String {
     }
 }
 
-fn append_message_timeline_segment(run_state: &mut AgentRunState, text: &str, timestamp: i64) {
+fn append_message_timeline_segment_for_item(
+    run_state: &mut AgentRunState,
+    text: &str,
+    timestamp: i64,
+    provider_item_id: Option<&str>,
+) {
     if text.is_empty() {
         return;
     }
     if let Some(last_event) = run_state.timeline.last_mut() {
         if last_event.get("type").and_then(|value| value.as_str()) == Some("message") {
+            let prior_provider_item_id = last_event
+                .get("provider_item_id")
+                .and_then(|value| value.as_str());
+            let prior_provider_item_missing = prior_provider_item_id.is_none();
+            if (prior_provider_item_id.is_some()
+                && provider_item_id.is_some()
+                && prior_provider_item_id != provider_item_id)
+                || (prior_provider_item_id.is_none() && provider_item_id.is_some())
+            {
+                run_state.timeline.push(serde_json::json!({
+                    "type": "message",
+                    "timestamp": timestamp,
+                    "content": text,
+                    "provider_item_id": provider_item_id,
+                }));
+                return;
+            }
             let existing = last_event
                 .get("content")
                 .and_then(|value| value.as_str())
@@ -979,6 +1003,14 @@ fn append_message_timeline_segment(run_state: &mut AgentRunState, text: &str, ti
                     "content".to_string(),
                     JsonValue::String(merge_text_output(&existing, text)),
                 );
+                if prior_provider_item_missing {
+                    if let Some(provider_item_id) = provider_item_id {
+                        object.insert(
+                            "provider_item_id".to_string(),
+                            JsonValue::String(provider_item_id.to_string()),
+                        );
+                    }
+                }
             }
             return;
         }
@@ -987,6 +1019,7 @@ fn append_message_timeline_segment(run_state: &mut AgentRunState, text: &str, ti
         "type": "message",
         "timestamp": timestamp,
         "content": text,
+        "provider_item_id": provider_item_id,
     }));
 }
 
@@ -994,11 +1027,54 @@ fn replace_message_timeline_with_final_content(
     run_state: &mut AgentRunState,
     final_content: &str,
     timestamp: i64,
+    provider_item_id: Option<&str>,
 ) {
-    run_state
-        .timeline
-        .retain(|event| event.get("type").and_then(|value| value.as_str()) != Some("message"));
-    append_message_timeline_segment(run_state, final_content, timestamp);
+    if provider_item_id.is_none() {
+        run_state
+            .timeline
+            .retain(|event| event.get("type").and_then(|value| value.as_str()) != Some("message"));
+        append_message_timeline_segment_for_item(run_state, final_content, timestamp, None);
+        return;
+    }
+    let target_index = if let Some(provider_item_id) = provider_item_id {
+        run_state.timeline.iter().rposition(|event| {
+            event.get("type").and_then(|value| value.as_str()) == Some("message")
+                && event
+                    .get("provider_item_id")
+                    .and_then(|value| value.as_str())
+                    == Some(provider_item_id)
+        })
+    } else {
+        run_state.timeline.iter().rposition(|event| {
+            event.get("type").and_then(|value| value.as_str()) == Some("message")
+        })
+    };
+    let Some(index) = target_index else {
+        append_message_timeline_segment_for_item(
+            run_state,
+            final_content,
+            timestamp,
+            provider_item_id,
+        );
+        return;
+    };
+    if final_content.is_empty() {
+        run_state.timeline.remove(index);
+        return;
+    }
+    if let Some(object) = run_state.timeline[index].as_object_mut() {
+        object.insert("timestamp".to_string(), JsonValue::from(timestamp));
+        object.insert(
+            "content".to_string(),
+            JsonValue::String(final_content.to_string()),
+        );
+        if let Some(provider_item_id) = provider_item_id {
+            object.insert(
+                "provider_item_id".to_string(),
+                JsonValue::String(provider_item_id.to_string()),
+            );
+        }
+    }
 }
 
 fn timeline_tool_use_id(event: &JsonValue) -> Option<&str> {
@@ -1252,7 +1328,18 @@ fn update_run_state_from_event(run_state: &mut AgentRunState, event: &JsonValue)
         "message_delta" => {
             if let Some(delta) = event.get("delta").and_then(|value| value.as_str()) {
                 run_state.content.push_str(delta);
-                append_message_timeline_segment(run_state, delta, timestamp);
+                let provider_item_id = event
+                    .get("provider_item_id")
+                    .and_then(|value| value.as_str());
+                if let Some(provider_item_id) = provider_item_id {
+                    run_state.active_message_item_id = Some(provider_item_id.to_string());
+                }
+                append_message_timeline_segment_for_item(
+                    run_state,
+                    delta,
+                    timestamp,
+                    provider_item_id,
+                );
             }
         }
         "message_completed" | "message" => {
@@ -1260,7 +1347,18 @@ fn update_run_state_from_event(run_state: &mut AgentRunState, event: &JsonValue)
                 let merged = merge_text_output(&run_state.content, content);
                 let appended = derive_incremental_text(&run_state.content, &merged);
                 run_state.content = merged;
-                append_message_timeline_segment(run_state, &appended, timestamp);
+                let provider_item_id = event
+                    .get("provider_item_id")
+                    .and_then(|value| value.as_str());
+                if let Some(provider_item_id) = provider_item_id {
+                    run_state.active_message_item_id = Some(provider_item_id.to_string());
+                }
+                append_message_timeline_segment_for_item(
+                    run_state,
+                    &appended,
+                    timestamp,
+                    provider_item_id,
+                );
             }
         }
         "usage" => {
@@ -1342,7 +1440,17 @@ fn update_run_state_from_event(run_state: &mut AgentRunState, event: &JsonValue)
             {
                 run_state.content = final_content.to_string();
                 run_state.final_content_override = Some(final_content.to_string());
-                replace_message_timeline_with_final_content(run_state, final_content, timestamp);
+                let provider_item_id = event
+                    .get("provider_item_id")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+                    .or_else(|| run_state.active_message_item_id.clone());
+                replace_message_timeline_with_final_content(
+                    run_state,
+                    final_content,
+                    timestamp,
+                    provider_item_id.as_deref(),
+                );
             }
         }
         _ => {}
@@ -1913,6 +2021,38 @@ fn normalize_commit_message_subject(value: &str) -> Option<String> {
     )
 }
 
+fn normalize_commit_message_body(value: &str) -> Option<String> {
+    let normalized = value
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .split("\n\n")
+        .map(|paragraph| {
+            paragraph
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .trim_matches(|ch| ch == '"' || ch == '\'' || ch == '`')
+                .to_string()
+        })
+        .filter(|paragraph| !paragraph.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .trim()
+        .trim_matches(|ch| ch == '"' || ch == '\'' || ch == '`')
+        .to_string();
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(
+        normalized
+            .chars()
+            .take(1200)
+            .collect::<String>()
+            .trim()
+            .to_string(),
+    )
+}
+
 fn normalize_ai_label(value: &str) -> Option<String> {
     let without_code_fences = strip_markdown_code(value);
     let normalized = without_code_fences
@@ -2014,6 +2154,19 @@ fn commit_subject_from_execution_data(execution_data: &JsonValue) -> Option<Stri
         .and_then(normalize_commit_message_subject)
 }
 
+fn commit_body_from_execution_data(execution_data: &JsonValue) -> Option<String> {
+    execution_data
+        .get("meta")
+        .and_then(|value| value.as_object())
+        .and_then(|meta| {
+            meta.get("commit_body")
+                .or_else(|| meta.get("agent_commit_body"))
+                .or_else(|| meta.get("runtime_commit_body"))
+        })
+        .and_then(|value| value.as_str())
+        .and_then(normalize_commit_message_body)
+}
+
 fn ai_label_from_execution_data(execution_data: &JsonValue) -> Option<String> {
     execution_data
         .get("meta")
@@ -2029,14 +2182,18 @@ fn ai_label_from_execution_data(execution_data: &JsonValue) -> Option<String> {
 }
 
 fn commit_message_for_snapshot(snapshot: &AgentRunSnapshot) -> String {
-    commit_subject_from_execution_data(&snapshot.execution_data)
+    let subject = commit_subject_from_execution_data(&snapshot.execution_data)
         .or_else(|| normalize_commit_message_fallback(Some(snapshot.final_content.as_str())))
         .unwrap_or_else(|| {
             format!(
                 "Update {}",
                 &snapshot.node_id[..snapshot.node_id.len().min(8)]
             )
-        })
+        });
+    match commit_body_from_execution_data(&snapshot.execution_data) {
+        Some(body) => format!("{subject}\n\n{body}"),
+        None => subject,
+    }
 }
 
 fn is_merge_using_ai_execution_data(execution_data: &JsonValue) -> bool {
@@ -3462,11 +3619,11 @@ mod tests {
     use super::{
         ai_label_from_execution_data, build_finalize_snapshot,
         cleanup_requires_server_final_persisted, cleanup_terminal_status_allows_cleanup,
-        commit_message_for_snapshot, commit_subject_from_execution_data,
-        decide_agent_run_watchdog_timeout, ensure_context_recovery_fields,
-        local_node_payload_for_snapshot, run_ledger_user_node_id_from_context,
-        snapshot_from_replayed_journal, update_run_state_from_event, AgentRunContext,
-        AgentRunSnapshot, AgentRunState,
+        commit_body_from_execution_data, commit_message_for_snapshot,
+        commit_subject_from_execution_data, decide_agent_run_watchdog_timeout,
+        ensure_context_recovery_fields, local_node_payload_for_snapshot,
+        run_ledger_user_node_id_from_context, snapshot_from_replayed_journal,
+        update_run_state_from_event, AgentRunContext, AgentRunSnapshot, AgentRunState,
     };
     use serde_json::json;
 
@@ -3690,18 +3847,38 @@ mod tests {
     fn commit_subject_comes_from_runtime_metadata() {
         let execution_data = json!({
             "meta": {
-                "commit_subject": "  `Add structured commit subjects.`  "
+                "commit_subject": "  `feat: add structured commit subjects.`  "
             }
         });
 
         assert_eq!(
             commit_subject_from_execution_data(&execution_data).as_deref(),
-            Some("Add structured commit subjects")
+            Some("feat: add structured commit subjects")
         );
         assert_eq!(
             commit_message_for_snapshot(&test_snapshot(execution_data, "Implemented the feature."))
                 .as_str(),
-            "Add structured commit subjects"
+            "feat: add structured commit subjects"
+        );
+    }
+
+    #[test]
+    fn commit_message_includes_runtime_body_metadata() {
+        let execution_data = json!({
+            "meta": {
+                "commit_subject": "  `feat: generate commit bodies.`  ",
+                "commit_body": " Explain why the body is useful.\n\nMention agents.rs and adapter schemas. "
+            }
+        });
+
+        assert_eq!(
+            commit_body_from_execution_data(&execution_data).as_deref(),
+            Some("Explain why the body is useful.\n\nMention agents.rs and adapter schemas.")
+        );
+        assert_eq!(
+            commit_message_for_snapshot(&test_snapshot(execution_data, "Implemented the feature."))
+                .as_str(),
+            "feat: generate commit bodies\n\nExplain why the body is useful.\n\nMention agents.rs and adapter schemas."
         );
     }
 
@@ -3773,15 +3950,15 @@ mod tests {
         let mut state = test_run_state();
         update_run_state_from_event(
             &mut state,
-            &json!({"type": "message_completed", "content": "Working on the fix.", "timestamp": 1}),
+            &json!({"type": "message_completed", "content": "Working on the fix.", "provider_item_id": "msg-1", "timestamp": 1}),
         );
         update_run_state_from_event(
             &mut state,
-            &json!({"type": "message_completed", "content": "Working on the fix. Checking tests.", "timestamp": 2}),
+            &json!({"type": "message_completed", "content": "Working on the fix. Checking tests.", "provider_item_id": "msg-1", "timestamp": 2}),
         );
         update_run_state_from_event(
             &mut state,
-            &json!({"type": "provider_stop", "provider_status": "completed", "final_content": "Implemented.\n\nVerification passed.", "timestamp": 3}),
+            &json!({"type": "provider_stop", "provider_status": "completed", "final_content": "Implemented.\n\nVerification passed.", "provider_item_id": "msg-1", "timestamp": 3}),
         );
 
         let message_events: Vec<_> = state
@@ -3795,6 +3972,39 @@ mod tests {
             message_events[0]["content"],
             "Implemented.\n\nVerification passed."
         );
+    }
+
+    #[test]
+    fn provider_final_content_preserves_prior_completed_message_items_in_timeline() {
+        let mut state = test_run_state();
+        update_run_state_from_event(
+            &mut state,
+            &json!({"type": "message_completed", "content": "Initial orchestration note.", "provider_item_id": "msg-1", "timestamp": 1}),
+        );
+        update_run_state_from_event(
+            &mut state,
+            &json!({"type": "tool_use", "name": "spawn_agents", "id": "tool-1", "timestamp": 2}),
+        );
+        update_run_state_from_event(
+            &mut state,
+            &json!({"type": "message_completed", "content": "Final status.", "provider_item_id": "msg-2", "timestamp": 3}),
+        );
+        update_run_state_from_event(
+            &mut state,
+            &json!({"type": "provider_stop", "provider_status": "completed", "final_content": "Final status.", "timestamp": 4}),
+        );
+
+        let message_events: Vec<_> = state
+            .timeline
+            .iter()
+            .filter(|event| event["type"] == "message")
+            .collect();
+        assert_eq!(state.content, "Final status.");
+        assert_eq!(message_events.len(), 2);
+        assert_eq!(message_events[0]["content"], "Initial orchestration note.");
+        assert_eq!(message_events[0]["provider_item_id"], "msg-1");
+        assert_eq!(message_events[1]["content"], "Final status.");
+        assert_eq!(message_events[1]["provider_item_id"], "msg-2");
     }
 
     #[test]

@@ -20,11 +20,13 @@ vi.mock('../../../../@/components/ui/hover-card', () => ({
   HoverCard: ({
     children,
     onOpenChange,
+    openDelay,
   }: {
     children: React.ReactNode;
     onOpenChange?: (open: boolean) => void;
+    openDelay?: number;
   }) => (
-    <div>
+    <div data-open-delay={openDelay}>
       <button type="button" onClick={() => onOpenChange?.(true)}>open hover</button>
       <button type="button" onClick={() => onOpenChange?.(false)}>close hover</button>
       {children}
@@ -92,6 +94,21 @@ describe('GraphNodeWrapper', () => {
     );
 
     expect(screen.getByText('node body')).toBeTruthy();
+    expect(screen.queryByText('expensive hover content')).toBeNull();
+  });
+
+  it('uses a 300ms graph hover delay and does not open directly on pointer enter', () => {
+    render(
+      <GraphNodeWrapper {...baseProps} hoverCardContent={<div>expensive hover content</div>}>
+        <div>node body</div>
+      </GraphNodeWrapper>
+    );
+
+    const hoverRoot = screen.getByText('open hover').parentElement;
+    expect(hoverRoot?.getAttribute('data-open-delay')).toBe('300');
+
+    fireEvent.pointerEnter(screen.getByText('node body'));
+
     expect(screen.queryByText('expensive hover content')).toBeNull();
   });
 

@@ -6,8 +6,8 @@ import { createSendFlowId, recordSendFlowEvent } from '../perf/sendFlow';
 import { getLegacyThreadIdForMessage, getMessageThreadSessionId } from '../lib/threadSessions';
 import { resolveLocalWorkspaceRepoPath } from '../lib/workspaceRepoPath';
 import { buildAgentRunLaunchContext } from '../lib/agentRunLaunchContext';
+import { buildAgentRuntimeArgs } from '../lib/agentRuntimeArgs';
 import {
-  applyComposerPermissionArgs,
   DEFAULT_COMPOSER_PERMISSION_MODE,
   type ComposerPermissionMode,
 } from '../lib/composerPermissions';
@@ -61,10 +61,6 @@ export interface HeadlessComposerMessageInput extends Omit<HeadlessComposerReply
   threadOriginId?: string | null;
   orchestrationMode?: boolean;
 }
-
-const splitCliArgs = (value: string | null | undefined): string[] => (
-  String(value || '').split(/\s+/).filter(Boolean)
-);
 
 const createLocalHeadlessMessages = (input: {
   workspaceId: string;
@@ -166,12 +162,15 @@ export const buildHeadlessComposerAgentArgs = (
   permissionMode: ComposerPermissionMode = DEFAULT_COMPOSER_PERMISSION_MODE,
   providerInternalArgs: string[] = [],
 ): string[] => {
-  const args = splitCliArgs(agent.cliArgs);
-  const argsWithPermissions = applyComposerPermissionArgs(args, agent.type, permissionMode);
-  if (agent.type === 'codex' || !agent.promptFlag) {
-    return [...argsWithPermissions, ...providerInternalArgs, prompt];
-  }
-  return [...argsWithPermissions, ...providerInternalArgs, agent.promptFlag, prompt];
+  return buildAgentRuntimeArgs({
+    agentType: agent.type,
+    cliArgs: agent.cliArgs,
+    promptFlag: agent.promptFlag,
+    prompt,
+    permissionMode,
+    providerInternalArgs,
+    createClaudeSessionId: () => crypto.randomUUID(),
+  }).args;
 };
 
 export const resolveWorkspaceRepoPath = (workspace: Workspace | null | undefined): string | null => (

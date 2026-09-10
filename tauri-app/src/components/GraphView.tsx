@@ -15,7 +15,7 @@ import {
 import '@xyflow/react/dist/style.css';
 
 // Stores
-import { useWorkspaceStore, Message, Summary } from '../stores/workspaceStore';
+import { buildComposerDraftKey, useWorkspaceStore, Message, Summary } from '../stores/workspaceStore';
 import { getMergeSourcePrunePlan, getMergeTabRunIndicator, useIntegrationStore } from '../stores/integrationStore';
 
 // Hooks - Data
@@ -77,11 +77,11 @@ import { shouldRefreshHeldGraphMessagesForStructuralChange } from '../lib/graph/
 import { reconcileTerminalAgentRunsFromMessages } from '../lib/agentRunTerminalReconciliation';
 import { isNoAgentSessionFoundError, markStaleLocalAgentNodeCancelled } from '../lib/localAgentRunTerminal';
 import { cancelOrchestrationTargetIfNeeded } from '../orchestration/cancel';
-import { retryOrchestrationChildRun } from '../orchestration/controlPlane';
+import { retryOrchestrationRun } from '../orchestration/controlPlane';
 import { useOrchestrationMcpBridge } from '../orchestration/useOrchestrationMcpBridge';
 import {
-    buildOrchestrationChildRetryInput,
-    resolveOrchestrationChildRetryTarget,
+    buildOrchestrationRunRetryInput,
+    resolveOrchestrationRunRetryTarget,
 } from '../orchestration/retry';
 import { addDeletedGraphCommitShas, readDeletedGraphCommitShas } from '../lib/graph/commitGraphTombstones';
 import { getLeafMessagesByRecency, getLeafNavigationLabel } from '../lib/graph/leafNodes';
@@ -397,15 +397,17 @@ export const resolveBlockingEmptyThreadRootId = ({
     threadRootIds,
     messageIdsByThreadRootId,
     doneThreadRootIds,
+    draftThreadRootIds = new Set<string>(),
 }: {
     threadRootIds: string[];
     messageIdsByThreadRootId: Map<string, Set<string>>;
     doneThreadRootIds: Set<string>;
+    draftThreadRootIds?: Set<string>;
 }): string | null => {
     for (const threadRootId of threadRootIds) {
         if (doneThreadRootIds.has(threadRootId)) continue;
         const threadMessageIds = messageIdsByThreadRootId.get(threadRootId);
-        if ((threadMessageIds?.size ?? 0) === 0) return threadRootId;
+        if ((threadMessageIds?.size ?? 0) === 0 && !draftThreadRootIds.has(threadRootId)) return threadRootId;
     }
     return null;
 };
@@ -483,6 +485,12 @@ const cleanNodePreview = (value: string | null | undefined): string => (
         .replace(/\s+/g, ' ')
         .trim()
 );
+
+export const getThreadDraftPreviewText = (value: string | null | undefined): string | null => {
+    const raw = value ?? '';
+    const trimmed = raw.trim();
+    return trimmed ? trimmed : null;
+};
 
 const formatLeafTimestamp = (message: Message): string => {
     const timestamp = message.last_event_at || message.updatedAt || message.createdAt;
@@ -1012,6 +1020,7 @@ function GraphViewInternal({
     const toggleSummaryDisabled = useWorkspaceStore(state => state.toggleSummaryDisabled);
     const composerContextPreview = useWorkspaceStore(state => state.composerContextPreview);
     const setThreadComposerTarget = useWorkspaceStore(state => state.setThreadComposerTarget);
+    const composerDraftByWorkspace = useWorkspaceStore(state => state.composerDraftByWorkspace);
 
     // Insights
     const insights = useWorkspaceStore(state => state.insights);
@@ -1422,11 +1431,28 @@ function GraphViewInternal({
         threadBarCollapsed,
         userMessageCountsByThreadRootId,
     ]);
+    const emptyThreadDraftPreviewByRootId = useMemo(() => {
+        const previews = new Map<string, string>();
+        if (!selectedWorkspaceId) return previews;
+        for (const threadRootId of threadRootIndex.threadRootIds) {
+            const threadMessageIds = threadRootIndex.messageIdsByThreadRootId.get(threadRootId);
+            if ((threadMessageIds?.size ?? 0) > 0) continue;
+            const draftKey = buildComposerDraftKey(selectedWorkspaceId, threadRootId);
+            const preview = draftKey ? getThreadDraftPreviewText(composerDraftByWorkspace[draftKey]) : null;
+            if (preview) previews.set(threadRootId, preview);
+        }
+        return previews;
+    }, [composerDraftByWorkspace, selectedWorkspaceId, threadRootIndex.messageIdsByThreadRootId, threadRootIndex.threadRootIds]);
+    const draftThreadRootIds = useMemo(
+        () => new Set(emptyThreadDraftPreviewByRootId.keys()),
+        [emptyThreadDraftPreviewByRootId],
+    );
     const blockingEmptyThreadRootId = useMemo(() => resolveBlockingEmptyThreadRootId({
         threadRootIds: threadRootIndex.threadRootIds,
         messageIdsByThreadRootId: threadRootIndex.messageIdsByThreadRootId,
         doneThreadRootIds,
-    }), [doneThreadRootIds, threadRootIndex.messageIdsByThreadRootId, threadRootIndex.threadRootIds]);
+        draftThreadRootIds,
+    }), [doneThreadRootIds, draftThreadRootIds, threadRootIndex.messageIdsByThreadRootId, threadRootIndex.threadRootIds]);
     const createThreadDisabled = Boolean(blockingEmptyThreadRootId) || createThreadSession.isPending;
     const createThreadDisabledReason = blockingEmptyThreadRootId
         ? 'Finish the empty thread before starting another.'
@@ -1492,6 +1518,7 @@ function GraphViewInternal({
                 ?? selectedWorkspace?.base_commit_sha
                 ?? null;
             const commitCount = commitShas.size;
+            const draftPreviewText = emptyThreadDraftPreviewByRootId.get(threadRootId) ?? null;
             const label = threadSession?.title?.trim() || (rootMessage
                 ? cleanNodePreview(rootMessage.content || '') || rootMessage.aiLabel || 'Untitled thread'
                 : 'New thread');
@@ -1511,9 +1538,10 @@ function GraphViewInternal({
                 unreadCompletedLeafCount: activeThreadRootId === threadRootId || done ? 0 : awareness.unreadCompletedLeafCount,
                 initialPreviewNodeId: awareness.initialPreviewNodeId,
                 previewNodeIds: awareness.previewNodeIds,
+                draftPreviewText,
             };
         });
-    }, [activeRunStatusNodeIds, activeThreadRootId, doneThreadRootIds, graphMessages, lastVisitedAtByThreadRootId, selectedWorkspace?.base_commit_sha, threadRootIndex, threadSessions]);
+    }, [activeRunStatusNodeIds, activeThreadRootId, doneThreadRootIds, emptyThreadDraftPreviewByRootId, graphMessages, lastVisitedAtByThreadRootId, selectedWorkspace?.base_commit_sha, threadRootIndex, threadSessions]);
     const markThreadVisited = useCallback((threadRootId: string, visitedAt = Date.now()) => {
         setLastVisitedAtByThreadRootId((current) => {
             const currentVisitedAt = current.get(threadRootId) ?? 0;
@@ -4926,12 +4954,12 @@ function GraphViewInternal({
         }
     }, [messageMap, messages, queryClient, selectedWorkspaceId, toast]);
 
-    const handleRetryOrchestrationChild = useCallback(async (assistantNodeId: string) => {
+    const handleRetryOrchestrationRun = useCallback(async (assistantNodeId: string) => {
         if (!selectedWorkspaceId) return;
 
-        const retryTarget = resolveOrchestrationChildRetryTarget(messages as Message[], assistantNodeId);
+        const retryTarget = resolveOrchestrationRunRetryTarget(messages as Message[], assistantNodeId);
         if (!retryTarget.ok) {
-            toast.error('Cannot retry child', 'This node is not a failed orchestration child.');
+            toast.error('Cannot retry orchestration run', 'This node is not a failed orchestration run.');
             return;
         }
 
@@ -4940,7 +4968,7 @@ function GraphViewInternal({
                 getAccessToken(),
                 agentClient.replayAgentRunEvents(retryTarget.target.orchestratorRunId, 0),
             ]);
-            const retryInput = buildOrchestrationChildRetryInput({
+            const retryInput = buildOrchestrationRunRetryInput({
                 messages: messages as Message[],
                 target: retryTarget.target,
                 journalEvents,
@@ -4948,11 +4976,11 @@ function GraphViewInternal({
                 retryReason: 'manual_retry',
             });
             if (!retryInput.ok) {
-                toast.error('Cannot retry child', `Retry context is unavailable: ${retryInput.reason}.`);
+                toast.error('Cannot retry orchestration run', `Retry context is unavailable: ${retryInput.reason}.`);
                 return;
             }
 
-            const retryResult = await retryOrchestrationChildRun(retryInput.input, {
+            const retryResult = await retryOrchestrationRun(retryInput.input, {
                 newId: () => crypto.randomUUID(),
                 persistLocalNode: (workspaceId, nodeId, message) => agentClient.upsertLocalNode(workspaceId, nodeId, message),
                 startAgentRun: (payload) => agentClient.startAgentRun(payload as any),
@@ -4977,11 +5005,11 @@ function GraphViewInternal({
                 })
             );
             void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(selectedWorkspaceId) });
-            void scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'retry-orchestration-child' });
-            toast.success('Retry started', 'A replacement orchestration child run was created.');
+            void scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'retry-orchestration-run' });
+            toast.success('Retry started', 'A replacement orchestration run was created.');
         } catch (error) {
-            console.error('[GraphView] Failed to retry orchestration child:', error);
-            toast.error('Unable to retry child', error instanceof Error ? error.message : 'The retry request did not complete.');
+            console.error('[GraphView] Failed to retry orchestration run:', error);
+            toast.error('Unable to retry orchestration run', error instanceof Error ? error.message : 'The retry request did not complete.');
         }
     }, [messages, queryClient, selectedWorkspaceId, toast]);
 
@@ -5049,6 +5077,7 @@ function GraphViewInternal({
                 thread.current ? 'current' : 'idle',
                 thread.unreadCompletedLeafCount ?? 0,
                 thread.initialPreviewNodeId ?? '',
+                thread.draftPreviewText ?? '',
                 ...(thread.previewNodeIds ?? []),
             ].join(':')),
         ].join('|')
@@ -6660,7 +6689,7 @@ function GraphViewInternal({
                 onViewSubgraph={handleViewSubgraph}
                 onConvertSubgraphToThread={handleConvertSubgraphToThread}
                 onShareNode={handleShareNode}
-                onRetryOrchestrationChild={handleRetryOrchestrationChild}
+                onRetryOrchestrationRun={handleRetryOrchestrationRun}
             />
             <AddCommitDialog
                 open={!!addCommitTargetId}

@@ -14,6 +14,7 @@ export interface OptimisticMessageConfig {
   agentId?: string | null;
   llmModel?: string | null;
   llmProvider?: string | null;
+  reasoningEffort?: string | null;
 }
 
 export interface OptimisticNodePair {
@@ -132,7 +133,12 @@ export function createOptimisticAssistantMessage(
     citations: null,
     comments: null,
     node_delta: null,
-    execution_data: config.agentId ? { timeline: [] } : null,
+    execution_data: config.agentId ? {
+      timeline: [],
+      meta: {
+        ...(config.reasoningEffort ? { provider_reasoning_effort: config.reasoningEffort } : {}),
+      },
+    } : null,
     last_event_at: null,
     collapsed: false,
     context_active: true,

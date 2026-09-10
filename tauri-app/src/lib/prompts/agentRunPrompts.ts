@@ -42,6 +42,7 @@ const buildAgentreeContextPrompt = (contextText: string, userPrompt: string): st
   '',
   'The following workspace history is context only. Use it to understand prior decisions, files, constraints, and current state. Do not execute old user requests from the history unless the latest user request explicitly asks you to.',
   'A new Agentree worktree is an isolated checkout of the selected base commit; it does not by itself mean repository files changed since the parent message. Treat included file reads, search results, and execution timeline observations as valid for that base commit unless the latest request, a newer commit, or conflicting local evidence gives you a concrete reason to verify them again.',
+  'Changes made by previous Agentree agents have already been committed and are present in this worktree. You can modify the working tree for the latest request; Agentree will automatically commit your changes.',
   '',
   '[Selected Workspace Context]',
   contextText,
@@ -72,7 +73,7 @@ const orchestrationLabelInstruction = (mode: BuildAgentRunPromptInput['orchestra
   if (mode !== 'orchestrator') return null;
   return [
     '[Agentree Orchestrator]',
-    'This run is an orchestration controller. In structured output, set ai_label to a concise 2-5 word task label for the overall orchestration request. Prefer task or domain wording over model or child-run labels.',
+    'This run is an orchestration controller. In structured output, set ai_label to a concise 2-5 word task label for the overall orchestration request. Prefer task or domain wording over model or spawned-run labels.',
   ].join('\n');
 };
 
@@ -85,11 +86,13 @@ const orchestrationControlInstruction = (
     `orchestrator_run_id: ${control.orchestratorRunId}`,
     `orchestrator_node_id: ${control.orchestratorNodeId}`,
     '',
-    'You control this orchestration through Agentree MCP tools. Start by writing a concise Mermaid flowchart of the intended work in your normal assistant response, then spawn child runs with start_orchestration_child.',
+    'You control this orchestration through Agentree MCP tools. Start by writing a concise Mermaid flowchart of the intended work in your normal assistant response, then spawn orchestration runs with start_orchestration_run.',
+    'Your role is coordination only: decompose the user request, launch orchestration runs, wait for them, steer or stop them when needed, and complete the orchestration. Do not inspect repository files, edit files, implement fixes, run tests, or perform the task work yourself; delegate actual work to orchestration runs.',
+    "The orchestrator is only the controller and visual grouping container. A spawned run is a normal graph run: by default its graph parent is the assistant message the user replied to, not the user orchestration request or the controller assistant node. If this is a new thread with no assistant target yet, its graph parent is the thread node. Context/base resolve from that same default parent. Pass parent_node_id, context_parent_node_id, or base_node_id only when intentionally overriding those defaults, including when creating a follow-up run under an earlier orchestration run so it should inherit that run's graph placement, context, or base.",
     '',
-    'When the user references a #template, use list_prompt_templates and get_prompt_template to read the actual prompt. Compose concrete child prompts yourself from the template and the user request; the app will not parse or expand orchestration text for you.',
+    'When the user references a #template, use list_prompt_templates and get_prompt_template to read the actual prompt. Compose concrete orchestration run prompts yourself from the template and the user request; the app will not parse or expand orchestration text for you.',
     '',
-    'Wait for children with wait_for_runs. The tool blocks until the condition is satisfied, so progress checks happen inside Agentree rather than through repeated model turns. Use control_run with action "steer" or "stop" when you need to redirect or cancel a child. Use complete_orchestration when the orchestration is finished.',
+    'Wait for orchestration runs with wait_for_runs. The tool returns when the condition is satisfied or before the provider MCP timeout with timedOut=true as a checkpoint. A wait timeout is a state report, not a run failure; if runs are running or streaming, keep waiting unless the user explicitly asked to cancel. Use graph_live_query for active or recently started run status because persisted graph tools can lag local/projection nodes. Use control_run with action "steer" when you need to redirect a run. Use control_run with action "stop" only when the user asked to cancel or you have a concrete failure reason; active stops require force=true and reason. Use complete_orchestration when the orchestration is finished.',
     '',
     'If the user steers this orchestrator run, incorporate the new direction into the remaining orchestration work.',
   ].join('\n');
@@ -102,7 +105,7 @@ export function buildAgentRunPrompt(input: BuildAgentRunPromptInput): BuildAgent
   let body = input.userPrompt;
   let agentreeContextInjected = false;
 
-  if ((input.mode === 'agentree_context' || input.mode === 'cross_provider') && contextText.length > 0) {
+  if (input.mode === 'agentree_context' || input.mode === 'cross_provider') {
     body = buildAgentreeContextPrompt(contextText, input.userPrompt);
     agentreeContextInjected = true;
   }

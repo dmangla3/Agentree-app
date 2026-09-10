@@ -398,6 +398,8 @@ pub struct ClaudeAdapterInvocation {
 pub fn claude_adapter_invocation(app: &AppHandle) -> Result<ClaudeAdapterInvocation, String> {
     let resource_script =
         crate::runtime_scripts::runtime_script_path(app, "claude-agent-sdk-adapter.mjs")?;
+    let resource_ai_label_prompt =
+        crate::runtime_scripts::runtime_script_path(app, "ai-label-prompt.txt")?;
 
     let sdk_dir = match installed_component_dir(app, COMPONENT_CLAUDE_SDK)? {
         Some(dir) => Some(dir),
@@ -415,9 +417,17 @@ pub fn claude_adapter_invocation(app: &AppHandle) -> Result<ClaudeAdapterInvocat
 
     if let Some(sdk_dir) = sdk_dir {
         let staged_script = sdk_dir.join("claude-agent-sdk-adapter.mjs");
+        let staged_ai_label_prompt = sdk_dir.join("ai-label-prompt.txt");
         fs::copy(&resource_script, &staged_script).map_err(|error| {
             format!(
                 "Could not stage Claude adapter into {}: {}",
+                sdk_dir.display(),
+                error
+            )
+        })?;
+        fs::copy(&resource_ai_label_prompt, &staged_ai_label_prompt).map_err(|error| {
+            format!(
+                "Could not stage Claude adapter prompt into {}: {}",
                 sdk_dir.display(),
                 error
             )

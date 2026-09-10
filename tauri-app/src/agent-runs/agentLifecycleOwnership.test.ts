@@ -129,6 +129,11 @@ describe('agent lifecycle ownership boundaries', () => {
     expect(codexSource).toContain('"method": "turn/steer"');
   });
 
+  it('uses the last assistant message id as Claude provider stop item identity', () => {
+    const source = readClaudeAdapterSource();
+    expect(source).toContain('provider_item_id: lastAssistantUuid ?? null');
+  });
+
   it('paints optimistic send feedback before graph focus and agent status work', () => {
     const source = readChatInputSource();
     const paintWaitIndex = source.indexOf('await waitForOptimisticSendPaint();');

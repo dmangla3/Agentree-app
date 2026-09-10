@@ -3,8 +3,8 @@ import type { StartAgentRunIntent } from '../lib/agentClient';
 import {
   cancelOrchestration,
   completeSatisfiedWaitGroup,
-  retryOrchestrationChildRun,
-  startOrchestrationChildRun,
+  retryOrchestrationRun,
+  startOrchestrationRun,
   startOrchestratorRun,
 } from './controlPlane';
 
@@ -18,7 +18,7 @@ const startAgentRunResponse = (intent: StartAgentRunIntent) => ({
 });
 
 describe('orchestration control plane', () => {
-  it('starts orchestrator runs as normal assistant nodes without controlled child metadata', async () => {
+  it('starts orchestrator runs as normal assistant nodes without orchestration run metadata', async () => {
     const persistLocalNode = vi.fn(async () => undefined);
     const startAgentRun = vi.fn(async (intent: StartAgentRunIntent) => startAgentRunResponse(intent));
 
@@ -50,6 +50,9 @@ describe('orchestration control plane', () => {
       node_kind: 'orchestrator',
       orchestrator_run_id: 'run-orchestrator',
       base_commit_sha: 'base-sha',
+      orchestration_target_node_id: 'root-user',
+      orchestration_context_parent_node_id: 'root-user',
+      orchestration_base_node_id: 'root-user',
     }));
     expect(startAgentRun).toHaveBeenCalledWith(expect.objectContaining({
       runId: 'run-orchestrator',
@@ -58,12 +61,12 @@ describe('orchestration control plane', () => {
     }));
   });
 
-  it('starts controlled child runs and records request/start events', async () => {
+  it('starts orchestration runs and records request/start events', async () => {
     const recordOrchestrationEvent = vi.fn(async () => 1);
     const persistLocalNode = vi.fn(async () => undefined);
     const startAgentRun = vi.fn(async (intent: StartAgentRunIntent) => startAgentRunResponse(intent));
 
-    const result = await startOrchestrationChildRun({
+    const result = await startOrchestrationRun({
       workspaceId: 'workspace-1',
       repoPath: '/repo',
       authToken: 'token',
@@ -92,6 +95,12 @@ describe('orchestration control plane', () => {
     });
 
     expect(result.assistantNode.controlled_by_node_id).toBe('assistant-orchestrator');
+    expect(result.userNode.parentId).toBe('root-user');
+    expect(result.userNode.execution_data?.context_profile).toEqual(expect.objectContaining({
+      context_parent_node_id: 'root-user',
+      base_node_id: 'root-user',
+      inherited_from_node_id: 'root-user',
+    }));
     expect(result.assistantNode.execution_data).toEqual(expect.objectContaining({
       repo_path: '/repo',
       meta: expect.objectContaining({
@@ -106,32 +115,91 @@ describe('orchestration control plane', () => {
       1,
       'run-orchestrator',
       'assistant-orchestrator',
-      'orchestration:child_requested',
+      'orchestration:run_requested',
       expect.objectContaining({
         decisionId: 'planner-1',
-        childAssistantNodeId: 'assistant-child',
-        childRunId: 'run-child',
+        runAssistantNodeId: 'assistant-child',
+        agentRunId: 'run-child',
+        parentNodeId: 'root-user',
+        contextParentNodeId: 'root-user',
+        baseNodeId: 'root-user',
       }),
     );
     expect(recordOrchestrationEvent).toHaveBeenNthCalledWith(
       2,
       'run-orchestrator',
       'assistant-orchestrator',
-      'orchestration:child_started',
+      'orchestration:run_started',
       expect.objectContaining({
         decisionId: 'planner-1',
-        childAssistantNodeId: 'assistant-child',
-        childRunId: 'run-child',
+        runAssistantNodeId: 'assistant-child',
+        agentRunId: 'run-child',
+        parentNodeId: 'root-user',
+        contextParentNodeId: 'root-user',
+        baseNodeId: 'root-user',
       }),
     );
   });
 
-  it('passes native provider continuation flags to orchestration child runs', async () => {
+  it('does not seed projected orchestration runs when request event recording fails', async () => {
+    const recordError = new Error('unsupported orchestration event type');
+    const recordOrchestrationEvent = vi.fn(async () => {
+      throw recordError;
+    });
+    const persistLocalNode = vi.fn(async () => undefined);
+    const startAgentRun = vi.fn(async (intent: StartAgentRunIntent) => startAgentRunResponse(intent));
+    const seedAgentRun = vi.fn();
+    const dispatchAgentRun = vi.fn();
+
+    await expect(startOrchestrationRun({
+      workspaceId: 'workspace-1',
+      repoPath: '/repo',
+      authToken: 'token',
+      orchestratorRunId: 'run-orchestrator',
+      orchestratorNodeId: 'assistant-orchestrator',
+      decisionId: 'planner-1',
+      parentNodeId: 'root-user',
+      contextParentNodeId: 'root-user',
+      baseNodeId: 'root-user',
+      baseCommitSha: 'base-sha',
+      prompt: 'Plan carefully',
+      agentId: 'agent-1',
+      agentType: 'codex',
+      now: '2026-06-01T00:00:00.000Z',
+      userNodeId: 'user-child',
+      assistantNodeId: 'assistant-child',
+      runId: 'run-child',
+    }, {
+      newId: () => 'unused',
+      persistLocalNode,
+      startAgentRun,
+      recordOrchestrationEvent,
+      seedAgentRun,
+      dispatchAgentRun,
+    })).rejects.toThrow(recordError);
+
+    expect(recordOrchestrationEvent).toHaveBeenCalledWith(
+      'run-orchestrator',
+      'assistant-orchestrator',
+      'orchestration:run_requested',
+      expect.objectContaining({
+        decisionId: 'planner-1',
+        runAssistantNodeId: 'assistant-child',
+        agentRunId: 'run-child',
+      }),
+    );
+    expect(seedAgentRun).not.toHaveBeenCalled();
+    expect(dispatchAgentRun).not.toHaveBeenCalled();
+    expect(persistLocalNode).not.toHaveBeenCalled();
+    expect(startAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('passes native provider continuation flags to orchestration runs', async () => {
     const recordOrchestrationEvent = vi.fn(async () => 1);
     const persistLocalNode = vi.fn(async () => undefined);
     const startAgentRun = vi.fn(async (intent: StartAgentRunIntent) => startAgentRunResponse(intent));
 
-    await startOrchestrationChildRun({
+    await startOrchestrationRun({
       workspaceId: 'workspace-1',
       repoPath: '/repo',
       authToken: 'token',
@@ -177,12 +245,12 @@ describe('orchestration control plane', () => {
     }));
   });
 
-  it('retries a child by starting a replacement and recording supersession', async () => {
+  it('retries an orchestration run by starting a replacement and recording supersession', async () => {
     const recordOrchestrationEvent = vi.fn(async () => 1);
     const persistLocalNode = vi.fn(async () => undefined);
     const startAgentRun = vi.fn(async (intent: StartAgentRunIntent) => startAgentRunResponse(intent));
 
-    const result = await retryOrchestrationChildRun({
+    const result = await retryOrchestrationRun({
       workspaceId: 'workspace-1',
       repoPath: '/repo',
       authToken: 'token',
@@ -213,7 +281,7 @@ describe('orchestration control plane', () => {
     expect(recordOrchestrationEvent).toHaveBeenLastCalledWith(
       'run-orchestrator',
       'assistant-orchestrator',
-      'orchestration:child_superseded',
+      'orchestration:run_superseded',
       expect.objectContaining({
         decisionId: 'planner-1',
         supersededAssistantNodeId: 'assistant-old',
@@ -231,8 +299,8 @@ describe('orchestration control plane', () => {
       projection: {
         status: 'running',
         requestedDecisionIds: new Set(),
-        childAssistantNodeIdByDecisionId: new Map(),
-        supersededChildIds: new Set(),
+        runAssistantNodeIdByDecisionId: new Map(),
+        supersededRunIds: new Set(),
         activeWaitGroup: {
           waitGroupId: 'wait-planners',
           decisionIds: ['planner-1', 'planner-2'],
@@ -240,12 +308,12 @@ describe('orchestration control plane', () => {
         },
         needsUserActionReason: null,
         lastSeq: 1,
-        controlledChildren: [
+        orchestrationRuns: [
           { assistantNodeId: 'assistant-1', decisionId: 'planner-1', status: 'completed', active: false, terminal: true, outputCommitSha: null },
           { assistantNodeId: 'assistant-2', decisionId: 'planner-2', status: 'completed', active: false, terminal: true, outputCommitSha: null },
         ],
-        activeControlledAssistantNodeIds: [],
-        terminalChildren: [],
+        activeOrchestrationRunAssistantNodeIds: [],
+        terminalOrchestrationRuns: [],
         missingDecisionIds: [],
       },
     }, {
@@ -272,7 +340,7 @@ describe('orchestration control plane', () => {
     const result = await cancelOrchestration({
       orchestratorRunId: 'run-orchestrator',
       orchestratorNodeId: 'assistant-orchestrator',
-      activeControlledAssistantNodeIds: ['assistant-child'],
+      activeOrchestrationRunAssistantNodeIds: ['assistant-child'],
       reason: 'user_cancelled',
     }, {
       recordOrchestrationEvent,

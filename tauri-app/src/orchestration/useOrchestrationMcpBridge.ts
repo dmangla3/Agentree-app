@@ -6,13 +6,14 @@ import { agentRunManager } from '../agent-runs/agentRunManager';
 import { getAccessToken } from '../lib/authSession';
 import { agentClient } from '../lib/agentClient';
 import { resolveWorkspaceRepoPath } from '../composer/headlessComposerSend';
+import { getThreadOriginNodeId } from '../lib/graphThreadRoots';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache } from '../hooks/useLocalNodes';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
 import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 import type { Message, Workspace } from '../stores/workspaceStore';
-import { startOrchestrationChildRun } from './controlPlane';
-import { findExistingOrchestrationChildLaunch } from './domain';
-import { isFailureAgentStatus, isTerminalAgentStatus } from '@shared/agentStatus';
+import { startOrchestrationRun } from './controlPlane';
+import { findExistingOrchestrationRunLaunch } from './domain';
+import { isActiveAgentStatus, isFailureAgentStatus, isTerminalAgentStatus } from '@shared/agentStatus';
 
 interface OrchestrationMcpRequest {
   requestId?: string;
@@ -38,7 +39,7 @@ interface PendingWait {
   timeoutId: number | null;
 }
 
-interface OrchestrationChildStartResponse {
+interface OrchestrationRunStartResponse {
   runId: string | null;
   userNodeId: string | null;
   assistantNodeId: string;
@@ -46,7 +47,7 @@ interface OrchestrationChildStartResponse {
   existing?: boolean;
 }
 
-type PendingChildStartMap = Map<string, Promise<OrchestrationChildStartResponse>>;
+type PendingOrchestrationRunStartMap = Map<string, Promise<OrchestrationRunStartResponse>>;
 
 export const ORCHESTRATION_WAIT_CONDITIONS = [
   'terminal',
@@ -61,20 +62,30 @@ export const ORCHESTRATION_WAIT_CONDITIONS = [
 
 export type OrchestrationWaitCondition = typeof ORCHESTRATION_WAIT_CONDITIONS[number];
 
+export const ORCHESTRATION_WAIT_MIN_TIMEOUT_MS = 1_000;
+export const ORCHESTRATION_WAIT_MAX_TIMEOUT_MS = 100_000;
+export const ORCHESTRATION_WAIT_DEFAULT_TIMEOUT_MS = ORCHESTRATION_WAIT_MAX_TIMEOUT_MS;
+
 export const isOrchestrationWaitCondition = (condition: string): condition is OrchestrationWaitCondition => (
   (ORCHESTRATION_WAIT_CONDITIONS as readonly string[]).includes(condition)
 );
 
-export const getOrchestrationChildStartKey = (
+export const resolveOrchestrationWaitTimeoutMs = (value: unknown): number => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return ORCHESTRATION_WAIT_DEFAULT_TIMEOUT_MS;
+  return Math.max(ORCHESTRATION_WAIT_MIN_TIMEOUT_MS, Math.min(numeric, ORCHESTRATION_WAIT_MAX_TIMEOUT_MS));
+};
+
+export const getOrchestrationRunStartKey = (
   orchestratorNodeId: string,
   decisionId: string,
 ): string => `${orchestratorNodeId}\u001f${decisionId}`;
 
-export const getOrStartPendingOrchestrationChild = async (
-  pendingStarts: PendingChildStartMap,
+export const getOrStartPendingOrchestrationRun = async (
+  pendingStarts: PendingOrchestrationRunStartMap,
   key: string,
-  start: () => Promise<OrchestrationChildStartResponse>,
-): Promise<OrchestrationChildStartResponse> => {
+  start: () => Promise<OrchestrationRunStartResponse>,
+): Promise<OrchestrationRunStartResponse> => {
   const existing = pendingStarts.get(key);
   if (existing) {
     const response = await existing;
@@ -99,7 +110,18 @@ export const mergeMessagesWithLiveWaitProjections = (
   const mergedById = new Map(messages.map((message) => [message.id, message]));
   for (const [nodeId, projection] of Object.entries(projectionsById)) {
     const existing = mergedById.get(nodeId);
-    if (!existing) continue;
+    if (!existing) {
+      mergedById.set(nodeId, {
+        ...projection,
+        execution_data: {
+          ...((projection.execution_data ?? {}) as Record<string, unknown>),
+          __local_authority: {
+            source: 'projection',
+          },
+        },
+      } as Message);
+      continue;
+    }
     mergedById.set(nodeId, {
       ...existing,
       ...projection,
@@ -135,6 +157,13 @@ const resolveContextProfile = (message: Message): Record<string, unknown> => (
   readRecord(readRecord(message.execution_data).context_profile)
 );
 
+const resolveThreadOriginParentNodeId = (message: Message, meta: Record<string, unknown>): string | null => {
+  const threadOriginId = readString(meta, 'thread_origin_id')
+    ?? (typeof message.threadId === 'string' && message.threadId.trim() ? message.threadId.trim() : null)
+    ?? (typeof message.thread_id === 'string' && message.thread_id.trim() ? message.thread_id.trim() : null);
+  return threadOriginId ? getThreadOriginNodeId(threadOriginId) : null;
+};
+
 const resolveBaseCommitSha = (message: Message, args: Record<string, unknown>): string | null => (
   readString(args, 'base_commit_sha')
   ?? (typeof message.base_commit_sha === 'string' && message.base_commit_sha.trim() ? message.base_commit_sha.trim() : null)
@@ -155,12 +184,53 @@ const resolveAgentId = (message: Message, args: Record<string, unknown>, agentTy
   ?? agentType
 );
 
+export const resolveOrchestrationRunLaunchDefaults = (
+  orchestrator: Message,
+  args: Record<string, unknown>,
+): {
+  parentNodeId: string | null;
+  contextParentNodeId: string | null;
+  baseNodeId: string | null;
+} => {
+  const meta = resolveMeta(orchestrator);
+  const contextProfile = resolveContextProfile(orchestrator);
+  const parentNodeId = readString(args, 'parent_node_id')
+    ?? readString(meta, 'orchestration_target_node_id')
+    ?? resolveThreadOriginParentNodeId(orchestrator, meta);
+  const contextParentNodeId = readString(args, 'context_parent_node_id')
+    ?? readString(meta, 'orchestration_context_parent_node_id')
+    ?? readString(contextProfile, 'context_parent_node_id')
+    ?? parentNodeId;
+  const baseNodeId = readString(args, 'base_node_id')
+    ?? readString(meta, 'orchestration_base_node_id')
+    ?? readString(contextProfile, 'base_node_id')
+    ?? (typeof orchestrator.base_selected_from_node_id === 'string' ? orchestrator.base_selected_from_node_id : null)
+    ?? parentNodeId;
+
+  return {
+    parentNodeId,
+    contextParentNodeId,
+    baseNodeId,
+  };
+};
+
 const respond = async (requestId: string, response: Record<string, unknown> | null, error: string | null) => {
   await tauriCommands.resolveOrchestrationMcpRequest(
     requestId,
     response ? JSON.stringify(response) : null,
     error,
   );
+};
+
+const respondSafely = async (requestId: string, response: Record<string, unknown> | null, error: string | null) => {
+  try {
+    await respond(requestId, response, error);
+  } catch (caught) {
+    console.warn('[OrchestrationMcpBridge] Dropped orchestration response for abandoned request:', {
+      requestId,
+      error: caught instanceof Error ? caught.message : String(caught),
+    });
+  }
 };
 
 const getMessageTerminalStatus = (message: Message | null): string | null => {
@@ -174,24 +244,24 @@ const getMessageTerminalStatus = (message: Message | null): string | null => {
 };
 
 export const isOrchestrationWaitSatisfied = (wait: Pick<PendingWait, 'assistantNodeIds' | 'condition'>, messages: Message[]): boolean => {
-  const children = wait.assistantNodeIds.map((id) => messages.find((message) => message.id === id) ?? null);
-  if (children.length === 0 || children.some((message) => !message)) return false;
+  const runs = wait.assistantNodeIds.map((id) => messages.find((message) => message.id === id) ?? null);
+  if (runs.length === 0 || runs.some((message) => !message)) return false;
 
   switch (wait.condition) {
     case 'any':
     case 'any_terminal':
-      return children.some((message) => Boolean(getMessageTerminalStatus(message)));
+      return runs.some((message) => Boolean(getMessageTerminalStatus(message)));
     case 'failed':
     case 'any_failed':
-      return children.some((message) => isFailureAgentStatus(getMessageTerminalStatus(message)));
+      return runs.some((message) => isFailureAgentStatus(getMessageTerminalStatus(message)));
     case 'completed':
-      return children.every((message) => getMessageTerminalStatus(message) === 'completed');
+      return runs.every((message) => getMessageTerminalStatus(message) === 'completed');
     case 'commit_available':
-      return children.every((message) => Boolean(message?.output_commit_sha));
+      return runs.every((message) => Boolean(message?.output_commit_sha));
     case 'all':
     case 'terminal':
     default:
-      return children.every((message) => Boolean(getMessageTerminalStatus(message)));
+      return runs.every((message) => Boolean(getMessageTerminalStatus(message)));
   }
 };
 
@@ -200,15 +270,91 @@ const buildWaitSummary = (wait: PendingWait, messages: Message[]): Record<string
   condition: wait.condition,
   runs: wait.assistantNodeIds.map((assistantNodeId) => {
     const message = messages.find((candidate) => candidate.id === assistantNodeId) ?? null;
+    const status = typeof message?.status === 'string' ? message.status : null;
     return {
       assistantNodeId,
-      status: message?.status ?? null,
+      status,
       terminalStatus: getMessageTerminalStatus(message),
+      active: isActiveAgentStatus(status),
       outputCommitSha: message?.output_commit_sha ?? null,
       aiLabel: message?.aiLabel ?? null,
+      source: readString(readRecord(readRecord(message?.execution_data).__local_authority), 'source') ?? 'persisted',
     };
   }),
 });
+
+const buildWaitTimeoutSummary = (wait: PendingWait, messages: Message[]): Record<string, unknown> => ({
+  ...buildWaitSummary(wait, messages),
+  timedOut: true,
+  conditionSatisfied: false,
+});
+
+const matchesGraphLiveFilter = (message: Message, filters: Record<string, unknown>): boolean => {
+  for (const [key, expected] of Object.entries(filters)) {
+    if (expected === undefined || expected === null || expected === '') continue;
+    const actual = key === 'id' || key === 'node_id' || key === 'nodeId'
+      ? message.id
+      : key === 'status'
+        ? message.status
+        : key === 'role'
+          ? message.role
+          : key === 'workspace_id' || key === 'workspaceId'
+            ? message.workspaceId
+            : key === 'parent_id' || key === 'parentId'
+              ? message.parentId
+              : readRecord(message as unknown as Record<string, unknown>)[key];
+    if (Array.isArray(expected)) {
+      if (!expected.includes(actual)) return false;
+      continue;
+    }
+    if (actual !== expected) return false;
+  }
+  return true;
+};
+
+export const buildGraphLiveQuerySummary = (
+  args: Record<string, unknown>,
+  messages: Message[],
+  selectedWorkspaceId: string | null,
+): Record<string, unknown> => {
+  const workspaceId = readString(args, 'workspace_id') ?? readString(args, 'workspaceId') ?? selectedWorkspaceId;
+  const filters = readRecord(args.filters);
+  const nodeId = readString(args, 'node_id') ?? readString(args, 'nodeId');
+  const limitValue = Number(args.limit);
+  const offsetValue = Number(args.offset);
+  const limit = Number.isFinite(limitValue) && limitValue > 0 ? Math.min(limitValue, 100) : 20;
+  const offset = Number.isFinite(offsetValue) && offsetValue > 0 ? offsetValue : 0;
+  const filtered = messages
+    .filter((message) => !workspaceId || message.workspaceId === workspaceId)
+    .filter((message) => !nodeId || message.id === nodeId)
+    .filter((message) => matchesGraphLiveFilter(message, filters));
+  const page = filtered.slice(offset, offset + limit);
+
+  return {
+    source: 'live',
+    includesLocalAndProjectionState: true,
+    workspaceId,
+    filters,
+    total: filtered.length,
+    offset,
+    limit,
+    nodes: page.map((message) => {
+      const status = typeof message.status === 'string' ? message.status : null;
+      return {
+        nodeId: message.id,
+        role: message.role,
+        status,
+        active: isActiveAgentStatus(status),
+        terminalStatus: getMessageTerminalStatus(message),
+        parentId: message.parentId ?? null,
+        workspaceId: message.workspaceId ?? null,
+        outputCommitSha: message.output_commit_sha ?? null,
+        aiLabel: message.aiLabel ?? null,
+        source: readString(readRecord(readRecord(message.execution_data).__local_authority), 'source') ?? 'persisted-or-local-cache',
+      };
+    }),
+  };
+};
 
 export const patchOrchestrationWaitMessagesIntoCaches = (
   queryClient: QueryClient,
@@ -247,7 +393,7 @@ export function useOrchestrationMcpBridge({
   queryClient,
 }: UseOrchestrationMcpBridgeInput) {
   const pendingWaitsRef = useRef(new Map<string, PendingWait>());
-  const pendingChildStartsRef = useRef<PendingChildStartMap>(new Map());
+  const pendingOrchestrationRunStartsRef = useRef<PendingOrchestrationRunStartMap>(new Map());
   const latestMessagesRef = useRef(messages);
   const latestProjectionsRef = useRef(useAgentRunProjectionStore.getState().projectionsById);
 
@@ -270,7 +416,7 @@ export function useOrchestrationMcpBridge({
       buildWaitSummary(wait, currentMessages),
     );
     patchOrchestrationWaitMessagesIntoCaches(queryClient, wait, currentMessages);
-    await respond(wait.requestId, buildWaitSummary(wait, currentMessages), null);
+    await respondSafely(wait.requestId, buildWaitSummary(wait, currentMessages), null);
     return true;
   }, [queryClient]);
 
@@ -295,10 +441,10 @@ export function useOrchestrationMcpBridge({
   useEffect(() => () => {
     for (const wait of pendingWaitsRef.current.values()) {
       if (wait.timeoutId !== null) window.clearTimeout(wait.timeoutId);
-      void respond(wait.requestId, null, 'Orchestration MCP bridge unmounted before wait completed.');
+      void respondSafely(wait.requestId, null, 'Orchestration MCP bridge unmounted before wait completed.');
     }
     pendingWaitsRef.current.clear();
-    pendingChildStartsRef.current.clear();
+    pendingOrchestrationRunStartsRef.current.clear();
   }, []);
 
   useEffect(() => {
@@ -347,17 +493,20 @@ export function useOrchestrationMcpBridge({
 
             if (await tryResolveWait(wait, getCurrentWaitMessages())) return;
 
-            const timeoutMsValue = Number(args.timeout_ms);
-            const timeoutMs = Number.isFinite(timeoutMsValue) && timeoutMsValue > 0
-              ? Math.min(timeoutMsValue, 30 * 60 * 1000)
-              : 10 * 60 * 1000;
+            const timeoutMs = resolveOrchestrationWaitTimeoutMs(args.timeout_ms);
             wait.timeoutId = window.setTimeout(() => {
               pendingWaitsRef.current.delete(requestId);
-              void respond(requestId, null, `Timed out waiting for ${assistantNodeIds.length} run(s).`);
+              void respondSafely(requestId, buildWaitTimeoutSummary(wait, getCurrentWaitMessages()), null);
             }, timeoutMs);
             pendingWaitsRef.current.set(requestId, wait);
 	            return;
 	          }
+
+          if (request.toolName === 'graph_live_query') {
+            const args = readRecord(request.arguments);
+            await respond(requestId, buildGraphLiveQuerySummary(args, getCurrentWaitMessages(), selectedWorkspaceId), null);
+            return;
+          }
 
           if (request.toolName === 'control_run') {
             const args = readRecord(request.arguments);
@@ -384,11 +533,32 @@ export function useOrchestrationMcpBridge({
               return;
             }
             if (action === 'stop') {
+              const currentMessages = getCurrentWaitMessages();
+              const target = currentMessages.find((message) => message.id === assistantNodeId) ?? null;
+              const status = typeof target?.status === 'string' ? target.status : null;
+              const active = isActiveAgentStatus(status);
+              const force = args.force === true;
+              const reason = readString(args, 'reason');
+              if (active && (!force || !reason)) {
+                await respond(requestId, {
+                  controlled: false,
+                  blocked: true,
+                  action,
+                  assistantNodeId,
+                  status,
+                  reasonRequired: true,
+                  forceRequired: true,
+                  message: 'Run is still active. Pass force=true and reason to stop an active orchestration run.',
+                }, null);
+                return;
+              }
               await agentClient.stopAgent(assistantNodeId);
               await respond(requestId, {
                 controlled: true,
                 action,
                 assistantNodeId,
+                status,
+                reason: reason ?? null,
               }, null);
               return;
             }
@@ -396,7 +566,7 @@ export function useOrchestrationMcpBridge({
             return;
           }
 
-          if (request.toolName !== 'start_orchestration_child') {
+          if (request.toolName !== 'start_orchestration_run') {
             await respond(requestId, null, `Unsupported orchestration MCP tool: ${request.toolName ?? 'unknown'}`);
             return;
           }
@@ -412,7 +582,7 @@ export function useOrchestrationMcpBridge({
             return;
           }
 
-          const existingLaunch = findExistingOrchestrationChildLaunch(currentMessages, orchestratorNodeId, decisionId);
+          const existingLaunch = findExistingOrchestrationRunLaunch(currentMessages, orchestratorNodeId, decisionId);
           if (existingLaunch) {
             await respond(requestId, {
               runId: existingLaunch.runId,
@@ -424,9 +594,9 @@ export function useOrchestrationMcpBridge({
             return;
           }
 
-          const childStartResponse = await getOrStartPendingOrchestrationChild(
-            pendingChildStartsRef.current,
-            getOrchestrationChildStartKey(orchestratorNodeId, decisionId),
+          const orchestrationRunStartResponse = await getOrStartPendingOrchestrationRun(
+            pendingOrchestrationRunStartsRef.current,
+            getOrchestrationRunStartKey(orchestratorNodeId, decisionId),
             async () => {
               const orchestrator = latestMessagesRef.current.find((message) => message.id === orchestratorNodeId) ?? null;
               if (!orchestrator) {
@@ -438,19 +608,21 @@ export function useOrchestrationMcpBridge({
               const repoPath = resolveWorkspaceRepoPath(workspace);
               const baseCommitSha = resolveBaseCommitSha(orchestrator, args);
               if (!workspaceId || !repoPath || !baseCommitSha) {
-                throw new Error('Could not resolve workspace, repo path, or base commit for orchestration child launch.');
+                throw new Error('Could not resolve workspace, repo path, or base commit for orchestration run launch.');
               }
 
               const meta = resolveMeta(orchestrator);
-              const contextProfile = resolveContextProfile(orchestrator);
               const agentType = resolveAgentType(orchestrator, args);
               const agentId = resolveAgentId(orchestrator, args, agentType);
               const authToken = await getAccessToken();
-              const parentNodeId = readString(args, 'parent_node_id') ?? orchestratorNodeId;
+              const launchDefaults = resolveOrchestrationRunLaunchDefaults(orchestrator, args);
+              const parentNodeId = launchDefaults.parentNodeId;
               const parentNode = latestMessagesRef.current.find((message) => message.id === parentNodeId) ?? null;
               const parentNodeMeta = (parentNode?.execution_data as { meta?: Record<string, unknown> } | null | undefined)?.meta ?? null;
-              const parentHasChildren = latestMessagesRef.current.some((message) => message.parentId === parentNodeId);
-              const result = await startOrchestrationChildRun({
+              const parentHasChildren = parentNodeId
+                ? latestMessagesRef.current.some((message) => message.parentId === parentNodeId)
+                : false;
+              const result = await startOrchestrationRun({
                 orchestratorRunId,
                 orchestratorNodeId,
                 decisionId,
@@ -469,12 +641,10 @@ export function useOrchestrationMcpBridge({
                 permissionMode: (readString(args, 'permission_mode') ?? readString(meta, 'composer_permission_mode') ?? undefined) as any,
                 loginProfileId: readString(args, 'login_profile_id') ?? readString(meta, 'login_profile_id'),
                 parentNodeId,
-                contextParentNodeId: readString(contextProfile, 'context_parent_node_id') ?? parentNodeId,
+                contextParentNodeId: launchDefaults.contextParentNodeId,
                 providerParentMeta: parentNodeMeta,
                 isBranchFromInterior: parentHasChildren,
-                baseNodeId: readString(contextProfile, 'base_node_id')
-                  ?? (typeof orchestrator.base_selected_from_node_id === 'string' ? orchestrator.base_selected_from_node_id : null)
-                  ?? parentNodeId,
+                baseNodeId: launchDefaults.baseNodeId,
                 baseCommitSha,
                 prompt,
                 threadId: orchestrator.threadId ?? orchestrator.thread_id ?? null,
@@ -509,7 +679,7 @@ export function useOrchestrationMcpBridge({
                 })
               );
               void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(workspaceId) });
-              void scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, { reason: 'mcp-orchestration-child' });
+              void scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, { reason: 'mcp-orchestration-run' });
 
               return {
                 runId: result.runId,
@@ -520,7 +690,7 @@ export function useOrchestrationMcpBridge({
             },
           );
 
-          await respond(requestId, { ...childStartResponse }, null);
+          await respond(requestId, { ...orchestrationRunStartResponse }, null);
         } catch (error) {
           await respond(requestId, null, error instanceof Error ? error.message : String(error));
         }

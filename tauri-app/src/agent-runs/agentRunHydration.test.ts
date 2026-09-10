@@ -240,11 +240,18 @@ describe('agent run hydration', () => {
       provider_item_id: 'msg-2',
       stream_seq: 6,
     }, input, streamState);
+    ingestAgentRunStreamEvent('assistant-1', {
+      type: 'provider_stop',
+      provider_status: 'completed',
+      provider_stop_reason: 'end_turn',
+      final_content: 'I will continue.',
+      stream_seq: 7,
+    }, input, streamState);
 
     const snapshot = agentRunManager.snapshot('assistant-1');
     const messageEvents = snapshot?.timeline.filter((event: any) => event?.type === 'message') ?? [];
 
-    expect(snapshot?.content).toBe('First line.I will continue.');
+    expect(snapshot?.content).toBe('I will continue.');
     expect(messageEvents.map((event: any) => event.content)).toEqual([
       'First line.',
       'I will continue.',

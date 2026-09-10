@@ -177,6 +177,7 @@ export const dispatchStreamingAssistantText = (
   nextContent: string,
   options: Pick<AgentRunStreamDispatchContext, 'nodeId' | 'parentId' | 'workspaceId' | 'agentId'> & {
     appendedText?: string;
+    providerItemId?: string | null;
     timestamp?: number;
     streamSeq?: number | null;
   },
@@ -185,6 +186,7 @@ export const dispatchStreamingAssistantText = (
     type: 'content',
     content: nextContent,
     appendedText: options.appendedText || '',
+    providerItemId: options.providerItemId ?? null,
     timestamp: options.timestamp ?? Date.now(),
     streamSeq: options.streamSeq ?? null,
   }, {
@@ -200,6 +202,7 @@ export const dispatchStreamingAssistantText = (
 export const dispatchFinalAssistantText = (
   finalContent: string,
   options: Pick<AgentRunStreamDispatchContext, 'nodeId' | 'parentId' | 'workspaceId' | 'agentId'> & {
+    providerItemId?: string | null;
     timestamp?: number;
     streamSeq?: number | null;
   },
@@ -207,6 +210,7 @@ export const dispatchFinalAssistantText = (
   agentRunManager.dispatch(options.nodeId, {
     type: 'content_final',
     content: finalContent,
+    providerItemId: options.providerItemId ?? null,
     timestamp: options.timestamp ?? Date.now(),
     streamSeq: options.streamSeq ?? null,
   }, {

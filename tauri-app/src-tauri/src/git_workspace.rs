@@ -2213,15 +2213,41 @@ pub async fn cleanup_worktree_owned(
                     &worktree_path,
                     &err,
                 );
-                return Err(err);
+                let owns_path =
+                    is_agent_worktree_path_for_node(&repo_path, &node_id, &worktree_path_string)?;
+                if !owns_path {
+                    return Err(err);
+                }
+                if let Err(remove_dir_err) = fs::remove_dir_all(&worktree_path) {
+                    log_agent_worktree_lifecycle(
+                        "cleanup.remove_dir_all.error",
+                        &repo_path,
+                        &node_id,
+                        &worktree_path,
+                        &format!("git_remove_err={} remove_dir_err={}", err, remove_dir_err),
+                    );
+                    return Err(format!(
+                        "{}; fallback remove_dir_all failed: {}",
+                        err, remove_dir_err
+                    ));
+                }
+                let _ = run_git(&repo_path, &["worktree", "prune"]);
+                log_agent_worktree_lifecycle(
+                    "cleanup.remove_dir_all.after",
+                    &repo_path,
+                    &node_id,
+                    &worktree_path,
+                    "ok",
+                );
+            } else {
+                log_agent_worktree_lifecycle(
+                    "cleanup.remove.after",
+                    &repo_path,
+                    &node_id,
+                    &worktree_path,
+                    "ok",
+                );
             }
-            log_agent_worktree_lifecycle(
-                "cleanup.remove.after",
-                &repo_path,
-                &node_id,
-                &worktree_path,
-                "ok",
-            );
         } else {
             log_agent_worktree_lifecycle(
                 "cleanup.path_missing",

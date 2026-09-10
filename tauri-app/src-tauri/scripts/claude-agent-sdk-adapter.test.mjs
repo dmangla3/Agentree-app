@@ -113,6 +113,161 @@ test('Claude input_json_delta chunks reconstruct tool input', async () => {
     limit: 99,
   });
 });
+test('Claude structured output schema carries commit body guidance', async () => {
+  const adapter = await import('./claude-agent-sdk-adapter.mjs');
+
+  assert.ok(adapter.FINAL_RESULT_SCHEMA.required.includes('commit_body'));
+  assert.match(
+    adapter.FINAL_RESULT_SCHEMA.properties.commit_subject.description,
+    /Conventional Commits format/
+  );
+  assert.match(
+    adapter.FINAL_RESULT_SCHEMA.properties.commit_body.description,
+    /1-3 short paragraphs/
+  );
+
+  const output = adapter.structuredFinalOutputFromInput({
+    final_response: 'Done',
+    commit_subject: '  `feat: add commit bodies.`  ',
+    commit_body: ' Explain why.\n\nMention adapter schemas. ',
+    ai_label: null,
+    thread_title: null,
+  });
+
+  assert.equal(output.commitSubject, 'feat: add commit bodies');
+  assert.equal(output.commitBody, 'Explain why.\n\nMention adapter schemas.');
+});
+
+test('Claude structured output ignores partial tool input', async () => {
+  const adapter = await import('./claude-agent-sdk-adapter.mjs');
+
+  assert.equal(adapter.structuredFinalOutputFromInput({
+    final_response: 'Done</final_response>\n<commit_subject>Bad shape</commit_subject>',
+  }), null);
+
+  assert.deepEqual(adapter.structuredFinalOutputFromInput({
+    final_response: 'Done',
+    commit_subject: null,
+    commit_body: null,
+    ai_label: 'Finished work',
+    thread_title: null,
+  }), {
+    finalResponse: 'Done',
+    commitSubject: null,
+    commitBody: null,
+    aiLabel: 'Finished work',
+    threadTitle: null,
+  });
+
+  assert.equal(adapter.structuredFinalOutputFromInput({
+    final_response: null,
+    commit_subject: 'fix: update adapter',
+    commit_body: null,
+    ai_label: 'Updated adapter',
+    thread_title: null,
+  }), null);
+});
+
+test('Claude structured output fallback is limited to exhausted metadata failures', async () => {
+  const adapter = await import('./claude-agent-sdk-adapter.mjs');
+  const failedResult = {
+    type: 'result',
+    is_error: true,
+    stop_reason: 'tool_use',
+  };
+
+  assert.equal(adapter.shouldFallbackAfterStructuredOutputFailure({
+    message: failedResult,
+    structuredOutputFailureCount: 2,
+    structuredFinalOutput: null,
+    fallbackFinalContent: 'Clean final answer',
+  }), false);
+
+  assert.equal(adapter.shouldFallbackAfterStructuredOutputFailure({
+    message: failedResult,
+    structuredOutputFailureCount: 3,
+    structuredFinalOutput: null,
+    fallbackFinalContent: 'Clean final answer',
+  }), true);
+
+  assert.equal(adapter.shouldFallbackAfterStructuredOutputFailure({
+    message: failedResult,
+    structuredOutputFailureCount: 3,
+    structuredFinalOutput: { finalResponse: 'Done' },
+    fallbackFinalContent: 'Clean final answer',
+  }), false);
+});
+
+test('Claude structured output tool errors are detected but not emitted as normal tool results', async () => {
+  const adapter = await import('./claude-agent-sdk-adapter.mjs');
+  const message = {
+    type: 'user',
+    message: {
+      content: [
+        { type: 'tool_result', tool_use_id: 'toolu_structured', is_error: true, content: 'schema failed' },
+        { type: 'tool_result', tool_use_id: 'toolu_read', is_error: false, content: 'ok' },
+      ],
+    },
+  };
+
+  assert.deepEqual(adapter.structuredOutputToolErrors(message, new Set(['toolu_structured'])), [
+    { type: 'tool_result', tool_use_id: 'toolu_structured', is_error: true, content: 'schema failed' },
+  ]);
+});
+
+test('worktree write guard denies writes outside the worktree and allows inside', async () => {
+  const adapter = await import('./claude-agent-sdk-adapter.mjs');
+  const worktree = '/home/user/.agentree/worktrees/abc/nodes/node-1';
+
+  // Inside the worktree (absolute) -> allowed (null).
+  assert.equal(
+    adapter.worktreeWriteEscapeDenial('Edit', { file_path: `${worktree}/src/app.ts` }, worktree),
+    null
+  );
+  // Relative path resolves under the worktree -> allowed.
+  assert.equal(
+    adapter.worktreeWriteEscapeDenial('Write', { file_path: 'src/new.ts' }, worktree),
+    null
+  );
+
+  // Absolute path into the user's main checkout -> denied.
+  const escape = adapter.worktreeWriteEscapeDenial(
+    'Write',
+    { file_path: '/home/user/projects/Agentree/src/app.ts' },
+    worktree
+  );
+  assert.equal(escape?.behavior, 'deny');
+  assert.match(escape.message, /outside this agent's worktree/);
+
+  // `..` traversal out of the worktree -> denied.
+  const traversal = adapter.worktreeWriteEscapeDenial(
+    'Edit',
+    { file_path: `${worktree}/../../../escape.ts` },
+    worktree
+  );
+  assert.equal(traversal?.behavior, 'deny');
+
+  // NotebookEdit uses notebook_path; outside -> denied.
+  const notebook = adapter.worktreeWriteEscapeDenial(
+    'NotebookEdit',
+    { notebook_path: '/etc/passwd.ipynb' },
+    worktree
+  );
+  assert.equal(notebook?.behavior, 'deny');
+});
+
+test('worktree write guard does not interfere with non-write tools or missing paths', async () => {
+  const adapter = await import('./claude-agent-sdk-adapter.mjs');
+  const worktree = '/home/user/.agentree/worktrees/abc/nodes/node-1';
+
+  // Read / Bash / other tools are never guarded.
+  assert.equal(adapter.worktreeWriteEscapeDenial('Read', { file_path: '/etc/hosts' }, worktree), null);
+  assert.equal(adapter.worktreeWriteEscapeDenial('Bash', { command: 'rm -rf /' }, worktree), null);
+
+  // Write tool without a usable path is left untouched (the tool itself errors).
+  assert.equal(adapter.worktreeWriteEscapeDenial('Write', {}, worktree), null);
+  assert.equal(adapter.worktreeWriteEscapeDenial('Edit', { file_path: '  ' }, worktree), null);
+});
 
 test('Claude default permission mode enables isolated sandbox', async () => {
   const adapter = await import('./claude-agent-sdk-adapter.mjs');

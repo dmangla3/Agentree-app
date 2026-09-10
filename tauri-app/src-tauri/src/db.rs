@@ -85,7 +85,10 @@ fn controlled_by_node_id_from_payload(payload: &JsonValue) -> Option<&str> {
 fn is_orchestration_event_type(event_type: &str) -> bool {
     matches!(
         event_type,
-        "orchestration:child_requested"
+        "orchestration:run_requested"
+            | "orchestration:run_started"
+            | "orchestration:run_superseded"
+            | "orchestration:child_requested"
             | "orchestration:child_started"
             | "orchestration:wait_started"
             | "orchestration:wait_completed"
@@ -7916,11 +7919,20 @@ mod tests {
             .record_orchestration_event(
                 "run-orchestrator",
                 "assistant-orchestrator",
-                "orchestration:child_requested",
+                "orchestration:run_requested",
                 r#"{"decisionId":"planner-1"}"#,
             )
             .expect("record orchestration event");
         assert_eq!(seq, 1);
+        let legacy_seq = db
+            .record_orchestration_event(
+                "run-orchestrator",
+                "assistant-orchestrator",
+                "orchestration:child_started",
+                r#"{"decisionId":"planner-1","runAssistantNodeId":"assistant-child"}"#,
+            )
+            .expect("record legacy orchestration event");
+        assert_eq!(legacy_seq, 2);
         let cancel_seq = db
             .record_orchestration_event(
                 "run-orchestrator",
@@ -7929,7 +7941,7 @@ mod tests {
                 r#"{"reason":"cancelled"}"#,
             )
             .expect("record cancelled orchestration event");
-        assert_eq!(cancel_seq, 2);
+        assert_eq!(cancel_seq, 3);
         assert!(db
             .record_orchestration_event(
                 "run-orchestrator",
@@ -7942,7 +7954,7 @@ mod tests {
             .record_orchestration_event(
                 "run-orchestrator",
                 "assistant-orchestrator",
-                "orchestration:child_requested",
+                "orchestration:run_requested",
                 "not json",
             )
             .is_err());
@@ -7950,9 +7962,10 @@ mod tests {
         let events = db
             .list_agent_run_events_after("run-orchestrator", 0)
             .expect("events");
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].event_type, "orchestration:child_requested");
-        assert_eq!(events[1].event_type, "orchestration:cancelled");
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].event_type, "orchestration:run_requested");
+        assert_eq!(events[1].event_type, "orchestration:child_started");
+        assert_eq!(events[2].event_type, "orchestration:cancelled");
     }
 
     #[test]

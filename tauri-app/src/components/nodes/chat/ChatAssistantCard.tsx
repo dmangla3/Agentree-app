@@ -19,7 +19,7 @@ import { useAgentRunProjectionStore } from '../../../stores/agentRunProjectionSt
 import { resolveNodeState } from '../../../lib/runStateResolver';
 import { agentRunManager } from '../../../agent-runs/agentRunManager';
 import { recordAssistantTextVisible } from '../../../perf/agentRunVisibilityPerf';
-import { getAssistantIdentityLabel } from '../../../lib/assistantIdentity';
+import { getAssistantIdentityParts, getAssistantReasoningEffortFromExecutionData } from '../../../lib/assistantIdentity';
 import { getNodeFailureReason, isNodeFailureStatus } from '../../../lib/nodeFailureReason';
 import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import { useAgentreeSurface } from '../../graph/surfaceCapabilities';
@@ -29,28 +29,34 @@ const AgentChip = ({
   agentId,
   llmModel,
   llmProvider,
+  reasoningEffort,
 }: {
   agentId?: string | null;
   llmModel?: string | null;
   llmProvider?: string | null;
+  reasoningEffort?: string | null;
 }) => {
   const { data: agents = [] } = useAgents();
   const agent = agents.find(a => a.id === agentId);
 
-  const name = getAssistantIdentityLabel({
+  const { label, reasoningEffort: reasoningEffortLabel } = getAssistantIdentityParts({
     agentName: agent?.name,
     llmModel,
     llmProvider,
+    reasoningEffort,
   });
   const colorName = agent?.color;
   const colorClass = getAgentColorClass(colorName) || 'bg-slate-500';
 
   return (
     <div className={cn(
-      "inline-flex min-w-0 max-w-[12rem] rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white shadow-sm",
+      "inline-flex min-w-0 max-w-[12rem] items-baseline rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white shadow-sm",
       colorClass
     )}>
-      <span className="truncate">{name}</span>
+      <span className="truncate">{label}</span>
+      {reasoningEffortLabel && (
+        <span className="ml-1 shrink-0 normal-case">{reasoningEffortLabel}</span>
+      )}
     </div>
   );
 };
@@ -768,6 +774,7 @@ export const ChatAssistantCard = memo(({
                   agentId={message?.agent_id}
                   llmModel={message?.llmModel}
                   llmProvider={message?.llmProvider}
+                  reasoningEffort={getAssistantReasoningEffortFromExecutionData(message?.execution_data)}
                 />
                 <StatusBadge status={displayStatus as any} failureReason={failureReason} />
                 {entity.toolCallCount ? (

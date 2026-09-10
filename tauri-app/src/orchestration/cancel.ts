@@ -32,7 +32,7 @@ export async function cancelOrchestrationTargetIfNeeded(
     return { handled: false, stoppedAssistantNodeIds: [] };
   }
 
-  const activeControlledAssistantNodeIds = input.messages
+  const activeOrchestrationRunAssistantNodeIds = input.messages
     .filter((message) => message.role === 'assistant')
     .filter((message) => getControlledByNodeId(message) === input.targetNodeId)
     .filter((message) => isActiveAgentStatus(message.status))
@@ -41,7 +41,7 @@ export async function cancelOrchestrationTargetIfNeeded(
   const result = await cancelOrchestration({
     orchestratorRunId,
     orchestratorNodeId: input.targetNodeId,
-    activeControlledAssistantNodeIds,
+    activeOrchestrationRunAssistantNodeIds,
     reason: input.reason ?? 'cancelled',
   }, deps);
 

@@ -3,13 +3,19 @@ import { QueryClient } from '@tanstack/react-query';
 import { localNodeKeys, type LocalNodeMessage } from '../hooks/useLocalNodes';
 import type { Message } from '../stores/workspaceStore';
 import {
-  getOrchestrationChildStartKey,
-  getOrStartPendingOrchestrationChild,
+  buildGraphLiveQuerySummary,
+  getOrchestrationRunStartKey,
+  getOrStartPendingOrchestrationRun,
   isOrchestrationWaitCondition,
   isOrchestrationWaitSatisfied,
   mergeMessagesWithLiveWaitProjections,
   ORCHESTRATION_WAIT_CONDITIONS,
+  ORCHESTRATION_WAIT_DEFAULT_TIMEOUT_MS,
+  ORCHESTRATION_WAIT_MAX_TIMEOUT_MS,
+  ORCHESTRATION_WAIT_MIN_TIMEOUT_MS,
   patchOrchestrationWaitMessagesIntoCaches,
+  resolveOrchestrationRunLaunchDefaults,
+  resolveOrchestrationWaitTimeoutMs,
 } from './useOrchestrationMcpBridge';
 
 const message = (input: Partial<Message> & { id: string; role?: Message['role'] }): Message => ({
@@ -38,6 +44,13 @@ describe('orchestration MCP wait helpers', () => {
     expect(isOrchestrationWaitCondition('any')).toBe(true);
     expect(isOrchestrationWaitCondition('failed')).toBe(true);
     expect(isOrchestrationWaitCondition('pending')).toBe(false);
+  });
+
+  it('caps wait checkpoints below the provider MCP call timeout', () => {
+    expect(resolveOrchestrationWaitTimeoutMs(undefined)).toBe(ORCHESTRATION_WAIT_DEFAULT_TIMEOUT_MS);
+    expect(resolveOrchestrationWaitTimeoutMs(500)).toBe(ORCHESTRATION_WAIT_MIN_TIMEOUT_MS);
+    expect(resolveOrchestrationWaitTimeoutMs(30_000)).toBe(30_000);
+    expect(resolveOrchestrationWaitTimeoutMs(10 * 60 * 1000)).toBe(ORCHESTRATION_WAIT_MAX_TIMEOUT_MS);
   });
 
   it('supports all/any/failed aliases when checking child run completion', () => {
@@ -87,6 +100,52 @@ describe('orchestration MCP wait helpers', () => {
     }, merged)).toBe(true);
   });
 
+  it('includes projection-only child nodes in wait checks', () => {
+    const merged = mergeMessagesWithLiveWaitProjections([], {
+      child: message({
+        id: 'child',
+        status: 'completed' as any,
+        execution_data: { last_terminal_status: 'completed' },
+      }) as any,
+    });
+
+    expect(isOrchestrationWaitSatisfied({
+      assistantNodeIds: ['child'],
+      condition: 'completed',
+    }, merged)).toBe(true);
+    expect((merged[0].execution_data as any).__local_authority).toEqual({
+      source: 'projection',
+    });
+  });
+
+  it('reports live graph query results from local and projection state', () => {
+    const summary = buildGraphLiveQuerySummary({
+      filters: { role: 'assistant', status: 'streaming' },
+    }, [
+      message({ id: 'user', role: 'user', status: null as any }),
+      message({
+        id: 'child',
+        status: 'streaming' as any,
+        output_commit_sha: null,
+        execution_data: {
+          __local_authority: { source: 'projection' },
+        },
+      }),
+    ], 'workspace-1');
+
+    expect(summary).toMatchObject({
+      source: 'live',
+      includesLocalAndProjectionState: true,
+      total: 1,
+      nodes: [{
+        nodeId: 'child',
+        status: 'streaming',
+        active: true,
+        source: 'projection',
+      }],
+    });
+  });
+
   it('patches waited terminal child messages into graph-facing query caches', () => {
     const queryClient = new QueryClient();
     const staleChild = message({
@@ -129,11 +188,86 @@ describe('orchestration MCP wait helpers', () => {
   });
 });
 
-describe('orchestration MCP child start idempotency helpers', () => {
+describe('orchestration MCP run start idempotency helpers', () => {
+  it('defaults graph parent to the assistant the user replied to and uses orchestration context metadata', () => {
+    const orchestrator = message({
+      id: 'assistant-orchestrator',
+      role: 'assistant',
+      parentId: 'orchestration-user',
+      base_selected_from_node_id: 'base-from-assistant',
+      execution_data: {
+        meta: {
+          node_kind: 'orchestrator',
+          orchestration_target_node_id: 'parent-assistant',
+          orchestration_context_parent_node_id: 'parent-assistant',
+          orchestration_base_node_id: 'parent-assistant',
+        },
+        context_profile: {
+          context_parent_node_id: 'legacy-context-parent',
+          base_node_id: 'legacy-base',
+        },
+      },
+    });
+
+    expect(resolveOrchestrationRunLaunchDefaults(orchestrator, {})).toEqual({
+      parentNodeId: 'parent-assistant',
+      contextParentNodeId: 'parent-assistant',
+      baseNodeId: 'parent-assistant',
+    });
+    expect(resolveOrchestrationRunLaunchDefaults(orchestrator, {
+      parent_node_id: 'run-parent-assistant-1',
+      context_parent_node_id: 'run-parent-assistant-1',
+      base_node_id: 'run-parent-assistant-1',
+    })).toEqual({
+      parentNodeId: 'run-parent-assistant-1',
+      contextParentNodeId: 'run-parent-assistant-1',
+      baseNodeId: 'run-parent-assistant-1',
+    });
+  });
+
+  it('defaults new-thread orchestration runs to the thread node instead of the request node', () => {
+    const orchestrator = message({
+      id: 'assistant-orchestrator',
+      role: 'assistant',
+      parentId: 'orchestration-user',
+      execution_data: {
+        meta: {
+          node_kind: 'orchestrator',
+          thread_origin_id: 'thread-1',
+        },
+      },
+    });
+
+    expect(resolveOrchestrationRunLaunchDefaults(orchestrator, {})).toEqual({
+      parentNodeId: 'thread-origin:thread-1',
+      contextParentNodeId: 'thread-origin:thread-1',
+      baseNodeId: 'thread-origin:thread-1',
+    });
+  });
+
+  it('does not fall back to the orchestration request when no target or thread node is known', () => {
+    const orchestrator = message({
+      id: 'assistant-orchestrator',
+      role: 'assistant',
+      parentId: 'orchestration-user',
+      execution_data: {
+        meta: {
+          node_kind: 'orchestrator',
+        },
+      },
+    });
+
+    expect(resolveOrchestrationRunLaunchDefaults(orchestrator, {})).toEqual({
+      parentNodeId: null,
+      contextParentNodeId: null,
+      baseNodeId: null,
+    });
+  });
+
   it('shares an in-flight child start for the same orchestrator and decision id', async () => {
     const pending = new Map();
     let starts = 0;
-    const key = getOrchestrationChildStartKey('assistant-orchestrator', 'planner-1');
+    const key = getOrchestrationRunStartKey('assistant-orchestrator', 'planner-1');
     const start = async () => {
       starts += 1;
       await Promise.resolve();
@@ -146,8 +280,8 @@ describe('orchestration MCP child start idempotency helpers', () => {
     };
 
     const [first, second] = await Promise.all([
-      getOrStartPendingOrchestrationChild(pending, key, start),
-      getOrStartPendingOrchestrationChild(pending, key, start),
+      getOrStartPendingOrchestrationRun(pending, key, start),
+      getOrStartPendingOrchestrationRun(pending, key, start),
     ]);
 
     expect(starts).toBe(1);
@@ -164,15 +298,15 @@ describe('orchestration MCP child start idempotency helpers', () => {
     expect(pending.size).toBe(0);
   });
 
-  it('clears failed in-flight child starts so the decision can be retried', async () => {
+  it('clears failed in-flight orchestration run starts so the decision can be retried', async () => {
     const pending = new Map();
-    const key = getOrchestrationChildStartKey('assistant-orchestrator', 'planner-1');
-    await expect(getOrStartPendingOrchestrationChild(pending, key, async () => {
+    const key = getOrchestrationRunStartKey('assistant-orchestrator', 'planner-1');
+    await expect(getOrStartPendingOrchestrationRun(pending, key, async () => {
       throw new Error('launch failed');
     })).rejects.toThrow('launch failed');
 
     expect(pending.size).toBe(0);
-    const retried = await getOrStartPendingOrchestrationChild(pending, key, async () => ({
+    const retried = await getOrStartPendingOrchestrationRun(pending, key, async () => ({
       runId: 'run-retry',
       userNodeId: 'user-retry',
       assistantNodeId: 'assistant-retry',

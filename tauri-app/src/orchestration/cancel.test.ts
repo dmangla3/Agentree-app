@@ -22,7 +22,7 @@ const message = (input: Partial<Message> & Pick<Message, 'id'>): Message => ({
 } as Message);
 
 describe('cancelOrchestrationTargetIfNeeded', () => {
-  it('records orchestration cancellation and stops only active controlled children for orchestrator targets', async () => {
+  it('records orchestration cancellation and stops only active orchestration runren for orchestrator targets', async () => {
     const recordOrchestrationEvent = vi.fn(async () => 1);
     const stopAgent = vi.fn(async () => undefined);
 
@@ -74,7 +74,7 @@ describe('cancelOrchestrationTargetIfNeeded', () => {
       'orchestration:cancel_requested',
       {
         reason: 'User cancelled from graph.',
-        activeControlledAssistantNodeIds: ['assistant-active-child'],
+        activeOrchestrationRunAssistantNodeIds: ['assistant-active-child'],
       },
     );
     expect(recordOrchestrationEvent).toHaveBeenNthCalledWith(

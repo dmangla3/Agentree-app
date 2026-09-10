@@ -153,6 +153,7 @@ export interface ThreadNavigationItem {
     unreadCompletedLeafCount?: number;
     initialPreviewNodeId?: string | null;
     previewNodeIds?: string[];
+    draftPreviewText?: string | null;
 }
 
 export interface GraphControlsProps {
@@ -390,6 +391,23 @@ function ThreadNodeHoverCardContent({
     );
 }
 
+function ThreadDraftHoverCardContent({ draftPreviewText }: { draftPreviewText: string }) {
+    return (
+        <div
+            data-agentree-thread-hover-card="true"
+            className="w-[360px] max-w-[calc(100vw-48px)] rounded-lg border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.98)] p-3 text-left shadow-xl shadow-black/10 backdrop-blur-md"
+        >
+            <div className="mb-2 flex items-center gap-1.5 border-b border-[hsl(var(--app-border)/0.4)] pb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                <User size={12} strokeWidth={2.1} />
+                <span>Draft</span>
+            </div>
+            <p className="max-h-48 overflow-hidden whitespace-pre-wrap break-words text-[12px] leading-relaxed text-foreground">
+                {draftPreviewText}
+            </p>
+        </div>
+    );
+}
+
 export function ThreadNodeHoverCard({
     thread,
     projectionInput,
@@ -399,6 +417,7 @@ export function ThreadNodeHoverCard({
     const hoverContentRef = useRef<HTMLDivElement | null>(null);
     const pointerInsideHoverContentRef = useRef(false);
     const [hoverOpen, setHoverOpen] = useState(false);
+    const draftPreviewText = thread.draftPreviewText?.trim() || null;
     const previewNodeIds = useMemo(() => {
         const nodeIds = thread.previewNodeIds ?? [];
         if (!projectionInput) return nodeIds;
@@ -462,7 +481,8 @@ export function ThreadNodeHoverCard({
         };
     }, [hoverOpen]);
 
-    if (!projectionInput || previewNodeIds.length === 0) {
+    const hasProjectedPreview = Boolean(projectionInput && previewNodeIds.length > 0);
+    if (!hasProjectedPreview && !draftPreviewText) {
         return <>{children}</>;
     }
 
@@ -512,7 +532,7 @@ export function ThreadNodeHoverCard({
                     closeHoverCard();
                 }}
             >
-                {hoverOpen ? (
+                {hoverOpen && projectionInput && previewNodeIds.length > 0 ? (
                     <ThreadNodeHoverCardContent
                         thread={thread}
                         projectionInput={projectionInput}
@@ -520,6 +540,8 @@ export function ThreadNodeHoverCard({
                         previewIndex={previewIndex}
                         onPreviewIndexChange={setPreviewIndex}
                     />
+                ) : hoverOpen && draftPreviewText ? (
+                    <ThreadDraftHoverCardContent draftPreviewText={draftPreviewText} />
                 ) : null}
             </HoverCardContent>
         </HoverCard>

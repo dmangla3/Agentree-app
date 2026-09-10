@@ -382,8 +382,8 @@ describe('NodeContextMenu', () => {
     expect(screen.getByRole('menuitem', { name: 'View subgraph' })).toBeTruthy();
   });
 
-  it('shows retry action for failed orchestration child nodes', () => {
-    const onRetryOrchestrationChild = vi.fn();
+  it('shows retry action for failed orchestration run nodes', () => {
+    const onRetryOrchestrationRun = vi.fn();
     const orchestratorEntity: ProjectedNodeEntity = {
       entityId: 'assistant_message:assistant-orchestrator',
       kind: 'assistant_message',
@@ -439,13 +439,13 @@ describe('NodeContextMenu', () => {
         contextMenu={{ x: 20, y: 30, targetIds: ['child-assistant'] }}
         projection={makeProjection(null, [orchestratorEntity, childEntity])}
         onClose={() => {}}
-        onRetryOrchestrationChild={onRetryOrchestrationChild}
+        onRetryOrchestrationRun={onRetryOrchestrationRun}
       />
     );
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Retry orchestration child' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Retry orchestration run' }));
 
-    expect(onRetryOrchestrationChild).toHaveBeenCalledWith('child-assistant');
+    expect(onRetryOrchestrationRun).toHaveBeenCalledWith('child-assistant');
   });
 
   it('shows thread actions for a node with thread root metadata', () => {
@@ -592,8 +592,8 @@ describe('NodeContextMenu', () => {
     expect(screen.queryByRole('menuitem', { name: 'Convert subgraph to thread' })).toBeNull();
   });
 
-  it('shows retry action for failed orchestration child nodes', () => {
-    const onRetryOrchestrationChild = vi.fn();
+  it('shows retry action for failed orchestration run nodes', () => {
+    const onRetryOrchestrationRun = vi.fn();
     const orchestratorEntity: ProjectedNodeEntity = {
       entityId: 'assistant_message:assistant-orchestrator',
       kind: 'assistant_message',
@@ -653,12 +653,12 @@ describe('NodeContextMenu', () => {
         contextMenu={{ x: 20, y: 30, targetIds: ['child-assistant'] }}
         projection={makeProjection(null, [orchestratorEntity, childEntity])}
         onClose={() => {}}
-        onRetryOrchestrationChild={onRetryOrchestrationChild}
+        onRetryOrchestrationRun={onRetryOrchestrationRun}
       />
     );
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Retry orchestration child' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Retry orchestration run' }));
 
-    expect(onRetryOrchestrationChild).toHaveBeenCalledWith('child-assistant');
+    expect(onRetryOrchestrationRun).toHaveBeenCalledWith('child-assistant');
   });
 });

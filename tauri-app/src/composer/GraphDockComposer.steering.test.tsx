@@ -208,6 +208,11 @@ describe('GraphDockComposer steering behavior', () => {
 
   it('debounces workspace draft writes while keeping textarea input immediate', async () => {
     vi.useFakeTimers();
+    useWorkspaceStore.setState({
+      focusedMessageId: null,
+      lastFocusSource: 'graph',
+      lastFocusMetadata: null,
+    });
     renderComposer([]);
 
     const composer = screen.getByLabelText('Graph composer prompt') as HTMLTextAreaElement;
@@ -393,7 +398,7 @@ describe('GraphDockComposer steering behavior', () => {
       });
     });
 
-    expect(await screen.findByText('New thread')).toBeTruthy();
+    expect(screen.getByText('New thread')).toBeTruthy();
     expect(screen.getByText('Thread root')).toBeTruthy();
 
     const composer = screen.getByLabelText('Graph composer prompt');
@@ -410,6 +415,41 @@ describe('GraphDockComposer steering behavior', () => {
     expect(userMessage.execution_data?.meta?.context_policy).toBe('fresh');
     expect(userMessage.execution_data?.meta?.thread_origin_id).toBe('pending-thread');
     expect(assistantMessage.threadId).toBe('pending-thread');
+  });
+
+  it('stores unsent new-thread drafts by pending thread id', async () => {
+    vi.useFakeTimers();
+    renderComposer([
+      message({
+        id: 'assistant-live',
+        role: 'assistant',
+        content: 'Running assistant',
+        status: 'completed' as any,
+        output_commit_sha: 'parent-output',
+      }),
+    ]);
+
+    act(() => {
+      useWorkspaceStore.getState().setThreadComposerTarget({
+        workspaceId: 'workspace-1',
+        threadId: 'pending-thread',
+        reason: 'create-thread',
+        nonce: 1,
+      });
+    });
+
+    expect(screen.getByText('New thread')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Graph composer prompt'), {
+      target: { value: 'Draft for pending thread' },
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+
+    expect(useWorkspaceStore.getState().composerDraftByWorkspace['workspace-1::pending-thread']).toBe('Draft for pending thread');
+    expect(useWorkspaceStore.getState().composerDraftByWorkspace['workspace-1']).toBeUndefined();
   });
 
   it('shows an unfocused root send as a thread root target, not a workspace root', async () => {

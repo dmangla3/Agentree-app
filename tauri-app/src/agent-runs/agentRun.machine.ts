@@ -192,9 +192,19 @@ const appendTimelineEvent = (timeline: any[], nextEvent: any) => {
     const lastIndex = nextTimeline.length - 1;
     const prior = lastIndex >= 0 ? nextTimeline[lastIndex] : null;
     if (prior?.type === 'message') {
+      const priorProviderItemId = typeof prior.provider_item_id === 'string' ? prior.provider_item_id : null;
+      const nextProviderItemId = typeof nextEvent.provider_item_id === 'string' ? nextEvent.provider_item_id : null;
+      if (
+        (priorProviderItemId && nextProviderItemId && priorProviderItemId !== nextProviderItemId) ||
+        (!priorProviderItemId && nextProviderItemId)
+      ) {
+        nextTimeline.push(nextEvent);
+        return nextTimeline;
+      }
       const existingContent = typeof prior.content === 'string' ? prior.content : '';
       nextTimeline[lastIndex] = {
         ...prior,
+        ...(nextProviderItemId && !priorProviderItemId ? { provider_item_id: nextProviderItemId } : {}),
         content: `${existingContent}${content}`,
         timestamp: nextEvent.timestamp ?? prior.timestamp,
       };
@@ -261,27 +271,56 @@ const appendAssistantTimelineMessage = (
   timeline: any[],
   appendedText: string | null | undefined,
   timestamp: number | null | undefined,
+  providerItemId?: string | null,
 ) => {
   if (!appendedText) return timeline;
   return appendTimelineEvent(timeline, {
     type: 'message',
     timestamp: timestamp ?? Date.now(),
     content: appendedText,
+    ...(providerItemId ? { provider_item_id: providerItemId } : {}),
   });
 };
 
+// `snapshot.content` is the card's current/final assistant answer. Timeline
+// `message` rows are work-log assistant items; finalization should replace the
+// matching provider item, not erase earlier completed assistant items.
 const replaceAssistantTimelineMessage = (
   timeline: any[],
   content: string,
   timestamp: number | null | undefined,
+  providerItemId?: string | null,
 ) => {
-  const withoutAssistantMessages = timeline.filter((event: any) => event?.type !== 'message');
-  if (!content) return withoutAssistantMessages;
-  return appendTimelineEvent(withoutAssistantMessages, {
-    type: 'message',
-    timestamp: timestamp ?? Date.now(),
+  if (!providerItemId) {
+    const withoutAssistantMessages = timeline.filter((event: any) => event?.type !== 'message');
+    if (!content) return withoutAssistantMessages;
+    return appendTimelineEvent(withoutAssistantMessages, {
+      type: 'message',
+      timestamp: timestamp ?? Date.now(),
+      content,
+    });
+  }
+  const targetIndex = providerItemId
+    ? [...timeline].reverse().findIndex((event: any) => (
+      event?.type === 'message' && event.provider_item_id === providerItemId
+    ))
+    : [...timeline].reverse().findIndex((event: any) => event?.type === 'message');
+  const index = targetIndex === -1 ? -1 : timeline.length - 1 - targetIndex;
+  if (index === -1) {
+    return appendAssistantTimelineMessage(timeline, content, timestamp, providerItemId);
+  }
+  const nextTimeline = [...timeline];
+  if (!content) {
+    nextTimeline.splice(index, 1);
+    return nextTimeline;
+  }
+  nextTimeline[index] = {
+    ...nextTimeline[index],
+    timestamp: timestamp ?? nextTimeline[index].timestamp ?? Date.now(),
     content,
-  });
+    ...(providerItemId ? { provider_item_id: providerItemId } : {}),
+  };
+  return nextTimeline;
 };
 
 const updateStatus = (
@@ -411,8 +450,8 @@ export const reduceAgentRunSnapshot = (
       {
         if (!shouldAcceptContentEvent(snapshot, event)) return snapshot;
         const timeline = isTerminalAgentStatus(snapshot.status)
-          ? replaceAssistantTimelineMessage(snapshot.timeline, event.content, event.timestamp)
-          : appendAssistantTimelineMessage(snapshot.timeline, event.appendedText, event.timestamp);
+          ? replaceAssistantTimelineMessage(snapshot.timeline, event.content, event.timestamp, event.providerItemId)
+          : appendAssistantTimelineMessage(snapshot.timeline, event.appendedText, event.timestamp, event.providerItemId);
         return {
         ...updateStatus(snapshot, 'streaming', snapshot.progress),
         content: event.content,
@@ -426,7 +465,7 @@ export const reduceAgentRunSnapshot = (
       }
     case 'content_final':
       {
-        const timeline = replaceAssistantTimelineMessage(snapshot.timeline, event.content, event.timestamp);
+        const timeline = replaceAssistantTimelineMessage(snapshot.timeline, event.content, event.timestamp, event.providerItemId);
         return {
           ...updateStatus(snapshot, 'streaming', snapshot.progress),
           content: event.content,

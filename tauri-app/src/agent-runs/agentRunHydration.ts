@@ -180,6 +180,7 @@ const dispatchHydratedStreamEvent = (
       workspaceId: input.workspaceId ?? '',
       agentId,
       appendedText: deriveIncrementalText(previousOutput, state.output),
+      providerItemId: merged.providerItemId,
       timestamp: numericSeq(event.timestamp) ?? Date.now(),
       streamSeq: numericSeq(event.stream_seq),
     });
@@ -201,6 +202,7 @@ const dispatchHydratedStreamEvent = (
       workspaceId: input.workspaceId ?? '',
       agentId,
       appendedText: deriveIncrementalText(previousOutput, state.output),
+      providerItemId: merged.providerItemId,
       timestamp: numericSeq(event.timestamp) ?? Date.now(),
       streamSeq: numericSeq(event.stream_seq),
     });
@@ -283,6 +285,7 @@ const dispatchHydratedStreamEvent = (
         parentId: input.parentId ?? '',
         workspaceId: input.workspaceId ?? '',
         agentId,
+        providerItemId: merged.providerItemId,
         timestamp: numericSeq(event.timestamp) ?? Date.now(),
         streamSeq: numericSeq(event.stream_seq),
       });

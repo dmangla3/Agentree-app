@@ -7,7 +7,11 @@ import { cn } from '../../../lib/utils';
 import type { AgentStatus } from '@shared/agentStatus';
 import { getAgentVisualState } from '../../../lib/agentStateUI';
 import { useRunStatusStore } from '../../../stores/runStatusStore';
-import { getAssistantIdentityLabel, getAssistantProviderIconKind } from '../../../lib/assistantIdentity';
+import {
+  getAssistantIdentityParts,
+  getAssistantProviderIconKind,
+  getAssistantReasoningEffortFromExecutionData,
+} from '../../../lib/assistantIdentity';
 import { getNodeFailureReason, isNodeFailureStatus } from '../../../lib/nodeFailureReason';
 import { shouldHydrateAgentRunHover } from '../../../lib/agentRunHoverHydrationPolicy';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../../@/components/ui/hover-card';
@@ -233,9 +237,10 @@ export const GraphAssistantNode = memo(({
   const resolvedHoverHydrationEnabled = shouldHydrateAgentRunHover(entity, runStatus);
   const isFullDetail = detailLevel === 'full';
   const isMinimalDetail = detailLevel === 'minimal';
-  const assistantIdentityLabel = getAssistantIdentityLabel({
+  const { label: assistantIdentityLabel, reasoningEffort: assistantReasoningEffortLabel } = getAssistantIdentityParts({
     llmModel: entity.message?.llmModel,
     llmProvider: entity.message?.llmProvider,
+    reasoningEffort: getAssistantReasoningEffortFromExecutionData(entity.message?.execution_data),
   });
   const assistantIconKind = getAssistantProviderIconKind({
     llmModel: entity.message?.llmModel,
@@ -285,6 +290,9 @@ export const GraphAssistantNode = memo(({
           <div className="min-w-0">
             <div className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-500 dark:text-zinc-400">
               {assistantIdentityLabel}
+              {assistantReasoningEffortLabel && (
+                <span className="ml-1 normal-case">{assistantReasoningEffortLabel}</span>
+              )}
             </div>
           </div>
         </div>

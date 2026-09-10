@@ -12,7 +12,7 @@ import { agentClient, GitMergePreview, type TargetBranchCheckoutStatus } from '.
 import { api } from '../../lib/api';
 import { getAccessToken } from '../../lib/authSession';
 import { cn } from '../../lib/utils';
-import { isLoginProfileActive } from '../../lib/loginProfiles';
+import { resolveLoginProfileSelection } from '../../lib/loginProfiles';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../../lib/graphInteractionGate';
 import { buildMergeAgentArgs, buildMergeAgentPrompt, buildMergeAgentUserContent } from '../../lib/mergeAgentNode';
 import { persistMergeCommitGraph } from '../../lib/mergeCommitGraph';
@@ -723,17 +723,14 @@ export function SetupStage() {
       const selectedProvider = selectedAgent.type === 'codex' || selectedAgent.type === 'claude'
         ? selectedAgent.type
         : null;
-      const compatibleLoginProfiles = selectedProvider
-        ? loginProfiles.filter((profile) => profile.provider === selectedProvider)
-        : [];
-      const selectedLoginProfileId = selectedProvider
-        ? compatibleLoginProfiles.find((profile) => profile.isDefault)?.id
-          ?? compatibleLoginProfiles[0]?.id
-          ?? null
-        : null;
-      const selectedLoginProfile = compatibleLoginProfiles.find((profile) => profile.id === selectedLoginProfileId) ?? null;
-      if (selectedProvider && (!selectedLoginProfile || !isLoginProfileActive(selectedLoginProfile))) {
-        throw new Error(`${selectedAgent.name} needs a ready active login profile before it can run.`);
+      const loginProfileSelection = resolveLoginProfileSelection({
+        profiles: loginProfiles,
+        provider: selectedProvider,
+        agentName: selectedAgent.name,
+      });
+      const selectedLoginProfile = loginProfileSelection.selectedProfile;
+      if (!loginProfileSelection.isReady) {
+        throw new Error(loginProfileSelection.failureMessage ?? `${selectedAgent.name} needs a ready login profile before it can run.`);
       }
       await Promise.all([
         agentClient.setMcpAuthToken(authToken),

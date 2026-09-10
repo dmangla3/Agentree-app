@@ -95,7 +95,15 @@ describe('ChatAssistantCard identity', () => {
   it('uses the model identity for the agent chip and shows the generated AI label separately', () => {
     render(
       <ChatAssistantCard
-        entity={makeAssistantEntity()}
+        entity={makeAssistantEntity({
+          message: {
+            execution_data: {
+              meta: {
+                provider_reasoning_effort: 'high',
+              },
+            },
+          } as any,
+        })}
         isFocused={false}
         isSelected={false}
         layout="chat"
@@ -106,7 +114,9 @@ describe('ChatAssistantCard identity', () => {
     );
 
     expect(screen.getByText('GPT 5.5')).toBeTruthy();
-    expect(screen.getByText('Generated AI topic label')).toBeTruthy();
+    // The reasoning effort renders in its own span that escapes the chip's
+    // uppercase styling, so it displays as "High" rather than "HIGH".
+    expect(screen.getByText('High').className).toContain('normal-case');
   });
 
   it('puts the persisted failure reason on the failed status tooltip only', () => {
@@ -189,7 +199,7 @@ describe('ChatAssistantCard identity', () => {
     expect(screen.getByText('Checking implementation details.')).toBeTruthy();
     expect(screen.getByText('User Steer')).toBeTruthy();
     expect(screen.getByText('stop')).toBeTruthy();
-    expect(screen.getByText('npm test')).toBeTruthy();
+    expect(screen.getByText('Run npm test')).toBeTruthy();
     expect(screen.getAllByText('Final answer only.')).toHaveLength(1);
   });
 
@@ -291,7 +301,7 @@ describe('ChatAssistantCard identity', () => {
     );
 
     expect(screen.getByText('Live progress update.')).toBeTruthy();
-    expect(screen.getByText('npm test')).toBeTruthy();
+    expect(screen.getByText('Run npm test')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /work logs/i })).toBeNull();
   });
 
@@ -357,7 +367,7 @@ describe('ChatAssistantCard identity', () => {
     expect(workLogs.compareDocumentPosition(runningCue) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByText(/Actions/i)).toBeNull();
     expect(screen.getByText('Inspecting the runtime.')).toBeTruthy();
-    expect(screen.getByText('npm test')).toBeTruthy();
+    expect(screen.getByText('Run npm test')).toBeTruthy();
     expect(screen.getByText('Retrying after transient failure.')).toBeTruthy();
   });
 

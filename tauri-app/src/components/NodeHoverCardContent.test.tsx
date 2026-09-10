@@ -215,7 +215,7 @@ describe('NodeHoverCardContent', () => {
       content: 'Public assistant response',
       aiLabel: 'Review agent',
       llmProvider: 'openai',
-      llmModel: 'openai/gpt-5.5-high',
+      llmModel: 'openai/gpt-5.5',
       base_commit_sha: '1111111111111111111111111111111111111111',
       output_commit_sha: '2222222222222222222222222222222222222222',
       tags: ['review', 'public'],
@@ -233,6 +233,7 @@ describe('NodeHoverCardContent', () => {
         meta: {
           commit_count: 1,
           files_changed_count: 2,
+          provider_reasoning_effort: 'high',
           total_additions: 14,
           total_deletions: 3,
         },
@@ -279,13 +280,16 @@ describe('NodeHoverCardContent', () => {
       content: 'Public assistant response with `inline code`',
       aiLabel: 'Review agent',
       llmProvider: 'openai',
-      llmModel: 'openai/gpt-5.5-high',
+      llmModel: 'openai/gpt-5.5',
       promptTokens: 1200,
       completionTokens: 345,
       totalTokens: 1545,
       tags: ['review', 'public'],
       status: 'completed' as any,
       execution_data: {
+        meta: {
+          provider_reasoning_effort: 'high',
+        },
         usage: {
           input_tokens: 1200,
           output_tokens: 345,
@@ -327,7 +331,8 @@ describe('NodeHoverCardContent', () => {
       </AgentreeSurfaceProvider>
     );
 
-    expect(screen.getByText('GPT 5.5 High')).toBeTruthy();
+    expect(screen.getByText('GPT 5.5')).toBeTruthy();
+    expect(screen.getByText('High')).toBeTruthy();
     expect(screen.getByText(/Completed/)).toBeTruthy();
     expect(screen.getByText('Public assistant response with')).toBeTruthy();
     expect(screen.getByText('inline code')).toBeTruthy();
@@ -372,7 +377,7 @@ describe('NodeHoverCardContent', () => {
     expect(shell.className).not.toContain('linear-gradient(180deg,rgba');
   });
 
-  it('shows orchestration child-run summary for orchestrator hover cards', () => {
+  it('shows orchestration-run summary for orchestrator hover cards', () => {
     const orchestratorMessage = makeMessage({
       id: 'orchestrator-1',
       role: 'assistant',
@@ -429,13 +434,13 @@ describe('NodeHoverCardContent', () => {
       orchestrationSummary: {
         controllerMessageId: orchestratorMessage.id,
         controlledEntityIds: [runningChild.entityId, completedChild.entityId, failedChild.entityId],
-        childAssistantEntityIds: [runningChild.entityId, completedChild.entityId, failedChild.entityId],
-        totalChildRuns: 3,
-        activeChildRuns: 1,
-        terminalChildRuns: 2,
-        completedChildRuns: 1,
-        failedChildRuns: 1,
-        cancelledChildRuns: 0,
+        orchestrationRunAssistantEntityIds: [runningChild.entityId, completedChild.entityId, failedChild.entityId],
+        totalOrchestrationRuns: 3,
+        activeOrchestrationRuns: 1,
+        terminalOrchestrationRuns: 2,
+        completedOrchestrationRuns: 1,
+        failedOrchestrationRuns: 1,
+        cancelledOrchestrationRuns: 0,
       },
     });
     const projection = makeProjection([
@@ -455,7 +460,7 @@ describe('NodeHoverCardContent', () => {
 
     expect(screen.getByTestId('orchestration-hover-summary')).toBeTruthy();
     expect(screen.getByText('Orchestration')).toBeTruthy();
-    expect(screen.getByText('3 controlled runs')).toBeTruthy();
+    expect(screen.getByText('3 orchestration runs')).toBeTruthy();
     expect(screen.getByText('Compare implementation options')).toBeTruthy();
     expect(screen.getByText('Write migration notes')).toBeTruthy();
     expect(screen.getByText('Run verification')).toBeTruthy();

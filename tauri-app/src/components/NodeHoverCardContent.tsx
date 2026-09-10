@@ -36,9 +36,9 @@ const isNearHoverPreviewBottom = (element: HTMLElement) => (
   element.scrollHeight - element.scrollTop - element.clientHeight <= HOVER_PREVIEW_BOTTOM_PIN_THRESHOLD_PX
 );
 
-const ORCHESTRATION_CHILD_PREVIEW_LIMIT = 4;
+const ORCHESTRATION_RUN_PREVIEW_LIMIT = 4;
 
-const getChildRunStatusLabel = (entity: ProjectedNodeEntity): string => {
+const getOrchestrationRunStatusLabel = (entity: ProjectedNodeEntity): string => {
   if (entity.status === 'completed') return 'Completed';
   if (entity.status === 'failed') return 'Failed';
   if (entity.status === 'cancelled') return 'Cancelled';
@@ -47,7 +47,7 @@ const getChildRunStatusLabel = (entity: ProjectedNodeEntity): string => {
   return 'Unknown';
 };
 
-const getChildRunStatusClassName = (entity: ProjectedNodeEntity): string => {
+const getOrchestrationRunStatusClassName = (entity: ProjectedNodeEntity): string => {
   if (entity.status === 'completed') {
     return 'border-emerald-500/24 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
   }
@@ -72,11 +72,11 @@ function OrchestrationSummaryPanel({
 }) {
   const summary = entity.nodeKind === 'orchestrator' ? entity.orchestrationSummary ?? null : null;
   if (!summary) return null;
-  const childEntities = summary.childAssistantEntityIds
+  const runEntities = summary.orchestrationRunAssistantEntityIds
     .map((entityId) => projection.entitiesById.get(entityId))
-    .filter((child): child is ProjectedNodeEntity => Boolean(child))
-    .slice(0, ORCHESTRATION_CHILD_PREVIEW_LIMIT);
-  const hiddenChildCount = Math.max(0, summary.totalChildRuns - childEntities.length);
+    .filter((run): run is ProjectedNodeEntity => Boolean(run))
+    .slice(0, ORCHESTRATION_RUN_PREVIEW_LIMIT);
+  const hiddenRunCount = Math.max(0, summary.totalOrchestrationRuns - runEntities.length);
 
   return (
     <section
@@ -92,17 +92,17 @@ function OrchestrationSummaryPanel({
           <div className="min-w-0">
             <div className="truncate text-[12px] font-semibold text-foreground">Orchestration</div>
             <div className="truncate text-[11px] text-muted-foreground">
-              {summary.totalChildRuns} controlled {summary.totalChildRuns === 1 ? 'run' : 'runs'}
+              {summary.totalOrchestrationRuns} orchestration {summary.totalOrchestrationRuns === 1 ? 'run' : 'runs'}
             </div>
           </div>
         </div>
         <div className="grid shrink-0 grid-cols-5 gap-1 text-center tabular-nums">
           {[
-            ['Active', summary.activeChildRuns],
-            ['Done', summary.completedChildRuns],
-            ['Failed', summary.failedChildRuns],
-            ['Cancelled', summary.cancelledChildRuns],
-            ['Total', summary.totalChildRuns],
+            ['Active', summary.activeOrchestrationRuns],
+            ['Done', summary.completedOrchestrationRuns],
+            ['Failed', summary.failedOrchestrationRuns],
+            ['Cancelled', summary.cancelledOrchestrationRuns],
+            ['Total', summary.totalOrchestrationRuns],
           ].map(([label, count]) => (
             <div key={label} className="min-w-10 rounded-lg bg-[hsl(var(--app-bg-muted)/0.46)] px-1.5 py-1">
               <div className="text-[11px] font-semibold leading-none text-foreground">{count}</div>
@@ -112,19 +112,19 @@ function OrchestrationSummaryPanel({
         </div>
       </div>
 
-      {childEntities.length > 0 ? (
+      {runEntities.length > 0 ? (
         <div className="mt-2 space-y-1">
-          {childEntities.map((child) => (
-            <div key={child.entityId} className="flex min-w-0 items-center justify-between gap-2 text-[11px]">
-              <span className="min-w-0 truncate text-muted-foreground">{child.preview || child.shortLabel}</span>
-              <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] leading-none ${getChildRunStatusClassName(child)}`}>
-                {getChildRunStatusLabel(child)}
+          {runEntities.map((run) => (
+            <div key={run.entityId} className="flex min-w-0 items-center justify-between gap-2 text-[11px]">
+              <span className="min-w-0 truncate text-muted-foreground">{run.preview || run.shortLabel}</span>
+              <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] leading-none ${getOrchestrationRunStatusClassName(run)}`}>
+                {getOrchestrationRunStatusLabel(run)}
               </span>
             </div>
           ))}
-          {hiddenChildCount > 0 ? (
+          {hiddenRunCount > 0 ? (
             <div className="text-[10px] text-muted-foreground">
-              +{hiddenChildCount} more controlled {hiddenChildCount === 1 ? 'run' : 'runs'}
+              +{hiddenRunCount} more orchestration {hiddenRunCount === 1 ? 'run' : 'runs'}
             </div>
           ) : null}
         </div>

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 const HELPER_ARG: &str = "--agentree-codex-adapter";
+const AI_LABEL_PROMPT: &str = include_str!("../scripts/ai-label-prompt.txt");
 
 #[derive(Debug, Clone)]
 struct AdapterArgs {
@@ -71,6 +72,7 @@ struct JsonRpcNotification {
 struct StructuredOutput {
     final_response: Option<String>,
     commit_subject: Option<String>,
+    commit_body: Option<String>,
     ai_label: Option<String>,
     thread_title: Option<String>,
 }
@@ -411,6 +413,7 @@ fn run_turn(args: AdapterArgs) -> Result<i32, AdapterError> {
             "provider_branch_target_node_id": args.target_node_id,
             "provider_turn_id": args.provider_turn_id,
             "provider_model": args.model,
+            "provider_reasoning_effort": args.reasoning_effort,
             "provider_run_mode": args.permission_mode,
             "provider_thread_resume_enabled": thread_strategy == "resume",
         }
@@ -1316,6 +1319,9 @@ fn handle_item_completed(state: &mut TurnState, payload: &JsonValue) {
     let item_type = item.get("type").and_then(JsonValue::as_str);
     let item_id = get_string(item, "id");
     if item_type == Some("agentMessage") {
+        if let Some(id) = item_id.as_deref() {
+            state.active_message_item_id = Some(id.to_string());
+        }
         let text = item
             .get("text")
             .and_then(JsonValue::as_str)
@@ -1402,6 +1408,9 @@ fn handle_turn_completed(
     if let Some(value) = state.structured_output.commit_subject.clone() {
         structured_meta.insert("commit_subject".to_string(), json!(value));
     }
+    if let Some(value) = state.structured_output.commit_body.clone() {
+        structured_meta.insert("commit_body".to_string(), json!(value));
+    }
     if let Some(value) = state.structured_output.ai_label.clone() {
         structured_meta.insert("ai_label".to_string(), json!(value));
     }
@@ -1462,6 +1471,7 @@ fn handle_turn_completed(
         "final_content": final_content,
         "provider_thread_id": state.active_thread_id,
         "provider_turn_id": state.active_turn_id,
+        "provider_item_id": state.active_message_item_id,
         "usage": state.last_usage,
         "timestamp": now_ms(),
     }));
@@ -1771,6 +1781,7 @@ fn structured_output_from_text(value: &str) -> StructuredOutput {
     StructuredOutput {
         final_response: normalize_final_response(parsed.get("final_response")),
         commit_subject: normalize_short_field(parsed.get("commit_subject"), 72),
+        commit_body: normalize_commit_body_field(parsed.get("commit_body")),
         ai_label: normalize_short_field(parsed.get("ai_label"), 80),
         thread_title: normalize_short_field(parsed.get("thread_title"), 80),
     }
@@ -1782,6 +1793,9 @@ fn merge_structured_output(current: &mut StructuredOutput, next: StructuredOutpu
     }
     if next.commit_subject.is_some() {
         current.commit_subject = next.commit_subject;
+    }
+    if next.commit_body.is_some() {
+        current.commit_body = next.commit_body;
     }
     if next.ai_label.is_some() {
         current.ai_label = next.ai_label;
@@ -1813,6 +1827,54 @@ fn normalize_short_field(value: Option<&JsonValue>, limit: usize) -> Option<Stri
     } else {
         Some(normalized.chars().take(limit).collect())
     }
+}
+
+fn normalize_commit_body_field(value: Option<&JsonValue>) -> Option<String> {
+    let raw = value?.as_str()?;
+    let without_code_fences = strip_markdown_fences(raw);
+    let normalized = without_code_fences
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .split("\n\n")
+        .map(|paragraph| paragraph.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|paragraph| !paragraph.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .trim_matches(|ch: char| matches!(ch, '"' | '\'' | '`' | ' '))
+        .to_string();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(
+            normalized
+                .chars()
+                .take(1200)
+                .collect::<String>()
+                .trim()
+                .to_string(),
+        )
+    }
+}
+
+fn strip_markdown_fences(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut in_fence = false;
+    for line in value.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            output.push('\n');
+            continue;
+        }
+        if !in_fence {
+            output.push_str(line);
+            output.push('\n');
+        }
+    }
+    output
 }
 
 fn json_string_field_prefix(buffer: &str, field_name: &str) -> Option<String> {
@@ -1857,12 +1919,28 @@ fn final_result_schema() -> JsonValue {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["final_response", "commit_subject", "ai_label", "thread_title"],
+        "required": ["final_response", "commit_subject", "commit_body", "ai_label", "thread_title"],
         "properties": {
-            "final_response": { "type": "string" },
-            "commit_subject": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
-            "ai_label": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
-            "thread_title": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+            "final_response": {
+                "type": "string",
+                "description": "User-visible final assistant response. Keep the normal summary, verification, and caveats here."
+            },
+            "commit_subject": {
+                "anyOf": [{ "type": "string" }, { "type": "null" }],
+                "description": "Git commit subject for the files changed, or null if no files changed. Use Conventional Commits format: <type>(optional scope): <summary>. Choose an accurate type such as feat, fix, refactor, test, docs, chore, perf, build, or ci. Keep it under 72 characters, specific, human readable, and focused on user-visible behavior or engineering intent instead of listing files. Avoid vague subjects like update code, fix bug, or changes. No trailing period."
+            },
+            "commit_body": {
+                "anyOf": [{ "type": "string" }, { "type": "null" }],
+                "description": "Optional git commit body for the files changed. Use null when no files changed or the change is trivial. For non-trivial changes, write 1-3 short paragraphs explaining why the change was made, important tradeoffs, and any relevant files/functions changed. Do not repeat the subject. Keep it factual, specific, and readable."
+            },
+            "ai_label": {
+                "anyOf": [{ "type": "string" }, { "type": "null" }],
+                "description": AI_LABEL_PROMPT.trim()
+            },
+            "thread_title": {
+                "anyOf": [{ "type": "string" }, { "type": "null" }],
+                "description": "Concise 3-7 word title for the Agentree thread, based only on the first user request. Use null unless Agentree explicitly says this is the first user message in a new thread."
+            },
         },
     })
 }
@@ -2077,6 +2155,38 @@ mod tests {
     fn extracts_streaming_final_response_prefix() {
         let prefix = json_string_field_prefix(r#"{"final_response":"hello\nwor"#, "final_response");
         assert_eq!(prefix.as_deref(), Some("hello\nwor"));
+    }
+
+    #[test]
+    fn structured_output_includes_commit_body() {
+        let output = structured_output_from_text(
+            r#"{"final_response":"Done","commit_subject":"feat: add commit bodies","commit_body":"Explain why.\n\nMention changed functions.","ai_label":null,"thread_title":null}"#,
+        );
+        assert_eq!(
+            output.commit_subject.as_deref(),
+            Some("feat: add commit bodies")
+        );
+        assert_eq!(
+            output.commit_body.as_deref(),
+            Some("Explain why.\n\nMention changed functions.")
+        );
+    }
+
+    #[test]
+    fn final_result_schema_requires_commit_body() {
+        let schema = final_result_schema();
+        let required = schema
+            .get("required")
+            .and_then(JsonValue::as_array)
+            .unwrap();
+        assert!(required
+            .iter()
+            .any(|value| value.as_str() == Some("commit_body")));
+        assert!(schema
+            .pointer("/properties/commit_body/description")
+            .and_then(JsonValue::as_str)
+            .unwrap()
+            .contains("commit body"));
     }
 
     #[test]

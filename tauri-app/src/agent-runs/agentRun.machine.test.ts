@@ -387,6 +387,51 @@ describe('agentRun.machine', () => {
     expect(snapshot.executionData.timeline).toHaveLength(1);
   });
 
+  it('keeps completed provider message items when final content arrives', () => {
+    const snapshot = reduce([
+      {
+        type: 'content',
+        content: 'Initial orchestration note.',
+        appendedText: 'Initial orchestration note.',
+        providerItemId: 'msg-1',
+        streamSeq: 1,
+        timestamp: 10,
+      },
+      {
+        type: 'timeline_event',
+        event: {
+          type: 'tool_use',
+          toolName: 'spawn_agents',
+          toolUseId: 'tool-1',
+          timestamp: 20,
+        },
+      },
+      {
+        type: 'content',
+        content: 'Initial orchestration note.Final status.',
+        appendedText: 'Final status.',
+        providerItemId: 'msg-2',
+        streamSeq: 2,
+        timestamp: 30,
+      },
+      {
+        type: 'content_final',
+        content: 'Final status.',
+        providerItemId: 'msg-2',
+        streamSeq: 3,
+        timestamp: 40,
+      },
+    ]);
+
+    const messageEvents = snapshot.timeline.filter((event: any) => event?.type === 'message');
+    expect(snapshot.content).toBe('Final status.');
+    expect(messageEvents.map((event: any) => event.content)).toEqual([
+      'Initial orchestration note.',
+      'Final status.',
+    ]);
+    expect(messageEvents.map((event: any) => event.provider_item_id)).toEqual(['msg-1', 'msg-2']);
+  });
+
   it('ignores stale content events after a terminal snapshot', () => {
     const snapshot = reduce([
       { type: 'content', content: 'final answer', appendedText: 'final answer', streamSeq: 2, timestamp: 20 },

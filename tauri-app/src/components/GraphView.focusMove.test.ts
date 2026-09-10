@@ -6,6 +6,7 @@ import {
   clampGraphZoom,
   GRAPH_MIN_ZOOM,
   getGraphNodeNavigationIds,
+  getThreadDraftPreviewText,
   resolveDirectionalGraphNavigationTarget,
   resolveFocusedThreadRootId,
   resolveBlockingEmptyThreadRootId,
@@ -601,6 +602,27 @@ describe('resolveBlockingEmptyThreadRootId', () => {
       ]),
       doneThreadRootIds: new Set(['thread-empty']),
     })).toBeNull();
+  });
+
+  it('does not block on empty threads that have meaningful drafts', () => {
+    expect(resolveBlockingEmptyThreadRootId({
+      threadRootIds: ['thread-empty'],
+      messageIdsByThreadRootId: new Map([
+        ['thread-empty', new Set()],
+      ]),
+      doneThreadRootIds: new Set(),
+      draftThreadRootIds: new Set(['thread-empty']),
+    })).toBeNull();
+  });
+});
+
+describe('getThreadDraftPreviewText', () => {
+  it('ignores whitespace-only drafts', () => {
+    expect(getThreadDraftPreviewText(' \n\t  ')).toBeNull();
+  });
+
+  it('trims meaningful draft previews without dropping internal newlines', () => {
+    expect(getThreadDraftPreviewText(' \nFirst line\n\nsecond line\t ')).toBe('First line\n\nsecond line');
   });
 });
 

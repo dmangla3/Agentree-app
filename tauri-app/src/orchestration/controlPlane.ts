@@ -46,10 +46,10 @@ export interface StartOrchestrationRunInput {
   userNodeId?: string;
   assistantNodeId?: string;
   runId?: string;
-  recordChildRequestedEvent?: boolean;
+  recordRunRequestedEvent?: boolean;
 }
 
-export interface RetryOrchestrationChildRunInput extends StartOrchestrationRunInput {
+export interface RetryOrchestrationRunInput extends StartOrchestrationRunInput {
   supersededAssistantNodeId: string;
   retryReason?: string | null;
 }
@@ -111,7 +111,7 @@ export interface StartOrchestrationRunResult {
   startResponse: StartAgentRunResponse;
 }
 
-export interface RetryOrchestrationChildRunResult extends StartOrchestrationRunResult {
+export interface RetryOrchestrationRunResult extends StartOrchestrationRunResult {
   supersededAssistantNodeId: string;
 }
 
@@ -128,7 +128,7 @@ export interface CompleteSatisfiedWaitResult {
 export interface CompleteOrchestrationInput {
   orchestratorRunId: string;
   orchestratorNodeId: string;
-  terminalChildAssistantNodeIds: string[];
+  terminalOrchestrationRunAssistantNodeIds: string[];
 }
 
 export interface CompleteOrchestrationResult {
@@ -165,8 +165,8 @@ export async function completeOrchestration(
     input.orchestratorNodeId,
     'orchestration:completed',
     {
-      terminalChildAssistantNodeIds: input.terminalChildAssistantNodeIds,
-      terminalChildRunCount: input.terminalChildAssistantNodeIds.length,
+      terminalOrchestrationRunAssistantNodeIds: input.terminalOrchestrationRunAssistantNodeIds,
+      terminalOrchestrationRunCount: input.terminalOrchestrationRunAssistantNodeIds.length,
     },
   );
 
@@ -176,7 +176,7 @@ export async function completeOrchestration(
 export interface CancelOrchestrationInput {
   orchestratorRunId: string;
   orchestratorNodeId: string;
-  activeControlledAssistantNodeIds: string[];
+  activeOrchestrationRunAssistantNodeIds: string[];
   reason?: string | null;
 }
 
@@ -200,13 +200,13 @@ export async function cancelOrchestration(
     'orchestration:cancel_requested',
     {
       reason: input.reason ?? 'cancelled',
-      activeControlledAssistantNodeIds: input.activeControlledAssistantNodeIds,
+      activeOrchestrationRunAssistantNodeIds: input.activeOrchestrationRunAssistantNodeIds,
     },
   );
 
   const stopTargets = [
     input.orchestratorNodeId,
-    ...input.activeControlledAssistantNodeIds,
+    ...input.activeOrchestrationRunAssistantNodeIds,
   ].filter((nodeId, index, all) => nodeId && all.indexOf(nodeId) === index);
 
   for (const nodeId of stopTargets) {
@@ -276,6 +276,9 @@ export async function startOrchestratorRun(
     loginProfileId: input.loginProfileId ?? null,
     orchestration: {
       nodeKind: 'orchestrator',
+      orchestrationTargetNodeId: input.parentNodeId,
+      orchestrationContextParentNodeId: input.contextParentNodeId,
+      orchestrationBaseNodeId: input.baseNodeId,
     },
     now,
     userNodeId,
@@ -355,10 +358,10 @@ export async function startOrchestratorRun(
   };
 }
 
-export async function retryOrchestrationChildRun(
-  input: RetryOrchestrationChildRunInput,
+export async function retryOrchestrationRun(
+  input: RetryOrchestrationRunInput,
   deps: StartOrchestrationRunDeps,
-): Promise<RetryOrchestrationChildRunResult> {
+): Promise<RetryOrchestrationRunResult> {
   await deps.recordOrchestrationEvent(
     input.orchestratorRunId,
     input.orchestratorNodeId,
@@ -370,12 +373,12 @@ export async function retryOrchestrationChildRun(
     },
   );
 
-  const replacement = await startOrchestrationChildRun(input, deps);
+  const replacement = await startOrchestrationRun(input, deps);
 
   await deps.recordOrchestrationEvent(
     input.orchestratorRunId,
     input.orchestratorNodeId,
-    'orchestration:child_superseded',
+    'orchestration:run_superseded',
     {
       decisionId: input.decisionId,
       supersededAssistantNodeId: input.supersededAssistantNodeId,
@@ -391,7 +394,7 @@ export async function retryOrchestrationChildRun(
   };
 }
 
-export async function startOrchestrationChildRun(
+export async function startOrchestrationRun(
   input: StartOrchestrationRunInput,
   deps: StartOrchestrationRunDeps,
 ): Promise<StartOrchestrationRunResult> {
@@ -442,26 +445,28 @@ export async function startOrchestrationChildRun(
     assistantNodeId,
   });
 
-  deps.seedAgentRun?.(pair.userNode as AgentRunProjectedMessage);
-  deps.seedAgentRun?.(pair.assistantNode as AgentRunProjectedMessage);
-  deps.dispatchAgentRun?.(pair.assistantNode.id, { type: 'status', status: 'initializing' });
-  deps.dispatchAgentRun?.(pair.assistantNode.id, { type: 'setup_progress', progress: 'Initializing agent...' });
-
-  if (input.recordChildRequestedEvent !== false) {
+  if (input.recordRunRequestedEvent !== false) {
     await deps.recordOrchestrationEvent(
       input.orchestratorRunId,
       input.orchestratorNodeId,
-      'orchestration:child_requested',
+      'orchestration:run_requested',
       {
         decisionId: input.decisionId,
-        childUserNodeId: pair.userNode.id,
-        childAssistantNodeId: pair.assistantNode.id,
-        childRunId: runId,
+        runUserNodeId: pair.userNode.id,
+        runAssistantNodeId: pair.assistantNode.id,
+        agentRunId: runId,
         parentNodeId: input.parentNodeId,
+        contextParentNodeId: input.contextParentNodeId,
+        baseNodeId: input.baseNodeId,
         orchestrationTemplateId: input.orchestrationTemplateId ?? null,
       },
     );
   }
+
+  deps.seedAgentRun?.(pair.userNode as AgentRunProjectedMessage);
+  deps.seedAgentRun?.(pair.assistantNode as AgentRunProjectedMessage);
+  deps.dispatchAgentRun?.(pair.assistantNode.id, { type: 'status', status: 'initializing' });
+  deps.dispatchAgentRun?.(pair.assistantNode.id, { type: 'setup_progress', progress: 'Initializing agent...' });
 
   await Promise.all([
     deps.persistLocalNode(input.workspaceId, pair.userNode.id, pair.userNode),
@@ -482,7 +487,7 @@ export async function startOrchestrationChildRun(
       ...((pair.assistantNode.execution_data?.meta ?? {}) as Record<string, unknown>),
       base_commit_sha: input.baseCommitSha,
       ...launchContext.meta,
-      child_run_id: runId,
+      agent_run_id: runId,
       ...(input.agentCliArgs ? { agent_cli_args: input.agentCliArgs } : {}),
       ...(input.agentPromptFlag ? { agent_prompt_flag: input.agentPromptFlag } : {}),
       ...(input.agentName ? { agent_name: input.agentName } : {}),
@@ -523,12 +528,15 @@ export async function startOrchestrationChildRun(
   await deps.recordOrchestrationEvent(
     input.orchestratorRunId,
     input.orchestratorNodeId,
-    'orchestration:child_started',
+    'orchestration:run_started',
     {
       decisionId: input.decisionId,
-      childUserNodeId: pair.userNode.id,
-      childAssistantNodeId: assistantNode.id,
-      childRunId: runId,
+      runUserNodeId: pair.userNode.id,
+      runAssistantNodeId: assistantNode.id,
+      agentRunId: runId,
+      parentNodeId: input.parentNodeId,
+      contextParentNodeId: input.contextParentNodeId,
+      baseNodeId: input.baseNodeId,
     },
   );
 

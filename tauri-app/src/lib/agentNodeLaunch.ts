@@ -2,16 +2,19 @@ import { AGENT_STATUS } from '@shared/agentStatus';
 import type { StartAgentRunIntent } from './agentClient';
 import type { ComposerContextManifest } from './composerContext';
 import {
-  applyComposerPermissionArgs,
   DEFAULT_COMPOSER_PERMISSION_MODE,
   type ComposerPermissionMode,
 } from './composerPermissions';
+import { buildAgentRuntimeArgs } from './agentRuntimeArgs';
 import type { Message } from '../stores/workspaceStore';
 
 export interface OrchestrationLaunchMetadata {
   controlledByNodeId?: string | null;
   orchestrationDecisionId?: string | null;
   orchestrationTemplateId?: string | null;
+  orchestrationTargetNodeId?: string | null;
+  orchestrationContextParentNodeId?: string | null;
+  orchestrationBaseNodeId?: string | null;
   nodeKind?: 'normal' | 'orchestrator' | string;
 }
 
@@ -66,6 +69,9 @@ export const buildAgentNodeExecutionMeta = (
       ...(orchestration.controlledByNodeId ? { controlled_by_node_id: orchestration.controlledByNodeId } : {}),
       ...(orchestration.orchestrationDecisionId ? { orchestration_decision_id: orchestration.orchestrationDecisionId } : {}),
       ...(orchestration.orchestrationTemplateId ? { orchestration_template_id: orchestration.orchestrationTemplateId } : {}),
+      ...(orchestration.orchestrationTargetNodeId ? { orchestration_target_node_id: orchestration.orchestrationTargetNodeId } : {}),
+      ...(orchestration.orchestrationContextParentNodeId ? { orchestration_context_parent_node_id: orchestration.orchestrationContextParentNodeId } : {}),
+      ...(orchestration.orchestrationBaseNodeId ? { orchestration_base_node_id: orchestration.orchestrationBaseNodeId } : {}),
     } : {}),
     ...(input.threadOriginId ? { thread_origin_id: input.threadOriginId } : {}),
     ...(input.llmModel ? { provider_model: input.llmModel } : {}),
@@ -152,16 +158,15 @@ export function buildAgentNodeArgs(input: {
   promptFlag?: string | null;
   prompt: string;
 }): string[] {
-  const args = String(input.cliArgs || '').split(/\s+/).filter(Boolean);
-  const argsWithPermissions = applyComposerPermissionArgs(
-    args,
-    input.agentType,
-    input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE,
-  );
-  if (input.agentType === 'codex' || !input.promptFlag) {
-    return [...argsWithPermissions, ...(input.providerInternalArgs ?? []), input.prompt];
-  }
-  return [...argsWithPermissions, ...(input.providerInternalArgs ?? []), input.promptFlag, input.prompt];
+  return buildAgentRuntimeArgs({
+    agentType: input.agentType,
+    cliArgs: input.cliArgs,
+    promptFlag: input.promptFlag,
+    prompt: input.prompt,
+    permissionMode: input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE,
+    providerInternalArgs: input.providerInternalArgs,
+    createClaudeSessionId: () => crypto.randomUUID(),
+  }).args;
 }
 
 export function buildAgentNodeStartIntent(input: {

@@ -8,6 +8,7 @@ import { recordPerfEvent } from '../../lib/perfRecorder';
 import { recordFundamentalCounter } from '../../perf/fundamentalCounters';
 import {
     createMessageHeightKey,
+    buildOrchestrationGraphModel,
     mapMessagesToGraphElements,
     getLayoutedElements,
     getLaneLayoutedElements,
@@ -761,8 +762,40 @@ function applyVisualProperties(
     let reusedEdgeCount = 0;
 
     const updatedNodes = cachedNodes.map(node => {
-        // Synthetic containers do not have message/entity visuals to refresh.
-        if (node.type === 'turn_group_hull' || node.type === 'orchestration_hull' || node.type === 'orchestration_node') return node;
+        if (node.type === 'turn_group_hull') return node;
+
+        if (node.type === 'orchestration_hull' || node.type === 'orchestration_node') {
+            const controllerMessageId = typeof node.data?.controllerMessageId === 'string'
+                ? node.data.controllerMessageId
+                : null;
+            const latestControllerEntity = controllerMessageId
+                ? projection.entitiesByMessageId.get(controllerMessageId)
+                : undefined;
+            const orchestrationModel = latestControllerEntity
+                ? buildOrchestrationGraphModel(latestControllerEntity, projection, messageMap)
+                : null;
+            if (!orchestrationModel) return node;
+            return {
+                ...node,
+                data: {
+                    ...node.data,
+                    label: orchestrationModel.label,
+                    sortTs: orchestrationModel.controllerEntity.sortTs,
+                    totalOrchestrationRuns: orchestrationModel.totalOrchestrationRuns,
+                    activeOrchestrationRuns: orchestrationModel.activeOrchestrationRuns,
+                    failedOrchestrationRuns: orchestrationModel.failedOrchestrationRuns,
+                    completedOrchestrationRuns: orchestrationModel.completedOrchestrationRuns,
+                    cancelledOrchestrationRuns: orchestrationModel.cancelledOrchestrationRuns,
+                    controllerEntity: orchestrationModel.controllerEntity,
+                    projection: orchestrationModel.projection,
+                    ...(node.type === 'orchestration_node' ? {
+                        miniChildren: orchestrationModel.miniChildren,
+                        miniAnchors: orchestrationModel.miniAnchors,
+                        miniEdges: orchestrationModel.miniEdges,
+                    } : {}),
+                },
+            };
+        }
 
         const data = node.data;
         const focusId = data.entity?.focusMessageId ?? data.entity?.messageId ?? node.id;

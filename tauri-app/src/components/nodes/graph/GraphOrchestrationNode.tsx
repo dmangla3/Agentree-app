@@ -3,10 +3,15 @@ import { Handle, Position } from '@xyflow/react';
 import { ChevronRight, Workflow } from 'lucide-react';
 import { isActiveAgentStatus, isFailureAgentStatus, type AgentStatus } from '@shared/agentStatus';
 import { cn } from '../../../lib/utils';
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../../@/components/ui/hover-card';
-import { NodeHoverCardContent } from '../../NodeHoverCardContent';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../../../domain/workspaceProjection';
 import { GraphNodeHoverCardShell } from './GraphNodeWrapper';
+import { GraphNodeHoverCardContent } from './GraphNodeHoverCardContent';
+import { useRunStatusStore } from '../../../stores/runStatusStore';
+import { shouldHydrateAgentRunHover } from '../../../lib/agentRunHoverHydrationPolicy';
+import {
+  getOrchestrationMiniGridPosition,
+  getOrchestrationMiniLayoutPositions,
+} from '../../../lib/orchestrationMiniLayout';
 
 interface OrchestrationMiniChild {
   id: string;
@@ -20,16 +25,21 @@ interface OrchestrationMiniEdge {
   targetId: string;
 }
 
+interface OrchestrationMiniAnchor {
+  id: string;
+}
+
 interface GraphOrchestrationNodeProps {
   data: {
     controllerMessageId: string;
     label?: string;
-    totalChildRuns?: number;
-    activeChildRuns?: number;
-    failedChildRuns?: number;
-    completedChildRuns?: number;
-    cancelledChildRuns?: number;
+    totalOrchestrationRuns?: number;
+    activeOrchestrationRuns?: number;
+    failedOrchestrationRuns?: number;
+    completedOrchestrationRuns?: number;
+    cancelledOrchestrationRuns?: number;
     miniChildren?: OrchestrationMiniChild[];
+    miniAnchors?: OrchestrationMiniAnchor[];
     miniEdges?: OrchestrationMiniEdge[];
     controllerEntity?: ProjectedNodeEntity;
     projection?: WorkspaceProjection;
@@ -68,97 +78,111 @@ const getEdgeToneClassName = (
   return 'agentree-orchestration-edge-muted';
 };
 
-const getDotPosition = (index: number, count: number): { x: number; y: number } => {
-  if (count <= 1) return { x: 50, y: 50 };
-  const columns = Math.min(4, Math.ceil(Math.sqrt(count)));
-  const rows = Math.ceil(count / columns);
-  const col = index % columns;
-  const row = Math.floor(index / columns);
-  const x = columns === 1 ? 50 : 18 + (col * 64) / Math.max(1, columns - 1);
-  const y = rows === 1 ? 50 : 24 + (row * 52) / Math.max(1, rows - 1);
-  return { x, y };
-};
+function OrchestrationMiniChildDot({
+  child,
+  index,
+  position,
+  projection,
+  onHoverOpenChange,
+}: {
+  child: OrchestrationMiniChild;
+  index: number;
+  position: { x: number; y: number };
+  projection?: WorkspaceProjection;
+  onHoverOpenChange: (childId: string, open: boolean) => void;
+}) {
+  const label = `${child.label}${child.status ? ` (${child.status})` : ''}`;
+  const isActive = isActiveAgentStatus(child.status);
+  const nodeId = child.entity?.focusMessageId ?? child.entity?.messageId ?? null;
+  const runStatus = useRunStatusStore(state => nodeId ? state.byNodeId[nodeId]?.status ?? null : null);
+  const hoverHydrationEnabled = shouldHydrateAgentRunHover(child.entity, runStatus);
+  const dot = (
+    <div
+      className={cn(
+        'absolute flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border text-[8px] font-bold shadow-sm',
+        'transition-[box-shadow,filter,transform] duration-150 hover:scale-[1.08]',
+        isActive ? 'shadow-[0_6px_14px_-8px_rgba(2,132,199,0.72)]' : '',
+        getChildToneClassName(child.status),
+      )}
+      style={{ left: `${position.x}%`, top: `${position.y}%` }}
+      title={child.entity && projection ? undefined : label}
+      aria-label={label}
+      onPointerEnter={(event) => {
+        event.stopPropagation();
+        onHoverOpenChange(child.id, true);
+      }}
+      onPointerLeave={(event) => {
+        event.stopPropagation();
+        onHoverOpenChange(child.id, false);
+      }}
+      onMouseEnter={(event) => {
+        event.stopPropagation();
+        onHoverOpenChange(child.id, true);
+      }}
+      onMouseLeave={(event) => {
+        event.stopPropagation();
+        onHoverOpenChange(child.id, false);
+      }}
+    >
+      {isActive ? (
+        <span
+          className="agentree-orchestration-dot-pulse absolute -inset-1 rounded-full border border-sky-400/48"
+          aria-hidden="true"
+        />
+      ) : null}
+      <span className="relative font-mono tabular-nums">{index + 1}</span>
+    </div>
+  );
+
+  if (!child.entity || !projection) {
+    return <div key={child.id}>{dot}</div>;
+  }
+
+  return (
+    <GraphNodeHoverCardShell
+      key={child.id}
+      nodeId={nodeId ?? undefined}
+      hoverOpenDelay={180}
+      hoverHydrationEnabled={hoverHydrationEnabled}
+      onHoverOpenChange={(open) => onHoverOpenChange(child.id, open)}
+      hoverCardContent={(
+        <GraphNodeHoverCardContent
+          entity={child.entity}
+          fallbackProjection={projection}
+          showOrchestrationSummary={false}
+        />
+      )}
+    >
+      {dot}
+    </GraphNodeHoverCardShell>
+  );
+}
 
 export const GraphOrchestrationNode = memo(({ data }: GraphOrchestrationNodeProps) => {
   const [hoveredMiniChildId, setHoveredMiniChildId] = useState<string | null>(null);
   const miniChildren = data.miniChildren ?? [];
   const controllerNodeId = data.controllerEntity?.focusMessageId ?? data.controllerEntity?.messageId ?? null;
-  const positions = new Map(miniChildren.map((child, index) => [child.id, getDotPosition(index, miniChildren.length)]));
+  const controllerRunStatus = useRunStatusStore(state => controllerNodeId ? state.byNodeId[controllerNodeId]?.status ?? null : null);
+  const controllerHoverHydrationEnabled = shouldHydrateAgentRunHover(data.controllerEntity, controllerRunStatus);
+  const miniLayoutNodes = [...(data.miniAnchors ?? []), ...miniChildren];
+  const positions = getOrchestrationMiniLayoutPositions(miniLayoutNodes, data.miniEdges ?? []);
   const miniChildById = new Map(miniChildren.map((child) => [child.id, child]));
   const renderMiniChildDot = (child: OrchestrationMiniChild, index: number) => {
-    const position = positions.get(child.id) ?? getDotPosition(index, miniChildren.length);
-    const label = `${child.label}${child.status ? ` (${child.status})` : ''}`;
-    const isActive = isActiveAgentStatus(child.status);
-    const dot = (
-      <div
-        className={cn(
-          'absolute flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border text-[8px] font-bold shadow-sm',
-          'transition-[box-shadow,filter,transform] duration-150 hover:scale-[1.08]',
-          isActive ? 'shadow-[0_6px_14px_-8px_rgba(2,132,199,0.72)]' : '',
-          getChildToneClassName(child.status),
-        )}
-        style={{ left: `${position.x}%`, top: `${position.y}%` }}
-        title={child.entity && data.projection ? undefined : label}
-        aria-label={label}
-        onPointerEnter={(event) => {
-          event.stopPropagation();
-          setHoveredMiniChildId(child.id);
-        }}
-        onPointerLeave={(event) => {
-          event.stopPropagation();
-          setHoveredMiniChildId((current) => (current === child.id ? null : current));
-        }}
-        onMouseEnter={(event) => {
-          event.stopPropagation();
-          setHoveredMiniChildId(child.id);
-        }}
-        onMouseLeave={(event) => {
-          event.stopPropagation();
-          setHoveredMiniChildId((current) => (current === child.id ? null : current));
-        }}
-      >
-        {isActive ? (
-          <span
-            className="agentree-orchestration-dot-pulse absolute -inset-1 rounded-full border border-sky-400/48"
-            aria-hidden="true"
-          />
-        ) : null}
-        <span className="relative font-mono tabular-nums">{index + 1}</span>
-      </div>
-    );
-
-    if (!child.entity || !data.projection) {
-      return <div key={child.id}>{dot}</div>;
-    }
-
+    const position = positions.get(child.id) ?? getOrchestrationMiniGridPosition(index, miniChildren.length);
     return (
-      <HoverCard
+      <OrchestrationMiniChildDot
         key={child.id}
-        open={hoveredMiniChildId === child.id}
-        onOpenChange={(open) => setHoveredMiniChildId(open ? child.id : null)}
-        openDelay={180}
-        closeDelay={120}
-      >
-        <HoverCardTrigger asChild>
-          {dot}
-        </HoverCardTrigger>
-        <HoverCardContent
-          side="right"
-          align="center"
-          sideOffset={8}
-          className="z-50 w-auto border-none bg-transparent p-0 shadow-none"
-          onPointerEnter={() => setHoveredMiniChildId(child.id)}
-          onPointerLeave={() => setHoveredMiniChildId((current) => (current === child.id ? null : current))}
-          onMouseEnter={() => setHoveredMiniChildId(child.id)}
-          onMouseLeave={() => setHoveredMiniChildId((current) => (current === child.id ? null : current))}
-        >
-          <NodeHoverCardContent
-            entity={child.entity}
-            projection={data.projection}
-            showOrchestrationSummary={false}
-          />
-        </HoverCardContent>
-      </HoverCard>
+        child={child}
+        index={index}
+        position={position}
+        projection={data.projection}
+        onHoverOpenChange={(childId, open) => {
+          setHoveredMiniChildId((current) => {
+            if (open) return childId;
+            return current === childId ? null : current;
+          });
+        }}
+      />
     );
   };
 
@@ -180,11 +204,11 @@ export const GraphOrchestrationNode = memo(({ data }: GraphOrchestrationNodeProp
           </div>
           <div className="mt-1 grid grid-cols-5 gap-0.5 text-center tabular-nums">
             {[
-              ['Active', data.activeChildRuns ?? 0],
-              ['Done', data.completedChildRuns ?? 0],
-              ['Failed', data.failedChildRuns ?? 0],
-              ['Cancel', data.cancelledChildRuns ?? 0],
-              ['Total', data.totalChildRuns ?? 0],
+              ['Active', data.activeOrchestrationRuns ?? 0],
+              ['Done', data.completedOrchestrationRuns ?? 0],
+              ['Failed', data.failedOrchestrationRuns ?? 0],
+              ['Cancel', data.cancelledOrchestrationRuns ?? 0],
+              ['Total', data.totalOrchestrationRuns ?? 0],
             ].map(([label, count]) => (
               <div key={label} className="min-w-0 rounded bg-[hsl(var(--app-bg-muted)/0.62)] px-0.5 py-0.5">
                 <div className="text-[9px] font-bold leading-none text-foreground">{count}</div>
@@ -276,11 +300,11 @@ export const GraphOrchestrationNode = memo(({ data }: GraphOrchestrationNodeProp
       nodeId={controllerNodeId ?? undefined}
       disabled={Boolean(hoveredMiniChildId)}
       hoverOpenDelay={220}
-      hoverHydrationEnabled
+      hoverHydrationEnabled={controllerHoverHydrationEnabled}
       hoverCardContent={(
-        <NodeHoverCardContent
+        <GraphNodeHoverCardContent
           entity={data.controllerEntity}
-          projection={data.projection}
+          fallbackProjection={data.projection}
         />
       )}
     >

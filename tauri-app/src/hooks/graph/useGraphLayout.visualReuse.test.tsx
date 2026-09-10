@@ -285,7 +285,7 @@ describe('useGraphLayout visual reuse', () => {
     expect(result.current.nodes).toBe(firstNodes);
   });
 
-  it('renders one orchestration hull around the controller turn and all controlled messages', () => {
+  it('renders one expanded orchestration hull that represents the hidden controller around controlled messages', () => {
     const orchestrationMessages = makeOrchestrationMessages();
 
     const { result } = renderHook(() => renderLayout(
@@ -298,10 +298,9 @@ describe('useGraphLayout visual reuse', () => {
     const hulls = result.current.nodes.filter((node) => node.type === 'orchestration_hull');
     expect(hulls).toHaveLength(1);
     expect(result.current.nodes.filter((node) => node.type === 'orchestration_node')).toHaveLength(0);
+    expect(result.current.nodes.find((node) => node.id === 'assistant-orchestrator')?.hidden).toBe(true);
     expect((hulls[0].data as any).controllerMessageId).toBe('assistant-orchestrator');
     expect((hulls[0].data as any).memberIds).toEqual(expect.arrayContaining([
-      'root-user',
-      'assistant-orchestrator',
       'child-user-1',
       'child-assistant-1',
       'child-user-2',
@@ -309,7 +308,39 @@ describe('useGraphLayout visual reuse', () => {
       'child-user-3',
       'child-assistant-3',
     ]));
+    expect((hulls[0].data as any).memberIds).not.toContain('assistant-orchestrator');
     expect((hulls[0].data as any).memberIds).not.toContain('parent-assistant');
+    expect(result.current.edges.some((edge) => edge.source === 'assistant-orchestrator' || edge.target === 'assistant-orchestrator')).toBe(false);
+    expect(result.current.edges.some((edge) => (edge.data as any)?.relationship === 'orchestration-control')).toBe(false);
+  });
+
+  it('reroutes legacy expanded orchestration runs away from the hidden controller', () => {
+    const orchestrationMessages = makeOrchestrationMessages().map((message) => (
+      message.id === 'child-user-1'
+        ? { ...message, parentId: 'assistant-orchestrator' }
+        : message
+    ));
+
+    const { result } = renderHook(() => renderLayout(
+      'assistant-orchestrator',
+      ['parent-user', 'parent-assistant', 'root-user', 'assistant-orchestrator'],
+      orchestrationMessages,
+      'orchestration-hull-legacy-parent',
+    ));
+
+    expect(result.current.nodes.find((node) => node.id === 'assistant-orchestrator')?.hidden).toBe(true);
+    expect(result.current.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: 'root-user',
+        target: 'child-user-1',
+        data: expect.objectContaining({
+          relationship: 'conversation',
+          routedThroughOrchestration: true,
+          orchestrationControllerMessageId: 'assistant-orchestrator',
+        }),
+      }),
+    ]));
+    expect(result.current.edges.some((edge) => edge.source === 'assistant-orchestrator' || edge.target === 'assistant-orchestrator')).toBe(false);
   });
 
   it('renders collapsed orchestration as a graph node with hidden member messages', () => {
@@ -330,25 +361,28 @@ describe('useGraphLayout visual reuse', () => {
     expect(orchestrationNode).toBeTruthy();
     expect(orchestrationNode?.id).toBe('orchestration:assistant-orchestrator');
     expect(orchestrationNode?.hidden).not.toBe(true);
+    expect(orchestrationNode?.style?.width).toBe(200);
     expect((orchestrationNode?.data as any).label).toBe('Security Review');
     expect((orchestrationNode?.data as any).miniChildren).toEqual([
-      expect.objectContaining({ label: 'Orchestration controller.', status: null }),
       expect.objectContaining({ label: 'Plan result.', status: 'running' }),
       expect.objectContaining({ label: 'Review result.', status: 'completed' }),
       expect.objectContaining({ label: 'Fix failed.', status: 'failed_runtime' }),
     ]);
+    expect((orchestrationNode?.data as any).miniAnchors).toEqual([
+      expect.objectContaining({ id: 'orchestration-root:assistant_message:assistant-orchestrator' }),
+    ]);
     expect((orchestrationNode?.data as any).miniEdges).toEqual([
+      expect.objectContaining({ sourceId: 'orchestration-root:assistant_message:assistant-orchestrator', targetId: 'assistant_message:child-assistant-1' }),
       expect.objectContaining({ sourceId: 'assistant_message:child-assistant-1', targetId: 'assistant_message:child-assistant-2' }),
       expect.objectContaining({ sourceId: 'assistant_message:child-assistant-2', targetId: 'assistant_message:child-assistant-3' }),
     ]);
-    expect((orchestrationNode?.data as any).activeChildRuns).toBe(1);
-    expect((orchestrationNode?.data as any).completedChildRuns).toBe(1);
-    expect((orchestrationNode?.data as any).failedChildRuns).toBe(1);
-    expect((orchestrationNode?.data as any).cancelledChildRuns).toBe(0);
-    expect((orchestrationNode?.data as any).totalChildRuns).toBe(4);
+    expect((orchestrationNode?.data as any).activeOrchestrationRuns).toBe(1);
+    expect((orchestrationNode?.data as any).completedOrchestrationRuns).toBe(1);
+    expect((orchestrationNode?.data as any).failedOrchestrationRuns).toBe(1);
+    expect((orchestrationNode?.data as any).cancelledOrchestrationRuns).toBe(0);
+    expect((orchestrationNode?.data as any).totalOrchestrationRuns).toBe(3);
 
     for (const messageId of [
-      'root-user',
       'assistant-orchestrator',
       'child-user-1',
       'child-assistant-1',
@@ -360,15 +394,56 @@ describe('useGraphLayout visual reuse', () => {
       expect(result.current.nodes.find((node) => node.id === messageId)?.hidden).toBe(true);
     }
 
+    expect(result.current.nodes.find((node) => node.id === 'root-user')?.hidden).not.toBe(true);
     expect(result.current.nodes.find((node) => node.id === 'parent-assistant')?.hidden).not.toBe(true);
-    expect(result.current.nodes.find((node) => node.id === 'hull:turn:root-user')?.hidden).toBe(true);
+    expect(result.current.nodes.find((node) => node.id === 'hull:turn:root-user')?.hidden).not.toBe(true);
     expect(result.current.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        source: 'parent-assistant',
+        source: 'root-user',
         target: 'orchestration:assistant-orchestrator',
         sourceHandle: 'bottom-source',
-        targetHandle: 'top-target',
       }),
+    ]));
+  });
+
+  it('refreshes collapsed orchestration mini data through the visual-only path', () => {
+    const orchestrationMessages = makeOrchestrationMessages();
+    const completedMessages = orchestrationMessages.map((message) => (
+      message.id === 'child-assistant-1'
+        ? {
+          ...message,
+          content: 'Plan completed.',
+          status: 'completed' as const,
+          updatedAt: isoAt(20),
+        }
+        : message
+    ));
+
+    const { result, rerender } = renderHook(
+      ({ inputMessages }) => renderLayout(
+        'assistant-orchestrator',
+        ['parent-user', 'parent-assistant', 'root-user', 'assistant-orchestrator'],
+        inputMessages,
+        'orchestration-visual-refresh',
+        new Set(['assistant-orchestrator']),
+      ),
+      { initialProps: { inputMessages: orchestrationMessages } },
+    );
+
+    const initialNode = result.current.nodes.find((node) => node.type === 'orchestration_node');
+    expect((initialNode?.data as any).activeOrchestrationRuns).toBe(1);
+    expect((initialNode?.data as any).completedOrchestrationRuns).toBe(1);
+    expect((initialNode?.data as any).miniChildren).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Plan result.', status: 'running' }),
+    ]));
+
+    rerender({ inputMessages: completedMessages });
+
+    const refreshedNode = result.current.nodes.find((node) => node.type === 'orchestration_node');
+    expect((refreshedNode?.data as any).activeOrchestrationRuns).toBe(0);
+    expect((refreshedNode?.data as any).completedOrchestrationRuns).toBe(2);
+    expect((refreshedNode?.data as any).miniChildren).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Plan completed.', status: 'completed' }),
     ]));
   });
 
@@ -407,10 +482,10 @@ describe('useGraphLayout visual reuse', () => {
     expect((orchestrationNodes[0].data as any).miniChildren).toEqual([
       expect.objectContaining({ label: 'Security review was cancelled.', status: 'cancelled' }),
     ]);
-    expect((orchestrationNodes[0].data as any).totalChildRuns).toBe(1);
-    expect((orchestrationNodes[0].data as any).cancelledChildRuns).toBe(1);
-    expect(result.current.nodes.find((node) => node.id === 'orchestration-user')?.hidden).toBe(true);
+    expect((orchestrationNodes[0].data as any).totalOrchestrationRuns).toBe(1);
+    expect((orchestrationNodes[0].data as any).cancelledOrchestrationRuns).toBe(1);
+    expect(result.current.nodes.find((node) => node.id === 'orchestration-user')?.hidden).not.toBe(true);
     expect(result.current.nodes.find((node) => node.id === 'generated-assistant')?.hidden).toBe(true);
-    expect(result.current.nodes.find((node) => node.id === 'hull:turn:orchestration-user')?.hidden).toBe(true);
+    expect(result.current.nodes.find((node) => node.id === 'hull:turn:orchestration-user')?.hidden).not.toBe(true);
   });
 });

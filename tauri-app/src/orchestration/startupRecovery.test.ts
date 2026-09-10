@@ -19,15 +19,15 @@ const message = (input: Partial<Message> & { id: string; role: Message['role'] }
 const baseProjection = (overrides: Partial<OrchestrationRecoveryProjection> = {}): OrchestrationRecoveryProjection => ({
   status: 'running',
   requestedDecisionIds: new Set(),
-  requestedChildLaunchByDecisionId: new Map(),
-  childAssistantNodeIdByDecisionId: new Map(),
-  supersededChildIds: new Set(),
+  requestedRunLaunchByDecisionId: new Map(),
+  runAssistantNodeIdByDecisionId: new Map(),
+  supersededRunIds: new Set(),
   activeWaitGroup: null,
   needsUserActionReason: null,
   lastSeq: 0,
-  controlledChildren: [],
-  activeControlledAssistantNodeIds: [],
-  terminalChildren: [],
+  orchestrationRuns: [],
+  activeOrchestrationRunAssistantNodeIds: [],
+  terminalOrchestrationRuns: [],
   missingDecisionIds: [],
   ...overrides,
 });
@@ -56,7 +56,7 @@ describe('orchestration startup recovery', () => {
     }]);
   });
 
-  it('applies cancel recovery by stopping active controlled children', async () => {
+  it('applies cancel recovery by stopping active orchestration runren', async () => {
     const stopAgent = vi.fn(async () => undefined);
     const recordOrchestrationEvent = vi.fn(async () => 1);
 
@@ -65,19 +65,19 @@ describe('orchestration startup recovery', () => {
       orchestratorNodeId: 'assistant-orchestrator',
       projection: baseProjection({
         status: 'cancelling',
-        activeControlledAssistantNodeIds: ['assistant-child'],
+        activeOrchestrationRunAssistantNodeIds: ['assistant-child'],
       }),
     }, {
       stopAgent,
       recordOrchestrationEvent,
     });
 
-    expect(result.action).toBe('stop_active_children');
+    expect(result.action).toBe('stop_active_runs');
     expect(stopAgent).toHaveBeenCalledWith('assistant-child');
     expect(recordOrchestrationEvent).not.toHaveBeenCalled();
   });
 
-  it('records wait completion during recovery when children satisfy the active wait group', async () => {
+  it('records wait completion during recovery when runs satisfy the active wait group', async () => {
     const stopAgent = vi.fn(async () => undefined);
     const recordOrchestrationEvent = vi.fn(async () => 1);
 
@@ -90,7 +90,7 @@ describe('orchestration startup recovery', () => {
           decisionIds: ['planner-1'],
           condition: 'all',
         },
-        controlledChildren: [
+        orchestrationRuns: [
           { assistantNodeId: 'assistant-child', decisionId: 'planner-1', status: 'completed', active: false, terminal: true, outputCommitSha: null },
         ],
       }),
@@ -113,7 +113,7 @@ describe('orchestration startup recovery', () => {
     );
   });
 
-  it('does not resume missing children from a host-built preview on startup', async () => {
+  it('does not resume missing runs from a host-built preview on startup', async () => {
     const recordOrchestrationEvent = vi.fn(async () => 1);
     const stopAgent = vi.fn(async () => undefined);
 
@@ -131,7 +131,7 @@ describe('orchestration startup recovery', () => {
         runId: 'run-orchestrator',
         assistantNodeId: 'assistant-orchestrator',
         seq: 1,
-        eventType: 'orchestration:child_requested',
+        eventType: 'orchestration:run_requested',
         payload: JSON.stringify({
           decisionId: 'planner-1',
         }),

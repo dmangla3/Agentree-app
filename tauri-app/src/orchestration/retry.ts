@@ -2,7 +2,7 @@ import { isFailureAgentStatus } from '@shared/agentStatus';
 import type { AgentRunJournalEvent } from '../lib/agentClient';
 import type { Message } from '../stores/workspaceStore';
 import {
-  type RetryOrchestrationChildRunInput,
+  type RetryOrchestrationRunInput,
 } from './controlPlane';
 import {
   getControlledByNodeId,
@@ -13,28 +13,28 @@ import {
 } from './domain';
 import { getOrchestratorRunId } from './startupRecovery';
 
-export type OrchestrationChildRetryResolveFailure =
+export type OrchestrationRunRetryResolveFailure =
   | 'target_not_retryable'
   | 'orchestrator_not_found'
   | 'orchestrator_run_not_found'
-  | 'child_prompt_not_found'
-  | 'child_runtime_context_not_found'
-  | 'child_already_superseded';
+  | 'run_prompt_not_found'
+  | 'run_runtime_context_not_found'
+  | 'run_already_superseded';
 
-export interface OrchestrationChildRetryTarget {
+export interface OrchestrationRunRetryTarget {
   assistantNodeId: string;
   orchestratorNodeId: string;
   orchestratorRunId: string;
   decisionId: string;
 }
 
-export type ResolveOrchestrationChildRetryTargetResult =
-  | { ok: true; target: OrchestrationChildRetryTarget }
-  | { ok: false; reason: OrchestrationChildRetryResolveFailure };
+export type ResolveOrchestrationRunRetryTargetResult =
+  | { ok: true; target: OrchestrationRunRetryTarget }
+  | { ok: false; reason: OrchestrationRunRetryResolveFailure };
 
-export type BuildOrchestrationChildRetryInputResult =
-  | { ok: true; input: RetryOrchestrationChildRunInput }
-  | { ok: false; reason: OrchestrationChildRetryResolveFailure };
+export type BuildOrchestrationRunRetryInputResult =
+  | { ok: true; input: RetryOrchestrationRunInput }
+  | { ok: false; reason: OrchestrationRunRetryResolveFailure };
 
 const messageMapFrom = (messages: Message[]): Map<string, Message> => (
   new Map(messages.map((message) => [message.id, message]))
@@ -51,10 +51,10 @@ const readString = (record: Record<string, unknown>, key: string): string | null
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 };
 
-export const resolveOrchestrationChildRetryTarget = (
+export const resolveOrchestrationRunRetryTarget = (
   messages: Message[],
   assistantNodeId: string,
-): ResolveOrchestrationChildRetryTargetResult => {
+): ResolveOrchestrationRunRetryTargetResult => {
   const messageMap = messageMapFrom(messages);
   const child = messageMap.get(assistantNodeId) ?? null;
   if (
@@ -92,13 +92,13 @@ export const resolveOrchestrationChildRetryTarget = (
   };
 };
 
-export const buildOrchestrationChildRetryInput = (input: {
+export const buildOrchestrationRunRetryInput = (input: {
   messages: Message[];
-  target: OrchestrationChildRetryTarget;
+  target: OrchestrationRunRetryTarget;
   journalEvents: AgentRunJournalEvent[];
   authToken: string;
   retryReason?: string | null;
-}): BuildOrchestrationChildRetryInputResult => {
+}): BuildOrchestrationRunRetryInputResult => {
   const events = input.journalEvents
     .map(parseOrchestrationJournalEvent)
     .filter((event): event is NonNullable<typeof event> => Boolean(event));
@@ -108,29 +108,29 @@ export const buildOrchestrationChildRetryInput = (input: {
     messages: input.messages,
   });
 
-  if (projection.supersededChildIds.has(input.target.assistantNodeId)) {
-    return { ok: false, reason: 'child_already_superseded' };
+  if (projection.supersededRunIds.has(input.target.assistantNodeId)) {
+    return { ok: false, reason: 'run_already_superseded' };
   }
 
   const messageMap = messageMapFrom(input.messages);
-  const failedChild = messageMap.get(input.target.assistantNodeId) ?? null;
-  const failedChildUser = failedChild?.parentId ? messageMap.get(failedChild.parentId) ?? null : null;
-  if (!failedChild || !failedChildUser || failedChildUser.role !== 'user' || !failedChildUser.content.trim()) {
-    return { ok: false, reason: 'child_prompt_not_found' };
+  const failedRun = messageMap.get(input.target.assistantNodeId) ?? null;
+  const failedRunUser = failedRun?.parentId ? messageMap.get(failedRun.parentId) ?? null : null;
+  if (!failedRun || !failedRunUser || failedRunUser.role !== 'user' || !failedRunUser.content.trim()) {
+    return { ok: false, reason: 'run_prompt_not_found' };
   }
 
-  const executionData = readRecord(failedChild.execution_data);
+  const executionData = readRecord(failedRun.execution_data);
   const meta = readRecord(executionData.meta);
   const contextProfile = readRecord(executionData.context_profile);
-  const agentId = failedChild.agent_id ?? readString(meta, 'agent_id');
-  const agentType = failedChild.llmProvider ?? readString(meta, 'provider');
-  const baseCommitSha = failedChild.base_commit_sha ?? readString(meta, 'base_commit_sha');
+  const agentId = failedRun.agent_id ?? readString(meta, 'agent_id');
+  const agentType = failedRun.llmProvider ?? readString(meta, 'provider');
+  const baseCommitSha = failedRun.base_commit_sha ?? readString(meta, 'base_commit_sha');
   const repoPath = readString(executionData, 'repo_path') ?? readString(meta, 'repo_path');
   if (!agentId || !agentType || !baseCommitSha || !repoPath) {
-    return { ok: false, reason: 'child_runtime_context_not_found' };
+    return { ok: false, reason: 'run_runtime_context_not_found' };
   }
 
-  const parentNodeId = failedChildUser.parentId ?? null;
+  const parentNodeId = failedRunUser.parentId ?? null;
   const parentNode = parentNodeId ? messageMap.get(parentNodeId) ?? null : null;
   const parentNodeMeta = readRecord(readRecord(parentNode?.execution_data).meta);
   const parentHasChildren = parentNodeId
@@ -139,7 +139,7 @@ export const buildOrchestrationChildRetryInput = (input: {
   return {
     ok: true,
     input: {
-      workspaceId: failedChild.workspaceId,
+      workspaceId: failedRun.workspaceId,
       repoPath,
       authToken: input.authToken,
       orchestratorRunId: input.target.orchestratorRunId,
@@ -149,20 +149,20 @@ export const buildOrchestrationChildRetryInput = (input: {
       contextParentNodeId: readString(contextProfile, 'context_parent_node_id') ?? parentNodeId,
       providerParentMeta: parentNodeMeta,
       isBranchFromInterior: parentHasChildren,
-      baseNodeId: failedChild.base_selected_from_node_id ?? readString(contextProfile, 'base_node_id'),
+      baseNodeId: failedRun.base_selected_from_node_id ?? readString(contextProfile, 'base_node_id'),
       baseCommitSha,
-      prompt: failedChildUser.content,
+      prompt: failedRunUser.content,
       agentId,
       agentType,
       agentCliArgs: readString(meta, 'agent_cli_args'),
       agentPromptFlag: readString(meta, 'agent_prompt_flag'),
       agentName: readString(meta, 'agent_name'),
-      llmModel: failedChild.llmModel ?? readString(meta, 'provider_model'),
+      llmModel: failedRun.llmModel ?? readString(meta, 'provider_model'),
       reasoningEffort: readString(meta, 'provider_reasoning_effort'),
-      permissionMode: readString(meta, 'composer_permission_mode') as RetryOrchestrationChildRunInput['permissionMode'],
+      permissionMode: readString(meta, 'composer_permission_mode') as RetryOrchestrationRunInput['permissionMode'],
       loginProfileId: readString(meta, 'login_profile_id'),
       contextManifest: null,
-      threadId: failedChild.threadId ?? failedChild.thread_id ?? null,
+      threadId: failedRun.threadId ?? failedRun.thread_id ?? null,
       threadOriginId: readString(meta, 'thread_origin_id'),
       orchestrationTemplateId: readString(meta, 'orchestration_template_id'),
       supersededAssistantNodeId: input.target.assistantNodeId,

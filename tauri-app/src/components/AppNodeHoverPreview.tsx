@@ -11,7 +11,7 @@ export function AppNodeHoverPreview({
   entity: ProjectedNodeEntity;
   projection: WorkspaceProjection;
 }) {
-  const messageId = entity.focusMessageId ?? entity.messageId ?? entity.message?.id ?? null;
+  const messageId = entity.messageId ?? entity.message?.id ?? null;
   const liveMessage = useAgentRunProjectionStore((state) => (
     messageId ? state.projectionsById[messageId] ?? null : null
   ));

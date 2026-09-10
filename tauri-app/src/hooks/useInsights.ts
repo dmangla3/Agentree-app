@@ -4,7 +4,7 @@ import { agentClient, type LocalInsightCandidateRecord, type LocalInsightRecord 
 import { getAccessToken } from '../lib/authSession';
 import { appendBackgroundAttentionAuditEvent } from '../lib/backgroundAttentionAudit';
 import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
-import { isLoginProfileActive, type LoginProfileSummary } from '../lib/loginProfiles';
+import { resolveLoginProfileSelection, type LoginProfileSummary } from '../lib/loginProfiles';
 import { INSIGHT_GENERATOR_PROMPT, INSIGHT_VALIDATOR_PROMPT } from '../lib/prompts';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { useWorkspaceStore, type Insight, type Message, type Workspace } from '../stores/workspaceStore';
@@ -152,10 +152,8 @@ const chooseReadyLoginProfile = (
   profiles: LoginProfileSummary[],
   provider: string,
 ): LoginProfileSummary | null => {
-  const compatibleReady = profiles.filter((profile) => (
-    profile.provider === provider && isLoginProfileActive(profile)
-  ));
-  return compatibleReady.find((profile) => profile.isDefault) ?? compatibleReady[0] ?? null;
+  const selection = resolveLoginProfileSelection({ profiles, provider });
+  return selection.isReady ? selection.selectedProfile : null;
 };
 
 const isCompletedAssistant = (message: Message): boolean => {

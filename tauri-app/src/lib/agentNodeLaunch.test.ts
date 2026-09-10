@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createAgentNodeMessages } from './agentNodeLaunch';
 
 describe('createAgentNodeMessages', () => {
-  it('marks orchestrator nodes without controlled child metadata', () => {
+  it('marks orchestrator nodes without orchestration run metadata', () => {
     const pair = createAgentNodeMessages({
       workspaceId: 'workspace-1',
       agentId: 'agent-1',
@@ -45,7 +45,7 @@ describe('createAgentNodeMessages', () => {
     expect(Object.keys(meta).filter((key) => key.startsWith('flow_'))).toEqual([]);
   });
 
-  it('creates normal controlled orchestration children without flow metadata', () => {
+  it('creates normal controlled orchestration runs without flow metadata', () => {
     const pair = createAgentNodeMessages({
       workspaceId: 'workspace-1',
       agentId: 'agent-1',

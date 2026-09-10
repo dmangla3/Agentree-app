@@ -9,21 +9,16 @@ import { GraphCanonicalCommitNode } from './GraphCanonicalCommitNode';
 import { GraphDerivedCommitGroupNode } from './GraphDerivedCommitGroupNode';
 import { GraphSummaryNode } from './GraphSummaryNode';
 import type { ProjectedCommitEntity, ProjectedCommitGroup, ProjectedNodeEntity, WorkspaceProjection } from '../../../domain/workspaceProjection';
-import { NodeHoverCardContent, preloadNodeHoverPreview } from '../../NodeHoverCardContent';
+import { preloadNodeHoverPreview } from '../../NodeHoverCardContent';
 import { useGraphInteractionContext } from '../../graph/GraphInteractionContext';
-import { useGraphHoverProjectionInput } from '../../graph/GraphHoverProjectionContext';
-import { useWorkspaceProjection } from '../../../hooks/useWorkspaceProjection';
 import type { AttentionBadgeItem, FocusTriggerMetrics } from '../../../types/nodes';
 import { createCommitHoverEntity } from './commitHoverEntity';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { getMessageOutputCommitSha } from '../../../lib/graph/commitAccessors';
 import { shouldEnableGraphNodeHover, type GraphNodeDetailLevel } from '../../../lib/graphNodeDetailLevel';
 import { dispatchGraphComposerDockExpand } from '../../../lib/graphComposerDockEvents';
-import {
-  useAgentreeSurface,
-  type AgentreeSurfaceCapabilities,
-  type AgentreeSurfaceMode,
-} from '../../graph/surfaceCapabilities';
+import { useAgentreeSurface } from '../../graph/surfaceCapabilities';
+import { GraphNodeHoverCardContent } from './GraphNodeHoverCardContent';
 
 
 export interface GraphNodeData {
@@ -49,41 +44,6 @@ export interface GraphNodeData {
 
 type GraphNode = Node<GraphNodeData>;
 let hasScheduledAppHoverPreviewPreload = false;
-
-function GraphNodeHoverCardContent({
-  entity,
-  fallbackProjection,
-  surfaceMode,
-  capabilities,
-}: {
-  entity?: ProjectedNodeEntity;
-  fallbackProjection?: WorkspaceProjection;
-  surfaceMode?: AgentreeSurfaceMode;
-  capabilities?: AgentreeSurfaceCapabilities;
-}) {
-  const hoverInput = useGraphHoverProjectionInput();
-  const hoverProjection = useWorkspaceProjection(
-    hoverInput.messages.length > 0 ? hoverInput.messages : fallbackProjection?.messages ?? [],
-    hoverInput.summaries.length > 0 ? hoverInput.summaries : fallbackProjection?.summaries ?? [],
-    null,
-    hoverInput.disabledSummaryIds,
-    'graph-hover',
-  );
-  const resolvedEntity = entity?.messageId
-    ? hoverProjection.entitiesByMessageId.get(entity.messageId) ?? entity
-    : entity?.summary?.id
-      ? hoverProjection.entitiesBySummaryId.get(entity.summary.id) ?? entity
-      : entity;
-
-  return (
-    <NodeHoverCardContent
-      entity={resolvedEntity}
-      projection={resolvedEntity ? hoverProjection : fallbackProjection}
-      surfaceMode={surfaceMode}
-      capabilities={capabilities}
-    />
-  );
-}
 
 export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
   const { data, selected: isSelectedInFlow } = props;

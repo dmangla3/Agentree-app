@@ -2,19 +2,21 @@ import { memo } from 'react';
 import type { CSSProperties } from 'react';
 import { ChevronDown, Workflow } from 'lucide-react';
 import { cn } from '../../../lib/utils';
-import { NodeHoverCardContent } from '../../NodeHoverCardContent';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../../../domain/workspaceProjection';
 import { GraphNodeHoverCardShell } from './GraphNodeWrapper';
+import { GraphNodeHoverCardContent } from './GraphNodeHoverCardContent';
+import { useRunStatusStore } from '../../../stores/runStatusStore';
+import { shouldHydrateAgentRunHover } from '../../../lib/agentRunHoverHydrationPolicy';
 
 interface GraphOrchestrationHullProps {
   data: {
     controllerMessageId: string;
     label?: string;
-    totalChildRuns?: number;
-    activeChildRuns?: number;
-    failedChildRuns?: number;
-    completedChildRuns?: number;
-    cancelledChildRuns?: number;
+    totalOrchestrationRuns?: number;
+    activeOrchestrationRuns?: number;
+    failedOrchestrationRuns?: number;
+    completedOrchestrationRuns?: number;
+    cancelledOrchestrationRuns?: number;
     controllerEntity?: ProjectedNodeEntity;
     projection?: WorkspaceProjection;
     onToggleCollapse?: (controllerMessageId: string, collapsed: boolean) => void;
@@ -24,6 +26,8 @@ interface GraphOrchestrationHullProps {
 
 export const GraphOrchestrationHull = memo(({ data, style }: GraphOrchestrationHullProps) => {
   const controllerNodeId = data.controllerEntity?.focusMessageId ?? data.controllerEntity?.messageId ?? null;
+  const controllerRunStatus = useRunStatusStore(state => controllerNodeId ? state.byNodeId[controllerNodeId]?.status ?? null : null);
+  const hoverHydrationEnabled = shouldHydrateAgentRunHover(data.controllerEntity, controllerRunStatus);
 
   const hull = (
     <div
@@ -40,7 +44,7 @@ export const GraphOrchestrationHull = memo(({ data, style }: GraphOrchestrationH
         <Workflow className="h-3 w-3" strokeWidth={2.4} />
         <span className="truncate">{data.label || 'Orchestration'}</span>
         <span className="rounded-full bg-[hsl(var(--app-accent-soft)/0.62)] px-1.5 py-0.5 font-mono text-[8px] leading-none">
-          {data.totalChildRuns ?? 0}
+          {data.totalOrchestrationRuns ?? 0}
         </span>
         <button
           type="button"
@@ -61,13 +65,13 @@ export const GraphOrchestrationHull = memo(({ data, style }: GraphOrchestrationH
       </div>
 
       <div className="absolute bottom-2 right-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center justify-end gap-x-1 gap-y-0.5 rounded-full bg-[hsl(var(--app-panel)/0.82)] px-2 py-1 text-[9px] font-semibold leading-none text-muted-foreground shadow-sm">
-        <span>{data.activeChildRuns ?? 0} active</span>
+        <span>{data.activeOrchestrationRuns ?? 0} active</span>
         <span>·</span>
-        <span>{data.completedChildRuns ?? 0} done</span>
+        <span>{data.completedOrchestrationRuns ?? 0} done</span>
         <span>·</span>
-        <span>{data.failedChildRuns ?? 0} failed</span>
+        <span>{data.failedOrchestrationRuns ?? 0} failed</span>
         <span>·</span>
-        <span>{data.cancelledChildRuns ?? 0} cancelled</span>
+        <span>{data.cancelledOrchestrationRuns ?? 0} cancelled</span>
       </div>
     </div>
   );
@@ -80,11 +84,11 @@ export const GraphOrchestrationHull = memo(({ data, style }: GraphOrchestrationH
     <GraphNodeHoverCardShell
       nodeId={controllerNodeId ?? undefined}
       hoverOpenDelay={220}
-      hoverHydrationEnabled
+      hoverHydrationEnabled={hoverHydrationEnabled}
       hoverCardContent={(
-        <NodeHoverCardContent
+        <GraphNodeHoverCardContent
           entity={data.controllerEntity}
-          projection={data.projection}
+          fallbackProjection={data.projection}
         />
       )}
     >

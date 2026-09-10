@@ -8,7 +8,7 @@ import { useRunStatusStore } from '../stores/runStatusStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { useOrchestrationTemplateStore } from '../stores/orchestrationTemplateStore';
 import { normalizeTemplateId, type OrchestrationPromptTemplate } from '../orchestration/templates';
-import { isLoginProfileActive } from '../lib/loginProfiles';
+import { resolveLoginProfileSelection } from '../lib/loginProfiles';
 import { isNoAgentSessionFoundError, markStaleLocalAgentNodeCancelled } from '../lib/localAgentRunTerminal';
 import { applyLocalNodeMessages } from '../hooks/useLiveMessages';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from '../hooks/useLocalNodes';
@@ -505,7 +505,11 @@ export function GraphDockComposer() {
       focusedCommitSha: null,
     }
     : rawTarget;
-  const composerDraftTargetId = editDraftSource?.id ?? target.parentMessageId ?? target.selectedNodeId ?? null;
+  const composerDraftTargetId = editDraftSource?.id
+    ?? (composerTargetMode === 'new-thread' ? pendingThreadId : null)
+    ?? target.parentMessageId
+    ?? target.selectedNodeId
+    ?? null;
   const composerDraftKey = buildComposerDraftKey(selectedWorkspaceId, composerDraftTargetId);
   const composerDraft = composerDraftKey ? composerDraftByWorkspace[composerDraftKey] ?? '' : '';
   const parentMessage = useMemo(
@@ -1364,15 +1368,14 @@ export function GraphDockComposer() {
         setPendingThreadId(thread.id);
       }
       for (const run of runsToLaunch) {
-        const compatibleLoginProfiles = useLoginProfilesStore.getState().profiles
-          .filter((profile) => profile.provider === run.agent.type);
-        const selectedLoginProfileId =
-          compatibleLoginProfiles.find((profile) => profile.isDefault)?.id
-          ?? compatibleLoginProfiles[0]?.id
-          ?? null;
-        const selectedLoginProfile = compatibleLoginProfiles.find((profile) => profile.id === selectedLoginProfileId) ?? null;
-        if (compatibleLoginProfiles.length > 0 && (!selectedLoginProfile || !isLoginProfileActive(selectedLoginProfile))) {
-          setError(`${run.agent.name ?? run.agent.type} needs a ready login profile before it can run.`);
+        const loginProfileSelection = resolveLoginProfileSelection({
+          profiles: useLoginProfilesStore.getState().profiles,
+          provider: run.agent.type,
+          agentName: run.agent.name ?? run.agent.type,
+        });
+        const selectedLoginProfile = loginProfileSelection.selectedProfile;
+        if (!loginProfileSelection.isReady) {
+          setError(loginProfileSelection.failureMessage ?? `${run.agent.name ?? run.agent.type} needs a ready login profile before it can run.`);
           return;
         }
         const flowId = createSendFlowId();

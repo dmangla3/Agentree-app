@@ -95,7 +95,7 @@ describe('workspace projection thread roots', () => {
       .toBe("ImportError: cannot import name 'ParamSpec' from 'typing'");
   });
 
-  it('indexes orchestrator-controlled children separately from graph parentage', () => {
+  it('indexes orchestrator-associated runs separately from graph parentage', () => {
     const projection = buildWorkspaceProjection({
       messages: [
         makeMessage('root-user', 'user', null, '2026-05-28T00:00:00.000Z'),
@@ -124,7 +124,7 @@ describe('workspace projection thread roots', () => {
     expect(projection.childEntityIdsByParentEntityId.get('assistant_message:orchestrator')).toBeUndefined();
   });
 
-  it('derives orchestration child run status counts on orchestrator entities', () => {
+  it('derives orchestration run status counts on orchestrator entities', () => {
     const projection = buildWorkspaceProjection({
       messages: [
         makeMessage('root-user', 'user', null, '2026-05-28T00:00:00.000Z'),
@@ -176,18 +176,18 @@ describe('workspace projection thread roots', () => {
         'user_message:child-user-4',
         'assistant_message:child-assistant-4',
       ],
-      childAssistantEntityIds: [
+      orchestrationRunAssistantEntityIds: [
         'assistant_message:child-assistant-1',
         'assistant_message:child-assistant-2',
         'assistant_message:child-assistant-3',
         'assistant_message:child-assistant-4',
       ],
-      totalChildRuns: 4,
-      activeChildRuns: 1,
-      terminalChildRuns: 3,
-      completedChildRuns: 1,
-      failedChildRuns: 1,
-      cancelledChildRuns: 1,
+      totalOrchestrationRuns: 4,
+      activeOrchestrationRuns: 1,
+      terminalOrchestrationRuns: 3,
+      completedOrchestrationRuns: 1,
+      failedOrchestrationRuns: 1,
+      cancelledOrchestrationRuns: 1,
     });
   });
 
@@ -206,13 +206,13 @@ describe('workspace projection thread roots', () => {
     expect(projection.entitiesByMessageId.get('orchestrator')?.orchestrationSummary).toEqual({
       controllerMessageId: 'orchestrator',
       controlledEntityIds: [],
-      childAssistantEntityIds: [],
-      totalChildRuns: 0,
-      activeChildRuns: 0,
-      terminalChildRuns: 0,
-      completedChildRuns: 0,
-      failedChildRuns: 0,
-      cancelledChildRuns: 0,
+      orchestrationRunAssistantEntityIds: [],
+      totalOrchestrationRuns: 0,
+      activeOrchestrationRuns: 0,
+      terminalOrchestrationRuns: 0,
+      completedOrchestrationRuns: 0,
+      failedOrchestrationRuns: 0,
+      cancelledOrchestrationRuns: 0,
     });
   });
 

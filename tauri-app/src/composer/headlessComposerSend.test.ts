@@ -652,7 +652,7 @@ describe('sendHeadlessComposerReply', () => {
     expect(response).not.toHaveProperty('orchestrationPreview');
   });
 
-  it('does not execute simple orchestration children from the composer', async () => {
+  it('does not execute simple orchestration runs from the composer', async () => {
     const order: string[] = [];
     const startAgentRun = vi.fn(async (intent: any) => {
       order.push(`startAgentRun:${intent.assistantNodeId}`);

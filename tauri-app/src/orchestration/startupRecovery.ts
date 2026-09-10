@@ -89,7 +89,7 @@ export const applyOrchestrationRecoveryAction = async (
 ): Promise<ApplyOrchestrationRecoveryResult> => {
   const action = input.action ?? planOrchestrationRecoveryAction(input.projection);
 
-  if (action.type === 'stop_active_children') {
+  if (action.type === 'stop_active_runs') {
     const stoppedAssistantNodeIds: string[] = [];
     for (const assistantNodeId of Array.from(new Set(action.assistantNodeIds))) {
       await deps.stopAgent(assistantNodeId);

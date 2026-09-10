@@ -59,6 +59,50 @@ export const isLoginProfileCompatibleWithProvider = (
   provider?: string | null
 ) => Boolean(provider && profile.provider === provider);
 
+export const providerRequiresLoginProfile = (provider?: string | null): boolean => (
+  provider === 'codex' || provider === 'claude'
+);
+
+export interface LoginProfileSelection {
+  provider: string | null;
+  selectedProfile: LoginProfileSummary | null;
+  requiresProfile: boolean;
+  isReady: boolean;
+  failureMessage: string | null;
+}
+
+export const selectLoginProfileForProvider = (
+  profiles: LoginProfileSummary[],
+  provider?: string | null,
+): LoginProfileSummary | null => {
+  if (!provider) return null;
+  const compatibleProfiles = profiles.filter((profile) => profile.provider === provider);
+  return compatibleProfiles.find((profile) => profile.isDefault && isLoginProfileActive(profile))
+    ?? compatibleProfiles.find((profile) => isLoginProfileActive(profile))
+    ?? compatibleProfiles.find((profile) => profile.isDefault)
+    ?? compatibleProfiles[0]
+    ?? null;
+};
+
+export const resolveLoginProfileSelection = (input: {
+  profiles: LoginProfileSummary[];
+  provider?: string | null;
+  agentName?: string | null;
+}): LoginProfileSelection => {
+  const provider = input.provider ?? null;
+  const requiresProfile = providerRequiresLoginProfile(provider);
+  const selectedProfile = selectLoginProfileForProvider(input.profiles, provider);
+  const isReady = !requiresProfile || Boolean(selectedProfile && isLoginProfileActive(selectedProfile));
+  const label = input.agentName ?? provider ?? 'This agent';
+  return {
+    provider,
+    selectedProfile,
+    requiresProfile,
+    isReady,
+    failureMessage: isReady ? null : `${label} needs a ready login profile before it can run.`,
+  };
+};
+
 export const hasActiveLoginProfileForProvider = (
   profiles: Pick<LoginProfileSummary, 'provider' | 'status'>[],
   provider?: string | null

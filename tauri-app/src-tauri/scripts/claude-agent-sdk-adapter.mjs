@@ -7,10 +7,19 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import readline from 'node:readline';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
-const FINAL_RESULT_SCHEMA = {
+const DEFAULT_AI_LABEL_PROMPT = 'Concise 5-10 word graph label for this assistant message. Capture the crux of what the assistant did or concluded so graph viewers can understand the message at a glance.';
+const AI_LABEL_PROMPT = (() => {
+  try {
+    return fs.readFileSync(new URL('./ai-label-prompt.txt', import.meta.url), 'utf8').trim() || DEFAULT_AI_LABEL_PROMPT;
+  } catch {
+    return DEFAULT_AI_LABEL_PROMPT;
+  }
+})();
+
+export const FINAL_RESULT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['final_response', 'commit_subject', 'ai_label', 'thread_title'],
+  required: ['final_response', 'commit_subject', 'commit_body', 'ai_label', 'thread_title'],
   properties: {
     final_response: {
       type: 'string',
@@ -18,11 +27,15 @@ const FINAL_RESULT_SCHEMA = {
     },
     commit_subject: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
-      description: 'Concise imperative git commit subject for the changes made, 4-10 words, no trailing period. Use null if no files changed.',
+      description: 'Git commit subject for the files changed, or null if no files changed. Use Conventional Commits format: <type>(optional scope): <summary>. Choose an accurate type such as feat, fix, refactor, test, docs, chore, perf, build, or ci. Keep it under 72 characters, specific, human readable, and focused on user-visible behavior or engineering intent instead of listing files. Avoid vague subjects like update code, fix bug, or changes. No trailing period.',
+    },
+    commit_body: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+      description: 'Optional git commit body for the files changed. Use null when no files changed or the change is trivial. For non-trivial changes, write 1-3 short paragraphs explaining why the change was made, important tradeoffs, and any relevant files/functions changed. Do not repeat the subject. Keep it factual, specific, and readable.',
     },
     ai_label: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
-      description: 'Concise 5-10 word graph label for this assistant message. Describe the outcome, not the full response. No trailing period.',
+      description: AI_LABEL_PROMPT,
     },
     thread_title: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
@@ -30,6 +43,16 @@ const FINAL_RESULT_SCHEMA = {
     },
   },
 };
+
+const STRUCTURED_OUTPUT_MAX_RETRIES = 2;
+const STRUCTURED_OUTPUT_RETRY_PROMPT = [
+  'Your previous StructuredOutput response did not follow the required rules.',
+  'Try again now.',
+  '',
+  'Call the StructuredOutput tool with valid values for all required fields.',
+  'Return only through the StructuredOutput tool.',
+  'Do not include extra wrapper text or alternate formats.',
+].join('\n');
 
 function nowMs() {
   return Date.now();
@@ -42,6 +65,33 @@ export function isDirectExecution(metaUrl, argvPath) {
   } catch {
     return metaUrl === pathToFileURL(argvPath).href;
   }
+}
+
+// File-mutating tools whose target path must stay inside the agent worktree.
+const WORKTREE_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+
+// Confine Claude's file writes to its worktree. Codex is jailed to its cwd by
+// an OS sandbox; the Claude Agent SDK has no equivalent, so an absolute path
+// pointing at the user's main checkout would otherwise be edited in place.
+// Returns a `deny` decision when a write tool targets a path outside the
+// worktree, or null to leave the decision unchanged.
+export function worktreeWriteEscapeDenial(toolName, input, worktreeRoot) {
+  if (!WORKTREE_WRITE_TOOLS.has(toolName)) return null;
+  if (!input || typeof input !== 'object') return null;
+  const rawTarget = toolName === 'NotebookEdit' ? input.notebook_path : input.file_path;
+  if (typeof rawTarget !== 'string' || !rawTarget.trim()) return null;
+
+  const root = path.resolve(worktreeRoot || '.');
+  const resolved = path.resolve(root, rawTarget);
+  const inside = resolved === root || resolved.startsWith(root + path.sep);
+  if (inside) return null;
+
+  return {
+    behavior: 'deny',
+    message:
+      `Refusing to write ${resolved}: it is outside this agent's worktree (${root}). ` +
+      'Edit only files inside the worktree — Agentree commits and merges your worktree changes from there.',
+  };
 }
 
 function emit(event) {
@@ -445,6 +495,21 @@ function normalizeStructuredCommitSubject(value) {
   return normalized.slice(0, 72).trim() || null;
 }
 
+function normalizeStructuredCommitBody(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n\n')
+    .map((paragraph) => paragraph.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n\n')
+    .replace(/^["'`\s]+|["'`\s]+$/g, '');
+  if (!normalized) return null;
+  return normalized.slice(0, 1200).trim() || null;
+}
+
 function normalizeStructuredAiLabel(value) {
   if (typeof value !== 'string') return null;
   const normalized = value
@@ -478,19 +543,51 @@ function isStructuredOutputBlock(block) {
   return block?.name === 'StructuredOutput';
 }
 
-function structuredFinalOutputFromInput(input) {
+export function structuredFinalOutputFromInput(input) {
   if (!input || typeof input !== 'object') return null;
+  if (!Object.hasOwn(input, 'final_response')) return null;
+  if (!Object.hasOwn(input, 'commit_subject')) return null;
+  if (!Object.hasOwn(input, 'ai_label')) return null;
+  if (!Object.hasOwn(input, 'thread_title')) return null;
   const finalResponse = normalizeStructuredFinalResponse(input.final_response);
   const commitSubject = normalizeStructuredCommitSubject(input.commit_subject);
+  const commitBody = normalizeStructuredCommitBody(input.commit_body);
   const aiLabel = normalizeStructuredAiLabel(input.ai_label);
   const threadTitle = normalizeStructuredThreadTitle(input.thread_title);
-  if (!finalResponse && !commitSubject && !aiLabel && !threadTitle) return null;
+  if (!finalResponse) return null;
   return {
     finalResponse,
     commitSubject,
+    commitBody,
     aiLabel,
     threadTitle,
   };
+}
+
+export function structuredOutputToolErrors(message, ignoredToolUseIds = new Set()) {
+  const content = message?.message?.content;
+  if (!Array.isArray(content)) return [];
+  return content.filter((block) => {
+    if (block?.type !== 'tool_result') return false;
+    if (block.is_error !== true) return false;
+    const toolUseId = block.tool_use_id ?? block.id ?? null;
+    return Boolean(toolUseId && ignoredToolUseIds.has(toolUseId));
+  });
+}
+
+export function shouldFallbackAfterStructuredOutputFailure({
+  message,
+  structuredOutputFailureCount,
+  structuredFinalOutput,
+  fallbackFinalContent,
+}) {
+  if (!message?.is_error) return false;
+  if (structuredFinalOutput) return false;
+  if (structuredOutputFailureCount <= STRUCTURED_OUTPUT_MAX_RETRIES) return false;
+  if (typeof fallbackFinalContent !== 'string' || !fallbackFinalContent.trim()) return false;
+  const stopReason = typeof message.stop_reason === 'string' ? message.stop_reason : '';
+  const subtype = typeof message.subtype === 'string' ? message.subtype : '';
+  return stopReason === 'tool_use' || subtype === 'error';
 }
 
 function mergeStructuredFinalOutput(current, next) {
@@ -498,6 +595,7 @@ function mergeStructuredFinalOutput(current, next) {
   return {
     finalResponse: next.finalResponse ?? current?.finalResponse ?? null,
     commitSubject: next.commitSubject ?? current?.commitSubject ?? null,
+    commitBody: next.commitBody ?? current?.commitBody ?? null,
     aiLabel: next.aiLabel ?? current?.aiLabel ?? null,
     threadTitle: next.threadTitle ?? current?.threadTitle ?? null,
   };
@@ -699,6 +797,10 @@ async function main() {
   let deltaCount = 0;
   let firstDeltaTs = null;
   let structuredFinalOutput = null;
+  let structuredOutputFailureCount = 0;
+  let structuredOutputRetryCount = 0;
+  let structuredOutputLastError = null;
+  let fallbackFinalContent = null;
   const seenToolUseIds = new Set();
   const structuredOutputToolUseIds = new Set();
   const rawMessageTypes = new Set();
@@ -877,6 +979,8 @@ async function main() {
           message: 'Tool use is disabled for this internal completion. Respond directly in the requested output format.',
         };
       }
+      const worktreeDenial = worktreeWriteEscapeDenial(toolName, input, process.cwd());
+      if (worktreeDenial) return worktreeDenial;
       return { behavior: 'allow', updatedInput: input };
     },
   };
@@ -982,6 +1086,7 @@ async function main() {
           for (const block of content) {
             if (block?.type === 'tool_use' && isStructuredOutputBlock(block)) {
               if (block.id) structuredOutputToolUseIds.add(block.id);
+              fallbackFinalContent ??= cumulativeText.trim() ? cumulativeText : null;
               structuredFinalOutput = mergeStructuredFinalOutput(
                 structuredFinalOutput,
                 structuredFinalOutputFromInput(block.input)
@@ -1007,6 +1112,23 @@ async function main() {
       }
 
       if (message.type === 'user') {
+        const structuredErrors = structuredOutputToolErrors(message, structuredOutputToolUseIds);
+        if (structuredErrors.length > 0) {
+          structuredOutputFailureCount += structuredErrors.length;
+          structuredOutputLastError = textFromContent(structuredErrors.at(-1)?.content).trim() || null;
+          if (structuredOutputRetryCount < STRUCTURED_OUTPUT_MAX_RETRIES) {
+            structuredOutputRetryCount += 1;
+            emit({
+              type: 'provider_meta',
+              meta: {
+                structured_output_retry_count: structuredOutputRetryCount,
+                structured_output_retry_max: STRUCTURED_OUTPUT_MAX_RETRIES,
+              },
+              timestamp: nowMs(),
+            });
+            inputQueue.push(sdkUserMessage(STRUCTURED_OUTPUT_RETRY_PROMPT, 'now'));
+          }
+        }
         for (const result of extractToolResults(message, structuredOutputToolUseIds)) emit(result);
         continue;
       }
@@ -1062,16 +1184,34 @@ async function main() {
         const finalContent = typeof message.result === 'string' && message.result.length > 0
           ? message.result
           : cumulativeText;
-        const visibleFinalContent = structuredFinalOutput?.finalResponse || finalContent;
+        const shouldFallbackStructuredOutput = shouldFallbackAfterStructuredOutputFailure({
+          message,
+          structuredOutputFailureCount,
+          structuredFinalOutput,
+          fallbackFinalContent,
+        });
+        const visibleFinalContent = structuredFinalOutput?.finalResponse
+          || (shouldFallbackStructuredOutput ? fallbackFinalContent : finalContent);
         const structuredMeta = {};
         if (structuredFinalOutput?.commitSubject) {
           structuredMeta.commit_subject = structuredFinalOutput.commitSubject;
+        }
+        if (structuredFinalOutput?.commitBody) {
+          structuredMeta.commit_body = structuredFinalOutput.commitBody;
         }
         if (structuredFinalOutput?.aiLabel) {
           structuredMeta.ai_label = structuredFinalOutput.aiLabel;
         }
         if (structuredFinalOutput?.threadTitle) {
           structuredMeta.thread_title = structuredFinalOutput.threadTitle;
+        }
+        if (shouldFallbackStructuredOutput) {
+          structuredMeta.structured_output_failed = true;
+          structuredMeta.structured_output_retry_count = structuredOutputRetryCount;
+          structuredMeta.structured_output_failure_count = structuredOutputFailureCount;
+          if (structuredOutputLastError) {
+            structuredMeta.structured_output_error = structuredOutputLastError;
+          }
         }
         if (Object.keys(structuredMeta).length > 0) {
           emit({
@@ -1095,15 +1235,20 @@ async function main() {
         });
         emit({
           type: 'provider_stop',
-          provider_stop_reason: message.stop_reason ?? message.subtype ?? 'end_turn',
-          provider_status: message.is_error ? 'failed' : 'completed',
+          provider_stop_reason: shouldFallbackStructuredOutput
+            ? 'structured_output_failed'
+            : message.stop_reason ?? message.subtype ?? 'end_turn',
+          provider_status: shouldFallbackStructuredOutput
+            ? 'completed'
+            : message.is_error ? 'failed' : 'completed',
           final_content: visibleFinalContent,
           provider_thread_id: message.session_id ?? activeSessionId,
           provider_turn_id: message.uuid ?? lastAssistantUuid,
+          provider_item_id: lastAssistantUuid ?? null,
           usage: lastUsage,
           timestamp: nowMs(),
         });
-        return message.is_error ? 1 : 0;
+        return shouldFallbackStructuredOutput ? 0 : message.is_error ? 1 : 0;
       }
 
       if (message.type === 'auth_status') {
@@ -1122,6 +1267,7 @@ async function main() {
       final_content: cumulativeText,
       provider_thread_id: activeSessionId,
       provider_turn_id: lastAssistantUuid,
+      provider_item_id: lastAssistantUuid ?? null,
       usage: lastUsage,
       timestamp: nowMs(),
     });
@@ -1166,6 +1312,7 @@ async function main() {
       final_content: action ? content : cumulativeText,
       provider_thread_id: activeSessionId,
       provider_turn_id: lastAssistantUuid,
+      provider_item_id: lastAssistantUuid ?? null,
       usage: lastUsage,
       timestamp: nowMs(),
     });

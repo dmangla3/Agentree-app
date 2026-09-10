@@ -3,12 +3,12 @@ import type { Message } from '../stores/workspaceStore';
 import { isActiveAgentStatus, isFailureAgentStatus, isTerminalAgentStatus, type AgentStatus } from '@shared/agentStatus';
 
 export const orchestrationEventTypes = [
-  'orchestration:child_requested',
-  'orchestration:child_started',
+  'orchestration:run_requested',
+  'orchestration:run_started',
   'orchestration:wait_started',
   'orchestration:wait_completed',
   'orchestration:retry_requested',
-  'orchestration:child_superseded',
+  'orchestration:run_superseded',
   'orchestration:cancel_requested',
   'orchestration:cancelled',
   'orchestration:completed',
@@ -16,6 +16,12 @@ export const orchestrationEventTypes = [
 ] as const;
 
 export type OrchestrationEventType = typeof orchestrationEventTypes[number];
+
+const legacyOrchestrationEventTypeAliases: Record<string, OrchestrationEventType> = {
+  'orchestration:child_requested': 'orchestration:run_requested',
+  'orchestration:child_started': 'orchestration:run_started',
+  'orchestration:child_superseded': 'orchestration:run_superseded',
+};
 
 export type OrchestrationStatus =
   | 'running'
@@ -37,9 +43,9 @@ export interface OrchestrationEventPayload {
   orchestratorRunId?: string;
   orchestratorNodeId?: string;
   decisionId?: string;
-  childUserNodeId?: string;
-  childAssistantNodeId?: string;
-  childRunId?: string;
+  runUserNodeId?: string;
+  runAssistantNodeId?: string;
+  agentRunId?: string;
   supersededAssistantNodeId?: string;
   replacementAssistantNodeId?: string;
   waitGroupId?: string;
@@ -60,19 +66,19 @@ export interface ParsedOrchestrationEvent {
 export interface OrchestrationProjection {
   status: OrchestrationStatus;
   requestedDecisionIds: Set<string>;
-  requestedChildLaunchByDecisionId?: Map<string, {
-    childUserNodeId?: string;
-    childAssistantNodeId?: string;
-    childRunId?: string;
+  requestedRunLaunchByDecisionId?: Map<string, {
+    runUserNodeId?: string;
+    runAssistantNodeId?: string;
+    agentRunId?: string;
   }>;
-  childAssistantNodeIdByDecisionId: Map<string, string>;
-  supersededChildIds: Set<string>;
+  runAssistantNodeIdByDecisionId: Map<string, string>;
+  supersededRunIds: Set<string>;
   activeWaitGroup: OrchestrationWaitGroup | null;
   needsUserActionReason: string | null;
   lastSeq: number;
 }
 
-export interface OrchestrationChildFact {
+export interface OrchestrationRunFact {
   assistantNodeId: string;
   decisionId: string | null;
   status: AgentStatus | null;
@@ -81,7 +87,7 @@ export interface OrchestrationChildFact {
   outputCommitSha: string | null;
 }
 
-export interface ExistingOrchestrationChildLaunch {
+export interface ExistingOrchestrationRunLaunch {
   userNodeId: string | null;
   assistantNodeId: string;
   runId: string | null;
@@ -89,21 +95,26 @@ export interface ExistingOrchestrationChildLaunch {
 }
 
 export interface OrchestrationRecoveryProjection extends OrchestrationProjection {
-  controlledChildren: OrchestrationChildFact[];
-  activeControlledAssistantNodeIds: string[];
-  terminalChildren: OrchestrationChildFact[];
+  orchestrationRuns: OrchestrationRunFact[];
+  activeOrchestrationRunAssistantNodeIds: string[];
+  terminalOrchestrationRuns: OrchestrationRunFact[];
   missingDecisionIds: string[];
 }
 
 export type OrchestrationRecoveryAction =
   | { type: 'complete_wait'; waitGroup: OrchestrationWaitGroup }
   | { type: 'mark_cancelled'; reason: string }
-  | { type: 'stop_active_children'; assistantNodeIds: string[]; reason: string }
+  | { type: 'stop_active_runs'; assistantNodeIds: string[]; reason: string }
   | { type: 'needs_user_action'; reason: string }
   | { type: 'none' };
 
+const normalizeOrchestrationEventType = (value: string): OrchestrationEventType | null => {
+  if (orchestrationEventTypes.includes(value as OrchestrationEventType)) return value as OrchestrationEventType;
+  return legacyOrchestrationEventTypeAliases[value] ?? null;
+};
+
 export const isOrchestrationEventType = (value: string): value is OrchestrationEventType =>
-  orchestrationEventTypes.includes(value as OrchestrationEventType);
+  normalizeOrchestrationEventType(value) !== null;
 
 const readRecordString = (record: Record<string, unknown>, keys: string[]): string | null => {
   for (const key of keys) {
@@ -158,14 +169,14 @@ const getRunId = (message: Pick<Message, 'execution_data'>): string | null => {
     ? executionData.meta as Record<string, unknown>
     : {};
   return readRecordString(executionData, ['current_run_id'])
-    ?? readRecordString(meta, ['child_run_id', 'run_id', 'runId']);
+    ?? readRecordString(meta, ['agent_run_id', 'child_run_id', 'run_id', 'runId']);
 };
 
-export const findExistingOrchestrationChildLaunch = (
+export const findExistingOrchestrationRunLaunch = (
   messages: Message[],
   orchestratorNodeId: string,
   decisionId: string,
-): ExistingOrchestrationChildLaunch | null => {
+): ExistingOrchestrationRunLaunch | null => {
   const assistant = messages.find((message) => (
     message.role === 'assistant'
     && getControlledByNodeId(message) === orchestratorNodeId
@@ -183,37 +194,37 @@ export const findExistingOrchestrationChildLaunch = (
 
 export const isOrchestrationWaitGroupSatisfied = (
   waitGroup: OrchestrationWaitGroup,
-  children: OrchestrationChildFact[],
+  runs: OrchestrationRunFact[],
 ): boolean => {
-  const childByDecisionId = new Map(
-    children
-      .filter((child) => child.decisionId)
-      .map((child) => [child.decisionId as string, child]),
+  const runByDecisionId = new Map(
+    runs
+      .filter((run) => run.decisionId)
+      .map((run) => [run.decisionId as string, run]),
   );
-  const waitChildren = waitGroup.decisionIds.map((decisionId) => childByDecisionId.get(decisionId) ?? null);
-  if (waitChildren.length === 0) return false;
+  const waitRuns = waitGroup.decisionIds.map((decisionId) => runByDecisionId.get(decisionId) ?? null);
+  if (waitRuns.length === 0) return false;
 
   const condition = String(waitGroup.condition || 'all').toLowerCase();
   switch (condition) {
     case 'any':
-      return waitChildren.some((child) => Boolean(child?.terminal));
+      return waitRuns.some((run) => Boolean(run?.terminal));
     case 'failed':
-      return waitChildren.some((child) => isFailureAgentStatus(child?.status));
+      return waitRuns.some((run) => isFailureAgentStatus(run?.status));
     case 'completed':
-      return waitChildren.every((child) => child?.status === 'completed');
+      return waitRuns.every((run) => run?.status === 'completed');
     case 'commit_available':
-      return waitChildren.every((child) => Boolean(child?.outputCommitSha));
+      return waitRuns.every((run) => Boolean(run?.outputCommitSha));
     case 'terminal':
     case 'all':
     default:
-      return waitChildren.every((child) => Boolean(child?.terminal));
+      return waitRuns.every((run) => Boolean(run?.terminal));
   }
 };
 
 export const getSatisfiedActiveWaitGroup = (
   projection: OrchestrationRecoveryProjection,
 ): OrchestrationWaitGroup | null => {
-  return projection.activeWaitGroup && isOrchestrationWaitGroupSatisfied(projection.activeWaitGroup, projection.controlledChildren)
+  return projection.activeWaitGroup && isOrchestrationWaitGroupSatisfied(projection.activeWaitGroup, projection.orchestrationRuns)
     ? projection.activeWaitGroup
     : null;
 };
@@ -229,10 +240,10 @@ export const planOrchestrationRecoveryAction = (
   }
 
   if (projection.status === 'cancelling') {
-    if (projection.activeControlledAssistantNodeIds.length > 0) {
+    if (projection.activeOrchestrationRunAssistantNodeIds.length > 0) {
       return {
-        type: 'stop_active_children',
-        assistantNodeIds: projection.activeControlledAssistantNodeIds,
+        type: 'stop_active_runs',
+        assistantNodeIds: projection.activeOrchestrationRunAssistantNodeIds,
         reason: 'cancel_recovery',
       };
     }
@@ -256,7 +267,8 @@ export const planOrchestrationRecoveryAction = (
 export const parseOrchestrationJournalEvent = (
   row: AgentRunJournalEvent,
 ): ParsedOrchestrationEvent | null => {
-  if (!isOrchestrationEventType(row.eventType)) return null;
+  const eventType = normalizeOrchestrationEventType(row.eventType);
+  if (!eventType) return null;
   let payload: OrchestrationEventPayload = {};
   try {
     const parsed = JSON.parse(row.payload);
@@ -266,8 +278,24 @@ export const parseOrchestrationJournalEvent = (
   } catch {
     payload = { reason: 'Invalid orchestration event payload.' };
   }
+  payload.runUserNodeId = typeof payload.runUserNodeId === 'string'
+    ? payload.runUserNodeId
+    : typeof payload.childUserNodeId === 'string'
+      ? payload.childUserNodeId
+      : undefined;
+  payload.runAssistantNodeId = typeof payload.runAssistantNodeId === 'string'
+    ? payload.runAssistantNodeId
+    : typeof payload.childAssistantNodeId === 'string'
+      ? payload.childAssistantNodeId
+      : undefined;
+  payload.agentRunId = typeof payload.agentRunId === 'string'
+    ? payload.agentRunId
+    : typeof payload.childRunId === 'string'
+      ? payload.childRunId
+      : undefined;
+
   return {
-    type: row.eventType,
+    type: eventType,
     seq: row.seq,
     timestamp: row.timestamp,
     payload,
@@ -279,13 +307,13 @@ export const replayOrchestrationEvents = (
 ): OrchestrationProjection => {
   const ordered = [...events].sort((left, right) => left.seq - right.seq);
   const requestedDecisionIds = new Set<string>();
-  const requestedChildLaunchByDecisionId = new Map<string, {
-    childUserNodeId?: string;
-    childAssistantNodeId?: string;
-    childRunId?: string;
+  const requestedRunLaunchByDecisionId = new Map<string, {
+    runUserNodeId?: string;
+    runAssistantNodeId?: string;
+    agentRunId?: string;
   }>();
-  const childAssistantNodeIdByDecisionId = new Map<string, string>();
-  const supersededChildIds = new Set<string>();
+  const runAssistantNodeIdByDecisionId = new Map<string, string>();
+  const supersededRunIds = new Set<string>();
   let status: OrchestrationStatus = 'running';
   let activeWaitGroup: OrchestrationWaitGroup | null = null;
   let needsUserActionReason: string | null = null;
@@ -295,27 +323,27 @@ export const replayOrchestrationEvents = (
     lastSeq = event.seq;
     const { payload } = event;
     switch (event.type) {
-      case 'orchestration:child_requested':
+      case 'orchestration:run_requested':
         if (!payload.decisionId) {
           status = 'needs_user_action';
-          needsUserActionReason = 'Child request event is missing its decision id.';
+          needsUserActionReason = 'Orchestration run request event is missing its decision id.';
           break;
         }
         requestedDecisionIds.add(payload.decisionId);
-        requestedChildLaunchByDecisionId.set(payload.decisionId, {
-          childUserNodeId: typeof payload.childUserNodeId === 'string' ? payload.childUserNodeId : undefined,
-          childAssistantNodeId: typeof payload.childAssistantNodeId === 'string' ? payload.childAssistantNodeId : undefined,
-          childRunId: typeof payload.childRunId === 'string' ? payload.childRunId : undefined,
+        requestedRunLaunchByDecisionId.set(payload.decisionId, {
+          runUserNodeId: typeof payload.runUserNodeId === 'string' ? payload.runUserNodeId : undefined,
+          runAssistantNodeId: typeof payload.runAssistantNodeId === 'string' ? payload.runAssistantNodeId : undefined,
+          agentRunId: typeof payload.agentRunId === 'string' ? payload.agentRunId : undefined,
         });
         break;
-      case 'orchestration:child_started':
-        if (!payload.decisionId || !payload.childAssistantNodeId) {
+      case 'orchestration:run_started':
+        if (!payload.decisionId || !payload.runAssistantNodeId) {
           status = 'needs_user_action';
-          needsUserActionReason = 'Child start event is missing its decision or assistant node id.';
+          needsUserActionReason = 'Orchestration run start event is missing its decision or assistant node id.';
           break;
         }
-        if (!childAssistantNodeIdByDecisionId.has(payload.decisionId)) {
-          childAssistantNodeIdByDecisionId.set(payload.decisionId, payload.childAssistantNodeId);
+        if (!runAssistantNodeIdByDecisionId.has(payload.decisionId)) {
+          runAssistantNodeIdByDecisionId.set(payload.decisionId, payload.runAssistantNodeId);
         }
         break;
       case 'orchestration:wait_started':
@@ -334,12 +362,12 @@ export const replayOrchestrationEvents = (
           activeWaitGroup = null;
         }
         break;
-      case 'orchestration:child_superseded':
+      case 'orchestration:run_superseded':
         if (typeof payload.supersededAssistantNodeId === 'string') {
-          supersededChildIds.add(payload.supersededAssistantNodeId);
+          supersededRunIds.add(payload.supersededAssistantNodeId);
         }
         if (typeof payload.decisionId === 'string' && typeof payload.replacementAssistantNodeId === 'string') {
-          childAssistantNodeIdByDecisionId.set(payload.decisionId, payload.replacementAssistantNodeId);
+          runAssistantNodeIdByDecisionId.set(payload.decisionId, payload.replacementAssistantNodeId);
         }
         break;
       case 'orchestration:cancel_requested':
@@ -365,9 +393,9 @@ export const replayOrchestrationEvents = (
   return {
     status,
     requestedDecisionIds,
-    requestedChildLaunchByDecisionId,
-    childAssistantNodeIdByDecisionId,
-    supersededChildIds,
+    requestedRunLaunchByDecisionId,
+    runAssistantNodeIdByDecisionId,
+    supersededRunIds,
     activeWaitGroup,
     needsUserActionReason,
     lastSeq,
@@ -380,10 +408,10 @@ export const recoverOrchestrationProjection = (input: {
   messages: Message[];
 }): OrchestrationRecoveryProjection => {
   const projection = replayOrchestrationEvents(input.events);
-  const controlledChildren = input.messages
+  const orchestrationRuns = input.messages
     .filter((message) => message.role === 'assistant')
     .filter((message) => getControlledByNodeId(message) === input.orchestratorNodeId)
-    .map((message): OrchestrationChildFact => {
+    .map((message): OrchestrationRunFact => {
       const status = (typeof message.status === 'string' ? message.status : null) as AgentStatus | null;
       return {
         assistantNodeId: message.id,
@@ -397,37 +425,37 @@ export const recoverOrchestrationProjection = (input: {
       };
     });
 
-  for (const child of controlledChildren) {
-    if (!child.decisionId) continue;
-    if (!projection.childAssistantNodeIdByDecisionId.has(child.decisionId)) {
-      projection.childAssistantNodeIdByDecisionId.set(child.decisionId, child.assistantNodeId);
+  for (const run of orchestrationRuns) {
+    if (!run.decisionId) continue;
+    if (!projection.runAssistantNodeIdByDecisionId.has(run.decisionId)) {
+      projection.runAssistantNodeIdByDecisionId.set(run.decisionId, run.assistantNodeId);
     }
   }
 
-  const childDecisionIds = new Set(controlledChildren.map((child) => child.decisionId).filter(Boolean));
+  const runDecisionIds = new Set(orchestrationRuns.map((run) => run.decisionId).filter(Boolean));
   const missingDecisionIds = [...projection.requestedDecisionIds]
     .filter((decisionId) => (
-      !projection.childAssistantNodeIdByDecisionId.has(decisionId)
-      && !childDecisionIds.has(decisionId)
-      && !projection.requestedChildLaunchByDecisionId?.get(decisionId)?.childAssistantNodeId
+      !projection.runAssistantNodeIdByDecisionId.has(decisionId)
+      && !runDecisionIds.has(decisionId)
+      && !projection.requestedRunLaunchByDecisionId?.get(decisionId)?.runAssistantNodeId
     ));
 
   let status = projection.status;
   let needsUserActionReason = projection.needsUserActionReason;
   if (missingDecisionIds.length > 0 && status !== 'completed' && status !== 'cancelled') {
     status = 'needs_user_action';
-    needsUserActionReason = `Requested child run is missing for decision ${missingDecisionIds[0]}.`;
+    needsUserActionReason = `Requested orchestration run is missing for decision ${missingDecisionIds[0]}.`;
   }
 
   return {
     ...projection,
     status,
     needsUserActionReason,
-    controlledChildren,
-    activeControlledAssistantNodeIds: controlledChildren
-      .filter((child) => child.active && !projection.supersededChildIds.has(child.assistantNodeId))
-      .map((child) => child.assistantNodeId),
-    terminalChildren: controlledChildren.filter((child) => child.terminal),
+    orchestrationRuns,
+    activeOrchestrationRunAssistantNodeIds: orchestrationRuns
+      .filter((run) => run.active && !projection.supersededRunIds.has(run.assistantNodeId))
+      .map((run) => run.assistantNodeId),
+    terminalOrchestrationRuns: orchestrationRuns.filter((run) => run.terminal),
     missingDecisionIds,
   };
 };

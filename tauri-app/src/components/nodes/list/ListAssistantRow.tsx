@@ -19,7 +19,7 @@ import { api } from '../../../lib/api';
 import { agentClient } from '../../../lib/agentClient';
 import type { Message } from '../../../stores/workspaceStore';
 import type { GraphSnapshot } from '../../../hooks/useGraphSnapshot';
-import { getAssistantIdentityLabel } from '../../../lib/assistantIdentity';
+import { getAssistantIdentityParts, getAssistantReasoningEffortFromExecutionData } from '../../../lib/assistantIdentity';
 
 const CACHE_REPAIR_LIST_ACTIVE_STATUS_REFRESH_COOLDOWN_MS = 15_000;
 const cacheRepairListRefreshAtByMessageId = new Map<string, number>();
@@ -55,18 +55,21 @@ const AgentChip = ({
   agentId,
   llmModel,
   llmProvider,
+  reasoningEffort,
 }: {
   agentId?: string | null;
   llmModel?: string | null;
   llmProvider?: string | null;
+  reasoningEffort?: string | null;
 }) => {
   const { data: agents = [] } = useAgents();
   const agent = agents.find(a => a.id === agentId);
 
-  const name = getAssistantIdentityLabel({
+  const { label, reasoningEffort: reasoningEffortLabel } = getAssistantIdentityParts({
     agentName: agent?.name,
     llmModel,
     llmProvider,
+    reasoningEffort,
   });
   const colorName = agent?.color;
   const colorClass = getAgentColorClass(colorName) || 'bg-slate-500';
@@ -76,7 +79,10 @@ const AgentChip = ({
       "shrink-0 rounded px-1.5 py-0.5 text-[8px] font-bold uppercase leading-none tracking-wider text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.22)]",
       colorClass
     )}>
-      {name}
+      {label}
+      {reasoningEffortLabel && (
+        <span className="ml-1 normal-case">{reasoningEffortLabel}</span>
+      )}
     </div>
   );
 };
@@ -205,6 +211,7 @@ export const ListAssistantRow = memo(({
           agentId={entity.message?.agent_id}
           llmModel={entity.message?.llmModel}
           llmProvider={entity.message?.llmProvider}
+          reasoningEffort={getAssistantReasoningEffortFromExecutionData(entity.message?.execution_data)}
         />
         <AiLabelChip aiLabel={entity.message?.aiLabel} />
 

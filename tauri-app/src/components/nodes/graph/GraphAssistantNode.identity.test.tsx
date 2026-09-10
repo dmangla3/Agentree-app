@@ -38,10 +38,15 @@ const makeAssistantEntity = (overrides: Partial<ProjectedNodeEntity> = {}): Proj
       createdAt: '2026-05-16T00:00:00.000Z',
       updatedAt: '2026-05-16T00:00:00.000Z',
       agent_id: null,
-      llmModel: 'openai/gpt-5.5-high',
+      llmModel: 'openai/gpt-5.5',
       llmProvider: 'openai',
       aiLabel: 'Generated AI topic label',
       tags: [],
+      execution_data: {
+        meta: {
+          provider_reasoning_effort: 'high',
+        },
+      },
       ...(messageOverrides ?? {}),
     },
     ...entityOverrides,
@@ -66,7 +71,8 @@ describe('GraphAssistantNode identity', () => {
       />
     );
 
-    expect(screen.getByText('GPT 5.5 High')).toBeTruthy();
+    expect(screen.getByText('GPT 5.5')).toBeTruthy();
+    expect(screen.getByText('High').className).toContain('normal-case');
     expect(screen.getByText('Implemented the fix.')).toBeTruthy();
     expect(screen.queryByText('Generated AI topic label')).toBeNull();
     expect(screen.queryByText('Assistant')).toBeNull();

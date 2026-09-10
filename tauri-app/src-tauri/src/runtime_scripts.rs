@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use tauri::{path::BaseDirectory, AppHandle, Manager};
 
 const RUNTIME_SCRIPTS: &[&str] = &[
+    "ai-label-prompt.txt",
     "bash-adapter.cjs",
     "claude-agent-sdk-adapter.mjs",
     "merge-review-runner.cjs",

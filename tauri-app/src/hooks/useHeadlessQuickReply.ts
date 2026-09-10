@@ -5,7 +5,10 @@ import { useQueryClient } from '@tanstack/react-query';
 import { agentRunManager } from '../agent-runs/agentRunManager';
 import { agentClient } from '../lib/agentClient';
 import { getAccessToken } from '../lib/authSession';
-import { isLoginProfileActive, type LoginProfileSummary } from '../lib/loginProfiles';
+import {
+  providerRequiresLoginProfile,
+  resolveLoginProfileSelection,
+} from '../lib/loginProfiles';
 import { markLocalAgentNodeTerminal } from '../lib/localAgentRunTerminal';
 import { resolveQuickReplyAgent, resolveQuickReplyBase } from '../lib/quickReply';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
@@ -16,20 +19,6 @@ import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage 
 import { useWorkspaces } from './useWorkspaces';
 
 type QuickReplyStatus = 'idle' | 'sending' | 'error';
-
-const providerRequiresLoginProfile = (provider?: string | null): boolean =>
-  provider === 'codex' || provider === 'claude';
-
-export const selectQuickReplyLoginProfile = (
-  profiles: LoginProfileSummary[],
-  provider?: string | null,
-): LoginProfileSummary | null => {
-  if (!provider) return null;
-  const compatibleProfiles = profiles.filter((profile) => profile.provider === provider);
-  const defaultProfile = compatibleProfiles.find((profile) => profile.isDefault) ?? null;
-  if (defaultProfile && isLoginProfileActive(defaultProfile)) return defaultProfile;
-  return compatibleProfiles.find((profile) => isLoginProfileActive(profile)) ?? null;
-};
 
 export const materializeHeadlessQuickReplyMessages = (
   queryClient: QueryClient,
@@ -116,10 +105,15 @@ export function useHeadlessQuickReply() {
       setError('The parent does not have an ancestor output commit to run from.');
       return;
     }
-    const selectedLoginProfile = selectQuickReplyLoginProfile(loginProfiles, agent.type);
-    if (providerRequiresLoginProfile(agent.type) && !selectedLoginProfile) {
+    const loginProfileSelection = resolveLoginProfileSelection({
+      profiles: loginProfiles,
+      provider: agent.type,
+      agentName: agent.name ?? agent.type,
+    });
+    const selectedLoginProfile = loginProfileSelection.selectedProfile;
+    if (providerRequiresLoginProfile(agent.type) && !loginProfileSelection.isReady) {
       setStatus('error');
-      setError(`${agent.name ?? agent.type} needs a ready login profile before it can run.`);
+      setError(loginProfileSelection.failureMessage ?? `${agent.name ?? agent.type} needs a ready login profile before it can run.`);
       return;
     }
 

@@ -40,15 +40,17 @@ interface GraphNodeHoverCardShellProps {
   hoverOpenDelay?: number;
   hoverHydrationEnabled?: boolean;
   hoverCardContent?: ReactNode;
+  onHoverOpenChange?: (open: boolean) => void;
   children: ReactNode;
 }
 
 export const GraphNodeHoverCardShell = ({
   nodeId,
   disabled,
-  hoverOpenDelay = 200,
+  hoverOpenDelay = 250,
   hoverHydrationEnabled = false,
   hoverCardContent,
+  onHoverOpenChange,
   children,
 }: GraphNodeHoverCardShellProps) => {
   const hoverContentRef = useRef<HTMLDivElement | null>(null);
@@ -101,6 +103,10 @@ export const GraphNodeHoverCardShell = ({
 
   useAgentRunHoverHydration(nodeId, hoverOpen && !shouldDisableHoverCard && hoverHydrationEnabled);
 
+  useEffect(() => {
+    onHoverOpenChange?.(hoverOpen && !shouldDisableHoverCard);
+  }, [hoverOpen, onHoverOpenChange, shouldDisableHoverCard]);
+
   if (!hoverCardContent) {
     return <>{children}</>;
   }
@@ -131,7 +137,6 @@ export const GraphNodeHoverCardShell = ({
           ? cloneElement(children as ReactElement<any>, {
             onPointerEnter: (event: ReactPointerEvent) => {
               pointerInsideTriggerRef.current = true;
-              setHoverOpen(true);
               (children as ReactElement<any>).props.onPointerEnter?.(event);
             },
             onPointerLeave: (event: ReactPointerEvent) => {
@@ -140,7 +145,6 @@ export const GraphNodeHoverCardShell = ({
             },
             onMouseEnter: (event: ReactMouseEvent) => {
               pointerInsideTriggerRef.current = true;
-              setHoverOpen(true);
               (children as ReactElement<any>).props.onMouseEnter?.(event);
             },
             onMouseLeave: (event: ReactMouseEvent) => {
@@ -189,7 +193,7 @@ export const GraphNodeWrapper = memo(({
   disableHoverCard,
   className,
   bodyClassName,
-  hoverOpenDelay = 200,
+  hoverOpenDelay = 250,
   style,
   heightKey,
   onMeasureHeight,

@@ -376,7 +376,7 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
             "tools": [
                 {
                     "name": "list_prompt_templates",
-                    "description": "List prompt templates available to the orchestrator. Use this to discover #template labels before spawning child runs.",
+                    "description": "List prompt templates available to the orchestrator. Use this to discover #template labels before spawning orchestration runs.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -390,7 +390,7 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                 },
                 {
                     "name": "get_prompt_template",
-                    "description": "Read one prompt template by id or #label. Use this before composing a child run prompt from a #template mention.",
+                    "description": "Read one prompt template by id or #label. Use this before composing an orchestration run prompt from a #template mention.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -403,8 +403,8 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                     }
                 },
                 {
-                    "name": "start_orchestration_child",
-                    "description": "Start one child agent run controlled by the current orchestrator. This delegates to Agentree's composer/control-plane launch path so graph nodes, local cache, runtime metadata, and orchestration journal events stay consistent.",
+                    "name": "start_orchestration_run",
+                    "description": "Start one orchestration agent run. The spawned run is a normal graph run associated with the current orchestrator, not a graph child of the controller assistant.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -412,7 +412,18 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                             "orchestrator_node_id": { "type": "string" },
                             "decision_id": { "type": "string" },
                             "prompt": { "type": "string" },
-                            "parent_node_id": { "type": "string" },
+                            "parent_node_id": {
+                                "type": "string",
+                                "description": "Optional visual/conversation parent for the orchestration run user node. Omit to attach first-level orchestration runs to the assistant message the user replied to, or to the thread node when this orchestration starts a new thread."
+                            },
+                            "context_parent_node_id": {
+                                "type": "string",
+                                "description": "Optional runtime context parent. Omit to inherit the orchestrator's original context parent."
+                            },
+                            "base_node_id": {
+                                "type": "string",
+                                "description": "Optional base node for runtime metadata. Omit to inherit the orchestrator's original base node."
+                            },
                             "template_id": { "type": "string" },
                             "agent_id": { "type": "string" },
                             "agent_type": { "type": "string" },
@@ -428,7 +439,7 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                 },
                 {
                     "name": "wait_for_runs",
-                    "description": "Wait for child assistant runs without polling from the model. Agentree records wait_started, resolves this tool when the app observes the requested condition, then records wait_completed.",
+                    "description": "Wait for orchestration assistant runs without tight model polling. The wait returns when the condition is satisfied or before the provider MCP timeout with timedOut=true as a checkpoint.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -447,39 +458,63 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                                 "type": "string",
                                 "description": "terminal, all, any, completed, failed, commit_available, any_terminal, or any_failed"
                             },
-                            "timeout_ms": { "type": "number" }
+                            "timeout_ms": {
+                                "type": "number",
+                                "description": "Requested checkpoint wait duration in milliseconds. Agentree caps this below the provider MCP timeout."
+                            }
                         },
                         "required": ["orchestrator_run_id", "orchestrator_node_id", "assistant_node_ids"]
                     }
                 },
                 {
                     "name": "control_run",
-                    "description": "Control a running assistant node. Use action=steer with content to guide it, or action=stop to cancel it. This uses the same app runtime controls as normal user steering.",
+                    "description": "Control a running assistant node. Use action=steer with content to guide it, or action=stop to cancel it. Stopping an active run requires force=true and reason. This uses the same app runtime controls as normal user steering.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "assistant_node_id": { "type": "string" },
                             "action": { "type": "string", "description": "steer or stop" },
                             "content": { "type": "string" },
-                            "idempotency_key": { "type": "string" }
+                            "idempotency_key": { "type": "string" },
+                            "force": { "type": "boolean" },
+                            "reason": { "type": "string" }
                         },
                         "required": ["assistant_node_id", "action"]
                     }
                 },
                 {
                     "name": "complete_orchestration",
-                    "description": "Mark an orchestrator run completed after child work is done.",
+                    "description": "Mark an orchestrator run completed after orchestration run work is done.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "orchestrator_run_id": { "type": "string" },
                             "orchestrator_node_id": { "type": "string" },
-                            "terminal_child_assistant_node_ids": {
+                            "terminal_orchestration_run_assistant_node_ids": {
                                 "type": "array",
+                                "description": "Terminal orchestration assistant node IDs.",
                                 "items": { "type": "string" }
                             }
                         },
                         "required": ["orchestrator_run_id", "orchestrator_node_id"]
+                    }
+                },
+                {
+                    "name": "graph_live_query",
+                    "description": "Search local/projection graph state currently loaded in the app. Use this for active or recently started orchestration runs because persisted graph_query can lag local-first nodes. Results are explicitly marked as live/projection/local.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "workspace_id": {
+                                "type": "string",
+                                "description": "OPTIONAL: Auto-detected from current context. Only pass if querying a different workspace."
+                            },
+                            "filters": { "type": "object", "description": "Filter criteria like {role: 'assistant', status: 'running'}" },
+                            "node_id": { "type": "string" },
+                            "limit": { "type": "number", "description": "Maximum nodes to return" },
+                            "offset": { "type": "number", "description": "Pagination offset" }
+                        },
+                        "required": []
                     }
                 },
                 {
@@ -533,12 +568,15 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                 },
                 {
                     "name": "graph_read_node",
-                    "description": "Read a specific graph node, including content, run metadata, and tool calls.",
+                    "description": "Read a specific graph node, including content and run metadata. Tool calls are omitted by default; pass include_tool_calls=true only when tool-call details are needed.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "node_id": { "type": "string" },
-                            "include_tool_calls": { "type": "boolean" },
+                            "include_tool_calls": {
+                                "type": "boolean",
+                                "description": "Optional, defaults to false. Set true only when tool-call details are needed."
+                            },
                             "max_content_length": { "type": "number" }
                         },
                         "required": ["node_id"]
@@ -666,9 +704,9 @@ async fn handle_tools_call(
             }
             handle_get_prompt_template(id, state, template_id.unwrap())
         }
-        Some("start_orchestration_child") => {
+        Some("start_orchestration_run") => {
             let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
-            handle_frontend_orchestration_tool(id, state, "start_orchestration_child", args).await
+            handle_frontend_orchestration_tool(id, state, "start_orchestration_run", args).await
         }
         Some("wait_for_runs") => {
             let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
@@ -681,6 +719,10 @@ async fn handle_tools_call(
         Some("complete_orchestration") => {
             let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
             handle_complete_orchestration(id, state, args)
+        }
+        Some("graph_live_query") => {
+            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
+            handle_frontend_orchestration_tool(id, state, "graph_live_query", args).await
         }
         Some("get_graph_overview") => {
             let workspace_id = get_workspace_id(arguments);
@@ -1259,11 +1301,11 @@ fn handle_complete_orchestration(
     let Some(orchestrator_node_id) = read_arg_string(&args, "orchestrator_node_id") else {
         return missing_args_response(id, "orchestrator_node_id is required");
     };
-    let terminal_child_assistant_node_ids =
-        read_arg_string_array(&args, "terminal_child_assistant_node_ids");
+    let terminal_orchestration_run_assistant_node_ids =
+        read_arg_string_array(&args, "terminal_orchestration_run_assistant_node_ids");
     let payload = serde_json::json!({
-        "terminalChildAssistantNodeIds": terminal_child_assistant_node_ids,
-        "terminalChildRunCount": terminal_child_assistant_node_ids.len(),
+        "terminalOrchestrationRunAssistantNodeIds": terminal_orchestration_run_assistant_node_ids,
+        "terminalOrchestrationRunCount": terminal_orchestration_run_assistant_node_ids.len(),
     });
     let telemetry = state.app_handle.state::<crate::db::TelemetryDb>();
     match telemetry.record_orchestration_event(
@@ -1272,11 +1314,15 @@ fn handle_complete_orchestration(
         "orchestration:completed",
         &payload.to_string(),
     ) {
-        Ok(seq) => tool_text_response(id, serde_json::json!({
-            "completed": true,
-            "seq": seq,
-            "terminalChildAssistantNodeIds": terminal_child_assistant_node_ids,
-        }).to_string()),
+        Ok(seq) => tool_text_response(
+            id,
+            serde_json::json!({
+                "completed": true,
+                "seq": seq,
+                "terminalOrchestrationRunAssistantNodeIds": terminal_orchestration_run_assistant_node_ids,
+            })
+            .to_string(),
+        ),
         Err(err) => JsonRpcResponse {
             jsonrpc: "2.0",
             id,
@@ -1288,6 +1334,12 @@ fn handle_complete_orchestration(
         },
     }
 }
+
+const ORCHESTRATION_MCP_DEFAULT_WAIT_TIMEOUT_MS: u64 = 100_000;
+const ORCHESTRATION_MCP_MAX_WAIT_TIMEOUT_MS: u64 = 100_000;
+const ORCHESTRATION_MCP_MIN_WAIT_TIMEOUT_MS: u64 = 1_000;
+const ORCHESTRATION_MCP_WAIT_BACKEND_GRACE_MS: u64 = 5_000;
+const ORCHESTRATION_MCP_NON_WAIT_TIMEOUT_MS: u64 = 110_000;
 
 async fn handle_frontend_orchestration_tool(
     id: serde_json::Value,
@@ -1318,7 +1370,10 @@ async fn handle_frontend_orchestration_tool(
         "toolName": tool_name,
         "arguments": arguments.clone(),
     });
-    if let Err(err) = state.app_handle.emit("agentree://orchestration-mcp-request", payload) {
+    if let Err(err) = state
+        .app_handle
+        .emit("agentree://orchestration-mcp-request", payload)
+    {
         let _ = MCP_ORCHESTRATION_PENDING
             .lock()
             .map(|mut pending| pending.remove(&request_id));
@@ -1337,11 +1392,14 @@ async fn handle_frontend_orchestration_tool(
         let timeout_ms = arguments
             .get("timeout_ms")
             .and_then(|value| value.as_u64())
-            .unwrap_or(10 * 60 * 1000)
-            .clamp(1_000, 30 * 60 * 1000);
-        Duration::from_millis(timeout_ms + 5_000)
+            .unwrap_or(ORCHESTRATION_MCP_DEFAULT_WAIT_TIMEOUT_MS)
+            .clamp(
+                ORCHESTRATION_MCP_MIN_WAIT_TIMEOUT_MS,
+                ORCHESTRATION_MCP_MAX_WAIT_TIMEOUT_MS,
+            );
+        Duration::from_millis(timeout_ms + ORCHESTRATION_MCP_WAIT_BACKEND_GRACE_MS)
     } else {
-        Duration::from_secs(120)
+        Duration::from_millis(ORCHESTRATION_MCP_NON_WAIT_TIMEOUT_MS)
     };
 
     match tokio::time::timeout(timeout, receiver).await {
@@ -1492,7 +1550,7 @@ mod tests {
 
         assert!(names.contains(&"list_prompt_templates"));
         assert!(names.contains(&"get_prompt_template"));
-        assert!(names.contains(&"start_orchestration_child"));
+        assert!(names.contains(&"start_orchestration_run"));
         assert!(names.contains(&"wait_for_runs"));
         assert!(names.contains(&"control_run"));
         assert!(names.contains(&"complete_orchestration"));
@@ -1911,10 +1969,9 @@ async fn handle_graph_read_node(
     };
     url.query_pairs_mut()
         .append_pair("node_id", node_id.as_str());
-    if let Some(include_tool_calls) = include_tool_calls {
-        url.query_pairs_mut()
-            .append_pair("include_tool_calls", &include_tool_calls.to_string());
-    }
+    let include_tool_calls = include_tool_calls.unwrap_or(false);
+    url.query_pairs_mut()
+        .append_pair("include_tool_calls", &include_tool_calls.to_string());
     if let Some(max_content_length) = max_content_length {
         url.query_pairs_mut()
             .append_pair("max_content_length", &max_content_length.to_string());

@@ -1,0 +1,1 @@
+Concise 5-10 word graph label for this assistant message. Capture the crux of what the assistant did or concluded so graph viewers can understand the message at a glance.
