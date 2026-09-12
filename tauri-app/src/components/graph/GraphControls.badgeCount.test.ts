@@ -9,7 +9,7 @@ describe('getThreadUnreadBadgeCount', () => {
     })).toBe(3);
   });
 
-  it('hides unread completed leaf counts for done threads', () => {
+  it('hides unread completed leaf counts for closed threads', () => {
     expect(getThreadUnreadBadgeCount({
       done: true,
       unreadCompletedLeafCount: 3,

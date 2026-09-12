@@ -50,10 +50,18 @@ export function OrchestrationPanel({ className }: { className?: string }) {
     [templates],
   );
   const normalizedDraftId = normalizeTemplateId(draftId);
-  const canSaveTemplate = Boolean(normalizedDraftId && draftPrompt.trim());
   const selectedTemplate = selectedTemplateId
     ? templates.find((template) => template.id === selectedTemplateId) ?? null
     : null;
+  const trimmedDraftPrompt = draftPrompt.trim();
+  const draftRequiresCommitValue = draftKind === 'node' ? draftRequiresCommit : undefined;
+  const templateDraftChanged = selectedTemplate
+    ? normalizedDraftId !== selectedTemplate.id
+      || draftKind !== selectedTemplate.kind
+      || trimmedDraftPrompt !== selectedTemplate.prompt
+      || draftRequiresCommitValue !== (selectedTemplate.kind === 'node' ? Boolean(selectedTemplate.requiresCommit) : undefined)
+    : Boolean(normalizedDraftId || trimmedDraftPrompt || draftRequiresCommit);
+  const canSaveTemplate = Boolean(normalizedDraftId && trimmedDraftPrompt && templateDraftChanged);
 
   const loadTemplateDraft = useCallback((template: OrchestrationPromptTemplate) => {
     setSelectedTemplateId(template.id);
@@ -63,10 +71,10 @@ export function OrchestrationPanel({ className }: { className?: string }) {
     setDraftRequiresCommit(Boolean(template.requiresCommit));
   }, []);
 
-  const resetTemplateDraft = useCallback(() => {
+  const resetTemplateDraft = useCallback((kind: OrchestrationTemplateKind = 'node') => {
     setSelectedTemplateId(null);
-    setDraftKind('node');
-    setDraftId('#custom_reviewer');
+    setDraftKind(kind);
+    setDraftId(kind === 'node' ? '#custom_reviewer' : '#custom_orchestration');
     setDraftPrompt('');
     setDraftRequiresCommit(false);
   }, []);
@@ -78,23 +86,45 @@ export function OrchestrationPanel({ className }: { className?: string }) {
       id: normalizedId,
       kind: draftKind,
       label: `#${normalizedId.replace(/^@/, '')}`,
-      prompt: draftPrompt.trim(),
-      requiresCommit: draftKind === 'node' ? draftRequiresCommit : undefined,
+      prompt: trimmedDraftPrompt,
+      requiresCommit: draftRequiresCommitValue,
       source: 'user',
       updatedAt: new Date().toISOString(),
     });
     setSelectedTemplateId(normalizedId);
     setDraftId(`#${normalizedId.replace(/^@/, '')}`);
-  }, [canSaveTemplate, draftId, draftKind, draftPrompt, draftRequiresCommit, upsertUserTemplate]);
+  }, [canSaveTemplate, draftId, draftKind, draftRequiresCommitValue, trimmedDraftPrompt, upsertUserTemplate]);
 
-  const renderTemplateList = (label: string, items: OrchestrationPromptTemplate[]) => (
-    <section className="min-h-0 rounded-xl border border-[hsl(var(--app-border)/0.68)] bg-background/48">
-      <div className="flex items-center justify-between border-b border-border/60 px-3 py-2">
-        <div className="flex min-w-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-          {label === 'Orchestration prompts' ? <Workflow className="h-3.5 w-3.5" /> : <Puzzle className="h-3.5 w-3.5" />}
-          <span>{label}</span>
+  const renderTemplateList = (
+    label: string,
+    kind: OrchestrationTemplateKind,
+    items: OrchestrationPromptTemplate[],
+  ) => (
+    <section className="min-h-0 overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.72)] bg-background/42 shadow-[0_14px_34px_-30px_hsl(var(--foreground)/0.42)]">
+      <div className="flex items-center justify-between border-b border-border/70 bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.92),hsl(var(--app-panel)/0.72))] px-3 py-2.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border/70 bg-background/72 text-[hsl(var(--app-accent))] shadow-sm">
+            {label === 'Orchestration prompts' ? <Workflow className="h-3.5 w-3.5" /> : <Puzzle className="h-3.5 w-3.5" />}
+          </span>
+          <div className="min-w-0">
+            <div className="truncate text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              {label}
+            </div>
+            <div className="mt-0.5 text-[10px] font-medium text-muted-foreground/75">
+              {items.length} saved
+            </div>
+          </div>
         </div>
-        <span className="font-mono text-[10px] text-muted-foreground">{items.length}</span>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => resetTemplateDraft(kind)}
+            className="flex h-7 items-center gap-1 rounded-md border border-[hsl(var(--app-accent)/0.28)] bg-[hsl(var(--app-accent-soft))] px-2 text-[10.5px] font-semibold normal-case tracking-normal text-[hsl(var(--app-accent))] transition-[background-color,filter,transform] hover:brightness-105 active:scale-[0.96]"
+          >
+            <Plus className="h-3 w-3" />
+            New
+          </button>
+        </div>
       </div>
       <div className="max-h-[18rem] space-y-1 overflow-y-auto p-1.5">
         {items.map((template) => {
@@ -136,8 +166,8 @@ export function OrchestrationPanel({ className }: { className?: string }) {
   return (
     <div className={cn('grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,28rem)]', className)}>
       <div className="grid min-h-0 gap-4 md:grid-cols-2 lg:grid-cols-1">
-        {renderTemplateList('Node prompts', nodeTemplates)}
-        {renderTemplateList('Orchestration prompts', orchestrationPromptTemplates)}
+        {renderTemplateList('Node prompts', 'node', nodeTemplates)}
+        {renderTemplateList('Orchestration prompts', 'orchestration', orchestrationPromptTemplates)}
       </div>
 
       <section className="app-panel flex min-h-0 flex-col rounded-2xl border border-[hsl(var(--app-border)/0.78)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-panel)/0.94))]">
@@ -147,17 +177,9 @@ export function OrchestrationPanel({ className }: { className?: string }) {
               Editor
             </div>
             <div className="mt-1 truncate text-sm font-semibold text-foreground">
-              {selectedTemplate ? selectedTemplate.label : 'New orchestration template'}
+              {selectedTemplate ? selectedTemplate.label : `New ${getTemplateKindLabel(draftKind).toLowerCase()}`}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={resetTemplateDraft}
-            className="flex h-8 items-center gap-1.5 rounded-lg border border-border/70 bg-background/70 px-2.5 text-xs font-semibold text-muted-foreground transition-[background-color,color,transform] hover:bg-muted hover:text-foreground active:scale-[0.96]"
-          >
-            <Plus className="h-3 w-3" />
-            New
-          </button>
         </div>
 
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">

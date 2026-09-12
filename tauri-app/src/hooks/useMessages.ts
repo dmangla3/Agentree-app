@@ -140,6 +140,9 @@ export const useMessages = (
                 const localMessages = localRows
                     .map(parseLocalNode)
                     .filter((row): row is NonNullable<ReturnType<typeof parseLocalNode>> => Boolean(row));
+                if (!queryClient.getQueryData(localNodeKeys.workspace(workspaceId))) {
+                    queryClient.setQueryData(localNodeKeys.workspace(workspaceId), localMessages);
+                }
                 const localRenderMessages = applyLocalNodeMessages([], localMessages, workspaceId);
                 if (localRenderMessages.length === 0) {
                     try {

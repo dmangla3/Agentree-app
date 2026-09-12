@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronDown,
   ChevronRight,
+  Cloud,
   Eye,
   FolderGit,
   FolderOpen,
@@ -47,6 +48,7 @@ import {
   RepoPrepareActionRequiredError,
   useCreateWorkspace,
   useDeleteWorkspace,
+  useEnableWorkspaceCloudBackup,
   useRenameWorkspace,
   useWorkspaces,
   type RepoDirtyStrategy,
@@ -266,7 +268,7 @@ function ThreadRow({
             </span>
           ) : thread.done ? (
             <span className="shrink-0 rounded bg-[hsl(var(--app-bg-muted))] px-1 py-0.5 text-[8px] font-bold leading-none text-muted-foreground">
-              Done
+              Closed
             </span>
           ) : null}
         </span>
@@ -279,7 +281,7 @@ function ThreadRow({
       <button
         type="button"
         onClick={() => onThreadDoneChange(thread.threadRootId, !thread.done)}
-        aria-label={thread.done ? `Reopen thread ${thread.label}` : `Mark done ${thread.label}`}
+        aria-label={thread.done ? `Reopen thread ${thread.label}` : `Close thread ${thread.label}`}
         className={cn(
           'flex w-7 shrink-0 items-center justify-center border-l border-[hsl(var(--app-border)/0.32)] text-muted-foreground opacity-60 transition-[background-color,color,opacity] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.32)] hover:text-foreground group-hover/thread:opacity-100',
           thread.done && 'text-[hsl(var(--app-accent))] opacity-100',
@@ -299,7 +301,7 @@ function ThreadRow({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" sideOffset={2} className="w-40">
           <DropdownMenuItem onClick={() => onThreadDoneChange(thread.threadRootId, !thread.done)}>
-            {thread.done ? 'Reopen thread' : 'Mark as done'}
+            {thread.done ? 'Reopen thread' : 'Close thread'}
           </DropdownMenuItem>
           {onThreadDelete ? (
             <>
@@ -349,7 +351,7 @@ function WorkspaceThreadSection({
     () => model?.threadItems.filter((thread) => !thread.done || thread.runningCount > 0) ?? [],
     [model?.threadItems],
   );
-  const doneThreadItems = useMemo(
+  const closedThreadItems = useMemo(
     () => model?.threadItems.filter((thread) => thread.done && thread.runningCount === 0) ?? [],
     [model?.threadItems],
   );
@@ -440,7 +442,7 @@ function WorkspaceThreadSection({
           />
         ))}
       </div>
-      {doneThreadItems.length > 0 ? (
+      {closedThreadItems.length > 0 ? (
         <div className="border-t border-[hsl(var(--app-border)/0.38)] pt-2">
           <button
             type="button"
@@ -448,12 +450,12 @@ function WorkspaceThreadSection({
             onClick={() => model.onDoneThreadsCollapsedChange(!model.doneThreadsCollapsed)}
             className="flex w-full items-center justify-between rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground transition-colors hover:bg-[hsl(var(--app-panel)/0.56)] hover:text-foreground"
           >
-            <span>Done threads</span>
-            <span className="font-mono tracking-normal">{doneThreadItems.length}</span>
+            <span>Closed threads</span>
+            <span className="font-mono tracking-normal">{closedThreadItems.length}</span>
           </button>
           {!model.doneThreadsCollapsed ? (
             <div className="mt-1 space-y-1">
-              {[...doneThreadItems].reverse().map((thread) => (
+              {[...closedThreadItems].reverse().map((thread) => (
                 <MemoThreadRow
                   key={thread.threadRootId}
                   thread={thread}
@@ -480,6 +482,7 @@ function WorkspaceRow({
   onCreateThread,
   onRequestRename,
   onRequestDelete,
+  onEnableBackup,
   onPrefetchWorkspace,
   showThreadSection,
   threadsFocused,
@@ -493,6 +496,7 @@ function WorkspaceRow({
   onCreateThread: () => void;
   onRequestRename: (workspace: Workspace) => void;
   onRequestDelete: (workspace: Workspace) => void;
+  onEnableBackup: (workspace: Workspace) => void;
   onPrefetchWorkspace: (workspaceId: string) => void;
   showThreadSection: boolean;
   threadsFocused: boolean;
@@ -507,9 +511,10 @@ function WorkspaceRow({
 
   const hasThreadModel = selected && Boolean(threadModel);
   const activeCount = hasThreadModel ? threadModel!.threadItems.filter((thread) => !thread.done || thread.runningCount > 0).length : null;
-  const doneCount = hasThreadModel ? threadModel!.threadItems.filter((thread) => thread.done && thread.runningCount === 0).length : null;
+  const closedCount = hasThreadModel ? threadModel!.threadItems.filter((thread) => thread.done && thread.runningCount === 0).length : null;
   const runningCount = hasThreadModel ? threadModel!.threadItems.reduce((total, thread) => total + thread.runningCount, 0) : null;
   const status = workspace.connection_status ?? workspace.connectionStatus ?? workspace.sync_status ?? workspace.syncStatus ?? null;
+  const cloudBackupEnabled = Boolean(workspace.cloud_backup_enabled ?? workspace.cloudBackupEnabled);
   const statusLabel = status && status !== 'connected' && status !== 'synced' ? String(status).replace(/_/g, ' ') : null;
   const createdAt = workspaceCreatedMs(workspace);
   const createdDate = createdAt > 0 ? new Date(createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : null;
@@ -552,7 +557,7 @@ function WorkspaceRow({
             <span className="block truncate text-[11px] font-semibold leading-none">{getWorkspaceDisplayName(workspace)}</span>
             <span className="mt-0.5 block truncate text-[9px] leading-none text-muted-foreground">
               {hasThreadModel
-                ? `${activeCount} active · ${doneCount} done · ${runningCount} running`
+                ? `${activeCount} active · ${closedCount} closed · ${runningCount} running`
                 : selected && showThreadSection
                   ? 'Loading thread index'
                   : createdDate
@@ -578,6 +583,12 @@ function WorkspaceRow({
               <Pencil className="mr-2 h-4 w-4" />
               Rename
             </DropdownMenuItem>
+            {!cloudBackupEnabled ? (
+              <DropdownMenuItem onClick={() => onEnableBackup(workspace)}>
+                <Cloud className="mr-2 h-4 w-4" />
+                Enable backup
+              </DropdownMenuItem>
+            ) : null}
             <DropdownMenuSeparator />
             <DropdownMenuItem
               className="text-destructive focus:text-destructive"
@@ -612,6 +623,7 @@ function RepoItem({
   onAddWorkspaceToRepo,
   onRequestRenameWorkspace,
   onRequestDeleteWorkspace,
+  onEnableWorkspaceBackup,
   onPrefetchWorkspace,
   showThreadSections,
   threadsFocused,
@@ -626,6 +638,7 @@ function RepoItem({
   onAddWorkspaceToRepo: (folderPath: string) => void;
   onRequestRenameWorkspace: (workspace: Workspace) => void;
   onRequestDeleteWorkspace: (workspace: Workspace) => void;
+  onEnableWorkspaceBackup: (workspace: Workspace) => void;
   onPrefetchWorkspace: (workspaceId: string) => void;
   showThreadSections: boolean;
   threadsFocused: boolean;
@@ -706,6 +719,7 @@ function RepoItem({
                 onCreateThread={onCreateThread}
                 onRequestRename={onRequestRenameWorkspace}
                 onRequestDelete={onRequestDeleteWorkspace}
+                onEnableBackup={onEnableWorkspaceBackup}
                 onPrefetchWorkspace={onPrefetchWorkspace}
                 showThreadSection={showThreadSections}
                 threadsFocused={threadsFocused}
@@ -731,7 +745,7 @@ function CollapsedWorkspaceNavigator({
   onExpand: () => void;
 }) {
   const activeThreadCount = threadModel?.threadItems.filter((thread) => !thread.done || thread.runningCount > 0).length ?? 0;
-  const doneThreadCount = threadModel?.threadItems.filter((thread) => thread.done && thread.runningCount === 0).length ?? 0;
+  const closedThreadCount = threadModel?.threadItems.filter((thread) => thread.done && thread.runningCount === 0).length ?? 0;
   const runningCount = threadModel?.threadItems.reduce((total, thread) => total + thread.runningCount, 0) ?? 0;
 
   return (
@@ -777,7 +791,7 @@ function CollapsedWorkspaceNavigator({
             </div>
           </TooltipTrigger>
           <TooltipContent side="right">
-            {activeThreadCount} active threads, {doneThreadCount} done, {runningCount} running
+            {activeThreadCount} active threads, {closedThreadCount} closed, {runningCount} running
           </TooltipContent>
         </Tooltip>
       </div>
@@ -802,6 +816,7 @@ export function WorkspaceNavigator({
   const createWorkspace = useCreateWorkspace();
   const renameWorkspace = useRenameWorkspace();
   const deleteWorkspace = useDeleteWorkspace();
+  const enableWorkspaceBackup = useEnableWorkspaceCloudBackup();
   const { addToast } = useToast();
   const [workspacePendingDelete, setWorkspacePendingDelete] = useState<Workspace | null>(null);
   const [workspacePendingRename, setWorkspacePendingRename] = useState<Workspace | null>(null);
@@ -1220,6 +1235,7 @@ export function WorkspaceNavigator({
                 onAddWorkspaceToRepo={handleAddWorkspaceToRepo}
                 onRequestRenameWorkspace={setWorkspacePendingRename}
                 onRequestDeleteWorkspace={setWorkspacePendingDelete}
+                onEnableWorkspaceBackup={(workspace) => enableWorkspaceBackup.mutate(workspace.id)}
                 onPrefetchWorkspace={handlePrefetchWorkspace}
                 showThreadSections={showThreadSections}
                 threadsFocused={threadsFocused}

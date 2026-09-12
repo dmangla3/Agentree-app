@@ -28,7 +28,7 @@ interface UseOrchestrationMcpBridgeInput {
   queryClient: QueryClient;
 }
 
-interface PendingWait {
+export interface PendingWait {
   requestId: string;
   orchestratorRunId: string;
   orchestratorNodeId: string;
@@ -243,6 +243,15 @@ const getMessageTerminalStatus = (message: Message | null): string | null => {
       : null;
 };
 
+const getMessageLastActivityAt = (message: Message | null): string | null => {
+  if (!message) return null;
+  return message.heartbeat_at
+    ?? message.last_event_at
+    ?? message.updatedAt
+    ?? message.createdAt
+    ?? null;
+};
+
 export const isOrchestrationWaitSatisfied = (wait: Pick<PendingWait, 'assistantNodeIds' | 'condition'>, messages: Message[]): boolean => {
   const runs = wait.assistantNodeIds.map((id) => messages.find((message) => message.id === id) ?? null);
   if (runs.length === 0 || runs.some((message) => !message)) return false;
@@ -276,6 +285,7 @@ const buildWaitSummary = (wait: PendingWait, messages: Message[]): Record<string
       status,
       terminalStatus: getMessageTerminalStatus(message),
       active: isActiveAgentStatus(status),
+      lastActivityAt: getMessageLastActivityAt(message),
       outputCommitSha: message?.output_commit_sha ?? null,
       aiLabel: message?.aiLabel ?? null,
       source: readString(readRecord(readRecord(message?.execution_data).__local_authority), 'source') ?? 'persisted',
@@ -283,8 +293,11 @@ const buildWaitSummary = (wait: PendingWait, messages: Message[]): Record<string
   }),
 });
 
-const buildWaitTimeoutSummary = (wait: PendingWait, messages: Message[]): Record<string, unknown> => ({
+export const buildWaitTimeoutSummary = (wait: PendingWait, messages: Message[]): Record<string, unknown> => ({
   ...buildWaitSummary(wait, messages),
+  checkpointElapsed: true,
+  waitExpired: true,
+  // Deprecated compatibility alias. This means the wait checkpoint elapsed, not that a child run timed out.
   timedOut: true,
   conditionSatisfied: false,
 });
@@ -345,6 +358,7 @@ export const buildGraphLiveQuerySummary = (
         role: message.role,
         status,
         active: isActiveAgentStatus(status),
+        lastActivityAt: getMessageLastActivityAt(message),
         terminalStatus: getMessageTerminalStatus(message),
         parentId: message.parentId ?? null,
         workspaceId: message.workspaceId ?? null,

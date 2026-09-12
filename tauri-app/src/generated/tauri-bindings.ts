@@ -15,6 +15,8 @@ export const commands = {
 	kvGet: (sessionId: string, key: string) => __TAURI_INVOKE<string | null>("kv_get", { sessionId, key }),
 	saveOrchestrationUserTemplates: (templatesJson: string) => __TAURI_INVOKE<null>("save_orchestration_user_templates", { templatesJson }),
 	getOrchestrationUserTemplates: () => __TAURI_INVOKE<string | null>("get_orchestration_user_templates"),
+	saveDefaultPromptOverrides: (promptsJson: string) => __TAURI_INVOKE<null>("save_default_prompt_overrides", { promptsJson }),
+	getDefaultPromptOverrides: () => __TAURI_INVOKE<string | null>("get_default_prompt_overrides"),
 	addMessage: (sessionId: string, role: string, content: string, metadata: string | null) => __TAURI_INVOKE<number>("add_message", { sessionId, role, content, metadata }),
 	updateSessionStatus: (sessionId: string, status: string) => __TAURI_INVOKE<null>("update_session_status", { sessionId, status }),
 	getSessionSnapshot: (sessionId: string) => __TAURI_INVOKE<{
@@ -71,16 +73,18 @@ export const commands = {
 	listLocalCommitGraph: (workspaceId: string) => __TAURI_INVOKE<LocalCommitGraphSnapshot>("list_local_commit_graph", { workspaceId }),
 	repairLocalCommitGraph: (workspaceId: string, repoPath: string, gitRef: string | null) => __TAURI_INVOKE<number>("repair_local_commit_graph", { workspaceId, repoPath, gitRef }),
 	enqueueLocalCommitGraphSync: (workspaceId: string, currentUserId: string, payloadJson: string, mutationId: string | null) => __TAURI_INVOKE<LocalSyncEventRow>("enqueue_local_commit_graph_sync", { workspaceId, currentUserId, payloadJson, mutationId }),
-	listLocalWorkspaces: (currentUserId: string) => __TAURI_INVOKE<LocalWorkspaceRow[]>("list_local_workspaces", { currentUserId }),
-	mergeServerWorkspaces: (currentUserId: string, payloads: string[]) => __TAURI_INVOKE<LocalWorkspaceRow[]>("merge_server_workspaces", { currentUserId, payloads }),
+	getLocalIdentity: () => __TAURI_INVOKE<LocalIdentity>("get_local_identity"),
+	listLocalWorkspaces: (currentUserId: string, activeCloudAccountId: string | null) => __TAURI_INVOKE<LocalWorkspaceRow[]>("list_local_workspaces", { currentUserId, activeCloudAccountId }),
+	mergeServerWorkspaces: (currentUserId: string, cloudAccountId: string, payloads: string[]) => __TAURI_INVOKE<LocalWorkspaceRow[]>("merge_server_workspaces", { currentUserId, cloudAccountId, payloads }),
 	localFirstCreateWorkspace: (request: LocalWorkspaceMutationRequest) => __TAURI_INVOKE<LocalWorkspaceRow>("local_first_create_workspace", { request }),
 	localFirstRenameWorkspace: (workspaceId: string, currentUserId: string, name: string) => __TAURI_INVOKE<LocalWorkspaceRow>("local_first_rename_workspace", { workspaceId, currentUserId, name }),
 	localFirstReconnectWorkspace: (request: LocalWorkspaceMutationRequest) => __TAURI_INVOKE<LocalWorkspaceRow>("local_first_reconnect_workspace", { request }),
+	enableWorkspaceCloudBackup: (workspaceId: string, currentUserId: string, cloudAccountId: string) => __TAURI_INVOKE<LocalWorkspaceRow>("enable_workspace_cloud_backup", { workspaceId, currentUserId, cloudAccountId }),
 	localFirstDeleteBranch: (workspaceId: string, currentUserId: string, rootNodeId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_delete_branch", { workspaceId, currentUserId, rootNodeId }),
 	localFirstDeleteWorkspace: (workspaceId: string, currentUserId: string) => __TAURI_INVOKE<LocalSyncEventRow>("local_first_delete_workspace", { workspaceId, currentUserId }),
 	listLocalDeletedNodeRoots: (workspaceId: string) => __TAURI_INVOKE<LocalDeletedNodeRoot[]>("list_local_deleted_node_roots", { workspaceId }),
 	listLocalDeletedWorkspaceIds: () => __TAURI_INVOKE<string[]>("list_local_deleted_workspace_ids"),
-	processLocalSyncEvents: (authToken: string, currentUserId: string, limit: number | null) => __TAURI_INVOKE<number>("process_local_sync_events", { authToken, currentUserId, limit }),
+	processLocalSyncEvents: (authToken: string, currentUserId: string, cloudAccountId: string, limit: number | null) => __TAURI_INVOKE<number>("process_local_sync_events", { authToken, currentUserId, cloudAccountId, limit }),
 	startAgentRun: (intent: StartAgentRunIntent) => __TAURI_INVOKE<StartAgentRunResponse>("start_agent_run", { intent }),
 	stopAgent: (sessionId: string) => __TAURI_INVOKE<null>("stop_agent", { sessionId }),
 	steerAgentRun: (assistantNodeId: string, content: string, idempotencyKey: string) => __TAURI_INVOKE<null>("steer_agent_run", { assistantNodeId, content, idempotencyKey }),
@@ -160,6 +164,9 @@ export const commands = {
 	resolveOrchestrationMcpRequest: (requestId: string, responseJson: string | null, error: string | null) => __TAURI_INVOKE<null>("resolve_orchestration_mcp_request", { requestId, responseJson, error }),
 	ensureAuthCallbackServerStarted: () => __TAURI_INVOKE<string>("ensure_auth_callback_server_started"),
 	getAuthCallbackBaseUrl: () => __TAURI_INVOKE<string>("get_auth_callback_base_url"),
+	saveAgentreeCloudSession: (sessionJson: string) => __TAURI_INVOKE<null>("save_agentree_cloud_session", { sessionJson }),
+	readAgentreeCloudSession: () => __TAURI_INVOKE<string | null>("read_agentree_cloud_session"),
+	clearAgentreeCloudSession: () => __TAURI_INVOKE<null>("clear_agentree_cloud_session"),
 	readGraphSnapshotCache: (workspaceId: string) => __TAURI_INVOKE<string | null>("read_graph_snapshot_cache", { workspaceId }),
 	writeGraphSnapshotCache: (workspaceId: string, contents: string) => __TAURI_INVOKE<null>("write_graph_snapshot_cache", { workspaceId, contents }),
 	deleteGraphSnapshotCache: (workspaceId: string) => __TAURI_INVOKE<null>("delete_graph_snapshot_cache", { workspaceId }),
@@ -510,6 +517,11 @@ export type LocalEnvironmentStatus = {
 	claude_auth: CliToolStatus,
 };
 
+export type LocalIdentity = {
+	localUserId: string,
+	localDeviceId: string,
+};
+
 export type LocalInsightCandidateRow = {
 	candidateId: string,
 	workspaceId: string,
@@ -564,6 +576,7 @@ export type LocalSyncEventRow = {
 	id: string,
 	workspaceId: string | null,
 	userId: string | null,
+	cloudAccountId: string | null,
 	entityType: string,
 	entityId: string,
 	eventType: string,
@@ -605,6 +618,8 @@ export type LocalWorkspaceRow = {
 	serverVersion: string | null,
 	nameDirty: boolean,
 	metadataDirty: boolean,
+	cloudBackupEnabled: boolean,
+	cloudAccountId: string | null,
 };
 
 export type LogPaths = {
@@ -860,4 +875,3 @@ export type WorktreeInfo = {
 	branch_name: string,
 	parent_commit: string,
 };
-

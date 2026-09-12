@@ -1,5 +1,77 @@
 use tauri::{Emitter, Manager};
 
+#[cfg(target_os = "macos")]
+fn macos_menu_without_close_window(
+    app_handle: &tauri::AppHandle<tauri::Wry>,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{AboutMetadata, Menu, PredefinedMenuItem, Submenu};
+
+    let pkg_info = app_handle.package_info();
+    let config = app_handle.config();
+    let about_metadata = AboutMetadata {
+        name: Some(pkg_info.name.clone()),
+        version: Some(pkg_info.version.to_string()),
+        copyright: config.bundle.copyright.clone(),
+        authors: config
+            .bundle
+            .publisher
+            .clone()
+            .map(|publisher| vec![publisher]),
+        ..Default::default()
+    };
+
+    Menu::with_items(
+        app_handle,
+        &[
+            &Submenu::with_items(
+                app_handle,
+                pkg_info.name.clone(),
+                true,
+                &[
+                    &PredefinedMenuItem::about(app_handle, None, Some(about_metadata))?,
+                    &PredefinedMenuItem::separator(app_handle)?,
+                    &PredefinedMenuItem::services(app_handle, None)?,
+                    &PredefinedMenuItem::separator(app_handle)?,
+                    &PredefinedMenuItem::hide(app_handle, None)?,
+                    &PredefinedMenuItem::hide_others(app_handle, None)?,
+                    &PredefinedMenuItem::separator(app_handle)?,
+                    &PredefinedMenuItem::quit(app_handle, None)?,
+                ],
+            )?,
+            &Submenu::with_items(
+                app_handle,
+                "Edit",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(app_handle, None)?,
+                    &PredefinedMenuItem::redo(app_handle, None)?,
+                    &PredefinedMenuItem::separator(app_handle)?,
+                    &PredefinedMenuItem::cut(app_handle, None)?,
+                    &PredefinedMenuItem::copy(app_handle, None)?,
+                    &PredefinedMenuItem::paste(app_handle, None)?,
+                    &PredefinedMenuItem::select_all(app_handle, None)?,
+                ],
+            )?,
+            &Submenu::with_items(
+                app_handle,
+                "View",
+                true,
+                &[&PredefinedMenuItem::fullscreen(app_handle, None)?],
+            )?,
+            &Submenu::with_items(
+                app_handle,
+                "Window",
+                true,
+                &[
+                    &PredefinedMenuItem::minimize(app_handle, None)?,
+                    &PredefinedMenuItem::maximize(app_handle, None)?,
+                ],
+            )?,
+            &Submenu::with_items(app_handle, "Help", true, &[])?,
+        ],
+    )
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 #[specta::specta]
@@ -139,6 +211,8 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             db::kv_get,
             db::save_orchestration_user_templates,
             db::get_orchestration_user_templates,
+            db::save_default_prompt_overrides,
+            db::get_default_prompt_overrides,
             db::add_message,
             db::update_session_status,
             db::get_session_snapshot,
@@ -161,11 +235,13 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             db::list_local_commit_graph,
             db::repair_local_commit_graph,
             db::enqueue_local_commit_graph_sync,
+            db::get_local_identity,
             db::list_local_workspaces,
             db::merge_server_workspaces,
             db::local_first_create_workspace,
             db::local_first_rename_workspace,
             db::local_first_reconnect_workspace,
+            db::enable_workspace_cloud_backup,
             db::local_first_delete_branch,
             db::local_first_delete_workspace,
             db::list_local_deleted_node_roots,
@@ -244,6 +320,9 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             mcp::resolve_orchestration_mcp_request,
             auth_callback::ensure_auth_callback_server_started,
             auth_callback::get_auth_callback_base_url,
+            auth_callback::save_agentree_cloud_session,
+            auth_callback::read_agentree_cloud_session,
+            auth_callback::clear_agentree_cloud_session,
             graph_snapshot_cache::read_graph_snapshot_cache,
             graph_snapshot_cache::write_graph_snapshot_cache,
             graph_snapshot_cache::delete_graph_snapshot_cache,
@@ -269,6 +348,10 @@ pub fn run() {
     export_specta_bindings(&specta_builder);
 
     let mut builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.menu(macos_menu_without_close_window);
+    }
 
     // Must be registered before any other plugin: a second launch of the *same*
     // build is folded into the already-running instance instead of starting a

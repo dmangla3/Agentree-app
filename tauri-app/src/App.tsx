@@ -102,12 +102,9 @@ function ProtectedRoute({ children }: { children: React.JSX.Element }) {
   }
 
   if (useDesktopAuth) {
-    if (!devBypass && !isDesktopAuthenticated) {
-      devLogLazy(() => ['[ROUTE][ProtectedRoute] Redirecting to /login because desktop auth is missing']);
-      return <Navigate to="/login" replace />;
-    }
-
-    devLogLazy(() => ['[ROUTE][ProtectedRoute] Rendering protected desktop route']);
+    devLogLazy(() => [
+      `[ROUTE][ProtectedRoute] Rendering local-first desktop route cloudConnected=${devBypass || isDesktopAuthenticated}`
+    ]);
     return children;
   }
 

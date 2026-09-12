@@ -96,7 +96,7 @@ describe('agent run prompts', () => {
   it('asks orchestrator runs for an orchestration ai label', () => {
     const result = buildAgentRunPrompt({
       mode: 'agentree_context',
-      userPrompt: '#security_reviewer',
+      userPrompt: '#reviewer',
       orchestrationLabelMode: 'orchestrator',
       orchestrationControl: {
         orchestratorRunId: 'run-orch',
@@ -122,8 +122,11 @@ describe('agent run prompts', () => {
     expect(result.prompt).toContain('Context/base resolve from that same default parent');
     expect(result.prompt).toContain('when creating a follow-up run under an earlier orchestration run');
     expect(result.prompt).toContain("inherit that run's graph placement, context, or base");
+    expect(result.prompt).toContain('Do not restate Agentree platform guardrails, dependency rules, or artifact path rules in spawned prompts');
     expect(result.prompt).toContain('Wait for orchestration runs with wait_for_runs');
-    expect(result.prompt).toContain('timedOut=true as a checkpoint');
+    expect(result.prompt).toContain('checkpointElapsed=true as a neutral checkpoint');
+    expect(result.prompt).toContain('Do not steer based on checkpoint count');
+    expect(result.prompt).toContain('recent lastActivityAt values');
   });
 
   it('wraps selected Agentree context for orchestration run prompts when provided', () => {
@@ -139,5 +142,52 @@ describe('agent run prompts', () => {
     expect(result.prompt).toContain('[Selected Workspace Context]\n[Turn 3] ASSISTANT (a3:assistant)\nImportant prior decision');
     expect(result.prompt).toContain('[Latest User Request]\nRun the selected orchestration run.');
     expect(result.agentreeContextInjected).toBe(true);
+  });
+
+  it('applies default prompt overrides while preserving placeholder expansion', () => {
+    const result = buildAgentRunPrompt({
+      mode: 'agentree_context',
+      userPrompt: 'Ship the prompt editor.',
+      contextManifest: {
+        ...EMPTY_COMPOSER_CONTEXT_MANIFEST,
+        contextText: 'Prior context',
+      },
+      threadTitleMode: 'none',
+      orchestrationControl: {
+        orchestratorRunId: 'run-123',
+        orchestratorNodeId: 'node-456',
+      },
+      defaultPromptOverrides: [
+        {
+          id: 'dependency_guard',
+          text: 'Custom dependency guard',
+        },
+        {
+          id: 'artifact_path',
+          text: 'Custom artifact path rule',
+        },
+        {
+          id: 'agentree_context_envelope',
+          text: 'Context: {{contextText}}\nRequest: {{userPrompt}}',
+        },
+        {
+          id: 'thread_title_none',
+          text: 'No title override',
+        },
+        {
+          id: 'orchestration_control',
+          text: 'Control {{orchestratorRunId}} from {{orchestratorNodeId}}',
+        },
+      ],
+    });
+
+    expect(result.prompt).toContain('Custom dependency guard');
+    expect(result.prompt).toContain('Custom artifact path rule');
+    expect(result.prompt).toContain('Context: Prior context\nRequest: Ship the prompt editor.');
+    expect(result.prompt).toContain('No title override');
+    expect(result.prompt).toContain('Control run-123 from node-456');
+    expect(result.prompt).not.toContain('Agentree provides writable per-agent cache/build env vars');
+    expect(result.prompt).not.toContain('{{contextText}}');
+    expect(result.prompt).not.toContain('{{orchestratorRunId}}');
   });
 });

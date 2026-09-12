@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { EMPTY_COMPOSER_CONTEXT_MANIFEST } from './prompts';
 import { buildAgentRunLaunchContext } from './agentRunLaunchContext';
 import type { Message } from '../stores/workspaceStore';
+import { useDefaultPromptStore } from '../stores/defaultPromptStore';
 
 const message = (input: Partial<Message> & Pick<Message, 'id'>): Message => ({
   id: input.id,
@@ -15,6 +16,10 @@ const message = (input: Partial<Message> & Pick<Message, 'id'>): Message => ({
 });
 
 describe('buildAgentRunLaunchContext', () => {
+  beforeEach(() => {
+    useDefaultPromptStore.getState().clearUserPrompts();
+  });
+
   it('resumes same-provider Claude threads from the parent provider thread', () => {
     const result = buildAgentRunLaunchContext({
       agentType: 'claude',
@@ -105,5 +110,28 @@ describe('buildAgentRunLaunchContext', () => {
     expect(result.providerInternalArgs).not.toContain('--provider-thread-id');
     expect(result.prompt).toContain('[Selected Workspace Context]');
     expect(result.meta.provider_cross_provider_fresh_thread).toBe(true);
+  });
+
+  it('passes saved default prompt overrides into launch prompt assembly', () => {
+    useDefaultPromptStore.getState().upsertUserPrompt({
+      id: 'dependency_guard',
+      text: 'Custom dependency guard',
+    });
+    useDefaultPromptStore.getState().upsertUserPrompt({
+      id: 'thread_title_none',
+      text: 'Do not set a thread title for this run.',
+    });
+
+    const result = buildAgentRunLaunchContext({
+      agentType: 'codex',
+      userPrompt: 'Review the implementation.',
+      contextPolicy: 'fresh',
+      threadTitleMode: 'none',
+    });
+
+    expect(result.prompt).toContain('Custom dependency guard');
+    expect(result.prompt).toContain('Do not set a thread title for this run.');
+    expect(result.prompt).not.toContain('Agentree provides writable per-agent cache/build env vars');
+    expect(result.prompt).not.toContain('set thread_title to null');
   });
 });

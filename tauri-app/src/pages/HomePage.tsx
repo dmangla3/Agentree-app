@@ -24,6 +24,8 @@ import { resolveWorkspaceRouteState } from '../lib/workspaceRouteState';
 import { LOGIN_PROFILES_NAVIGATION_EVENT, type LoginProfilesNavigationDetail } from '../lib/loginNavigationEvents';
 import { useAppFontSizeHotkeys } from '../hotkeys/appFontSizeHotkeys';
 import { useOpenSearchHotkey } from '../hotkeys/searchHotkeys';
+import { useCreateThreadHotkey } from '../hotkeys/threadHotkeys';
+import { agentClient } from '../lib/agentClient';
 import { PanelRightClose, PanelRightOpen, X } from 'lucide-react';
 
 const AdvancedSearchPanel = lazy(() => import('../components/AdvancedSearchPanel').then((module) => ({ default: module.AdvancedSearchPanel })));
@@ -51,6 +53,7 @@ function PanelLoading() {
 
 export function HomePage() {
   const { user } = useAuthStore();
+  const [localUserId, setLocalUserId] = useState<string | null>(null);
   const {
     selectedWorkspaceId,
     selectWorkspace,
@@ -76,10 +79,26 @@ export function HomePage() {
   const graphPanelRef = useRef<ImperativePanelHandle>(null);
   const chatPanelRef = useRef<ImperativePanelHandle>(null);
   const rememberedGraphChatSplitRef = useRef(readRememberedGraphChatSplit() ?? DEFAULT_GRAPH_CHAT_SPLIT);
-  const hasCompletedOnboarding = useOnboardingStore((state) => state.hasCompletedForUser(user?.id));
+  const effectiveUserId = user?.id ?? localUserId;
+  const effectiveUserName = user?.name || 'Local workspace';
+  const hasCompletedOnboarding = useOnboardingStore((state) => state.hasCompletedForUser(effectiveUserId));
   const markCompletedOnboarding = useOnboardingStore((state) => state.markCompleted);
   const startLoginProfilesSync = useLoginProfilesStore((state) => state.startSync);
   const workspaces = workspacesData ?? [];
+  useEffect(() => {
+    let cancelled = false;
+    agentClient.getLocalIdentity()
+      .then((identity) => {
+        if (!cancelled) setLocalUserId(identity.localUserId);
+      })
+      .catch((error) => {
+        console.warn('[HomePage] Failed to load local identity:', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const navigateToWorkspace = useCallback((id: string, options?: { replace?: boolean; messageId?: string | null }) => {
     const search = options?.messageId ? `?messageId=${encodeURIComponent(options.messageId)}` : '';
     navigate(`/workspaces/${encodeURIComponent(id)}${search}`, { replace: options?.replace ?? false });
@@ -178,14 +197,14 @@ export function HomePage() {
   }, [clearSelectedWorkspace, messageId, navigate, routeState, selectAndNavigateWorkspace, selectWorkspace, workspaceId]);
 
   useEffect(() => {
-    if (!user || hasCompletedOnboarding || workspaces.length === 0) return;
-    markCompletedOnboarding(user.id, selectedWorkspaceId ?? workspaces[0]?.id ?? null);
-  }, [hasCompletedOnboarding, markCompletedOnboarding, selectedWorkspaceId, user, workspaces]);
+    if (!effectiveUserId || hasCompletedOnboarding || workspaces.length === 0) return;
+    markCompletedOnboarding(effectiveUserId, selectedWorkspaceId ?? workspaces[0]?.id ?? null);
+  }, [effectiveUserId, hasCompletedOnboarding, markCompletedOnboarding, selectedWorkspaceId, workspaces]);
 
   useEffect(() => {
-    if (!user) return undefined;
+    if (!effectiveUserId) return undefined;
     return startLoginProfilesSync();
-  }, [startLoginProfilesSync, user]);
+  }, [effectiveUserId, startLoginProfilesSync]);
 
   useOpenSearchHotkey(() => {
     setIsSearchPanelOpen(true);
@@ -242,6 +261,13 @@ export function HomePage() {
     selectedThreadNavigationModel?.onCreateThread();
   }, [selectedThreadNavigationModel]);
 
+  useCreateThreadHotkey({
+    enabled: activeView === 'chat'
+      && Boolean(selectedThreadNavigationModel)
+      && !selectedThreadNavigationModel?.createThreadDisabled,
+    createThread: handleNavigatorCreateThread,
+  });
+
   const handleWorktreePolicyOpenChange = useCallback((open: boolean) => {
     if (!open) {
       setWorktreePolicyPromptRepoPath(null);
@@ -292,16 +318,8 @@ export function HomePage() {
     }, { source: 'HomePage' });
   }, [activeView, isChatCollapsed, restoreChatPanel, selectedWorkspaceId]);
 
-  // If no user, ProtectedRoute should have redirected, but double-check
-  useEffect(() => {
-    if (!user) {
-      navigate('/login', { replace: true });
-    }
-  }, [user, navigate]);
-
-  if (!user) {
-    devLogLazy(() => ['[ROUTE][HomePage] Returning null because user is missing']);
-    return null; // Render nothing while redirecting
+  if (!effectiveUserId) {
+    return <PanelLoading />;
   }
 
   if (!hasCompletedOnboarding && !isLoadingWorkspaces) {
@@ -309,10 +327,10 @@ export function HomePage() {
     return (
       <Suspense fallback={<PanelLoading />}>
         <FirstRunExperience
-          userName={user.name}
+          userName={effectiveUserName}
           workspaces={workspaces}
           onSelectWorkspace={(workspaceId) => selectAndNavigateWorkspace(workspaceId, null, { replace: true })}
-          onComplete={(workspaceId) => markCompletedOnboarding(user.id, workspaceId)}
+          onComplete={(workspaceId) => markCompletedOnboarding(effectiveUserId, workspaceId)}
           onRepositoryConnected={handleRepositoryConnected}
         />
       </Suspense>

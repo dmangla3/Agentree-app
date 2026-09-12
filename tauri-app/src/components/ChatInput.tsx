@@ -287,20 +287,6 @@ const resolveContextStartMessage = (
     return latestFreshStart ?? contextMessages[0] ?? null;
 };
 
-const hasConversationChild = (
-    messageId: string | null | undefined,
-    messages: Message[],
-    messageMap: Map<string, Message>,
-    excludedMessageIds: Set<string> = new Set()
-): boolean => {
-    if (!messageId) return false;
-    return messages.some((message) => {
-        if (excludedMessageIds.has(message.id)) return false;
-        if (message.parentId !== messageId) return false;
-        return !isFirstClassCommitMessage(message, { messageMap });
-    });
-};
-
 import { useMessages, useSendMessage, useCommitDescendants, useCommitAncestors } from '../hooks/useMessages';
 import { useCreateThreadSession } from '../hooks/useThreadSessions';
 import { useWorkspaceMessages } from '../hooks/useLiveMessages';
@@ -1821,40 +1807,14 @@ export function ChatInput({
     }, [isInProgressStatus, persistedMessages, selectedWorkspaceId]);
 
     const uploadFile = useCallback(async (attachmentId: string, file: File) => {
-        sendFlowDebug('Upload starting', { filename: file.name, attachmentId });
-        try {
-            setAttachments((prev: Attachment[]) => prev.map((att: Attachment) => getAttachmentId(att) === attachmentId ? { ...att, status: 'uploading' } as FileAttachment : att));
-
-            const signedUrlResponse = await api.post<{ signedUrl: string; path: string; publicUrl: string | null }>(
-                '/attachments/signed-url',
-                { filename: file.name, contentType: file.type }
-            );
-            const { signedUrl, path, publicUrl } = signedUrlResponse.data;
-            if (!signedUrl || !path) throw new Error('Missing signed URL or path from backend response.');
-
-            const uploadResponse = await fetch(signedUrl, {
-                method: 'PUT',
-                headers: { 'Content-Type': file.type || 'application/octet-stream' },
-                body: file,
-            });
-            if (!uploadResponse.ok) {
-                let errorBody = `Upload failed with status ${uploadResponse.status}`;
-                try { const responseJson = await uploadResponse.json(); errorBody = `Upload failed: ${responseJson.message || responseJson.error || uploadResponse.statusText}`; } catch { /* ignore */ }
-                throw new Error(errorBody);
-            }
-            sendFlowDebug('Upload success', { filename: file.name, path });
-            setAttachments((prev: Attachment[]) => prev.map((att: Attachment) => {
-                if (getAttachmentId(att) === attachmentId && 'file' in att) {
-                    return { ...att, status: 'uploaded', path: path, publicUrl: publicUrl };
-                }
-                return att;
-            }));
-        } catch (error: unknown) {
-            console.error(`[Upload] Failed for ${file.name}:`, error);
-            const errorMessage = error instanceof Error ? error.message : 'Upload failed';
-            setAttachments((prev: Attachment[]) => prev.map((att: Attachment) => getAttachmentId(att) === attachmentId ? { ...att, status: 'error', error: errorMessage } as FileAttachment : att));
-        }
-    }, []);
+        sendFlowDebug('Attachment ignored while upload is redesigned', { filename: file.name, attachmentId });
+        setAttachments((prev: Attachment[]) => prev.filter((att: Attachment) => getAttachmentId(att) !== attachmentId));
+        addToast({
+            title: 'Attachments are not available',
+            description: 'File attachments will be redesigned after the local-first migration.',
+            variant: 'info',
+        });
+    }, [addToast]);
 
     const addFileAttachment = useCallback((file: File) => {
         const newAttachmentId = `${file.name}-${file.lastModified}-${Math.random()}`;

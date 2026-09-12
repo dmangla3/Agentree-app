@@ -19,6 +19,7 @@ import { resolveNodeState } from '../../lib/runStateResolver';
 import { getMessageOutputCommitSha } from '../../lib/graph/commitAccessors';
 import { getAssistantCommitCount, getToolCallCount } from '../../domain/nodes';
 import type { GraphNodeSectionId } from '../../components/graph/GraphCanvasIndexPanel';
+import type { FocusTriggerMetrics } from '../../types/nodes';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -57,7 +58,7 @@ export interface UseGraphLayoutOptions {
     onToggleSummary: (id: string) => void;
     onToggleCollapse: (id: string, collapsed: boolean) => void;
     onToggleOrchestrationCollapse?: (controllerMessageId: string, collapsed: boolean) => void;
-    onFocus: (id: string) => void;
+    onFocus: (id: string, metrics?: FocusTriggerMetrics) => void;
     onOpenThread?: (threadRootId: string) => void;
     onSelect: (id: string, multi: boolean) => void;
     onContextMenu: (id: string, e: React.MouseEvent) => void;
@@ -688,7 +689,7 @@ function applyVisualProperties(
     _hasNodeTypeFilter: boolean,
     _keepAncestors: boolean,
     _keepDescendants: boolean,
-    onFocus: (id: string) => void,
+    onFocus: (id: string, metrics?: FocusTriggerMetrics) => void,
     onOpenThread: ((threadRootId: string) => void) | undefined,
     onSelect: (id: string, multi: boolean) => void,
     onContextMenu: (id: string, e: React.MouseEvent) => void,
@@ -775,10 +776,23 @@ function applyVisualProperties(
                 ? buildOrchestrationGraphModel(latestControllerEntity, projection, messageMap)
                 : null;
             if (!orchestrationModel) return node;
+            const data = node.data;
+            const focusId = orchestrationModel.controllerEntity.focusMessageId
+                ?? orchestrationModel.controllerEntity.messageId
+                ?? controllerMessageId
+                ?? node.id;
+            const isFocused = isGraphNodeVisuallyFocused({
+                ...node,
+                data: {
+                    ...data,
+                    entity: orchestrationModel.controllerEntity,
+                },
+            }, focusedMessageId);
             return {
                 ...node,
                 data: {
-                    ...node.data,
+                    ...data,
+                    entity: orchestrationModel.controllerEntity,
                     label: orchestrationModel.label,
                     sortTs: orchestrationModel.controllerEntity.sortTs,
                     totalOrchestrationRuns: orchestrationModel.totalOrchestrationRuns,
@@ -788,6 +802,15 @@ function applyVisualProperties(
                     cancelledOrchestrationRuns: orchestrationModel.cancelledOrchestrationRuns,
                     controllerEntity: orchestrationModel.controllerEntity,
                     projection: orchestrationModel.projection,
+                    onFocus,
+                    onOpenThread,
+                    onSelect,
+                    onContextMenu,
+                    isFocused,
+                    isComposerBaseCommit: false,
+                    isInContextPath: contextPathNodes.has(focusId),
+                    matchesTagFilter: !filterActive || matchingMessageIds.has(focusId),
+                    filterActive,
                     ...(node.type === 'orchestration_node' ? {
                         miniChildren: orchestrationModel.miniChildren,
                         miniAnchors: orchestrationModel.miniAnchors,
@@ -937,7 +960,7 @@ function applyVisualProperties(
             previousEdge.type === edge.type &&
             previousEdge.sourceHandle === edge.sourceHandle &&
             previousEdge.targetHandle === edge.targetHandle &&
-            previousEdge.animated === isOnContextPath &&
+            previousEdge.animated === false &&
             previousEdge.zIndex === nextZIndex &&
             shallowEqualRecord(previousEdge.data as Record<string, unknown> | undefined, nextData) &&
             shallowEqualRecord(previousEdge.style as Record<string, unknown> | undefined, nextStyle)
@@ -948,7 +971,7 @@ function applyVisualProperties(
 
         return {
             ...edge,
-            animated: isOnContextPath,
+            animated: false,
             data: nextData,
             style: nextStyle,
             zIndex: nextZIndex,

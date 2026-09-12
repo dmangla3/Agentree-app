@@ -7,19 +7,36 @@ import {
     reportLocalSyncSuccess,
     shouldSkipLocalSync,
 } from './localSyncDiagnostics';
-import { useAuthStore } from '../stores/authStore';
 
 const hasTauriRuntime = () =>
     typeof window !== 'undefined' &&
     Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__);
 
-const currentAuthUserId = (): string => {
-    const userId = useAuthStore.getState().user?.id;
-    if (userId) return userId;
+export interface LocalIdentity {
+    localUserId: string;
+    localDeviceId: string;
+}
+
+let localIdentityPromise: Promise<LocalIdentity> | null = null;
+
+const getLocalIdentity = async (): Promise<LocalIdentity> => {
+    if (!hasTauriRuntime()) {
+        return {
+            localUserId: import.meta.env.VITE_DEV_AUTH_USER_ID || '11111111-1111-1111-1111-111111111111',
+            localDeviceId: 'web-local-device',
+        };
+    }
+    localIdentityPromise ??= invoke<LocalIdentity>('get_local_identity');
+    return localIdentityPromise;
+};
+
+const currentLocalUserId = async (): Promise<string> => {
+    const identity = await getLocalIdentity();
+    if (identity.localUserId) return identity.localUserId;
     if (import.meta.env.VITE_DEV_AUTH_BYPASS === 'true') {
         return import.meta.env.VITE_DEV_AUTH_USER_ID || '11111111-1111-1111-1111-111111111111';
     }
-    throw new Error('Cannot use local sync without an authenticated user id.');
+    throw new Error('Cannot use local storage without a local user id.');
 };
 
 export interface AgentRuntimeEventEnvelope {
@@ -225,12 +242,13 @@ export interface LocalSyncEventRecord {
     id: string;
     workspaceId?: string | null;
     userId?: string | null;
+    cloudAccountId?: string | null;
     entityType: string;
     entityId: string;
     eventType: string;
     payloadJson: string;
     idempotencyKey: string;
-    status: 'pending' | 'in_flight' | 'synced' | 'dead';
+    status: 'pending' | 'in_flight' | 'synced' | 'dead' | 'local_only';
     attemptCount: number;
     nextAttemptAt?: number | null;
     lastError?: string | null;
@@ -262,6 +280,8 @@ export interface LocalWorkspaceRecord {
     serverVersion?: string | null;
     nameDirty: boolean;
     metadataDirty: boolean;
+    cloudBackupEnabled: boolean;
+    cloudAccountId?: string | null;
 }
 
 export interface LocalWorkspaceMutationRequest {
@@ -702,6 +722,7 @@ export interface BlameContextResponse {
 
 export const agentClient = {
     hasRuntime: hasTauriRuntime,
+    getLocalIdentity,
     // ═══════════════════════════════════════════════════════════════════════
     // AGENT SPAWNING
     // ═══════════════════════════════════════════════════════════════════════
@@ -778,7 +799,7 @@ export const agentClient = {
         if (!hasTauriRuntime()) return null;
         return await (tauriCommands as any).upsertLocalInsight(
             workspaceId,
-            currentAuthUserId(),
+            await currentLocalUserId(),
             insightId,
             JSON.stringify(payload),
             mutationId ?? null
@@ -786,13 +807,13 @@ export const agentClient = {
     },
     localFirstDismissInsight: async (workspaceId: string, insightId: string): Promise<LocalSyncEventRecord | null> => {
         if (!hasTauriRuntime()) return null;
-        return await (tauriCommands as any).localFirstDismissInsight(workspaceId, currentAuthUserId(), insightId) as LocalSyncEventRecord;
+        return await (tauriCommands as any).localFirstDismissInsight(workspaceId, await currentLocalUserId(), insightId) as LocalSyncEventRecord;
     },
     recordLocalInsightFeedback: async (workspaceId: string, insightId: string, action: string, context?: unknown): Promise<void> => {
         if (!hasTauriRuntime()) return;
         await (tauriCommands as any).recordLocalInsightFeedback(
             workspaceId,
-            currentAuthUserId(),
+            await currentLocalUserId(),
             insightId,
             action,
             context === undefined ? null : JSON.stringify(context),
@@ -857,29 +878,31 @@ export const agentClient = {
         if (!hasTauriRuntime()) return null;
         return await tauriCommands.enqueueLocalCommitGraphSync(
             workspaceId,
-            currentAuthUserId(),
+            await currentLocalUserId(),
             JSON.stringify(payload),
             mutationId ?? null
         ) as LocalSyncEventRecord;
     },
     localFirstDeleteBranch: async (workspaceId: string, rootNodeId: string): Promise<LocalSyncEventRecord | null> => {
         if (!hasTauriRuntime()) return null;
-        return await tauriCommands.localFirstDeleteBranch(workspaceId, currentAuthUserId(), rootNodeId) as LocalSyncEventRecord;
+        return await tauriCommands.localFirstDeleteBranch(workspaceId, await currentLocalUserId(), rootNodeId) as LocalSyncEventRecord;
     },
     localFirstDeleteWorkspace: async (workspaceId: string): Promise<LocalSyncEventRecord | null> => {
         if (!hasTauriRuntime()) return null;
-        return await tauriCommands.localFirstDeleteWorkspace(workspaceId, currentAuthUserId()) as LocalSyncEventRecord;
+        return await tauriCommands.localFirstDeleteWorkspace(workspaceId, await currentLocalUserId()) as LocalSyncEventRecord;
     },
-    listLocalWorkspaces: async (): Promise<LocalWorkspaceRecord[]> => {
+    listLocalWorkspaces: async (activeCloudAccountId?: string | null): Promise<LocalWorkspaceRecord[]> => {
         if (!hasTauriRuntime()) return [];
         return await invoke<LocalWorkspaceRecord[]>('list_local_workspaces', {
-            currentUserId: currentAuthUserId(),
+            currentUserId: await currentLocalUserId(),
+            activeCloudAccountId: activeCloudAccountId ?? null,
         });
     },
-    mergeServerWorkspaces: async (workspaces: unknown[]): Promise<LocalWorkspaceRecord[]> => {
+    mergeServerWorkspaces: async (workspaces: unknown[], cloudAccountId: string): Promise<LocalWorkspaceRecord[]> => {
         if (!hasTauriRuntime()) return [];
         return await invoke<LocalWorkspaceRecord[]>('merge_server_workspaces', {
-            currentUserId: currentAuthUserId(),
+            currentUserId: await currentLocalUserId(),
+            cloudAccountId,
             payloads: workspaces.map((workspace) => JSON.stringify(workspace)),
         });
     },
@@ -889,14 +912,14 @@ export const agentClient = {
         return await invoke<LocalWorkspaceRecord>('local_first_create_workspace', {
             request: {
                 ...request,
-                currentUserId: currentAuthUserId(),
+                currentUserId: await currentLocalUserId(),
             },
         });
     },
     localFirstRenameWorkspace: async (workspaceId: string, name: string): Promise<LocalWorkspaceRecord> => {
         return await invoke<LocalWorkspaceRecord>('local_first_rename_workspace', {
             workspaceId,
-            currentUserId: currentAuthUserId(),
+            currentUserId: await currentLocalUserId(),
             name,
         });
     },
@@ -906,8 +929,15 @@ export const agentClient = {
         return await invoke<LocalWorkspaceRecord>('local_first_reconnect_workspace', {
             request: {
                 ...request,
-                currentUserId: currentAuthUserId(),
+                currentUserId: await currentLocalUserId(),
             },
+        });
+    },
+    enableWorkspaceCloudBackup: async (workspaceId: string, cloudAccountId: string): Promise<LocalWorkspaceRecord> => {
+        return await invoke<LocalWorkspaceRecord>('enable_workspace_cloud_backup', {
+            workspaceId,
+            currentUserId: await currentLocalUserId(),
+            cloudAccountId,
         });
     },
     listLocalDeletedNodeRoots: async (workspaceId: string): Promise<LocalDeletedNodeRootRecord[]> => {
@@ -918,11 +948,11 @@ export const agentClient = {
         if (!hasTauriRuntime()) return [];
         return await tauriCommands.listLocalDeletedWorkspaceIds();
     },
-    processLocalSyncEvents: async (authToken: string, limit = 25): Promise<number> => {
+    processLocalSyncEvents: async (authToken: string, cloudAccountId: string, limit = 25): Promise<number> => {
         if (!hasTauriRuntime()) return 0;
         if (shouldSkipLocalSync()) return 0;
         try {
-            const synced = await tauriCommands.processLocalSyncEvents(authToken, currentAuthUserId(), limit);
+            const synced = await tauriCommands.processLocalSyncEvents(authToken, await currentLocalUserId(), cloudAccountId, limit);
             reportLocalSyncSuccess();
             return synced;
         } catch (error) {
@@ -931,7 +961,7 @@ export const agentClient = {
         }
     },
     startAgentRun: async (intent: StartAgentRunIntent): Promise<StartAgentRunResponse> => {
-        const currentUserId = intent.currentUserId ?? currentAuthUserId();
+        const currentUserId = intent.currentUserId ?? await currentLocalUserId();
         return await tauriCommands.startAgentRun({
             ...intent,
             currentUserId,

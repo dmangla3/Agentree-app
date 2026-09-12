@@ -1,5 +1,6 @@
 import { agentRunManager } from './agentRunManager';
 import type { RuntimeProvider } from '../lib/providerContinuation';
+import { sanitizeAgentStructuredMeta } from '../schemas/agentIngressSchemas';
 import type { AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 import { useProviderLimitsStore } from '../stores/providerLimitsStore';
 
@@ -259,7 +260,11 @@ export const dispatchProviderStreamEvent = (
   };
 
   if (data.type === 'provider_meta' && data.meta && typeof data.meta === 'object') {
-    mergeProviderMeta(data.meta);
+    const meta = sanitizeAgentStructuredMeta(data.meta, {
+      nodeId: context.nodeId,
+      eventType: data.type,
+    });
+    if (meta) mergeProviderMeta(meta);
   } else if (data.type === 'thinking') {
     maybePromoteLiveActivity(data.thinking || data.content || null);
     dispatchTimelineEvent({

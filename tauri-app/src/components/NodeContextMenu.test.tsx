@@ -81,7 +81,7 @@ describe('NodeContextMenu', () => {
     expect(onAddCommitShasToMergePanel).toHaveBeenCalledWith([commit.sha]);
   });
 
-  it('marks the action owner thread done by default when adding a graph commit to the merge panel', () => {
+  it('closes the action owner thread by default when adding a graph commit to the merge panel', () => {
     const onAddCommitShasToMergePanel = vi.fn();
     const onMarkThreadDone = vi.fn();
     const commit = makeGeneratedCommit();
@@ -115,7 +115,7 @@ describe('NodeContextMenu', () => {
       />
     );
 
-    const markDoneCheckbox = screen.getByRole('menuitemcheckbox', { name: 'Mark thread done' });
+    const markDoneCheckbox = screen.getByRole('menuitemcheckbox', { name: 'Close thread' });
     expect(markDoneCheckbox.getAttribute('aria-checked')).toBe('true');
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Add to merge panel' }));
@@ -124,7 +124,7 @@ describe('NodeContextMenu', () => {
     expect(onMarkThreadDone).toHaveBeenCalledWith('user-root');
   });
 
-  it('keeps the action owner thread open when the merge-panel mark-done option is unchecked', () => {
+  it('keeps the action owner thread open when the merge-panel close-thread option is unchecked', () => {
     const onAddCommitShasToMergePanel = vi.fn();
     const onMarkThreadDone = vi.fn();
     const commit = makeGeneratedCommit();
@@ -158,14 +158,14 @@ describe('NodeContextMenu', () => {
       />
     );
 
-    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Mark thread done' }));
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Close thread' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Add to merge panel' }));
 
     expect(onAddCommitShasToMergePanel).toHaveBeenCalledWith([commit.sha]);
     expect(onMarkThreadDone).not.toHaveBeenCalled();
   });
 
-  it('does not infer a mark-done owner from represented merge threads', () => {
+  it('does not infer a close-thread owner from represented merge threads', () => {
     const onMarkThreadDone = vi.fn();
     const externalMerge: ProjectedCommitEntity = {
       ...makeGeneratedCommit(),
@@ -190,7 +190,7 @@ describe('NodeContextMenu', () => {
       />
     );
 
-    expect(screen.queryByRole('menuitemcheckbox', { name: 'Mark thread done' })).toBeNull();
+    expect(screen.queryByRole('menuitemcheckbox', { name: 'Close thread' })).toBeNull();
   });
 
   it('resolves commit-message merge ownership without a canonical commit row', () => {
@@ -220,7 +220,7 @@ describe('NodeContextMenu', () => {
       .toBe('user-root');
   });
 
-  it('marks the visible commit-message thread done when the commit row is missing', () => {
+  it('closes the visible commit-message thread when the commit row is missing', () => {
     const onAddCommitShasToMergePanel = vi.fn();
     const onMarkThreadDone = vi.fn();
     const commitSha = '4b1a8a1ce0a05626fbe975b6de73770dcb9755a4';
@@ -255,7 +255,7 @@ describe('NodeContextMenu', () => {
       />
     );
 
-    expect(screen.getByRole('menuitemcheckbox', { name: 'Mark thread done' })).toBeTruthy();
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Close thread' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Add to merge panel' }));
 
@@ -298,7 +298,7 @@ describe('NodeContextMenu', () => {
       />
     );
 
-    expect(screen.getByRole('menuitemcheckbox', { name: 'Mark thread done' })).toBeTruthy();
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Close thread' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Add to merge panel' }));
 
@@ -341,7 +341,7 @@ describe('NodeContextMenu', () => {
       />
     );
 
-    expect(screen.getByRole('menuitemcheckbox', { name: 'Mark thread done' })).toBeTruthy();
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Close thread' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Add to merge panel' }));
 
@@ -484,7 +484,7 @@ describe('NodeContextMenu', () => {
     );
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Focus thread' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Mark thread done' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close thread' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Hide subgraph' }));
 
     expect(onFocusThread).toHaveBeenCalledWith('user-root');

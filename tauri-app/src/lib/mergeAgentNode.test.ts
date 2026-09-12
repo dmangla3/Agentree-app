@@ -46,6 +46,19 @@ describe('merge agent node helpers', () => {
     expect(prompt).toContain('Agentree will create the final multi-parent merge commit');
   });
 
+  it('uses default prompt overrides for the dependency guard', () => {
+    const prompt = buildMergeAgentPrompt({
+      ...input,
+      defaultPromptOverrides: [{
+        id: 'dependency_guard',
+        text: 'Custom merge dependency guard',
+      }],
+    });
+
+    expect(prompt).toContain('Custom merge dependency guard');
+    expect(prompt).not.toContain('Agentree provides writable per-agent cache/build env vars');
+  });
+
   it('appends the prompt to selected agent cli args', () => {
     expect(buildMergeAgentArgs('--model gpt-5.5 --reasoning-effort high', null, 'merge prompt')).toEqual([
       '--model',

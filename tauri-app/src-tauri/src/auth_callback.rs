@@ -5,6 +5,7 @@ use axum::{
     Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use keyring::Entry;
 use once_cell::sync::Lazy;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,6 +18,11 @@ static AUTH_CALLBACK_LOGO_DATA_URI: Lazy<String> = Lazy::new(|| {
     let bytes = include_bytes!("../../src/assets/logo.png");
     format!("data:image/png;base64,{}", BASE64_STANDARD.encode(bytes))
 });
+#[cfg(debug_assertions)]
+const CLOUD_AUTH_KEYCHAIN_SERVICE: &str = "com.agentree.agentree.dev.cloud-auth";
+#[cfg(not(debug_assertions))]
+const CLOUD_AUTH_KEYCHAIN_SERVICE: &str = "com.agentree.agentree.cloud-auth";
+const CLOUD_AUTH_KEYCHAIN_ACCOUNT: &str = "agentree-cloud-session";
 
 #[cfg(debug_assertions)]
 const DEFAULT_AUTH_CALLBACK_PORT: u16 = 34118;
@@ -47,6 +53,40 @@ pub fn is_auth_callback_url(_url: &tauri::Url) -> bool {
 #[specta::specta]
 pub fn get_auth_callback_base_url() -> String {
     auth_callback_base_url()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn save_agentree_cloud_session(session_json: String) -> Result<(), String> {
+    Entry::new(CLOUD_AUTH_KEYCHAIN_SERVICE, CLOUD_AUTH_KEYCHAIN_ACCOUNT)
+        .map_err(|error| format!("failed to open cloud auth vault: {}", error))?
+        .set_password(&session_json)
+        .map_err(|error| format!("failed to save cloud auth session: {}", error))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn read_agentree_cloud_session() -> Result<Option<String>, String> {
+    match Entry::new(CLOUD_AUTH_KEYCHAIN_SERVICE, CLOUD_AUTH_KEYCHAIN_ACCOUNT)
+        .map_err(|error| format!("failed to open cloud auth vault: {}", error))?
+        .get_password()
+    {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!("failed to read cloud auth session: {}", error)),
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn clear_agentree_cloud_session() -> Result<(), String> {
+    match Entry::new(CLOUD_AUTH_KEYCHAIN_SERVICE, CLOUD_AUTH_KEYCHAIN_ACCOUNT)
+        .map_err(|error| format!("failed to open cloud auth vault: {}", error))?
+        .delete_credential()
+    {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("failed to clear cloud auth session: {}", error)),
+    }
 }
 
 #[tauri::command]

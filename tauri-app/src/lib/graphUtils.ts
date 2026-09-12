@@ -2300,7 +2300,7 @@ export const mapMessagesToGraphElements = (
           sourceHandle: 'bottom-source',
           targetHandle: 'top-target',
           type: 'compactLineage',
-          animated: isInContextEdge,
+          animated: false,
           data: {
             edgeLegendType: relationship === 'conversation' && contextBoundary ? 'context-break' : relationship,
             relationship,
@@ -2710,7 +2710,7 @@ export const mapMessagesToGraphElements = (
             source: sourceNodeId,
             target: summary.id,
             type: 'summaryEdge',
-            animated: shouldAnimateEdge,
+            animated: false,
             style: {
               stroke: shouldAnimateEdge ? activeStroke : inactiveStroke,
               strokeWidth: baseWidth,
@@ -2748,7 +2748,7 @@ export const mapMessagesToGraphElements = (
           source: summary.id,
           target: targetNodeId,
           type: 'summaryEdge',
-          animated: shouldAnimateSuccessorEdge,
+          animated: false,
           style: {
             stroke: shouldAnimateSuccessorEdge ? activeStroke : inactiveStroke,
             strokeWidth: baseWidth,

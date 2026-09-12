@@ -1003,6 +1003,8 @@ export function getToolSummary(toolName: string, toolInput: any): string {
     if (name === 'webfetch' && typeof toolInput.url === 'string') return toolInput.url;
     if (name === 'codesearch' && typeof toolInput.query === 'string') return toolInput.query;
     if (name === 'task' && typeof toolInput.description === 'string') return toolInput.description;
+    const agentreeSummary = summarizeAgentreeMcpTool(name, toolInput);
+    if (agentreeSummary) return agentreeSummary;
 
     const knownKey = toolInput.file_path || toolInput.path || toolInput.query || toolInput.url || toolInput.pattern;
     if (typeof knownKey === 'string') return knownKey;
@@ -1012,6 +1014,47 @@ export function getToolSummary(toolName: string, toolInput: any): string {
     } catch {
         return String(toolInput);
     }
+}
+
+function summarizeAgentreeMcpTool(toolName: string, input: Record<string, any>): string | null {
+    const name = toolName.replace(/^mcp__/, '').replace(/^agentree[._-]/, '');
+    const promptLine = typeof input.prompt === 'string' ? firstNonEmptyLine(input.prompt) : null;
+    const templateId = typeof input.template_id === 'string' ? input.template_id : null;
+    const decisionId = typeof input.decision_id === 'string' ? input.decision_id : null;
+
+    if (name === 'start_orchestration_run') {
+        const label = templateId || decisionId || 'run';
+        return promptLine ? `Start ${label}: ${promptLine}` : `Start ${label}`;
+    }
+    if (name === 'wait_for_runs') {
+        const ids = Array.isArray(input.assistant_node_ids) ? input.assistant_node_ids.length : null;
+        const condition = typeof input.condition === 'string' ? input.condition : 'terminal';
+        return ids ? `Wait for ${ids} ${ids === 1 ? 'run' : 'runs'} (${condition})` : `Wait for runs (${condition})`;
+    }
+    if (name === 'graph_live_query') {
+        const nodeId = typeof input.node_id === 'string' ? input.node_id : null;
+        return nodeId ? `Live graph query for ${nodeId.slice(0, 8)}` : 'Live graph query';
+    }
+    if (name === 'list_prompt_templates') {
+        const kind = typeof input.kind === 'string' ? input.kind : null;
+        return kind ? `List ${kind} templates` : 'List prompt templates';
+    }
+    if (name === 'get_prompt_template') {
+        return templateId ? `Read ${templateId}` : 'Read prompt template';
+    }
+    if (name === 'complete_orchestration') {
+        const ids = Array.isArray(input.terminal_orchestration_run_assistant_node_ids)
+            ? input.terminal_orchestration_run_assistant_node_ids.length
+            : null;
+        return ids ? `Complete orchestration with ${ids} terminal ${ids === 1 ? 'run' : 'runs'}` : 'Complete orchestration';
+    }
+    if (name === 'control_run') {
+        const action = typeof input.action === 'string' ? input.action : 'control';
+        const assistantNodeId = typeof input.assistant_node_id === 'string' ? input.assistant_node_id.slice(0, 8) : 'run';
+        return `${action[0]?.toUpperCase() ?? 'C'}${action.slice(1)} ${assistantNodeId}`;
+    }
+
+    return null;
 }
 
 function summarizeToolText(toolName: string, text: string): string {

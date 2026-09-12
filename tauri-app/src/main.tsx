@@ -10,7 +10,7 @@ import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { initAnalytics } from './lib/analytics';
 import { applyStoredAppFontSizePreference } from './lib/appFontSizePreference';
 import { devLogLazy } from './lib/appLogger';
-import { getKindeRedirectUri, initKindeDeepLinkHandler, shouldUseDesktopBrowserAuth } from './lib/kindeDesktopAuth';
+import { getKindeRedirectUri, initKindeDeepLinkHandler, restoreDesktopCloudSession, shouldUseDesktopBrowserAuth } from './lib/kindeDesktopAuth';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from './lib/perfRecorder';
 
 const ReactQueryDevtools = lazy(() =>
@@ -106,6 +106,10 @@ const bootstrap = async () => {
   }, {
     source: 'main.tsx',
     durationMs: Number((performance.now() - deepLinkStartedAt).toFixed(2)),
+  });
+
+  await restoreDesktopCloudSession().catch((error) => {
+    console.error('[Auth] Failed to restore desktop cloud session:', error);
   });
 
   const kindeRedirectUri = getKindeRedirectUri();

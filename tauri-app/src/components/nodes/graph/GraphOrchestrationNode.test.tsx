@@ -16,7 +16,14 @@ vi.mock('@xyflow/react', () => ({
 }));
 
 vi.mock('../../../../@/components/ui/hover-card', () => ({
-  HoverCard: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  HoverCard: ({ children, onOpenChange }: { children: ReactNode; onOpenChange?: (open: boolean) => void }) => (
+    <div
+      onPointerEnter={() => onOpenChange?.(true)}
+      onMouseEnter={() => onOpenChange?.(true)}
+    >
+      {children}
+    </div>
+  ),
   HoverCardTrigger: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   HoverCardContent: ({ children }: { children: ReactNode }) => <div data-testid="mini-dot-hover-card">{children}</div>,
 }));
@@ -152,5 +159,22 @@ describe('GraphOrchestrationNode', () => {
     fireEvent.pointerEnter(screen.getByText('Orchestration').closest('[data-agentree-orchestration-node="true"]')!);
 
     expect(screen.getByText('hover entity: assistant-orchestrator')).toBeTruthy();
+  });
+
+  it('uses the shared graph node wrapper focus styling', () => {
+    const { container } = render(
+      <GraphOrchestrationNode
+        isFocused
+        data={{
+          controllerMessageId: 'assistant-orchestrator',
+          label: 'Orchestration',
+        }}
+      />
+    );
+
+    const wrapper = container.querySelector('[data-agentree-graph-node-id="assistant-orchestrator"]');
+
+    expect(wrapper).toBeTruthy();
+    expect(wrapper?.className).toContain('ring-indigo-500');
   });
 });

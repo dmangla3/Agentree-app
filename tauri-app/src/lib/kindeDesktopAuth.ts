@@ -141,7 +141,7 @@ export const readDesktopUserFromSession = (session: DesktopAuthSessionLike | nul
   };
 };
 
-const persistDesktopSession = (tokens: {
+const persistDesktopSession = async (tokens: {
   accessToken: string;
   expiresAt: number | null;
   idToken: string;
@@ -157,11 +157,20 @@ const persistDesktopSession = (tokens: {
   });
   useAuthStore.getState().setUser(user);
   useAuthStore.getState().clearAuthErrorReason();
+  await invoke('save_agentree_cloud_session', {
+    sessionJson: JSON.stringify({
+      accessToken: tokens.accessToken,
+      idToken: tokens.idToken,
+      refreshToken: tokens.refreshToken,
+      expiresAt: tokens.expiresAt,
+    }),
+  });
 };
 
-const clearDesktopSession = () => {
+const clearDesktopSession = async () => {
   clearPendingDesktopAuth();
   useAuthStore.getState().clearSession();
+  await invoke('clear_agentree_cloud_session');
 };
 
 const buildDesktopLogoutRedirectUri = () => {
@@ -217,7 +226,7 @@ const exchangeAuthorizationCode = async (params: {
 };
 
 const refreshDesktopTokens = async (forceRefresh = false) => {
-  const { desktopSession, markSessionExpired, setDesktopSession } = useAuthStore.getState();
+  const { desktopSession, markSessionExpired } = useAuthStore.getState();
   if (!desktopSession) return undefined;
 
   const expiresAt = desktopSession.expiresAt ?? 0;
@@ -253,13 +262,7 @@ const refreshDesktopTokens = async (forceRefresh = false) => {
     ? Date.now() + (refreshed.expires_in * 1000)
     : desktopSession.expiresAt;
 
-  setDesktopSession({
-    accessToken: nextAccessToken,
-    idToken: nextIdToken,
-    refreshToken: nextRefreshToken,
-    expiresAt: nextExpiresAt,
-  });
-  persistDesktopSession({
+  await persistDesktopSession({
     accessToken: nextAccessToken,
     idToken: nextIdToken,
     refreshToken: nextRefreshToken,
@@ -308,7 +311,7 @@ const completeDesktopLogin = async (callbackUrl: string) => {
     ? Date.now() + (tokens.expires_in * 1000)
     : null;
 
-  persistDesktopSession({
+  await persistDesktopSession({
     accessToken: tokens.access_token,
     idToken: tokens.id_token,
     refreshToken: tokens.refresh_token,
@@ -326,7 +329,7 @@ const routeKindeCallbackUrl = async (url: string) => {
     window.dispatchEvent(new PopStateEvent('popstate'));
   } catch (error) {
     console.error('[Auth] Failed to finish desktop browser auth:', error);
-    clearDesktopSession();
+    await clearDesktopSession();
     useAuthStore.getState().setAuthErrorReason(
       error instanceof Error ? error.message : 'Could not finish browser authentication. Please try again.',
     );
@@ -337,9 +340,38 @@ const configureDesktopAuthRuntime = () => {
   configureDesktopAuthSession({
     getToken: async (options) => refreshDesktopTokens(!!options?.forceRefresh),
     logout: async () => {
-      clearDesktopSession();
+      await clearDesktopSession();
     },
   });
+};
+
+export const restoreDesktopCloudSession = async () => {
+  if (!shouldUseDesktopBrowserAuth()) return;
+  const sessionJson = await invoke<string | null>('read_agentree_cloud_session');
+  if (!sessionJson) return;
+  try {
+    const parsed = JSON.parse(sessionJson) as {
+      accessToken?: string;
+      expiresAt?: number | null;
+      idToken?: string;
+      refreshToken?: string;
+    };
+    if (!parsed.accessToken || !parsed.idToken || !parsed.refreshToken) {
+      await clearDesktopSession();
+      return;
+    }
+    useAuthStore.getState().setDesktopSession({
+      accessToken: parsed.accessToken,
+      idToken: parsed.idToken,
+      refreshToken: parsed.refreshToken,
+      expiresAt: typeof parsed.expiresAt === 'number' ? parsed.expiresAt : null,
+    });
+    useAuthStore.getState().setUser(readDesktopUserFromSession({ idToken: parsed.idToken }));
+    useAuthStore.getState().clearAuthErrorReason();
+  } catch (error) {
+    console.warn('[Auth] Failed to restore desktop cloud session:', error);
+    await clearDesktopSession();
+  }
 };
 
 export const isTauriRuntime = () => (
@@ -420,6 +452,6 @@ export const openKindeAuthInSystemBrowser = async (intent: AuthIntent) => {
 };
 
 export const logoutDesktopBrowserAuth = async () => {
-  clearDesktopSession();
+  await clearDesktopSession();
   await openDesktopLogoutInBrowser();
 };

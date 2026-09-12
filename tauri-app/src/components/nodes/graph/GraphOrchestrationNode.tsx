@@ -1,10 +1,10 @@
 import { memo, useState } from 'react';
-import { Handle, Position } from '@xyflow/react';
+import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { ChevronRight, Workflow } from 'lucide-react';
 import { isActiveAgentStatus, isFailureAgentStatus, type AgentStatus } from '@shared/agentStatus';
 import { cn } from '../../../lib/utils';
 import type { ProjectedNodeEntity, WorkspaceProjection } from '../../../domain/workspaceProjection';
-import { GraphNodeHoverCardShell } from './GraphNodeWrapper';
+import { GraphNodeHoverCardShell, GraphNodeWrapper } from './GraphNodeWrapper';
 import { GraphNodeHoverCardContent } from './GraphNodeHoverCardContent';
 import { useRunStatusStore } from '../../../stores/runStatusStore';
 import { shouldHydrateAgentRunHover } from '../../../lib/agentRunHoverHydrationPolicy';
@@ -12,6 +12,7 @@ import {
   getOrchestrationMiniGridPosition,
   getOrchestrationMiniLayoutPositions,
 } from '../../../lib/orchestrationMiniLayout';
+import type { FocusTriggerMetrics } from '../../../types/nodes';
 
 interface OrchestrationMiniChild {
   id: string;
@@ -30,6 +31,17 @@ interface OrchestrationMiniAnchor {
 }
 
 interface GraphOrchestrationNodeProps {
+  nodeId?: string;
+  isFocused?: boolean;
+  isSelected?: boolean;
+  focusFeedbackEnabled?: boolean;
+  detailLevel?: string;
+  disableHoverCard?: boolean;
+  heightKey?: string;
+  hoverCardContent?: ReactNode;
+  onFocus?: (metrics?: FocusTriggerMetrics) => void;
+  onSelect?: (multi: boolean) => void;
+  onContextMenu?: (e: ReactMouseEvent) => void;
   data: {
     controllerMessageId: string;
     label?: string;
@@ -46,6 +58,9 @@ interface GraphOrchestrationNodeProps {
     onToggleCollapse?: (controllerMessageId: string, collapsed: boolean) => void;
   };
 }
+
+const ORCHESTRATION_NODE_WIDTH = 200;
+const ORCHESTRATION_NODE_HEIGHT = 190;
 
 const getChildToneClassName = (status: AgentStatus | null | undefined): string => {
   if (status === 'completed') return 'border-emerald-500/60 bg-emerald-500 text-white';
@@ -158,7 +173,19 @@ function OrchestrationMiniChildDot({
   );
 }
 
-export const GraphOrchestrationNode = memo(({ data }: GraphOrchestrationNodeProps) => {
+export const GraphOrchestrationNode = memo(({
+  data,
+  nodeId,
+  isFocused = false,
+  isSelected = false,
+  focusFeedbackEnabled = true,
+  disableHoverCard = false,
+  heightKey,
+  hoverCardContent,
+  onFocus = () => {},
+  onSelect = () => {},
+  onContextMenu = () => {},
+}: GraphOrchestrationNodeProps) => {
   const [hoveredMiniChildId, setHoveredMiniChildId] = useState<string | null>(null);
   const miniChildren = data.miniChildren ?? [];
   const controllerNodeId = data.controllerEntity?.focusMessageId ?? data.controllerEntity?.messageId ?? null;
@@ -189,10 +216,7 @@ export const GraphOrchestrationNode = memo(({ data }: GraphOrchestrationNodeProp
   const node = (
     <div
       data-agentree-orchestration-node="true"
-      className={cn(
-        'relative h-full w-full overflow-hidden rounded-lg border border-[hsl(var(--app-accent)/0.42)]',
-        'bg-[hsl(var(--app-panel-strong)/0.92)] shadow-[0_12px_28px_-22px_hsl(var(--foreground)/0.44)]',
-      )}
+      className="relative h-full w-full overflow-hidden"
     >
       <div className="flex min-h-11 items-start gap-2 border-b border-[hsl(var(--app-border)/0.55)] px-2.5 py-1.5">
         <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[hsl(var(--app-accent-soft)/0.7)] text-[hsl(var(--app-accent))]">
@@ -264,52 +288,44 @@ export const GraphOrchestrationNode = memo(({ data }: GraphOrchestrationNodeProp
         </svg>
         {miniChildren.map(renderMiniChildDot)}
       </div>
-      <Handle
-        id="top-target"
-        type="target"
-        position={Position.Top}
-        className="!w-2.5 !h-2.5 !bg-slate-400 !border-2 !border-background"
-      />
-      <Handle
-        id="left-target"
-        type="target"
-        position={Position.Left}
-        className="!h-2.5 !w-2.5 !border-0 !bg-transparent"
-      />
-      <Handle
-        id="right-target"
-        type="target"
-        position={Position.Right}
-        className="!h-2.5 !w-2.5 !border-0 !bg-transparent"
-      />
-      <Handle
-        id="bottom-source"
-        type="source"
-        position={Position.Bottom}
-        className="!w-2.5 !h-2.5 !bg-slate-400 !border-2 !border-background"
-      />
     </div>
   );
 
-  if (!data.controllerEntity || !data.projection) {
-    return node;
-  }
-
-  return (
-    <GraphNodeHoverCardShell
-      nodeId={controllerNodeId ?? undefined}
-      disabled={Boolean(hoveredMiniChildId)}
-      hoverOpenDelay={220}
-      hoverHydrationEnabled={controllerHoverHydrationEnabled}
-      hoverCardContent={(
+  const resolvedHoverCardContent = hoverCardContent ?? (
+    data.controllerEntity && data.projection ? (
         <GraphNodeHoverCardContent
           entity={data.controllerEntity}
           fallbackProjection={data.projection}
         />
+    ) : undefined
+  );
+
+  return (
+    <GraphNodeWrapper
+      nodeId={nodeId ?? controllerNodeId ?? data.controllerMessageId}
+      isFocused={isFocused}
+      isSelected={isSelected}
+      focusFeedbackEnabled={focusFeedbackEnabled}
+      disableHoverCard={disableHoverCard || Boolean(hoveredMiniChildId)}
+      heightKey={heightKey}
+      className={cn(
+        'overflow-hidden border-[hsl(var(--app-accent)/0.42)] bg-[hsl(var(--app-panel-strong)/0.92)]',
+        'shadow-[0_12px_28px_-22px_hsl(var(--foreground)/0.44)]',
       )}
+      bodyClassName="!p-0"
+      style={{
+        width: ORCHESTRATION_NODE_WIDTH,
+        height: ORCHESTRATION_NODE_HEIGHT,
+      }}
+      hoverOpenDelay={220}
+      hoverHydrationEnabled={controllerHoverHydrationEnabled}
+      hoverCardContent={resolvedHoverCardContent}
+      onFocus={onFocus}
+      onSelect={onSelect}
+      onContextMenu={onContextMenu}
     >
       {node}
-    </GraphNodeHoverCardShell>
+    </GraphNodeWrapper>
   );
 });
 

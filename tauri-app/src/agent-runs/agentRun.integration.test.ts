@@ -288,6 +288,56 @@ describe('agentRun projection integration', () => {
     agentRunManager.unwatch('assistant-1', 'hover');
   });
 
+  it('projects UI-relevant metadata updates for watched runs', () => {
+    agentRunManager.seed(message({ status: 'running', content: '' }), 'run-1');
+    agentRunManager.watch('assistant-1', 'hover');
+
+    agentRunManager.dispatch('assistant-1', {
+      type: 'execution_data',
+      patch: {
+        meta: {
+          ai_label: 'Runtime validation',
+          commit_subject: 'Validate provider metadata',
+          commit_body: 'Strip invalid generated metadata while preserving diagnostics.',
+          thread_title: 'Validation plan',
+          provider: 'codex',
+          provider_limits: {
+            primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 123 },
+          },
+        },
+      },
+    });
+
+    const meta = (useAgentRunProjectionStore.getState().projectionsById['assistant-1']?.execution_data as any)?.meta;
+    expect(meta).toMatchObject({
+      ai_label: 'Runtime validation',
+      commit_subject: 'Validate provider metadata',
+      commit_body: 'Strip invalid generated metadata while preserving diagnostics.',
+      thread_title: 'Validation plan',
+      provider: 'codex',
+      provider_limits: {
+        primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 123 },
+      },
+    });
+
+    agentRunManager.unwatch('assistant-1', 'hover');
+  });
+
+  it('does not project arbitrary metadata-only churn for watched runs', () => {
+    agentRunManager.seed(message({ status: 'running', content: '' }), 'run-1');
+    agentRunManager.watch('assistant-1', 'hover');
+
+    agentRunManager.dispatch('assistant-1', {
+      type: 'execution_data',
+      patch: { meta: { unknown_diagnostic: { retained: true } } },
+    });
+
+    expect(agentRunManager.snapshot('assistant-1')?.executionData.meta?.unknown_diagnostic).toEqual({ retained: true });
+    expect((useAgentRunProjectionStore.getState().projectionsById['assistant-1']?.execution_data as any)?.meta).toBeUndefined();
+
+    agentRunManager.unwatch('assistant-1', 'hover');
+  });
+
   it('notifies when projection watchers transition between zero and nonzero', () => {
     const events: Array<{ nodeId: string; hasWatchers: boolean; reasons: string[] }> = [];
     const unsubscribe = agentRunManager.subscribeProjectionWatchers((event) => {

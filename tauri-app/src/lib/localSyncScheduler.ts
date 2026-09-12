@@ -1,6 +1,7 @@
 import { agentClient } from './agentClient';
 import { getAccessToken } from './authSession';
 import { recordPerfEvent } from './perfRecorder';
+import { useAuthStore } from '../stores/authStore';
 
 const DEFAULT_LOCAL_SYNC_LIMIT = 25;
 const LOCAL_SYNC_DEBOUNCE_MS = 1_500;
@@ -19,6 +20,11 @@ const queued: QueuedLocalSync = {
   inFlight: null,
 };
 
+const isCloudSyncAvailable = () => {
+  const { user, desktopSession } = useAuthStore.getState();
+  return Boolean(user && desktopSession);
+};
+
 const runQueuedLocalSync = async () => {
   if (queued.inFlight) return queued.inFlight;
   if (queued.timer) {
@@ -33,8 +39,25 @@ const runQueuedLocalSync = async () => {
 
   queued.inFlight = (async () => {
     try {
+      if (!isCloudSyncAvailable()) {
+        recordPerfEvent('local-sync.flush.skipped', {
+          reason: reasons.join('+') || null,
+          limit,
+          skipReason: 'cloud_not_connected',
+        }, { source: 'localSyncScheduler' });
+        return;
+      }
       const token = await getAccessToken();
-      const synced = await agentClient.processLocalSyncEvents(token, limit);
+      const cloudAccountId = useAuthStore.getState().user?.id;
+      if (!cloudAccountId) {
+        recordPerfEvent('local-sync.flush.skipped', {
+          reason: reasons.join('+') || null,
+          limit,
+          skipReason: 'cloud_account_missing',
+        }, { source: 'localSyncScheduler' });
+        return;
+      }
+      const synced = await agentClient.processLocalSyncEvents(token, cloudAccountId, limit);
       recordPerfEvent('local-sync.flush.completed', {
         reason: reasons.join('+') || null,
         limit,

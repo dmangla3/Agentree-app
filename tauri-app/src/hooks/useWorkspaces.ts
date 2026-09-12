@@ -129,6 +129,9 @@ function workspaceFromLocalRecord(record: LocalWorkspaceRecord): Workspace {
     connectionStatus: record.connectionStatus,
     sync_status: record.syncStatus,
     syncStatus: record.syncStatus,
+    cloud_backup_enabled: record.cloudBackupEnabled,
+    cloudBackupEnabled: record.cloudBackupEnabled,
+    cloudAccountId: record.cloudAccountId ?? null,
     base_commit_sha: record.baseCommitSha ?? null,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
@@ -168,6 +171,9 @@ export const workspaceKeys = {
   all: ['workspaces'] as const,
   list: (userId: string | null | undefined) => ['workspaces', userId ?? 'anonymous'] as const,
 };
+
+const desktopWorkspaceListKey = (cloudAccountId: string | null, cloudConnected: boolean) =>
+  cloudConnected && cloudAccountId ? `desktop:cloud:${cloudAccountId}` : 'desktop:local';
 
 async function prepareRepoForWorkspace(
   folderPath: string,
@@ -253,21 +259,27 @@ async function prepareRepoForWorkspace(
 
 export const useWorkspaces = (): UseQueryResult<Workspace[], Error> => {
   const userId = useAuthStore((state) => state.user?.id ?? null);
+  const desktopSession = useAuthStore((state) => state.desktopSession);
+  const isDesktop = isTauriEnvironment();
+  const cloudConnected = Boolean(userId && (!isDesktop || desktopSession));
+  const workspaceListKey = isDesktop ? desktopWorkspaceListKey(userId, cloudConnected) : userId;
   const query = useQuery<Workspace[]>({
-    queryKey: workspaceKeys.list(userId),
-    enabled: Boolean(userId),
+    queryKey: workspaceKeys.list(workspaceListKey),
+    enabled: isDesktop || Boolean(userId),
     queryFn: async () => {
       const startedAt = performance.now();
-      if (isTauriEnvironment()) {
-        const localWorkspaces = await agentClient.listLocalWorkspaces();
+      if (isDesktop) {
+        const localWorkspaces = await agentClient.listLocalWorkspaces(userId);
         let mergedLocalWorkspaces = localWorkspaces;
-        try {
-          const response = await api.get('/workspaces');
-          if (Array.isArray(response.data)) {
-            mergedLocalWorkspaces = await agentClient.mergeServerWorkspaces(response.data);
+        if (cloudConnected) {
+          try {
+            const response = await api.get('/workspaces');
+            if (Array.isArray(response.data)) {
+              mergedLocalWorkspaces = await agentClient.mergeServerWorkspaces(response.data, userId!);
+            }
+          } catch (error) {
+            console.warn('[useWorkspaces] Cloud workspace merge failed; using local workspaces.', error);
           }
-        } catch (error) {
-          console.warn('[useWorkspaces] Server workspace merge failed; using local workspaces.', error);
         }
         recordPerfEvent('query.workspaces.fetch', {
           elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
@@ -301,9 +313,9 @@ export const useWorkspaces = (): UseQueryResult<Workspace[], Error> => {
   });
 
   useEffect(() => {
-    if (!userId) return;
+    if (!cloudConnected) return;
     queueLocalSyncFlush({ reason: 'workspaces-mounted' });
-  }, [userId]);
+  }, [cloudConnected]);
 
   return query;
 };
@@ -312,6 +324,10 @@ export const useCreateWorkspace = () => {
   const queryClient = useQueryClient();
   const { addToast } = useToast();
   const userId = useAuthStore((state) => state.user?.id ?? null);
+  const desktopSession = useAuthStore((state) => state.desktopSession);
+  const isDesktop = isTauriEnvironment();
+  const cloudConnected = Boolean(userId && desktopSession);
+  const workspaceListKey = isDesktop ? desktopWorkspaceListKey(userId, cloudConnected) : userId;
   const markWorkspaceUsed = useWorkspaceStore((state) => state.markWorkspaceUsed);
 
   return useMutation({
@@ -329,7 +345,7 @@ export const useCreateWorkspace = () => {
       dirtyStrategy?: RepoDirtyStrategy;
     }) => {
       const repo = await prepareRepoForWorkspace(folderPath, allowGitInit, commitMessage, dirtyStrategy);
-      const existingWorkspaces = queryClient.getQueryData<Workspace[]>(workspaceKeys.list(userId));
+      const existingWorkspaces = queryClient.getQueryData<Workspace[]>(workspaceKeys.list(workspaceListKey));
       const workspaceName = name?.trim() || suggestWorkspaceNameForRepo(repo.repo_path || folderPath, existingWorkspaces);
       if (isTauriEnvironment()) {
         const workspaceId = crypto.randomUUID();
@@ -360,7 +376,7 @@ export const useCreateWorkspace = () => {
       });
       if (workspace?.id) {
         markWorkspaceUsed(workspace.id);
-        queryClient.setQueryData<Workspace[]>(workspaceKeys.list(userId), (current) =>
+        queryClient.setQueryData<Workspace[]>(workspaceKeys.list(workspaceListKey), (current) =>
           mergeWorkspaceIntoCachedWorkspaces(current, workspace as Workspace)
         );
       }
@@ -379,6 +395,10 @@ export const useRenameWorkspace = () => {
   const queryClient = useQueryClient();
   const { addToast } = useToast();
   const userId = useAuthStore((state) => state.user?.id ?? null);
+  const desktopSession = useAuthStore((state) => state.desktopSession);
+  const isDesktop = isTauriEnvironment();
+  const cloudConnected = Boolean(userId && desktopSession);
+  const workspaceListKey = isDesktop ? desktopWorkspaceListKey(userId, cloudConnected) : userId;
   return useMutation({
     mutationFn: async ({ id, name }: { id: string; name: string }) => {
       if (isTauriEnvironment()) {
@@ -388,7 +408,7 @@ export const useRenameWorkspace = () => {
       return response.data;
     },
     onSuccess: (workspace, variables) => {
-      queryClient.setQueryData<Workspace[]>(workspaceKeys.list(userId), (current) =>
+      queryClient.setQueryData<Workspace[]>(workspaceKeys.list(workspaceListKey), (current) =>
         renameWorkspaceInCachedWorkspaces(
           current,
           variables.id,
@@ -496,6 +516,35 @@ export const useConnectRepo = () => {
       if (error instanceof RepoPrepareActionRequiredError) return;
       const message = error instanceof Error ? error.message : 'Failed to connect repo';
       addToast({ title: 'Error connecting repo', description: message, variant: 'error' });
+    },
+  });
+};
+
+export const useEnableWorkspaceCloudBackup = () => {
+  const queryClient = useQueryClient();
+  const { addToast } = useToast();
+  const cloudAccountId = useAuthStore((state) => state.user?.id ?? null);
+  return useMutation({
+    mutationFn: async (workspaceId: string) => {
+      if (!cloudAccountId) {
+        throw new Error('Connect Agentree Cloud before enabling backup.');
+      }
+      return workspaceFromLocalRecord(
+        await agentClient.enableWorkspaceCloudBackup(workspaceId, cloudAccountId)
+      );
+    },
+    onSuccess: () => {
+      queueLocalSyncFlush({ reason: 'workspace-backup-enabled' });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.all });
+      addToast({
+        title: 'Backup enabled',
+        description: 'This workspace will sync when Agentree Cloud is connected.',
+        variant: 'success',
+      });
+    },
+    onError: (error: unknown) => {
+      const message = error instanceof Error ? error.message : 'Failed to enable backup';
+      addToast({ title: 'Backup not enabled', description: message, variant: 'error' });
     },
   });
 };

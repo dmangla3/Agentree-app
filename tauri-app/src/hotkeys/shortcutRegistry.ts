@@ -13,6 +13,13 @@ export interface ShortcutDefinition {
 }
 
 export const SHORTCUTS = {
+  'thread.create': {
+    id: 'thread.create',
+    defaultHotkey: 'Mod+T',
+    label: 'Start new thread',
+    description: 'Create a new thread in the selected workspace.',
+    scope: 'global',
+  },
   'search.open': {
     id: 'search.open',
     defaultHotkey: 'Mod+K',
@@ -103,6 +110,20 @@ export const SHORTCUTS = {
     label: 'Latest graph node',
     description: 'Move focus to the latest graph node.',
     scope: 'graph',
+  },
+  'thread.close': {
+    id: 'thread.close',
+    defaultHotkey: 'Mod+W',
+    label: 'Close thread',
+    description: 'Close the current thread.',
+    scope: 'global',
+  },
+  'thread.reopen-last-closed': {
+    id: 'thread.reopen-last-closed',
+    defaultHotkey: 'Mod+Shift+T',
+    label: 'Reopen last closed thread',
+    description: 'Bring back the most recently closed thread.',
+    scope: 'global',
   },
   'integration.embedded.close': {
     id: 'integration.embedded.close',

@@ -1079,6 +1079,7 @@ function GraphViewInternal({
         () => readConvertedSubgraphThreadRootIds(selectedWorkspaceId)
     );
     const previousUserMessageCountsByThreadRootIdRef = useRef<Map<string, number> | null>(null);
+    const lastClosedThreadRootIdsRef = useRef<string[]>([]);
 
     useEffect(() => {
         const state = readGraphThreadState(selectedWorkspaceId);
@@ -1091,6 +1092,7 @@ function GraphViewInternal({
         setConvertedSubgraphThreadRootIds(readConvertedSubgraphThreadRootIds(selectedWorkspaceId));
         setSubgraphRootNodeId(null);
         previousUserMessageCountsByThreadRootIdRef.current = null;
+        lastClosedThreadRootIdsRef.current = [];
     }, [selectedWorkspaceId]);
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1099,7 +1101,9 @@ function GraphViewInternal({
     const graphSnapshotQuery = useGraphSnapshot(selectedWorkspaceId || null, graphResetNonce);
     const shouldHydrateFullMessages = graphSnapshotQuery.isSuccess || graphSnapshotQuery.isError;
     const messagesQuery = useMessages(selectedWorkspaceId || '');
-    const localNodesQuery = useLocalNodes(selectedWorkspaceId || null);
+    const localNodesQuery = useLocalNodes(selectedWorkspaceId || null, {
+        enabled: messagesQuery.isSuccess || messagesQuery.isError,
+    });
     const threadSessionsQuery = useThreadSessions(selectedWorkspaceId || null);
     const createThreadSession = useCreateThreadSession();
     const summariesQuery = useSummaries(selectedWorkspaceId || '', { enabled: shouldHydrateFullMessages && !agentClient.hasRuntime() });
@@ -3424,6 +3428,8 @@ function GraphViewInternal({
 
         const targetNode = layoutNodesRef.current.find((node) => (
             node.id === messageId ||
+            (node.data as any)?.entity?.focusMessageId === messageId ||
+            (node.data as any)?.entity?.messageId === messageId ||
             (node.data as any)?.commit?.sha === messageId ||
             ((node.data as any)?.group?.commitShas ?? []).includes(messageId)
         ));
@@ -3895,8 +3901,15 @@ function GraphViewInternal({
         const nextDoneThreadRootIds = new Set(doneThreadRootIds);
         if (done) {
             nextDoneThreadRootIds.add(threadRootId);
+            if (!doneThreadRootIds.has(threadRootId)) {
+                lastClosedThreadRootIdsRef.current = [
+                    ...lastClosedThreadRootIdsRef.current.filter((id) => id !== threadRootId),
+                    threadRootId,
+                ];
+            }
         } else {
             nextDoneThreadRootIds.delete(threadRootId);
+            lastClosedThreadRootIdsRef.current = lastClosedThreadRootIdsRef.current.filter((id) => id !== threadRootId);
         }
         const nextThreadItems = threadIndexItems.map((thread) => (
             thread.threadRootId === threadRootId ? { ...thread, done } : thread
@@ -3929,6 +3942,24 @@ function GraphViewInternal({
         threadIndexItems,
         threadRootIndex.threadRootIds,
     ]);
+
+    const handleCloseCurrentThread = useCallback(() => {
+        if (!activeThreadRootId || doneThreadRootIds.has(activeThreadRootId)) return;
+        handleThreadDoneChange(activeThreadRootId, true);
+    }, [activeThreadRootId, doneThreadRootIds, handleThreadDoneChange]);
+
+    const handleReopenLastClosedThread = useCallback(() => {
+        const availableThreadRootIds = new Set(threadRootIndex.threadRootIds);
+        const lastClosedThreadRootIds = lastClosedThreadRootIdsRef.current.filter((threadRootId) => (
+            availableThreadRootIds.has(threadRootId) && doneThreadRootIds.has(threadRootId)
+        ));
+        lastClosedThreadRootIdsRef.current = lastClosedThreadRootIds;
+        const threadRootId = lastClosedThreadRootIds[lastClosedThreadRootIds.length - 1];
+        if (!threadRootId) return;
+
+        handleThreadDoneChange(threadRootId, false);
+        handleFocusThread(threadRootId);
+    }, [doneThreadRootIds, handleFocusThread, handleThreadDoneChange, threadRootIndex.threadRootIds]);
 
     const handleDoneThreadsCollapsedChange = useCallback((collapsed: boolean) => {
         setDoneThreadsCollapsed(collapsed);
@@ -4243,7 +4274,7 @@ function GraphViewInternal({
         if (!previewEdgeType) return visibleEdges;
 
         const matchesPreview = (edge: any) => {
-            if (previewEdgeType === 'context-path') return edge?.data?.isOnContextPath === true || edge?.animated === true;
+            if (previewEdgeType === 'context-path') return edge?.data?.isOnContextPath === true;
             return edge?.data?.edgeLegendType === previewEdgeType;
         };
 
@@ -4262,7 +4293,7 @@ function GraphViewInternal({
                         ...(edge.data ?? {}),
                         ...(endpointDotVariant ? { endpointDotVariant } : {}),
                     },
-                    animated: matched,
+                    animated: false,
                     style: {
                         ...edge.style,
                         stroke: matched ? '#f59e0b' : edge.style?.stroke,
@@ -4571,6 +4602,8 @@ function GraphViewInternal({
                 handleFocusGraphNavigationNode(latestGraphNodeId, 'latest-node');
             }
         },
+        closeThread: handleCloseCurrentThread,
+        reopenLastClosedThread: handleReopenLastClosedThread,
         openSearch: () => {
             setIsSearchPanelOpen(true);
         },
@@ -5262,7 +5295,9 @@ function GraphViewInternal({
         }>();
         let reusedCount = 0;
         const result = layoutNodes.map((node) => {
-            const selected = nodeSelection.selectedNodeIds.has(node.id);
+            const nodeFocusId = node.data?.entity?.focusMessageId ?? node.data?.entity?.messageId ?? null;
+            const selected = nodeSelection.selectedNodeIds.has(node.id)
+                || (typeof nodeFocusId === 'string' && nodeSelection.selectedNodeIds.has(nodeFocusId));
             const entity = node.data?.entity as { kind?: string; messageId?: string | null } | undefined;
             const attentionBadgeItems = entity?.kind === 'assistant_message' && entity.messageId
                 ? attentionByParentId.get(entity.messageId)

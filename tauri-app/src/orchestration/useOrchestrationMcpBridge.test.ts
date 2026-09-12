@@ -3,6 +3,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { localNodeKeys, type LocalNodeMessage } from '../hooks/useLocalNodes';
 import type { Message } from '../stores/workspaceStore';
 import {
+  buildWaitTimeoutSummary,
   buildGraphLiveQuerySummary,
   getOrchestrationRunStartKey,
   getOrStartPendingOrchestrationRun,
@@ -126,6 +127,8 @@ describe('orchestration MCP wait helpers', () => {
       message({
         id: 'child',
         status: 'streaming' as any,
+        updatedAt: '2026-06-01T00:01:00.000Z',
+        last_event_at: '2026-06-01T00:02:00.000Z',
         output_commit_sha: null,
         execution_data: {
           __local_authority: { source: 'projection' },
@@ -141,7 +144,40 @@ describe('orchestration MCP wait helpers', () => {
         nodeId: 'child',
         status: 'streaming',
         active: true,
+        lastActivityAt: '2026-06-01T00:02:00.000Z',
         source: 'projection',
+      }],
+    });
+  });
+
+  it('labels elapsed waits as neutral checkpoints and includes child activity', () => {
+    const summary = buildWaitTimeoutSummary({
+      requestId: 'request-1',
+      orchestratorRunId: 'run-orch',
+      orchestratorNodeId: 'assistant-orch',
+      waitGroupId: 'implementers',
+      assistantNodeIds: ['child'],
+      decisionIds: [],
+      condition: 'all',
+      timeoutId: null,
+    }, [
+      message({
+        id: 'child',
+        status: 'streaming' as any,
+        last_event_at: '2026-06-01T00:02:00.000Z',
+      }),
+    ]);
+
+    expect(summary).toMatchObject({
+      checkpointElapsed: true,
+      waitExpired: true,
+      timedOut: true,
+      conditionSatisfied: false,
+      runs: [{
+        assistantNodeId: 'child',
+        status: 'streaming',
+        active: true,
+        lastActivityAt: '2026-06-01T00:02:00.000Z',
       }],
     });
   });

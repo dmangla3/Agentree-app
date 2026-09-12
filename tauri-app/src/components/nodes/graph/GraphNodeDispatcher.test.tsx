@@ -63,6 +63,15 @@ vi.mock('./GraphAssistantNode', () => ({
     <button type="button" onClick={() => onFocus?.({ clickAt: 14, pointerDownAt: 9 })}>assistant node</button>
   ),
 }));
+vi.mock('./GraphOrchestrationNode', () => ({
+  GraphOrchestrationNode: ({
+    onFocus,
+  }: {
+    onFocus?: (metrics?: FocusTriggerMetrics) => void;
+  }) => (
+    <button type="button" onClick={() => onFocus?.({ clickAt: 18, pointerDownAt: 12 })}>orchestration node</button>
+  ),
+}));
 vi.mock('./GraphThreadOriginNode', () => ({
   GraphThreadOriginNode: ({
     hoverCardContent,
@@ -354,6 +363,56 @@ describe('GraphNodeDispatcher', () => {
 
     expect(onContextMenu).toHaveBeenCalledTimes(1);
     expect(onContextMenu.mock.calls[0][0]).toBe('commit:feedface12345678');
+  });
+
+  it('routes collapsed orchestration node clicks through assistant focus and opens the graph composer', () => {
+    const onFocus = vi.fn();
+    const opened = vi.fn();
+    window.addEventListener(GRAPH_COMPOSER_DOCK_EXPAND_EVENT, opened);
+    const props = {
+      id: 'orchestration:assistant-orchestrator',
+      type: 'orchestration_node',
+      selected: false,
+      isConnectable: false,
+      dragging: false,
+      zIndex: 0,
+      xPos: 0,
+      yPos: 0,
+      data: {
+        controllerMessageId: 'assistant-orchestrator',
+        entity: {
+          entityId: 'assistant_message:assistant-orchestrator',
+          kind: 'assistant_message',
+          messageId: 'assistant-orchestrator',
+          focusMessageId: 'assistant-orchestrator',
+          sortTs: 0,
+          preview: 'Run orchestration.',
+          shortLabel: 'Orchestrator',
+          status: 'completed',
+        } as ProjectedNodeEntity,
+        isSelected: false,
+        onFocus,
+        onSelect: () => {},
+        onContextMenu: () => {},
+      },
+    };
+
+    try {
+      render(
+        React.createElement(GraphNodeDispatcher as any, props)
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'orchestration node' }));
+
+      expect(opened).toHaveBeenCalledTimes(1);
+      expect(onFocus).toHaveBeenCalledWith('assistant-orchestrator', {
+        clickAt: 18,
+        pointerDownAt: 12,
+        metadata: { via: 'react-flow-node-click' },
+      });
+    } finally {
+      window.removeEventListener(GRAPH_COMPOSER_DOCK_EXPAND_EVENT, opened);
+    }
   });
 
   it('opens redirected user-node context menus by concrete message id, not focus target', () => {

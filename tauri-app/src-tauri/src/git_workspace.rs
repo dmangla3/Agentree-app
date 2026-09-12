@@ -529,12 +529,8 @@ fn prune_stale_node_heads(repo_path: &str) -> Result<(), String> {
 }
 
 /// Whether an agent run is finished (or abandoned) so its scratch branch and
-/// worktree can be reclaimed. A missing ledger record means the scratch branch
-/// is fully orphaned and is treated as dead.
-fn agent_run_is_dead(ledger: Option<&crate::db::AgentRunLedgerRow>) -> bool {
-    let Some(ledger) = ledger else {
-        return true;
-    };
+/// worktree can be reclaimed.
+fn agent_run_is_dead(ledger: &crate::db::AgentRunLedgerRow) -> bool {
     if ledger.cleanup_completed || ledger.terminal_status.is_some() {
         return true;
     }
@@ -555,11 +551,12 @@ fn agent_run_is_dead(ledger: Option<&crate::db::AgentRunLedgerRow>) -> bool {
 
 /// Reclaim scratch `agentree/<node_id>` branches and their worktrees left behind
 /// by agent runs that are no longer live. A pair is removed only when (a) its run
-/// is dead (or has no ledger record) and (b) the worktree has no uncommitted
-/// changes — so in-flight runs and any unsaved agent work are never touched. The
-/// branch tip is archived into `refs/agentree/nodes/<node_id>` before deletion
-/// (the same mechanism as normal cleanup), so no commit is ever lost. Returns the
-/// number of scratch branches reclaimed.
+/// is known dead from the native ledger and (b) the worktree has no uncommitted
+/// changes. Missing ledger rows are preserved because local-first packaged runs
+/// can still have live worktrees without native ledger rows. The branch tip is
+/// archived into `refs/agentree/nodes/<node_id>` before deletion (the same
+/// mechanism as normal cleanup), so no commit is ever lost. Returns the number
+/// of scratch branches reclaimed.
 pub fn reconcile_orphaned_agent_worktrees(
     repo_path: &str,
     telemetry: &crate::db::TelemetryDb,
@@ -594,9 +591,20 @@ pub fn reconcile_orphaned_agent_worktrees(
                 continue;
             }
 
-            // Never touch a run that is still in progress.
             let ledger = telemetry.get_agent_run_ledger_by_assistant(node_id)?;
-            if !agent_run_is_dead(ledger.as_ref()) {
+            let Some(ledger) = ledger else {
+                log_agent_worktree_lifecycle(
+                    "reconcile.preserve_missing_ledger",
+                    repo_path,
+                    node_id,
+                    Path::new(""),
+                    &format!("branch={}", branch_name),
+                );
+                continue;
+            };
+
+            // Never touch a run that is still in progress.
+            if !agent_run_is_dead(&ledger) {
                 continue;
             }
 
@@ -2434,6 +2442,38 @@ mod tests {
         assert!(
             is_agent_worktree_path_for_node(&repo_path, node_id, &legacy)
                 .expect("legacy path validation")
+        );
+    }
+
+    #[test]
+    fn reconcile_preserves_clean_worktree_without_native_ledger() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-without-ledger";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        let db_dir = tempfile::tempdir().expect("telemetry tempdir");
+        let telemetry = crate::db::TelemetryDb::open(db_dir.path()).expect("open telemetry");
+
+        let reclaimed = super::reconcile_orphaned_agent_worktrees(&repo_path, &telemetry)
+            .expect("reconcile worktrees");
+
+        assert_eq!(reclaimed, 0);
+        assert!(
+            worktree_path.exists(),
+            "missing ledger must not make an agent worktree reclaimable"
+        );
+        assert_eq!(
+            run_test_git(
+                dir.path(),
+                &[
+                    "rev-parse",
+                    "--verify",
+                    &format!("refs/heads/agentree/{node_id}")
+                ],
+            ),
+            parent_commit
         );
     }
 

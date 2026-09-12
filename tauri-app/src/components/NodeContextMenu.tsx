@@ -338,7 +338,7 @@ export function NodeContextMenu({
               onClose();
             }}
           >
-            Mark thread done
+            Close thread
           </DropdownMenuItem>
         ) : null}
 
@@ -394,7 +394,7 @@ export function NodeContextMenu({
                 onSelect={(event) => event.preventDefault()}
                 onCheckedChange={(checked) => setMarkThreadDoneAfterMerge(checked === true)}
               >
-                Mark thread done
+                Close thread
               </DropdownMenuCheckboxItem>
             ) : null}
           </div>

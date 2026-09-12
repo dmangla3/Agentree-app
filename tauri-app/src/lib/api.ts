@@ -1,9 +1,12 @@
 import axios from 'axios';
 import { getAccessToken, handleSessionExpired } from './authSession';
 
+const OFFICIAL_AGENTREE_API_URL = 'https://api.agentree.app';
 const DEFAULT_API_URL = import.meta.env.DEV
   ? 'http://localhost:3000'
-  : 'https://api.agentree.app';
+  : import.meta.env.VITE_AGENTREE_OFFICIAL_CLOUD === 'true'
+    ? OFFICIAL_AGENTREE_API_URL
+    : '';
 
 export const API_URL = import.meta.env.VITE_API_URL || DEFAULT_API_URL;
 
@@ -13,6 +16,9 @@ export const api = axios.create({
 });
 
 api.interceptors.request.use(async (config) => {
+    if (!API_URL) {
+        throw new Error('Agentree Cloud API is not configured for this build.');
+    }
     const token = await getAccessToken();
     if (token) {
         config.headers.Authorization = `Bearer ${token}`;

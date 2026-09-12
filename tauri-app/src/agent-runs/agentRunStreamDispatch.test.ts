@@ -4,6 +4,19 @@ import { deriveStreamingAppendText, dispatchProviderStreamEvent, resolveProvider
 import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
 import { useRunStatusStore } from '../stores/runStatusStore';
 
+const message = (overrides: Record<string, any> = {}) => ({
+  id: 'assistant-1',
+  workspaceId: 'workspace-1',
+  parentId: 'user-1',
+  role: 'assistant',
+  content: '',
+  status: 'running',
+  createdAt: '2026-05-06T00:00:00.000Z',
+  updatedAt: '2026-05-06T00:00:00.000Z',
+  execution_data: {},
+  ...overrides,
+}) as any;
+
 const dispatchContext = {
   nodeId: 'assistant-1',
   parentId: 'user-1',
@@ -133,5 +146,73 @@ describe('resolveProviderAssistantOutput', () => {
         idempotencyKey: 'steer-1',
       }),
     ]);
+  });
+
+  it('preserves valid structured provider metadata and unrelated provider metadata', () => {
+    agentRunManager.seed(message(), 'run-1');
+
+    dispatchProviderStreamEvent({
+      type: 'provider_meta',
+      meta: {
+        ai_label: '  Fix Runtime Validation  ',
+        commit_subject: '  Add provider metadata validation  ',
+        commit_body: '  Validate generated provider metadata before merge.  ',
+        thread_title: '  Runtime Validation  ',
+        provider: 'custom',
+        provider_limits: {
+          credits: { balance: '10', hasCredits: true, unlimited: false },
+          primary: { usedPercent: 0.25, windowDurationMins: 300, resetsAt: 123 },
+        },
+        unknown_diagnostic: { retained: true },
+      },
+    }, dispatchContext);
+
+    const meta = agentRunManager.snapshot('assistant-1')?.executionData.meta;
+    expect(meta).toMatchObject({
+      ai_label: 'Fix Runtime Validation',
+      commit_subject: 'Add provider metadata validation',
+      commit_body: 'Validate generated provider metadata before merge.',
+      thread_title: 'Runtime Validation',
+      provider: 'custom',
+      provider_limits: {
+        credits: { balance: '10', hasCredits: true, unlimited: false },
+      },
+      unknown_diagnostic: { retained: true },
+    });
+  });
+
+  it('strips invalid generated provider metadata without dropping unknown metadata', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    agentRunManager.seed(message(), 'run-1');
+
+    dispatchProviderStreamEvent({
+      type: 'provider_meta',
+      meta: {
+        ai_label: 42,
+        commit_subject: 'x'.repeat(73),
+        commit_body: { text: 'not a string' },
+        thread_title: null,
+        provider: 'custom',
+        provider_limits: {
+          credits: { balance: '10', hasCredits: true, unlimited: false },
+        },
+        unknown_diagnostic: { retained: true },
+      },
+    }, dispatchContext);
+
+    const meta = agentRunManager.snapshot('assistant-1')?.executionData.meta;
+    expect(meta).toMatchObject({
+      provider: 'custom',
+      provider_limits: {
+        credits: { balance: '10', hasCredits: true, unlimited: false },
+      },
+      unknown_diagnostic: { retained: true },
+    });
+    expect(meta?.ai_label).toBeUndefined();
+    expect(meta?.commit_subject).toBeUndefined();
+    expect(meta?.commit_body).toBeUndefined();
+    expect(meta?.thread_title).toBeUndefined();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

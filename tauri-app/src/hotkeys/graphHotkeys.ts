@@ -1,4 +1,4 @@
-import { useShortcut } from './useShortcut';
+import { useCapturedShortcut, useShortcut } from './useShortcut';
 
 export type GraphNavigationDirection = 'up' | 'down' | 'left' | 'right';
 
@@ -12,6 +12,8 @@ export function useGraphViewHotkeys(options: {
   focusPrevious: () => void;
   focusNext: () => void;
   focusLatest: () => void;
+  closeThread: () => void;
+  reopenLastClosedThread: () => void;
 }) {
   useShortcut('graph.composer.close', () => {
     options.closeComposer();
@@ -47,6 +49,14 @@ export function useGraphViewHotkeys(options: {
 
   useShortcut('graph.navigate.latest', () => {
     options.focusLatest();
+  });
+
+  useCapturedShortcut('thread.close', () => {
+    options.closeThread();
+  });
+
+  useShortcut('thread.reopen-last-closed', () => {
+    options.reopenLastClosedThread();
   });
 
   useShortcut('search.open', () => {

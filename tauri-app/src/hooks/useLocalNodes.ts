@@ -98,7 +98,10 @@ export const parseLocalNode = (row: LocalNodeRecord): LocalNodeMessage | null =>
   }
 };
 
-export const useLocalNodes = (workspaceId: string | null | undefined) => {
+export const useLocalNodes = (
+  workspaceId: string | null | undefined,
+  options: { enabled?: boolean } = {},
+) => {
   const query = useQuery<LocalNodeMessage[]>({
     queryKey: localNodeKeys.workspace(workspaceId),
     queryFn: async () => {
@@ -119,14 +122,18 @@ export const useLocalNodes = (workspaceId: string | null | undefined) => {
       });
       return localNodes;
     },
-    enabled: Boolean(workspaceId) && agentClient.hasRuntime(),
-    staleTime: 1000,
+    enabled: Boolean(workspaceId) && agentClient.hasRuntime() && options.enabled !== false,
+    staleTime: 5000,
     gcTime: 30 * 60 * 1000,
     refetchInterval: (query) => {
       if (!agentClient.hasRuntime()) return false;
       const data = query.state.data;
-      if (!data?.some((row) => row.syncStatus === 'local_only')) return false;
-      return 5000;
+      const localOnlyRows = data?.filter((row) => row.syncStatus === 'local_only') ?? [];
+      if (localOnlyRows.length === 0) return false;
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const nextRetryAt = Math.min(...localOnlyRows.map((row) => row.nextRetryAt ?? nowSeconds));
+      if (nextRetryAt <= nowSeconds) return 15000;
+      return Math.min(Math.max((nextRetryAt - nowSeconds) * 1000, 5000), 60000);
     },
     refetchOnWindowFocus: false,
     refetchOnReconnect: true,

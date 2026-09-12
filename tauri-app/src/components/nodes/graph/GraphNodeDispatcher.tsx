@@ -8,6 +8,7 @@ import { GraphCommitNode } from './GraphCommitNode';
 import { GraphCanonicalCommitNode } from './GraphCanonicalCommitNode';
 import { GraphDerivedCommitGroupNode } from './GraphDerivedCommitGroupNode';
 import { GraphSummaryNode } from './GraphSummaryNode';
+import { GraphOrchestrationNode } from './GraphOrchestrationNode';
 import type { ProjectedCommitEntity, ProjectedCommitGroup, ProjectedNodeEntity, WorkspaceProjection } from '../../../domain/workspaceProjection';
 import { preloadNodeHoverPreview } from '../../NodeHoverCardContent';
 import { useGraphInteractionContext } from '../../graph/GraphInteractionContext';
@@ -233,6 +234,32 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
   }
 
   if (!data.entity) return null;
+
+  if (props.type === 'orchestration_node') {
+    return (
+      <GraphOrchestrationNode
+        data={data as any}
+        nodeId={data.entity.focusMessageId ?? data.entity.messageId ?? props.id}
+        isFocused={isFocused}
+        isSelected={isSelected}
+        focusFeedbackEnabled
+        detailLevel={detailLevel}
+        heightKey={data.heightKey}
+        disableHoverCard={!enableHoverCard || isSelectionGestureActive || isViewportInteracting}
+        hoverCardContent={enableHoverCard ? (
+          <GraphNodeHoverCardContent
+            entity={data.entity}
+            fallbackProjection={data.projection}
+            surfaceMode={surfaceMode}
+            capabilities={capabilities}
+          />
+        ) : undefined}
+        onFocus={handleFocus}
+        onSelect={handleSelect}
+        onContextMenu={handleContextMenu}
+      />
+    );
+  }
 
   switch (data.entity.kind) {
     case 'thread_origin':

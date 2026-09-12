@@ -14,7 +14,7 @@ describe('Workspace navigator thread migration layout', () => {
     expect(source).toContain('WorkspaceRow');
     expect(source).toContain('WorkspaceThreadSection');
     expect(source).toContain('ThreadNodeHoverCard');
-    expect(source).toContain('Done threads');
+    expect(source).toContain('Closed threads');
     expect(source).toContain('aria-label="Collapse navigator"');
     expect(source).toContain('Collapse navigator');
     expect(source).toContain('CollapsedWorkspaceNavigator');
@@ -38,5 +38,7 @@ describe('Workspace navigator thread migration layout', () => {
     expect(graphViewSource).toContain('onThreadNavigationModelChange');
     expect(graphViewSource).toContain('threadBarCollapsed ? \'thread-bar-collapsed\' : \'thread-bar-open\'');
     expect(graphViewSource).toContain('onThreadBarCollapsedChange: handleThreadBarCollapsedChange');
+    expect(graphViewSource).toContain('closeThread: handleCloseCurrentThread');
+    expect(graphViewSource).toContain('reopenLastClosedThread: handleReopenLastClosedThread');
   });
 });

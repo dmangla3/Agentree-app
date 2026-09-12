@@ -128,6 +128,27 @@ describe('getToolSummary', () => {
     expect(formatToolPayload(payload)).not.toContain('"content"');
   });
 
+  it('summarizes Agentree orchestration MCP calls without raw JSON', () => {
+    const summary = getToolSummary('agentree.start_orchestration_run', {
+      template_id: '@synthesizer',
+      decision_id: 'synthesizer-commits',
+      prompt: 'Look at the shared commits.\n\nCompare them.',
+    });
+
+    expect(summary).toBe('Start @synthesizer: Look at the shared commits.');
+    expect(summary).not.toContain('{"template_id"');
+  });
+
+  it('summarizes Agentree wait and completion MCP calls', () => {
+    expect(getToolSummary('agentree.wait_for_runs', {
+      assistant_node_ids: ['a', 'b'],
+      condition: 'terminal',
+    })).toBe('Wait for 2 runs (terminal)');
+    expect(getToolSummary('agentree.complete_orchestration', {
+      terminal_orchestration_run_assistant_node_ids: ['a'],
+    })).toBe('Complete orchestration with 1 terminal run');
+  });
+
   it('keeps MCP server and tool names available on timeline rows', () => {
     const rows = buildTimelineRows([
       {

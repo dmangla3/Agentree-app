@@ -1903,9 +1903,32 @@ fn json_string_field_prefix(buffer: &str, field_name: &str) -> Option<String> {
 }
 
 fn decode_json_string_prefix(value: &str) -> String {
+    let value = trim_incomplete_json_string_escape(value);
     let wrapped = format!("\"{}\"", value);
     serde_json::from_str::<String>(&wrapped)
         .unwrap_or_else(|_| value.replace("\\n", "\n").replace("\\\"", "\""))
+}
+
+fn trim_incomplete_json_string_escape(value: &str) -> &str {
+    let Some(last_escape_start) = value.rfind('\\') else {
+        return value;
+    };
+    let trailing_backslashes = value[last_escape_start..]
+        .chars()
+        .take_while(|ch| *ch == '\\')
+        .count();
+    if trailing_backslashes > 1 {
+        return value;
+    }
+
+    let escape_tail = &value[last_escape_start..];
+    if escape_tail == "\\" {
+        return &value[..last_escape_start];
+    }
+    if escape_tail.starts_with("\\u") && escape_tail.chars().count() < 6 {
+        return &value[..last_escape_start];
+    }
+    value
 }
 
 fn suffix_after_prefix(previous: &str, current: &str) -> String {
@@ -2155,6 +2178,24 @@ mod tests {
     fn extracts_streaming_final_response_prefix() {
         let prefix = json_string_field_prefix(r#"{"final_response":"hello\nwor"#, "final_response");
         assert_eq!(prefix.as_deref(), Some("hello\nwor"));
+    }
+
+    #[test]
+    fn streaming_final_response_prefix_ignores_dangling_escape() {
+        let first = json_string_field_prefix(
+            r#"{"final_response":"```mermaid\nflowchart TD\n    A[Read] --> B[Spawn]\"#,
+            "final_response",
+        );
+        let second = json_string_field_prefix(
+            r#"{"final_response":"```mermaid\nflowchart TD\n    A[Read] --> B[Spawn]\n    B --> C[Wait]"#,
+            "final_response",
+        );
+        let first = first.expect("partial prefix");
+        let second = second.expect("longer partial prefix");
+
+        assert!(!first.ends_with('\\'));
+        assert!(second.starts_with(&first));
+        assert_eq!(suffix_after_prefix(&first, &second), "\n    B --> C[Wait]");
     }
 
     #[test]

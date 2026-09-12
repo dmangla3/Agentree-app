@@ -285,7 +285,7 @@ describe('GraphControls', () => {
     expect(screen.getByRole('button', { name: 'Merge panel (1 source)' })).toBeTruthy();
   });
 
-  it('leaves done thread grouping to the workspace navigator', () => {
+  it('leaves closed thread grouping to the workspace navigator', () => {
     render(
       <TooltipProvider>
         <GraphControls

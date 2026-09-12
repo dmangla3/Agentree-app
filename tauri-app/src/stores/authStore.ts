@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
 
 interface User {
   id: string;
@@ -27,38 +26,34 @@ interface AuthState {
   markSessionExpired: (reason?: string) => void;
 }
 
-export const useAuthStore = create<AuthState>()(
-  persist(
-    (set) => ({
+if (typeof window !== 'undefined' && window.localStorage) {
+  window.localStorage.removeItem('auth-storage');
+}
+
+export const useAuthStore = create<AuthState>()((set) => ({
+  user: null,
+  desktopSession: null,
+  authErrorReason: null,
+
+  setUser: (user: User | null) => set({ user }),
+
+  setDesktopSession: (session: DesktopAuthSession | null) => set({ desktopSession: session }),
+
+  setAuthErrorReason: (reason: string | null) => set({ authErrorReason: reason }),
+
+  clearAuthErrorReason: () => {
+    set({ authErrorReason: null });
+  },
+
+  clearSession: () => {
+    set({ user: null, desktopSession: null, authErrorReason: null });
+  },
+
+  markSessionExpired: (reason?: string) => {
+    set({
+      authErrorReason: reason || 'Your session has expired. Please log in again.',
       user: null,
-      desktopSession: null,
-      authErrorReason: null,
-
-      setUser: (user: User | null) => set({ user }),
-
-      setDesktopSession: (session: DesktopAuthSession | null) => set({ desktopSession: session }),
-
-      setAuthErrorReason: (reason: string | null) => set({ authErrorReason: reason }),
-
-      clearAuthErrorReason: () => {
-        set({ authErrorReason: null });
-      },
-
-      clearSession: () => {
-        set({ user: null, desktopSession: null, authErrorReason: null });
-      },
-
-      markSessionExpired: (reason?: string) => {
-        set({
-          authErrorReason: reason || 'Your session has expired. Please log in again.',
-          user: null,
-          desktopSession: null
-        });
-      }
-    }),
-    {
-      name: 'auth-storage',
-      partialize: (state: AuthState) => ({ user: state.user, desktopSession: state.desktopSession }),
-    }
-  )
-);
+      desktopSession: null
+    });
+  }
+}));

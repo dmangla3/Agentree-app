@@ -65,6 +65,36 @@ const timelineProjectionFingerprint = (timeline: any[]) => (
     .join('|')
 );
 
+const projectionMetaFingerprint = (executionData: Record<string, any>) => {
+  const meta = executionData.meta && typeof executionData.meta === 'object'
+    ? executionData.meta as Record<string, any>
+    : {};
+  const providerLimits = meta.provider_limits && typeof meta.provider_limits === 'object'
+    ? meta.provider_limits as Record<string, any>
+    : {};
+  return {
+    ai_label: meta.ai_label ?? null,
+    commit_subject: meta.commit_subject ?? null,
+    commit_body: meta.commit_body ?? null,
+    thread_title: meta.thread_title ?? null,
+    threadTitle: meta.threadTitle ?? null,
+    agent_thread_title: meta.agent_thread_title ?? null,
+    runtime_thread_title: meta.runtime_thread_title ?? null,
+    provider: meta.provider ?? null,
+    provider_model: meta.provider_model ?? null,
+    provider_reasoning_effort: meta.provider_reasoning_effort ?? null,
+    provider_limits: {
+      credits: providerLimits.credits ?? null,
+      bucket: providerLimits.bucket ?? null,
+      primary: providerLimits.primary ?? null,
+      secondary: providerLimits.secondary ?? null,
+      limitId: providerLimits.limitId ?? null,
+      limitName: providerLimits.limitName ?? null,
+      planType: providerLimits.planType ?? null,
+    },
+  };
+};
+
 const snapshotProjectionKey = (snapshot: AgentRunSnapshot) => JSON.stringify({
   nodeId: snapshot.nodeId,
   workspaceId: snapshot.workspaceId,
@@ -79,6 +109,7 @@ const snapshotProjectionKey = (snapshot: AgentRunSnapshot) => JSON.stringify({
   contentTail: snapshot.content.slice(-160),
   timelineLength: snapshot.timeline.length,
   timelineTail: timelineProjectionFingerprint(snapshot.timeline),
+  meta: projectionMetaFingerprint(snapshot.executionData),
   usage: snapshot.usage,
   terminalStatus: snapshot.terminalStatus,
   terminalReason: snapshot.terminalReason,

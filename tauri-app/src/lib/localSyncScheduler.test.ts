@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushQueuedLocalSyncForTest, queueLocalSyncFlush, resetLocalSyncSchedulerForTest } from './localSyncScheduler';
 import { getAccessToken } from './authSession';
 import { agentClient } from './agentClient';
+import { useAuthStore } from '../stores/authStore';
 
 vi.mock('./authSession', () => ({
   getAccessToken: vi.fn(async () => 'mock-token'),
@@ -17,11 +18,23 @@ describe('localSyncScheduler', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    useAuthStore.getState().setUser({
+      id: 'cloud-user-1',
+      email: 'cloud@example.com',
+      name: 'Cloud User',
+    });
+    useAuthStore.getState().setDesktopSession({
+      accessToken: 'mock-token',
+      idToken: 'mock-id-token',
+      refreshToken: 'mock-refresh-token',
+      expiresAt: null,
+    });
     resetLocalSyncSchedulerForTest();
   });
 
   afterEach(() => {
     resetLocalSyncSchedulerForTest();
+    useAuthStore.getState().clearSession();
     vi.useRealTimers();
   });
 
@@ -36,6 +49,6 @@ describe('localSyncScheduler', () => {
 
     expect(getAccessToken).toHaveBeenCalledTimes(1);
     expect(agentClient.processLocalSyncEvents).toHaveBeenCalledTimes(1);
-    expect(agentClient.processLocalSyncEvents).toHaveBeenCalledWith('mock-token', 25);
+    expect(agentClient.processLocalSyncEvents).toHaveBeenCalledWith('mock-token', 'cloud-user-1', 25);
   });
 });

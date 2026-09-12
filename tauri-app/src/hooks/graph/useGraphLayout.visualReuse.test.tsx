@@ -455,7 +455,7 @@ describe('useGraphLayout visual reuse', () => {
         id: 'orchestration-user',
         role: 'user',
         parentId: 'parent-assistant',
-        content: '#security_reviewer',
+        content: '#reviewer',
         execution_data: { meta: { node_kind: 'orchestrator' } },
       }, 2),
       makeMessage({

@@ -1,4 +1,7 @@
-import { DEPENDENCY_GUARD_INSTRUCTION } from './agentRunPrompts';
+import {
+  getEffectiveDefaultPromptText,
+  type DefaultPromptOverride,
+} from './defaultPrompts';
 
 export interface MergeAgentPromptTarget {
   label: string;
@@ -14,6 +17,7 @@ export interface MergeAgentPromptSource {
 export interface MergeAgentPromptInput {
   target: MergeAgentPromptTarget;
   sources: MergeAgentPromptSource[];
+  defaultPromptOverrides?: DefaultPromptOverride[];
 }
 
 const formatSource = (source: MergeAgentPromptSource, index: number) => {
@@ -21,10 +25,11 @@ const formatSource = (source: MergeAgentPromptSource, index: number) => {
   return `${index + 1}. ${source.label} (${source.commitSha}${branchSuffix})`;
 };
 
-export const buildMergeAgentPrompt = ({ target, sources }: MergeAgentPromptInput): string => {
+export const buildMergeAgentPrompt = ({ target, sources, defaultPromptOverrides }: MergeAgentPromptInput): string => {
   const sourceList = sources.map(formatSource).join('\n');
+  const dependencyGuard = getEffectiveDefaultPromptText('dependency_guard', defaultPromptOverrides);
 
-  return `${DEPENDENCY_GUARD_INSTRUCTION}
+  return `${dependencyGuard}
 
 Merge the selected source commits into the selected target commit.
 

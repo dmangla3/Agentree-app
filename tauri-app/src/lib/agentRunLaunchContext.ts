@@ -7,6 +7,7 @@ import {
   type RuntimeProvider,
 } from './providerContinuation';
 import type { Message } from '../stores/workspaceStore';
+import { getDefaultPromptOverridesSnapshot } from '../stores/defaultPromptStore';
 
 export interface AgentRunLaunchContextInput {
   agentType: string | null | undefined;
@@ -165,6 +166,7 @@ export function buildAgentRunLaunchContext(input: AgentRunLaunchContextInput): A
     mode: promptMode,
     userPrompt: input.userPrompt,
     contextManifest,
+    defaultPromptOverrides: getDefaultPromptOverridesSnapshot(),
     threadTitleMode: input.threadTitleMode ?? 'none',
     orchestrationLabelMode: input.orchestrationLabelMode ?? 'none',
     orchestrationControl: input.orchestrationControl ?? null,

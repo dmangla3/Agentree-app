@@ -1,5 +1,5 @@
-import { useSyncExternalStore } from 'react';
-import { useHotkeys } from '@tanstack/react-hotkeys';
+import { useEffect, useSyncExternalStore } from 'react';
+import { matchesKeyboardEvent, normalizeRegisterableHotkey, parseHotkey, useHotkeys } from '@tanstack/react-hotkeys';
 import {
   getEffectiveShortcutHotkeys,
   getShortcut,
@@ -36,4 +36,45 @@ export function useShortcut(
       },
     })),
   );
+}
+
+export function useCapturedShortcut(
+  id: ShortcutId,
+  callback: HotkeyCallback,
+  options: UseHotkeyOptions = {},
+) {
+  const shortcutOverrides = useSyncExternalStore(
+    subscribeShortcutOverrides,
+    getShortcutOverridesSnapshot,
+    getShortcutOverridesSnapshot,
+  );
+  const hotkeys = getEffectiveShortcutHotkeys(id, shortcutOverrides);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const normalizedHotkeys = hotkeys.map((hotkey) => normalizeRegisterableHotkey(hotkey, options.platform));
+    const handler = (event: KeyboardEvent) => {
+      if (options.enabled === false) return;
+
+      const matchedHotkey = normalizedHotkeys.find((hotkey) => (
+        matchesKeyboardEvent(event, hotkey, options.platform)
+      ));
+      if (!matchedHotkey) return;
+
+      if (options.preventDefault !== false) {
+        event.preventDefault();
+      }
+      if (options.stopPropagation !== false) {
+        event.stopPropagation();
+      }
+      callback(event, {
+        hotkey: matchedHotkey,
+        parsedHotkey: parseHotkey(matchedHotkey, options.platform),
+      });
+    };
+
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [callback, hotkeys, options.enabled, options.platform, options.preventDefault, options.stopPropagation]);
 }

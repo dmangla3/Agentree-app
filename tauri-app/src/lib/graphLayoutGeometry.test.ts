@@ -2769,7 +2769,8 @@ describe('graph layout geometry QA', () => {
 
     const highlightedEdge = mapped.edges.find((edge) => edge.source === 'assistant-1' && edge.target === 'user-2');
     const focusedLineageEdge = mapped.edges.find((edge) => edge.source === 'user-2' && edge.target === 'assistant-2');
-    expect(highlightedEdge?.animated).toBe(true);
+    expect((highlightedEdge?.data as any)?.isOnContextPath).toBe(true);
+    expect(highlightedEdge?.animated).not.toBe(true);
     expect(focusedLineageEdge?.animated).not.toBe(true);
   });
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+  FileText,
   Keyboard,
   type LucideIcon,
   Settings,
@@ -14,6 +15,7 @@ import {
 } from '../../@/components/ui/dialog';
 import { ShortcutSettingsPanel } from './ShortcutSettingsPanel';
 import { WorktreePolicyPanel } from './WorktreePolicyButton';
+import { DefaultPromptSettingsPanel } from './DefaultPromptSettingsPanel';
 import { cn } from '../lib/utils';
 
 interface ConfigButtonProps {
@@ -22,7 +24,7 @@ interface ConfigButtonProps {
   onOpenChange?: (open: boolean) => void;
 }
 
-type ConfigPanelId = 'worktree-policy' | 'keyboard-shortcuts';
+type ConfigPanelId = 'worktree-policy' | 'keyboard-shortcuts' | 'default-prompts';
 
 const configPanels = [
   {
@@ -36,6 +38,12 @@ const configPanels = [
     label: 'Keyboard shortcuts',
     description: 'Review and override app shortcuts',
     icon: Keyboard,
+  },
+  {
+    id: 'default-prompts',
+    label: 'Default prompts',
+    description: 'View and edit built-in prompt text',
+    icon: FileText,
   },
 ] as const satisfies Array<{
   id: ConfigPanelId;
@@ -71,7 +79,7 @@ export function ConfigButton({ repoPath, open, onOpenChange }: ConfigButtonProps
       <DialogContent className="h-[min(720px,calc(100dvh-2rem))] max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-[1040px] gap-0 overflow-hidden rounded-xl border-border/80 p-0 shadow-[0_28px_90px_-46px_hsl(var(--foreground)/0.65)] sm:max-w-[1040px]">
         <DialogTitle className="sr-only">Configuration</DialogTitle>
         <DialogDescription className="sr-only">
-          Configure worktree policy and keyboard shortcuts.
+          Configure worktree policy, keyboard shortcuts, and default prompts.
         </DialogDescription>
 
         <div className="grid h-full min-h-0 grid-cols-1 bg-background md:grid-cols-[240px_minmax(0,1fr)]">
@@ -122,8 +130,10 @@ export function ConfigButton({ repoPath, open, onOpenChange }: ConfigButtonProps
               <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                 <WorktreePolicyPanel repoPath={repoPath} />
               </div>
-            ) : (
+            ) : activePanelId === 'keyboard-shortcuts' ? (
               <ShortcutSettingsPanel />
+            ) : (
+              <DefaultPromptSettingsPanel />
             )}
           </div>
         </div>

@@ -86,15 +86,15 @@ export function LoginPage() {
                 </span>
               </h1>
               <p className="max-w-md text-base leading-7 text-slate-300 text-pretty">
-                Every agent run is captured in a shared tree, so your team can launch 100s of agents in parallel, branch in new directions, and keep the full context of every decision.
+                Work locally by default. Connect Agentree Cloud when you want backup, sync, sharing, or collaboration.
               </p>
             </div>
 
             <div className="mt-10 grid gap-3">
               {[
-                'Collaborate in a shared agent tree built for the whole team.',
-                'Branch from any node to explore new ideas, debates, and execution paths.',
-                'Use smart merge to let AI combine changes across selected nodes.',
+                'Local work remains available when cloud is disconnected.',
+                'Backup stays off until you enable it for a workspace.',
+                'Sharing starts only after you explicitly publish.',
               ].map((item) => (
                 <div key={item} className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-slate-200">
                   {item}
@@ -105,9 +105,9 @@ export function LoginPage() {
 
           <div className="bg-card/70 px-6 py-8 dark:bg-zinc-950/90 sm:px-8 sm:py-10">
             <CardHeader className="px-0 pb-6">
-              <CardTitle className="text-2xl text-foreground dark:text-zinc-50">Sign in to continue</CardTitle>
+              <CardTitle className="text-2xl text-foreground dark:text-zinc-50">Connect Agentree Cloud</CardTitle>
               <p className="text-sm leading-6 text-muted-foreground dark:text-zinc-300">
-                Authentication opens in your browser, then returns you to the app for environment checks and workspace setup.
+                Authentication opens in your browser, then returns you to the app. Your local work stays local until backup is enabled.
               </p>
             </CardHeader>
             <CardContent className="px-0">
@@ -126,7 +126,7 @@ export function LoginPage() {
                     "flex items-center justify-center gap-2 text-sm font-medium shadow-[0_12px_30px_-18px_rgba(37,99,235,0.55)]"
                   )}
                 >
-                  Sign In
+                  Connect Cloud
                   <ArrowRight className="h-4 w-4" />
                 </button>
 
@@ -137,7 +137,7 @@ export function LoginPage() {
                     "flex items-center justify-center gap-2 text-sm font-medium"
                   )}
                 >
-                  Create Account
+                  Create Cloud Account
                 </button>
               </div>
 

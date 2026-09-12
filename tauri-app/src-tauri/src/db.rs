@@ -674,6 +674,7 @@ pub struct LocalSyncEventRow {
     pub id: String,
     pub workspace_id: Option<String>,
     pub user_id: Option<String>,
+    pub cloud_account_id: Option<String>,
     pub entity_type: String,
     pub entity_id: String,
     pub event_type: String,
@@ -685,6 +686,13 @@ pub struct LocalSyncEventRow {
     pub last_error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalIdentity {
+    pub local_user_id: String,
+    pub local_device_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -715,6 +723,8 @@ pub struct LocalWorkspaceRow {
     pub server_version: Option<String>,
     pub name_dirty: bool,
     pub metadata_dirty: bool,
+    pub cloud_backup_enabled: bool,
+    pub cloud_account_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -1018,7 +1028,7 @@ impl TelemetryDb {
                 repo_fingerprint TEXT,
                 base_commit_sha TEXT,
                 connection_status TEXT NOT NULL DEFAULT 'remote_unconnected',
-                sync_status TEXT NOT NULL DEFAULT 'synced',
+                sync_status TEXT NOT NULL DEFAULT 'local_only',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 deleted_at TEXT,
@@ -1028,7 +1038,9 @@ impl TelemetryDb {
                 server_ack_at TEXT,
                 server_version TEXT,
                 name_dirty INTEGER NOT NULL DEFAULT 0,
-                metadata_dirty INTEGER NOT NULL DEFAULT 0
+                metadata_dirty INTEGER NOT NULL DEFAULT 0,
+                cloud_backup_enabled INTEGER NOT NULL DEFAULT 0,
+                cloud_account_id TEXT
             );
 
             CREATE TABLE IF NOT EXISTS local_sync_events (
@@ -1040,6 +1052,7 @@ impl TelemetryDb {
                 event_type TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
                 idempotency_key TEXT NOT NULL UNIQUE,
+                cloud_account_id TEXT,
                 status TEXT NOT NULL,
                 attempt_count INTEGER NOT NULL DEFAULT 0,
                 next_attempt_at INTEGER,
@@ -1213,7 +1226,7 @@ impl TelemetryDb {
             [],
         );
         let _ = conn.execute(
-            "ALTER TABLE local_workspaces ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'synced'",
+            "ALTER TABLE local_workspaces ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'local_only'",
             [],
         );
         let _ = conn.execute(
@@ -1230,6 +1243,18 @@ impl TelemetryDb {
         );
         let _ = conn.execute(
             "ALTER TABLE local_workspaces ADD COLUMN metadata_dirty INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_workspaces ADD COLUMN cloud_backup_enabled INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_workspaces ADD COLUMN cloud_account_id TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_sync_events ADD COLUMN cloud_account_id TEXT",
             [],
         );
         let _ = Self::repair_local_workspace_repo_paths(&conn);
@@ -3183,7 +3208,8 @@ impl TelemetryDb {
                           AND e.last_error IS NOT NULL
                         ORDER BY e.updated_at DESC
                         LIMIT 1
-                    ) AS last_upload_error
+                    ) AS last_upload_error,
+                    n.execution_data_json
                 FROM local_nodes n
                 WHERE n.workspace_id = ?1
                   AND n.deleted_at IS NULL
@@ -3193,26 +3219,37 @@ impl TelemetryDb {
                 "#,
             )
             .map_err(|e| e.to_string())?;
-        let mut rows = stmt
+        let mut rows_with_execution_data = stmt
             .query_map(params![workspace_id], |row| {
-                Ok(LocalNodeRow {
-                    node_id: row.get(0)?,
-                    workspace_id: row.get(1)?,
-                    controlled_by_node_id: row.get(2)?,
-                    payload: row.get(3)?,
-                    sync_status: row.get(4)?,
-                    finalized_at: row.get(5)?,
-                    server_ack_at: row.get(6)?,
-                    retry_attempt: row.get(7)?,
-                    next_retry_at: row.get(8)?,
-                    last_upload_error: row.get(9)?,
-                })
+                Ok((
+                    LocalNodeRow {
+                        node_id: row.get(0)?,
+                        workspace_id: row.get(1)?,
+                        controlled_by_node_id: row.get(2)?,
+                        payload: row.get(3)?,
+                        sync_status: row.get(4)?,
+                        finalized_at: row.get(5)?,
+                        server_ack_at: row.get(6)?,
+                        retry_attempt: row.get(7)?,
+                        next_retry_at: row.get(8)?,
+                        last_upload_error: row.get(9)?,
+                    },
+                    row.get::<_, Option<String>>(10)?,
+                ))
             })
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
         drop(stmt);
-        for row in rows.iter_mut() {
+        for (row, execution_data_json) in rows_with_execution_data.iter_mut() {
+            if execution_data_json
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<JsonValue>(value).ok())
+                .map(|execution_data| execution_data_has_structured_timeline(&execution_data))
+                .unwrap_or(false)
+            {
+                continue;
+            }
             let Ok(mut payload) = serde_json::from_str::<JsonValue>(&row.payload) else {
                 continue;
             };
@@ -3238,6 +3275,10 @@ impl TelemetryDb {
                 .map_err(|e| e.to_string())?;
             }
         }
+        let mut rows: Vec<LocalNodeRow> = rows_with_execution_data
+            .into_iter()
+            .map(|(row, _)| row)
+            .collect();
         rows.sort_by_key(|row| row.finalized_at);
         Ok(rows)
     }
@@ -3901,6 +3942,126 @@ impl TelemetryDb {
         Ok(device_id)
     }
 
+    fn local_user_id_locked(conn: &Connection, now: i64) -> Result<String, String> {
+        let existing = conn
+            .query_row(
+                "SELECT value FROM local_app_kv WHERE key = 'local_user_id'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(local_user_id) = existing {
+            Self::repair_legacy_cloud_owned_local_rows_locked(conn, &local_user_id, None)?;
+            return Ok(local_user_id);
+        }
+        let local_user_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            r#"
+            INSERT INTO local_app_kv(key, value, created_at, updated_at)
+            VALUES ('local_user_id', ?1, ?2, ?2)
+            "#,
+            params![local_user_id, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Self::repair_legacy_cloud_owned_local_rows_locked(conn, &local_user_id, None)?;
+        Ok(local_user_id)
+    }
+
+    fn repair_legacy_cloud_owned_local_rows_locked(
+        conn: &Connection,
+        local_user_id: &str,
+        active_cloud_account_id: Option<&str>,
+    ) -> Result<(), String> {
+        if local_user_id.trim().is_empty() {
+            return Ok(());
+        }
+
+        if let Some(cloud_account_id) =
+            active_cloud_account_id.filter(|value| !value.trim().is_empty())
+        {
+            conn.execute(
+                r#"
+                UPDATE local_workspaces
+                SET cloud_account_id = COALESCE(cloud_account_id, user_id),
+                    cloud_backup_enabled = 1,
+                    sync_status = CASE
+                        WHEN sync_status = 'local_only' THEN 'sync_pending'
+                        ELSE sync_status
+                    END,
+                    user_id = ?1
+                WHERE user_id = ?2
+                  AND user_id != ?1
+                  AND (cloud_account_id IS NULL OR cloud_account_id = ?2)
+                "#,
+                params![local_user_id, cloud_account_id],
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            conn.execute(
+                r#"
+                UPDATE local_workspaces
+                SET cloud_account_id = user_id,
+                    cloud_backup_enabled = 1,
+                    sync_status = CASE
+                        WHEN sync_status = 'local_only' THEN 'sync_pending'
+                        ELSE sync_status
+                    END,
+                    user_id = ?1
+                WHERE user_id IS NOT NULL
+                  AND user_id != ?1
+                  AND cloud_account_id IS NULL
+                "#,
+                params![local_user_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        conn.execute(
+            r#"
+            UPDATE local_sync_events
+            SET user_id = ?1,
+                cloud_account_id = COALESCE(
+                    cloud_account_id,
+                    (
+                        SELECT workspace.cloud_account_id
+                        FROM local_workspaces workspace
+                        WHERE workspace.id = local_sync_events.workspace_id
+                    )
+                )
+            WHERE status = 'pending'
+              AND workspace_id IN (
+                SELECT id
+                FROM local_workspaces
+                WHERE user_id = ?1
+                  AND cloud_backup_enabled = 1
+                  AND cloud_account_id IS NOT NULL
+                  AND (?2 IS NULL OR cloud_account_id = ?2)
+              )
+              AND (
+                user_id IS NULL
+                OR user_id != ?1
+                OR cloud_account_id IS NULL
+              )
+            "#,
+            params![local_user_id, active_cloud_account_id],
+        )
+        .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    pub fn get_local_identity(&self) -> Result<LocalIdentity, String> {
+        let now = unix_timestamp();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let local_user_id = Self::local_user_id_locked(&conn, now)?;
+        let local_device_id = Self::local_device_id_locked(&conn, now)?;
+        Ok(LocalIdentity {
+            local_user_id,
+            local_device_id,
+        })
+    }
+
     #[cfg(test)]
     pub fn enqueue_local_sync_event(
         &self,
@@ -3934,6 +4095,18 @@ impl TelemetryDb {
     ) -> Result<LocalSyncEventRow, String> {
         let now = unix_timestamp();
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        if !Self::workspace_cloud_backup_enabled_locked(&conn, workspace_id)? {
+            return Ok(Self::local_only_sync_event(
+                workspace_id,
+                user_id,
+                entity_type,
+                entity_id,
+                event_type,
+                payload_json,
+                now,
+            ));
+        }
+        let cloud_account_id = Self::workspace_cloud_account_id_locked(&conn, workspace_id)?;
         let device_id = Self::local_device_id_locked(&conn, now)?;
         let mutation_id = mutation_id
             .map(|value| value.to_string())
@@ -3943,13 +4116,14 @@ impl TelemetryDb {
         conn.execute(
             r#"
             INSERT INTO local_sync_events (
-                id, workspace_id, user_id, entity_type, entity_id, event_type, payload_json,
+                id, workspace_id, user_id, cloud_account_id, entity_type, entity_id, event_type, payload_json,
                 idempotency_key, status, attempt_count, next_attempt_at, created_at, updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', 0, ?9, ?9, ?9)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', 0, ?10, ?10, ?10)
             ON CONFLICT(idempotency_key) DO UPDATE SET
                 workspace_id = excluded.workspace_id,
                 user_id = COALESCE(excluded.user_id, local_sync_events.user_id),
+                cloud_account_id = excluded.cloud_account_id,
                 payload_json = excluded.payload_json,
                 status = CASE
                     WHEN local_sync_events.status = 'synced' THEN 'synced'
@@ -3957,14 +4131,15 @@ impl TelemetryDb {
                 END,
                 next_attempt_at = CASE
                     WHEN local_sync_events.status = 'synced' THEN local_sync_events.next_attempt_at
-                    ELSE ?9
+                    ELSE ?10
                 END,
-                updated_at = ?9
+                updated_at = ?10
             "#,
             params![
                 id,
                 workspace_id,
                 user_id,
+                cloud_account_id,
                 entity_type,
                 entity_id,
                 event_type,
@@ -3977,6 +4152,68 @@ impl TelemetryDb {
         drop(conn);
         self.get_local_sync_event_by_idempotency_key(&idempotency_key)?
             .ok_or_else(|| "Failed to read enqueued sync event.".to_string())
+    }
+
+    fn workspace_cloud_backup_enabled_locked(
+        conn: &Connection,
+        workspace_id: Option<&str>,
+    ) -> Result<bool, String> {
+        let Some(workspace_id) = workspace_id else {
+            return Ok(true);
+        };
+        conn.query_row(
+            "SELECT cloud_backup_enabled FROM local_workspaces WHERE id = ?1",
+            params![workspace_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map(|value| value.map(|flag| flag != 0).unwrap_or(true))
+        .map_err(|e| e.to_string())
+    }
+
+    fn workspace_cloud_account_id_locked(
+        conn: &Connection,
+        workspace_id: Option<&str>,
+    ) -> Result<Option<String>, String> {
+        let Some(workspace_id) = workspace_id else {
+            return Ok(None);
+        };
+        conn.query_row(
+            "SELECT cloud_account_id FROM local_workspaces WHERE id = ?1",
+            params![workspace_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|value| value.flatten())
+        .map_err(|e| e.to_string())
+    }
+
+    fn local_only_sync_event(
+        workspace_id: Option<&str>,
+        user_id: Option<&str>,
+        entity_type: &str,
+        entity_id: &str,
+        event_type: &str,
+        payload_json: &str,
+        now: i64,
+    ) -> LocalSyncEventRow {
+        LocalSyncEventRow {
+            id: format!("local-only:{}:{}", event_type, entity_id),
+            workspace_id: workspace_id.map(str::to_string),
+            user_id: user_id.map(str::to_string),
+            cloud_account_id: None,
+            entity_type: entity_type.to_string(),
+            entity_id: entity_id.to_string(),
+            event_type: event_type.to_string(),
+            payload_json: payload_json.to_string(),
+            idempotency_key: format!("local-only:{}:{}", event_type, entity_id),
+            status: "local_only".to_string(),
+            attempt_count: 0,
+            next_attempt_at: None,
+            last_error: None,
+            created_at: now,
+            updated_at: now,
+        }
     }
 
     pub fn enqueue_local_commit_graph_sync(
@@ -4007,7 +4244,11 @@ impl TelemetryDb {
         event_type: &str,
         payload_json: &str,
         mutation_id: Option<&str>,
-    ) -> Result<String, String> {
+    ) -> Result<Option<String>, String> {
+        if !Self::workspace_cloud_backup_enabled_locked(conn, workspace_id)? {
+            return Ok(None);
+        }
+        let cloud_account_id = Self::workspace_cloud_account_id_locked(conn, workspace_id)?;
         let device_id = Self::local_device_id_locked(conn, now)?;
         let mutation_id = mutation_id
             .map(|value| value.to_string())
@@ -4017,13 +4258,14 @@ impl TelemetryDb {
         conn.execute(
             r#"
             INSERT INTO local_sync_events (
-                id, workspace_id, user_id, entity_type, entity_id, event_type, payload_json,
+                id, workspace_id, user_id, cloud_account_id, entity_type, entity_id, event_type, payload_json,
                 idempotency_key, status, attempt_count, next_attempt_at, created_at, updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', 0, ?9, ?9, ?9)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', 0, ?10, ?10, ?10)
             ON CONFLICT(idempotency_key) DO UPDATE SET
                 workspace_id = excluded.workspace_id,
                 user_id = COALESCE(excluded.user_id, local_sync_events.user_id),
+                cloud_account_id = excluded.cloud_account_id,
                 payload_json = excluded.payload_json,
                 status = CASE
                     WHEN local_sync_events.status = 'synced' THEN 'synced'
@@ -4031,14 +4273,15 @@ impl TelemetryDb {
                 END,
                 next_attempt_at = CASE
                     WHEN local_sync_events.status = 'synced' THEN local_sync_events.next_attempt_at
-                    ELSE ?9
+                    ELSE ?10
                 END,
-                updated_at = ?9
+                updated_at = ?10
             "#,
             params![
                 id,
                 workspace_id,
                 user_id,
+                cloud_account_id,
                 entity_type,
                 entity_id,
                 event_type,
@@ -4048,7 +4291,7 @@ impl TelemetryDb {
             ],
         )
         .map_err(|e| e.to_string())?;
-        Ok(idempotency_key)
+        Ok(Some(idempotency_key))
     }
 
     pub fn upsert_local_insight_payload_for_user(
@@ -4170,8 +4413,20 @@ impl TelemetryDb {
         )?;
         tx.commit().map_err(|e| e.to_string())?;
         drop(conn);
-        self.get_local_sync_event_by_idempotency_key(&idempotency_key)?
-            .ok_or_else(|| "Failed to read enqueued insight sync event.".to_string())
+        if let Some(idempotency_key) = idempotency_key {
+            self.get_local_sync_event_by_idempotency_key(&idempotency_key)?
+                .ok_or_else(|| "Failed to read enqueued insight sync event.".to_string())
+        } else {
+            Ok(Self::local_only_sync_event(
+                Some(workspace_id),
+                user_id,
+                "insight",
+                insight_id,
+                "insight.upsert",
+                &sync_payload_json,
+                now,
+            ))
+        }
     }
 
     pub fn persist_background_insight_candidates_for_user(
@@ -4480,8 +4735,20 @@ impl TelemetryDb {
         )?;
         tx.commit().map_err(|e| e.to_string())?;
         drop(conn);
-        self.get_local_sync_event_by_idempotency_key(&idempotency_key)?
-            .ok_or_else(|| "Failed to read enqueued insight dismiss event.".to_string())
+        if let Some(idempotency_key) = idempotency_key {
+            self.get_local_sync_event_by_idempotency_key(&idempotency_key)?
+                .ok_or_else(|| "Failed to read enqueued insight dismiss event.".to_string())
+        } else {
+            Ok(Self::local_only_sync_event(
+                Some(workspace_id),
+                user_id,
+                "insight",
+                insight_id,
+                "insight.dismiss",
+                &sync_payload_json,
+                now,
+            ))
+        }
     }
 
     pub fn record_local_insight_feedback(
@@ -4814,34 +5081,39 @@ impl TelemetryDb {
     ) -> Result<Option<LocalSyncEventRow>, String> {
         conn.query_row(
             r#"
-            SELECT id, workspace_id, user_id, entity_type, entity_id, event_type, payload_json,
+            SELECT id, workspace_id, user_id, cloud_account_id, entity_type, entity_id, event_type, payload_json,
                    idempotency_key, status, attempt_count, next_attempt_at, last_error,
                    created_at, updated_at
             FROM local_sync_events
             WHERE id = ?1
             "#,
             params![id],
-            |row| {
-                Ok(LocalSyncEventRow {
-                    id: row.get(0)?,
-                    workspace_id: row.get(1)?,
-                    user_id: row.get(2)?,
-                    entity_type: row.get(3)?,
-                    entity_id: row.get(4)?,
-                    event_type: row.get(5)?,
-                    payload_json: row.get(6)?,
-                    idempotency_key: row.get(7)?,
-                    status: row.get(8)?,
-                    attempt_count: row.get(9)?,
-                    next_attempt_at: row.get(10)?,
-                    last_error: row.get(11)?,
-                    created_at: row.get(12)?,
-                    updated_at: row.get(13)?,
-                })
-            },
+            Self::local_sync_event_row_from_sql,
         )
         .optional()
         .map_err(|e| e.to_string())
+    }
+
+    fn local_sync_event_row_from_sql(
+        row: &rusqlite::Row<'_>,
+    ) -> rusqlite::Result<LocalSyncEventRow> {
+        Ok(LocalSyncEventRow {
+            id: row.get(0)?,
+            workspace_id: row.get(1)?,
+            user_id: row.get(2)?,
+            cloud_account_id: row.get(3)?,
+            entity_type: row.get(4)?,
+            entity_id: row.get(5)?,
+            event_type: row.get(6)?,
+            payload_json: row.get(7)?,
+            idempotency_key: row.get(8)?,
+            status: row.get(9)?,
+            attempt_count: row.get(10)?,
+            next_attempt_at: row.get(11)?,
+            last_error: row.get(12)?,
+            created_at: row.get(13)?,
+            updated_at: row.get(14)?,
+        })
     }
 
     pub fn get_local_sync_event_by_idempotency_key(
@@ -4851,36 +5123,20 @@ impl TelemetryDb {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.query_row(
             r#"
-            SELECT id, workspace_id, user_id, entity_type, entity_id, event_type, payload_json,
+            SELECT id, workspace_id, user_id, cloud_account_id, entity_type, entity_id, event_type, payload_json,
                    idempotency_key, status, attempt_count, next_attempt_at, last_error,
                    created_at, updated_at
             FROM local_sync_events
             WHERE idempotency_key = ?1
             "#,
             params![idempotency_key],
-            |row| {
-                Ok(LocalSyncEventRow {
-                    id: row.get(0)?,
-                    workspace_id: row.get(1)?,
-                    user_id: row.get(2)?,
-                    entity_type: row.get(3)?,
-                    entity_id: row.get(4)?,
-                    event_type: row.get(5)?,
-                    payload_json: row.get(6)?,
-                    idempotency_key: row.get(7)?,
-                    status: row.get(8)?,
-                    attempt_count: row.get(9)?,
-                    next_attempt_at: row.get(10)?,
-                    last_error: row.get(11)?,
-                    created_at: row.get(12)?,
-                    updated_at: row.get(13)?,
-                })
-            },
+            Self::local_sync_event_row_from_sql,
         )
         .optional()
         .map_err(|e| e.to_string())
     }
 
+    #[cfg(test)]
     pub fn list_due_local_sync_events_for_user(
         &self,
         user_id: &str,
@@ -4888,40 +5144,74 @@ impl TelemetryDb {
     ) -> Result<Vec<LocalSyncEventRow>, String> {
         let now = unix_timestamp();
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        Self::repair_legacy_cloud_owned_local_rows_locked(&conn, user_id, Some(cloud_account_id))?;
         let mut stmt = conn
             .prepare(
                 r#"
-                SELECT id, workspace_id, user_id, entity_type, entity_id, event_type, payload_json,
+                SELECT id, workspace_id, user_id, cloud_account_id, entity_type, entity_id, event_type, payload_json,
                        idempotency_key, status, attempt_count, next_attempt_at, last_error,
                        created_at, updated_at
                 FROM local_sync_events
                 WHERE status = 'pending'
                   AND user_id = ?2
                   AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
-                ORDER BY created_at ASC
+                ORDER BY
+                  created_at ASC,
+                  CASE
+                    WHEN entity_type = 'workspace' AND event_type = 'workspace.create' THEN 0
+                    ELSE 1
+                  END,
+                  updated_at ASC
                 LIMIT ?3
                 "#,
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![now, user_id, limit], |row| {
-                Ok(LocalSyncEventRow {
-                    id: row.get(0)?,
-                    workspace_id: row.get(1)?,
-                    user_id: row.get(2)?,
-                    entity_type: row.get(3)?,
-                    entity_id: row.get(4)?,
-                    event_type: row.get(5)?,
-                    payload_json: row.get(6)?,
-                    idempotency_key: row.get(7)?,
-                    status: row.get(8)?,
-                    attempt_count: row.get(9)?,
-                    next_attempt_at: row.get(10)?,
-                    last_error: row.get(11)?,
-                    created_at: row.get(12)?,
-                    updated_at: row.get(13)?,
-                })
-            })
+            .query_map(
+                params![now, user_id, limit],
+                Self::local_sync_event_row_from_sql,
+            )
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    pub fn list_due_local_sync_events_for_user_and_cloud(
+        &self,
+        user_id: &str,
+        cloud_account_id: &str,
+        limit: i64,
+    ) -> Result<Vec<LocalSyncEventRow>, String> {
+        let now = unix_timestamp();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT id, workspace_id, user_id, cloud_account_id, entity_type, entity_id, event_type, payload_json,
+                       idempotency_key, status, attempt_count, next_attempt_at, last_error,
+                       created_at, updated_at
+                FROM local_sync_events
+                WHERE status = 'pending'
+                  AND user_id = ?2
+                  AND cloud_account_id = ?3
+                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
+                ORDER BY
+                  created_at ASC,
+                  CASE
+                    WHEN entity_type = 'workspace' AND event_type = 'workspace.create' THEN 0
+                    ELSE 1
+                  END,
+                  updated_at ASC
+                LIMIT ?4
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(
+                params![now, user_id, cloud_account_id, limit],
+                Self::local_sync_event_row_from_sql,
+            )
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
@@ -5180,6 +5470,8 @@ impl TelemetryDb {
             server_version: row.get(14)?,
             name_dirty: row.get::<_, i64>(15)? != 0,
             metadata_dirty: row.get::<_, i64>(16)? != 0,
+            cloud_backup_enabled: row.get::<_, i64>(17)? != 0,
+            cloud_account_id: row.get(18)?,
         })
     }
 
@@ -5193,7 +5485,8 @@ impl TelemetryDb {
             SELECT
                 id, name, user_id, local_repo_path, folder_path, repo_path, base_commit_sha,
                 connection_status, sync_status, created_at, updated_at, deleted_at,
-                local_updated_at, server_workspace_id, server_version, name_dirty, metadata_dirty
+                local_updated_at, server_workspace_id, server_version, name_dirty, metadata_dirty,
+                cloud_backup_enabled, cloud_account_id
             FROM local_workspaces
             WHERE id = ?1 AND (user_id = ?2 OR user_id IS NULL)
             ORDER BY user_id IS NULL ASC
@@ -5206,15 +5499,25 @@ impl TelemetryDb {
         .map_err(|e| e.to_string())
     }
 
-    pub fn list_local_workspaces(&self, user_id: &str) -> Result<Vec<LocalWorkspaceRow>, String> {
+    pub fn list_local_workspaces(
+        &self,
+        user_id: &str,
+        active_cloud_account_id: Option<&str>,
+    ) -> Result<Vec<LocalWorkspaceRow>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        Self::repair_legacy_cloud_owned_local_rows_locked(&conn, user_id, active_cloud_account_id)?;
         let mut stmt = conn
             .prepare(
                 r#"
                 SELECT
                     id, name, user_id, local_repo_path, folder_path, repo_path, base_commit_sha,
                     connection_status, sync_status, created_at, updated_at, deleted_at,
-                    local_updated_at, server_workspace_id, server_version, name_dirty, metadata_dirty
+                    local_updated_at, server_workspace_id, server_version, name_dirty, metadata_dirty,
+                    CASE
+                        WHEN cloud_backup_enabled = 1 AND cloud_account_id = ?2 THEN 1
+                        ELSE 0
+                    END AS cloud_backup_enabled,
+                    cloud_account_id
                 FROM local_workspaces
                 WHERE user_id = ?1 AND deleted_at IS NULL
                 ORDER BY local_updated_at DESC, updated_at DESC
@@ -5222,7 +5525,10 @@ impl TelemetryDb {
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![user_id], Self::local_workspace_row_from_sql)
+            .query_map(
+                params![user_id, active_cloud_account_id],
+                Self::local_workspace_row_from_sql,
+            )
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
@@ -5232,11 +5538,13 @@ impl TelemetryDb {
     pub fn merge_server_workspaces(
         &self,
         user_id: &str,
+        cloud_account_id: &str,
         payloads: Vec<String>,
     ) -> Result<Vec<LocalWorkspaceRow>, String> {
         let now = unix_timestamp();
         let now_text = chrono_like_now();
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        Self::repair_legacy_cloud_owned_local_rows_locked(&conn, user_id, Some(cloud_account_id))?;
         for payload_json in payloads {
             let payload: JsonValue = match serde_json::from_str(&payload_json) {
                 Ok(value) => value,
@@ -5263,6 +5571,14 @@ impl TelemetryDb {
                 continue;
             }
             if let Some(row) = existing {
+                if row
+                    .cloud_account_id
+                    .as_deref()
+                    .is_some_and(|existing_cloud| existing_cloud != cloud_account_id)
+                    && row.local_repo_path.is_none()
+                {
+                    continue;
+                }
                 if row.name_dirty {
                     conn.execute(
                         r#"
@@ -5270,10 +5586,12 @@ impl TelemetryDb {
                         SET user_id = ?5,
                             server_workspace_id = COALESCE(server_workspace_id, ?2),
                             server_version = ?3,
-                            server_ack_at = COALESCE(server_ack_at, ?4)
+                            server_ack_at = COALESCE(server_ack_at, ?4),
+                            cloud_backup_enabled = 1,
+                            cloud_account_id = ?6
                         WHERE id = ?1 AND (user_id = ?5 OR user_id IS NULL)
                         "#,
-                        params![id, id, server_version, now_text, user_id],
+                        params![id, id, server_version, now_text, user_id, cloud_account_id],
                     )
                     .map_err(|e| e.to_string())?;
                 } else {
@@ -5285,10 +5603,19 @@ impl TelemetryDb {
                             server_workspace_id = COALESCE(server_workspace_id, ?1),
                             server_version = ?3,
                             server_ack_at = COALESCE(server_ack_at, ?4),
-                            updated_at = ?4
+                            updated_at = ?4,
+                            cloud_backup_enabled = 1,
+                            cloud_account_id = ?6
                         WHERE id = ?1 AND (user_id = ?5 OR user_id IS NULL)
                         "#,
-                        params![id, name, server_version, now_text, user_id],
+                        params![
+                            id,
+                            name,
+                            server_version,
+                            now_text,
+                            user_id,
+                            cloud_account_id
+                        ],
                     )
                     .map_err(|e| e.to_string())?;
                 }
@@ -5298,9 +5625,9 @@ impl TelemetryDb {
                     INSERT INTO local_workspaces (
                         id, user_id, name, base_commit_sha, connection_status, sync_status,
                         created_at, updated_at, local_updated_at, server_workspace_id,
-                        server_ack_at, server_version
+                        server_ack_at, server_version, cloud_backup_enabled, cloud_account_id
                     )
-                    VALUES (?1, ?2, ?3, ?4, 'remote_unconnected', 'synced', ?5, ?5, ?6, ?1, ?5, ?7)
+                    VALUES (?1, ?2, ?3, ?4, 'remote_unconnected', 'synced', ?5, ?5, ?6, ?1, ?5, ?7, 1, ?8)
                     "#,
                     params![
                         id,
@@ -5312,14 +5639,15 @@ impl TelemetryDb {
                             .and_then(|value| value.as_str()),
                         now_text,
                         now,
-                        server_version
+                        server_version,
+                        cloud_account_id
                     ],
                 )
                 .map_err(|e| e.to_string())?;
             }
         }
         drop(conn);
-        self.list_local_workspaces(user_id)
+        self.list_local_workspaces(user_id, Some(cloud_account_id))
     }
 
     fn canonical_local_repo_path(path: &str) -> Result<String, String> {
@@ -5437,7 +5765,7 @@ impl TelemetryDb {
                 base_commit_sha, connection_status, sync_status, created_at, updated_at,
                 local_updated_at, last_local_change_id, metadata_dirty
             )
-            VALUES (?1, ?2, ?3, ?4, ?4, ?4, ?5, ?6, 'connected', 'sync_pending', ?7, ?7, ?8, ?9, 1)
+            VALUES (?1, ?2, ?3, ?4, ?4, ?4, ?5, ?6, 'connected', 'local_only', ?7, ?7, ?8, ?9, 1)
             ON CONFLICT(id) DO UPDATE SET
                 user_id = excluded.user_id,
                 name = excluded.name,
@@ -5447,7 +5775,10 @@ impl TelemetryDb {
                 repo_fingerprint = excluded.repo_fingerprint,
                 base_commit_sha = excluded.base_commit_sha,
                 connection_status = 'connected',
-                sync_status = 'sync_pending',
+                sync_status = CASE
+                    WHEN cloud_backup_enabled = 1 THEN 'sync_pending'
+                    ELSE 'local_only'
+                END,
                 updated_at = excluded.updated_at,
                 local_updated_at = excluded.local_updated_at,
                 deleted_at = NULL,
@@ -5514,10 +5845,14 @@ impl TelemetryDb {
                 SET name = ?3,
                     updated_at = ?4,
                     local_updated_at = ?5,
-                    sync_status = 'sync_pending',
+                    sync_status = CASE
+                        WHEN cloud_backup_enabled = 1 THEN 'sync_pending'
+                        ELSE 'local_only'
+                    END,
                     name_dirty = 1,
                     last_local_change_id = ?6
                 WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL
+                  AND (cloud_account_id IS NULL OR cloud_account_id = ?3)
                 "#,
                 params![
                     workspace_id,
@@ -5577,7 +5912,10 @@ impl TelemetryDb {
                     repo_fingerprint = ?4,
                     base_commit_sha = COALESCE(?5, base_commit_sha),
                     connection_status = 'connected',
-                    sync_status = 'sync_pending',
+                    sync_status = CASE
+                        WHEN cloud_backup_enabled = 1 THEN 'sync_pending'
+                        ELSE 'local_only'
+                    END,
                     updated_at = ?6,
                     local_updated_at = ?7,
                     metadata_dirty = 1,
@@ -5622,6 +5960,306 @@ impl TelemetryDb {
             Some(local_change_id.as_str()),
         )?;
         Ok(row)
+    }
+
+    pub fn enable_workspace_cloud_backup(
+        &self,
+        workspace_id: &str,
+        user_id: &str,
+        cloud_account_id: &str,
+    ) -> Result<LocalWorkspaceRow, String> {
+        if cloud_account_id.trim().is_empty() {
+            return Err("Cannot enable backup without an active cloud account.".to_string());
+        }
+        let now = unix_timestamp();
+        let now_text = chrono_like_now();
+        let local_change_id = format!("workspace.enable_backup:{}:{}", workspace_id, now);
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let updated = conn
+            .execute(
+                r#"
+                UPDATE local_workspaces
+                SET cloud_backup_enabled = 1,
+                    cloud_account_id = ?3,
+                    sync_status = 'sync_pending',
+                    metadata_dirty = 1,
+                    updated_at = ?4,
+                    local_updated_at = ?5,
+                    last_local_change_id = ?6
+                WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL
+                "#,
+                params![
+                    workspace_id,
+                    user_id,
+                    cloud_account_id,
+                    now_text,
+                    now,
+                    local_change_id.as_str()
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        if updated == 0 {
+            return Err("Workspace not found for local identity.".to_string());
+        }
+        let row = Self::select_local_workspace_locked(&conn, workspace_id, user_id)?
+            .ok_or_else(|| "Workspace not found for local identity.".to_string())?;
+        drop(conn);
+        let payload = serde_json::json!({
+            "id": row.id,
+            "name": row.name,
+            "folderPath": row.local_repo_path,
+            "repoPath": row.local_repo_path,
+            "baseCommitSha": row.base_commit_sha,
+        });
+        self.enqueue_local_sync_event_for_user(
+            Some(workspace_id),
+            Some(user_id),
+            "workspace",
+            workspace_id,
+            "workspace.create",
+            &serde_json::to_string(&payload).map_err(|e| e.to_string())?,
+            Some(local_change_id.as_str()),
+        )?;
+        self.enqueue_workspace_cloud_backup_backfill(workspace_id, user_id, now)?;
+        Ok(row)
+    }
+
+    fn enqueue_workspace_cloud_backup_backfill(
+        &self,
+        workspace_id: &str,
+        user_id: &str,
+        snapshot_at: i64,
+    ) -> Result<(), String> {
+        let (node_snapshots, insight_snapshots) = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let mut node_stmt = conn
+                .prepare(
+                    r#"
+                    SELECT
+                        assistant.id,
+                        user.payload_json,
+                        assistant.payload_json,
+                        assistant.content,
+                        COALESCE(assistant.status, 'completed'),
+                        assistant.execution_data_json,
+                        assistant.prompt_tokens,
+                        assistant.completion_tokens,
+                        assistant.total_tokens,
+                        assistant.output_commit_sha,
+                        assistant.git_branch_name,
+                        COALESCE(
+                            json_extract(CASE WHEN json_valid(COALESCE(assistant.execution_data_json, '')) THEN assistant.execution_data_json ELSE '{}' END, '$.current_run_id'),
+                            json_extract(CASE WHEN json_valid(COALESCE(assistant.execution_data_json, '')) THEN assistant.execution_data_json ELSE '{}' END, '$.meta.run_id'),
+                            ledger.run_id,
+                            assistant.id
+                        )
+                    FROM local_nodes assistant
+                    JOIN local_nodes user
+                      ON user.id = assistant.parent_id
+                     AND user.workspace_id = assistant.workspace_id
+                     AND user.deleted_at IS NULL
+                    LEFT JOIN agent_run_ledger ledger
+                      ON ledger.assistant_node_id = assistant.id
+                    WHERE assistant.workspace_id = ?1
+                      AND assistant.deleted_at IS NULL
+                      AND assistant.role = 'assistant'
+                      AND assistant.parent_id IS NOT NULL
+                      AND assistant.status IN (
+                        'completed',
+                        'failed',
+                        'cancelled',
+                        'error',
+                        'needs_user_action',
+                        'failed_setup',
+                        'failed_spawn',
+                        'failed_runtime',
+                        'failed_finalization'
+                      )
+                    ORDER BY assistant.local_updated_at ASC
+                    "#,
+                )
+                .map_err(|e| e.to_string())?;
+            let node_snapshots = node_stmt
+                .query_map(params![workspace_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                        row.get::<_, Option<i64>>(7)?,
+                        row.get::<_, Option<i64>>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, Option<String>>(10)?,
+                        row.get::<_, String>(11)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+
+            let mut insight_stmt = conn
+                .prepare(
+                    r#"
+                    SELECT id, payload_json
+                    FROM local_insights
+                    WHERE workspace_id = ?1
+                      AND deleted_at IS NULL
+                      AND status = 'active'
+                    ORDER BY local_updated_at ASC
+                    "#,
+                )
+                .map_err(|e| e.to_string())?;
+            let insight_snapshots = insight_stmt
+                .query_map(params![workspace_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+
+            (node_snapshots, insight_snapshots)
+        };
+
+        for (
+            assistant_id,
+            user_payload_json,
+            assistant_payload_json,
+            final_content,
+            status,
+            execution_data_json,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            output_commit_sha,
+            git_branch_name,
+            run_id,
+        ) in node_snapshots
+        {
+            let Some(user_payload_json) = user_payload_json else {
+                continue;
+            };
+            let Some(assistant_payload_json) = assistant_payload_json else {
+                continue;
+            };
+            let user_message =
+                serde_json::from_str::<JsonValue>(&user_payload_json).unwrap_or(JsonValue::Null);
+            let assistant_message = serde_json::from_str::<JsonValue>(&assistant_payload_json)
+                .unwrap_or(JsonValue::Null);
+            if user_message.is_null() || assistant_message.is_null() {
+                continue;
+            }
+            let execution_data = execution_data_json
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<JsonValue>(raw).ok())
+                .unwrap_or(JsonValue::Null);
+            let payload = serde_json::json!({
+                "workspaceId": workspace_id,
+                "userMessage": user_message,
+                "assistantMessage": assistant_message,
+                "finalize": {
+                    "runId": run_id,
+                    "status": status,
+                    "finalContent": final_content,
+                    "executionData": execution_data,
+                    "promptTokens": prompt_tokens,
+                    "completionTokens": completion_tokens,
+                    "totalTokens": total_tokens,
+                    "outputCommitSha": output_commit_sha,
+                    "gitBranchName": git_branch_name,
+                }
+            });
+            let mutation_id = format!("initial-backup:{snapshot_at}:node:{assistant_id}");
+            self.enqueue_local_sync_event_for_user(
+                Some(workspace_id),
+                Some(user_id),
+                "node",
+                &assistant_id,
+                "node.update_terminal",
+                &serde_json::to_string(&payload).map_err(|e| e.to_string())?,
+                Some(&mutation_id),
+            )?;
+        }
+
+        for (insight_id, payload_json) in insight_snapshots {
+            let insight =
+                serde_json::from_str::<JsonValue>(&payload_json).unwrap_or(JsonValue::Null);
+            if insight.is_null() {
+                continue;
+            }
+            let payload = serde_json::json!({
+                "action": "upsert",
+                "workspaceId": workspace_id,
+                "insight": insight,
+            });
+            let mutation_id = format!("initial-backup:{snapshot_at}:insight:{insight_id}");
+            self.enqueue_local_sync_event_for_user(
+                Some(workspace_id),
+                Some(user_id),
+                "insight",
+                &insight_id,
+                "insight.upsert",
+                &serde_json::to_string(&payload).map_err(|e| e.to_string())?,
+                Some(&mutation_id),
+            )?;
+        }
+
+        let graph = self.list_local_commit_graph(workspace_id)?;
+        if !graph.commits.is_empty() {
+            let parents_by_child = graph.commit_parents.iter().fold(
+                HashMap::<String, Vec<String>>::new(),
+                |mut map, parent| {
+                    map.entry(parent.child_sha.clone())
+                        .or_default()
+                        .push(parent.parent_sha.clone());
+                    map
+                },
+            );
+            let commits = graph
+                .commits
+                .iter()
+                .map(|commit| {
+                    serde_json::json!({
+                        "sha": commit.sha,
+                        "parents": parents_by_child
+                            .get(&commit.sha)
+                            .cloned()
+                            .or_else(|| commit.first_parent_sha.clone().map(|sha| vec![sha]))
+                            .unwrap_or_default(),
+                        "subject": commit.subject,
+                        "authorName": commit.author_name,
+                        "authorEmail": commit.author_email,
+                        "authoredAt": commit.authored_at,
+                        "filesChangedCount": commit.files_changed_count,
+                        "totalAdditions": commit.total_additions,
+                        "totalDeletions": commit.total_deletions,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let tip_commit_sha = graph.commits.last().map(|commit| commit.sha.clone());
+            let payload = serde_json::json!({
+                "refs": [{
+                    "gitRef": "refs/agentree/backup/current",
+                    "allowUntrackedImport": true,
+                    "tipCommitSha": tip_commit_sha,
+                    "commits": commits,
+                }]
+            });
+            let mutation_id = format!("initial-backup:{snapshot_at}:commit-graph");
+            self.enqueue_local_sync_event_for_user(
+                Some(workspace_id),
+                Some(user_id),
+                "commit_graph",
+                workspace_id,
+                "commit_graph.git_sync_ingest",
+                &serde_json::to_string(&payload).map_err(|e| e.to_string())?,
+                Some(&mutation_id),
+            )?;
+        }
+
+        Ok(())
     }
 
     pub fn mark_local_workspace_persisted(
@@ -5751,7 +6389,10 @@ impl TelemetryDb {
             ON CONFLICT(id) DO UPDATE SET
                 user_id = COALESCE(local_workspaces.user_id, excluded.user_id),
                 deleted_at = excluded.deleted_at,
-                sync_status = 'sync_pending',
+                sync_status = CASE
+                    WHEN cloud_backup_enabled = 1 THEN 'sync_pending'
+                    ELSE 'local_only'
+                END,
                 local_updated_at = excluded.local_updated_at
             "#,
             params![workspace_id, deleted_at, now, user_id],
@@ -5924,6 +6565,28 @@ pub fn get_orchestration_user_templates(
 
 #[tauri::command]
 #[specta::specta]
+pub fn save_default_prompt_overrides(
+    telemetry: State<TelemetryDb>,
+    prompts_json: String,
+) -> Result<(), String> {
+    let parsed: JsonValue = serde_json::from_str(&prompts_json)
+        .map_err(|e| format!("Invalid default prompt overrides JSON: {}", e))?;
+    if !parsed.is_array() {
+        return Err("Default prompt overrides JSON must be an array.".to_string());
+    }
+    telemetry.local_app_kv_set("default_prompt_overrides", &prompts_json)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_default_prompt_overrides(
+    telemetry: State<TelemetryDb>,
+) -> Result<Option<String>, String> {
+    telemetry.local_app_kv_get("default_prompt_overrides")
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn add_message(
     telemetry: State<TelemetryDb>,
     session_id: String,
@@ -5990,7 +6653,20 @@ pub fn list_local_nodes(
     telemetry: State<TelemetryDb>,
     workspace_id: String,
 ) -> Result<Vec<LocalNodeRow>, String> {
-    telemetry.list_local_nodes_for_workspace(&workspace_id)
+    let started_at = std::time::Instant::now();
+    let result = telemetry.list_local_nodes_for_workspace(&workspace_id);
+    if let Ok(rows) = result.as_ref() {
+        let elapsed = started_at.elapsed();
+        if elapsed >= std::time::Duration::from_millis(250) {
+            crate::app_log!(
+                "[PERF][DB] list_local_nodes workspace={} rows={} duration_ms={}",
+                workspace_id,
+                rows.len(),
+                elapsed.as_millis()
+            );
+        }
+    }
+    result
 }
 
 #[tauri::command]
@@ -6098,7 +6774,20 @@ pub fn list_thread_sessions(
     telemetry: State<TelemetryDb>,
     workspace_id: String,
 ) -> Result<Vec<ThreadSessionPayload>, String> {
-    telemetry.list_thread_sessions_for_workspace(&workspace_id)
+    let started_at = std::time::Instant::now();
+    let result = telemetry.list_thread_sessions_for_workspace(&workspace_id);
+    if let Ok(rows) = result.as_ref() {
+        let elapsed = started_at.elapsed();
+        if elapsed >= std::time::Duration::from_millis(250) {
+            crate::app_log!(
+                "[PERF][DB] list_thread_sessions workspace={} rows={} duration_ms={}",
+                workspace_id,
+                rows.len(),
+                elapsed.as_millis()
+            );
+        }
+    }
+    result
 }
 
 #[tauri::command]
@@ -6145,7 +6834,22 @@ pub fn list_local_commit_graph(
     telemetry: State<TelemetryDb>,
     workspace_id: String,
 ) -> Result<LocalCommitGraphSnapshot, String> {
-    telemetry.list_local_commit_graph(&workspace_id)
+    let started_at = std::time::Instant::now();
+    let result = telemetry.list_local_commit_graph(&workspace_id);
+    if let Ok(graph) = result.as_ref() {
+        let elapsed = started_at.elapsed();
+        if elapsed >= std::time::Duration::from_millis(250) {
+            crate::app_log!(
+                "[PERF][DB] list_local_commit_graph workspace={} commits={} parents={} observations={} duration_ms={}",
+                workspace_id,
+                graph.commits.len(),
+                graph.commit_parents.len(),
+                graph.commit_observations.len(),
+                elapsed.as_millis()
+            );
+        }
+    }
+    result
 }
 
 #[tauri::command]
@@ -6178,11 +6882,18 @@ pub fn enqueue_local_commit_graph_sync(
 
 #[tauri::command]
 #[specta::specta]
+pub fn get_local_identity(telemetry: State<TelemetryDb>) -> Result<LocalIdentity, String> {
+    telemetry.get_local_identity()
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn list_local_workspaces(
     telemetry: State<TelemetryDb>,
     current_user_id: String,
+    active_cloud_account_id: Option<String>,
 ) -> Result<Vec<LocalWorkspaceRow>, String> {
-    telemetry.list_local_workspaces(&current_user_id)
+    telemetry.list_local_workspaces(&current_user_id, active_cloud_account_id.as_deref())
 }
 
 #[tauri::command]
@@ -6190,9 +6901,10 @@ pub fn list_local_workspaces(
 pub fn merge_server_workspaces(
     telemetry: State<TelemetryDb>,
     current_user_id: String,
+    cloud_account_id: String,
     payloads: Vec<String>,
 ) -> Result<Vec<LocalWorkspaceRow>, String> {
-    telemetry.merge_server_workspaces(&current_user_id, payloads)
+    telemetry.merge_server_workspaces(&current_user_id, &cloud_account_id, payloads)
 }
 
 #[tauri::command]
@@ -6222,6 +6934,17 @@ pub fn local_first_reconnect_workspace(
     request: LocalWorkspaceMutationRequest,
 ) -> Result<LocalWorkspaceRow, String> {
     telemetry.local_first_reconnect_workspace(request)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn enable_workspace_cloud_backup(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+    current_user_id: String,
+    cloud_account_id: String,
+) -> Result<LocalWorkspaceRow, String> {
+    telemetry.enable_workspace_cloud_backup(&workspace_id, &current_user_id, &cloud_account_id)
 }
 
 #[tauri::command]
@@ -6431,14 +7154,21 @@ pub async fn process_local_sync_events(
     app: tauri::AppHandle,
     auth_token: String,
     current_user_id: String,
+    cloud_account_id: String,
     limit: Option<i64>,
 ) -> Result<usize, String> {
     if current_user_id.trim().is_empty() {
         return Err("Cannot process local sync events without a current user id.".to_string());
     }
+    if cloud_account_id.trim().is_empty() {
+        return Err(
+            "Cannot process local sync events without an active cloud account id.".to_string(),
+        );
+    }
     let telemetry = app.state::<TelemetryDb>();
-    let events = telemetry.list_due_local_sync_events_for_user(
+    let events = telemetry.list_due_local_sync_events_for_user_and_cloud(
         current_user_id.trim(),
+        cloud_account_id.trim(),
         limit.unwrap_or(25).clamp(1, 100),
     )?;
     // Pre-compute all in-flight marks while we still have access to the telemetry State.
@@ -8598,6 +9328,7 @@ mod tests {
         let rows = db
             .merge_server_workspaces(
                 "user-1",
+                "cloud-1",
                 vec![
                     r#"{"id":"workspace-1","name":"Stale server name","folderPath":"/server/path","repoPath":"/server/path","updatedAt":"server-v1"}"#.to_string(),
                     r#"{"id":"workspace-remote","name":"Remote only","folderPath":"/server/remote","updatedAt":"server-v1"}"#.to_string(),
@@ -8620,6 +9351,19 @@ mod tests {
             .expect("remote workspace");
         assert_eq!(remote.connection_status, "remote_unconnected");
         assert!(remote.local_repo_path.is_none());
+        assert_eq!(remote.cloud_account_id.as_deref(), Some("cloud-1"));
+
+        let cloud_two_rows = db
+            .list_local_workspaces("user-1", Some("cloud-2"))
+            .expect("list workspaces for another cloud account");
+        let local_for_cloud_two = cloud_two_rows
+            .iter()
+            .find(|row| row.id == "workspace-1")
+            .expect("local workspace remains visible");
+        assert!(!local_for_cloud_two.cloud_backup_enabled);
+        assert!(cloud_two_rows
+            .iter()
+            .all(|row| row.id != "workspace-remote"));
     }
 
     #[test]
@@ -8640,6 +9384,8 @@ mod tests {
             mutation_id: Some("workspace.create:workspace-1".to_string()),
         })
         .expect("create local workspace");
+        db.enable_workspace_cloud_backup("workspace-1", "user-1", "cloud-1")
+            .expect("enable backup");
         let create_event = db
             .list_due_local_sync_events_for_user("user-1", 25)
             .expect("list sync events")
@@ -8658,6 +9404,7 @@ mod tests {
         let rows = db
             .merge_server_workspaces(
                 "user-1",
+                "cloud-1",
                 vec![
                     r#"{"id":"workspace-1","name":"Stale server name","updatedAt":"server-v1"}"#
                         .to_string(),
@@ -8672,6 +9419,133 @@ mod tests {
         assert_eq!(local.name, "Dirty local name");
         assert!(local.name_dirty);
         assert!(!local.metadata_dirty);
+    }
+
+    #[test]
+    fn enabling_backup_queues_current_workspace_snapshot() {
+        let (_db_dir, db) = open_test_db();
+        let (repo_dir, shas) = init_test_repo_with_commits(1);
+        let local_path = std::fs::canonicalize(repo_dir.path())
+            .expect("canonical repo")
+            .to_string_lossy()
+            .to_string();
+        db.local_first_create_workspace(LocalWorkspaceMutationRequest {
+            workspace_id: "workspace-1".to_string(),
+            current_user_id: "user-1".to_string(),
+            name: Some("Local workspace".to_string()),
+            local_repo_path: Some(local_path.clone()),
+            base_commit_sha: Some(shas[0].clone()),
+            repo_fingerprint: Some(format!("base:{}", shas[0])),
+            mutation_id: Some("workspace.create:workspace-1".to_string()),
+        })
+        .expect("create local workspace");
+        db.upsert_local_node(
+            "user-node-1",
+            "workspace-1",
+            &serde_json::json!({
+                "id": "user-node-1",
+                "workspaceId": "workspace-1",
+                "role": "user",
+                "content": "Build locally first",
+                "createdAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:00Z"
+            })
+            .to_string(),
+        )
+        .expect("upsert user node");
+        db.upsert_local_node(
+            "assistant-node-1",
+            "workspace-1",
+            &serde_json::json!({
+                "id": "assistant-node-1",
+                "workspaceId": "workspace-1",
+                "parentId": "user-node-1",
+                "role": "assistant",
+                "content": "Done",
+                "status": "completed",
+                "execution_data": { "current_run_id": "run-1", "timeline": [] },
+                "promptTokens": 1,
+                "completionTokens": 2,
+                "totalTokens": 3,
+                "outputCommitSha": shas[0],
+                "createdAt": "2026-01-01T00:00:01Z",
+                "updatedAt": "2026-01-01T00:00:02Z"
+            })
+            .to_string(),
+        )
+        .expect("upsert assistant node");
+        db.upsert_local_insight_payload_for_user(
+            "workspace-1",
+            Some("user-1"),
+            "insight-1",
+            &serde_json::json!({
+                "id": "insight-1",
+                "content": "Current local insight",
+                "agentType": "hypothesis",
+                "parentNodeId": "assistant-node-1",
+                "createdAt": "2026-01-01T00:00:03Z"
+            })
+            .to_string(),
+            Some("insight-before-backup"),
+        )
+        .expect("upsert local-only insight");
+        db.import_local_commits(
+            "workspace-1",
+            vec![LocalCommitImport {
+                sha: "child-sha".to_string(),
+                parents: vec![shas[0].clone()],
+                subject: Some("Generated local commit".to_string()),
+                author_name: Some("Agentree".to_string()),
+                author_email: None,
+                authored_at: Some("2026-01-01T00:00:04Z".to_string()),
+                committed_at: Some("2026-01-01T00:00:05Z".to_string()),
+                source_kind: Some("agent".to_string()),
+                produced_by_node_id: Some("assistant-node-1".to_string()),
+                files_changed_count: Some(1),
+                total_additions: Some(2),
+                total_deletions: Some(0),
+            }],
+            Some("agentree/assistant-node-1"),
+        )
+        .expect("import local commit graph");
+
+        db.enable_workspace_cloud_backup("workspace-1", "user-1", "cloud-1")
+            .expect("enable backup");
+
+        let events = db
+            .list_due_local_sync_events_for_user_and_cloud("user-1", "cloud-1", 25)
+            .expect("list cloud-scoped events");
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "workspace.create"));
+        assert!(events.iter().any(|event| {
+            event.event_type == "node.update_terminal" && event.entity_id == "assistant-node-1"
+        }));
+        assert!(events.iter().any(|event| {
+            event.event_type == "insight.upsert" && event.entity_id == "insight-1"
+        }));
+        let commit_graph_event = events
+            .iter()
+            .find(|event| {
+                event.event_type == "commit_graph.git_sync_ingest"
+                    && event.entity_id == "workspace-1"
+            })
+            .expect("commit graph backup event");
+        let commit_graph_payload =
+            serde_json::from_str::<JsonValue>(&commit_graph_event.payload_json)
+                .expect("commit graph payload");
+        let commits = commit_graph_payload
+            .get("refs")
+            .and_then(|refs| refs.get(0))
+            .and_then(|ref_payload| ref_payload.get("commits"))
+            .and_then(|commits| commits.as_array())
+            .expect("commit graph commits");
+        assert!(commits
+            .iter()
+            .any(|commit| { commit.get("sha").and_then(|sha| sha.as_str()) == Some("child-sha") }));
+        assert!(events
+            .iter()
+            .all(|event| event.cloud_account_id.as_deref() == Some("cloud-1")));
     }
 
     #[test]
@@ -8717,7 +9591,9 @@ mod tests {
         TelemetryDb::repair_local_workspace_repo_paths(&conn).expect("repair paths");
         drop(conn);
 
-        let rows = db.list_local_workspaces("user-1").expect("list workspaces");
+        let rows = db
+            .list_local_workspaces("user-1", None)
+            .expect("list workspaces");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].connection_status, "remote_unconnected");
         assert!(rows[0].local_repo_path.is_none());
@@ -8751,7 +9627,9 @@ mod tests {
         TelemetryDb::repair_local_workspace_repo_paths(&conn).expect("repair paths");
         drop(conn);
 
-        let rows = db.list_local_workspaces("user-1").expect("list workspaces");
+        let rows = db
+            .list_local_workspaces("user-1", None)
+            .expect("list workspaces");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].connection_status, "connected");
         assert_eq!(

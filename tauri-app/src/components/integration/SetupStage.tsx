@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useIntegrationStore } from '../../stores/integrationStore';
 import { useWorkspaceStore, type Message } from '../../stores/workspaceStore';
 import { useLoginProfilesStore } from '../../stores/loginProfilesStore';
+import { getDefaultPromptOverridesSnapshot } from '../../stores/defaultPromptStore';
 import { useAgents, findDefaultCodexAgentId } from '../../hooks/useAgents';
 import { filterCommitsReachableFrom, useCommits, CommitWithRef } from '../../hooks/useCommits';
 import { useWorkspaces } from '../../hooks/useWorkspaces';
@@ -652,6 +653,7 @@ export function SetupStage() {
           commitSha: source.commitSha,
           branchName: source.branchName,
         })),
+        defaultPromptOverrides: getDefaultPromptOverridesSnapshot(),
       };
       const prompt = buildMergeAgentPrompt(mergePromptInput);
       const userContent = buildMergeAgentUserContent(mergePromptInput);

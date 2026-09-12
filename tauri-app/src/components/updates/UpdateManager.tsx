@@ -26,6 +26,7 @@ interface UpdateContextValue {
 
 const UpdateContext = createContext<UpdateContextValue | null>(null);
 const BACKGROUND_UPDATE_CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000;
+const updatesEnabled = () => import.meta.env.MODE === 'test' || import.meta.env.VITE_AGENTREE_OFFICIAL_CLOUD === 'true';
 
 export function UpdateManager({ children }: { children: ReactNode }) {
   const { addToast, removeToast } = useToast();
@@ -120,7 +121,7 @@ export function UpdateManager({ children }: { children: ReactNode }) {
 
   const checkForUpdates = useCallback(
     async ({ silent = false }: { silent?: boolean } = {}) => {
-      if (checking || installing || import.meta.env.DEV) return;
+      if (checking || installing || import.meta.env.DEV || !updatesEnabled()) return;
 
       setChecking(true);
       try {
@@ -160,14 +161,14 @@ export function UpdateManager({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    if (import.meta.env.DEV) return;
+    if (import.meta.env.DEV || !updatesEnabled()) return;
     if (autoCheckStartedRef.current) return;
     autoCheckStartedRef.current = true;
     void checkForUpdates({ silent: true });
   }, [checkForUpdates]);
 
   useEffect(() => {
-    if (import.meta.env.DEV) return;
+    if (import.meta.env.DEV || !updatesEnabled()) return;
 
     const intervalId = window.setInterval(() => {
       void checkForUpdates({ silent: true });

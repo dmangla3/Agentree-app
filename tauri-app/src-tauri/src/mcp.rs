@@ -439,7 +439,7 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                 },
                 {
                     "name": "wait_for_runs",
-                    "description": "Wait for orchestration assistant runs without tight model polling. The wait returns when the condition is satisfied or before the provider MCP timeout with timedOut=true as a checkpoint.",
+                    "description": "Wait for orchestration assistant runs without tight model polling. The wait returns when the condition is satisfied or before the provider MCP timeout with checkpointElapsed=true as a neutral checkpoint. A checkpoint is not a child-run timeout.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -994,57 +994,60 @@ fn default_prompt_templates() -> Vec<serde_json::Value> {
             "id": "#planner",
             "kind": "node",
             "label": "#planner",
-            "prompt": "Create a concrete implementation plan for {{request}}. Include validation steps and key risks.",
+            "prompt": "Understand the current codebase around the request, then write an implementation plan.\n\nPrefer integrating with the existing domain model over inventing new names, helpers, or parallel abstractions. Fix the current concept unless the bug reveals a truly missing concept, new functionality, or business logic that requires it.",
+            "requiresCommit": true,
             "source": "built_in"
         }),
         serde_json::json!({
             "id": "#synthesizer",
             "kind": "node",
             "label": "#synthesizer",
-            "prompt": "Synthesize the relevant prior node outputs into one clear recommendation for {{request}}.",
+            "prompt": "Look at the shared commits. They may contain implementations, plans, or other outputs.\n\nCompare them and select the commit that best matches the requirement.\n\nIf other implementations contain better ideas, include those ideas and write the final changes.\n\nThe final synthesized output should combine the best ideas and feel coherent and seamless.",
+            "requiresCommit": true,
             "source": "built_in"
         }),
         serde_json::json!({
             "id": "#reviewer",
             "kind": "node",
             "label": "#reviewer",
-            "prompt": "Review the current result for correctness, regressions, missing tests, and unclear assumptions.",
+            "prompt": "Review the commit for correctness and regressions.\n\nAlso assess the result at a high level: identify major missed opportunities or significantly better, simpler, cleaner, or more elegant alternative solutions.",
             "source": "built_in"
         }),
         serde_json::json!({
             "id": "#fixer",
             "kind": "node",
             "label": "#fixer",
-            "prompt": "Apply focused fixes for the reviewed issues while preserving the requested behavior.",
+            "prompt": "Review the reviewer suggestions.\n\nFor each suggestion, implement it if you agree. If you disagree, explain why.",
             "requiresCommit": true,
             "source": "built_in"
         }),
         serde_json::json!({
-            "id": "#security_reviewer",
+            "id": "#implementer",
             "kind": "node",
-            "label": "#security_reviewer",
-            "prompt": "Review the change for plausible security issues, privilege boundaries, and unsafe data handling.",
+            "label": "#implementer",
+            "prompt": "Implement the plan thoroughly and correctly.\n\nYou may adjust small implementation details as you learn the codebase, but keep the functionality aligned with the user's requirement.",
+            "requiresCommit": true,
             "source": "built_in"
         }),
         serde_json::json!({
-            "id": "#ui_polish_reviewer",
+            "id": "#handoff",
             "kind": "node",
-            "label": "#ui_polish_reviewer",
-            "prompt": "Review the UI for layout, responsiveness, visual clarity, and interaction polish.",
+            "label": "#handoff",
+            "prompt": "Your job is to reduce the user's mental load because the user may not want to read full plans or test full implementations.\n\nBe brief, concrete, and selective. Do not ask broad approval questions. Ask the user for clarification only when the answer is required to avoid a wrong implementation, unsafe change, failed acceptance, or materially different product direction.\n\nWrite the response with exactly these sections:\n\n## What Matters\n- 2 to 4 bullets covering the key decision, plan, or implementation outcome in simple words.\n\n## User Attention Needed\n- Only blockers, risky assumptions, or required clarifications.\n- If there are none, write: None.\n\n## Suggested Next Step\nOne concrete sentence.\n\n## Quick Checks\n- For planning, list only clarifications that truly affect implementation.\n- For implementation, list the smallest useful things the user should test before accepting or requesting changes.",
             "source": "built_in"
         }),
         serde_json::json!({
             "id": "#parallel_planners",
             "kind": "orchestration",
             "label": "#parallel_planners",
-            "prompt": "Create three parallel #planner for {{request}}. Create a #synthesizer sibling to combine the plans.",
+            "prompt": "Create three parallel #planner runs named A, B, and C.\nCreate a #synthesizer sibling D to combine the plans.\nCreate a #handoff E as a child of D.\n\nShare the handoff's output with the user after finishing.",
             "source": "built_in"
         }),
         serde_json::json!({
-            "id": "#review_fix_chain",
+            "id": "#parallel_implementer",
             "kind": "orchestration",
-            "label": "#review_fix_chain",
-            "prompt": "Create a #reviewer for {{request}}. Create a #fixer as child of reviewer to apply focused fixes.",
+            "label": "#parallel_implementer",
+            "prompt": "Create three parallel #implementer runs named A, B, and C.\nCreate a #synthesizer sibling D to combine the plans.\n\nLoop up to 3 times:\n- Create a #reviewer sibling to review the latest synthesized plan.\n- Create a #fixer child of D for the first pass, then a child of the previous fixer for later passes.\n\nRun a #handoff as a child of the final fixer.\n\nShare the handoff's output with the user after finishing.",
             "source": "built_in"
         }),
     ]
@@ -1053,7 +1056,11 @@ fn default_prompt_templates() -> Vec<serde_json::Value> {
 fn normalize_template_id(value: &str) -> Option<String> {
     let mut normalized = String::new();
     let mut last_was_separator = false;
-    for ch in value.trim().trim_start_matches(|ch| ch == '@' || ch == '#').chars() {
+    for ch in value
+        .trim()
+        .trim_start_matches(|ch| ch == '@' || ch == '#')
+        .chars()
+    {
         let lower = ch.to_ascii_lowercase();
         if lower.is_ascii_alphanumeric() || lower == '-' || lower == '_' {
             normalized.push(lower);
@@ -1139,7 +1146,11 @@ fn load_prompt_templates(state: &McpState) -> Result<Vec<serde_json::Value>, Str
         let parsed: serde_json::Value = serde_json::from_str(&raw)
             .map_err(|e| format!("Failed to parse orchestration user templates: {}", e))?;
         if let Some(user_templates) = parsed.as_array() {
-            for template in user_templates.iter().cloned().filter_map(normalize_prompt_template) {
+            for template in user_templates
+                .iter()
+                .cloned()
+                .filter_map(normalize_prompt_template)
+            {
                 let Some(id) = template.get("id").and_then(|value| value.as_str()) else {
                     continue;
                 };
@@ -1181,9 +1192,11 @@ fn handle_list_prompt_templates(
             let templates: Vec<serde_json::Value> = templates
                 .into_iter()
                 .filter(|template| {
-                    kind.as_deref().filter(|value| !value.is_empty()).map_or(true, |kind| {
-                        template.get("kind").and_then(|value| value.as_str()) == Some(kind)
-                    })
+                    kind.as_deref()
+                        .filter(|value| !value.is_empty())
+                        .map_or(true, |kind| {
+                            template.get("kind").and_then(|value| value.as_str()) == Some(kind)
+                        })
                 })
                 .collect();
             let body = serde_json::json!({
@@ -1562,6 +1575,33 @@ mod tests {
         assert!(!serialized.contains("project_id"));
         assert!(!serialized.contains("messages"));
         assert!(!serialized.contains("workspace tree"));
+    }
+
+    #[test]
+    fn default_prompt_templates_match_edited_builtin_set() {
+        let ids: Vec<String> = default_prompt_templates()
+            .into_iter()
+            .filter_map(|template| {
+                template
+                    .get("id")
+                    .and_then(|id| id.as_str())
+                    .map(str::to_string)
+            })
+            .collect();
+
+        assert_eq!(
+            ids,
+            vec![
+                "#planner",
+                "#synthesizer",
+                "#reviewer",
+                "#fixer",
+                "#implementer",
+                "#handoff",
+                "#parallel_planners",
+                "#parallel_implementer",
+            ]
+        );
     }
 
     #[test]

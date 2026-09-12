@@ -26,6 +26,9 @@ export interface Workspace {
   connectionStatus?: 'connected' | 'missing' | 'remote_unconnected' | 'path_mismatch' | string | null;
   sync_status?: 'sync_pending' | 'synced' | 'sync_error' | 'local_only' | string | null;
   syncStatus?: 'sync_pending' | 'synced' | 'sync_error' | 'local_only' | string | null;
+  cloud_backup_enabled?: boolean;
+  cloudBackupEnabled?: boolean;
+  cloudAccountId?: string | null;
   base_commit_sha?: string | null;
   agentArgs?: string | null;
   createdAt: string;

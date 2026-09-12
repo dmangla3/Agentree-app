@@ -37,6 +37,11 @@ describe('shortcut registry overrides', () => {
     expect(getShortcutOverridesSnapshot()['search.open']).toContain('Shift+K');
   });
 
+  it('registers thread close and reopen defaults', () => {
+    expect(getEffectiveShortcutHotkeys('thread.close')).toEqual(['Mod+W']);
+    expect(getEffectiveShortcutHotkeys('thread.reopen-last-closed')).toEqual(['Mod+Shift+T']);
+  });
+
   it('can reset one shortcut without clearing other overrides', () => {
     setShortcutOverride('search.open', 'Mod+Shift+K' as RegisterableHotkey);
     setShortcutOverride('graph.navigate.latest', 'Mod+End' as RegisterableHotkey);
@@ -46,5 +51,9 @@ describe('shortcut registry overrides', () => {
     expect(getEffectiveShortcutHotkeys('search.open')).toEqual(['Mod+K']);
     expect(getShortcutDisplayLabels(getEffectiveShortcutHotkeys('graph.navigate.latest'))).toContain('End');
     expect(getShortcutOverridesSnapshot()['graph.navigate.latest']).toContain('End');
+  });
+
+  it('registers Mod+T as the default create thread shortcut', () => {
+    expect(getEffectiveShortcutHotkeys('thread.create')).toEqual(['Mod+T']);
   });
 });

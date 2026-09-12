@@ -7,9 +7,11 @@ describe('OrchestrationPanel structure', () => {
     const source = readFileSync(join(process.cwd(), 'src/components/orchestration/OrchestrationPanel.tsx'), 'utf8');
 
     expect(source).toContain("'Node prompt' : 'Orchestration prompt'");
-    expect(source).toContain("renderTemplateList('Node prompts'");
-    expect(source).toContain("renderTemplateList('Orchestration prompts'");
+    expect(source).toContain("renderTemplateList('Node prompts', 'node'");
+    expect(source).toContain("renderTemplateList('Orchestration prompts', 'orchestration'");
     expect(source).toContain('orchestrationPromptTemplates');
+    expect(source).toContain("resetTemplateDraft(kind)");
+    expect(source).toContain("kind === 'node' ? '#custom_reviewer' : '#custom_orchestration'");
     expect(source).not.toContain("'Pre-defined node' : 'Flow'");
     expect(source).not.toContain("renderTemplateList('Flows'");
     expect(source).not.toContain('flowTemplates');

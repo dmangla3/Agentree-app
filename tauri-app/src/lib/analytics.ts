@@ -22,6 +22,7 @@ const parseSampleRate = (value: unknown): number => {
 };
 
 const isAnalyticsDisabled = () =>
+  import.meta.env.VITE_AGENTREE_OFFICIAL_CLOUD !== 'true' ||
   parseBoolean(import.meta.env.VITE_AMPLITUDE_DISABLED) ||
   parseBoolean(import.meta.env.VITE_ANALYTICS_DISABLED);
 

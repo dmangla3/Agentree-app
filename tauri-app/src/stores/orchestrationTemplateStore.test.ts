@@ -25,6 +25,19 @@ describe('orchestration template store', () => {
     useOrchestrationTemplateStore.getState().clearUserTemplates();
   });
 
+  it('uses the edited dev templates as the built-in default set', () => {
+    expect(DEFAULT_ORCHESTRATION_TEMPLATES.map((template) => template.id)).toEqual([
+      '#planner',
+      '#synthesizer',
+      '#reviewer',
+      '#fixer',
+      '#implementer',
+      '#handoff',
+      '#parallel_planners',
+      '#parallel_implementer',
+    ]);
+  });
+
   it('merges built-in templates with normalized user templates', () => {
     const templates = mergeOrchestrationTemplates([{
       id: 'Migration Review',
@@ -62,7 +75,7 @@ describe('orchestration template store', () => {
 
     expect(useOrchestrationTemplateStore.getState().templates.find((template) => template.id === '@planner'))
       .toEqual(expect.objectContaining({
-        prompt: 'Create a concrete implementation plan for {{request}}. Include validation steps and key risks.',
+        prompt: 'Understand the current codebase around the request, then write an implementation plan.\n\nPrefer integrating with the existing domain model over inventing new names, helpers, or parallel abstractions. Fix the current concept unless the bug reveals a truly missing concept, new functionality, or business logic that requires it.',
       }));
   });
 
