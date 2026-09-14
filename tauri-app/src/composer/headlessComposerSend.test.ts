@@ -98,6 +98,44 @@ describe('sendHeadlessComposerReply', () => {
     });
   });
 
+  it('starts local reply runs when Agentree Cloud auth is disconnected', async () => {
+    const startAgentRun = vi.fn().mockResolvedValue(undefined);
+
+    const response = await sendHeadlessComposerReply({
+      workspaceId: 'workspace-1',
+      replyParentId: 'parent-1',
+      prompt: 'Ship it',
+      messages: [
+        message({ id: 'parent-1', output_commit_sha: 'root-output' }),
+      ],
+      agent: {
+        id: 'codex-agent',
+        type: 'codex',
+        name: 'Codex',
+        cliArgs: '',
+        promptFlag: null,
+        model_config: { model: 'gpt-5.5' },
+      },
+      base: {
+        commitSha: 'root-output',
+        selectedFromNodeId: 'parent-1',
+      },
+      workspaces: [{ id: 'workspace-1', local_repo_path: '/repo' } as Workspace],
+      startAgentRun,
+      getAccessToken: vi.fn().mockRejectedValue(new Error('No access token available')),
+      seedAgentRun: vi.fn(),
+      dispatchAgentRun: vi.fn(),
+      createRunId: () => 'run-1',
+      nowIso: () => '2026-05-27T01:02:03.000Z',
+    });
+
+    expect(startAgentRun).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run-1',
+      assistantNodeId: response.assistantMessages?.[0]?.id,
+      authToken: '',
+    }));
+  });
+
   it('resumes same-provider Claude provider threads for quick replies', async () => {
     const startAgentRun = vi.fn().mockResolvedValue(undefined);
 
@@ -605,6 +643,57 @@ describe('sendHeadlessComposerReply', () => {
     expect(response).not.toHaveProperty('orchestrationPreview');
     expect(response).not.toHaveProperty('orchestrationExecutionContext');
     expect(response).not.toHaveProperty('orchestrationExecutionResult');
+  });
+
+  it('starts local orchestration sends when Agentree Cloud auth is disconnected', async () => {
+    const startAgentRun = vi.fn(async () => undefined);
+    const persistLocalNode = vi.fn(async () => undefined);
+
+    const response = await sendHeadlessComposerMessage({
+      workspaceId: 'workspace-1',
+      parentMessageId: null,
+      contextParentId: null,
+      contextPolicy: 'fresh',
+      prompt: 'Create three parallel #planner.',
+      messages: [],
+      agent: {
+        id: 'codex-agent',
+        type: 'codex',
+        name: 'Codex',
+        cliArgs: '',
+        promptFlag: null,
+        model_config: { model: 'gpt-5.5' },
+      },
+      base: {
+        commitSha: 'base-sha',
+        selectedFromNodeId: null,
+      },
+      workspaces: [{ id: 'workspace-1', local_repo_path: '/repo' } as Workspace],
+      startAgentRun,
+      getAccessToken: vi.fn().mockRejectedValue(new Error('No access token available')),
+      seedAgentRun: vi.fn(),
+      dispatchAgentRun: vi.fn(),
+      persistLocalNode,
+      orchestrationMode: true,
+      createRunId: () => 'run-orchestrator',
+      nowIso: () => '2026-05-27T01:02:03.000Z',
+    });
+
+    const assistantMessage = response.assistantMessages?.[0];
+    expect(assistantMessage?.execution_data?.meta).toEqual(expect.objectContaining({
+      node_kind: 'orchestrator',
+      orchestrator_run_id: 'run-orchestrator',
+    }));
+    expect(persistLocalNode).toHaveBeenCalledWith('workspace-1', response.userMessage?.id, response.userMessage);
+    expect(persistLocalNode).toHaveBeenCalledWith('workspace-1', assistantMessage?.id, expect.objectContaining({
+      id: assistantMessage?.id,
+      role: 'assistant',
+    }));
+    expect(startAgentRun).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run-orchestrator',
+      assistantNodeId: assistantMessage?.id,
+      authToken: '',
+    }));
   });
 
   it('passes saved orchestration template mentions through to the orchestrator without app-side expansion', async () => {

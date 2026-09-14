@@ -1064,6 +1064,8 @@ impl TelemetryDb {
                 ON local_sync_events(status, next_attempt_at, created_at);
             CREATE INDEX IF NOT EXISTS idx_local_sync_events_entity
                 ON local_sync_events(entity_type, entity_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_local_sync_events_entity_status_updated
+                ON local_sync_events(entity_type, entity_id, status, updated_at);
 
             CREATE TABLE IF NOT EXISTS local_insights (
                 id TEXT PRIMARY KEY,
@@ -1266,6 +1268,10 @@ impl TelemetryDb {
         let _ = conn.execute("ALTER TABLE local_sync_events ADD COLUMN user_id TEXT", []);
         let _ = conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_local_sync_events_due_user ON local_sync_events(user_id, status, next_attempt_at, created_at)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_local_sync_events_entity_status_updated ON local_sync_events(entity_type, entity_id, status, updated_at)",
             [],
         );
         let _ = conn.execute(
@@ -2722,6 +2728,101 @@ impl TelemetryDb {
         Ok(())
     }
 
+    pub fn repair_legacy_local_node_timelines(&self, limit: usize) -> Result<usize, String> {
+        if limit == 0 {
+            return Ok(0);
+        }
+
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let candidates = {
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                    SELECT n.id, n.payload_json
+                    FROM local_nodes n
+                    WHERE n.deleted_at IS NULL
+                      AND n.payload_json IS NOT NULL
+                      AND json_valid(n.payload_json)
+                      AND COALESCE(json_extract(n.payload_json, '$.execution_data.meta.agentree_hidden_node'), 0) != 1
+                      AND COALESCE(json_extract(n.payload_json, '$.execution_data.meta.agentree_insight_run'), 0) != 1
+                      AND (
+                          n.execution_data_json IS NULL
+                          OR NOT json_valid(n.execution_data_json)
+                          OR NOT EXISTS (
+                              SELECT 1
+                              FROM json_each(json_extract(n.execution_data_json, '$.timeline')) AS timeline_entry
+                              WHERE json_extract(timeline_entry.value, '$.type') IN (
+                                  'tool_use',
+                                  'tool_result',
+                                  'tool_output_delta',
+                                  'thinking',
+                                  'error',
+                                  'stderr',
+                                  'user_steer_requested'
+                              )
+                          )
+                      )
+                      AND EXISTS (
+                          SELECT 1
+                          FROM agent_run_events ev
+                          WHERE ev.assistant_node_id = n.id
+                            AND ev.event_type IN (
+                                'thinking',
+                                'tool_use',
+                                'tool_result',
+                                'tool_output_delta',
+                                'error',
+                                'stderr',
+                                'user_steer_requested'
+                            )
+                      )
+                    ORDER BY n.local_updated_at ASC
+                    LIMIT ?1
+                    "#,
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![limit as i64], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            rows
+        };
+
+        let mut repaired = 0usize;
+        for (node_id, payload_json) in candidates {
+            let Ok(mut payload) = serde_json::from_str::<JsonValue>(&payload_json) else {
+                continue;
+            };
+            if payload_has_structured_timeline(&payload) {
+                continue;
+            }
+            Self::repair_payload_timeline_if_needed(&conn, &node_id, &mut payload)?;
+            if !payload_has_structured_timeline(&payload) {
+                continue;
+            }
+            let payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+            let execution_data_json = payload
+                .get("execution_data")
+                .and_then(|value| serde_json::to_string(value).ok());
+            conn.execute(
+                r#"
+                UPDATE local_nodes
+                SET payload_json = ?2,
+                    execution_data_json = ?3
+                WHERE id = ?1
+                  AND deleted_at IS NULL
+                "#,
+                params![node_id, payload_json, execution_data_json],
+            )
+            .map_err(|e| e.to_string())?;
+            repaired += 1;
+        }
+        Ok(repaired)
+    }
+
     pub fn upsert_local_node(
         &self,
         node_id: &str,
@@ -2925,9 +3026,13 @@ impl TelemetryDb {
         let mut hydrated = 0usize;
 
         for payload in payloads {
-            let payload_value =
+            let mut payload_value =
                 serde_json::from_str::<JsonValue>(&payload).unwrap_or(JsonValue::Null);
-            let Some(node_id) = payload_value.get("id").and_then(|value| value.as_str()) else {
+            let Some(node_id) = payload_value
+                .get("id")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string())
+            else {
                 continue;
             };
             let payload_workspace_id = payload_value
@@ -2973,6 +3078,8 @@ impl TelemetryDb {
                 continue;
             }
 
+            Self::repair_payload_timeline_if_needed(&tx, &node_id, &mut payload_value)?;
+            let payload = serde_json::to_string(&payload_value).map_err(|e| e.to_string())?;
             let parent_id = payload_value
                 .get("parentId")
                 .and_then(|value| value.as_str());
@@ -3092,6 +3199,37 @@ impl TelemetryDb {
         let mut stmt = conn
             .prepare(
                 r#"
+                WITH sync_events AS (
+                    SELECT
+                        entity_id,
+                        MAX(attempt_count) AS retry_attempt,
+                        MIN(CASE
+                            WHEN status IN ('pending', 'in_flight') THEN next_attempt_at
+                            ELSE NULL
+                        END) AS next_retry_at
+                    FROM local_sync_events
+                    WHERE entity_type = 'node'
+                      AND status IN ('pending', 'in_flight', 'dead')
+                    GROUP BY entity_id
+                ),
+                latest_error_events AS (
+                    SELECT e.entity_id, MAX(e.last_error) AS last_upload_error
+                    FROM local_sync_events e
+                    JOIN (
+                        SELECT entity_id, MAX(updated_at) AS updated_at
+                        FROM local_sync_events
+                        WHERE entity_type = 'node'
+                          AND status IN ('pending', 'in_flight', 'dead')
+                          AND last_error IS NOT NULL
+                        GROUP BY entity_id
+                    ) latest
+                      ON latest.entity_id = e.entity_id
+                     AND latest.updated_at = e.updated_at
+                    WHERE e.entity_type = 'node'
+                      AND e.status IN ('pending', 'in_flight', 'dead')
+                      AND e.last_error IS NOT NULL
+                    GROUP BY e.entity_id
+                )
                 SELECT
                     n.id,
                     n.workspace_id,
@@ -3169,13 +3307,7 @@ impl TelemetryDb {
                         )
                     END AS payload,
                     CASE
-                        WHEN EXISTS (
-                            SELECT 1
-                            FROM local_sync_events e
-                            WHERE e.entity_type = 'node'
-                              AND e.entity_id = n.id
-                              AND e.status IN ('pending', 'in_flight', 'dead')
-                        ) THEN 'local_only'
+                        WHEN se.entity_id IS NOT NULL THEN 'local_only'
                         WHEN n.server_ack_at IS NULL THEN 'local_only'
                         ELSE 'persisted'
                     END AS sync_status,
@@ -3185,32 +3317,12 @@ impl TelemetryDb {
                         WHEN n.server_ack_at GLOB '[0-9]*' THEN CAST(n.server_ack_at AS INTEGER)
                         ELSE NULL
                     END AS server_ack_at,
-                    COALESCE((
-                        SELECT MAX(e.attempt_count)
-                        FROM local_sync_events e
-                        WHERE e.entity_type = 'node'
-                          AND e.entity_id = n.id
-                          AND e.status IN ('pending', 'in_flight', 'dead')
-                    ), 0) AS retry_attempt,
-                    (
-                        SELECT MIN(e.next_attempt_at)
-                        FROM local_sync_events e
-                        WHERE e.entity_type = 'node'
-                          AND e.entity_id = n.id
-                          AND e.status IN ('pending', 'in_flight')
-                    ) AS next_retry_at,
-                    (
-                        SELECT e.last_error
-                        FROM local_sync_events e
-                        WHERE e.entity_type = 'node'
-                          AND e.entity_id = n.id
-                          AND e.status IN ('pending', 'in_flight', 'dead')
-                          AND e.last_error IS NOT NULL
-                        ORDER BY e.updated_at DESC
-                        LIMIT 1
-                    ) AS last_upload_error,
-                    n.execution_data_json
+                    COALESCE(se.retry_attempt, 0) AS retry_attempt,
+                    se.next_retry_at,
+                    le.last_upload_error
                 FROM local_nodes n
+                LEFT JOIN sync_events se ON se.entity_id = n.id
+                LEFT JOIN latest_error_events le ON le.entity_id = n.id
                 WHERE n.workspace_id = ?1
                   AND n.deleted_at IS NULL
                   AND COALESCE(json_extract(n.payload_json, '$.execution_data.meta.agentree_hidden_node'), 0) != 1
@@ -3219,66 +3331,24 @@ impl TelemetryDb {
                 "#,
             )
             .map_err(|e| e.to_string())?;
-        let mut rows_with_execution_data = stmt
+        let mut rows: Vec<LocalNodeRow> = stmt
             .query_map(params![workspace_id], |row| {
-                Ok((
-                    LocalNodeRow {
-                        node_id: row.get(0)?,
-                        workspace_id: row.get(1)?,
-                        controlled_by_node_id: row.get(2)?,
-                        payload: row.get(3)?,
-                        sync_status: row.get(4)?,
-                        finalized_at: row.get(5)?,
-                        server_ack_at: row.get(6)?,
-                        retry_attempt: row.get(7)?,
-                        next_retry_at: row.get(8)?,
-                        last_upload_error: row.get(9)?,
-                    },
-                    row.get::<_, Option<String>>(10)?,
-                ))
+                Ok(LocalNodeRow {
+                    node_id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    controlled_by_node_id: row.get(2)?,
+                    payload: row.get(3)?,
+                    sync_status: row.get(4)?,
+                    finalized_at: row.get(5)?,
+                    server_ack_at: row.get(6)?,
+                    retry_attempt: row.get(7)?,
+                    next_retry_at: row.get(8)?,
+                    last_upload_error: row.get(9)?,
+                })
             })
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
-        drop(stmt);
-        for (row, execution_data_json) in rows_with_execution_data.iter_mut() {
-            if execution_data_json
-                .as_deref()
-                .and_then(|value| serde_json::from_str::<JsonValue>(value).ok())
-                .map(|execution_data| execution_data_has_structured_timeline(&execution_data))
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            let Ok(mut payload) = serde_json::from_str::<JsonValue>(&row.payload) else {
-                continue;
-            };
-            if payload_has_structured_timeline(&payload) {
-                continue;
-            }
-            Self::repair_payload_timeline_if_needed(&conn, &row.node_id, &mut payload)?;
-            if payload_has_structured_timeline(&payload) {
-                row.payload = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-                let execution_data_json = payload
-                    .get("execution_data")
-                    .and_then(|value| serde_json::to_string(value).ok());
-                conn.execute(
-                    r#"
-                    UPDATE local_nodes
-                    SET payload_json = ?2,
-                        execution_data_json = ?3
-                    WHERE id = ?1
-                      AND deleted_at IS NULL
-                    "#,
-                    params![row.node_id, row.payload, execution_data_json],
-                )
-                .map_err(|e| e.to_string())?;
-            }
-        }
-        let mut rows: Vec<LocalNodeRow> = rows_with_execution_data
-            .into_iter()
-            .map(|(row, _)| row)
-            .collect();
         rows.sort_by_key(|row| row.finalized_at);
         Ok(rows)
     }
@@ -5144,7 +5214,7 @@ impl TelemetryDb {
     ) -> Result<Vec<LocalSyncEventRow>, String> {
         let now = unix_timestamp();
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        Self::repair_legacy_cloud_owned_local_rows_locked(&conn, user_id, Some(cloud_account_id))?;
+        Self::repair_legacy_cloud_owned_local_rows_locked(&conn, user_id, None)?;
         let mut stmt = conn
             .prepare(
                 r#"
@@ -8935,7 +9005,7 @@ mod tests {
     }
 
     #[test]
-    fn list_local_nodes_repairs_existing_summary_timeline_from_journal() {
+    fn list_local_nodes_does_not_repair_existing_summary_timeline_from_journal() {
         let (_dir, db) = open_test_db();
         upsert_run(&db, "assistant-existing-bad", "completed", "cleaned");
         db.append_agent_run_event(
@@ -8989,10 +9059,8 @@ mod tests {
         let timeline = payload["execution_data"]["timeline"]
             .as_array()
             .expect("timeline");
-        assert_eq!(timeline.len(), 3);
+        assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0]["type"], "message");
-        assert_eq!(timeline[1]["type"], "tool_use");
-        assert_eq!(timeline[2]["type"], "tool_result");
 
         let conn = db.conn.lock().expect("db lock");
         let execution_data_json: String = conn
@@ -9005,8 +9073,73 @@ mod tests {
         let execution_data: serde_json::Value =
             serde_json::from_str(&execution_data_json).expect("execution data");
         let persisted_timeline = execution_data["timeline"].as_array().expect("timeline");
-        assert_eq!(persisted_timeline.len(), 3);
-        assert_eq!(persisted_timeline[1]["type"], "tool_use");
+        assert_eq!(persisted_timeline.len(), 1);
+    }
+
+    #[test]
+    fn repair_legacy_local_node_timelines_repairs_existing_summary_timeline_from_journal() {
+        let (_dir, db) = open_test_db();
+        upsert_run(&db, "assistant-existing-bad", "completed", "cleaned");
+        db.append_agent_run_event(
+            "run-assistant-existing-bad",
+            "assistant-existing-bad",
+            "tool_use",
+            None,
+            None,
+            r#"{"type":"tool_use","id":"call-1","name":"commandExecution","tool_input":{"command":"sed -n '1,20p' package.json"},"timestamp":1778917768000}"#,
+        )
+        .expect("tool use");
+        db.append_agent_run_event(
+            "run-assistant-existing-bad",
+            "assistant-existing-bad",
+            "tool_result",
+            None,
+            None,
+            r#"{"type":"tool_result","toolUseId":"call-1","toolName":"commandExecution","toolOutput":"ok","timestamp":1778917769000}"#,
+        )
+        .expect("tool result");
+
+        {
+            let conn = db.conn.lock().expect("conn");
+            conn.execute(
+                r#"
+                INSERT INTO local_nodes (
+                    id, workspace_id, parent_id, role, content, status,
+                    execution_data_json, payload_json, created_at, updated_at,
+                    deleted_at, local_updated_at
+                )
+                VALUES (?1, ?2, ?3, 'assistant', 'summary', 'completed', ?4, ?5, ?6, ?6, NULL, ?7)
+                "#,
+                params![
+                    "assistant-existing-bad",
+                    "workspace-1",
+                    "user-assistant-existing-bad",
+                    r#"{"timeline":[{"type":"message","content":"summary"}]}"#,
+                    r#"{"id":"assistant-existing-bad","workspaceId":"workspace-1","parentId":"user-assistant-existing-bad","role":"assistant","content":"summary","status":"completed","execution_data":{"timeline":[{"type":"message","content":"summary"}]}}"#,
+                    "2026-05-16T00:00:00Z",
+                    1_i64,
+                ],
+            )
+            .expect("insert bad local node");
+        }
+
+        let repaired = db
+            .repair_legacy_local_node_timelines(25)
+            .expect("repair legacy timelines");
+        assert_eq!(repaired, 1);
+
+        let rows = db
+            .list_local_nodes_for_workspace("workspace-1")
+            .expect("local nodes");
+        let payload: serde_json::Value =
+            serde_json::from_str(&rows[0].payload).expect("payload json");
+        let timeline = payload["execution_data"]["timeline"]
+            .as_array()
+            .expect("timeline");
+        assert_eq!(timeline.len(), 3);
+        assert_eq!(timeline[0]["type"], "message");
+        assert_eq!(timeline[1]["type"], "tool_use");
+        assert_eq!(timeline[2]["type"], "tool_result");
     }
 
     #[test]
@@ -9085,6 +9218,57 @@ mod tests {
         assert_eq!(stored.attempt_count, 1);
         assert_eq!(stored.last_error.as_deref(), Some("offline"));
         assert!(stored.next_attempt_at.is_some());
+    }
+
+    #[test]
+    fn list_local_nodes_includes_retry_metadata_from_sync_events() {
+        let (_dir, db) = open_test_db();
+        {
+            let conn = db.conn.lock().expect("conn");
+            conn.execute(
+                r#"
+                INSERT INTO local_nodes (
+                    id, workspace_id, parent_id, role, content, status,
+                    execution_data_json, payload_json, created_at, updated_at,
+                    server_ack_at, deleted_at, local_updated_at
+                )
+                VALUES (?1, ?2, NULL, 'assistant', 'synced', 'completed', '{}', ?3, ?4, ?4, '100', NULL, 1)
+                "#,
+                params![
+                    "node-retry",
+                    "workspace-1",
+                    r#"{"id":"node-retry","workspaceId":"workspace-1","role":"assistant","content":"synced","status":"completed"}"#,
+                    "2026-06-24T00:00:00Z",
+                ],
+            )
+            .expect("insert node");
+            conn.execute(
+                r#"
+                INSERT INTO local_sync_events (
+                    id, workspace_id, entity_type, entity_id, event_type, payload_json,
+                    idempotency_key, status, attempt_count, next_attempt_at, last_error,
+                    created_at, updated_at
+                )
+                VALUES
+                    ('event-old', 'workspace-1', 'node', 'node-retry', 'node.update_terminal', '{}',
+                     'key-old', 'pending', 1, 200, 'old error', 10, 10),
+                    ('event-new', 'workspace-1', 'node', 'node-retry', 'node.update_terminal', '{}',
+                     'key-new', 'dead', 3, NULL, 'new error', 20, 20)
+                "#,
+                [],
+            )
+            .expect("insert sync events");
+        }
+
+        let rows = db
+            .list_local_nodes_for_workspace("workspace-1")
+            .expect("local nodes");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].sync_status, "local_only");
+        assert_eq!(rows[0].server_ack_at, Some(100));
+        assert_eq!(rows[0].retry_attempt, 3);
+        assert_eq!(rows[0].next_retry_at, Some(200));
+        assert_eq!(rows[0].last_upload_error.as_deref(), Some("new error"));
     }
 
     #[test]

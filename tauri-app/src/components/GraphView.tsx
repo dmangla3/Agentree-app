@@ -128,7 +128,7 @@ import { classifyMessageNodeKind } from '../domain/nodes';
 
 import { ChevronLeft, ChevronRight, ChevronsRight, GitBranch, X } from 'lucide-react';
 import { agentClient } from '../lib/agentClient';
-import { getAccessToken } from '../lib/authSession';
+import { getOptionalCloudAuthToken } from '../lib/authSession';
 import { ensureLocalCommitGraphRepaired } from '../lib/localCommitGraphRepair';
 import { createProfilerOnRender, startFocusInteraction } from '../lib/interactionProfiler';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
@@ -4998,7 +4998,7 @@ function GraphViewInternal({
 
         try {
             const [authToken, journalEvents] = await Promise.all([
-                getAccessToken(),
+                getOptionalCloudAuthToken(),
                 agentClient.replayAgentRunEvents(retryTarget.target.orchestratorRunId, 0),
             ]);
             const retryInput = buildOrchestrationRunRetryInput({

@@ -14,6 +14,7 @@ import {
 import {
   startOrchestratorRun,
 } from '../orchestration/controlPlane';
+import { getOptionalCloudAuthToken } from '../lib/authSession';
 
 export interface HeadlessComposerBase {
   commitSha: string;
@@ -245,11 +246,11 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
         orchestratorNodeId: assistantNodeId,
       },
     });
-    const authToken = await input.getAccessToken();
+    const authToken = await getOptionalCloudAuthToken(input.getAccessToken);
     const startResult = await startOrchestratorRun({
       workspaceId: input.workspaceId,
       repoPath,
-      authToken: authToken ?? '',
+      authToken,
       parentNodeId: input.parentMessageId,
       contextParentNodeId: contextParentId,
       baseNodeId: input.base.selectedFromNodeId,
@@ -370,7 +371,7 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
       throw new Error('Workspace repository path is required for composer sends.');
     }
 
-    const authToken = await input.getAccessToken();
+    const authToken = await getOptionalCloudAuthToken(input.getAccessToken);
     const runId = input.createRunId?.() ?? crypto.randomUUID();
     const contextParentId = input.contextPolicy === 'fresh'
       ? null

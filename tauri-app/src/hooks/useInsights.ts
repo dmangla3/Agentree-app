@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { AGENT_STATUS, isTerminalAgentStatus } from '@shared/agentStatus';
 import { agentClient, type LocalInsightCandidateRecord, type LocalInsightRecord } from '../lib/agentClient';
-import { getAccessToken } from '../lib/authSession';
+import { getOptionalCloudAuthToken } from '../lib/authSession';
 import { appendBackgroundAttentionAuditEvent } from '../lib/backgroundAttentionAudit';
 import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
 import { resolveLoginProfileSelection, type LoginProfileSummary } from '../lib/loginProfiles';
@@ -538,8 +538,8 @@ export function useInsights(
               const repoPath = workspace.git_repo_path ?? workspace.folderPath ?? null;
               const parentCommit = readCommitForInsightRun(parent, workspace);
               const loginProfile = agent ? chooseReadyLoginProfile(loginProfiles, agent.type) : null;
-              const authToken = await getAccessToken();
-              if (!agent || !loginProfile || !repoPath || !parentCommit || !authToken || !workspaceId) {
+              const authToken = await getOptionalCloudAuthToken();
+              if (!agent || !loginProfile || !repoPath || !parentCommit || !workspaceId) {
                 recordBackgroundAttentionAudit({
                   workspaceId,
                   outcome: 'failed',
@@ -547,7 +547,7 @@ export function useInsights(
                   triggerClass: 'light',
                   parentNodeId,
                   runNodeId,
-                  message: 'Validator could not start because agent, login profile, repo, commit, auth, or workspace was missing.',
+                  message: 'Validator could not start because agent, login profile, repo, commit, or workspace was missing.',
                   metadata: {
                     hasAgent: Boolean(agent),
                     hasLoginProfile: Boolean(loginProfile),
@@ -793,23 +793,7 @@ ${JSON.stringify(proposedCandidates, null, 2)}`;
       return;
     }
 
-    const authToken = await getAccessToken();
-    if (!authToken) {
-      console.info('[useInsights] Skipping local insight generation:', {
-        reason: 'missing-auth-token',
-        workspaceId,
-        parentNodeId: parent.id,
-      });
-      recordBackgroundAttentionAudit({
-        workspaceId,
-        outcome: 'skipped',
-        reason: 'missing_auth_token',
-        triggerClass: 'light',
-        parentNodeId: parent.id,
-        message: 'Skipped because no auth token was available for the local run.',
-      });
-      return;
-    }
+    const authToken = await getOptionalCloudAuthToken();
 
     const prompt = `${INSIGHT_GENERATOR_PROMPT}
 

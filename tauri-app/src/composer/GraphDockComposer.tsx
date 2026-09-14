@@ -20,7 +20,7 @@ import { getEnabledTrackedGitRefs, useGitRefSnapshot } from '../hooks/useGitRefS
 import { useTrackedRefs } from '../hooks/useTrackedRefs';
 import { agentRunManager } from '../agent-runs/agentRunManager';
 import { agentClient, type GitCommitMetadata, type SkillSummary } from '../lib/agentClient';
-import { getAccessToken } from '../lib/authSession';
+import { getOptionalCloudAuthToken } from '../lib/authSession';
 import { createSendFlowId, recordSendFlowEvent } from '../perf/sendFlow';
 import {
   buildComposerCommitPickerChipItems,
@@ -48,7 +48,6 @@ import {
 } from '../lib/composerAgentRuns';
 import {
   buildRepoMentionSearchIndex,
-  extractRepoMentionPaths,
   getMentionedRepoPathSet,
   getRepoMentionMatches,
   type RepoMentionFile,
@@ -368,7 +367,6 @@ export function GraphDockComposer() {
   const [editDraftSource, setEditDraftSource] = useState<Message | null>(null);
   const orchestrationTemplates = useOrchestrationTemplateStore((state) => state.templates);
   const [repoMentionFiles, setRepoMentionFiles] = useState<RepoMentionFile[]>([]);
-  const [repoMentionCommit, setRepoMentionCommit] = useState<string | null>(null);
   const [activeFileMention, setActiveFileMention] = useState<ActiveFileMention | null>(null);
   const [activeFileMentionIndex, setActiveFileMentionIndex] = useState(0);
   const [activeSkillMention, setActiveSkillMention] = useState<ActiveSkillMention | null>(null);
@@ -917,7 +915,6 @@ export function GraphDockComposer() {
     const commit = effectiveBase?.commitSha?.trim() || null;
     if (!selectedWorkspaceRepoPath || !commit) {
       setRepoMentionFiles([]);
-      setRepoMentionCommit(null);
       return;
     }
 
@@ -925,7 +922,6 @@ export function GraphDockComposer() {
       try {
         const repoPaths = await agentClient.listFilesAtCommit(selectedWorkspaceRepoPath, commit);
         if (cancelled) return;
-        setRepoMentionCommit(commit);
         setRepoMentionFiles(repoPaths.map((path) => ({
           path,
           name: path.split('/').pop() || path,
@@ -934,7 +930,6 @@ export function GraphDockComposer() {
         if (cancelled) return;
         console.warn('[GraphDockComposer] Failed to load repo mention files:', caught);
         setRepoMentionFiles([]);
-        setRepoMentionCommit(null);
       }
     };
 
@@ -1260,21 +1255,6 @@ export function GraphDockComposer() {
     handleTemplateMentionSelect,
   ]);
 
-  const expandRepoMentionContext = useCallback(async (rawPrompt: string) => {
-    if (!selectedWorkspaceRepoPath || !repoMentionCommit) return rawPrompt;
-    const mentionedPaths = Array.from(new Set(
-      extractRepoMentionPaths(rawPrompt).filter((path) => repoMentionFilePathSet.has(path))
-    ));
-    if (mentionedPaths.length === 0) return rawPrompt;
-
-    const fileBlocks = await Promise.all(mentionedPaths.slice(0, 8).map(async (filePath) => {
-      const content = await agentClient.showFileAtCommit(selectedWorkspaceRepoPath, repoMentionCommit, filePath);
-      return `Path: ${filePath}\n\`\`\`\n${content}\n\`\`\``;
-    }));
-
-    return `${rawPrompt}\n\n[REPO FILE CONTEXT]\n${fileBlocks.join('\n\n')}`.trim();
-  }, [repoMentionCommit, repoMentionFilePathSet, selectedWorkspaceRepoPath]);
-
   const handleSend = useCallback(async () => {
     const trimmedPrompt = promptRef.current.trim();
     if (!selectedWorkspaceId || !trimmedPrompt || isPrimaryActionBusy) {
@@ -1332,12 +1312,7 @@ export function GraphDockComposer() {
       return;
     }
 
-    let promptForAgent = trimmedPrompt;
-    try {
-      promptForAgent = await expandRepoMentionContext(trimmedPrompt);
-    } catch (caught) {
-      console.warn('[GraphDockComposer] Failed to expand repo mention context:', caught);
-    }
+    const promptForAgent = trimmedPrompt;
 
     setError(null);
     const runsToLaunch = orchestrationMode
@@ -1394,7 +1369,7 @@ export function GraphDockComposer() {
           },
           workspaces: workspaces as Workspace[],
           startAgentRun: (payload) => agentClient.startAgentRun(payload as any),
-          getAccessToken,
+          getAccessToken: getOptionalCloudAuthToken,
           seedAgentRun: (message) => agentRunManager.seed(message),
           dispatchAgentRun: (nodeId, event) => agentRunManager.dispatch(nodeId, event as any),
           persistLocalNode: (workspaceId, nodeId, message) => agentClient.upsertLocalNode(workspaceId, nodeId, message),
@@ -1466,7 +1441,6 @@ export function GraphDockComposer() {
     effectiveContextParentId,
     effectiveContextPolicy,
     effectiveContextStartId,
-    expandRepoMentionContext,
     isPrimaryActionBusy,
     isSteeringRunningAssistant,
     messages,

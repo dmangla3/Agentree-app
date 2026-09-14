@@ -875,3 +875,4 @@ export type WorktreeInfo = {
 	branch_name: string,
 	parent_commit: string,
 };
+

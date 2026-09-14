@@ -11,7 +11,7 @@ import { useWorkspaces } from '../../hooks/useWorkspaces';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from '../../hooks/useLocalNodes';
 import { agentClient, GitMergePreview, type TargetBranchCheckoutStatus } from '../../lib/agentClient';
 import { api } from '../../lib/api';
-import { getAccessToken } from '../../lib/authSession';
+import { getOptionalCloudAuthToken } from '../../lib/authSession';
 import { cn } from '../../lib/utils';
 import { resolveLoginProfileSelection } from '../../lib/loginProfiles';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../../lib/graphInteractionGate';
@@ -721,7 +721,7 @@ export function SetupStage() {
         execution_data: executionData,
       };
 
-      const authToken = await getAccessToken();
+      const authToken = await getOptionalCloudAuthToken();
       const selectedProvider = selectedAgent.type === 'codex' || selectedAgent.type === 'claude'
         ? selectedAgent.type
         : null;

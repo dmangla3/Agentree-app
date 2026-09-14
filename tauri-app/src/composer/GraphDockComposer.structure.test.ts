@@ -43,7 +43,9 @@ describe('GraphDockComposer structure', () => {
     expect(source).toContain('agentClient.listInstalledSkills');
     expect(source).toContain('agentClient.listFilesAtCommit');
     expect(source).toContain('Type @ for files, # for orchestration, or $ for skills');
-    expect(source).toContain('expandRepoMentionContext');
+    expect(source).not.toContain('expandRepoMentionContext');
+    expect(source).not.toContain('showFileAtCommit');
+    expect(source).not.toContain('[REPO FILE CONTEXT]');
   });
 
   it('describes # templates as orchestration prompts instead of executable flows', () => {

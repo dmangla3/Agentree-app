@@ -1,6 +1,7 @@
 import { useAuthStore } from '../stores/authStore';
 
 type TokenGetter = (options?: { forceRefresh?: boolean }) => Promise<string | undefined>;
+type OptionalTokenGetter = () => Promise<string | null | undefined>;
 type LogoutHandler = () => Promise<void> | void;
 
 interface AuthRuntimeConfig {
@@ -16,6 +17,12 @@ let tokenRequestInFlight: Promise<string> | null = null;
 let sessionExpiryInFlight: Promise<void> | null = null;
 
 const isDevBypassEnabled = () => import.meta.env.VITE_DEV_AUTH_BYPASS === 'true';
+
+export const isMissingCloudAuthError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) return false;
+  return error.message === 'No access token available'
+    || error.message === 'Authentication is not initialized';
+};
 
 const resolveToken = async (options?: { forceRefresh?: boolean }): Promise<string> => {
   if (isDevBypassEnabled()) {
@@ -59,6 +66,17 @@ export const getAccessToken = async (options?: { forceRefresh?: boolean }): Prom
   });
 
   return tokenRequestInFlight;
+};
+
+export const getOptionalCloudAuthToken = async (
+  getToken: OptionalTokenGetter = getAccessToken,
+): Promise<string> => {
+  try {
+    return await getToken() ?? '';
+  } catch (error) {
+    if (isMissingCloudAuthError(error)) return '';
+    throw error;
+  }
 };
 
 export const handleSessionExpired = async (reason?: string) => {

@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { QueryClient } from '@tanstack/react-query';
 import { commands as tauriCommands } from '../generated/tauri-bindings';
 import { agentRunManager } from '../agent-runs/agentRunManager';
-import { getAccessToken } from '../lib/authSession';
+import { getOptionalCloudAuthToken } from '../lib/authSession';
 import { agentClient } from '../lib/agentClient';
 import { resolveWorkspaceRepoPath } from '../composer/headlessComposerSend';
 import { getThreadOriginNodeId } from '../lib/graphThreadRoots';
@@ -628,7 +628,7 @@ export function useOrchestrationMcpBridge({
               const meta = resolveMeta(orchestrator);
               const agentType = resolveAgentType(orchestrator, args);
               const agentId = resolveAgentId(orchestrator, args, agentType);
-              const authToken = await getAccessToken();
+              const authToken = await getOptionalCloudAuthToken();
               const launchDefaults = resolveOrchestrationRunLaunchDefaults(orchestrator, args);
               const parentNodeId = launchDefaults.parentNodeId;
               const parentNode = latestMessagesRef.current.find((message) => message.id === parentNodeId) ?? null;

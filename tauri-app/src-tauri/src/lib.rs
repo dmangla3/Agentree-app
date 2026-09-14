@@ -465,6 +465,14 @@ pub fn run() {
                             reconciled_prelaunch_local_nodes
                         );
                     }
+                    let repaired_legacy_local_timelines =
+                        telemetry.repair_legacy_local_node_timelines(100)?;
+                    if repaired_legacy_local_timelines > 0 {
+                        crate::app_log!(
+                            "[AGENT_RECOVERY] event=startup_reconcile.legacy_local_timelines count={}",
+                            repaired_legacy_local_timelines
+                        );
+                    }
                     // Reclaim scratch worktrees/branches left behind by runs that are
                     // no longer live (crashes, force-quits, skipped cleanup). Runs that
                     // reconcile_agent_runs_on_startup just reclassified are now dead, so

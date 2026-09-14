@@ -32,7 +32,7 @@ import {
 } from '../lib/chatInputSurface';
 import axios from 'axios';
 import { api } from '../lib/api';
-import { getAccessToken } from '../lib/authSession';
+import { getOptionalCloudAuthToken } from '../lib/authSession';
 import { getMessageById, resolveNodeCommit } from '../lib/gitNodeUtils';
 import { track, trackAgentRunFailed, trackAgentRunStarted } from '../lib/analytics';
 import { buildAgentRunLaunchContext } from '../lib/agentRunLaunchContext';
@@ -72,7 +72,6 @@ import {
 import { waitForOptimisticSendPaint } from '../lib/composerSendPaint';
 import {
     buildRepoMentionSearchIndex,
-    extractRepoMentionPaths,
     getMentionedRepoPathSet,
     getRepoMentionMatches,
     type RepoMentionFile,
@@ -361,7 +360,6 @@ export function ChatInput({
     const filesMap = useMemo(() => new Map(files.map(f => [f.id, f])), [files]);
     const [contextIds, setContextIds] = useState<string[]>([]);
     const [repoMentionFiles, setRepoMentionFiles] = useState<RepoMentionFile[]>([]);
-    const [repoMentionCommit, setRepoMentionCommit] = useState<string | null>(null);
     const [selectedBaseCommit, setSelectedBaseCommit] = useState<CommitEntity | null>(null);
     const [baseCommitSearch, setBaseCommitSearch] = useState('');
     const [activeFileMention, setActiveFileMention] = useState<ActiveFileMention | null>(null);
@@ -990,7 +988,7 @@ export function ChatInput({
 
         void (async () => {
             try {
-                const token = await getAccessToken();
+                const token = await getOptionalCloudAuthToken();
                 if (cancelled) return;
                 await ensureMcpSetup(token, selectedWorkspaceId);
             } catch (error) {
@@ -1207,7 +1205,7 @@ export function ChatInput({
         const nodeId = node.id;
         const workspaceId = node.workspaceId;
         const parentId = options?.parentId ?? node.parentId ?? '';
-        const authToken = options?.authToken ?? await getAccessToken();
+        const authToken = options?.authToken ?? await getOptionalCloudAuthToken();
         const flowId = getSendFlowIdForKey(nodeId);
         if (flowId) {
             recordSendFlowEvent('stream.registered', {
@@ -1957,7 +1955,6 @@ export function ChatInput({
         const loadRepoFiles = async () => {
             if (!selectedWorkspaceRepoPath) {
                 setRepoMentionFiles([]);
-                setRepoMentionCommit(null);
                 return;
             }
 
@@ -1972,7 +1969,6 @@ export function ChatInput({
                 if (!commit) {
                     if (!cancelled) {
                         setRepoMentionFiles([]);
-                        setRepoMentionCommit(null);
                     }
                     return;
                 }
@@ -1980,7 +1976,6 @@ export function ChatInput({
                 const repoPaths = await agentClient.listFilesAtCommit(selectedWorkspaceRepoPath, commit);
                 if (cancelled) return;
 
-                setRepoMentionCommit(commit);
                 setRepoMentionFiles(repoPaths.map((path) => ({
                     path,
                     name: path.split('/').pop() || path,
@@ -1989,7 +1984,6 @@ export function ChatInput({
                 if (cancelled) return;
                 console.warn('[ChatInput] Failed to load repo mention files:', error);
                 setRepoMentionFiles([]);
-                setRepoMentionCommit(null);
             }
         };
 
@@ -2149,26 +2143,6 @@ export function ChatInput({
             setIsCommandPopoverOpen(false);
         }
     };
-
-    const expandRepoMentionContext = useCallback(async (rawPrompt: string) => {
-        if (!selectedWorkspaceRepoPath || !repoMentionCommit) return rawPrompt;
-
-        const mentionedPaths = Array.from(
-            new Set(
-                extractRepoMentionPaths(rawPrompt).filter((path) => repoMentionFilePathSet.has(path))
-            )
-        );
-
-        if (mentionedPaths.length === 0) return rawPrompt;
-
-        const limitedPaths = mentionedPaths.slice(0, 8);
-        const fileBlocks = await Promise.all(limitedPaths.map(async (filePath) => {
-            const content = await agentClient.showFileAtCommit(selectedWorkspaceRepoPath, repoMentionCommit, filePath);
-            return `Path: ${filePath}\n\`\`\`\n${content}\n\`\`\``;
-        }));
-
-        return `${rawPrompt}\n\n[REPO FILE CONTEXT]\n${fileBlocks.join('\n\n')}`.trim();
-    }, [repoMentionCommit, repoMentionFilePathSet, selectedWorkspaceRepoPath]);
 
     const resolveWorkspaceWorkspace = useCallback(async () => {
         const attachedRepoPath = resolveLocalWorkspaceRepoPath(selectedWorkspace);
@@ -2866,7 +2840,7 @@ export function ChatInput({
                 }, { source: 'ChatInput' });
                 releaseSendAcceptance('local-first-persisted');
 
-                const token = await getAccessToken();
+                const token = await getOptionalCloudAuthToken();
                 optimisticAssistantMessageIds.forEach((assistantMessageId) => {
                     attachLatencyTraceToNode(operationKey, assistantMessageId, token);
                     recordLatencyMark(assistantMessageId, 'assistant_node_created', {
@@ -2901,12 +2875,6 @@ export function ChatInput({
                     });
                 });
 
-                let expandedPromptForAgent = savedPrompt.trim();
-                try {
-                    expandedPromptForAgent = await expandRepoMentionContext(savedPrompt.trim());
-                } catch (error) {
-                    console.warn('[ChatInput] Failed to expand repo mention context:', error);
-                }
                 for (const run of assistantRunMessages) {
                     if (!run.assistantMessage || !run.assistantMessageId) continue;
                     if (shouldAutoCheckout) {
@@ -2915,7 +2883,7 @@ export function ChatInput({
                     runAgentSetupInBackground({
                         nodeId: run.assistantMessageId,
                         assistantMsg: run.assistantMessage as Message,
-                        prompt: expandedPromptForAgent,
+                        prompt: savedPrompt.trim(),
                         authToken: token,
                         autoCheckout: shouldAutoCheckout,
                         contextPolicy: sendContextPolicy,
@@ -3068,7 +3036,7 @@ export function ChatInput({
                     phase: 'real-assistant',
                 });
 
-                const token = await getAccessToken();
+                const token = await getOptionalCloudAuthToken();
                 attachLatencyTraceToNode(operationKey, realAssistant.id, token);
                 recordLatencyMark(realAssistant.id, 'assistant_node_created', {
                     authToken: token,
@@ -3114,12 +3082,6 @@ export function ChatInput({
 
                 // --- 7. PARALLEL AGENT SETUP (if applicable) ---
                 if (primarySelectedAgent && realAssistantId) {
-                    let expandedPromptForAgent = savedPrompt.trim();
-                    try {
-                        expandedPromptForAgent = await expandRepoMentionContext(savedPrompt.trim());
-                    } catch (error) {
-                        console.warn('[ChatInput] Failed to expand repo mention context:', error);
-                    }
                     if (shouldAutoCheckout) {
                         autoCheckoutPendingRef.current.add(realAssistantId);
                     }
@@ -3127,7 +3089,7 @@ export function ChatInput({
                     runAgentSetupInBackground({
                         nodeId: realAssistantId,
                         assistantMsg: realAssistant,
-                        prompt: expandedPromptForAgent,
+                        prompt: savedPrompt.trim(),
                         authToken: token,
                         autoCheckout: shouldAutoCheckout,
                         contextPolicy: sendContextPolicy,
@@ -3298,7 +3260,6 @@ export function ChatInput({
         onSendComplete,
         resetComposerTargetAfterSuccessfulSend,
         resolveWorkspaceWorkspace,
-        expandRepoMentionContext,
         trackStreamForNode,
     ]);
 

@@ -4,7 +4,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import { useQueryClient } from '@tanstack/react-query';
 import { agentRunManager } from '../agent-runs/agentRunManager';
 import { agentClient } from '../lib/agentClient';
-import { getAccessToken } from '../lib/authSession';
+import { getOptionalCloudAuthToken } from '../lib/authSession';
 import {
   providerRequiresLoginProfile,
   resolveLoginProfileSelection,
@@ -133,7 +133,7 @@ export function useHeadlessQuickReply() {
         workspaces: workspaces as Workspace[],
         selectedLoginProfileId: selectedLoginProfile?.id ?? null,
         startAgentRun: (payload) => agentClient.startAgentRun(payload as any),
-        getAccessToken,
+        getAccessToken: getOptionalCloudAuthToken,
         seedAgentRun: (message) => agentRunManager.seed(message),
         dispatchAgentRun: (nodeId, event) => agentRunManager.dispatch(nodeId, event as any),
         persistLocalNode: (workspaceId, nodeId, message) => agentClient.upsertLocalNode(workspaceId, nodeId, message),
