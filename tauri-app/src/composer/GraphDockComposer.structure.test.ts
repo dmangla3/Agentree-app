@@ -40,7 +40,7 @@ describe('GraphDockComposer structure', () => {
     expect(source).toContain('handleSkillMentionSelect');
     expect(source).toContain('activeMentionFiles');
     expect(source).toContain('activeMentionSkills');
-    expect(source).toContain('agentClient.listInstalledSkills');
+    expect(source).toContain('agentClient.listProviderSkills');
     expect(source).toContain('agentClient.listFilesAtCommit');
     expect(source).toContain('Type @ for files, # for orchestration, or $ for skills');
     expect(source).not.toContain('expandRepoMentionContext');

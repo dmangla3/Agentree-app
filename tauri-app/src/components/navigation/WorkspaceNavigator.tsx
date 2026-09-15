@@ -94,7 +94,7 @@ export interface WorkspaceThreadNavigationModel {
 
 interface WorkspaceNavigatorProps {
   selectedWorkspaceId: string | null;
-  activeView: 'chat' | 'orchestration' | 'tracking' | 'knowledge' | 'skills' | 'logins';
+  activeView: 'chat' | 'orchestration' | 'tracking' | 'knowledge' | 'logins';
   onSelectWorkspace: (workspaceId: string, options?: { replace?: boolean }) => void;
   onOpenThread: (threadRootId: string) => void;
   onCreateThread: () => void;
@@ -225,10 +225,10 @@ function ThreadRow({
     <div
       onContextMenu={handleContextMenu}
       className={cn(
-        'group/thread relative flex min-w-0 items-stretch overflow-hidden rounded-md border shadow-[inset_0_1px_0_hsl(var(--foreground)/0.022)] transition-[background-color,border-color,box-shadow,opacity] duration-150',
+        'group/thread relative flex min-w-0 items-stretch overflow-hidden rounded-lg border shadow-[inset_0_1px_0_hsl(var(--foreground)/0.022)] transition-[background-color,border-color,box-shadow,opacity,transform] duration-200 ease-out',
         thread.current
-          ? 'border-[hsl(var(--app-accent)/0.32)] bg-[hsl(var(--app-accent-soft)/0.38)] text-[hsl(var(--app-accent))] shadow-[inset_2px_0_0_hsl(var(--app-accent)/0.48),inset_0_1px_0_hsl(var(--foreground)/0.028)]'
-          : 'border-[hsl(var(--app-border)/0.34)] bg-[hsl(var(--app-panel)/0.3)] text-foreground hover:border-[hsl(var(--app-border-strong)/0.56)] hover:bg-[hsl(var(--app-panel)/0.5)]',
+          ? 'border-transparent bg-[hsl(var(--app-bg-muted))] text-foreground shadow-[0_10px_24px_-22px_rgb(24_24_27/0.58)] dark:bg-zinc-700 dark:text-zinc-50'
+          : 'border-transparent bg-[hsl(var(--app-panel)/0.08)] text-muted-foreground hover:-translate-y-px hover:border-[hsl(var(--app-border)/0.34)] hover:bg-[hsl(var(--app-panel-strong)/0.46)] hover:text-foreground hover:shadow-[0_8px_22px_-20px_hsl(var(--foreground)/0.32)]',
         thread.done && thread.runningCount === 0 && 'opacity-70',
       )}
     >
@@ -244,21 +244,32 @@ function ThreadRow({
         <span className="flex min-w-0 items-center gap-1.5">
           <span
             className={cn(
-              'h-1.5 w-1.5 shrink-0 rounded-full',
+              'shrink-0 rounded-full',
               thread.current
-                ? 'bg-[hsl(var(--app-accent))]'
+                ? 'h-2 w-2 bg-zinc-950 dark:bg-zinc-100'
                 : thread.runningCount > 0
-                  ? 'bg-[hsl(var(--app-warning))]'
+                  ? 'h-1.5 w-1.5 bg-[hsl(var(--app-warning))]'
                   : thread.done
-                    ? 'bg-muted-foreground/30'
-                    : 'bg-muted-foreground/45',
+                    ? 'h-1.5 w-1.5 bg-muted-foreground/30'
+                    : 'h-1.5 w-1.5 bg-muted-foreground/45',
             )}
           />
-          <span className="min-w-0 truncate text-[11px] font-semibold leading-none">
+          <span
+            className={cn(
+              'min-w-0 truncate text-[10.5px] leading-none',
+              thread.current
+                ? 'font-semibold text-zinc-950 dark:text-zinc-50'
+                : thread.runningCount > 0
+                  ? 'font-medium text-foreground/82 dark:text-foreground/88'
+                  : thread.done
+                    ? 'font-normal text-foreground/52 dark:text-foreground/60'
+                    : 'font-normal text-foreground/70 dark:text-foreground/78',
+            )}
+          >
             {thread.label}
           </span>
           {thread.current ? (
-            <span className="shrink-0 rounded bg-[hsl(var(--app-accent)/0.13)] px-1 py-0.5 text-[8px] font-bold leading-none">
+            <span className="shrink-0 rounded bg-[hsl(var(--app-panel-strong))] px-1 py-0.5 text-[8px] font-bold leading-none text-foreground dark:bg-zinc-600 dark:text-zinc-50">
               Current
             </span>
           ) : null}
@@ -272,8 +283,8 @@ function ThreadRow({
             </span>
           ) : null}
         </span>
-        <span className="mt-1 block truncate text-[9px] leading-none text-muted-foreground">
-          <span className="font-mono text-foreground/70">{baseCommitLabel}</span>
+        <span className="mt-1 block truncate text-[9px] leading-none text-muted-foreground/70">
+          <span className="font-mono text-muted-foreground/90">{baseCommitLabel}</span>
           <span className="px-1 text-muted-foreground/45">·</span>
           {metadata}
         </span>
@@ -364,7 +375,7 @@ function WorkspaceThreadSection({
     return (
       <div
         className={cn(
-          'rounded-lg border border-dashed border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-bg)/0.34)] px-2.5 py-2 text-[11px] text-muted-foreground',
+          'rounded-xl border border-dashed border-[hsl(var(--app-border)/0.42)] bg-[hsl(var(--app-panel-strong)/0.38)] px-2.5 py-2 text-[11px] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)]',
           !threadsFocused && 'ml-6',
         )}
       >
@@ -376,12 +387,12 @@ function WorkspaceThreadSection({
   return (
     <div
       className={cn(
-        'space-y-2 rounded-lg border border-[hsl(var(--app-border)/0.46)] bg-[hsl(var(--app-bg)/0.34)] p-2 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.025)]',
+        'space-y-2 rounded-xl border border-[hsl(var(--app-border)/0.24)] bg-[hsl(var(--app-panel-strong))] p-2 shadow-[inset_0_1px_0_rgb(255_255_255/0.5)] dark:bg-zinc-800 dark:shadow-[inset_0_1px_0_rgb(255_255_255/0.05)]',
         !threadsFocused && 'ml-6',
       )}
     >
       <div className="flex items-center justify-between gap-2 border-b border-[hsl(var(--app-border)/0.34)] pb-1.5">
-        <div className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+        <div className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-foreground/66">
           <ParallelThreadsIcon size={12} strokeWidth={2.1} />
           <span>Threads</span>
           <span className="rounded bg-[hsl(var(--app-bg-muted)/0.72)] px-1.5 py-0.5 font-mono text-[8px] tracking-normal text-foreground/70">
@@ -520,14 +531,19 @@ function WorkspaceRow({
   const createdDate = createdAt > 0 ? new Date(createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : null;
 
   return (
-    <div className="space-y-1">
+    <div
+      className={cn(
+        'space-y-1',
+        selected && showThreadSection && 'rounded-xl bg-[hsl(var(--app-panel-strong))] p-1 shadow-[0_20px_44px_-30px_rgb(24_24_27/0.55),inset_0_1px_0_rgb(255_255_255/0.62)] dark:bg-zinc-800 dark:shadow-[0_18px_40px_-30px_rgb(0_0_0/0.9),inset_0_1px_0_rgb(255_255_255/0.08)]',
+      )}
+    >
       <div
         onMouseEnter={() => onPrefetchWorkspace(workspace.id)}
         className={cn(
-          'group/workspace flex min-w-0 items-center gap-1 rounded-md border px-1.5 py-1 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.025)] transition-[background-color,border-color,box-shadow,color] duration-150',
+          'group/workspace flex min-w-0 items-center gap-1 rounded-lg border px-1.5 py-1.5 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.025)] transition-[background-color,border-color,box-shadow,color,transform] duration-200 ease-out',
           selected
-            ? 'border-[hsl(var(--app-accent)/0.3)] bg-[linear-gradient(180deg,hsl(var(--app-accent-soft)/0.42),hsl(var(--app-panel)/0.64))] text-[hsl(var(--app-accent))] shadow-[inset_2px_0_0_hsl(var(--app-accent)/0.52),inset_0_1px_0_hsl(var(--foreground)/0.035)]'
-            : 'border-[hsl(var(--app-border)/0.4)] bg-[hsl(var(--app-panel)/0.34)] text-foreground hover:border-[hsl(var(--app-border-strong)/0.56)] hover:bg-[hsl(var(--app-panel)/0.62)]',
+            ? 'border-transparent bg-[hsl(var(--app-panel-strong))] text-foreground shadow-[0_16px_34px_-22px_rgb(24_24_27/0.78),inset_0_1px_0_rgb(255_255_255/0.76)] dark:bg-zinc-800 dark:text-zinc-50 dark:shadow-[0_14px_30px_-22px_rgb(0_0_0/0.95),inset_0_1px_0_rgb(255_255_255/0.08)]'
+            : 'border-[hsl(var(--app-border)/0.22)] bg-[hsl(var(--app-panel)/0.16)] text-foreground/78 hover:-translate-y-px hover:border-[hsl(var(--app-border-strong)/0.42)] hover:bg-[hsl(var(--app-panel-strong)/0.5)] hover:text-foreground hover:shadow-[0_8px_22px_-20px_hsl(var(--foreground)/0.3)]',
         )}
       >
         {selected ? (
@@ -535,7 +551,7 @@ function WorkspaceRow({
             type="button"
             aria-label={isOpen ? `Collapse workspace ${getWorkspaceDisplayName(workspace)}` : `Expand workspace ${getWorkspaceDisplayName(workspace)}`}
             onClick={() => setIsOpen((current) => !current)}
-            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-[background-color,color,transform] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.45)] hover:text-foreground active:scale-[0.96]"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,transform] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.45)] hover:text-foreground active:scale-[0.96]"
           >
             {isOpen ? <ChevronDown size={13} strokeWidth={2.2} /> : <ChevronRight size={13} strokeWidth={2.2} />}
           </button>
@@ -552,10 +568,12 @@ function WorkspaceRow({
           onFocus={() => onPrefetchWorkspace(workspace.id)}
           onClick={() => onSelectWorkspace(workspace.id)}
         >
-          <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', selected ? 'bg-[hsl(var(--app-accent))]' : 'bg-muted-foreground/45')} />
+          <span className={cn('shrink-0 rounded-full', selected ? 'h-2 w-2 bg-foreground dark:bg-zinc-50' : 'h-1.5 w-1.5 bg-muted-foreground/38')} />
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-[11px] font-semibold leading-none">{getWorkspaceDisplayName(workspace)}</span>
-            <span className="mt-0.5 block truncate text-[9px] leading-none text-muted-foreground">
+            <span className={cn('block truncate text-[12px] leading-none', selected ? 'font-semibold text-foreground dark:text-zinc-50' : 'font-medium text-foreground/78')}>
+              {getWorkspaceDisplayName(workspace)}
+            </span>
+            <span className={cn('mt-0.5 block truncate text-[9px] leading-none', selected ? 'font-medium text-[hsl(var(--app-text-soft))] dark:text-zinc-300' : 'text-muted-foreground/80')}>
               {hasThreadModel
                 ? `${activeCount} active · ${closedCount} closed · ${runningCount} running`
                 : selected && showThreadSection
@@ -657,10 +675,10 @@ function RepoItem({
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
       <div
         className={cn(
-          'rounded-xl border p-1 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.026)] transition-[background-color,border-color,box-shadow] duration-150',
+          'rounded-xl border p-1 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.026)] transition-[background-color,border-color,box-shadow,transform] duration-200 ease-out',
           hasSelectedWorkspace
-            ? 'border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.62),hsl(var(--app-panel)/0.42))] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.035)]'
-            : 'border-[hsl(var(--app-border)/0.36)] bg-[hsl(var(--app-panel)/0.24)] hover:border-[hsl(var(--app-border)/0.54)] hover:bg-[hsl(var(--app-panel)/0.38)]',
+            ? 'border-[hsl(var(--app-border-strong)/0.36)] bg-zinc-100/82 shadow-[0_18px_42px_-34px_rgb(24_24_27/0.42),inset_0_1px_0_rgb(255_255_255/0.62)] dark:bg-zinc-900/72 dark:shadow-[0_18px_42px_-34px_rgb(0_0_0/0.86),inset_0_1px_0_rgb(255_255_255/0.06)]'
+            : 'border-[hsl(var(--app-border)/0.34)] bg-[hsl(var(--app-panel)/0.22)] hover:-translate-y-px hover:border-[hsl(var(--app-border-strong)/0.48)] hover:bg-[hsl(var(--app-panel)/0.4)] hover:shadow-[0_14px_34px_-30px_hsl(var(--foreground)/0.38)]',
         )}
       >
         <div className="flex items-center gap-1 rounded-lg px-1.5 py-1.5">
@@ -671,19 +689,40 @@ function RepoItem({
               aria-label={`${isOpen ? 'Collapse' : 'Expand'} repository ${repo.name}`}
               className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left transition-[background-color,transform] duration-150 active:scale-[0.99]"
             >
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[hsl(var(--app-bg-muted)/0.42)] text-muted-foreground">
+              <span
+                className={cn(
+                  'flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors',
+                  hasSelectedWorkspace
+                    ? 'bg-[hsl(var(--app-bg-muted)/0.7)] text-foreground/72'
+                    : 'bg-[hsl(var(--app-bg-muted)/0.42)] text-muted-foreground',
+                )}
+              >
                 {isOpen ? <ChevronDown size={14} strokeWidth={2.2} /> : <ChevronRight size={14} strokeWidth={2.2} />}
               </span>
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[hsl(var(--app-border)/0.38)] bg-[hsl(var(--app-panel-strong)/0.56)] text-[hsl(var(--app-accent))] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)]">
+              <span
+                className={cn(
+                  'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-colors',
+                  hasSelectedWorkspace
+                    ? 'border-[hsl(var(--app-border)/0.34)] bg-[hsl(var(--app-panel-strong)/0.74)] text-[hsl(var(--app-accent))]'
+                    : 'border-[hsl(var(--app-border)/0.38)] bg-[hsl(var(--app-panel-strong)/0.56)] text-[hsl(var(--app-accent))]',
+                )}
+              >
                 <FolderGit className="h-4 w-4" />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-semibold leading-none text-foreground">{repo.name}</span>
+                <span className={cn('block truncate text-[13px] leading-none', hasSelectedWorkspace ? 'font-bold text-foreground' : 'font-semibold text-foreground/86')}>{repo.name}</span>
                 {repo.path ? (
-                  <span className="mt-1 block truncate text-[10px] leading-none text-muted-foreground">{repo.path}</span>
+                  <span className={cn('mt-1 block truncate text-[10px] leading-none', hasSelectedWorkspace ? 'text-foreground/62' : 'text-muted-foreground/90')}>{repo.path}</span>
                 ) : null}
               </span>
-              <span className="rounded bg-[hsl(var(--app-bg-muted)/0.72)] px-1.5 py-0.5 font-mono text-[10px] font-semibold tabular-nums text-muted-foreground">
+              <span
+                className={cn(
+                  'rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold tabular-nums',
+                  hasSelectedWorkspace
+                    ? 'bg-[hsl(var(--app-panel-strong)/0.78)] text-foreground/70'
+                    : 'bg-[hsl(var(--app-bg-muted)/0.72)] text-muted-foreground',
+                )}
+              >
                 {repo.workspaces.length}
               </span>
             </button>
@@ -707,7 +746,12 @@ function RepoItem({
           ) : null}
         </div>
         <CollapsibleContent>
-          <div className="ml-4 space-y-1.5 border-l border-[hsl(var(--app-border)/0.42)] pb-1.5 pl-2 pr-1">
+          <div
+            className={cn(
+              'ml-4 space-y-1.5 border-l pb-1.5 pl-2 pr-1',
+              hasSelectedWorkspace ? 'border-[hsl(var(--app-border-strong)/0.34)]' : 'border-[hsl(var(--app-border)/0.42)]',
+            )}
+          >
             {repo.workspaces.map((workspace) => (
               <WorkspaceRow
                 key={workspace.id}
@@ -1060,7 +1104,7 @@ export function WorkspaceNavigator({
   }
 
   return (
-    <aside className="flex h-full w-[19rem] shrink-0 flex-col border-r border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong)/0.46)] shadow-[inset_-1px_0_0_hsl(var(--foreground)/0.025)]">
+    <aside className="flex h-full w-[19rem] shrink-0 flex-col border-r border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-bg-muted)/0.82)] shadow-[inset_-1px_0_0_hsl(var(--foreground)/0.025)] dark:bg-[hsl(var(--app-panel-strong)/0.46)]">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[hsl(var(--app-border)/0.56)] px-3 py-2">
         <div className="min-w-0">
           <div className="truncate text-[11px] font-semibold uppercase tracking-[0.14em] text-[hsl(var(--app-accent))]">

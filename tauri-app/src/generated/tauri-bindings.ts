@@ -111,6 +111,7 @@ export const commands = {
 	getAgentSandboxRoot: () => __TAURI_INVOKE<string>("get_agent_sandbox_root"),
 	getAgentWorktreeConfig: (repoPath: string) => __TAURI_INVOKE<AgentWorktreeConfigStatus>("get_agent_worktree_config", { repoPath }),
 	saveAgentWorktreeConfig: (repoPath: string, config: AgentWorktreeConfig) => __TAURI_INVOKE<AgentWorktreeConfigStatus>("save_agent_worktree_config", { repoPath, config }),
+	listProviderSkills: (providers: string[], repoPath: string | null) => __TAURI_INVOKE<ProviderSkill[]>("list_provider_skills", { providers, repoPath }),
 	checkLocalEnvironment: () => __TAURI_INVOKE<LocalEnvironmentStatus>("check_local_environment"),
 	attachWorkspace: (path: string) => __TAURI_INVOKE<WorkspaceInfo>("attach_workspace", { path }),
 	initGitRepo: (repoPath: string) => __TAURI_INVOKE<string>("init_git_repo", { repoPath }),
@@ -151,13 +152,6 @@ export const commands = {
 	listAddableCommitRange: (repoPath: string, baseCommit: string, tipCommit: string, limit: number | null) => __TAURI_INVOKE<GitCommitMetadata[]>("list_addable_commit_range", { repoPath, baseCommit, tipCommit, limit }),
 	listAllCommits: (repoPath: string, limit: number | null, exclusions: string[] | null, excludeDescendantsOf: string | null) => __TAURI_INVOKE<GitCommitMetadata[]>("list_all_commits", { repoPath, limit, exclusions, excludeDescendantsOf }),
 	getAvailableEditors: () => __TAURI_INVOKE<Editor[]>("get_available_editors"),
-	getSkillStorePath: () => __TAURI_INVOKE<string>("get_skill_store_path"),
-	listInstalledSkills: (opId: string | null) => __TAURI_INVOKE<SkillSummary[]>("list_installed_skills", { opId }),
-	listImportableSkills: (opId: string | null) => __TAURI_INVOKE<SkillSummary[]>("list_importable_skills", { opId }),
-	searchCatalogSkills: (query: string, opId: string | null) => __TAURI_INVOKE<SkillSummary[]>("search_catalog_skills", { query, opId }),
-	installCatalogSkill: (skillId: string, opId: string | null) => __TAURI_INVOKE<SkillSummary>("install_catalog_skill", { skillId, opId }),
-	importLocalSkill: (sourcePath: string, opId: string | null) => __TAURI_INVOKE<SkillSummary>("import_local_skill", { sourcePath, opId }),
-	deleteInstalledSkill: (skillId: string, opId: string | null) => __TAURI_INVOKE<null>("delete_installed_skill", { skillId, opId }),
 	setMcpAuthToken: (token: string) => __TAURI_INVOKE<null>("set_mcp_auth_token", { token }),
 	setMcpWorkspaceId: (workspaceId: string) => __TAURI_INVOKE<null>("set_mcp_workspace_id", { workspaceId }),
 	getMcpServerUrl: () => __TAURI_INVOKE<string>("get_mcp_server_url"),
@@ -260,7 +254,6 @@ export type AgentWorktreeConfig = {
 	copyEnvFiles: boolean,
 	envFilePatterns: string[],
 	commitExcludePatterns: string[],
-	runtimeScaffoldingDirs: string[],
 	blockDependencyMutationCommands: boolean,
 };
 
@@ -715,6 +708,15 @@ export type PerfCaptureExportSession = {
 	startedAt: string,
 };
 
+export type ProviderSkill = {
+	id: string,
+	name: string,
+	description: string,
+	provider: string,
+	source: string,
+	path: string,
+};
+
 /**  How to resolve a conflict. */
 export type ResolutionAction = 
 /**  Use the source version. */
@@ -738,15 +740,6 @@ export type RuntimeReadiness = {
 	recommendedCommand: string | null,
 	message: string,
 	diagnostics: unknown,
-};
-
-export type SkillSummary = {
-	id: string,
-	name: string,
-	description: string,
-	installed: boolean,
-	source: string,
-	path: string | null,
 };
 
 export type StartAgentRunIntent = {

@@ -1,11 +1,11 @@
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { flushSync } from 'react-dom';
-import TextareaAutosize from 'react-textarea-autosize';
 import { Button } from '../../@/components/ui/button';
 import { Send, X, Reply, FileText, FileTextIcon, GitBranchIcon, Loader2, ChevronDown, Bot, Check, Pencil, AtSign, RotateCcw, Plus, Minus, Search, GitCommitHorizontal, Shield } from 'lucide-react';
 import { buildComposerDraftKey, useWorkspaceStore, AttachmentMetadata, Message, Workspace, CommitEntity } from '../stores/workspaceStore';
 import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 import { useProviderLimitsStore } from '../stores/providerLimitsStore';
+import { useOrchestrationTemplateStore } from '../stores/orchestrationTemplateStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { isLoginProfileActive, resolveLoginProfileSelection } from '../lib/loginProfiles';
 import { isNoAgentSessionFoundError, markStaleLocalAgentNodeCancelled } from '../lib/localAgentRunTerminal';
@@ -42,7 +42,7 @@ import { Checkbox } from '../../@/components/ui/checkbox';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../@/components/ui/hover-card';
 import { useShallow } from 'zustand/react/shallow';
 import { branchKeys } from '../hooks/useBranches';
-import { primeHotSendMessageDeltaCursor, useHotSendMessageDeltas } from '../hooks/useHotSendMessageDeltas';
+import { primeHotSendMessageDeltaCursor } from '../hooks/useHotSendMessageDeltas';
 import { isFirstClassCommitMessage } from '../lib/graph/turnUtils';
 import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { getMergeVisualParentEntries, isMergeResultNode } from '../lib/graph/lineage';
@@ -97,7 +97,6 @@ import {
 } from '../perf/agentRunVisibilityPerf';
 import { cancelOrchestrationTargetIfNeeded } from '../orchestration/cancel';
 import { agentRunManager } from '../agent-runs/agentRunManager';
-import { registerAgentRunEffectsQueryClient } from '../agent-runs/agentRunEffects';
 import { getEnabledTrackedGitRefs, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
 import {
     materializePersistedOptimisticUserMessage,
@@ -108,6 +107,7 @@ import {
     untrackAgentRunLiveStreamNode,
 } from '../agent-runs/agentRunLiveStreamCoordinator';
 import { commands } from '../generated/tauri-bindings';
+import { TemplateMentionTextarea } from './composer/TemplateMentionTextarea';
 
 
 // --- Types ---
@@ -360,6 +360,7 @@ export function ChatInput({
     const filesMap = useMemo(() => new Map(files.map(f => [f.id, f])), [files]);
     const [contextIds, setContextIds] = useState<string[]>([]);
     const [repoMentionFiles, setRepoMentionFiles] = useState<RepoMentionFile[]>([]);
+    const orchestrationTemplates = useOrchestrationTemplateStore((state) => state.templates);
     const [selectedBaseCommit, setSelectedBaseCommit] = useState<CommitEntity | null>(null);
     const [baseCommitSearch, setBaseCommitSearch] = useState('');
     const [activeFileMention, setActiveFileMention] = useState<ActiveFileMention | null>(null);
@@ -559,9 +560,6 @@ export function ChatInput({
     const [queuedComposerSendCount, setQueuedComposerSendCount] = useState(0);
     const [queuedReplayVersion, setQueuedReplayVersion] = useState(0);
     const queryClient = useQueryClient();
-    useHotSendMessageDeltas(selectedWorkspaceId);
-
-    useEffect(() => registerAgentRunEffectsQueryClient(queryClient), [queryClient]);
 
     const focusedCommitSha = useMemo(() => {
         if (lastFocusSource !== 'graph') return null;
@@ -4523,8 +4521,10 @@ export function ChatInput({
                                     </div>
                                 </div>
                             )}
-                            <TextareaAutosize
+                            <TemplateMentionTextarea
                                 ref={textareaRef}
+                                templates={orchestrationTemplates}
+                                highlightValue={prompt}
                                 data-testid="chat-composer-textarea"
                                 defaultValue=""
                                 onChange={handlePromptChange}

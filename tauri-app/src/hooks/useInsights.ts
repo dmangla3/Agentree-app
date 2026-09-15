@@ -4,6 +4,7 @@ import { agentClient, type LocalInsightCandidateRecord, type LocalInsightRecord 
 import { getOptionalCloudAuthToken } from '../lib/authSession';
 import { appendBackgroundAttentionAuditEvent } from '../lib/backgroundAttentionAudit';
 import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
+import { isRetryableLocalOnlySync } from './useLocalNodes';
 import { resolveLoginProfileSelection, type LoginProfileSummary } from '../lib/loginProfiles';
 import { INSIGHT_GENERATOR_PROMPT, INSIGHT_VALIDATOR_PROMPT } from '../lib/prompts';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
@@ -381,7 +382,7 @@ export function useInsights(
       lastCandidateRowsFingerprintRef.current = candidateFingerprint;
       setInsightCandidates(candidateRows);
     }
-    if (rows.some((row) => row.syncStatus === 'local_only')) {
+    if (rows.some(isRetryableLocalOnlySync)) {
       queueLocalSyncFlush({ reason: 'local-insights' });
     }
     return insights;

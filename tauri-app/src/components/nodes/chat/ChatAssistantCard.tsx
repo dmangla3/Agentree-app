@@ -658,10 +658,31 @@ export const ChatAssistantCard = memo(({
     () => timeline.some((event: any) => event?.type && event.type !== 'message'),
     [timeline]
   );
+  const shouldRevealStream = isStreamingStatus(displayStatus as any);
   const transcriptRows = useMemo(
     () => hasStructuredTimeline ? buildTimelineRows(timeline) : [],
     [hasStructuredTimeline, timeline]
   );
+  const liveMessageRows = useMemo(
+    () => {
+      if (hasStructuredTimeline || !shouldRevealStream) return [];
+      return timeline
+        .map((event: any, index) => {
+          if (event?.type !== 'message') return null;
+          const content = typeof event.content === 'string' ? event.content : '';
+          if (!content.trim()) return null;
+          const providerItemId = typeof event.provider_item_id === 'string' ? event.provider_item_id : null;
+          const timestamp = event.timestamp != null ? String(event.timestamp) : 'unknown';
+          return {
+            key: `live-message:${providerItemId ?? timestamp}:${index}`,
+            content,
+          };
+        })
+        .filter((row): row is { key: string; content: string } => Boolean(row));
+    },
+    [hasStructuredTimeline, shouldRevealStream, timeline]
+  );
+  const hasLiveMessageChunks = liveMessageRows.length > 1;
   const hasInterleavedTranscript = useMemo(
     () => hasStructuredTimeline && transcriptRows.some((row) => row.kind === 'message' || row.kind === 'user_steer'),
     [hasStructuredTimeline, transcriptRows]
@@ -705,7 +726,6 @@ export const ChatAssistantCard = memo(({
   const timestamp = message?.createdAt
     ? new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : null;
-  const shouldRevealStream = isStreamingStatus(displayStatus as any);
   const streamingTailText = useMemo(
     () => getStreamingTailText({
       hasInterleavedTranscript,
@@ -959,6 +979,19 @@ export const ChatAssistantCard = memo(({
 
               return null;
             })}
+          </div>
+        ) : hasLiveMessageChunks ? (
+          <div className="min-w-0 max-w-full space-y-3">
+            {liveMessageRows.map((row, index) => (
+              <div
+                key={`${row.key}:${index}`}
+                className="min-w-0 max-w-full rounded-xl border border-border/40 bg-background/80 px-3 py-2.5 shadow-sm"
+              >
+                <div className="min-w-0 max-w-full prose dark:prose-invert prose-sm max-w-none break-words text-[14px] leading-[1.62] [overflow-wrap:anywhere] prose-p:my-1.5 prose-p:max-w-[74ch] prose-p:text-foreground/90 prose-p:leading-[1.62] prose-li:max-w-[74ch] prose-li:leading-[1.58] prose-pre:my-1.5 prose-pre:max-w-full prose-pre:whitespace-pre-wrap prose-pre:break-words prose-table:my-1.5 prose-th:py-1 prose-td:py-1">
+                  <StreamingMarkdown text={row.content} isStreaming={shouldRevealStream} repoPath={repoPath} />
+                </div>
+              </div>
+            ))}
           </div>
         ) : (
           <div className="min-w-0 max-w-full prose dark:prose-invert prose-sm max-w-none break-words text-[14px] leading-[1.62] [overflow-wrap:anywhere] prose-p:my-1.5 prose-p:max-w-[74ch] prose-p:text-foreground/90 prose-p:leading-[1.62] prose-li:max-w-[74ch] prose-li:leading-[1.58] prose-pre:my-1.5 prose-pre:max-w-full prose-pre:whitespace-pre-wrap prose-pre:break-words prose-table:my-1.5 prose-th:py-1 prose-td:py-1">

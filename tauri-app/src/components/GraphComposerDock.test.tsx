@@ -87,8 +87,8 @@ describe('GraphComposerDock', () => {
     const { join } = await import('node:path');
     const composerSource = readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
 
-    expect(composerSource).toContain("import TextareaAutosize from 'react-textarea-autosize';");
-    expect(composerSource).toContain('<TextareaAutosize');
+    expect(composerSource).toContain("import { TemplateMentionTextarea } from '../components/composer/TemplateMentionTextarea';");
+    expect(composerSource).toContain('<TemplateMentionTextarea');
     expect(composerSource).toContain('minRows={2}');
     expect(composerSource).toContain('maxRows={10}');
     expect(composerSource).toContain('overflow-y-auto');

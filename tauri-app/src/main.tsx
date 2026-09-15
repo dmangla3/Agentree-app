@@ -12,6 +12,7 @@ import { applyStoredAppFontSizePreference } from './lib/appFontSizePreference';
 import { devLogLazy } from './lib/appLogger';
 import { getKindeRedirectUri, initKindeDeepLinkHandler, restoreDesktopCloudSession, shouldUseDesktopBrowserAuth } from './lib/kindeDesktopAuth';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from './lib/perfRecorder';
+import { registerAgentRunEffectsQueryClient } from './agent-runs/agentRunEffects';
 
 const ReactQueryDevtools = lazy(() =>
   import('@tanstack/react-query-devtools').then((module) => ({
@@ -42,6 +43,7 @@ const queryClient = new QueryClient({
     },
   },
 });
+registerAgentRunEffectsQueryClient(queryClient);
 if (import.meta.env.DEV) {
   (window as any).__AGENTREE_QUERY_CLIENT__ = queryClient;
 }

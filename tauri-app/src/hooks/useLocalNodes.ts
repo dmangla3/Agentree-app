@@ -98,6 +98,16 @@ export const parseLocalNode = (row: LocalNodeRecord): LocalNodeMessage | null =>
   }
 };
 
+export const isRetryableLocalOnlySync = (row: {
+  syncStatus?: string | null;
+  retryAttempt?: number | null;
+  nextRetryAt?: number | null;
+  lastUploadError?: string | null;
+}): boolean => {
+  if (row.syncStatus !== 'local_only') return false;
+  return Boolean(row.nextRetryAt || row.retryAttempt || row.lastUploadError);
+};
+
 export const useLocalNodes = (
   workspaceId: string | null | undefined,
   options: { enabled?: boolean } = {},
@@ -128,7 +138,7 @@ export const useLocalNodes = (
     refetchInterval: (query) => {
       if (!agentClient.hasRuntime()) return false;
       const data = query.state.data;
-      const localOnlyRows = data?.filter((row) => row.syncStatus === 'local_only') ?? [];
+      const localOnlyRows = data?.filter(isRetryableLocalOnlySync) ?? [];
       if (localOnlyRows.length === 0) return false;
       const nowSeconds = Math.floor(Date.now() / 1000);
       const nextRetryAt = Math.min(...localOnlyRows.map((row) => row.nextRetryAt ?? nowSeconds));
@@ -142,11 +152,10 @@ export const useLocalNodes = (
 
   useEffect(() => {
     if (!workspaceId || !agentClient.hasRuntime()) return;
-    const hasRetryableLocalOnly = (localNodes ?? []).some((row) => {
-      if (row.syncStatus !== 'local_only') return false;
-      if (!row.nextRetryAt) return true;
-      return row.nextRetryAt <= Math.floor(Date.now() / 1000);
-    });
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const hasRetryableLocalOnly = (localNodes ?? []).some((row) => (
+      isRetryableLocalOnlySync(row) && (row.nextRetryAt ?? nowSeconds) <= nowSeconds
+    ));
     if (!hasRetryableLocalOnly) return;
     queueLocalSyncFlush({ reason: 'local-node-retryable' });
   }, [localNodes, workspaceId]);

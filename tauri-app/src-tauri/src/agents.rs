@@ -1,6 +1,6 @@
-use crate::skills;
 #[cfg(unix)]
 use libc;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::HashMap;
@@ -18,6 +18,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 const AGENT_RUN_WATCHDOG_IDLE_TIMEOUT_MS: i64 = 10 * 60 * 1000;
 const AGENT_RUN_WATCHDOG_POLL_INTERVAL_MS: u64 = 30 * 1000;
+const AGENT_RUN_ACTIVITY_PERSIST_INTERVAL_MS: i64 = 60 * 1000;
+
+static AGENT_RUN_ACTIVITY_PERSISTED_AT: Lazy<Mutex<HashMap<String, i64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -86,6 +90,7 @@ enum FinalizeRunSnapshotOutcome {
     QueuedForRetry {
         finalize_ack: FinalizeAckPayload,
         upload_error: String,
+        finalization_durable: bool,
     },
 }
 
@@ -227,6 +232,79 @@ fn unix_timestamp_millis() -> i64 {
         .unwrap_or(0)
 }
 
+fn unix_millis_to_rfc3339(ms: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn is_terminal_runtime_status(status: &str) -> bool {
+    matches!(
+        status,
+        "completed"
+            | "failed"
+            | "cancelled"
+            | "error"
+            | "failed_setup"
+            | "failed_spawn"
+            | "failed_finalization"
+            | "failed_runtime"
+    )
+}
+
+fn terminal_status_for_runtime_activity<'a>(
+    event_type: &str,
+    status: Option<&'a str>,
+) -> Option<&'a str> {
+    let status = status.filter(|value| is_terminal_runtime_status(value))?;
+    match event_type {
+        "agent:lifecycle" | "finalize_ack" | "provider_stop" | "stop" => Some(status),
+        _ => None,
+    }
+}
+
+fn maybe_persist_agent_run_activity(
+    app_handle: &AppHandle,
+    session_id: &str,
+    event_type: &str,
+    event_timestamp_ms: i64,
+    status: Option<&str>,
+) {
+    let terminal_status = terminal_status_for_runtime_activity(event_type, status);
+    let should_persist = terminal_status.is_some() || event_type == "finalize_ack" || {
+        let mut persisted_at = AGENT_RUN_ACTIVITY_PERSISTED_AT.lock().unwrap();
+        let last = persisted_at.get(session_id).copied().unwrap_or(0);
+        if event_timestamp_ms.saturating_sub(last) < AGENT_RUN_ACTIVITY_PERSIST_INTERVAL_MS {
+            false
+        } else {
+            persisted_at.insert(session_id.to_string(), event_timestamp_ms);
+            true
+        }
+    };
+    if !should_persist {
+        return;
+    }
+    if terminal_status.is_some() {
+        AGENT_RUN_ACTIVITY_PERSISTED_AT
+            .lock()
+            .unwrap()
+            .remove(session_id);
+    }
+
+    let last_event_at = unix_millis_to_rfc3339(event_timestamp_ms);
+    if let Err(err) = app_handle
+        .state::<crate::db::TelemetryDb>()
+        .update_local_node_runtime_activity(session_id, &last_event_at, event_type, terminal_status)
+    {
+        crate::app_log!(
+            "[RCSTRM] activity_persist_failed session_id={} event_type={} err={}",
+            session_id,
+            event_type,
+            err
+        );
+    }
+}
+
 fn string_from_execution_meta(execution_data: &JsonValue, key: &str) -> Option<String> {
     execution_data
         .get("meta")
@@ -350,8 +428,19 @@ fn emit_agent_event(app_handle: &AppHandle, session_id: &str, event: &serde_json
             .and_then(|value| value.as_str())
             .unwrap_or("event")
             .to_string();
-        let status = event.get("status").and_then(|value| value.as_str());
-        let phase = event.get("phase").and_then(|value| value.as_str());
+        let status = event
+            .get("status")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let runtime_status = event
+            .get("provider_status")
+            .and_then(|value| value.as_str())
+            .or(status.as_deref())
+            .map(str::to_string);
+        let phase = event
+            .get("phase")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
         let payload = event.to_string();
         if let Ok(seq) = app_handle
             .state::<crate::db::TelemetryDb>()
@@ -359,8 +448,8 @@ fn emit_agent_event(app_handle: &AppHandle, session_id: &str, event: &serde_json
                 &ledger.run_id,
                 session_id,
                 &event_type,
-                status,
-                phase,
+                status.as_deref(),
+                phase.as_deref(),
                 &payload,
             )
         {
@@ -380,6 +469,17 @@ fn emit_agent_event(app_handle: &AppHandle, session_id: &str, event: &serde_json
                 }
             }
         }
+        let event_timestamp_ms = event
+            .get("timestamp")
+            .and_then(|value| value.as_i64())
+            .unwrap_or_else(unix_timestamp_millis);
+        maybe_persist_agent_run_activity(
+            app_handle,
+            session_id,
+            &event_type,
+            event_timestamp_ms,
+            runtime_status.as_deref(),
+        );
     }
     let payload = serde_json::json!({
         "nodeId": session_id,
@@ -411,16 +511,7 @@ fn emit_finalize_progress(app_handle: &AppHandle, session_id: &str, phase: &str,
 }
 
 fn cleanup_terminal_status_allows_cleanup(status: &str) -> bool {
-    matches!(
-        status,
-        "completed"
-            | "failed"
-            | "cancelled"
-            | "error"
-            | "failed_setup"
-            | "failed_spawn"
-            | "failed_runtime"
-    )
+    is_terminal_runtime_status(status)
 }
 
 fn cleanup_requires_server_final_persisted(status: &str) -> bool {
@@ -628,11 +719,12 @@ fn finalize_run_state_if_ready(
             Ok(FinalizeRunSnapshotOutcome::QueuedForRetry {
                 finalize_ack,
                 upload_error,
+                finalization_durable,
             }) => {
                 let _ = telemetry.mark_agent_run_finalized(
                     session_id,
                     &finalize_ack.status,
-                    false,
+                    finalization_durable,
                     finalize_ack.output_commit_sha.as_deref(),
                 );
                 cleanup_worktree_after_finalize(
@@ -1272,7 +1364,12 @@ fn clean_failure_reason(value: &str) -> Option<String> {
 fn should_persist_failure_reason(status: &str) -> bool {
     matches!(
         status,
-        "failed" | "error" | "failed_setup" | "failed_spawn" | "failed_runtime"
+        "failed"
+            | "error"
+            | "failed_setup"
+            | "failed_spawn"
+            | "failed_finalization"
+            | "failed_runtime"
     )
 }
 
@@ -1733,11 +1830,12 @@ pub fn recover_terminal_agent_runs_from_journal(app_handle: &AppHandle) -> Resul
             Ok(FinalizeRunSnapshotOutcome::QueuedForRetry {
                 finalize_ack,
                 upload_error,
+                finalization_durable,
             }) => {
                 telemetry.mark_agent_run_finalized(
                     &ledger.assistant_node_id,
                     &finalize_ack.status,
-                    false,
+                    finalization_durable,
                     finalize_ack.output_commit_sha.as_deref(),
                 )?;
                 cleanup_worktree_after_finalize(
@@ -1790,6 +1888,273 @@ pub fn recover_terminal_agent_runs_from_journal(app_handle: &AppHandle) -> Resul
     }
 
     Ok(recovered)
+}
+
+const STARTUP_RESUME_PROMPT: &str = "Continue the interrupted run.";
+
+fn string_from_json(value: &JsonValue, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|entry| entry.as_str())
+        .filter(|entry| !entry.trim().is_empty())
+        .map(|entry| entry.to_string())
+}
+
+fn string_from_event_payload(payload: &JsonValue, key: &str) -> Option<String> {
+    string_from_json(payload, key).or_else(|| {
+        payload
+            .get("meta")
+            .and_then(|meta| string_from_json(meta, key))
+    })
+}
+
+fn latest_provider_thread_id(
+    events: &[crate::db::AgentRunJournalEvent],
+    execution_data: &JsonValue,
+) -> Option<String> {
+    for event in events.iter().rev() {
+        let Ok(payload) = serde_json::from_str::<JsonValue>(&event.payload) else {
+            continue;
+        };
+        if let Some(thread_id) = string_from_event_payload(&payload, "provider_thread_id")
+            .or_else(|| string_from_json(&payload, "session_id"))
+        {
+            return Some(thread_id);
+        }
+    }
+    string_from_execution_meta(execution_data, "provider_thread_id")
+        .or_else(|| string_from_execution_meta(execution_data, "agent_session_id"))
+}
+
+fn latest_provider_arg_value(
+    events: &[crate::db::AgentRunJournalEvent],
+    execution_data: &JsonValue,
+    keys: &[&str],
+) -> Option<String> {
+    for event in events.iter().rev() {
+        let Ok(payload) = serde_json::from_str::<JsonValue>(&event.payload) else {
+            continue;
+        };
+        for key in keys {
+            if let Some(value) = string_from_event_payload(&payload, key) {
+                return Some(value);
+            }
+        }
+    }
+    keys.iter()
+        .find_map(|key| string_from_execution_meta(execution_data, key))
+}
+
+fn startup_resume_args(
+    agent_type: &str,
+    assistant_node_id: &str,
+    provider_thread_id: &str,
+    events: &[crate::db::AgentRunJournalEvent],
+    execution_data: &JsonValue,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(model) = latest_provider_arg_value(
+        events,
+        execution_data,
+        &["provider_model", "llmModel", "model"],
+    ) {
+        args.extend(["--model".to_string(), model]);
+    }
+    if let Some(reasoning_effort) = latest_provider_arg_value(
+        events,
+        execution_data,
+        &["provider_reasoning_effort", "reasoning_effort"],
+    ) {
+        args.push(if agent_type == "claude" {
+            "--effort".to_string()
+        } else {
+            "--reasoning-effort".to_string()
+        });
+        args.push(reasoning_effort);
+    }
+    if let Some(permission_mode) = latest_provider_arg_value(
+        events,
+        execution_data,
+        &["provider_run_mode", "permission_mode"],
+    ) {
+        args.extend(["--permission-mode".to_string(), permission_mode]);
+    }
+    args.extend([
+        "--provider-thread-strategy".to_string(),
+        "resume".to_string(),
+        "--provider-thread-id".to_string(),
+        provider_thread_id.to_string(),
+        "--node-id".to_string(),
+        assistant_node_id.to_string(),
+        STARTUP_RESUME_PROMPT.to_string(),
+    ]);
+    args
+}
+
+pub fn resume_interrupted_agent_runs_on_startup(app_handle: &AppHandle) -> Result<usize, String> {
+    let telemetry = app_handle.state::<crate::db::TelemetryDb>();
+    let candidates = telemetry.list_startup_resume_candidates()?;
+    let mut resumed = 0usize;
+
+    for ledger in candidates {
+        let agent_state = app_handle.state::<AgentState>();
+        let sessions = agent_state.sessions.lock();
+        if sessions
+            .as_ref()
+            .map(|sessions| sessions.contains_key(&ledger.assistant_node_id))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        drop(sessions);
+
+        let Some(agent_type) = ledger.agent_type.as_deref() else {
+            continue;
+        };
+        let Some(repo_path) = ledger.repo_path.as_deref() else {
+            continue;
+        };
+        let Some(worktree_path) = ledger.worktree_path.as_deref() else {
+            continue;
+        };
+        let Some(login_profile_id) = ledger.login_profile_id.clone() else {
+            continue;
+        };
+
+        let mut execution_data = execution_data_from_local_payload(
+            telemetry.get_local_node_payload(&ledger.assistant_node_id)?,
+        );
+        ensure_context_recovery_fields(
+            &mut execution_data,
+            ledger.workspace_id.as_deref(),
+            ledger.user_node_id.as_deref(),
+        );
+        if let Some(object) = execution_data.as_object_mut() {
+            let meta = object
+                .entry("meta".to_string())
+                .or_insert_with(|| JsonValue::Object(JsonMap::new()));
+            if let Some(meta_object) = meta.as_object_mut() {
+                if let Some(branch_name) = ledger.branch_name.as_deref() {
+                    meta_object.insert(
+                        "git_branch_name".to_string(),
+                        JsonValue::String(branch_name.to_string()),
+                    );
+                }
+                meta_object.insert(
+                    "git_worktree_path".to_string(),
+                    JsonValue::String(worktree_path.to_string()),
+                );
+            }
+        }
+
+        let events = telemetry.list_agent_run_events_after(&ledger.run_id, 0)?;
+        let Some(provider_thread_id) = latest_provider_thread_id(&events, &execution_data) else {
+            continue;
+        };
+        let args = startup_resume_args(
+            agent_type,
+            &ledger.assistant_node_id,
+            &provider_thread_id,
+            &events,
+            &execution_data,
+        );
+        let run_context = AgentRunContext {
+            run_id: ledger.run_id.clone(),
+            execution_data,
+            git_branch_name: ledger.branch_name.clone(),
+            repo_path: ledger.repo_path.clone(),
+            parent_commit: ledger.parent_commit.clone(),
+            author_name: None,
+            prompt_fallback: Some(STARTUP_RESUME_PROMPT.to_string()),
+            auth_user_id: None,
+        };
+
+        telemetry.mark_agent_run_startup_resuming(&ledger.assistant_node_id)?;
+        telemetry.append_agent_run_event(
+            &ledger.run_id,
+            &ledger.assistant_node_id,
+            "agent:lifecycle",
+            Some("running"),
+            Some("resuming_provider_thread"),
+            &serde_json::json!({
+                "type": "agent:lifecycle",
+                "status": "running",
+                "phase": "resuming_provider_thread",
+                "run_id": ledger.run_id.clone(),
+                "nodeId": ledger.assistant_node_id.clone(),
+                "provider_thread_id": provider_thread_id.clone(),
+                "resume_prompt": STARTUP_RESUME_PROMPT,
+            })
+            .to_string(),
+        )?;
+
+        crate::app_log!(
+            "[AGENT_RECOVERY] event=startup_provider_resume.start node_id={} run_id={} agent_type={} provider_thread_id={}",
+            ledger.assistant_node_id,
+            ledger.run_id,
+            agent_type,
+            provider_thread_id
+        );
+        let worktree_config = match crate::worktree_config::load_agent_worktree_config(repo_path) {
+            Ok(config) => config,
+            Err(err) => {
+                let _ = telemetry.update_agent_run_phase(
+                    &ledger.assistant_node_id,
+                    "needs_user_action",
+                    "needs_user_action",
+                    Some(&err),
+                );
+                let _ = telemetry.mark_agent_run_needs_user_action(
+                    &ledger.assistant_node_id,
+                    "App restarted before this run reached a terminal state, and automatic provider-thread resume failed.",
+                );
+                crate::app_log!(
+                    "[AGENT_RECOVERY] event=startup_provider_resume.config_failed node_id={} run_id={} err={}",
+                    ledger.assistant_node_id,
+                    ledger.run_id,
+                    err
+                );
+                continue;
+            }
+        };
+        match spawn_agent_internal(
+            app_handle.clone(),
+            &agent_state,
+            agent_type.to_string(),
+            worktree_path.to_string(),
+            args,
+            ledger.assistant_node_id.clone(),
+            String::new(),
+            None,
+            Some(login_profile_id),
+            Some(run_context),
+            worktree_config,
+        ) {
+            Ok(_) => {
+                resumed += 1;
+            }
+            Err(err) => {
+                let _ = telemetry.update_agent_run_phase(
+                    &ledger.assistant_node_id,
+                    "needs_user_action",
+                    "needs_user_action",
+                    Some(&err),
+                );
+                let _ = telemetry.mark_agent_run_needs_user_action(
+                    &ledger.assistant_node_id,
+                    "App restarted before this run reached a terminal state, and automatic provider-thread resume failed.",
+                );
+                crate::app_log!(
+                    "[AGENT_RECOVERY] event=startup_provider_resume.failed node_id={} run_id={} err={}",
+                    ledger.assistant_node_id,
+                    ledger.run_id,
+                    err
+                );
+            }
+        }
+    }
+
+    Ok(resumed)
 }
 
 fn post_json_with_retry(
@@ -2196,6 +2561,17 @@ fn commit_message_for_snapshot(snapshot: &AgentRunSnapshot) -> String {
     }
 }
 
+fn should_create_worktree_commit_for_snapshot(snapshot: &AgentRunSnapshot) -> bool {
+    snapshot.status == "completed" || snapshot.status == "cancelled"
+}
+
+fn worktree_commit_message_for_snapshot(snapshot: &AgentRunSnapshot) -> String {
+    if snapshot.status == "cancelled" {
+        return format!("Cancelled run snapshot: {}", snapshot.node_id);
+    }
+    commit_message_for_snapshot(snapshot)
+}
+
 fn is_merge_using_ai_execution_data(execution_data: &JsonValue) -> bool {
     execution_data
         .get("meta")
@@ -2403,7 +2779,7 @@ fn finalize_run_snapshot(
         snapshot.git_branch_name
     );
 
-    if snapshot.status == "completed" {
+    if should_create_worktree_commit_for_snapshot(snapshot) {
         if let (Some(repo_path), Some(parent_commit)) =
             (snapshot.repo_path.clone(), snapshot.parent_commit.clone())
         {
@@ -2438,7 +2814,7 @@ fn finalize_run_snapshot(
                     "commit_message",
                     "Preparing AI merge commit...",
                 );
-                let commit_message = commit_message_for_snapshot(snapshot);
+                let commit_message = worktree_commit_message_for_snapshot(snapshot);
                 let source_commits =
                     merge_source_commits_from_execution_data(&snapshot.execution_data);
                 let target_branch =
@@ -2499,7 +2875,7 @@ fn finalize_run_snapshot(
                         "commit_message",
                         "Preparing commit message...",
                     );
-                    let commit_message = commit_message_for_snapshot(snapshot);
+                    let commit_message = worktree_commit_message_for_snapshot(snapshot);
                     emit_finalize_progress(
                         app_handle,
                         &snapshot.node_id,
@@ -2602,9 +2978,17 @@ fn finalize_run_snapshot(
             commit_created,
         };
         store_finalize_ack(&telemetry, &snapshot.node_id, &finalize_ack);
+        let workspace_id = workspace_id_from_execution_data(&snapshot.execution_data);
+        let finalization_is_durable =
+            !telemetry.workspace_cloud_backup_enabled(workspace_id.as_deref())?;
         return Ok(FinalizeRunSnapshotOutcome::QueuedForRetry {
             finalize_ack,
-            upload_error: "insight records queued for background sync".to_string(),
+            upload_error: if finalization_is_durable {
+                "local-only insight finalization".to_string()
+            } else {
+                "insight records queued for background sync".to_string()
+            },
+            finalization_durable: finalization_is_durable,
         });
     }
     let _ = app_handle
@@ -2635,7 +3019,7 @@ fn finalize_run_snapshot(
         "finalize": payload,
     });
     let payload_json = serde_json::to_string(&sync_payload).unwrap_or_else(|_| "{}".to_string());
-    telemetry
+    let sync_event = telemetry
         .enqueue_local_sync_event_for_user(
             Some(workspace_id.as_str()),
             snapshot.auth_user_id.as_deref(),
@@ -2648,6 +3032,7 @@ fn finalize_run_snapshot(
         .map_err(|queue_err| {
             format!("failed to enqueue local terminal sync retry: {}", queue_err)
         })?;
+    let finalization_is_durable = sync_event.status == "local_only";
     let finalize_ack = FinalizeAckPayload {
         run_id: snapshot.run_id.clone(),
         status: snapshot.status.clone(),
@@ -2661,7 +3046,12 @@ fn finalize_run_snapshot(
 
     Ok(FinalizeRunSnapshotOutcome::QueuedForRetry {
         finalize_ack,
-        upload_error: "queued for background sync".to_string(),
+        upload_error: if finalization_is_durable {
+            "local-only finalization".to_string()
+        } else {
+            "queued for background sync".to_string()
+        },
+        finalization_durable: finalization_is_durable,
     })
 }
 
@@ -2685,7 +3075,6 @@ fn spawn_agent_internal(
         cwd,
         run_context.is_some()
     );
-    let skill_store = skills::ensure_runtime_skills(&agent_type, Path::new(&cwd))?;
     let mut args = args;
     let mut program_override: Option<String> = None;
     if agent_type.as_str() == "codex" {
@@ -2770,13 +3159,6 @@ fn spawn_agent_internal(
         .env("AGENTREE_MCP_URL", &mcp_url)
         .env("MCP_SERVER_URL", &mcp_url)
         .env("AGENTREE_TRACE_ID", trace_id.clone().unwrap_or_default())
-        .env(
-            "AGENTREE_SKILLS_DIR",
-            skill_store
-                .as_ref()
-                .map(|path| path.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -3621,9 +4003,11 @@ mod tests {
         cleanup_requires_server_final_persisted, cleanup_terminal_status_allows_cleanup,
         commit_body_from_execution_data, commit_message_for_snapshot,
         commit_subject_from_execution_data, decide_agent_run_watchdog_timeout,
-        ensure_context_recovery_fields, local_node_payload_for_snapshot,
-        run_ledger_user_node_id_from_context, snapshot_from_replayed_journal,
-        update_run_state_from_event, AgentRunContext, AgentRunSnapshot, AgentRunState,
+        ensure_context_recovery_fields, is_terminal_runtime_status, latest_provider_thread_id,
+        local_node_payload_for_snapshot, run_ledger_user_node_id_from_context,
+        should_persist_failure_reason, snapshot_from_replayed_journal, startup_resume_args,
+        terminal_status_for_runtime_activity, update_run_state_from_event, AgentRunContext,
+        AgentRunSnapshot, AgentRunState, STARTUP_RESUME_PROMPT,
     };
     use serde_json::json;
 
@@ -3667,6 +4051,9 @@ mod tests {
         ));
         assert!(cleanup_terminal_status_allows_cleanup("completed"));
         assert!(cleanup_terminal_status_allows_cleanup("failed_setup"));
+        assert!(cleanup_terminal_status_allows_cleanup(
+            "failed_finalization"
+        ));
         assert!(cleanup_terminal_status_allows_cleanup("failed_runtime"));
     }
 
@@ -3676,6 +4063,9 @@ mod tests {
         assert!(!cleanup_requires_server_final_persisted("failed"));
         assert!(!cleanup_requires_server_final_persisted("cancelled"));
         assert!(!cleanup_requires_server_final_persisted("failed_spawn"));
+        assert!(!cleanup_requires_server_final_persisted(
+            "failed_finalization"
+        ));
     }
 
     #[test]
@@ -3797,6 +4187,124 @@ mod tests {
             )
             .timed_out
         );
+    }
+
+    #[test]
+    fn runtime_activity_terminal_statuses_match_finalization_failures() {
+        assert!(is_terminal_runtime_status("failed_finalization"));
+        assert!(!is_terminal_runtime_status("finalizing"));
+    }
+
+    #[test]
+    fn runtime_activity_terminal_status_requires_run_terminal_event() {
+        assert_eq!(
+            terminal_status_for_runtime_activity("tool_result", Some("completed")),
+            None
+        );
+        assert_eq!(
+            terminal_status_for_runtime_activity("tool_result", Some("failed")),
+            None
+        );
+        assert_eq!(
+            terminal_status_for_runtime_activity("provider_stop", Some("completed")),
+            Some("completed")
+        );
+        assert_eq!(
+            terminal_status_for_runtime_activity("finalize_ack", Some("completed")),
+            Some("completed")
+        );
+        assert_eq!(
+            terminal_status_for_runtime_activity("agent:lifecycle", Some("failed_runtime")),
+            Some("failed_runtime")
+        );
+        assert_eq!(
+            terminal_status_for_runtime_activity("finalize_progress", Some("finalizing")),
+            None
+        );
+    }
+
+    #[test]
+    fn startup_resume_uses_latest_provider_thread_and_fixed_prompt() {
+        let events = vec![
+            crate::db::AgentRunJournalEvent {
+                run_id: "run-1".to_string(),
+                assistant_node_id: "assistant-1".to_string(),
+                seq: 1,
+                event_type: "provider_meta".to_string(),
+                status: None,
+                phase: None,
+                payload: json!({
+                    "type": "provider_meta",
+                    "meta": {
+                        "provider_thread_id": "thread-old",
+                        "provider_model": "gpt-old"
+                    }
+                })
+                .to_string(),
+                timestamp: 1,
+            },
+            crate::db::AgentRunJournalEvent {
+                run_id: "run-1".to_string(),
+                assistant_node_id: "assistant-1".to_string(),
+                seq: 2,
+                event_type: "session".to_string(),
+                status: None,
+                phase: None,
+                payload: json!({"type": "session", "session_id": "thread-current"}).to_string(),
+                timestamp: 2,
+            },
+            crate::db::AgentRunJournalEvent {
+                run_id: "run-1".to_string(),
+                assistant_node_id: "assistant-1".to_string(),
+                seq: 3,
+                event_type: "provider_meta".to_string(),
+                status: None,
+                phase: None,
+                payload: json!({
+                    "type": "provider_meta",
+                    "meta": {
+                        "provider_model": "gpt-5.5",
+                        "provider_reasoning_effort": "high",
+                        "provider_run_mode": "safe-write"
+                    }
+                })
+                .to_string(),
+                timestamp: 3,
+            },
+        ];
+        let execution_data = json!({"meta": {}});
+
+        assert_eq!(
+            latest_provider_thread_id(&events, &execution_data).as_deref(),
+            Some("thread-current")
+        );
+        let args = startup_resume_args(
+            "codex",
+            "assistant-1",
+            "thread-current",
+            &events,
+            &execution_data,
+        );
+
+        assert_eq!(args.last().map(String::as_str), Some(STARTUP_RESUME_PROMPT));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--model" && pair[1] == "gpt-5.5"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--reasoning-effort" && pair[1] == "high"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--provider-thread-id" && pair[1] == "thread-current"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--node-id" && pair[1] == "assistant-1"));
+    }
+
+    #[test]
+    fn failure_reason_persistence_includes_finalization_failures() {
+        assert!(should_persist_failure_reason("failed_finalization"));
+        assert!(!should_persist_failure_reason("cancelled"));
     }
 
     #[test]

@@ -6,9 +6,9 @@ use axum::{
     Json, Router,
 };
 use once_cell::sync::Lazy;
-use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde_json::Value as JsonValue;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
@@ -71,8 +71,6 @@ pub fn mcp_server_url() -> String {
 #[derive(Clone)]
 struct McpState {
     app_handle: AppHandle,
-    server_base_url: String,
-    http: reqwest::Client,
 }
 
 #[derive(Debug, Deserialize)]
@@ -144,12 +142,7 @@ pub fn start_mcp_server(app_handle: AppHandle) {
         .unwrap_or(requested_port);
     MCP_ACTUAL_PORT.store(actual_port, Ordering::SeqCst);
 
-    let server_base_url = crate::config::server_base_url();
-    let state = Arc::new(McpState {
-        app_handle,
-        server_base_url,
-        http: reqwest::Client::new(),
-    });
+    let state = Arc::new(McpState { app_handle });
 
     let app = Router::new()
         .route("/mcp", post(handle_rpc).get(handle_sse))
@@ -671,7 +664,7 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
 async fn handle_tools_call(
     id: serde_json::Value,
     params: Option<serde_json::Value>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     state: Arc<McpState>,
 ) -> JsonRpcResponse {
     let params = params.unwrap_or_else(|| serde_json::json!({}));
@@ -729,7 +722,7 @@ async fn handle_tools_call(
             if let Err(resp) = workspace_id {
                 return resp.with_id(id);
             }
-            handle_overview(id, headers, state, workspace_id.unwrap()).await
+            handle_overview(id, state, workspace_id.unwrap()).await
         }
         Some("graph_locate") => {
             let node_id = arguments
@@ -752,7 +745,7 @@ async fn handle_tools_call(
                 .and_then(|value| value.as_str())
                 .map(|value| value.to_string())
                 .or_else(|| MCP_WORKSPACE_ID.lock().ok().and_then(|guard| guard.clone()));
-            handle_graph_locate(id, headers, state, node_id.unwrap(), workspace_id).await
+            handle_graph_locate(id, state, node_id.unwrap(), workspace_id).await
         }
         Some("graph_query") => {
             let workspace_id = get_workspace_id(arguments);
@@ -768,16 +761,7 @@ async fn handle_tools_call(
                 .and_then(|args| args.get("offset"))
                 .and_then(|value| value.as_u64())
                 .map(|value| value as u32);
-            handle_graph_query(
-                id,
-                headers,
-                state,
-                workspace_id.unwrap(),
-                filters,
-                limit,
-                offset,
-            )
-            .await
+            handle_graph_query(id, state, workspace_id.unwrap(), filters, limit, offset).await
         }
         Some("graph_read_node") => {
             let node_id = arguments
@@ -804,7 +788,6 @@ async fn handle_tools_call(
                 .map(|value| value as u32);
             handle_graph_read_node(
                 id,
-                headers,
                 state,
                 node_id.unwrap(),
                 include_tool_calls,
@@ -843,7 +826,6 @@ async fn handle_tools_call(
                 .unwrap_or(false);
             handle_graph_blame(
                 id,
-                headers,
                 state,
                 node_id.unwrap(),
                 file_path.unwrap(),
@@ -883,7 +865,6 @@ async fn handle_tools_call(
                 .unwrap_or(false);
             handle_graph_diff(
                 id,
-                headers,
                 state,
                 from_node_id.unwrap(),
                 to_node_id.unwrap(),
@@ -897,7 +878,7 @@ async fn handle_tools_call(
             if let Err(resp) = workspace_id {
                 return resp.with_id(id);
             }
-            handle_list_thread_sessions(id, headers, state, workspace_id.unwrap()).await
+            handle_list_thread_sessions(id, state, workspace_id.unwrap()).await
         }
         Some("read_thread") => {
             let workspace_id = get_workspace_id(arguments);
@@ -926,7 +907,6 @@ async fn handle_tools_call(
                 .map(|value| value as u32);
             handle_read_thread(
                 id,
-                headers,
                 state,
                 workspace_id.unwrap(),
                 thread_id.unwrap(),
@@ -956,7 +936,6 @@ async fn handle_tools_call(
                 .and_then(|value| value.as_bool());
             handle_query_commits(
                 id,
-                headers,
                 state,
                 workspace_id.unwrap(),
                 filters,
@@ -1348,8 +1327,8 @@ fn handle_complete_orchestration(
     }
 }
 
-const ORCHESTRATION_MCP_DEFAULT_WAIT_TIMEOUT_MS: u64 = 100_000;
-const ORCHESTRATION_MCP_MAX_WAIT_TIMEOUT_MS: u64 = 100_000;
+const ORCHESTRATION_MCP_DEFAULT_WAIT_TIMEOUT_MS: u64 = 5 * 60 * 1000;
+const ORCHESTRATION_MCP_MAX_WAIT_TIMEOUT_MS: u64 = 5 * 60 * 1000;
 const ORCHESTRATION_MCP_MIN_WAIT_TIMEOUT_MS: u64 = 1_000;
 const ORCHESTRATION_MCP_WAIT_BACKEND_GRACE_MS: u64 = 5_000;
 const ORCHESTRATION_MCP_NON_WAIT_TIMEOUT_MS: u64 = 110_000;
@@ -1605,22 +1584,17 @@ mod tests {
     }
 
     #[test]
-    fn set_mcp_current_context_seeds_fallback_workspace_and_auth() {
+    fn set_mcp_current_context_seeds_fallback_workspace() {
         set_mcp_current_context("token-1", Some("workspace-1")).expect("context should set");
 
         assert_eq!(
             get_workspace_id(None).expect("workspace should come from fallback"),
             "workspace-1"
         );
-        assert_eq!(
-            get_auth_header(HeaderMap::new()).expect("auth should come from fallback"),
-            "Bearer token-1"
-        );
 
         set_mcp_current_context("", Some("")).expect("blank context should clear");
 
         assert!(get_workspace_id(None).is_err());
-        assert!(get_auth_header(HeaderMap::new()).is_err());
     }
 }
 
@@ -1651,509 +1625,697 @@ fn get_workspace_id(arguments: Option<&serde_json::Value>) -> Result<String, Pen
     })
 }
 
-fn get_auth_header(headers: HeaderMap) -> Result<String, PendingError> {
-    // Check if auth header was provided in the request
-    if let Some(header_value) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
-        let truncated = if header_value.len() > 20 {
-            format!("{}...", &header_value[..20])
-        } else {
-            header_value.to_string()
-        };
-        crate::app_log!("[MCP] Auth from request header: {}", truncated);
-        return Ok(header_value.to_string());
+fn text_result(id: serde_json::Value, output: String) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        id,
+        result: Some(serde_json::json!({
+            "content": [{ "type": "text", "text": output }]
+        })),
+        error: None,
     }
+}
 
-    // Fall back to stored MCP_AUTH_TOKEN
-    if let Ok(guard) = MCP_AUTH_TOKEN.lock() {
-        if let Some(token) = guard.clone() {
-            let truncated = if token.len() > 20 {
-                format!("{}...", &token[..20])
-            } else {
-                token.clone()
-            };
-            crate::app_log!("[MCP] Auth from MCP_AUTH_TOKEN: {}", truncated);
-            return Ok(format!("Bearer {}", token));
-        } else {
-            crate::app_log!("[MCP] MCP_AUTH_TOKEN is None!");
-        }
-    } else {
-        crate::app_log!("[MCP] Failed to lock MCP_AUTH_TOKEN!");
+fn local_data_error(id: serde_json::Value, message: impl Into<String>) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        id,
+        result: None,
+        error: Some(JsonRpcError {
+            code: -32006,
+            message: message.into(),
+        }),
     }
+}
 
-    crate::app_log!("[MCP] No auth token available!");
-    Err(PendingError {
-        code: -32001,
-        message: "Missing Authorization header".to_string(),
+#[derive(Debug, Clone)]
+struct LocalGraphNode {
+    row: crate::db::LocalNodeRow,
+    payload: JsonValue,
+}
+
+fn parse_node_payload(node_id: &str, payload: &str) -> Result<JsonValue, JsonRpcError> {
+    serde_json::from_str::<JsonValue>(payload).map_err(|err| JsonRpcError {
+        code: -32004,
+        message: format!("Invalid local payload for node {}: {}", node_id, err),
     })
+}
+
+fn node_string<'a>(payload: &'a JsonValue, keys: &[&str]) -> Option<&'a str> {
+    for key in keys {
+        if let Some(value) = payload.get(*key).and_then(|value| value.as_str()) {
+            if !value.trim().is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn execution_string<'a>(payload: &'a JsonValue, keys: &[&str]) -> Option<&'a str> {
+    let execution_data = payload.get("execution_data")?;
+    for key in keys {
+        if let Some(value) = execution_data.get(*key).and_then(|value| value.as_str()) {
+            if !value.trim().is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn node_parent_id(payload: &JsonValue) -> Option<&str> {
+    node_string(payload, &["parentId", "parent_id"])
+}
+
+fn node_workspace_id(payload: &JsonValue) -> Option<&str> {
+    node_string(payload, &["workspaceId", "workspace_id"])
+}
+
+fn node_thread_id(payload: &JsonValue) -> Option<&str> {
+    node_string(payload, &["threadId", "thread_id"])
+}
+
+fn node_content(payload: &JsonValue) -> &str {
+    payload
+        .get("content")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+}
+
+fn truncate_chars(value: &str, max_chars: Option<u32>) -> String {
+    let Some(max_chars) = max_chars else {
+        return value.to_string();
+    };
+    let max_chars = max_chars as usize;
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push_str("\n...[truncated]");
+    truncated
+}
+
+fn sanitize_node_payload(mut payload: JsonValue, include_tool_calls: bool) -> JsonValue {
+    if include_tool_calls {
+        return payload;
+    }
+    if let Some(execution_data) = payload
+        .get_mut("execution_data")
+        .and_then(|value| value.as_object_mut())
+    {
+        if let Some(timeline) = execution_data
+            .get_mut("timeline")
+            .and_then(|value| value.as_array_mut())
+        {
+            timeline.retain(|event| {
+                event
+                    .get("type")
+                    .and_then(|value| value.as_str())
+                    .map(|event_type| !event_type.to_ascii_lowercase().contains("tool"))
+                    .unwrap_or(true)
+            });
+        }
+        execution_data.remove("tool_calls");
+        execution_data.remove("toolCalls");
+    }
+    if let Some(object) = payload.as_object_mut() {
+        object.remove("tool_calls");
+        object.remove("toolCalls");
+    }
+    payload
+}
+
+fn node_summary(node: &LocalGraphNode) -> String {
+    let payload = &node.payload;
+    let role = node_string(payload, &["role"]).unwrap_or("unknown");
+    let status = node_string(payload, &["status"]).unwrap_or("unknown");
+    let parent = node_parent_id(payload).unwrap_or("-");
+    let thread = node_thread_id(payload).unwrap_or("-");
+    let commit = node_string(
+        payload,
+        &["output_commit_sha", "git_commit_sha", "gitCommitSha"],
+    )
+    .unwrap_or("-");
+    let content = node_content(payload).replace('\n', " ");
+    let preview = truncate_chars(content.trim(), Some(140));
+    format!(
+        "- {} role={} status={} parent={} thread={} commit={} content={}",
+        node.row.node_id, role, status, parent, thread, commit, preview
+    )
+}
+
+fn telemetry_db(state: &Arc<McpState>) -> tauri::State<'_, crate::db::TelemetryDb> {
+    state.app_handle.state::<crate::db::TelemetryDb>()
+}
+
+fn local_nodes_for_workspace(
+    state: &Arc<McpState>,
+    workspace_id: &str,
+) -> Result<Vec<LocalGraphNode>, JsonRpcError> {
+    telemetry_db(state)
+        .list_local_nodes_for_workspace(workspace_id)
+        .map_err(|err| JsonRpcError {
+            code: -32006,
+            message: format!("Failed to read local graph nodes: {}", err),
+        })?
+        .into_iter()
+        .map(|row| {
+            let payload = parse_node_payload(&row.node_id, &row.payload)?;
+            Ok(LocalGraphNode { row, payload })
+        })
+        .collect()
+}
+
+fn local_node_payload(state: &Arc<McpState>, node_id: &str) -> Result<JsonValue, JsonRpcError> {
+    let raw_payload = telemetry_db(state)
+        .get_local_node_payload(node_id)
+        .map_err(|err| JsonRpcError {
+            code: -32006,
+            message: format!("Failed to read local node {}: {}", node_id, err),
+        })?
+        .ok_or_else(|| JsonRpcError {
+            code: -32006,
+            message: format!(
+                "Node {} was not found in the local Agentree database.",
+                node_id
+            ),
+        })?;
+    let mut payload = parse_node_payload(node_id, &raw_payload)?;
+    if let Some(workspace_id) = node_workspace_id(&payload).map(str::to_string) {
+        if let Ok(nodes) = local_nodes_for_workspace(state, &workspace_id) {
+            if let Some(node) = nodes.into_iter().find(|node| node.row.node_id == node_id) {
+                payload = node.payload;
+            }
+        }
+    }
+    Ok(payload)
+}
+
+fn local_node_metadata(state: &Arc<McpState>, node_id: &str) -> Result<JsonValue, JsonRpcError> {
+    let mut payload = local_node_payload(state, node_id)?;
+    let repo_path = resolve_repo_path_for_node(state, &payload);
+    if let Some(repo_path) = repo_path {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("git_repo_path".to_string(), JsonValue::String(repo_path));
+        }
+    }
+    Ok(payload)
+}
+
+fn resolve_repo_path_for_node(state: &Arc<McpState>, payload: &JsonValue) -> Option<String> {
+    node_string(payload, &["git_repo_path", "repo_path", "local_repo_path"])
+        .or_else(|| execution_string(payload, &["git_repo_path", "repo_path", "worktree_path"]))
+        .map(str::to_string)
+        .or_else(|| {
+            let workspace_id = node_workspace_id(payload)?;
+            telemetry_db(state)
+                .get_local_workspace_by_id(workspace_id)
+                .ok()
+                .flatten()
+                .and_then(|workspace| {
+                    workspace
+                        .local_repo_path
+                        .or(workspace.folder_path)
+                        .or(workspace.repo_path)
+                })
+        })
+}
+
+fn node_commit(payload: &JsonValue) -> Option<String> {
+    node_string(
+        payload,
+        &[
+            "output_commit_sha",
+            "git_commit_sha",
+            "gitCommitSha",
+            "commit_sha",
+            "base_commit_sha",
+            "baseCommitSha",
+        ],
+    )
+    .map(str::to_string)
+}
+
+fn filter_value_matches(actual: &JsonValue, expected: &JsonValue) -> bool {
+    match (actual, expected) {
+        (_, JsonValue::Null) => true,
+        (JsonValue::String(actual), JsonValue::String(expected)) => actual == expected,
+        (JsonValue::Bool(actual), JsonValue::Bool(expected)) => actual == expected,
+        (JsonValue::Number(actual), JsonValue::Number(expected)) => actual == expected,
+        (JsonValue::Array(actual), _) => actual
+            .iter()
+            .any(|value| filter_value_matches(value, expected)),
+        _ => actual == expected,
+    }
+}
+
+fn payload_filter_value<'a>(payload: &'a JsonValue, key: &str) -> Option<&'a JsonValue> {
+    match key {
+        "node_id" | "nodeId" => payload.get("id").or_else(|| payload.get("node_id")),
+        "parent_id" | "parentId" => payload.get("parentId").or_else(|| payload.get("parent_id")),
+        "workspace_id" | "workspaceId" => payload
+            .get("workspaceId")
+            .or_else(|| payload.get("workspace_id")),
+        "thread_id" | "threadId" => payload.get("threadId").or_else(|| payload.get("thread_id")),
+        "controlled_by_node_id" | "controlledByNodeId" => payload
+            .get("controlled_by_node_id")
+            .or_else(|| payload.get("controlledByNodeId")),
+        _ => payload
+            .get(key)
+            .or_else(|| {
+                payload
+                    .get("execution_data")
+                    .and_then(|value| value.get(key))
+            })
+            .or_else(|| {
+                payload
+                    .get("execution_data")
+                    .and_then(|value| value.get("meta"))
+                    .and_then(|value| value.get(key))
+            }),
+    }
+}
+
+fn node_matches_filters(node: &LocalGraphNode, filters: Option<&JsonValue>) -> bool {
+    let Some(filters) = filters.and_then(|value| value.as_object()) else {
+        return true;
+    };
+    filters.iter().all(|(key, expected)| {
+        payload_filter_value(&node.payload, key)
+            .map(|actual| filter_value_matches(actual, expected))
+            .unwrap_or(false)
+    })
+}
+
+fn commit_filter_value<'a>(commit: &'a JsonValue, key: &str) -> Option<&'a JsonValue> {
+    match key {
+        "source_kind" | "sourceKind" => commit.get("sourceKind"),
+        "produced_by_node_id" | "producedByNodeId" => commit.get("producedByNodeId"),
+        "first_parent_sha" | "firstParentSha" => commit.get("firstParentSha"),
+        "files_changed_count" | "filesChangedCount" => commit.get("filesChangedCount"),
+        "total_additions" | "totalAdditions" => commit.get("totalAdditions"),
+        "total_deletions" | "totalDeletions" => commit.get("totalDeletions"),
+        _ => commit.get(key),
+    }
+}
+
+fn commit_matches_filters(commit: &JsonValue, filters: Option<&JsonValue>) -> bool {
+    let Some(filters) = filters.and_then(|value| value.as_object()) else {
+        return true;
+    };
+    filters.iter().all(|(key, expected)| {
+        commit_filter_value(commit, key)
+            .map(|actual| filter_value_matches(actual, expected))
+            .unwrap_or(false)
+    })
+}
+
+fn paged<T: Clone>(items: &[T], limit: Option<u32>, offset: Option<u32>) -> Vec<T> {
+    let offset = offset.unwrap_or(0) as usize;
+    let limit = limit.unwrap_or(50) as usize;
+    items.iter().skip(offset).take(limit).cloned().collect()
 }
 
 async fn handle_overview(
     id: serde_json::Value,
-    headers: HeaderMap,
     state: Arc<McpState>,
     workspace_id: String,
 ) -> JsonRpcResponse {
-    let auth_header = match get_auth_header(headers) {
-        Ok(value) => value,
-        Err(err) => return err.with_id(id),
-    };
-
-    let mut url = match Url::parse(&format!("{}/api/graph/overview", state.server_base_url)) {
-        Ok(url) => url,
+    let nodes = match local_nodes_for_workspace(&state, &workspace_id) {
+        Ok(nodes) => nodes,
         Err(err) => {
             return JsonRpcResponse {
                 jsonrpc: "2.0",
                 id,
                 result: None,
-                error: Some(JsonRpcError {
-                    code: -32002,
-                    message: format!("Invalid server URL: {}", err),
-                }),
+                error: Some(err),
             }
         }
     };
-    url.query_pairs_mut()
-        .append_pair("workspace_id", workspace_id.as_str());
 
-    let request = state.http.get(url).header("Authorization", auth_header);
-    match request.send().await {
-        Ok(response) => {
-            let status = response.status();
-            match response.json::<serde_json::Value>().await {
-                Ok(body) => {
-                    if !status.is_success() {
-                        let message = body
-                            .get("error")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or("Graph overview failed")
-                            .to_string();
-                        return JsonRpcResponse {
-                            jsonrpc: "2.0",
-                            id,
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: -32003,
-                                message,
-                            }),
-                        };
-                    }
-                    let output = body
-                        .get("output")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let node_mapping = body.get("nodeMapping").cloned();
-                    JsonRpcResponse {
-                        jsonrpc: "2.0",
-                        id,
-                        result: Some(serde_json::json!({
-                            "content": [
-                                { "type": "text", "text": output }
-                            ],
-                            "metadata": { "nodeMapping": node_mapping }
-                        })),
-                        error: None,
-                    }
-                }
-                Err(err) => JsonRpcResponse {
-                    jsonrpc: "2.0",
-                    id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32004,
-                        message: format!("Invalid response body: {}", err),
-                    }),
-                },
-            }
+    let mut role_counts: HashMap<String, usize> = HashMap::new();
+    let mut status_counts: HashMap<String, usize> = HashMap::new();
+    let mut threads: HashSet<String> = HashSet::new();
+    for node in &nodes {
+        let role = node_string(&node.payload, &["role"]).unwrap_or("unknown");
+        *role_counts.entry(role.to_string()).or_default() += 1;
+        let status = node_string(&node.payload, &["status"]).unwrap_or("unknown");
+        *status_counts.entry(status.to_string()).or_default() += 1;
+        if let Some(thread_id) = node_thread_id(&node.payload) {
+            threads.insert(thread_id.to_string());
         }
-        Err(err) => JsonRpcResponse {
-            jsonrpc: "2.0",
-            id,
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32005,
-                message: format!("Request failed: {}", err),
-            }),
-        },
     }
+
+    let node_ids: HashSet<&str> = nodes.iter().map(|node| node.row.node_id.as_str()).collect();
+    let roots: Vec<&LocalGraphNode> = nodes
+        .iter()
+        .filter(|node| {
+            node_parent_id(&node.payload)
+                .map(|parent_id| !node_ids.contains(parent_id))
+                .unwrap_or(true)
+        })
+        .collect();
+
+    let mut output = String::new();
+    output.push_str("Source: local Agentree database\n");
+    output.push_str(&format!("Workspace: {}\n", workspace_id));
+    output.push_str(&format!("Nodes: {}\n", nodes.len()));
+    output.push_str(&format!("Threads: {}\n", threads.len()));
+    output.push_str(&format!("Roles: {:?}\n", role_counts));
+    output.push_str(&format!("Statuses: {:?}\n", status_counts));
+    output.push_str("\nRoot nodes:\n");
+    for node in roots.iter().take(20) {
+        output.push_str(&format!("{}\n", node_summary(node)));
+    }
+    if roots.len() > 20 {
+        output.push_str("... (truncated)\n");
+    }
+    output.push_str("\nRecent nodes:\n");
+    for node in nodes.iter().rev().take(20).rev() {
+        output.push_str(&format!("{}\n", node_summary(node)));
+    }
+
+    text_result(id, output)
 }
 
 async fn handle_graph_locate(
     id: serde_json::Value,
-    headers: HeaderMap,
     state: Arc<McpState>,
     node_id: String,
     workspace_id: Option<String>,
 ) -> JsonRpcResponse {
-    let auth_header = match get_auth_header(headers) {
-        Ok(value) => value,
-        Err(err) => return err.with_id(id),
-    };
-    let mut url = match Url::parse(&format!("{}/api/graph/locate", state.server_base_url)) {
-        Ok(url) => url,
+    let payload = match local_node_payload(&state, &node_id) {
+        Ok(payload) => payload,
         Err(err) => {
             return JsonRpcResponse {
                 jsonrpc: "2.0",
                 id,
                 result: None,
-                error: Some(JsonRpcError {
-                    code: -32002,
-                    message: format!("Invalid server URL: {}", err),
-                }),
+                error: Some(err),
             }
         }
     };
-    url.query_pairs_mut()
-        .append_pair("node_id", node_id.as_str());
-    if let Some(workspace_id) = workspace_id {
-        url.query_pairs_mut()
-            .append_pair("workspace_id", workspace_id.as_str());
-    }
-
-    let request = state.http.get(url).header("Authorization", auth_header);
-    match request.send().await {
-        Ok(response) => {
-            let status = response.status();
-            match response.json::<serde_json::Value>().await {
-                Ok(body) => {
-                    if !status.is_success() {
-                        let message = body
-                            .get("error")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or("Graph locate failed")
-                            .to_string();
-                        return JsonRpcResponse {
-                            jsonrpc: "2.0",
-                            id,
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: -32003,
-                                message,
-                            }),
-                        };
-                    }
-                    let output = body
-                        .get("output")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    JsonRpcResponse {
-                        jsonrpc: "2.0",
-                        id,
-                        result: Some(
-                            serde_json::json!({ "content": [ { "type": "text", "text": output } ] }),
-                        ),
-                        error: None,
-                    }
-                }
-                Err(err) => JsonRpcResponse {
-                    jsonrpc: "2.0",
-                    id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32004,
-                        message: format!("Invalid response body: {}", err),
-                    }),
-                },
+    let workspace_id = workspace_id
+        .or_else(|| node_workspace_id(&payload).map(str::to_string))
+        .ok_or_else(|| PendingError {
+            code: -32602,
+            message: "Missing workspace_id".to_string(),
+        });
+    let workspace_id = match workspace_id {
+        Ok(value) => value,
+        Err(err) => return err.with_id(id),
+    };
+    let nodes = match local_nodes_for_workspace(&state, &workspace_id) {
+        Ok(nodes) => nodes,
+        Err(err) => {
+            return JsonRpcResponse {
+                jsonrpc: "2.0",
+                id,
+                result: None,
+                error: Some(err),
             }
         }
-        Err(err) => JsonRpcResponse {
-            jsonrpc: "2.0",
+    };
+    let by_id: HashMap<String, LocalGraphNode> = nodes
+        .iter()
+        .cloned()
+        .map(|node| (node.row.node_id.clone(), node))
+        .collect();
+    let Some(current) = by_id.get(&node_id) else {
+        return local_data_error(
             id,
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32005,
-                message: format!("Request failed: {}", err),
-            }),
-        },
+            format!(
+                "Node {} was not found in local workspace {}.",
+                node_id, workspace_id
+            ),
+        );
+    };
+    let parent_id = node_parent_id(&current.payload).map(str::to_string);
+    let mut path = Vec::new();
+    let mut cursor = Some(node_id.as_str());
+    while let Some(cursor_id) = cursor {
+        path.push(cursor_id.to_string());
+        cursor = by_id
+            .get(cursor_id)
+            .and_then(|node| node_parent_id(&node.payload));
     }
+    path.reverse();
+    let children: Vec<&LocalGraphNode> = nodes
+        .iter()
+        .filter(|node| node_parent_id(&node.payload) == Some(node_id.as_str()))
+        .collect();
+    let siblings: Vec<&LocalGraphNode> = nodes
+        .iter()
+        .filter(|node| {
+            node.row.node_id != node_id && node_parent_id(&node.payload) == parent_id.as_deref()
+        })
+        .collect();
+
+    let mut output = String::new();
+    output.push_str("Source: local Agentree database\n");
+    output.push_str(&format!("Node: {}\n", node_id));
+    output.push_str(&format!("Workspace: {}\n", workspace_id));
+    output.push_str(&format!("Depth: {}\n", path.len().saturating_sub(1)));
+    output.push_str(&format!("Path: {}\n", path.join(" -> ")));
+    output.push_str(&format!(
+        "Parent: {}\n",
+        parent_id.as_deref().unwrap_or("-")
+    ));
+    output.push_str(&format!("Children: {}\n", children.len()));
+    output.push_str(&format!("Siblings: {}\n", siblings.len()));
+    output.push_str(&format!("Summary: {}\n", node_summary(current)));
+    output.push_str("\nChildren:\n");
+    for child in children.iter().take(20) {
+        output.push_str(&format!("{}\n", node_summary(child)));
+    }
+    output.push_str("\nSiblings:\n");
+    for sibling in siblings.iter().take(20) {
+        output.push_str(&format!("{}\n", node_summary(sibling)));
+    }
+
+    text_result(id, output)
 }
 
 async fn handle_graph_query(
     id: serde_json::Value,
-    headers: HeaderMap,
     state: Arc<McpState>,
     workspace_id: String,
     filters: Option<serde_json::Value>,
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> JsonRpcResponse {
-    let auth_header = match get_auth_header(headers) {
-        Ok(value) => value,
-        Err(err) => return err.with_id(id),
-    };
-
-    let url = match Url::parse(&format!("{}/api/graph/query", state.server_base_url)) {
-        Ok(url) => url,
+    let nodes = match local_nodes_for_workspace(&state, &workspace_id) {
+        Ok(nodes) => nodes,
         Err(err) => {
             return JsonRpcResponse {
                 jsonrpc: "2.0",
                 id,
                 result: None,
-                error: Some(JsonRpcError {
-                    code: -32002,
-                    message: format!("Invalid server URL: {}", err),
-                }),
-            };
-        }
-    };
-
-    let mut body = serde_json::Map::new();
-    body.insert(
-        "workspace_id".to_string(),
-        serde_json::Value::String(workspace_id),
-    );
-    body.insert(
-        "filters".to_string(),
-        filters.unwrap_or_else(|| serde_json::json!({})),
-    );
-    if let Some(limit) = limit {
-        body.insert("limit".to_string(), serde_json::Value::Number(limit.into()));
-    }
-    if let Some(offset) = offset {
-        body.insert(
-            "offset".to_string(),
-            serde_json::Value::Number(offset.into()),
-        );
-    }
-
-    let request = state
-        .http
-        .post(url)
-        .header("Authorization", auth_header)
-        .json(&body);
-    match request.send().await {
-        Ok(response) => {
-            let status = response.status();
-            match response.json::<serde_json::Value>().await {
-                Ok(body) => {
-                    if !status.is_success() {
-                        let message = body
-                            .get("error")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or("Graph query failed")
-                            .to_string();
-                        return JsonRpcResponse {
-                            jsonrpc: "2.0",
-                            id,
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: -32003,
-                                message,
-                            }),
-                        };
-                    }
-                    let output = body
-                        .get("output")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    JsonRpcResponse {
-                        jsonrpc: "2.0",
-                        id,
-                        result: Some(
-                            serde_json::json!({ "content": [ { "type": "text", "text": output } ] }),
-                        ),
-                        error: None,
-                    }
-                }
-                Err(err) => JsonRpcResponse {
-                    jsonrpc: "2.0",
-                    id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32004,
-                        message: format!("Invalid response body: {}", err),
-                    }),
-                },
+                error: Some(err),
             }
         }
-        Err(err) => JsonRpcResponse {
-            jsonrpc: "2.0",
-            id,
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32005,
-                message: format!("Request failed: {}", err),
-            }),
-        },
+    };
+    let matches: Vec<LocalGraphNode> = nodes
+        .into_iter()
+        .filter(|node| node_matches_filters(node, filters.as_ref()))
+        .collect();
+    let page = paged(&matches, limit, offset);
+
+    let mut output = String::new();
+    output.push_str("Source: local Agentree database\n");
+    output.push_str(&format!("Workspace: {}\n", workspace_id));
+    output.push_str(&format!("Matched nodes: {}\n", matches.len()));
+    output.push_str(&format!(
+        "Returned nodes: {} (offset={}, limit={})\n\n",
+        page.len(),
+        offset.unwrap_or(0),
+        limit.unwrap_or(50)
+    ));
+    for node in &page {
+        output.push_str(&format!("{}\n", node_summary(node)));
     }
+
+    text_result(id, output)
 }
 
 async fn handle_graph_read_node(
     id: serde_json::Value,
-    headers: HeaderMap,
     state: Arc<McpState>,
     node_id: String,
     include_tool_calls: Option<bool>,
     max_content_length: Option<u32>,
 ) -> JsonRpcResponse {
-    let auth_header = match get_auth_header(headers) {
-        Ok(value) => value,
-        Err(err) => return err.with_id(id),
-    };
-
-    let mut url = match Url::parse(&format!("{}/api/graph/read-node", state.server_base_url)) {
-        Ok(url) => url,
+    let payload = match local_node_payload(&state, &node_id) {
+        Ok(payload) => payload,
         Err(err) => {
             return JsonRpcResponse {
                 jsonrpc: "2.0",
                 id,
                 result: None,
-                error: Some(JsonRpcError {
-                    code: -32002,
-                    message: format!("Invalid server URL: {}", err),
-                }),
-            };
-        }
-    };
-    url.query_pairs_mut()
-        .append_pair("node_id", node_id.as_str());
-    let include_tool_calls = include_tool_calls.unwrap_or(false);
-    url.query_pairs_mut()
-        .append_pair("include_tool_calls", &include_tool_calls.to_string());
-    if let Some(max_content_length) = max_content_length {
-        url.query_pairs_mut()
-            .append_pair("max_content_length", &max_content_length.to_string());
-    }
-
-    let request = state.http.get(url).header("Authorization", auth_header);
-    match request.send().await {
-        Ok(response) => {
-            let status = response.status();
-            match response.json::<serde_json::Value>().await {
-                Ok(body) => {
-                    if !status.is_success() {
-                        let message = body
-                            .get("error")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or("Graph read node failed")
-                            .to_string();
-                        return JsonRpcResponse {
-                            jsonrpc: "2.0",
-                            id,
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: -32003,
-                                message,
-                            }),
-                        };
-                    }
-                    let output = body
-                        .get("output")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    JsonRpcResponse {
-                        jsonrpc: "2.0",
-                        id,
-                        result: Some(
-                            serde_json::json!({ "content": [ { "type": "text", "text": output } ] }),
-                        ),
-                        error: None,
-                    }
-                }
-                Err(err) => JsonRpcResponse {
-                    jsonrpc: "2.0",
-                    id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32004,
-                        message: format!("Invalid response body: {}", err),
-                    }),
-                },
+                error: Some(err),
             }
         }
-        Err(err) => JsonRpcResponse {
-            jsonrpc: "2.0",
-            id,
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32005,
-                message: format!("Request failed: {}", err),
-            }),
-        },
+    };
+    let include_tool_calls = include_tool_calls.unwrap_or(false);
+    let sanitized = sanitize_node_payload(payload.clone(), include_tool_calls);
+    let content = truncate_chars(node_content(&payload), max_content_length);
+    let mut output = String::new();
+    output.push_str("Source: local Agentree database\n");
+    output.push_str(&format!("Node: {}\n", node_id));
+    output.push_str(&format!(
+        "Workspace: {}\n",
+        node_workspace_id(&payload).unwrap_or("-")
+    ));
+    output.push_str(&format!(
+        "Role: {}\n",
+        node_string(&payload, &["role"]).unwrap_or("unknown")
+    ));
+    output.push_str(&format!(
+        "Status: {}\n",
+        node_string(&payload, &["status"]).unwrap_or("unknown")
+    ));
+    output.push_str(&format!(
+        "Parent: {}\n",
+        node_parent_id(&payload).unwrap_or("-")
+    ));
+    output.push_str(&format!(
+        "Thread: {}\n",
+        node_thread_id(&payload).unwrap_or("-")
+    ));
+    output.push_str(&format!(
+        "Output commit: {}\n",
+        node_string(
+            &payload,
+            &["output_commit_sha", "git_commit_sha", "gitCommitSha"]
+        )
+        .unwrap_or("-")
+    ));
+    output.push_str("\nContent:\n");
+    output.push_str(&content);
+    output.push_str("\n\nLocal payload:\n");
+    output.push_str(&serde_json::to_string_pretty(&sanitized).unwrap_or_else(|_| "{}".to_string()));
+
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        id,
+        result: Some(serde_json::json!({
+            "content": [{ "type": "text", "text": output }],
+            "metadata": { "node": sanitized }
+        })),
+        error: None,
     }
 }
 
 async fn handle_list_thread_sessions(
     id: serde_json::Value,
-    headers: HeaderMap,
     state: Arc<McpState>,
     workspace_id: String,
 ) -> JsonRpcResponse {
-    let auth_header = match get_auth_header(headers) {
-        Ok(value) => value,
-        Err(err) => return err.with_id(id),
+    let sessions = match telemetry_db(&state).list_thread_sessions_for_workspace(&workspace_id) {
+        Ok(sessions) => sessions,
+        Err(err) => {
+            return local_data_error(id, format!("Failed to read local thread sessions: {}", err))
+        }
     };
-
-    let mut url = match Url::parse(&format!(
-        "{}/api/graph/thread-sessions",
-        state.server_base_url
-    )) {
-        Ok(url) => url,
+    let nodes = match local_nodes_for_workspace(&state, &workspace_id) {
+        Ok(nodes) => nodes,
         Err(err) => {
             return JsonRpcResponse {
                 jsonrpc: "2.0",
                 id,
                 result: None,
-                error: Some(JsonRpcError {
-                    code: -32002,
-                    message: format!("Invalid server URL: {}", err),
-                }),
-            };
+                error: Some(err),
+            }
         }
     };
-    url.query_pairs_mut()
-        .append_pair("workspace_id", workspace_id.as_str());
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for node in &nodes {
+        if let Some(thread_id) = node_thread_id(&node.payload) {
+            *counts.entry(thread_id.to_string()).or_default() += 1;
+        }
+    }
 
-    let request = state.http.get(url).header("Authorization", auth_header);
-    text_output_response(id, request, "Thread session listing failed").await
+    let mut output = String::new();
+    output.push_str("Source: local Agentree database\n");
+    output.push_str(&format!("Workspace: {}\n", workspace_id));
+    output.push_str(&format!("Thread sessions: {}\n\n", sessions.len()));
+    for session in &sessions {
+        output.push_str(&format!(
+            "- {} status={} source={} nodes={} title={}\n",
+            session.id,
+            session.status,
+            session.source,
+            counts.get(&session.id).copied().unwrap_or(0),
+            session.title.as_deref().unwrap_or("-")
+        ));
+    }
+
+    text_result(id, output)
 }
 
 async fn handle_read_thread(
     id: serde_json::Value,
-    headers: HeaderMap,
     state: Arc<McpState>,
     workspace_id: String,
     thread_id: String,
     max_nodes: Option<u32>,
 ) -> JsonRpcResponse {
-    let auth_header = match get_auth_header(headers) {
-        Ok(value) => value,
-        Err(err) => return err.with_id(id),
+    let sessions = match telemetry_db(&state).list_thread_sessions_for_workspace(&workspace_id) {
+        Ok(sessions) => sessions,
+        Err(err) => {
+            return local_data_error(id, format!("Failed to read local thread sessions: {}", err))
+        }
     };
-
-    let mut url = match Url::parse(&format!("{}/api/graph/read-thread", state.server_base_url)) {
-        Ok(url) => url,
+    let session = sessions.iter().find(|session| session.id == thread_id);
+    let mut nodes: Vec<LocalGraphNode> = match local_nodes_for_workspace(&state, &workspace_id) {
+        Ok(nodes) => nodes
+            .into_iter()
+            .filter(|node| node_thread_id(&node.payload) == Some(thread_id.as_str()))
+            .collect(),
         Err(err) => {
             return JsonRpcResponse {
                 jsonrpc: "2.0",
                 id,
                 result: None,
-                error: Some(JsonRpcError {
-                    code: -32002,
-                    message: format!("Invalid server URL: {}", err),
-                }),
-            };
+                error: Some(err),
+            }
         }
     };
-    url.query_pairs_mut()
-        .append_pair("workspace_id", workspace_id.as_str())
-        .append_pair("thread_id", thread_id.as_str());
-    if let Some(max_nodes) = max_nodes {
-        url.query_pairs_mut()
-            .append_pair("max_nodes", &max_nodes.to_string());
+    nodes.sort_by_key(|node| node.row.finalized_at);
+    let page = paged(&nodes, max_nodes, Some(0));
+
+    let mut output = String::new();
+    output.push_str("Source: local Agentree database\n");
+    output.push_str(&format!("Workspace: {}\n", workspace_id));
+    output.push_str(&format!("Thread: {}\n", thread_id));
+    if let Some(session) = session {
+        output.push_str(&format!(
+            "Session status: {} source={} title={}\n",
+            session.status,
+            session.source,
+            session.title.as_deref().unwrap_or("-")
+        ));
+    } else {
+        output.push_str(
+            "Session: not found in local thread_sessions table; showing matching nodes only.\n",
+        );
+    }
+    output.push_str(&format!(
+        "Nodes: {} returned={}\n\n",
+        nodes.len(),
+        page.len()
+    ));
+    for node in &page {
+        output.push_str(&format!("{}\n", node_summary(node)));
     }
 
-    let request = state.http.get(url).header("Authorization", auth_header);
-    text_output_response(id, request, "Thread read failed").await
+    text_result(id, output)
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_query_commits(
     id: serde_json::Value,
-    headers: HeaderMap,
     state: Arc<McpState>,
     workspace_id: String,
     filters: Option<serde_json::Value>,
@@ -2162,196 +2324,87 @@ async fn handle_query_commits(
     include_parents: Option<bool>,
     include_observations: Option<bool>,
 ) -> JsonRpcResponse {
-    let auth_header = match get_auth_header(headers) {
-        Ok(value) => value,
-        Err(err) => return err.with_id(id),
+    let graph = match telemetry_db(&state).list_local_commit_graph(&workspace_id) {
+        Ok(graph) => graph,
+        Err(err) => return local_data_error(id, format!("Failed to read local commits: {}", err)),
     };
-
-    let url = match Url::parse(&format!(
-        "{}/api/graph/query-commits",
-        state.server_base_url
-    )) {
-        Ok(url) => url,
-        Err(err) => {
-            return JsonRpcResponse {
-                jsonrpc: "2.0",
-                id,
-                result: None,
-                error: Some(JsonRpcError {
-                    code: -32002,
-                    message: format!("Invalid server URL: {}", err),
-                }),
-            };
-        }
-    };
-
-    let mut body = serde_json::Map::new();
-    body.insert(
-        "workspace_id".to_string(),
-        serde_json::Value::String(workspace_id),
-    );
-    body.insert(
-        "filters".to_string(),
-        filters.unwrap_or_else(|| serde_json::json!({})),
-    );
-    if let Some(limit) = limit {
-        body.insert("limit".to_string(), serde_json::Value::Number(limit.into()));
-    }
-    if let Some(offset) = offset {
-        body.insert(
-            "offset".to_string(),
-            serde_json::Value::Number(offset.into()),
-        );
-    }
-    if let Some(include_parents) = include_parents {
-        body.insert(
-            "include_parents".to_string(),
-            serde_json::Value::Bool(include_parents),
-        );
-    }
-    if let Some(include_observations) = include_observations {
-        body.insert(
-            "include_observations".to_string(),
-            serde_json::Value::Bool(include_observations),
-        );
-    }
-
-    let request = state
-        .http
-        .post(url)
-        .header("Authorization", auth_header)
-        .json(&body);
-    text_output_response(id, request, "Commit query failed").await
-}
-
-async fn text_output_response(
-    id: serde_json::Value,
-    request: reqwest::RequestBuilder,
-    fallback_error: &str,
-) -> JsonRpcResponse {
-    match request.send().await {
-        Ok(response) => {
-            let status = response.status();
-            match response.json::<serde_json::Value>().await {
-                Ok(body) => {
-                    if !status.is_success() {
-                        let message = body
-                            .get("error")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or(fallback_error)
-                            .to_string();
-                        return JsonRpcResponse {
-                            jsonrpc: "2.0",
-                            id,
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: -32003,
-                                message,
-                            }),
-                        };
-                    }
-                    let output = body
-                        .get("output")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    JsonRpcResponse {
-                        jsonrpc: "2.0",
-                        id,
-                        result: Some(
-                            serde_json::json!({ "content": [ { "type": "text", "text": output } ] }),
-                        ),
-                        error: None,
-                    }
-                }
-                Err(err) => JsonRpcResponse {
-                    jsonrpc: "2.0",
-                    id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32004,
-                        message: format!("Invalid response body: {}", err),
-                    }),
-                },
-            }
-        }
-        Err(err) => JsonRpcResponse {
-            jsonrpc: "2.0",
-            id,
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32005,
-                message: format!("Request failed: {}", err),
-            }),
-        },
-    }
-}
-
-async fn fetch_graph_node_metadata(
-    state: &Arc<McpState>,
-    auth_header: &str,
-    node_id: &str,
-) -> Result<serde_json::Value, JsonRpcError> {
-    let mut url =
-        Url::parse(&format!("{}/api/graph/read-node", state.server_base_url)).map_err(|err| {
-            JsonRpcError {
-                code: -32002,
-                message: format!("Invalid server URL: {}", err),
-            }
-        })?;
-    url.query_pairs_mut().append_pair("node_id", node_id);
-
-    let response = state
-        .http
-        .get(url)
-        .header("Authorization", auth_header)
-        .send()
-        .await
-        .map_err(|err| JsonRpcError {
-            code: -32005,
-            message: format!("Request failed: {}", err),
-        })?;
-
-    let status = response.status();
-    let body = response
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|err| JsonRpcError {
-            code: -32004,
-            message: format!("Invalid response body: {}", err),
-        })?;
-
-    if !status.is_success() {
-        let message = body
-            .get("error")
+    let mut commits: Vec<JsonValue> = graph
+        .commits
+        .iter()
+        .filter_map(|commit| serde_json::to_value(commit).ok())
+        .filter(|commit| commit_matches_filters(commit, filters.as_ref()))
+        .collect();
+    commits.sort_by(|left, right| {
+        left.get("committedAt")
             .and_then(|value| value.as_str())
-            .unwrap_or("Graph read node failed")
-            .to_string();
-        return Err(JsonRpcError {
-            code: -32003,
-            message,
-        });
+            .cmp(&right.get("committedAt").and_then(|value| value.as_str()))
+    });
+    let page = paged(&commits, limit, offset);
+
+    let mut output = String::new();
+    output.push_str("Source: local Agentree database\n");
+    output.push_str(&format!("Workspace: {}\n", workspace_id));
+    output.push_str(&format!("Matched commits: {}\n", commits.len()));
+    output.push_str(&format!(
+        "Returned commits: {} (offset={}, limit={})\n\n",
+        page.len(),
+        offset.unwrap_or(0),
+        limit.unwrap_or(50)
+    ));
+    for commit in &page {
+        let sha = commit
+            .get("sha")
+            .and_then(|value| value.as_str())
+            .unwrap_or("-");
+        let subject = commit
+            .get("subject")
+            .and_then(|value| value.as_str())
+            .unwrap_or("-");
+        let source_kind = commit
+            .get("sourceKind")
+            .and_then(|value| value.as_str())
+            .unwrap_or("-");
+        let node = commit
+            .get("producedByNodeId")
+            .and_then(|value| value.as_str())
+            .unwrap_or("-");
+        output.push_str(&format!(
+            "- {} source={} node={} subject={}\n",
+            sha, source_kind, node, subject
+        ));
     }
 
-    Ok(body)
+    let mut metadata = serde_json::json!({ "commits": page });
+    if include_parents.unwrap_or(false) {
+        metadata["parents"] =
+            serde_json::to_value(&graph.commit_parents).unwrap_or_else(|_| serde_json::json!([]));
+    }
+    if include_observations.unwrap_or(false) {
+        metadata["observations"] = serde_json::to_value(&graph.commit_observations)
+            .unwrap_or_else(|_| serde_json::json!([]));
+    }
+
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        id,
+        result: Some(serde_json::json!({
+            "content": [{ "type": "text", "text": output }],
+            "metadata": metadata
+        })),
+        error: None,
+    }
 }
 
 async fn handle_graph_blame(
     id: serde_json::Value,
-    headers: HeaderMap,
     state: Arc<McpState>,
     node_id: String,
     file_path: String,
     _include_context: bool,
     _include_content: bool,
 ) -> JsonRpcResponse {
-    let auth_header = match get_auth_header(headers) {
-        Ok(value) => value,
-        Err(err) => return err.with_id(id),
-    };
-
-    let node_meta = match fetch_graph_node_metadata(&state, &auth_header, &node_id).await {
-        Ok(body) => body,
+    let node_meta = match local_node_metadata(&state, &node_id) {
+        Ok(payload) => payload,
         Err(err) => {
             return JsonRpcResponse {
                 jsonrpc: "2.0",
@@ -2379,17 +2432,8 @@ async fn handle_graph_blame(
             };
         }
     };
-    let commit = node_meta
-        .get("output_commit_sha")
-        .and_then(|value| value.as_str())
-        .or_else(|| {
-            node_meta
-                .get("base_commit_sha")
-                .and_then(|value| value.as_str())
-        })
-        .unwrap_or("")
-        .to_string();
-    if commit.is_empty() {
+    let commit = node_commit(&node_meta);
+    let Some(commit) = commit else {
         return JsonRpcResponse {
             jsonrpc: "2.0",
             id,
@@ -2399,7 +2443,7 @@ async fn handle_graph_blame(
                 message: "This node does not have a finalized git commit.".to_string(),
             }),
         };
-    }
+    };
 
     match crate::git_workspace::git_compute_blame(repo_path, commit.clone(), file_path.clone())
         .await
@@ -2453,20 +2497,14 @@ async fn handle_graph_blame(
 
 async fn handle_graph_diff(
     id: serde_json::Value,
-    headers: HeaderMap,
     state: Arc<McpState>,
     from_node_id: String,
     to_node_id: String,
     file_path: Option<String>,
     include_content: bool,
 ) -> JsonRpcResponse {
-    let auth_header = match get_auth_header(headers) {
-        Ok(value) => value,
-        Err(err) => return err.with_id(id),
-    };
-
-    let from_meta = match fetch_graph_node_metadata(&state, &auth_header, &from_node_id).await {
-        Ok(body) => body,
+    let from_meta = match local_node_metadata(&state, &from_node_id) {
+        Ok(payload) => payload,
         Err(err) => {
             return JsonRpcResponse {
                 jsonrpc: "2.0",
@@ -2476,8 +2514,8 @@ async fn handle_graph_diff(
             }
         }
     };
-    let to_meta = match fetch_graph_node_metadata(&state, &auth_header, &to_node_id).await {
-        Ok(body) => body,
+    let to_meta = match local_node_metadata(&state, &to_node_id) {
+        Ok(payload) => payload,
         Err(err) => {
             return JsonRpcResponse {
                 jsonrpc: "2.0",
@@ -2505,26 +2543,8 @@ async fn handle_graph_diff(
             };
         }
     };
-    let from_commit = from_meta
-        .get("output_commit_sha")
-        .and_then(|value| value.as_str())
-        .or_else(|| {
-            from_meta
-                .get("base_commit_sha")
-                .and_then(|value| value.as_str())
-        })
-        .unwrap_or("")
-        .to_string();
-    let to_commit = to_meta
-        .get("output_commit_sha")
-        .and_then(|value| value.as_str())
-        .or_else(|| {
-            to_meta
-                .get("base_commit_sha")
-                .and_then(|value| value.as_str())
-        })
-        .unwrap_or("")
-        .to_string();
+    let from_commit = node_commit(&from_meta).unwrap_or_default();
+    let to_commit = node_commit(&to_meta).unwrap_or_default();
 
     if from_commit.is_empty() || to_commit.is_empty() {
         return JsonRpcResponse {

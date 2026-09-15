@@ -2077,6 +2077,127 @@ impl TelemetryDb {
         updated += conn
             .execute(
                 r#"
+                WITH repaired AS (
+                    SELECT
+                        n.id,
+                        COALESCE(
+                            NULLIF(n.content, ''),
+                            (
+                                SELECT json_extract(e.payload, '$.final_content')
+                                FROM agent_run_events e
+                                WHERE e.assistant_node_id = n.id
+                                  AND e.event_type IN ('provider_stop', 'stop')
+                                  AND NULLIF(json_extract(e.payload, '$.final_content'), '') IS NOT NULL
+                                ORDER BY e.seq DESC
+                                LIMIT 1
+                            ),
+                            (
+                                SELECT json_extract(e.payload, '$.content')
+                                FROM agent_run_events e
+                                WHERE e.assistant_node_id = n.id
+                                  AND e.event_type IN ('message_completed', 'message')
+                                  AND NULLIF(json_extract(e.payload, '$.content'), '') IS NOT NULL
+                                ORDER BY e.seq DESC
+                                LIMIT 1
+                            ),
+                            ''
+                        ) AS content,
+                        l.output_commit_sha,
+                        l.updated_at
+                    FROM local_nodes n
+                    JOIN agent_run_ledger l ON l.assistant_node_id = n.id
+                    JOIN local_workspaces w ON w.id = l.workspace_id
+                    WHERE n.deleted_at IS NULL
+                      AND n.status = 'failed'
+                      AND l.terminal_status = 'completed'
+                      AND w.cloud_backup_enabled = 0
+                      AND json_extract(n.execution_data_json, '$.meta.native_recovery_status') IS NOT NULL
+                )
+                UPDATE local_nodes
+                SET status = 'completed',
+                    content = (SELECT content FROM repaired WHERE repaired.id = local_nodes.id),
+                    output_commit_sha = COALESCE(output_commit_sha, (SELECT output_commit_sha FROM repaired WHERE repaired.id = local_nodes.id)),
+                    execution_data_json = json_set(
+                        json_remove(
+                            CASE
+                                WHEN json_valid(COALESCE(execution_data_json, '')) THEN json(execution_data_json)
+                                ELSE json_object()
+                            END,
+                            '$.meta.native_recovery_status',
+                            '$.meta.native_recovery_phase',
+                            '$.meta.provider_error_message',
+                            '$.meta.needs_user_action_reason',
+                            '$.meta.failure_reason'
+                        ),
+                        '$.last_terminal_status',
+                        'completed'
+                    ),
+                    payload_json = json_set(
+                        json_remove(
+                            CASE
+                                WHEN json_valid(COALESCE(payload_json, '')) THEN json(payload_json)
+                                ELSE json_object(
+                                    'id', id,
+                                    'role', role,
+                                    'workspaceId', workspace_id,
+                                    'parentId', parent_id,
+                                    'content', content,
+                                    'status', status
+                                )
+                            END,
+                            '$.execution_data.meta.native_recovery_status',
+                            '$.execution_data.meta.native_recovery_phase',
+                            '$.execution_data.meta.provider_error_message',
+                            '$.execution_data.meta.needs_user_action_reason',
+                            '$.execution_data.meta.failure_reason'
+                        ),
+                        '$.status',
+                        'completed',
+                        '$.content',
+                        (SELECT content FROM repaired WHERE repaired.id = local_nodes.id),
+                        '$.execution_data.last_terminal_status',
+                        'completed',
+                        '$.output_commit_sha',
+                        (SELECT output_commit_sha FROM repaired WHERE repaired.id = local_nodes.id),
+                        '$.outputCommitSha',
+                        (SELECT output_commit_sha FROM repaired WHERE repaired.id = local_nodes.id),
+                        '$.updatedAt',
+                        datetime((SELECT updated_at FROM repaired WHERE repaired.id = local_nodes.id), 'unixepoch')
+                    ),
+                    updated_at = datetime((SELECT updated_at FROM repaired WHERE repaired.id = local_nodes.id), 'unixepoch'),
+                    local_updated_at = (SELECT updated_at FROM repaired WHERE repaired.id = local_nodes.id)
+                WHERE id IN (SELECT id FROM repaired)
+                "#,
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+
+        updated += conn
+            .execute(
+                r#"
+                UPDATE agent_run_ledger
+                SET status = COALESCE(terminal_status, status),
+                    phase = CASE WHEN cleanup_completed = 1 THEN 'cleaned' ELSE 'terminal' END,
+                    server_final_persisted = 1,
+                    failure_reason = NULL,
+                    needs_user_action_reason = NULL,
+                    updated_at = ?1
+                WHERE server_final_persisted = 0
+                  AND terminal_status = 'completed'
+                  AND EXISTS (
+                    SELECT 1
+                    FROM local_workspaces w
+                    WHERE w.id = agent_run_ledger.workspace_id
+                      AND w.cloud_backup_enabled = 0
+                  )
+                "#,
+                params![unix_timestamp()],
+            )
+            .map_err(|e| e.to_string())?;
+
+        updated += conn
+            .execute(
+                r#"
                 UPDATE agent_run_ledger
                 SET status = 'failed_finalization',
                     phase = 'failed_finalization',
@@ -2506,6 +2627,100 @@ impl TelemetryDb {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
         Ok(rows)
+    }
+
+    pub fn list_startup_resume_candidates(&self) -> Result<Vec<AgentRunLedgerRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT
+                    run_id, user_node_id, assistant_node_id, workspace_id, repo_path,
+                    worktree_path, branch_name, parent_commit, pid, agent_type,
+                    status, phase, last_seq, started_at, updated_at, terminal_status,
+                    finalize_attempt_count, cleanup_attempt_count, server_start_persisted,
+                    server_final_persisted, output_commit_sha, failure_reason,
+                    needs_user_action_reason, cleanup_completed, login_profile_id
+                FROM agent_run_ledger
+                WHERE cleanup_completed = 0
+                  AND server_final_persisted = 0
+                  AND terminal_status IS NULL
+                  AND output_commit_sha IS NULL
+                  AND status NOT IN (
+                    'completed',
+                    'failed',
+                    'cancelled',
+                    'error',
+                    'failed_setup',
+                    'failed_spawn',
+                    'failed_finalization',
+                    'failed_runtime'
+                  )
+                  AND (
+                    status != 'needs_user_action'
+                    OR needs_user_action_reason LIKE 'App restarted before this run reached a terminal state%'
+                  )
+                  AND agent_type IN ('codex', 'claude')
+                  AND login_profile_id IS NOT NULL
+                  AND repo_path IS NOT NULL
+                  AND worktree_path IS NOT NULL
+                ORDER BY updated_at ASC
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(AgentRunLedgerRow {
+                    run_id: row.get(0)?,
+                    user_node_id: row.get(1)?,
+                    assistant_node_id: row.get(2)?,
+                    workspace_id: row.get(3)?,
+                    repo_path: row.get(4)?,
+                    worktree_path: row.get(5)?,
+                    branch_name: row.get(6)?,
+                    parent_commit: row.get(7)?,
+                    pid: row.get(8)?,
+                    agent_type: row.get(9)?,
+                    status: row.get(10)?,
+                    phase: row.get(11)?,
+                    last_seq: row.get(12)?,
+                    started_at: row.get(13)?,
+                    updated_at: row.get(14)?,
+                    terminal_status: row.get(15)?,
+                    finalize_attempt_count: row.get(16)?,
+                    cleanup_attempt_count: row.get(17)?,
+                    server_start_persisted: row.get::<_, i64>(18)? != 0,
+                    server_final_persisted: row.get::<_, i64>(19)? != 0,
+                    output_commit_sha: row.get(20)?,
+                    failure_reason: row.get(21)?,
+                    needs_user_action_reason: row.get(22)?,
+                    cleanup_completed: row.get::<_, i64>(23)? != 0,
+                    login_profile_id: row.get(24)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    pub fn mark_agent_run_startup_resuming(&self, assistant_node_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            r#"
+            UPDATE agent_run_ledger
+            SET status = 'running',
+                phase = 'resuming_provider_thread',
+                pid = NULL,
+                failure_reason = NULL,
+                needs_user_action_reason = NULL,
+                updated_at = ?2
+            WHERE assistant_node_id = ?1
+            "#,
+            params![assistant_node_id, unix_timestamp()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn append_agent_run_event(
@@ -3187,6 +3402,81 @@ impl TelemetryDb {
             "#,
             params![node_id, unix_timestamp().to_string()],
         )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn update_local_node_runtime_activity(
+        &self,
+        node_id: &str,
+        last_event_at: &str,
+        latest_event_type: &str,
+        terminal_status: Option<&str>,
+    ) -> Result<(), String> {
+        let now = unix_timestamp();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        match terminal_status {
+            Some(terminal_status) => {
+                conn.execute(
+                    r#"
+                    UPDATE local_nodes
+                    SET
+                        payload_json = json_set(
+                            CASE
+                                WHEN json_valid(COALESCE(payload_json, '')) THEN json(payload_json)
+                                ELSE json('{}')
+                            END,
+                            '$.last_event_at', ?2,
+                            '$.execution_data.last_event_at', ?2,
+                            '$.execution_data.latest_event_type', ?3,
+                            '$.execution_data.last_terminal_status', ?4
+                        ),
+                        execution_data_json = json_set(
+                            CASE
+                                WHEN json_valid(COALESCE(execution_data_json, '')) THEN json(execution_data_json)
+                                ELSE json('{}')
+                            END,
+                            '$.last_event_at', ?2,
+                            '$.latest_event_type', ?3,
+                            '$.last_terminal_status', ?4
+                        ),
+                        local_updated_at = ?5
+                    WHERE id = ?1
+                      AND deleted_at IS NULL
+                    "#,
+                    params![node_id, last_event_at, latest_event_type, terminal_status, now],
+                )
+            }
+            None => {
+                conn.execute(
+                    r#"
+                    UPDATE local_nodes
+                    SET
+                        payload_json = json_set(
+                            CASE
+                                WHEN json_valid(COALESCE(payload_json, '')) THEN json(payload_json)
+                                ELSE json('{}')
+                            END,
+                            '$.last_event_at', ?2,
+                            '$.execution_data.last_event_at', ?2,
+                            '$.execution_data.latest_event_type', ?3
+                        ),
+                        execution_data_json = json_set(
+                            CASE
+                                WHEN json_valid(COALESCE(execution_data_json, '')) THEN json(execution_data_json)
+                                ELSE json('{}')
+                            END,
+                            '$.last_event_at', ?2,
+                            '$.latest_event_type', ?3
+                        ),
+                        local_updated_at = ?4
+                    WHERE id = ?1
+                      AND deleted_at IS NULL
+                    "#,
+                    params![node_id, last_event_at, latest_event_type, now],
+                )
+            }
+        }
         .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -4239,6 +4529,14 @@ impl TelemetryDb {
         .optional()
         .map(|value| value.map(|flag| flag != 0).unwrap_or(true))
         .map_err(|e| e.to_string())
+    }
+
+    pub fn workspace_cloud_backup_enabled(
+        &self,
+        workspace_id: Option<&str>,
+    ) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        Self::workspace_cloud_backup_enabled_locked(&conn, workspace_id)
     }
 
     fn workspace_cloud_account_id_locked(
@@ -5563,6 +5861,30 @@ impl TelemetryDb {
             LIMIT 1
             "#,
             params![workspace_id, user_id],
+            Self::local_workspace_row_from_sql,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn get_local_workspace_by_id(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Option<LocalWorkspaceRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            r#"
+            SELECT
+                id, name, user_id, local_repo_path, folder_path, repo_path, base_commit_sha,
+                connection_status, sync_status, created_at, updated_at, deleted_at,
+                local_updated_at, server_workspace_id, server_version, name_dirty, metadata_dirty,
+                cloud_backup_enabled, cloud_account_id
+            FROM local_workspaces
+            WHERE id = ?1 AND deleted_at IS NULL
+            ORDER BY user_id IS NULL ASC
+            LIMIT 1
+            "#,
+            params![workspace_id],
             Self::local_workspace_row_from_sql,
         )
         .optional()
@@ -7509,6 +7831,62 @@ mod tests {
     }
 
     #[test]
+    fn local_node_runtime_activity_updates_compact_metadata_only() {
+        let (_dir, db) = open_test_db();
+        db.upsert_local_node(
+            "assistant-1",
+            "workspace-1",
+            &serde_json::json!({
+                "id": "assistant-1",
+                "workspaceId": "workspace-1",
+                "role": "assistant",
+                "content": "",
+                "status": "streaming",
+                "execution_data": {}
+            })
+            .to_string(),
+        )
+        .expect("upsert local node");
+
+        db.update_local_node_runtime_activity(
+            "assistant-1",
+            "2026-06-01T00:05:00.000Z",
+            "message_delta",
+            None,
+        )
+        .expect("update runtime activity");
+
+        let conn = db.conn.lock().expect("lock db");
+        let (payload_json, execution_data_json): (String, String) = conn
+            .query_row(
+                "SELECT payload_json, execution_data_json FROM local_nodes WHERE id = ?1",
+                params!["assistant-1"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("local node row");
+        let payload: JsonValue = serde_json::from_str(&payload_json).expect("payload json");
+        let execution_data: JsonValue =
+            serde_json::from_str(&execution_data_json).expect("execution data json");
+
+        assert_eq!(
+            payload
+                .get("last_event_at")
+                .and_then(|value| value.as_str()),
+            Some("2026-06-01T00:05:00.000Z")
+        );
+        assert_eq!(
+            execution_data
+                .get("latest_event_type")
+                .and_then(|value| value.as_str()),
+            Some("message_delta")
+        );
+        assert_eq!(
+            payload.get("content").and_then(|value| value.as_str()),
+            Some("")
+        );
+    }
+
+    #[test]
     fn opening_existing_agent_run_ledger_without_login_profile_id_migrates_schema() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("telemetry.db");
@@ -8362,6 +8740,48 @@ mod tests {
     }
 
     #[test]
+    fn startup_resume_candidates_include_prior_restart_fallback_rows() {
+        let (_dir, db) = open_test_db();
+        db.upsert_agent_run_ledger(&AgentRunLedgerUpsert {
+            run_id: "run-resume".to_string(),
+            user_node_id: Some("user-resume".to_string()),
+            assistant_node_id: "assistant-resume".to_string(),
+            workspace_id: Some("workspace-1".to_string()),
+            repo_path: Some("/tmp/repo".to_string()),
+            worktree_path: Some("/tmp/repo/.agentree/worktrees/assistant-resume".to_string()),
+            branch_name: Some("agentree/assistant-resume".to_string()),
+            parent_commit: Some("parent-sha".to_string()),
+            pid: Some(1234),
+            agent_type: Some("codex".to_string()),
+            status: "needs_user_action".to_string(),
+            phase: "needs_user_action".to_string(),
+            login_profile_id: Some("profile-1".to_string()),
+        })
+        .expect("upsert run");
+        db.mark_agent_run_needs_user_action(
+            "assistant-resume",
+            "App restarted before this run reached a terminal state. The agent worktree is preserved for inspection; automatic process reattach is not available.",
+        )
+        .expect("mark needs action");
+
+        let candidates = db
+            .list_startup_resume_candidates()
+            .expect("list resume candidates");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].assistant_node_id, "assistant-resume");
+
+        db.mark_agent_run_startup_resuming("assistant-resume")
+            .expect("mark resuming");
+        let row = db
+            .get_agent_run_ledger_by_assistant("assistant-resume")
+            .expect("get row")
+            .expect("row");
+        assert_eq!(row.status, "running");
+        assert_eq!(row.phase, "resuming_provider_thread");
+        assert_eq!(row.needs_user_action_reason, None);
+    }
+
+    #[test]
     fn failed_finalization_preserves_real_failure_reason() {
         let (_dir, db) = open_test_db();
         upsert_run(&db, "assistant-setup-failed", "running", "running");
@@ -8463,6 +8883,183 @@ mod tests {
         assert_eq!(row.phase, "terminal");
         assert!(!row.server_final_persisted);
         assert_eq!(row.needs_user_action_reason, None);
+    }
+
+    #[test]
+    fn startup_recovery_treats_local_only_completed_run_as_durable() {
+        let (_dir, db) = open_test_db();
+        {
+            let conn = db.conn.lock().expect("lock db");
+            conn.execute(
+                r#"
+                INSERT INTO local_workspaces (
+                    id, name, folder_path, repo_path, base_commit_sha,
+                    created_at, updated_at, local_updated_at, cloud_backup_enabled
+                )
+                VALUES (
+                    'workspace-1', 'Local Workspace', '/tmp/repo', '/tmp/repo',
+                    'parent-sha', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z',
+                    1, 0
+                )
+                "#,
+                [],
+            )
+            .expect("insert local workspace");
+        }
+        upsert_run(
+            &db,
+            "assistant-local-only",
+            "needs_user_action",
+            "needs_user_action",
+        );
+        db.mark_agent_run_finalized(
+            "assistant-local-only",
+            "completed",
+            false,
+            Some("commit-sha"),
+        )
+        .expect("mark local finalized");
+        db.mark_agent_run_needs_user_action(
+            "assistant-local-only",
+            "Cleanup blocked because completed run is not durably finalized on the server.",
+        )
+        .expect("mark user action");
+        db.append_agent_run_event(
+            "run-assistant-local-only",
+            "assistant-local-only",
+            "provider_stop",
+            Some("completed"),
+            None,
+            r#"{"type":"provider_stop","provider_status":"completed","final_content":"Implemented local-only run."}"#,
+        )
+        .expect("append final event");
+        db.upsert_local_node(
+            "assistant-local-only",
+            "workspace-1",
+            r#"{
+                "id":"assistant-local-only",
+                "workspaceId":"workspace-1",
+                "role":"assistant",
+                "parentId":"user-assistant-local-only",
+                "content":"",
+                "status":"failed",
+                "execution_data":{
+                    "last_terminal_status":"failed",
+                    "meta":{
+                        "native_recovery_status":"needs_user_action",
+                        "native_recovery_phase":"needs_user_action",
+                        "provider_error_message":"Cleanup blocked because completed run is not durably finalized on the server.",
+                        "needs_user_action_reason":"Cleanup blocked because completed run is not durably finalized on the server.",
+                        "failure_reason":null
+                    }
+                }
+            }"#,
+        )
+        .expect("upsert stale failed node");
+        upsert_run(
+            &db,
+            "assistant-local-only-no-commit",
+            "needs_user_action",
+            "needs_user_action",
+        );
+        db.mark_agent_run_finalized("assistant-local-only-no-commit", "completed", false, None)
+            .expect("mark local no-commit finalized");
+        db.mark_agent_run_needs_user_action(
+            "assistant-local-only-no-commit",
+            "Cleanup blocked because completed run is not durably finalized on the server.",
+        )
+        .expect("mark no-commit user action");
+        db.append_agent_run_event(
+            "run-assistant-local-only-no-commit",
+            "assistant-local-only-no-commit",
+            "provider_stop",
+            Some("completed"),
+            None,
+            r#"{"type":"provider_stop","provider_status":"completed","final_content":"Review failed, but the run completed."}"#,
+        )
+        .expect("append no-commit final event");
+        db.upsert_local_node(
+            "assistant-local-only-no-commit",
+            "workspace-1",
+            r#"{
+                "id":"assistant-local-only-no-commit",
+                "workspaceId":"workspace-1",
+                "role":"assistant",
+                "parentId":"user-assistant-local-only-no-commit",
+                "content":"",
+                "status":"failed",
+                "execution_data":{
+                    "last_terminal_status":"failed",
+                    "meta":{
+                        "native_recovery_status":"needs_user_action",
+                        "native_recovery_phase":"needs_user_action",
+                        "provider_error_message":"Cleanup blocked because completed run is not durably finalized on the server.",
+                        "needs_user_action_reason":"Cleanup blocked because completed run is not durably finalized on the server.",
+                        "failure_reason":null
+                    }
+                }
+            }"#,
+        )
+        .expect("upsert stale no-commit failed node");
+
+        db.reconcile_agent_runs_on_startup().expect("reconcile");
+        let row = db
+            .get_agent_run_ledger_by_assistant("assistant-local-only")
+            .expect("get row")
+            .expect("row");
+        assert_eq!(row.status, "completed");
+        assert_eq!(row.phase, "terminal");
+        assert!(row.server_final_persisted);
+        assert_eq!(row.failure_reason, None);
+        assert_eq!(row.needs_user_action_reason, None);
+
+        let local_nodes = db
+            .list_local_nodes_for_workspace("workspace-1")
+            .expect("list local nodes");
+        let node = local_nodes
+            .iter()
+            .find(|node| node.node_id == "assistant-local-only")
+            .expect("local node");
+        let payload: JsonValue = serde_json::from_str(&node.payload).expect("payload json");
+        assert_eq!(payload["status"], "completed");
+        assert_eq!(payload["content"], "Implemented local-only run.");
+        assert_eq!(
+            payload["execution_data"]["last_terminal_status"],
+            "completed"
+        );
+        assert_eq!(
+            payload["execution_data"]["meta"].get("native_recovery_status"),
+            None
+        );
+        let no_commit_row = db
+            .get_agent_run_ledger_by_assistant("assistant-local-only-no-commit")
+            .expect("get no-commit row")
+            .expect("no-commit row");
+        assert_eq!(no_commit_row.status, "completed");
+        assert_eq!(no_commit_row.phase, "terminal");
+        assert!(no_commit_row.server_final_persisted);
+        assert_eq!(no_commit_row.output_commit_sha, None);
+        assert_eq!(no_commit_row.needs_user_action_reason, None);
+
+        let no_commit_node = local_nodes
+            .iter()
+            .find(|node| node.node_id == "assistant-local-only-no-commit")
+            .expect("no-commit local node");
+        let no_commit_payload: JsonValue =
+            serde_json::from_str(&no_commit_node.payload).expect("no-commit payload json");
+        assert_eq!(no_commit_payload["status"], "completed");
+        assert_eq!(
+            no_commit_payload["content"],
+            "Review failed, but the run completed."
+        );
+        assert_eq!(
+            no_commit_payload["execution_data"]["last_terminal_status"],
+            "completed"
+        );
+        assert_eq!(
+            no_commit_payload["execution_data"]["meta"].get("native_recovery_status"),
+            None
+        );
     }
 
     #[test]

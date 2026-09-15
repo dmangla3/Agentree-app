@@ -1,5 +1,4 @@
 import { useCallback, useMemo, useState } from 'react';
-import TextareaAutosize from 'react-textarea-autosize';
 import { Check, Plus, Puzzle, Trash2, Workflow } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useOrchestrationTemplateStore } from '../../stores/orchestrationTemplateStore';
@@ -9,6 +8,7 @@ import {
   type OrchestrationTemplateKind,
 } from '../../orchestration/templates';
 import { cn } from '../../lib/utils';
+import { TemplateMentionTextarea } from '../composer/TemplateMentionTextarea';
 
 const getTemplateKindLabel = (kind: OrchestrationTemplateKind): string => (
   kind === 'node' ? 'Node prompt' : 'Orchestration prompt'
@@ -211,8 +211,9 @@ export function OrchestrationPanel({ className }: { className?: string }) {
 
           <label className="block space-y-1.5">
             <span className="text-[11px] font-semibold text-muted-foreground">Prompt</span>
-            <TextareaAutosize
+            <TemplateMentionTextarea
               value={draftPrompt}
+              templates={templates}
               onChange={(event) => setDraftPrompt(event.target.value)}
               className="min-h-48 w-full resize-y rounded-lg border border-border/70 bg-background/80 px-2.5 py-2 text-xs leading-5 outline-none transition-[border-color,box-shadow] focus:border-[hsl(var(--app-focus)/0.72)] focus:shadow-[0_0_0_3px_hsl(var(--app-focus)/0.10)]"
               placeholder="Review {{request}} for correctness and validation gaps."

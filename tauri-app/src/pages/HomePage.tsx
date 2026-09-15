@@ -14,6 +14,7 @@ import {
 import { Sidebar } from '../components/Sidebar';
 import { WorkspaceNavigator, type WorkspaceThreadNavigationModel } from '../components/navigation/WorkspaceNavigator';
 import { useWorkspaces } from '../hooks/useWorkspaces';
+import { useHotSendMessageDeltas } from '../hooks/useHotSendMessageDeltas';
 import { AppHeader } from '../components/AppHeader';
 import { useOnboardingStore } from '../stores/onboardingStore';
 import { trackScreenViewed } from '../lib/analytics';
@@ -36,7 +37,6 @@ const GraphView = lazy(() => import('../components/GraphView').then((module) => 
 const KnowledgeBase = lazy(() => import('../components/KnowledgeBase/KnowledgeBase').then((module) => ({ default: module.KnowledgeBase })));
 const LoginProfilesPanel = lazy(() => import('../components/logins/LoginProfilesPanel').then((module) => ({ default: module.LoginProfilesPanel })));
 const OrchestrationPanel = lazy(() => import('../components/orchestration/OrchestrationPanel').then((module) => ({ default: module.OrchestrationPanel })));
-const SkillsPanel = lazy(() => import('../components/SkillsPanel').then((module) => ({ default: module.SkillsPanel })));
 const TrackingDashboard = lazy(() => import('../components/TrackingDashboard').then((module) => ({ default: module.TrackingDashboard })));
 
 function PanelLoading() {
@@ -69,7 +69,7 @@ export function HomePage() {
   const messageId = searchParams.get('messageId');
 
   const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
-  const [activeView, setActiveView] = useState<'chat' | 'orchestration' | 'tracking' | 'knowledge' | 'skills' | 'logins'>('chat');
+  const [activeView, setActiveView] = useState<'chat' | 'orchestration' | 'tracking' | 'knowledge' | 'logins'>('chat');
   const [loginProviderIntent, setLoginProviderIntent] = useState<'codex' | 'claude' | null>(null);
   const [threadNavigationModelsByWorkspace, setThreadNavigationModelsByWorkspace] = useState<Record<string, WorkspaceThreadNavigationModel>>({});
   const [workspaceNavigatorThreadsFocused, setWorkspaceNavigatorThreadsFocused] = useState(false);
@@ -135,6 +135,7 @@ export function HomePage() {
       || null
     : null;
   const worktreePolicyRepoPath = worktreePolicyPromptRepoPath ?? selectedWorkspaceRepoPath;
+  useHotSendMessageDeltas(selectedWorkspaceId);
   const routeState = useMemo(() => resolveWorkspaceRouteState({
     workspaceIdParam: workspaceId,
     selectedWorkspaceId,
@@ -487,25 +488,6 @@ export function HomePage() {
             <Suspense fallback={<PanelLoading />}>
               <LoginProfilesPanel initialProvider={loginProviderIntent} />
             </Suspense>
-          ) : activeView === 'skills' ? (
-            <div className="app-view-surface h-full w-full overflow-auto p-5">
-              <div className="app-view-frame mx-auto flex h-full w-full max-w-5xl flex-col">
-                <header className="app-view-header">
-                  <div className="min-w-0">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[hsl(var(--app-accent))]">Workspace tools</p>
-                    <h1 className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-foreground">Skills</h1>
-                    <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                      Manage installed skills and workspace knowledge from the same shell.
-                    </p>
-                  </div>
-                </header>
-                <div className="min-h-0 flex-1 overflow-hidden">
-                  <Suspense fallback={<PanelLoading />}>
-                    <SkillsPanel className="app-panel h-full overflow-hidden rounded-2xl" />
-                  </Suspense>
-                </div>
-              </div>
-            </div>
           ) : (
             <div className="app-view-surface h-full w-full p-5">
               <div className="app-view-frame mx-auto flex h-full w-full max-w-6xl flex-col">

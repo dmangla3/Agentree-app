@@ -110,7 +110,12 @@ describe('agent run prompts', () => {
     expect(result.prompt).toContain('Prefer task or domain wording over model or spawned-run labels');
     expect(result.prompt).toContain('orchestrator_run_id: run-orch');
     expect(result.prompt).toContain('orchestrator_node_id: assistant-orch');
-    expect(result.prompt).toContain('Start by writing a concise Mermaid flowchart');
+    expect(result.prompt).toContain('first use list_prompt_templates and get_prompt_template');
+    expect(result.prompt).toContain('before writing any Mermaid flowchart');
+    expect(result.prompt).toContain('After resolving any referenced #template, write a concise Mermaid flowchart');
+    expect(result.prompt.indexOf('first use list_prompt_templates and get_prompt_template')).toBeLessThan(
+      result.prompt.indexOf('After resolving any referenced #template, write a concise Mermaid flowchart'),
+    );
     expect(result.prompt).toContain('normal assistant response');
     expect(result.prompt).toContain('Your role is coordination only');
     expect(result.prompt).toContain('Do not inspect repository files, edit files, implement fixes, run tests, or perform the task work yourself');
@@ -126,7 +131,7 @@ describe('agent run prompts', () => {
     expect(result.prompt).toContain('Wait for orchestration runs with wait_for_runs');
     expect(result.prompt).toContain('checkpointElapsed=true as a neutral checkpoint');
     expect(result.prompt).toContain('Do not steer based on checkpoint count');
-    expect(result.prompt).toContain('recent lastActivityAt values');
+    expect(result.prompt).toContain('recent latestEventAt values');
   });
 
   it('wraps selected Agentree context for orchestration run prompts when provided', () => {

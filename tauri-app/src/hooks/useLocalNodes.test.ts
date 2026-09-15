@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '../stores/workspaceStore';
 import type { LocalNodeMessage } from './useLocalNodes';
-import { parseLocalNode, upsertMessagesIntoLocalNodeCache } from './useLocalNodes';
+import { isRetryableLocalOnlySync, parseLocalNode, upsertMessagesIntoLocalNodeCache } from './useLocalNodes';
 
 const message = (overrides: Partial<Message> & Pick<Message, 'id' | 'role'>): Message => {
   const { id, role, ...rest } = overrides;
@@ -59,6 +59,47 @@ describe('parseLocalNode', () => {
 
     expect(parsed?.message.controlled_by_node_id).toBe('assistant-orchestrator');
     expect(parsed?.message.controlledByNodeId).toBe('assistant-orchestrator');
+  });
+});
+
+describe('isRetryableLocalOnlySync', () => {
+  it('does not treat intentionally local-only rows as retryable sync work', () => {
+    expect(isRetryableLocalOnlySync({
+      syncStatus: 'local_only',
+      retryAttempt: 0,
+      nextRetryAt: null,
+      lastUploadError: null,
+    })).toBe(false);
+  });
+
+  it('treats local-only rows with retry metadata as retryable sync work', () => {
+    expect(isRetryableLocalOnlySync({
+      syncStatus: 'local_only',
+      retryAttempt: 0,
+      nextRetryAt: 1779199000,
+      lastUploadError: null,
+    })).toBe(true);
+    expect(isRetryableLocalOnlySync({
+      syncStatus: 'local_only',
+      retryAttempt: 1,
+      nextRetryAt: null,
+      lastUploadError: null,
+    })).toBe(true);
+    expect(isRetryableLocalOnlySync({
+      syncStatus: 'local_only',
+      retryAttempt: 0,
+      nextRetryAt: null,
+      lastUploadError: 'offline',
+    })).toBe(true);
+  });
+
+  it('ignores persisted rows even if retry metadata is present', () => {
+    expect(isRetryableLocalOnlySync({
+      syncStatus: 'persisted',
+      retryAttempt: 1,
+      nextRetryAt: 1779199000,
+      lastUploadError: 'offline',
+    })).toBe(false);
   });
 });
 

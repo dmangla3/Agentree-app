@@ -305,6 +305,37 @@ describe('ChatAssistantCard identity', () => {
     expect(screen.queryByRole('button', { name: /work logs/i })).toBeNull();
   });
 
+  it('renders live message-only timeline rows as separate chunks before falling back to flat content', () => {
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          status: 'running' as any,
+          message: {
+            status: 'running' as any,
+            content: 'First progress update.Second progress update.',
+            execution_data: {
+              timeline: [
+                { type: 'message', timestamp: 1, content: 'First progress update.' },
+                { type: 'message', timestamp: 2, content: 'Second progress update.' },
+              ],
+            },
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByText('First progress update.')).toBeTruthy();
+    expect(screen.getByText('Second progress update.')).toBeTruthy();
+    expect(screen.queryByText('First progress update.Second progress update.')).toBeNull();
+    expect(screen.queryByRole('button', { name: /work logs/i })).toBeNull();
+  });
+
   it('shows a refined running cue instead of the generic working label', () => {
     render(
       <ChatAssistantCard

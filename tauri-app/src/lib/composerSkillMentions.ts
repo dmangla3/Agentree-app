@@ -1,5 +1,10 @@
 import { getFuzzyMatchScore } from './fuzzySearch';
-import type { SkillSummary } from './agentClient';
+
+export interface ComposerSkill {
+  id: string;
+  name: string;
+  description: string;
+}
 
 export interface ActiveSkillMention {
   start: number;
@@ -72,7 +77,7 @@ export const getSkillMentionNames = (value: string, knownSkillNames: readonly st
     .filter(Boolean);
 };
 
-const rankSkillMention = (query: string, skill: SkillSummary): number | null => {
+const rankSkillMention = (query: string, skill: ComposerSkill): number | null => {
   const normalizedQuery = query.trim().toLowerCase();
   const collapsedQuery = collapseFuzzyText(normalizedQuery);
   if (!collapsedQuery) return 0;
@@ -110,11 +115,11 @@ const rankSkillMention = (query: string, skill: SkillSummary): number | null => 
   return score;
 };
 
-export const getSkillMentionSuggestions = (
-  skills: SkillSummary[],
+export const getSkillMentionSuggestions = <T extends ComposerSkill>(
+  skills: T[],
   query: string,
-  limit = 8
-): SkillSummary[] => {
+  limit = Infinity
+): T[] => {
   if (limit <= 0) return [];
   const normalizedQuery = query.trim();
   if (!normalizedQuery) {
@@ -126,7 +131,7 @@ export const getSkillMentionSuggestions = (
       const score = rankSkillMention(normalizedQuery, skill);
       return score === null ? null : { skill, score };
     })
-    .filter((entry): entry is { skill: SkillSummary; score: number } => entry !== null)
+    .filter((entry): entry is { skill: T; score: number } => entry !== null)
     .sort((left, right) => left.score - right.score || left.skill.name.localeCompare(right.skill.name))
     .map((entry) => entry.skill)
     .slice(0, limit);

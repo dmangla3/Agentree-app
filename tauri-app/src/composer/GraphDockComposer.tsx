@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
-import TextareaAutosize from 'react-textarea-autosize';
 import { Bot, Check, ChevronDown, CornerDownRight, FileText, GitBranchIcon, GitCommitHorizontal, History, Loader2, Minus, Pencil, Plus, Puzzle, RotateCcw, Search, Send, Shield, Square, Workflow, X } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useShallow } from 'zustand/react/shallow';
@@ -7,7 +6,7 @@ import { buildComposerDraftKey, useWorkspaceStore, type Message, type Workspace 
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { useOrchestrationTemplateStore } from '../stores/orchestrationTemplateStore';
-import { normalizeTemplateId, type OrchestrationPromptTemplate } from '../orchestration/templates';
+import type { OrchestrationPromptTemplate } from '../orchestration/templates';
 import { resolveLoginProfileSelection } from '../lib/loginProfiles';
 import { isNoAgentSessionFoundError, markStaleLocalAgentNodeCancelled } from '../lib/localAgentRunTerminal';
 import { applyLocalNodeMessages } from '../hooks/useLiveMessages';
@@ -19,7 +18,7 @@ import { useCreateThreadSession } from '../hooks/useThreadSessions';
 import { getEnabledTrackedGitRefs, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
 import { useTrackedRefs } from '../hooks/useTrackedRefs';
 import { agentRunManager } from '../agent-runs/agentRunManager';
-import { agentClient, type GitCommitMetadata, type SkillSummary } from '../lib/agentClient';
+import { agentClient, type GitCommitMetadata, type ProviderSkill } from '../lib/agentClient';
 import { getOptionalCloudAuthToken } from '../lib/authSession';
 import { createSendFlowId, recordSendFlowEvent } from '../perf/sendFlow';
 import {
@@ -87,6 +86,13 @@ import {
   resolveGraphDockComposerTarget,
   shouldSubmitGraphDockComposerKey,
 } from './graphDockComposerLogic';
+import { TemplateMentionTextarea } from '../components/composer/TemplateMentionTextarea';
+import {
+  getActiveTemplateMention,
+  getTemplateMentionText,
+  promptIncludesOrchestrationTemplate,
+  type ActiveTemplateMention,
+} from '../lib/composerTemplateMentions';
 
 const GRAPH_DOCK_PROMPT_DRAFT_DEBOUNCE_MS = 300;
 
@@ -94,12 +100,6 @@ type ContextPolicy = 'continue' | 'fresh';
 type ComposerTargetMode = 'reply' | 'new-thread';
 type EditUserMessageEventDetail = { message?: Message };
 interface ActiveFileMention {
-  start: number;
-  end: number;
-  query: string;
-}
-
-interface ActiveTemplateMention {
   start: number;
   end: number;
   query: string;
@@ -232,44 +232,12 @@ const getActiveFileMention = (
   };
 };
 
-const getActiveTemplateMention = (
-  value: string,
-  cursorPosition: number | null | undefined,
-): ActiveTemplateMention | null => {
-  if (cursorPosition == null) return null;
-  const beforeCursor = value.slice(0, cursorPosition);
-  const mentionMatch = beforeCursor.match(/(^|\s)#([^\s#]*)$/);
-  if (!mentionMatch) return null;
-
-  const query = mentionMatch[2] ?? '';
-  return {
-    start: beforeCursor.length - query.length - 1,
-    end: cursorPosition,
-    query,
-  };
-};
-
-const getTemplateMentionText = (template: OrchestrationPromptTemplate): string => (
-  `#${template.id.replace(/^@/, '')}`
-);
-
-const promptIncludesOrchestrationTemplate = (
-  value: string,
-  templates: OrchestrationPromptTemplate[],
-): boolean => {
-  const templatesById = new Map(templates.map((template) => [normalizeTemplateId(template.id), template]));
-  for (const match of value.matchAll(/#([a-zA-Z0-9_-]+)/g)) {
-    const template = templatesById.get(normalizeTemplateId(match[1]));
-    if (template?.kind === 'orchestration') return true;
-  }
-  return false;
-};
-
 function GraphDockPromptTextarea({
   textareaRef,
   initialValue,
   resetVersion,
   disabled,
+  templates,
   onPromptChange,
   onDraftChange,
   onSelectionChange,
@@ -280,6 +248,7 @@ function GraphDockPromptTextarea({
   initialValue: string;
   resetVersion: number;
   disabled: boolean;
+  templates: OrchestrationPromptTemplate[];
   onPromptChange: (value: string) => void;
   onDraftChange: (value: string) => void;
   onSelectionChange: (value: string, cursorPosition: number | null | undefined) => void;
@@ -311,8 +280,9 @@ function GraphDockPromptTextarea({
   }, [clearPendingDraftSave, onDraftChange, onPromptChange]);
 
   return (
-    <TextareaAutosize
+    <TemplateMentionTextarea
       ref={textareaRef}
+      templates={templates}
       data-testid="chat-composer-textarea"
       aria-label="Graph composer prompt"
       value={localPrompt}
@@ -425,13 +395,6 @@ export function GraphDockComposer() {
   const isRootComposerTarget = editDraftSource
     ? !editDraftSource.parentId
     : composerTargetMode === 'new-thread' || !rawTarget.parentMessageId;
-  const installedSkillsQuery = useQuery({
-    queryKey: ['skills', 'installed'],
-    queryFn: () => agentClient.listInstalledSkills('graph-composer-skills-installed'),
-    enabled: Boolean(selectedWorkspaceId) && agentClient.hasRuntime(),
-    staleTime: 30_000,
-  });
-  const installedSkills = useMemo(() => installedSkillsQuery.data ?? [], [installedSkillsQuery.data]);
   const localRefsQuery = useQuery({
     queryKey: ['git-refs', selectedWorkspaceRepoPath, selectedWorkspaceId],
     queryFn: async () => {
@@ -588,6 +551,20 @@ export function GraphDockComposer() {
       }))
       .filter((entry) => entry.count > 0)
   ), [agents, normalizedSelectedAgentRunCounts]);
+  const selectedSkillProviders = useMemo(() => (
+    Array.from(new Set(
+      selectedAgentRunItems
+        .map((run) => run.agent.type)
+        .filter((provider) => provider === 'codex' || provider === 'claude')
+    )).sort()
+  ), [selectedAgentRunItems]);
+  const providerSkillsQuery = useQuery({
+    queryKey: ['provider-skills', selectedWorkspaceRepoPath, selectedSkillProviders],
+    queryFn: () => agentClient.listProviderSkills(selectedSkillProviders, selectedWorkspaceRepoPath),
+    enabled: Boolean(selectedWorkspaceId && selectedSkillProviders.length > 0 && agentClient.hasRuntime()),
+    staleTime: 30_000,
+  });
+  const providerSkills = useMemo(() => providerSkillsQuery.data ?? [], [providerSkillsQuery.data]);
   const selectedRunTotal = selectedAgentRuns.length;
   const base = resolveGraphDockComposerBase({
     targetMode: isRootComposerTarget ? 'new-thread' : composerTargetMode,
@@ -814,21 +791,21 @@ export function GraphDockComposer() {
     () => getMentionedRepoPathSet(promptText, repoMentionFilePathSet),
     [promptText, repoMentionFilePathSet]
   );
-  const installedSkillNames = useMemo(
-    () => installedSkills.map((skill: SkillSummary) => skill.name),
-    [installedSkills]
+  const providerSkillNames = useMemo(
+    () => providerSkills.map((skill: ProviderSkill) => skill.name),
+    [providerSkills]
   );
   const skillMentionNameSet = useMemo(
-    () => new Set(getSkillMentionNames(promptText, installedSkillNames)),
-    [installedSkillNames, promptText]
+    () => new Set(getSkillMentionNames(promptText, providerSkillNames)),
+    [providerSkillNames, promptText]
   );
   const activeMentionFiles = useMemo(
     () => activeFileMention ? getRepoMentionMatches(repoMentionSearchIndex, activeFileMention.query, 8) : [],
     [activeFileMention, repoMentionSearchIndex]
   );
   const activeMentionSkills = useMemo(
-    () => activeSkillMention ? getSkillMentionSuggestions(installedSkills, activeSkillMention.query, 8) : [],
-    [activeSkillMention, installedSkills]
+    () => activeSkillMention ? getSkillMentionSuggestions(providerSkills, activeSkillMention.query) : [],
+    [activeSkillMention, providerSkills]
   );
   const activeMentionTemplates = useMemo(() => {
     if (!activeTemplateMention) return [];
@@ -1124,7 +1101,7 @@ export function GraphDockComposer() {
     }, 80);
   }, [activeFileMention, setPromptValue]);
 
-  const handleSkillMentionSelect = useCallback((skill: SkillSummary) => {
+  const handleSkillMentionSelect = useCallback((skill: ProviderSkill) => {
     if (!activeSkillMention) return;
 
     const replacement = insertSkillMention(promptRef.current, activeSkillMention, skill.name);
@@ -1623,7 +1600,7 @@ export function GraphDockComposer() {
                     Reference skills
                   </div>
                   <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                    Search installed skills. Enter to insert, Esc to dismiss.
+                    Search skills for the selected provider. Enter to insert, Esc to dismiss.
                   </p>
                 </div>
                 {activeSkillMention.query ? (
@@ -1633,18 +1610,18 @@ export function GraphDockComposer() {
                 ) : null}
               </div>
               <div className="max-h-72 overflow-y-auto p-2">
-                {installedSkillsQuery.isLoading ? (
+                {providerSkillsQuery.isLoading ? (
                   <div className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-border/70 px-3 py-6 text-[12px] text-muted-foreground">
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     Loading skills...
                   </div>
-                ) : installedSkillsQuery.error ? (
+                ) : providerSkillsQuery.error ? (
                   <div className="rounded-xl border border-dashed border-destructive/40 px-3 py-6 text-center text-[12px] text-destructive">
                     Skills could not be loaded.
                   </div>
                 ) : activeMentionSkills.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-border/70 px-3 py-6 text-center text-[12px] text-muted-foreground">
-                    No installed skills match this query.
+                    No selected-provider skills match this query.
                   </div>
                 ) : (
                   <div className="space-y-1">
@@ -1668,7 +1645,7 @@ export function GraphDockComposer() {
                               <span className="truncate">{skill.name}</span>
                             </span>
                             <span className="mt-1 block truncate pl-6 text-[11px] text-muted-foreground">
-                              {skill.description || skill.id}
+                              {skill.description || skill.path}
                             </span>
                           </span>
                           <span className="shrink-0 rounded-full border border-border/70 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
@@ -1757,6 +1734,7 @@ export function GraphDockComposer() {
             onSelectionChange={syncActiveMentions}
             onPromptKeyDown={handlePromptKeyDown}
             onSubmit={() => void handleSend()}
+            templates={orchestrationTemplates}
           />
         </div>
         <div data-testid="graph-dock-control-row" className="mt-1.5 grid min-w-0 grid-cols-2 gap-1.5 border-t border-[hsl(var(--app-border)/0.52)] px-0.5 pt-1.5 md:grid-cols-4">

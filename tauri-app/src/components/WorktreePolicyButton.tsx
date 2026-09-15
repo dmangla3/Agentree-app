@@ -68,7 +68,6 @@ const cloneConfig = (config: AgentWorktreeConfig): AgentWorktreeConfig => ({
   copyEnvFiles: config.copyEnvFiles,
   envFilePatterns: [...config.envFilePatterns],
   commitExcludePatterns: [...config.commitExcludePatterns],
-  runtimeScaffoldingDirs: [...config.runtimeScaffoldingDirs],
   blockDependencyMutationCommands: config.blockDependencyMutationCommands,
 });
 
@@ -176,38 +175,6 @@ function PolicyTextareaField({
         spellCheck={false}
         className="min-h-[86px] resize-y bg-background/70 font-mono text-xs leading-5"
       />
-    </div>
-  );
-}
-
-function PolicyReadonlyListField({
-  label,
-  value,
-  info,
-}: {
-  label: string;
-  value: string[];
-  info: string;
-}) {
-  return (
-    <div className="space-y-2">
-      <div className="flex min-h-7 items-center gap-1.5">
-        <div className="text-xs font-semibold text-foreground">{label}</div>
-        <InfoTip label={`About ${label}`} content={info} />
-      </div>
-      <div className="min-h-[86px] rounded-md border border-border/70 bg-muted/35 px-3 py-2 font-mono text-xs leading-5 text-foreground/85">
-        {value.length > 0 ? (
-          <div className="space-y-1">
-            {value.map((entry) => (
-              <div key={entry} className="truncate" title={entry}>
-                {entry}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <span className="text-muted-foreground">none</span>
-        )}
-      </div>
     </div>
   );
 }
@@ -542,11 +509,6 @@ export function WorktreePolicyPanel({ repoPath }: WorktreePolicyPanelProps) {
                     placeholder="dist/**"
                     disabled={isSaving}
                     info="Files already ignored by .gitignore are excluded by default. Add patterns here only for other files you want left out of the agent's commit."
-                  />
-                  <PolicyReadonlyListField
-                    label="Agentree-managed dirs"
-                    value={draft.runtimeScaffoldingDirs}
-                    info="Agentree uses these dirs for runtime skill links it adds to the worktree. They are shown for transparency and excluded from the agent's final commit automatically."
                   />
                 </div>
                 <RuntimeCachePolicy />

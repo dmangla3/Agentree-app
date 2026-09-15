@@ -63,7 +63,7 @@ export const ORCHESTRATION_WAIT_CONDITIONS = [
 export type OrchestrationWaitCondition = typeof ORCHESTRATION_WAIT_CONDITIONS[number];
 
 export const ORCHESTRATION_WAIT_MIN_TIMEOUT_MS = 1_000;
-export const ORCHESTRATION_WAIT_MAX_TIMEOUT_MS = 100_000;
+export const ORCHESTRATION_WAIT_MAX_TIMEOUT_MS = 5 * 60 * 1_000;
 export const ORCHESTRATION_WAIT_DEFAULT_TIMEOUT_MS = ORCHESTRATION_WAIT_MAX_TIMEOUT_MS;
 
 export const isOrchestrationWaitCondition = (condition: string): condition is OrchestrationWaitCondition => (
@@ -245,56 +245,133 @@ const getMessageTerminalStatus = (message: Message | null): string | null => {
 
 const getMessageLastActivityAt = (message: Message | null): string | null => {
   if (!message) return null;
+  const executionData = readRecord(message.execution_data);
   return message.heartbeat_at
     ?? message.last_event_at
+    ?? readString(executionData, 'heartbeat_at')
+    ?? readString(executionData, 'last_event_at')
     ?? message.updatedAt
     ?? message.createdAt
     ?? null;
 };
 
-export const isOrchestrationWaitSatisfied = (wait: Pick<PendingWait, 'assistantNodeIds' | 'condition'>, messages: Message[]): boolean => {
-  const runs = wait.assistantNodeIds.map((id) => messages.find((message) => message.id === id) ?? null);
-  if (runs.length === 0 || runs.some((message) => !message)) return false;
+export interface OrchestrationWaitRunStatus {
+  assistantNodeId: string;
+  status: string | null;
+  terminalStatus: string | null;
+  active: boolean;
+  latestEventAt: string | null;
+  outputCommitSha: string | null;
+  aiLabel: string | null;
+  source: 'runtime' | 'projection' | 'persisted';
+}
+
+type OrchestrationWaitLiveStatuses = Record<string, OrchestrationWaitRunStatus | null | undefined>;
+
+const readOutputCommitSha = (message: Message | null, executionData: Record<string, unknown>): string | null => (
+  (typeof message?.output_commit_sha === 'string' && message.output_commit_sha.trim() ? message.output_commit_sha.trim() : null)
+  ?? readString(executionData, 'output_commit_sha')
+  ?? readString(readRecord(executionData.meta), 'output_commit_sha')
+);
+
+const buildMessageRunStatus = (assistantNodeId: string, message: Message | null): OrchestrationWaitRunStatus | null => {
+  if (!message) return null;
+  const executionData = readRecord(message.execution_data);
+  const status = typeof message.status === 'string' ? message.status : null;
+  const latestEventAt = getMessageLastActivityAt(message);
+  return {
+    assistantNodeId,
+    status,
+    terminalStatus: getMessageTerminalStatus(message),
+    active: isActiveAgentStatus(status),
+    latestEventAt,
+    outputCommitSha: readOutputCommitSha(message, executionData),
+    aiLabel: message.aiLabel ?? readString(readRecord(executionData.meta), 'ai_label'),
+    source: readString(readRecord(readRecord(message.execution_data).__local_authority), 'source') === 'projection'
+      ? 'projection'
+      : 'persisted',
+  };
+};
+
+const buildRuntimeRunStatus = (assistantNodeId: string): OrchestrationWaitRunStatus | null => {
+  const snapshot = agentRunManager.snapshot(assistantNodeId);
+  if (!snapshot) return null;
+  const status = typeof snapshot.status === 'string' ? snapshot.status : null;
+  const terminalStatus = status && isTerminalAgentStatus(status)
+    ? status
+    : typeof snapshot.terminalStatus === 'string' && isTerminalAgentStatus(snapshot.terminalStatus)
+      ? snapshot.terminalStatus
+      : null;
+  const latestEventAt = snapshot.updatedAt || null;
+  return {
+    assistantNodeId,
+    status,
+    terminalStatus,
+    active: isActiveAgentStatus(status),
+    latestEventAt,
+    outputCommitSha: snapshot.finalizeAck?.outputCommitSha
+      ?? readOutputCommitSha(null, snapshot.executionData ?? {}),
+    aiLabel: readString(readRecord(snapshot.executionData?.meta), 'ai_label'),
+    source: 'runtime',
+  };
+};
+
+export const buildOrchestrationWaitRunStatuses = (
+  wait: Pick<PendingWait, 'assistantNodeIds'>,
+  messages: Message[],
+  liveStatuses: OrchestrationWaitLiveStatuses = {},
+): Array<OrchestrationWaitRunStatus | null> => (
+  wait.assistantNodeIds.map((assistantNodeId) => {
+    if (Object.prototype.hasOwnProperty.call(liveStatuses, assistantNodeId)) {
+      return liveStatuses[assistantNodeId] ?? null;
+    }
+    return buildRuntimeRunStatus(assistantNodeId)
+      ?? buildMessageRunStatus(assistantNodeId, messages.find((message) => message.id === assistantNodeId) ?? null);
+  })
+);
+
+export const isOrchestrationWaitSatisfied = (
+  wait: Pick<PendingWait, 'assistantNodeIds' | 'condition'>,
+  messages: Message[],
+  liveStatuses?: OrchestrationWaitLiveStatuses,
+): boolean => {
+  const runs = buildOrchestrationWaitRunStatuses(wait, messages, liveStatuses);
+  if (runs.length === 0 || runs.some((run) => !run)) return false;
 
   switch (wait.condition) {
     case 'any':
     case 'any_terminal':
-      return runs.some((message) => Boolean(getMessageTerminalStatus(message)));
+      return runs.some((run) => Boolean(run?.terminalStatus));
     case 'failed':
     case 'any_failed':
-      return runs.some((message) => isFailureAgentStatus(getMessageTerminalStatus(message)));
+      return runs.some((run) => isFailureAgentStatus(run?.terminalStatus ?? null));
     case 'completed':
-      return runs.every((message) => getMessageTerminalStatus(message) === 'completed');
+      return runs.every((run) => run?.terminalStatus === 'completed');
     case 'commit_available':
-      return runs.every((message) => Boolean(message?.output_commit_sha));
+      return runs.every((run) => Boolean(run?.outputCommitSha));
     case 'all':
     case 'terminal':
     default:
-      return runs.every((message) => Boolean(getMessageTerminalStatus(message)));
+      return runs.every((run) => Boolean(run?.terminalStatus));
   }
 };
 
-const buildWaitSummary = (wait: PendingWait, messages: Message[]): Record<string, unknown> => ({
+const buildWaitSummary = (
+  wait: PendingWait,
+  messages: Message[],
+  liveStatuses?: OrchestrationWaitLiveStatuses,
+): Record<string, unknown> => ({
   waitGroupId: wait.waitGroupId,
   condition: wait.condition,
-  runs: wait.assistantNodeIds.map((assistantNodeId) => {
-    const message = messages.find((candidate) => candidate.id === assistantNodeId) ?? null;
-    const status = typeof message?.status === 'string' ? message.status : null;
-    return {
-      assistantNodeId,
-      status,
-      terminalStatus: getMessageTerminalStatus(message),
-      active: isActiveAgentStatus(status),
-      lastActivityAt: getMessageLastActivityAt(message),
-      outputCommitSha: message?.output_commit_sha ?? null,
-      aiLabel: message?.aiLabel ?? null,
-      source: readString(readRecord(readRecord(message?.execution_data).__local_authority), 'source') ?? 'persisted',
-    };
-  }),
+  runs: buildOrchestrationWaitRunStatuses(wait, messages, liveStatuses),
 });
 
-export const buildWaitTimeoutSummary = (wait: PendingWait, messages: Message[]): Record<string, unknown> => ({
-  ...buildWaitSummary(wait, messages),
+export const buildWaitTimeoutSummary = (
+  wait: PendingWait,
+  messages: Message[],
+  liveStatuses?: OrchestrationWaitLiveStatuses,
+): Record<string, unknown> => ({
+  ...buildWaitSummary(wait, messages, liveStatuses),
   checkpointElapsed: true,
   waitExpired: true,
   // Deprecated compatibility alias. This means the wait checkpoint elapsed, not that a child run timed out.

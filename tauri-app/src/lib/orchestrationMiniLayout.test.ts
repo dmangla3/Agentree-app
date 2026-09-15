@@ -46,6 +46,23 @@ describe('orchestration mini graph layout', () => {
     expect(positions.get('left')!.x).toBeLessThan(positions.get('right')!.x);
   });
 
+  it('keeps five parallel orchestration runs on one visual row', () => {
+    const positions = getOrchestrationMiniLayoutPositions(
+      children(['root', 'a', 'b', 'c', 'd', 'e']),
+      [
+        { sourceId: 'root', targetId: 'a' },
+        { sourceId: 'root', targetId: 'b' },
+        { sourceId: 'root', targetId: 'c' },
+        { sourceId: 'root', targetId: 'd' },
+        { sourceId: 'root', targetId: 'e' },
+      ],
+    );
+
+    const childRows = new Set(['a', 'b', 'c', 'd', 'e'].map((id) => positions.get(id)?.y));
+    expect(childRows.size).toBe(1);
+    expect(positions.get('root')!.y).toBeLessThan(positions.get('a')!.y);
+  });
+
   it('wraps wide sibling fan-out across rows', () => {
     const positions = getOrchestrationMiniLayoutPositions(
       children(['root', 'a', 'b', 'c', 'd', 'e', 'f']),
@@ -62,6 +79,25 @@ describe('orchestration mini graph layout', () => {
     const childRows = new Set(['a', 'b', 'c', 'd', 'e', 'f'].map((id) => positions.get(id)?.y));
     expect(childRows.size).toBeGreaterThan(1);
     expect(positions.get('root')!.y).toBeLessThan(positions.get('a')!.y);
+  });
+
+  it('packs a partial child row around its parent instead of stretching edge length', () => {
+    const positions = getOrchestrationMiniLayoutPositions(
+      children(['root', 'a', 'b', 'c', 'd', 'e', 'left-child', 'right-child']),
+      [
+        { sourceId: 'root', targetId: 'a' },
+        { sourceId: 'root', targetId: 'b' },
+        { sourceId: 'root', targetId: 'c' },
+        { sourceId: 'root', targetId: 'd' },
+        { sourceId: 'root', targetId: 'e' },
+        { sourceId: 'a', targetId: 'left-child' },
+        { sourceId: 'a', targetId: 'right-child' },
+      ],
+    );
+
+    expect(positions.get('left-child')?.x).toBe(positions.get('a')?.x);
+    expect(positions.get('right-child')!.x).toBeLessThan(50);
+    expect(positions.get('left-child')?.y).toBe(positions.get('right-child')?.y);
   });
 
   it('centers a fan-in child beneath its parents', () => {

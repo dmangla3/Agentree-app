@@ -13,7 +13,6 @@ pub struct AgentWorktreeConfig {
     pub copy_env_files: bool,
     pub env_file_patterns: Vec<String>,
     pub commit_exclude_patterns: Vec<String>,
-    pub runtime_scaffolding_dirs: Vec<String>,
     pub block_dependency_mutation_commands: bool,
 }
 
@@ -40,10 +39,6 @@ impl Default for AgentWorktreeConfig {
             copy_env_files: true,
             env_file_patterns: vec![".env*".to_string()],
             commit_exclude_patterns: Vec::new(),
-            runtime_scaffolding_dirs: vec![
-                ".agents/skills".to_string(),
-                ".claude/skills".to_string(),
-            ],
             block_dependency_mutation_commands: true,
         }
     }
@@ -61,7 +56,6 @@ struct PartialAgentWorktreeConfig {
     copy_env_files: Option<bool>,
     env_file_patterns: Option<Vec<String>>,
     commit_exclude_patterns: Option<Vec<String>>,
-    runtime_scaffolding_dirs: Option<Vec<String>>,
     block_dependency_mutation_commands: Option<bool>,
 }
 
@@ -103,13 +97,6 @@ pub fn load_agent_worktree_config(repo_path: &str) -> Result<AgentWorktreeConfig
             "worktree.commitExcludePatterns",
             true,
         )?,
-        runtime_scaffolding_dirs: validate_relative_paths(
-            partial
-                .runtime_scaffolding_dirs
-                .unwrap_or(defaults.runtime_scaffolding_dirs),
-            "worktree.runtimeScaffoldingDirs",
-            false,
-        )?,
         block_dependency_mutation_commands: partial
             .block_dependency_mutation_commands
             .unwrap_or(defaults.block_dependency_mutation_commands),
@@ -137,11 +124,6 @@ pub fn validate_agent_worktree_config(
             config.commit_exclude_patterns,
             "worktree.commitExcludePatterns",
             true,
-        )?,
-        runtime_scaffolding_dirs: validate_relative_paths(
-            config.runtime_scaffolding_dirs,
-            "worktree.runtimeScaffoldingDirs",
-            false,
         )?,
         block_dependency_mutation_commands: config.block_dependency_mutation_commands,
     })
@@ -236,12 +218,11 @@ pub fn path_matches_patterns(matcher: &Gitignore, path: &Path, is_dir: bool) -> 
 
 pub fn config_summary(config: &AgentWorktreeConfig) -> String {
     format!(
-        "dependency_link_dirs={} copy_env_files={} env_file_patterns={} commit_exclude_patterns={} runtime_scaffolding_dirs={} block_dependency_mutation_commands={}",
+        "dependency_link_dirs={} copy_env_files={} env_file_patterns={} commit_exclude_patterns={} block_dependency_mutation_commands={}",
         config.dependency_link_dirs.join(","),
         config.copy_env_files,
         config.env_file_patterns.join(","),
         config.commit_exclude_patterns.join(","),
-        config.runtime_scaffolding_dirs.join(","),
         config.block_dependency_mutation_commands,
     )
 }
@@ -334,7 +315,6 @@ mod tests {
                 "copyEnvFiles": false,
                 "envFilePatterns": [".env.agent"],
                 "commitExcludePatterns": ["dist/**"],
-                "runtimeScaffoldingDirs": [".agents/skills"],
                 "blockDependencyMutationCommands": false
               }
             }"#,
@@ -351,10 +331,6 @@ mod tests {
         assert!(!config.copy_env_files);
         assert_eq!(config.env_file_patterns, vec![".env.agent".to_string()]);
         assert_eq!(config.commit_exclude_patterns, vec!["dist/**".to_string()]);
-        assert_eq!(
-            config.runtime_scaffolding_dirs,
-            vec![".agents/skills".to_string()]
-        );
         assert!(!config.block_dependency_mutation_commands);
     }
 
@@ -387,7 +363,6 @@ mod tests {
             copy_env_files: false,
             env_file_patterns: vec![".env.agent".to_string()],
             commit_exclude_patterns: vec!["dist/**".to_string()],
-            runtime_scaffolding_dirs: vec![".agents/skills".to_string()],
             block_dependency_mutation_commands: false,
         };
 

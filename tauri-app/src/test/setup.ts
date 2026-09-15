@@ -42,6 +42,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 vi.mock('../lib/authSession', () => ({
   getAccessToken: vi.fn(async () => 'mock-token'),
+  getOptionalCloudAuthToken: vi.fn(async () => 'mock-token'),
   handleSessionExpired: vi.fn(),
   configureAuthSession: vi.fn(),
   configureDesktopAuthSession: vi.fn(),

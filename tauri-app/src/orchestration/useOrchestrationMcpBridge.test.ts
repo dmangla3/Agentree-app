@@ -3,6 +3,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { localNodeKeys, type LocalNodeMessage } from '../hooks/useLocalNodes';
 import type { Message } from '../stores/workspaceStore';
 import {
+  buildOrchestrationWaitRunStatuses,
   buildWaitTimeoutSummary,
   buildGraphLiveQuerySummary,
   getOrchestrationRunStartKey,
@@ -52,6 +53,7 @@ describe('orchestration MCP wait helpers', () => {
     expect(resolveOrchestrationWaitTimeoutMs(500)).toBe(ORCHESTRATION_WAIT_MIN_TIMEOUT_MS);
     expect(resolveOrchestrationWaitTimeoutMs(30_000)).toBe(30_000);
     expect(resolveOrchestrationWaitTimeoutMs(10 * 60 * 1000)).toBe(ORCHESTRATION_WAIT_MAX_TIMEOUT_MS);
+    expect(ORCHESTRATION_WAIT_DEFAULT_TIMEOUT_MS).toBe(5 * 60 * 1000);
   });
 
   it('supports all/any/failed aliases when checking child run completion', () => {
@@ -177,9 +179,74 @@ describe('orchestration MCP wait helpers', () => {
         assistantNodeId: 'child',
         status: 'streaming',
         active: true,
-        lastActivityAt: '2026-06-01T00:02:00.000Z',
+        latestEventAt: '2026-06-01T00:02:00.000Z',
       }],
     });
+    expect(JSON.stringify(summary)).not.toContain('content');
+  });
+
+  it('prefers compact live run status over stale graph message state', () => {
+    const staleMessages = [
+      message({
+        id: 'child',
+        status: 'pending' as any,
+        updatedAt: '2026-06-01T00:00:00.000Z',
+      }),
+    ];
+    const liveStatuses = {
+      child: {
+        assistantNodeId: 'child',
+        status: 'streaming',
+        terminalStatus: null,
+        active: true,
+        latestEventAt: '2026-06-01T00:05:00.000Z',
+        outputCommitSha: null,
+        aiLabel: null,
+        source: 'runtime' as const,
+      },
+    };
+
+    expect(buildOrchestrationWaitRunStatuses({
+      assistantNodeIds: ['child'],
+    }, staleMessages, liveStatuses)).toEqual([liveStatuses.child]);
+    expect(buildWaitTimeoutSummary({
+      requestId: 'request-1',
+      orchestratorRunId: 'run-orch',
+      orchestratorNodeId: 'assistant-orch',
+      waitGroupId: 'implementers',
+      assistantNodeIds: ['child'],
+      decisionIds: [],
+      condition: 'all',
+      timeoutId: null,
+    }, staleMessages, liveStatuses)).toMatchObject({
+      runs: [{
+        assistantNodeId: 'child',
+        status: 'streaming',
+        active: true,
+        latestEventAt: '2026-06-01T00:05:00.000Z',
+        source: 'runtime',
+      }],
+    });
+  });
+
+  it('allows terminal live status to satisfy waits without refreshed graph messages', () => {
+    expect(isOrchestrationWaitSatisfied({
+      assistantNodeIds: ['child'],
+      condition: 'completed',
+    }, [
+      message({ id: 'child', status: 'streaming' as any }),
+    ], {
+      child: {
+        assistantNodeId: 'child',
+        status: 'completed',
+        terminalStatus: 'completed',
+        active: false,
+        latestEventAt: '2026-06-01T00:05:00.000Z',
+        outputCommitSha: 'abc123',
+        aiLabel: null,
+        source: 'runtime',
+      },
+    })).toBe(true);
   });
 
   it('patches waited terminal child messages into graph-facing query caches', () => {

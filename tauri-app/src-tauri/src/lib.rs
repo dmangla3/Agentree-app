@@ -103,9 +103,9 @@ mod managed_runtime;
 mod mcp;
 mod merge_review;
 mod metric_kit;
+mod provider_skills;
 mod runtime_readiness;
 mod runtime_scripts;
-mod skills;
 pub mod types;
 mod worktree_config;
 
@@ -273,6 +273,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             command_guards::get_agent_sandbox_root,
             worktree_config::get_agent_worktree_config,
             worktree_config::save_agent_worktree_config,
+            provider_skills::list_provider_skills,
             git_workspace::check_local_environment,
             git_workspace::attach_workspace,
             git_workspace::init_git_repo,
@@ -307,13 +308,6 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             git_workspace::list_addable_commit_range,
             git_workspace::list_all_commits,
             editors::get_available_editors,
-            skills::get_skill_store_path,
-            skills::list_installed_skills,
-            skills::list_importable_skills,
-            skills::search_catalog_skills,
-            skills::install_catalog_skill,
-            skills::import_local_skill,
-            skills::delete_installed_skill,
             mcp::set_mcp_auth_token,
             mcp::set_mcp_workspace_id,
             mcp::get_mcp_server_url,
@@ -446,6 +440,14 @@ pub fn run() {
                         crate::app_log!(
                             "[AGENT_RECOVERY] event=startup_terminal_journal_replay.recovered count={}",
                             recovered_terminal_runs
+                        );
+                    }
+                    let resumed_interrupted_runs =
+                        agents::resume_interrupted_agent_runs_on_startup(app.handle())?;
+                    if resumed_interrupted_runs > 0 {
+                        crate::app_log!(
+                            "[AGENT_RECOVERY] event=startup_provider_resume.resumed count={}",
+                            resumed_interrupted_runs
                         );
                     }
 

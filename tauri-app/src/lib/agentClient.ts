@@ -99,6 +99,15 @@ export interface RuntimeReadiness {
     };
 }
 
+export interface ProviderSkill {
+    id: string;
+    name: string;
+    description: string;
+    provider: string;
+    source: string;
+    path: string;
+}
+
 export type CodexReadinessStatus = RuntimeReadinessStatus;
 export type CodexReadiness = RuntimeReadiness;
 
@@ -119,7 +128,6 @@ export interface AgentWorktreeConfig {
     copyEnvFiles: boolean;
     envFilePatterns: string[];
     commitExcludePatterns: string[];
-    runtimeScaffoldingDirs: string[];
     blockDependencyMutationCommands: boolean;
 }
 
@@ -134,7 +142,6 @@ export const DEFAULT_AGENT_WORKTREE_CONFIG: AgentWorktreeConfig = {
     copyEnvFiles: true,
     envFilePatterns: ['.env*'],
     commitExcludePatterns: [],
-    runtimeScaffoldingDirs: ['.agents/skills', '.claude/skills'],
     blockDependencyMutationCommands: true,
 };
 
@@ -671,25 +678,6 @@ export interface BlameResult {
     warnings: string[];
 }
 
-export interface SkillSummary {
-    id: string;
-    name: string;
-    description: string;
-    installed: boolean;
-    source: string;
-    path?: string | null;
-}
-
-export interface SkillProgressEvent {
-    op_id: string;
-    operation: string;
-    skill_id?: string | null;
-    stage: string;
-    message: string;
-    done: boolean;
-    error: boolean;
-}
-
 export interface ToolCallMatch {
     toolUseId: string;
     toolName: string;
@@ -735,27 +723,6 @@ export const agentClient = {
     },
     getMcpServerUrl: async (): Promise<string> => {
         return await tauriCommands.getMcpServerUrl();
-    },
-    getSkillStorePath: async (): Promise<string> => {
-        return await tauriCommands.getSkillStorePath();
-    },
-    listInstalledSkills: async (opId?: string): Promise<SkillSummary[]> => {
-        return await tauriCommands.listInstalledSkills(opId ?? null);
-    },
-    listImportableSkills: async (opId?: string): Promise<SkillSummary[]> => {
-        return await tauriCommands.listImportableSkills(opId ?? null);
-    },
-    searchCatalogSkills: async (query: string, opId?: string): Promise<SkillSummary[]> => {
-        return await tauriCommands.searchCatalogSkills(query, opId ?? null);
-    },
-    installCatalogSkill: async (skillId: string, opId?: string): Promise<SkillSummary> => {
-        return await tauriCommands.installCatalogSkill(skillId, opId ?? null);
-    },
-    importLocalSkill: async (sourcePath: string, opId?: string): Promise<SkillSummary> => {
-        return await tauriCommands.importLocalSkill(sourcePath, opId ?? null);
-    },
-    deleteInstalledSkill: async (skillId: string, opId?: string): Promise<void> => {
-        await tauriCommands.deleteInstalledSkill(skillId, opId ?? null);
     },
     stopAgent: async (sessionId: string): Promise<void> => {
         await tauriCommands.stopAgent(sessionId);
@@ -1031,11 +998,6 @@ export const agentClient = {
             callback(event.payload);
         });
     },
-    onSkillProgress: async (callback: (event: SkillProgressEvent) => void): Promise<UnlistenFn> => {
-        return await listen<SkillProgressEvent>('skills:progress', (event) => {
-            callback(event.payload);
-        });
-    },
     onMergeReviewEvent: async (callback: (event: MergeReviewEvent) => void): Promise<UnlistenFn> => {
         return await listen<MergeReviewEvent>('integration:merge-review-event', (event) => {
             callback(event.payload);
@@ -1295,6 +1257,9 @@ export const agentClient = {
             exclusions ?? null,
             excludeDescendantsOf ?? null
         ) as GitCommitMetadata[];
+    },
+    listProviderSkills: async (providers: string[], repoPath?: string | null): Promise<ProviderSkill[]> => {
+        return await (tauriCommands as any).listProviderSkills(providers, repoPath ?? null) as ProviderSkill[];
     },
 
 };

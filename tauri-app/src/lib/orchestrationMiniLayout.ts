@@ -143,7 +143,8 @@ export const getOrchestrationMiniLayoutPositions = (
   const maxY = 78;
   const minX = 16;
   const maxX = 84;
-  const maxNodesPerVisualRow = 3;
+  const maxNodesPerVisualRow = 5;
+  const compactXStep = (maxX - minX) / Math.max(1, maxNodesPerVisualRow - 1);
   const visualRows = layerNumbers.flatMap((layer) => {
     const ids = layers.get(layer) ?? [];
     const rows: string[][] = [];
@@ -158,10 +159,24 @@ export const getOrchestrationMiniLayoutPositions = (
     const y = rowCount <= 1
       ? 50
       : minY + ((maxY - minY) * rowIndex) / (rowCount - 1);
+    const parentXs = ids.flatMap((id) => (
+      Array.from(incoming.get(id) ?? [])
+        .map((parentId) => positions.get(parentId)?.x)
+        .filter((x): x is number => x !== undefined)
+    ));
+    const compactCenterX = parentXs.length > 0
+      ? parentXs.reduce((sum, x) => sum + x, 0) / parentXs.length
+      : null;
+    const compactWidth = compactXStep * Math.max(0, ids.length - 1);
+    const compactStartX = compactCenterX === null
+      ? null
+      : Math.min(maxX - compactWidth, Math.max(minX, compactCenterX - compactWidth / 2));
     ids.forEach((id, index) => {
-      const x = ids.length <= 1
-        ? 50
-        : minX + ((maxX - minX) * index) / (ids.length - 1);
+      const x = compactStartX !== null
+        ? compactStartX + compactXStep * index
+        : ids.length <= 1
+          ? 50
+          : minX + ((maxX - minX) * index) / (ids.length - 1);
       positions.set(id, { x, y });
     });
   });

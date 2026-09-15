@@ -18,7 +18,7 @@ const hookMocks = vi.hoisted(() => ({
   startAgentRun: vi.fn(),
   upsertLocalNode: vi.fn(),
   createThreadSession: vi.fn(),
-  listInstalledSkills: vi.fn(),
+  listProviderSkills: vi.fn(),
   listFilesAtCommit: vi.fn(),
   scheduleRefresh: vi.fn(),
 }));
@@ -30,10 +30,17 @@ vi.mock('../lib/agentClient', () => ({
     hasRuntime: vi.fn(() => true),
     startAgentRun: hookMocks.startAgentRun,
     upsertLocalNode: hookMocks.upsertLocalNode,
-    listInstalledSkills: hookMocks.listInstalledSkills,
+    listProviderSkills: hookMocks.listProviderSkills,
     listFilesAtCommit: hookMocks.listFilesAtCommit,
     listLocalRefs: vi.fn(async () => []),
     listAllCommits: vi.fn(async () => []),
+  },
+}));
+
+vi.mock('../generated/tauri-bindings', () => ({
+  commands: {
+    getOrchestrationUserTemplates: vi.fn(async () => null),
+    saveOrchestrationUserTemplates: vi.fn(async () => null),
   },
 }));
 
@@ -140,8 +147,8 @@ describe('GraphDockComposer steering behavior', () => {
     hookMocks.startAgentRun.mockResolvedValue(undefined);
     hookMocks.upsertLocalNode.mockReset();
     hookMocks.upsertLocalNode.mockResolvedValue(undefined);
-    hookMocks.listInstalledSkills.mockReset();
-    hookMocks.listInstalledSkills.mockResolvedValue([]);
+    hookMocks.listProviderSkills.mockReset();
+    hookMocks.listProviderSkills.mockResolvedValue([]);
     hookMocks.listFilesAtCommit.mockReset();
     hookMocks.listFilesAtCommit.mockResolvedValue([]);
     hookMocks.createThreadSession.mockReset();
@@ -220,7 +227,7 @@ describe('GraphDockComposer steering behavior', () => {
     fireEvent.change(composer, { target: { value: 'Local draft' } });
 
     expect(composer.value).toBe('Local draft');
-    const draftKey = buildComposerDraftKey('workspace-1', 'assistant-live')!;
+    const draftKey = buildComposerDraftKey('workspace-1')!;
     expect(useWorkspaceStore.getState().composerDraftByWorkspace[draftKey]).toBeUndefined();
 
     await act(async () => {

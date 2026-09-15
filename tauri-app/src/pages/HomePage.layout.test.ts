@@ -89,7 +89,7 @@ describe('HomePage graph/chat split layout', () => {
 
     expect(source).toContain('app-view-surface');
     expect(source).toContain('app-view-header');
-    expect(source).toContain('Manage installed skills and workspace knowledge from the same shell.');
+    expect(source).toContain('Manage reusable node prompts and natural-language orchestration prompts for the graph composer.');
   });
 
   it('wires tracking as a primary shell view without replacing the workspace split', () => {
@@ -125,11 +125,11 @@ describe('HomePage graph/chat split layout', () => {
     expect(source).not.toContain('app-rail-button-label');
   });
 
-  it('hides knowledge from the primary sidebar while keeping skills visible', () => {
+  it('hides knowledge and skills from the primary sidebar', () => {
     const source = readSidebarSource();
 
-    expect(source).toContain("label: 'Skills'");
-    expect(source).toContain("id: 'skills'");
+    expect(source).not.toContain("label: 'Skills'");
+    expect(source).not.toContain("id: 'skills'");
     expect(source).not.toContain("label: 'Knowledge'");
     expect(source).not.toContain("id: 'knowledge', icon");
   });

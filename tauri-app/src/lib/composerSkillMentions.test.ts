@@ -5,29 +5,23 @@ import {
   getSkillMentionSuggestions,
   insertSkillMention,
 } from './composerSkillMentions';
-import type { SkillSummary } from './agentClient';
+import type { ComposerSkill } from './composerSkillMentions';
 
-const skills: SkillSummary[] = [
+const skills: ComposerSkill[] = [
   {
     id: 'skill-frontend',
     name: 'Frontend Polish',
     description: 'Improve UI details and interactions',
-    source: 'codex',
-    installed: true,
   },
   {
     id: 'skill-debug',
     name: 'Systematic Debugging',
     description: 'Trace bugs to root cause',
-    source: 'codex',
-    installed: true,
   },
   {
     id: 'skill-plan',
     name: 'Writing Plans',
     description: 'Create implementation plans',
-    source: 'codex',
-    installed: true,
   },
 ];
 
@@ -85,5 +79,15 @@ describe('composer skill mentions', () => {
     expect(getSkillMentionSuggestions(skills, 'debug').map((skill) => skill.name)).toEqual([
       'Systematic Debugging',
     ]);
+  });
+
+  it('returns every skill when no explicit limit is passed', () => {
+    const manySkills = Array.from({ length: 12 }, (_, index) => ({
+      id: `skill-${index}`,
+      name: `Skill ${String(index).padStart(2, '0')}`,
+      description: 'Available provider skill',
+    }));
+
+    expect(getSkillMentionSuggestions(manySkills, '')).toHaveLength(12);
   });
 });
