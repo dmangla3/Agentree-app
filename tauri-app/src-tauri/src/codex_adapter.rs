@@ -1,5 +1,7 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::collections::{HashSet, VecDeque};
+use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -29,6 +31,7 @@ struct AdapterArgs {
     readiness_check: bool,
     rate_limits_read: bool,
     prompt: String,
+    input_artifacts: Vec<JsonValue>,
 }
 
 #[derive(Debug)]
@@ -78,6 +81,7 @@ struct StructuredOutput {
 }
 
 struct TurnState {
+    node_id: Option<String>,
     active_thread_id: Option<String>,
     active_turn_id: Option<String>,
     active_message_item_id: Option<String>,
@@ -97,8 +101,9 @@ struct TurnState {
 }
 
 impl TurnState {
-    fn new() -> Self {
+    fn new(node_id: Option<String>) -> Self {
         Self {
+            node_id,
             active_thread_id: None,
             active_turn_id: None,
             active_message_item_id: None,
@@ -185,6 +190,7 @@ fn parse_args(argv: Vec<String>) -> Result<AdapterArgs, AdapterError> {
         readiness_check: false,
         rate_limits_read: false,
         prompt: String::new(),
+        input_artifacts: Vec::new(),
     };
 
     let mut index = 0;
@@ -217,6 +223,9 @@ fn parse_args(argv: Vec<String>) -> Result<AdapterArgs, AdapterError> {
             }
             "--target-node-id" => args.target_node_id = Some(take_value(&mut index)?),
             "--node-id" => args.node_id = Some(take_value(&mut index)?),
+            "--input-artifacts-json" => {
+                args.input_artifacts = parse_input_artifacts_json(&take_value(&mut index)?)?
+            }
             "--raw-events" => args.raw_events = true,
             "--readiness-check" => args.readiness_check = true,
             "--rate-limits-read" => args.rate_limits_read = true,
@@ -235,8 +244,133 @@ fn parse_args(argv: Vec<String>) -> Result<AdapterArgs, AdapterError> {
     Ok(args)
 }
 
+fn parse_input_artifacts_json(raw: &str) -> Result<Vec<JsonValue>, AdapterError> {
+    let parsed = serde_json::from_str::<JsonValue>(raw).map_err(|error| {
+        AdapterError::new(
+            "bad_args",
+            format!("Invalid --input-artifacts-json value: {error}"),
+        )
+    })?;
+    Ok(parsed.as_array().cloned().unwrap_or_default())
+}
+
+fn json_string(value: &JsonValue, path: &[&str]) -> Option<String> {
+    value_at(value, path)
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn artifact_is_image(artifact: &JsonValue) -> bool {
+    json_string(artifact, &["mimeType"])
+        .or_else(|| json_string(artifact, &["mime_type"]))
+        .is_some_and(|mime| mime.starts_with("image/"))
+        || matches!(
+            json_string(artifact, &["kind"]).as_deref(),
+            Some("image") | Some("screenshot")
+        )
+}
+
+fn usable_image_url(value: Option<String>) -> Option<String> {
+    let value = value?;
+    if value.starts_with("http://") || value.starts_with("https://") || value.starts_with("data:") {
+        return Some(value);
+    }
+    None
+}
+
+fn local_artifact_path(artifact: &JsonValue, cwd: &str) -> Option<PathBuf> {
+    let raw_path =
+        json_string(artifact, &["storage", "path"]).or_else(|| json_string(artifact, &["path"]))?;
+    if raw_path.starts_with("data:") {
+        return None;
+    }
+    let path = PathBuf::from(raw_path);
+    Some(if path.is_absolute() {
+        path
+    } else {
+        Path::new(cwd).join(path)
+    })
+}
+
+fn artifact_image_url(artifact: &JsonValue, cwd: &str) -> Option<String> {
+    usable_image_url(
+        json_string(artifact, &["storage", "url"])
+            .or_else(|| json_string(artifact, &["url"]))
+            .or_else(|| json_string(artifact, &["publicUrl"]))
+            .or_else(|| json_string(artifact, &["thumbnail", "url"])),
+    )
+    .or_else(|| {
+        let path = local_artifact_path(artifact, cwd)?;
+        let bytes = fs::read(path).ok()?;
+        let mime = json_string(artifact, &["mimeType"])
+            .or_else(|| json_string(artifact, &["mime_type"]))
+            .filter(|mime| mime.starts_with("image/"))
+            .unwrap_or_else(|| "image/png".to_string());
+        Some(format!(
+            "data:{};base64,{}",
+            mime,
+            BASE64_STANDARD.encode(bytes)
+        ))
+    })
+}
+
+#[derive(Debug)]
+struct PreparedTurnInput {
+    input: Vec<JsonValue>,
+    skipped_image_artifacts: Vec<JsonValue>,
+}
+
+fn artifact_warning_label(artifact: &JsonValue) -> String {
+    json_string(artifact, &["title"])
+        .or_else(|| json_string(artifact, &["filename"]))
+        .or_else(|| json_string(artifact, &["id"]))
+        .unwrap_or_else(|| "selected image artifact".to_string())
+}
+
+fn skipped_image_artifact_warning(artifact: &JsonValue) -> JsonValue {
+    json!({
+        "id": json_string(artifact, &["id"]),
+        "label": artifact_warning_label(artifact),
+        "mimeType": json_string(artifact, &["mimeType"]).or_else(|| json_string(artifact, &["mime_type"])),
+        "path": json_string(artifact, &["storage", "path"]).or_else(|| json_string(artifact, &["path"])),
+        "url": json_string(artifact, &["storage", "url"])
+            .or_else(|| json_string(artifact, &["url"]))
+            .or_else(|| json_string(artifact, &["publicUrl"]))
+            .or_else(|| json_string(artifact, &["thumbnail", "url"])),
+    })
+}
+
+fn prepare_turn_input(prompt: &str, input_artifacts: &[JsonValue], cwd: &str) -> PreparedTurnInput {
+    let mut input = vec![json!({ "type": "text", "text": prompt })];
+    let mut skipped_image_artifacts = Vec::new();
+    for artifact in input_artifacts {
+        if !artifact_is_image(artifact) {
+            continue;
+        }
+        let Some(image_url) = artifact_image_url(artifact, cwd) else {
+            skipped_image_artifacts.push(skipped_image_artifact_warning(artifact));
+            continue;
+        };
+        input.push(json!({
+            "type": "input_image",
+            "image_url": image_url,
+            "detail": "auto",
+        }));
+    }
+    PreparedTurnInput {
+        input,
+        skipped_image_artifacts,
+    }
+}
+
+fn model_uses_structured_text_output(model: &str) -> bool {
+    model != "gpt-image-2"
+}
+
 fn run_turn(args: AdapterArgs) -> Result<i32, AdapterError> {
-    let mut state = TurnState::new();
+    let mut state = TurnState::new(args.node_id.clone());
     emit_trace(
         "adapter_started",
         json!({ "node_id": args.node_id, "cwd": args.cwd }),
@@ -429,17 +563,48 @@ fn run_turn(args: AdapterArgs) -> Result<i32, AdapterError> {
         json!({ "provider_thread_id": state.active_thread_id, "strategy": thread_strategy }),
     );
 
-    let turn_response = client.request(
-        "turn/start",
+    let prepared_turn_input = prepare_turn_input(&args.prompt, &args.input_artifacts, &args.cwd);
+    emit_trace(
+        "turn_input_prepared",
         json!({
-            "threadId": state.active_thread_id,
-            "input": [{ "type": "text", "text": args.prompt }],
-            "model": args.model,
-            "cwd": args.cwd,
-            "outputSchema": final_result_schema(),
-            "sandboxPolicy": sandbox_policy,
+            "image_input_count": prepared_turn_input.input.len().saturating_sub(1),
+            "skipped_image_input_count": prepared_turn_input.skipped_image_artifacts.len(),
         }),
-    )?;
+    );
+    let skipped_image_input_count = prepared_turn_input.skipped_image_artifacts.len();
+    if skipped_image_input_count > 0 {
+        emit_trace(
+            "image_input_artifacts_skipped",
+            json!({
+                "count": skipped_image_input_count,
+                "artifacts": prepared_turn_input.skipped_image_artifacts.clone(),
+            }),
+        );
+        emit(json!({
+            "type": "tool_result",
+            "toolName": "image_context",
+            "toolOutput": format!(
+                "{} selected image artifact{} could not be attached as model input.",
+                skipped_image_input_count,
+                if skipped_image_input_count == 1 { "" } else { "s" }
+            ),
+            "isError": false,
+            "toolUseId": "image_context_skipped",
+            "timestamp": now_ms(),
+        }));
+    }
+
+    let mut turn_start_params = json!({
+        "threadId": state.active_thread_id,
+        "input": prepared_turn_input.input,
+        "model": args.model,
+        "cwd": args.cwd,
+        "sandboxPolicy": sandbox_policy,
+    });
+    if model_uses_structured_text_output(&args.model) {
+        turn_start_params["outputSchema"] = final_result_schema();
+    }
+    let turn_response = client.request("turn/start", turn_start_params)?;
     state.active_turn_id = extract_turn_id(&turn_response);
 
     let stdin_writer = client.stdin.clone();
@@ -1371,8 +1536,149 @@ fn handle_item_completed(state: &mut TurnState, payload: &JsonValue) {
         }
         return;
     }
+    if matches!(
+        item_type,
+        Some("imageGeneration") | Some("image_generation_call")
+    ) {
+        emit_provider_image_artifacts(state, item, item_id.as_deref());
+    }
     if let Some(mapped) = map_tool_event(item, true, &state.output_delta_by_item) {
         emit(with_timestamp(mapped));
+    }
+}
+
+fn collect_image_urls(value: &JsonValue, urls: &mut Vec<String>) {
+    match value {
+        JsonValue::Object(object) => {
+            for (key, nested) in object {
+                let normalized_key = key.to_ascii_lowercase();
+                if matches!(
+                    normalized_key.as_str(),
+                    "image_url"
+                        | "imageurl"
+                        | "url"
+                        | "b64_json"
+                        | "b64json"
+                        | "image_base64"
+                        | "imagebase64"
+                ) {
+                    if let Some(raw) = nested.as_str().map(str::trim).filter(|raw| !raw.is_empty())
+                    {
+                        if normalized_key.contains("b64") || normalized_key.contains("base64") {
+                            urls.push(format!("data:image/png;base64,{raw}"));
+                        } else if raw.starts_with("data:")
+                            || raw.starts_with("http://")
+                            || raw.starts_with("https://")
+                        {
+                            urls.push(raw.to_string());
+                        }
+                    }
+                }
+                collect_image_urls(nested, urls);
+            }
+        }
+        JsonValue::Array(values) => {
+            for nested in values {
+                collect_image_urls(nested, urls);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn mime_extension(mime_type: &str) -> &'static str {
+    match mime_type {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "image/svg+xml" => "svg",
+        _ => "png",
+    }
+}
+
+fn parse_inline_image_data_url(url: &str) -> Option<(&str, &str)> {
+    let (header, data) = url.split_once(',')?;
+    if !header.starts_with("data:image/") || !header.contains(";base64") {
+        return None;
+    }
+    let mime_type = header
+        .strip_prefix("data:")
+        .and_then(|value| value.split(';').next())
+        .unwrap_or("image/png");
+    Some((mime_type, data))
+}
+
+fn provider_artifacts_dir() -> PathBuf {
+    std::env::var("AGENTREE_ARTIFACTS_DIR")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("agentree-provider-images"))
+}
+
+fn materialize_provider_image_url(
+    url: &str,
+    artifact_id: &str,
+) -> Option<(JsonValue, Option<u64>)> {
+    if !url.starts_with("data:") {
+        return Some((
+            json!({
+                "backend": "remote",
+                "url": url,
+            }),
+            None,
+        ));
+    }
+
+    let (mime_type, data) = parse_inline_image_data_url(url)?;
+    let bytes = BASE64_STANDARD.decode(data).ok()?;
+    let output_dir = provider_artifacts_dir();
+    fs::create_dir_all(&output_dir).ok()?;
+    let path = output_dir.join(format!(
+        "{}.{}",
+        artifact_id.replace(['/', ':'], "_"),
+        mime_extension(mime_type)
+    ));
+    fs::write(&path, &bytes).ok()?;
+    Some((
+        json!({
+            "backend": "local",
+            "path": path.to_string_lossy(),
+        }),
+        Some(bytes.len() as u64),
+    ))
+}
+
+fn emit_provider_image_artifacts(state: &TurnState, item: &JsonValue, item_id: Option<&str>) {
+    let mut urls = Vec::new();
+    collect_image_urls(item, &mut urls);
+    urls.sort();
+    urls.dedup();
+    for (index, url) in urls.into_iter().enumerate() {
+        let artifact_id = item_id
+            .map(|id| format!("{id}:image:{index}"))
+            .unwrap_or_else(|| format!("provider-image:{index}"));
+        let Some((storage, size_bytes)) = materialize_provider_image_url(&url, &artifact_id) else {
+            continue;
+        };
+        emit(json!({
+            "type": "artifact_registered",
+            "artifact": {
+                "id": artifact_id,
+                "nodeId": state.node_id,
+                "role": "output",
+                "kind": "image",
+                "mimeType": "image/png",
+                "title": if index == 0 { "Generated image" } else { "Generated image variant" },
+                "storage": storage,
+                "sizeBytes": size_bytes,
+                "isPrimary": index == 0,
+                "source": "provider_image_generation",
+                "createdAt": now_iso_string(),
+            },
+            "timestamp": now_ms(),
+        }));
     }
 }
 
@@ -2170,6 +2476,10 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
+fn now_iso_string() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2228,6 +2538,100 @@ mod tests {
             .and_then(JsonValue::as_str)
             .unwrap()
             .contains("commit body"));
+    }
+
+    #[test]
+    fn build_turn_input_adds_selected_image_artifacts() {
+        let input = prepare_turn_input(
+            "Generate a variation.",
+            &[json!({
+                "kind": "screenshot",
+                "mimeType": "image/png",
+                "storage": {
+                    "backend": "remote",
+                    "url": "https://cdn.example.com/reference.png"
+                }
+            })],
+            ".",
+        )
+        .input;
+
+        assert_eq!(input.len(), 2);
+        assert_eq!(
+            input[0],
+            json!({ "type": "text", "text": "Generate a variation." })
+        );
+        assert_eq!(input[1]["type"], "input_image");
+        assert_eq!(
+            input[1]["image_url"],
+            "https://cdn.example.com/reference.png"
+        );
+        assert_eq!(input[1]["detail"], "auto");
+    }
+
+    #[test]
+    fn build_turn_input_ignores_non_image_artifacts() {
+        let input = prepare_turn_input(
+            "Summarize.",
+            &[json!({
+                "kind": "pdf",
+                "mimeType": "application/pdf",
+                "storage": { "url": "https://cdn.example.com/report.pdf" }
+            })],
+            ".",
+        )
+        .input;
+
+        assert_eq!(input, vec![json!({ "type": "text", "text": "Summarize." })]);
+    }
+
+    #[test]
+    fn prepare_turn_input_reports_unattached_image_artifacts() {
+        let prepared = prepare_turn_input(
+            "Use this.",
+            &[json!({
+                "id": "artifact-1",
+                "title": "Missing image",
+                "kind": "image",
+                "mimeType": "image/png",
+                "storage": { "path": "/tmp/does-not-exist.png" }
+            })],
+            ".",
+        );
+
+        assert_eq!(
+            prepared.input,
+            vec![json!({ "type": "text", "text": "Use this." })]
+        );
+        assert_eq!(prepared.skipped_image_artifacts.len(), 1);
+        assert_eq!(prepared.skipped_image_artifacts[0]["id"], "artifact-1");
+        assert_eq!(
+            prepared.skipped_image_artifacts[0]["label"],
+            "Missing image"
+        );
+    }
+
+    #[test]
+    fn image_models_do_not_use_structured_text_output_schema() {
+        assert!(!model_uses_structured_text_output("gpt-image-2"));
+        assert!(model_uses_structured_text_output("gpt-5.5"));
+    }
+
+    #[test]
+    fn materializes_inline_provider_image_to_local_storage() {
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("AGENTREE_ARTIFACTS_DIR", temp.path());
+        let (storage, size_bytes) =
+            materialize_provider_image_url("data:image/png;base64,aGVsbG8=", "item-1:image:0")
+                .expect("materialized image");
+        std::env::remove_var("AGENTREE_ARTIFACTS_DIR");
+
+        assert_eq!(storage["backend"], "local");
+        assert_eq!(size_bytes, Some(5));
+        let path = storage["path"].as_str().expect("local path");
+        assert!(!path.contains("aGVsbG8="));
+        assert!(path.starts_with(temp.path().to_str().unwrap()));
+        assert_eq!(fs::read(path).unwrap(), b"hello");
     }
 
     #[test]

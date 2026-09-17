@@ -32,6 +32,7 @@ export interface SharedNodeProps {
   attentionBadgeItems?: AttentionBadgeItem[];
   showSelectionControl?: boolean;
   layout: ViewLayout;
+  graphNodeHeight?: number;
   heightKey?: string;
   onMeasureHeight?: (id: string, height: number) => void;
   hoverCardContent?: ReactNode;

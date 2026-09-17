@@ -35,6 +35,7 @@ export interface GraphNodeData {
   attentionBadgeCount?: number;
   attentionBadgeItems?: AttentionBadgeItem[];
   detailLevel?: GraphNodeDetailLevel;
+  graphNodeHeight?: number;
   heightKey?: string;
   onMeasureHeight?: (id: string, height: number) => void;
   onFocus: (id: string, metrics?: FocusTriggerMetrics) => void;
@@ -179,6 +180,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
     focusFeedbackEnabled: !isRedirectedUserNode,
     detailLevel,
     layout: 'graph' as const,
+    graphNodeHeight: typeof data.graphNodeHeight === 'number' ? data.graphNodeHeight : undefined,
     heightKey: data.heightKey,
     onMeasureHeight: data.onMeasureHeight,
     hoverCardContent: enableHoverCard ? (

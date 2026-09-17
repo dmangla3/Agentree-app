@@ -417,7 +417,11 @@ fn upsert_run_ledger_for_context(
     }
 }
 
-fn emit_agent_event(app_handle: &AppHandle, session_id: &str, event: &serde_json::Value) {
+pub(crate) fn emit_agent_event(
+    app_handle: &AppHandle,
+    session_id: &str,
+    event: &serde_json::Value,
+) {
     let mut event = event.clone();
     if let Ok(Some(ledger)) = app_handle
         .state::<crate::db::TelemetryDb>()
@@ -486,6 +490,23 @@ fn emit_agent_event(app_handle: &AppHandle, session_id: &str, event: &serde_json
         "event": event,
     });
     let _ = app_handle.emit("agent:event", payload);
+}
+
+pub(crate) fn apply_and_emit_agent_event(
+    app_handle: &AppHandle,
+    session_id: &str,
+    event: &serde_json::Value,
+) {
+    let run_state = {
+        let app_state = app_handle.state::<AgentState>();
+        let run_states = app_state.run_states.lock().unwrap();
+        run_states.get(session_id).cloned()
+    };
+    if let Some(run_state) = run_state {
+        let mut run_state = run_state.lock().unwrap();
+        update_run_state_from_event(&mut run_state, event);
+    }
+    emit_agent_event(app_handle, session_id, event);
 }
 
 fn emit_finalize_ack(app_handle: &AppHandle, session_id: &str, payload: &FinalizeAckPayload) {
@@ -1057,6 +1078,17 @@ fn derive_incremental_text(previous: &str, next: &str) -> String {
     }
 }
 
+fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.windows(2)
+        .find(|window| window.first().map(String::as_str) == Some(flag))
+        .and_then(|window| window.get(1))
+        .map(String::as_str)
+}
+
+fn codex_chatgpt_session_supports_model(model: Option<&str>) -> bool {
+    !matches!(model, Some("gpt-image-2"))
+}
+
 fn append_message_timeline_segment_for_item(
     run_state: &mut AgentRunState,
     text: &str,
@@ -1232,6 +1264,23 @@ fn normalize_timeline_event(event: &JsonValue) -> Option<JsonValue> {
             "content": event.get("content").cloned().unwrap_or(JsonValue::Null),
             "idempotency_key": event.get("idempotency_key").cloned().unwrap_or(JsonValue::Null),
         })),
+        "artifact_registered" => {
+            let artifact = event.get("artifact")?;
+            if !artifact.is_object() {
+                return None;
+            }
+            Some(serde_json::json!({
+                "type": "tool_result",
+                "timestamp": timestamp,
+                "toolName": "show_output",
+                "toolOutput": artifact.get("title").cloned()
+                    .or_else(|| artifact.get("filename").cloned())
+                    .or_else(|| artifact.get("kind").cloned())
+                    .unwrap_or(JsonValue::String("output preview".to_string())),
+                "isError": false,
+                "toolUseId": artifact.get("id").cloned().unwrap_or(JsonValue::Null),
+            }))
+        }
         "tool_use" => Some(serde_json::json!({
             "type": "tool_use",
             "timestamp": timestamp,
@@ -1488,6 +1537,14 @@ fn update_run_state_from_event(run_state: &mut AgentRunState, event: &JsonValue)
                 event.get("delta").and_then(|value| value.as_str()),
             ) {
                 append_tool_output_delta(run_state, tool_use_id, delta);
+            }
+        }
+        "artifact_registered" => {
+            if let Some(artifact) = event.get("artifact").cloned().filter(JsonValue::is_object) {
+                crate::artifacts::upsert_artifact_in_execution_data(
+                    &mut run_state.context.execution_data,
+                    artifact,
+                );
             }
         }
         "session" => {
@@ -3151,13 +3208,32 @@ fn spawn_agent_internal(
         ),
     );
 
-    let mcp_url = crate::mcp::mcp_server_url();
+    let base_mcp_url = crate::mcp::mcp_server_url();
+    let mcp_url = if base_mcp_url.contains('?') {
+        format!("{}&agentree_node_id={}", base_mcp_url, session_id)
+    } else {
+        format!("{}?agentree_node_id={}", base_mcp_url, session_id)
+    };
     let mut command = Command::new(&program);
+    let artifacts_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve app data dir: {}", error))?
+        .join("artifacts")
+        .join(&session_id);
+    std::fs::create_dir_all(&artifacts_dir).map_err(|error| {
+        format!(
+            "Could not create artifact directory {}: {}",
+            artifacts_dir.display(),
+            error
+        )
+    })?;
     command
         .args(&args)
         .current_dir(&cwd)
         .env("AGENTREE_MCP_URL", &mcp_url)
         .env("MCP_SERVER_URL", &mcp_url)
+        .env("AGENTREE_ARTIFACTS_DIR", &artifacts_dir)
         .env("AGENTREE_TRACE_ID", trace_id.clone().unwrap_or_default())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -3199,6 +3275,13 @@ fn spawn_agent_internal(
             ));
         }
         if agent_type.as_str() == "codex" && materialized.auth_type == "codex_chatgpt_session" {
+            let model = arg_value(&args, "--model");
+            if !codex_chatgpt_session_supports_model(model) {
+                return Err(format!(
+                    "{} is not available through a Codex ChatGPT subscription. Use a Codex OpenAI API key profile to run this model.",
+                    model.unwrap_or("This model")
+                ));
+            }
             if let Some(codex_home) = materialized.codex_home.clone() {
                 codex_auth_state_to_persist = Some((profile_id.to_string(), codex_home));
             }
@@ -3999,15 +4082,16 @@ pub fn get_agent_run_state(
 #[cfg(test)]
 mod tests {
     use super::{
-        ai_label_from_execution_data, build_finalize_snapshot,
+        ai_label_from_execution_data, arg_value, build_finalize_snapshot,
         cleanup_requires_server_final_persisted, cleanup_terminal_status_allows_cleanup,
-        commit_body_from_execution_data, commit_message_for_snapshot,
-        commit_subject_from_execution_data, decide_agent_run_watchdog_timeout,
-        ensure_context_recovery_fields, is_terminal_runtime_status, latest_provider_thread_id,
-        local_node_payload_for_snapshot, run_ledger_user_node_id_from_context,
-        should_persist_failure_reason, snapshot_from_replayed_journal, startup_resume_args,
-        terminal_status_for_runtime_activity, update_run_state_from_event, AgentRunContext,
-        AgentRunSnapshot, AgentRunState, STARTUP_RESUME_PROMPT,
+        codex_chatgpt_session_supports_model, commit_body_from_execution_data,
+        commit_message_for_snapshot, commit_subject_from_execution_data,
+        decide_agent_run_watchdog_timeout, ensure_context_recovery_fields,
+        is_terminal_runtime_status, latest_provider_thread_id, local_node_payload_for_snapshot,
+        run_ledger_user_node_id_from_context, should_persist_failure_reason,
+        snapshot_from_replayed_journal, startup_resume_args, terminal_status_for_runtime_activity,
+        update_run_state_from_event, AgentRunContext, AgentRunSnapshot, AgentRunState,
+        STARTUP_RESUME_PROMPT,
     };
     use serde_json::json;
 
@@ -4066,6 +4150,17 @@ mod tests {
         assert!(!cleanup_requires_server_final_persisted(
             "failed_finalization"
         ));
+    }
+
+    #[test]
+    fn codex_chatgpt_session_rejects_image_model() {
+        let args = vec!["--model".to_string(), "gpt-image-2".to_string()];
+
+        assert_eq!(arg_value(&args, "--model"), Some("gpt-image-2"));
+        assert!(!codex_chatgpt_session_supports_model(arg_value(
+            &args, "--model"
+        )));
+        assert!(codex_chatgpt_session_supports_model(Some("gpt-5.5")));
     }
 
     #[test]
@@ -4530,7 +4625,7 @@ mod tests {
             agent_type: Some("codex".to_string()),
             status: "running".to_string(),
             phase: "running".to_string(),
-            last_seq: 2,
+            last_seq: 3,
             started_at: 1,
             updated_at: 2,
             terminal_status: None,
@@ -4560,6 +4655,28 @@ mod tests {
                 run_id: "run-1".to_string(),
                 assistant_node_id: "assistant-1".to_string(),
                 seq: 2,
+                event_type: "artifact_registered".to_string(),
+                status: None,
+                phase: None,
+                payload: json!({
+                    "type": "artifact_registered",
+                    "artifact": {
+                        "id": "artifact-1",
+                        "kind": "image",
+                        "title": "Preview image",
+                        "mimeType": "image/png",
+                        "path": "/tmp/preview.png",
+                        "isPrimary": true
+                    },
+                    "timestamp": 2
+                })
+                .to_string(),
+                timestamp: 2,
+            },
+            crate::db::AgentRunJournalEvent {
+                run_id: "run-1".to_string(),
+                assistant_node_id: "assistant-1".to_string(),
+                seq: 3,
                 event_type: "provider_stop".to_string(),
                 status: None,
                 phase: None,
@@ -4569,10 +4686,10 @@ mod tests {
                     "provider_stop_reason": "end_turn",
                     "final_content": "final answer",
                     "usage": {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8},
-                    "timestamp": 2
+                    "timestamp": 3
                 })
                 .to_string(),
-                timestamp: 2,
+                timestamp: 3,
             },
         ];
 
@@ -4593,6 +4710,30 @@ mod tests {
         assert_eq!(snapshot.prompt_tokens, Some(3));
         assert_eq!(snapshot.completion_tokens, Some(5));
         assert_eq!(snapshot.total_tokens, Some(8));
+        assert_eq!(snapshot.execution_data["artifacts"][0]["id"], "artifact-1");
+        assert_eq!(
+            snapshot.execution_data["artifacts"][0]["isPrimary"],
+            json!(true)
+        );
+        let artifact_timeline_row = snapshot.execution_data["timeline"]
+            .as_array()
+            .and_then(|events| {
+                events
+                    .iter()
+                    .find(|event| event.get("toolName") == Some(&json!("show_output")))
+            })
+            .cloned();
+        assert_eq!(
+            artifact_timeline_row,
+            Some(json!({
+                "type": "tool_result",
+                "timestamp": 2,
+                "toolName": "show_output",
+                "toolOutput": "Preview image",
+                "isError": false,
+                "toolUseId": "artifact-1"
+            }))
+        );
     }
 
     #[test]

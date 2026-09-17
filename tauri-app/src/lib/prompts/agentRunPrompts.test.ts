@@ -36,7 +36,7 @@ describe('agent run prompts', () => {
 
     expect(result.prompt).toContain('You are working inside Agentree on a repository-backed agent node.');
     expect(result.prompt).toContain('Changes made by previous Agentree agents have already been committed and are present in this worktree');
-    expect(result.prompt).toContain('You can modify the working tree for the latest request');
+    expect(result.prompt).toContain('You may edit repository files as needed');
     expect(result.prompt).toContain('[Selected Workspace Context]\n[Context: Stable Prefix]\n[Turn 2] ASSISTANT (a2:assistant)\nRefactor summary');
     expect(result.prompt).toContain('[Latest User Request]\nContinue the refactor.');
     expect(result.prompt).not.toContain('Cross-Provider');
@@ -68,10 +68,12 @@ describe('agent run prompts', () => {
     });
 
     expect(result.prompt).toContain('Agentree provides writable per-agent cache/build env vars');
-    expect(result.prompt).toContain('when you create or revise repository files that may be committed');
-    expect(result.prompt).toContain('write file references as repo-relative paths');
+    expect(result.prompt).toContain('File editing: You are working in an Agentree-managed worktree');
+    expect(result.prompt).toContain('In files you edit or create, use repo-relative file references');
     expect(result.prompt).toContain('Do not write absolute Agentree worktree paths');
-    expect(result.prompt).toContain('Absolute clickable local file links are acceptable only in your final chat response');
+    expect(result.prompt).toContain('File references in responses');
+    expect(result.prompt).toContain('clickable absolute local file links are acceptable');
+    expect(result.prompt).toContain('call the Agentree MCP show_output tool with its path or URL');
     expect(result.prompt).toContain('Review this generated implementation.');
     expect(result.agentreeContextInjected).toBe(false);
   });

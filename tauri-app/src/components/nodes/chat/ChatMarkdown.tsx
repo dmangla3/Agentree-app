@@ -1,12 +1,112 @@
-import { memo, useMemo } from 'react';
+import { memo, useEffect, useId, useMemo, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import { cn } from '../../../lib/utils';
 import { createMarkdownLinkClickHandler } from '../../../lib/linkActivation';
 import { ChatMermaidBlock } from './ChatMermaidBlock';
+import type { MessageHighlightAnnotation } from '../../../stores/workspaceStore';
+import { MESSAGE_HIGHLIGHT_COLORS } from '../../../lib/messageHighlights';
+import { useActiveMessageHighlightId } from '../../highlights/MessageHighlightActiveContext';
 
 const chatMarkdownPlugins = [remarkGfm, remarkBreaks];
+const HIGHLIGHT_REGISTRY_NAMES = {
+  yellow: 'agentree-message-highlight-yellow',
+  green: 'agentree-message-highlight-green',
+  blue: 'agentree-message-highlight-blue',
+  rose: 'agentree-message-highlight-rose',
+  active: 'agentree-message-highlight-active',
+} as const;
+
+type HighlightColorName = keyof typeof HIGHLIGHT_REGISTRY_NAMES;
+type HighlightBucket = Record<HighlightColorName, Range[]>;
+const mountedHighlightBuckets = new Map<string, HighlightBucket>();
+
+const createEmptyHighlightBucket = (): HighlightBucket => ({
+  yellow: [],
+  green: [],
+  blue: [],
+  rose: [],
+  active: [],
+});
+
+const getCssHighlightApi = () => {
+  const cssHighlights = typeof CSS !== 'undefined' ? (CSS as any).highlights : null;
+  const HighlightCtor = typeof window !== 'undefined' ? (window as any).Highlight : null;
+  if (!cssHighlights || !HighlightCtor) return null;
+  return { cssHighlights, HighlightCtor };
+};
+
+const refreshCssHighlights = () => {
+  const api = getCssHighlightApi();
+  if (!api) return;
+  const allBuckets = createEmptyHighlightBucket();
+  mountedHighlightBuckets.forEach((bucket) => {
+    MESSAGE_HIGHLIGHT_COLORS.forEach((color) => {
+      allBuckets[color].push(...bucket[color]);
+    });
+    allBuckets.active.push(...bucket.active);
+  });
+  (Object.keys(HIGHLIGHT_REGISTRY_NAMES) as HighlightColorName[]).forEach((name) => {
+    const ranges = allBuckets[name];
+    if (ranges.length > 0) {
+      api.cssHighlights.set(HIGHLIGHT_REGISTRY_NAMES[name], new api.HighlightCtor(...ranges));
+    } else {
+      api.cssHighlights.delete(HIGHLIGHT_REGISTRY_NAMES[name]);
+    }
+  });
+};
+
+const createRangeFromTextOffsets = (root: HTMLElement, start: number, end: number): Range | null => {
+  const ownerDocument = root.ownerDocument;
+  const walker = ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let offset = 0;
+  let startNode: Text | null = null;
+  let endNode: Text | null = null;
+  let startOffset = 0;
+  let endOffset = 0;
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    const nodeStart = offset;
+    const nodeEnd = nodeStart + node.data.length;
+    if (!startNode && start >= nodeStart && start <= nodeEnd) {
+      startNode = node;
+      startOffset = start - nodeStart;
+    }
+    if (!endNode && end >= nodeStart && end <= nodeEnd) {
+      endNode = node;
+      endOffset = end - nodeStart;
+      break;
+    }
+    offset = nodeEnd;
+  }
+
+  if (!startNode || !endNode) return null;
+  const range = ownerDocument.createRange();
+  range.setStart(startNode, startOffset);
+  range.setEnd(endNode, endOffset);
+  return range;
+};
+
+const scrollRangeIntoView = (root: HTMLElement, range: Range) => {
+  const rangeRect = range.getBoundingClientRect();
+  if (!rangeRect.width && !rangeRect.height) return;
+  let container: HTMLElement | null = root.parentElement;
+  while (container) {
+    const style = window.getComputedStyle(container);
+    const canScroll = /(auto|scroll)/.test(`${style.overflow}${style.overflowY}`) && container.scrollHeight > container.clientHeight;
+    if (canScroll) break;
+    container = container.parentElement;
+  }
+  if (container) {
+    const containerRect = container.getBoundingClientRect();
+    const delta = rangeRect.top - containerRect.top - (containerRect.height / 2) + (rangeRect.height / 2);
+    container.scrollTo({ top: container.scrollTop + delta, behavior: 'smooth' });
+    return;
+  }
+  rangeRect.top && window.scrollBy({ top: rangeRect.top - (window.innerHeight / 2), behavior: 'smooth' });
+};
 
 export const createChatMarkdownComponents = (repoPath?: string | null) => {
   const handleLinkClick = createMarkdownLinkClickHandler(repoPath);
@@ -83,15 +183,63 @@ export const chatMarkdownComponents = createChatMarkdownComponents();
 export const ChatMarkdown = memo(function ChatMarkdown({
   children,
   repoPath = null,
+  messageId = null,
+  highlights = [],
+  activeHighlightId,
+  highlightEnabled = false,
 }: {
   children: string;
   repoPath?: string | null;
+  messageId?: string | null;
+  highlights?: MessageHighlightAnnotation[];
+  activeHighlightId?: string | null;
+  highlightEnabled?: boolean;
 }) {
   const components = useMemo(() => createChatMarkdownComponents(repoPath), [repoPath]);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const rootId = useId();
+  const contextActiveHighlightId = useActiveMessageHighlightId();
+  const resolvedActiveHighlightId = activeHighlightId ?? contextActiveHighlightId;
+
+  useEffect(() => {
+    const root = rootRef.current;
+    const api = getCssHighlightApi();
+    if (!root || !api || !highlightEnabled || highlights.length === 0) {
+      mountedHighlightBuckets.delete(rootId);
+      refreshCssHighlights();
+      return;
+    }
+
+    const bucket = createEmptyHighlightBucket();
+    highlights.forEach((highlight) => {
+      const range = createRangeFromTextOffsets(root, highlight.range.start, highlight.range.end);
+      if (!range) return;
+      bucket[highlight.color].push(range);
+      if (highlight.id === resolvedActiveHighlightId) {
+        bucket.active.push(range);
+        scrollRangeIntoView(root, range);
+      }
+    });
+    mountedHighlightBuckets.set(rootId, bucket);
+    refreshCssHighlights();
+
+    return () => {
+      mountedHighlightBuckets.delete(rootId);
+      refreshCssHighlights();
+    };
+  }, [rootId, highlights, highlightEnabled, resolvedActiveHighlightId, children]);
+
   return (
-    <ReactMarkdown remarkPlugins={chatMarkdownPlugins} components={components}>
-      {children}
-    </ReactMarkdown>
+    <div
+      ref={rootRef}
+      className="contents"
+      data-agentree-highlight-content-root={highlightEnabled ? 'true' : undefined}
+      data-agentree-highlight-message-id={messageId || undefined}
+    >
+      <ReactMarkdown remarkPlugins={chatMarkdownPlugins} components={components}>
+        {children}
+      </ReactMarkdown>
+    </div>
   );
 });
 

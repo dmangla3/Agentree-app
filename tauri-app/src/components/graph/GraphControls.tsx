@@ -51,12 +51,14 @@ import {
     Leaf,
     ChevronLeft,
     ChevronRight,
-    Loader2,
-    CheckCircle2,
-    Brain,
-} from 'lucide-react';
-import { cn } from '../../lib/utils';
-import type { Insight, Message, Summary } from '../../stores/workspaceStore';
+	    Loader2,
+	    CheckCircle2,
+	    Brain,
+	    Highlighter,
+	    Trash2,
+	} from 'lucide-react';
+	import { cn } from '../../lib/utils';
+	import type { Insight, Message, MessageHighlightColor, Summary } from '../../stores/workspaceStore';
 import type { MergeTabRunIndicator } from '../../stores/integrationStore';
 import { LayoutMode, LaneStrategy } from '../../hooks/graph/useGraphLayout';
 import { AgentOperator, GroupOperator, MessageNodeType, TagOperator, TimePreset } from '../../hooks/graph/useTagFilter';
@@ -135,6 +137,15 @@ export interface LeafNodeNavigationItem {
     modelLabel: string;
     statusLabel: string;
     statusTone: 'active' | 'success' | 'danger' | 'muted';
+    timestampLabel: string;
+}
+
+export interface HighlightNavigationItem {
+    id: string;
+    messageId: string;
+    label: string;
+    exact: string;
+    color: MessageHighlightColor;
     timestampLabel: string;
 }
 
@@ -228,6 +239,10 @@ export interface GraphControlsProps {
     leafNodes: LeafNodeNavigationItem[];
     allLeafNodes?: LeafNodeNavigationItem[];
     onLeafNodeFocus: (id: string) => void;
+    highlightItems?: HighlightNavigationItem[];
+    activeHighlightId?: string | null;
+    onHighlightFocus?: (item: HighlightNavigationItem) => void;
+    onHighlightDelete?: (item: HighlightNavigationItem) => void;
     mergeSourceCount: number;
     mergeRunIndicator: MergeTabRunIndicator;
     mergeAttentionNonce: number;
@@ -605,10 +620,14 @@ export function GraphControls({
     onToggleInsightsVisible,
     onToggleShowInsightsInGraph,
     renderInsightPanel,
-    leafNodes,
-    allLeafNodes,
-    onLeafNodeFocus,
-    mergeSourceCount,
+	    leafNodes,
+	    allLeafNodes,
+	    onLeafNodeFocus,
+	    highlightItems = [],
+	    activeHighlightId = null,
+	    onHighlightFocus,
+	    onHighlightDelete,
+	    mergeSourceCount,
     mergeRunIndicator,
     mergeAttentionNonce,
     renderMergePanel,
@@ -722,13 +741,19 @@ export function GraphControls({
         if (open === insightsVisible) return;
         onToggleInsightsVisible();
     }, [insightsVisible, onToggleInsightsVisible]);
-    const leafStatusToneClass = {
-        active: 'bg-amber-500/12 text-amber-700 dark:bg-amber-400/12 dark:text-amber-300',
-        success: 'bg-emerald-500/12 text-emerald-700 dark:bg-emerald-400/12 dark:text-emerald-300',
-        danger: 'bg-red-500/12 text-red-700 dark:bg-red-400/12 dark:text-red-300',
-        muted: 'bg-slate-500/12 text-slate-600 dark:bg-slate-400/12 dark:text-slate-300',
-    };
-    const visibleLeafNodes = leafNodeScope === 'all' ? (allLeafNodes ?? leafNodes) : leafNodes;
+	    const leafStatusToneClass = {
+	        active: 'bg-amber-500/12 text-amber-700 dark:bg-amber-400/12 dark:text-amber-300',
+	        success: 'bg-emerald-500/12 text-emerald-700 dark:bg-emerald-400/12 dark:text-emerald-300',
+	        danger: 'bg-red-500/12 text-red-700 dark:bg-red-400/12 dark:text-red-300',
+	        muted: 'bg-slate-500/12 text-slate-600 dark:bg-slate-400/12 dark:text-slate-300',
+	    };
+	    const highlightColorClass: Record<MessageHighlightColor, string> = {
+	        yellow: 'bg-yellow-300 ring-yellow-500/40',
+	        green: 'bg-green-300 ring-green-500/40',
+	        blue: 'bg-blue-300 ring-blue-500/40',
+	        rose: 'bg-rose-300 ring-rose-500/40',
+	    };
+	    const visibleLeafNodes = leafNodeScope === 'all' ? (allLeafNodes ?? leafNodes) : leafNodes;
     return (
         <div
             ref={controlsRef}
@@ -1304,10 +1329,109 @@ export function GraphControls({
                                 </div>
                             )}
                         </PopoverContent>
-                    </Popover>
+	                    </Popover>
 
-                    {/* Leaf nodes */}
-                    <DropdownMenu>
+	                    {/* Highlights */}
+	                    <DropdownMenu>
+	                        <Tooltip>
+	                            <TooltipTrigger asChild>
+	                                <DropdownMenuTrigger asChild>
+	                                    <button
+	                                        type="button"
+	                                        className={cn(
+	                                            iconButtonBase,
+	                                            iconButtonGhost,
+	                                            highlightItems.length > 0 && "text-foreground"
+	                                        )}
+	                                        aria-label="Highlights"
+	                                    >
+	                                        <span className={iconGlow} />
+	                                        <span className={iconContainer}>
+	                                            <Highlighter size={15} strokeWidth={2} />
+	                                        </span>
+	                                        {highlightItems.length > 0 ? (
+	                                            <span className="absolute -right-1 -top-1 inline-flex h-[16px] min-w-[16px] items-center justify-center rounded-full border border-background bg-yellow-400 px-1 font-mono text-[8px] font-bold leading-none text-yellow-950 shadow-sm">
+	                                                {highlightItems.length > 99 ? '99+' : highlightItems.length}
+	                                            </span>
+	                                        ) : null}
+	                                    </button>
+	                                </DropdownMenuTrigger>
+	                            </TooltipTrigger>
+	                            <TooltipContent side="bottom" align="end">
+	                                Saved text highlights
+	                            </TooltipContent>
+	                        </Tooltip>
+	                        <DropdownMenuContent className="w-96 overflow-hidden p-0" align="end">
+	                            <div className="border-b border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-panel-strong)/0.64)] p-3">
+	                                <div className="flex items-center gap-2">
+	                                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-yellow-400/18 text-yellow-700 dark:text-yellow-300">
+	                                        <Highlighter size={14} />
+	                                    </div>
+	                                    <div>
+	                                        <p className="text-sm font-semibold leading-none">Highlights</p>
+	                                        <p className="mt-1 text-[11px] text-muted-foreground">
+	                                            {highlightItems.length} saved text ranges
+	                                        </p>
+	                                    </div>
+	                                </div>
+	                            </div>
+	                            {highlightItems.length > 0 ? (
+	                                <div
+	                                    className="max-h-80 overflow-y-auto overscroll-contain p-1.5 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
+	                                    onWheelCapture={stopNestedScrollPropagation}
+	                                    onTouchMoveCapture={stopNestedScrollPropagation}
+	                                >
+	                                    {highlightItems.map((item) => (
+	                                        <DropdownMenuItem
+	                                            key={item.id}
+	                                            onClick={() => onHighlightFocus?.(item)}
+	                                            className={cn(
+	                                                "group/item flex cursor-pointer items-start gap-2 rounded-md px-2 py-2",
+	                                                activeHighlightId === item.id && "bg-yellow-400/10"
+	                                            )}
+	                                        >
+	                                            <span className={cn("mt-0.5 h-3 w-3 shrink-0 rounded-full ring-2", highlightColorClass[item.color])} />
+	                                            <span className="min-w-0 flex-1">
+	                                                <span className="block truncate text-xs font-medium text-foreground">
+	                                                    {item.exact}
+	                                                </span>
+	                                                <span className="mt-1 flex min-w-0 items-center gap-1.5">
+	                                                    <span className="min-w-0 truncate text-[10px] text-muted-foreground">
+	                                                        {item.label}
+	                                                    </span>
+	                                                    <span className="shrink-0 text-[10px] text-muted-foreground/80">
+	                                                        {item.timestampLabel}
+	                                                    </span>
+	                                                </span>
+	                                            </span>
+	                                            {onHighlightDelete ? (
+	                                                <button
+	                                                    type="button"
+	                                                    className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition hover:bg-destructive/10 hover:text-destructive group-hover/item:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/30"
+	                                                    aria-label="Delete highlight"
+	                                                    title="Delete highlight"
+	                                                    onClick={(event) => {
+	                                                        event.preventDefault();
+	                                                        event.stopPropagation();
+	                                                        onHighlightDelete(item);
+	                                                    }}
+	                                                >
+	                                                    <Trash2 size={12} />
+	                                                </button>
+	                                            ) : null}
+	                                        </DropdownMenuItem>
+	                                    ))}
+	                                </div>
+	                            ) : (
+	                                <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+	                                    No highlights yet
+	                                </div>
+	                            )}
+	                        </DropdownMenuContent>
+	                    </DropdownMenu>
+
+	                    {/* Leaf nodes */}
+	                    <DropdownMenu>
                         <Tooltip>
                             <TooltipTrigger asChild>
                                 <DropdownMenuTrigger asChild>

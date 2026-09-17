@@ -12,6 +12,7 @@ import { resolveNodeState } from './runStateResolver';
 import { getMessageBaseCommitSha, getMessageOutputCommitSha } from './graph/commitAccessors';
 import { getVisibleCommitProjection } from './graphCommitVisibility';
 import { getThreadOriginNodeId } from './graphThreadRoots';
+import { getMessageArtifacts } from './artifacts';
 
 // --- Interface ---
 export interface LlmNodeData {
@@ -90,6 +91,16 @@ const getFilesChanged = (message: Message): Array<{ additions?: number; deletion
   return Array.isArray(files) ? files : [];
 };
 
+export const hasAssistantOutputPreview = (
+  message: Message,
+  nodeKind: 'thread_link' | 'user_message' | 'assistant_message' | 'commit_message' = 'assistant_message',
+): boolean => {
+  if (nodeKind !== 'assistant_message' || message.role !== 'assistant') return false;
+  if (isActiveAgentStatus(resolveNodeState(message, null).status)) return false;
+  return getMessageArtifacts(message, { includeAttachments: false, role: 'output' })
+    .some((artifact) => artifact.role === 'output');
+};
+
 export const createMessageHeightKey = ({
   message,
   entity,
@@ -112,11 +123,13 @@ export const createMessageHeightKey = ({
   const filesChanged = getFilesChanged(message);
   const hasAdditions = filesChanged.some((file) => (file.additions || 0) > 0) ? 1 : 0;
   const hasDeletions = filesChanged.some((file) => (file.deletions || 0) > 0) ? 1 : 0;
+  const outputPreview = hasAssistantOutputPreview(message, nodeKind) ? 1 : 0;
 
   return [
     'turn-cell-v2',
     nodeKind,
     `preview:${previewBucket}`,
+    `outputPreview:${outputPreview}`,
     `collapsed:${message.collapsed ? 1 : 0}`,
     `status:${message.status || ''}`,
     `agent:${message.agent_id || ''}`,
@@ -170,6 +183,8 @@ const TURN_LANE_GAP = 2;
 const TURN_STACK_GAP = 2;
 const TURN_CONVERSATION_NODE_WIDTH = 200;
 const TURN_COMMIT_NODE_WIDTH = 120;
+const TURN_ASSISTANT_NODE_HEIGHT = 112;
+const TURN_ASSISTANT_OUTPUT_PREVIEW_NODE_HEIGHT = 168;
 const TURN_COMMIT_NODE_HEIGHT = 112;
 const ORCHESTRATION_NODE_WIDTH = TURN_CONVERSATION_NODE_WIDTH;
 const ORCHESTRATION_NODE_HEIGHT = 190;
@@ -282,7 +297,7 @@ const getNodeHeight = (node: Node<any>): number => {
   if (node.type === 'layout_derived_commit_group') return 118;
   if (node.type === 'thread_origin') return 64;
   if (node.type === 'thread_link') return 64;
-  if (node.type === 'assistant_message') return 112;
+  if (node.type === 'assistant_message') return TURN_ASSISTANT_NODE_HEIGHT;
   if (node.type === 'user_message') return 82;
   if (node.type === 'orchestration_node') return ORCHESTRATION_NODE_HEIGHT;
   return NODE_HEIGHT;
@@ -2162,16 +2177,23 @@ export const mapMessagesToGraphElements = (
           : getLlmColor(msg.llmModel);
 
       const width = nodeKind === 'commit_message' ? TURN_COMMIT_NODE_WIDTH : TURN_CONVERSATION_NODE_WIDTH;
-      const measuredHeight = nodeKind === 'commit_message' ? undefined : measuredNodeHeights.get(msg.id);
-      const height = measuredHeight ?? (
+      const nodeState = resolveNodeState(msg, null);
+      const hasOutputPreview = hasAssistantOutputPreview(msg, nodeKind);
+      const baseHeight = (
         nodeKind === 'thread_link'
           ? 64
           : nodeKind === 'assistant_message'
-            ? 112
+            ? hasOutputPreview
+              ? TURN_ASSISTANT_OUTPUT_PREVIEW_NODE_HEIGHT
+              : TURN_ASSISTANT_NODE_HEIGHT
             : nodeKind === 'user_message'
               ? 82
               : TURN_COMMIT_NODE_HEIGHT
       );
+      const measuredHeight = nodeKind === 'commit_message' || nodeKind === 'assistant_message'
+        ? undefined
+        : measuredNodeHeights.get(msg.id);
+      const height = measuredHeight ?? baseHeight;
       const branchPointers = branchPointersByNodeId.get(msg.id) ?? [];
       const toolCallCount = getToolCallCount(msg);
       const messageCommitCount = getAssistantCommitCount(msg, messages, messageMap);
@@ -2181,7 +2203,6 @@ export const mapMessagesToGraphElements = (
       const changedFilesCount = filesChanged.length || undefined;
       const displayEntity = commitCount !== entity.commitCount ? { ...entity, commitCount } : entity;
       if (renderMessageNode) {
-        const nodeState = resolveNodeState(msg, null);
         nodes.push({
           id: msg.id,
           type: nodeKind, // Use the canonical node kind as the type
@@ -2190,6 +2211,7 @@ export const mapMessagesToGraphElements = (
             entity: displayEntity,
             projection,
             isSelected: false, // Selection will be updated in applyVisualProperties
+            graphNodeHeight: height,
             heightKey: createMessageHeightKey({
               message: msg,
               entity: displayEntity,

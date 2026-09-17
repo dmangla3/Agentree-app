@@ -1,10 +1,14 @@
 import { devLogLazy, installFrontendLogPersistence } from "@/lib/appLogger";
 import { installDevPerformanceObservers, recordPerfEvent } from "@/lib/perfRecorder";
+import { installAgentreeDebugHelpers } from "./debug/graphNodeProbe";
 
 // This file is imported first to trace module loading
 const initTime = Date.now();
 installFrontendLogPersistence();
 installDevPerformanceObservers();
+if (import.meta.env.DEV) {
+  installAgentreeDebugHelpers();
+}
 devLogLazy(() => [`[debug-init] ${initTime} - Module loading started`]);
 recordPerfEvent('app.module-load-start', { initTime }, { source: 'debug-init' });
 

@@ -109,6 +109,34 @@ const buildTurnWithLocalAssistantOutputCommit = (): Message[] => [
   }, 1),
 ];
 
+const buildTurnWithAssistantOutputArtifact = (): Message[] => [
+  makeMessage({
+    id: 'user-1',
+    role: 'user',
+    parentId: null,
+    content: 'Capture a previewable output.',
+  }, 0),
+  makeMessage({
+    id: 'assistant-1',
+    role: 'assistant',
+    parentId: 'user-1',
+    content: 'Attached the screenshot.',
+    status: 'completed',
+    agent_id: 'agent-1',
+    execution_data: {
+      artifacts: [{
+        id: 'artifact-1',
+        role: 'output',
+        kind: 'screenshot',
+        mimeType: 'image/png',
+        title: 'Screenshot preview',
+        storage: { backend: 'local', path: '/tmp/screenshot.png' },
+        isPrimary: true,
+      }],
+    },
+  }, 1),
+];
+
 const buildTurnWithLocalAssistantCommitStack = (): Message[] => [
   makeMessage({
     id: 'user-1',
@@ -616,6 +644,33 @@ const buildMappedGraph = (
   );
 };
 
+const buildMappedGraphWithMeasuredHeights = (
+  messages: Message[],
+  measuredNodeHeights: Map<string, number>,
+) => {
+  const projection = buildWorkspaceProjection({
+    messages,
+    summaries: [],
+    focusedMessageId: 'assistant-1',
+  });
+
+  return mapMessagesToGraphElements(
+    projection,
+    messages,
+    [],
+    'assistant-1',
+    new Set(),
+    new Set(),
+    false,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    measuredNodeHeights,
+  );
+};
+
 const buildCanonicalImportedCommitChain = () => {
   const commits: CommitEntity[] = [1, 2, 3, 4].map((index) => ({
     sha: `imported000${index}`,
@@ -866,6 +921,44 @@ describe('graph layout geometry QA', () => {
     const layouted = getTidyTreeLayoutedElements(mapped.nodes, mapped.edges);
 
     assertCompactTurnCellGeometry(layouted.nodes, layouted.edges);
+  });
+
+  it('reserves deterministic height for assistant nodes with output previews', () => {
+    const mapped = buildMappedGraph(buildTurnWithAssistantOutputArtifact());
+    const assistant = getNode(mapped.nodes, 'assistant-1');
+
+    expect(numberStyle(assistant.style?.height)).toBe(168);
+    expect((assistant.data as any).graphNodeHeight).toBe(168);
+    expect((assistant.data as any).heightKey).toContain('outputPreview:1');
+  });
+
+  it('does not let stale small measurements shrink output-preview assistant nodes', () => {
+    const mapped = buildMappedGraphWithMeasuredHeights(
+      buildTurnWithAssistantOutputArtifact(),
+      new Map([['assistant-1', 112]]),
+    );
+    const assistant = getNode(mapped.nodes, 'assistant-1');
+
+    expect(numberStyle(assistant.style?.height)).toBe(168);
+    expect((assistant.data as any).graphNodeHeight).toBe(168);
+  });
+
+  it('sizes turn hulls around deterministic output-preview assistant height', () => {
+    const mapped = buildMappedGraph(buildTurnWithAssistantOutputArtifact());
+    const layouted = getTidyTreeLayoutedElements(mapped.nodes, mapped.edges);
+    const user = getNode(layouted.nodes, 'user-1');
+    const assistant = getNode(layouted.nodes, 'assistant-1');
+    const hull = getHullByMember(layouted.nodes, 'assistant-1');
+
+    const minY = Math.min(user.position.y, assistant.position.y);
+    const maxY = Math.max(
+      user.position.y + numberStyle(user.style?.height),
+      assistant.position.y + numberStyle(assistant.style?.height),
+    );
+
+    expect(numberStyle(assistant.style?.height)).toBe(168);
+    expect(hull.position.y).toBe(minY);
+    expect(numberStyle(hull.style?.height)).toBe(maxY - minY);
   });
 
   it('removes hidden node sections before calculating turn lane width', () => {

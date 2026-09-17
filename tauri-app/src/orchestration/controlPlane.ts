@@ -33,6 +33,7 @@ export interface StartOrchestrationRunInput {
   agentPromptFlag?: string | null;
   agentName?: string | null;
   llmModel?: string | null;
+  modelCapabilities?: { inputModalities?: string[] } | null;
   reasoningEffort?: string | null;
   permissionMode?: ComposerPermissionMode;
   loginProfileId?: string | null;
@@ -69,6 +70,7 @@ export interface StartOrchestratorRunInput {
   agentPromptFlag?: string | null;
   agentName?: string | null;
   llmModel?: string | null;
+  modelCapabilities?: { inputModalities?: string[] } | null;
   reasoningEffort?: string | null;
   permissionMode?: ComposerPermissionMode;
   loginProfileId?: string | null;
@@ -246,6 +248,7 @@ export async function startOrchestratorRun(
     baseMessageId: input.parentNodeId,
     contextManifest: input.contextManifest ?? null,
     providerParentMeta: input.providerParentMeta ?? null,
+    modelCapabilities: input.modelCapabilities ?? null,
     isBranchFromInterior: input.isBranchFromInterior,
     targetNodeId: input.parentNodeId,
     nodeId: assistantNodeId,
@@ -411,6 +414,7 @@ export async function startOrchestrationRun(
     baseMessageId: input.parentNodeId,
     contextManifest: input.contextManifest ?? null,
     providerParentMeta: input.providerParentMeta ?? null,
+    modelCapabilities: input.modelCapabilities ?? null,
     isBranchFromInterior: input.isBranchFromInterior,
     targetNodeId: input.parentNodeId,
     nodeId: assistantNodeId,

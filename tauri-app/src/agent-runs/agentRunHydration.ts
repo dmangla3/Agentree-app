@@ -338,6 +338,7 @@ const dispatchHydratedStreamEvent = (
     event.type === 'tool_use' ||
     event.type === 'tool_result' ||
     event.type === 'tool_output_delta' ||
+    event.type === 'artifact_registered' ||
     event.type === 'user_steer_requested' ||
     event.type === 'error' ||
     event.type === 'stderr'

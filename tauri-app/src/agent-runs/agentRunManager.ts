@@ -95,6 +95,26 @@ const projectionMetaFingerprint = (executionData: Record<string, any>) => {
   };
 };
 
+const projectionArtifactsFingerprint = (executionData: Record<string, any>) => (
+  Array.isArray(executionData.artifacts)
+    ? executionData.artifacts.map((artifact: any) => {
+        if (!artifact || typeof artifact !== 'object') return null;
+        return {
+          id: artifact.id ?? null,
+          role: artifact.role ?? null,
+          kind: artifact.kind ?? null,
+          mimeType: artifact.mimeType ?? artifact.mime_type ?? null,
+          title: artifact.title ?? null,
+          filename: artifact.filename ?? artifact.fileName ?? null,
+          storageBackend: artifact.storage?.backend ?? null,
+          storageUrl: artifact.storage?.url ?? artifact.url ?? null,
+          thumbnailUrl: artifact.thumbnail?.url ?? null,
+          isPrimary: artifact.isPrimary ?? artifact.is_primary ?? null,
+        };
+      })
+    : []
+);
+
 const snapshotProjectionKey = (snapshot: AgentRunSnapshot) => JSON.stringify({
   nodeId: snapshot.nodeId,
   workspaceId: snapshot.workspaceId,
@@ -109,6 +129,7 @@ const snapshotProjectionKey = (snapshot: AgentRunSnapshot) => JSON.stringify({
   contentTail: snapshot.content.slice(-160),
   timelineLength: snapshot.timeline.length,
   timelineTail: timelineProjectionFingerprint(snapshot.timeline),
+  artifacts: projectionArtifactsFingerprint(snapshot.executionData),
   meta: projectionMetaFingerprint(snapshot.executionData),
   usage: snapshot.usage,
   terminalStatus: snapshot.terminalStatus,

@@ -15,6 +15,8 @@ import {
 import { getNodeFailureReason, isNodeFailureStatus } from '../../../lib/nodeFailureReason';
 import { shouldHydrateAgentRunHover } from '../../../lib/agentRunHoverHydrationPolicy';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../../@/components/ui/hover-card';
+import { getMessageArtifacts } from '../../../lib/artifacts';
+import { ArtifactGraphPreview } from '../../artifacts/ArtifactPreview';
 
 const isActiveAssistantStatus = (status: AgentStatus | null | undefined): boolean => (
   isActiveAgentStatus(status)
@@ -224,6 +226,7 @@ export const GraphAssistantNode = memo(({
   attentionBadgeCount,
   attentionBadgeItems = [],
   detailLevel = 'full',
+  graphNodeHeight,
   heightKey,
   onMeasureHeight,
   hoverCardContent,
@@ -237,6 +240,7 @@ export const GraphAssistantNode = memo(({
   const resolvedHoverHydrationEnabled = shouldHydrateAgentRunHover(entity, runStatus);
   const isFullDetail = detailLevel === 'full';
   const isMinimalDetail = detailLevel === 'minimal';
+  const cardHeight = typeof graphNodeHeight === 'number' ? graphNodeHeight : 112;
   const { label: assistantIdentityLabel, reasoningEffort: assistantReasoningEffortLabel } = getAssistantIdentityParts({
     llmModel: entity.message?.llmModel,
     llmProvider: entity.message?.llmProvider,
@@ -251,6 +255,9 @@ export const GraphAssistantNode = memo(({
     : null;
   const isAssistantWorking = isActiveAssistantStatus(displayStatus as AgentStatus | null | undefined);
   const hasAttention = Boolean(attentionBadgeCount && attentionBadgeCount > 0);
+  const outputArtifacts = getMessageArtifacts(entity.message, { includeAttachments: false, role: 'output' })
+    .filter((artifact) => artifact.role === 'output');
+  const hasOutputArtifacts = outputArtifacts.length > 0;
   return (
     <GraphNodeWrapper
       nodeId={nodeId}
@@ -265,7 +272,7 @@ export const GraphAssistantNode = memo(({
       )}
       style={{
         width: 200,
-        height: 112,
+        height: cardHeight,
       }}
       onMeasureHeight={onMeasureHeight}
       hoverCardContent={hoverCardContent}
@@ -307,6 +314,10 @@ export const GraphAssistantNode = memo(({
           <StatusIcon status={displayStatus as any} failureReason={failureReason} />
         </div>
       </div>
+
+      {!isMinimalDetail && !isAssistantWorking && hasOutputArtifacts ? (
+        <ArtifactGraphPreview artifacts={outputArtifacts} />
+      ) : null}
 
       {isMinimalDetail ? (
         <div className="relative z-10 flex min-h-0 flex-1 items-center">

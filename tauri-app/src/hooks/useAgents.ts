@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import {
+    type AgentModelConfig,
     defaultRuntimeModelKey,
     getRuntimeModelByKey,
     runtimeModels,
@@ -10,7 +11,7 @@ export interface Agent {
     name: string;
     type: string;
     tools?: string[];
-    model_config?: any;
+    model_config?: AgentModelConfig | null;
     cliArgs?: string;  // Raw CLI arguments for this agent
     promptFlag?: string | null;
     color?: string;    // Color theme for the agent
@@ -47,6 +48,7 @@ export function useAgents() {
                     effortLabel: model.effortLabel,
                     effortDescription: model.effortDescription,
                     reasoningEffort: model.reasoningEffort ?? null,
+                    capabilities: model.capabilities,
                 },
                 cliArgs: model.cliArgs,
                 promptFlag: model.promptFlag,
@@ -66,6 +68,7 @@ export function useAgents() {
                 effortLabel: model.effortLabel,
                 effortDescription: model.effortDescription,
                 reasoningEffort: model.reasoningEffort ?? null,
+                capabilities: model.capabilities,
             },
             cliArgs: model.cliArgs,
             promptFlag: model.promptFlag,

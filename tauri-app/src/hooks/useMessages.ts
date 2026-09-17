@@ -1,7 +1,16 @@
 import { useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { Message, Summary, AttachmentMetadata, CommitEntity, useWorkspaceStore } from '../stores/workspaceStore';
+import {
+    Message,
+    Summary,
+    AttachmentMetadata,
+    CommitEntity,
+    MessageHighlightAnnotation,
+    MessageHighlightColor,
+    MessageHighlightRange,
+    useWorkspaceStore,
+} from '../stores/workspaceStore';
 import axios from 'axios';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
@@ -10,6 +19,12 @@ import { localNodeKeys, parseLocalNode } from './useLocalNodes';
 import { applyLocalNodeMessages } from './useLiveMessages';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
+import {
+    addOrUpdateMessageHighlight,
+    createMessageHighlight,
+    removeMessageHighlight,
+    updateMessageHighlightColor,
+} from '../lib/messageHighlights';
 
 const patchMessageInCache = (
     queryClient: ReturnType<typeof useQueryClient>,
@@ -64,6 +79,40 @@ const syncMessageTagsToServer = async ({
         api.delete<Message>(`/messages/${messageId}/tags/${encodeURIComponent(tag)}`)
     ));
     return responses.length > 0 ? responses[responses.length - 1].data : null;
+};
+
+const syncMessageHighlightToServer = async ({
+    messageId,
+    action,
+    highlight,
+    highlightId,
+    color,
+}: {
+    messageId: string;
+    action: 'add' | 'update' | 'delete';
+    highlight?: MessageHighlightAnnotation;
+    highlightId?: string;
+    color?: MessageHighlightColor;
+}): Promise<Message | null> => {
+    if (action === 'add' && highlight) {
+        const response = await api.post<Message>(`/messages/${messageId}/highlights`, {
+            id: highlight.id,
+            color: highlight.color,
+            range: highlight.range,
+        });
+        return response.data;
+    }
+    if (action === 'update' && highlightId && color) {
+        const response = await api.patch<Message>(`/messages/${messageId}/highlights/${encodeURIComponent(highlightId)}`, {
+            color,
+        });
+        return response.data;
+    }
+    if (action === 'delete' && highlightId) {
+        const response = await api.delete<Message>(`/messages/${messageId}/highlights/${encodeURIComponent(highlightId)}`);
+        return response.data;
+    }
+    return null;
 };
 
 const fetchServerMessages = async (workspaceId: string): Promise<Message[]> => {
@@ -628,6 +677,134 @@ export const useDeleteComment = () => {
                 };
             });
             markMessagesStaleOnly(queryClient, variables.workspaceId, 'delete-comment');
+        },
+    });
+};
+
+export const useAddHighlight = () => {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async ({
+            workspaceId,
+            messageId,
+            color,
+            range,
+        }: {
+            workspaceId: string;
+            messageId: string;
+            color: MessageHighlightColor;
+            range: MessageHighlightRange;
+        }) => {
+            const highlight = createMessageHighlight({ color, range });
+            if (agentClient.hasRuntime()) {
+                void syncMessageHighlightToServer({ messageId, action: 'add', highlight }).catch((error) => {
+                    recordPerfEvent('mutation.highlights.background-sync-failed', {
+                        workspaceId,
+                        messageId,
+                        action: 'add',
+                        error: error instanceof Error ? error.message : String(error),
+                    }, { source: 'useAddHighlight' });
+                    console.warn('[useAddHighlight] Background highlight sync failed', error);
+                });
+                return { message: null as Message | null, highlight };
+            }
+            const message = await syncMessageHighlightToServer({ messageId, action: 'add', highlight });
+            return { message, highlight };
+        },
+        onSuccess: (data, variables) => {
+            patchMessageInCache(queryClient, variables.workspaceId, variables.messageId, (message) => ({
+                ...message,
+                ...(data.message ?? {}),
+                annotations: Array.isArray(data.message?.annotations)
+                    ? data.message.annotations
+                    : addOrUpdateMessageHighlight(message.annotations, data.highlight),
+                updatedAt: data.message?.updatedAt ?? new Date().toISOString(),
+            }));
+            markMessagesStaleOnly(queryClient, variables.workspaceId, 'add-highlight');
+        },
+    });
+};
+
+export const useUpdateHighlight = () => {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async ({
+            workspaceId,
+            messageId,
+            highlightId,
+            color,
+        }: {
+            workspaceId: string;
+            messageId: string;
+            highlightId: string;
+            color: MessageHighlightColor;
+        }) => {
+            if (agentClient.hasRuntime()) {
+                void syncMessageHighlightToServer({ messageId, action: 'update', highlightId, color }).catch((error) => {
+                    recordPerfEvent('mutation.highlights.background-sync-failed', {
+                        workspaceId,
+                        messageId,
+                        highlightId,
+                        action: 'update',
+                        error: error instanceof Error ? error.message : String(error),
+                    }, { source: 'useUpdateHighlight' });
+                    console.warn('[useUpdateHighlight] Background highlight sync failed', error);
+                });
+                return null;
+            }
+            return syncMessageHighlightToServer({ messageId, action: 'update', highlightId, color });
+        },
+        onSuccess: (updatedMessage, variables) => {
+            patchMessageInCache(queryClient, variables.workspaceId, variables.messageId, (message) => ({
+                ...message,
+                ...(updatedMessage ?? {}),
+                annotations: Array.isArray(updatedMessage?.annotations)
+                    ? updatedMessage.annotations
+                    : updateMessageHighlightColor(message.annotations, variables.highlightId, variables.color),
+                updatedAt: updatedMessage?.updatedAt ?? new Date().toISOString(),
+            }));
+            markMessagesStaleOnly(queryClient, variables.workspaceId, 'update-highlight');
+        },
+    });
+};
+
+export const useDeleteHighlight = () => {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async ({
+            workspaceId,
+            messageId,
+            highlightId,
+        }: {
+            workspaceId: string;
+            messageId: string;
+            highlightId: string;
+        }) => {
+            if (agentClient.hasRuntime()) {
+                void syncMessageHighlightToServer({ messageId, action: 'delete', highlightId }).catch((error) => {
+                    recordPerfEvent('mutation.highlights.background-sync-failed', {
+                        workspaceId,
+                        messageId,
+                        highlightId,
+                        action: 'delete',
+                        error: error instanceof Error ? error.message : String(error),
+                    }, { source: 'useDeleteHighlight' });
+                    console.warn('[useDeleteHighlight] Background highlight sync failed', error);
+                });
+                return null;
+            }
+            return syncMessageHighlightToServer({ messageId, action: 'delete', highlightId });
+        },
+        onSuccess: (updatedMessage, variables) => {
+            patchMessageInCache(queryClient, variables.workspaceId, variables.messageId, (message) => ({
+                ...message,
+                ...(updatedMessage ?? {}),
+                annotations: Array.isArray(updatedMessage?.annotations)
+                    ? updatedMessage.annotations
+                    : removeMessageHighlight(message.annotations, variables.highlightId),
+                updatedAt: updatedMessage?.updatedAt ?? new Date().toISOString(),
+            }));
+            markMessagesStaleOnly(queryClient, variables.workspaceId, 'delete-highlight');
         },
     });
 };

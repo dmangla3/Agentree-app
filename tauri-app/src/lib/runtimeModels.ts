@@ -1,5 +1,24 @@
 export type RuntimeProvider = 'claude' | 'codex';
 
+export type RuntimeModelModality = 'text' | 'image';
+
+export interface RuntimeModelCapabilities {
+  inputModalities: RuntimeModelModality[];
+  outputModalities: RuntimeModelModality[];
+  reasoningEffort: boolean;
+}
+
+export interface AgentModelConfig {
+  model?: string | null;
+  familyKey?: string | null;
+  familyLabel?: string | null;
+  familyDescription?: string | null;
+  effortLabel?: string | null;
+  effortDescription?: string | null;
+  reasoningEffort?: string | null;
+  capabilities?: RuntimeModelCapabilities | null;
+}
+
 export interface RuntimeModel {
   key: string;
   id: string;
@@ -17,7 +36,14 @@ export interface RuntimeModel {
   cliArgs: string;
   promptFlag: string | null;
   color: string;
+  capabilities: RuntimeModelCapabilities;
 }
+
+const textReasoningCapabilities: RuntimeModelCapabilities = {
+  inputModalities: ['text'],
+  outputModalities: ['text'],
+  reasoningEffort: true,
+};
 
 const claudeEfforts = [
   { id: 'low', label: 'Low', description: 'Minimal thinking, fastest responses' },
@@ -63,6 +89,7 @@ const makeClaudeModel = ({
   cliArgs: `--permission-mode auto --print --output-format stream-json --verbose --no-session-persistence --model ${modelAlias} --effort ${effort.id}`,
   promptFlag: null,
   color: 'amber',
+  capabilities: textReasoningCapabilities,
 });
 
 const makeCodexModel = ({
@@ -92,6 +119,39 @@ const makeCodexModel = ({
   cliArgs: `--model ${id} --reasoning-effort ${effort.id}`,
   promptFlag: null,
   color: 'green',
+  capabilities: textReasoningCapabilities,
+});
+
+const makeCodexImageModel = ({
+  id,
+  label,
+  description,
+}: {
+  id: string;
+  label: string;
+  description: string;
+}): RuntimeModel => ({
+  key: `codex:${id}`,
+  id,
+  provider: 'codex',
+  modelId: id,
+  familyKey: `codex:${id}`,
+  familyLabel: label,
+  familyDescription: description,
+  effortLabel: 'Image',
+  effortDescription: 'Image generation and editing',
+  reasoningEffort: null,
+  label,
+  providerLabel: 'Codex',
+  description,
+  cliArgs: `--model ${id}`,
+  promptFlag: null,
+  color: 'green',
+  capabilities: {
+    inputModalities: ['text', 'image'],
+    outputModalities: ['text', 'image'],
+    reasoningEffort: false,
+  },
 });
 
 const claudeModelBases = [
@@ -141,6 +201,14 @@ const codexModelBases = [
   },
 ] as const;
 
+const codexImageModelBases = [
+  {
+    id: 'gpt-image-2',
+    label: 'GPT Image 2',
+    description: 'OpenAI image generation and editing model for visual assistant outputs',
+  },
+] as const;
+
 const claudeModels: RuntimeModel[] = [
   ...claudeModelBases.flatMap((model) => claudeEfforts.map((effort) => makeClaudeModel({ ...model, effort }))),
   makeClaudeModel({
@@ -154,7 +222,11 @@ const codexModels: RuntimeModel[] = codexModelBases.flatMap((model) =>
   codexReasoningEfforts.map((effort) => makeCodexModel({ ...model, effort }))
 );
 
-export const runtimeModels: RuntimeModel[] = [...codexModels, ...claudeModels];
+const codexImageModels: RuntimeModel[] = codexImageModelBases.map((model) =>
+  makeCodexImageModel(model)
+);
+
+export const runtimeModels: RuntimeModel[] = [...codexModels, ...codexImageModels, ...claudeModels];
 
 export const defaultRuntimeModelKey = 'codex:gpt-5.5:high';
 

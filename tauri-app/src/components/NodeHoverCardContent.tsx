@@ -10,6 +10,7 @@ import {
   type AgentreeSurfaceCapabilities,
   type AgentreeSurfaceMode,
 } from './graph/surfaceCapabilities';
+import { MessageHighlightSelectionPopover } from './highlights/MessageHighlightSelectionPopover';
 
 let appNodeHoverPreviewPreload: Promise<{ default: typeof import('./AppNodeHoverPreview').AppNodeHoverPreview }> | null = null;
 
@@ -277,7 +278,11 @@ export function NodeHoverCardContent({
           />
         </Suspense>
       ) : null}
-    </div>
-    </AgentreeSurfaceProvider>
-  );
-}
+	    </div>
+	    <MessageHighlightSelectionPopover
+	      workspaceId={entity.message?.workspaceId ?? null}
+	      surfaceRef={previewScrollRef}
+	    />
+	    </AgentreeSurfaceProvider>
+	  );
+	}

@@ -33,6 +33,22 @@ vi.mock('../hooks/useAgents', () => ({
         },
       },
       {
+        id: 'codex:gpt-image-2',
+        type: 'codex',
+        name: 'GPT Image 2',
+        model_config: {
+          model: 'gpt-image-2',
+          familyKey: 'codex:gpt-image-2',
+          familyLabel: 'GPT Image 2',
+          effortLabel: 'Image',
+          capabilities: {
+            inputModalities: ['text', 'image'],
+            outputModalities: ['text', 'image'],
+            reasoningEffort: false,
+          },
+        },
+      },
+      {
         id: 'claude:opus-4.5:high',
         type: 'claude',
         name: 'Claude Opus High',
@@ -108,6 +124,36 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
     fireEvent.click(getByText('High'));
 
     expect(onSelectAgent).toHaveBeenCalledWith('codex:gpt-5.5:high');
+  });
+
+  it('blocks Codex image models for ChatGPT session profiles', () => {
+    profileState.profiles = [
+      { id: 'codex-chatgpt', provider: 'codex', displayName: 'Codex Subscription', authType: 'codex_chatgpt_session', status: 'ready', isDefault: true },
+    ];
+    const onSelectAgent = vi.fn();
+
+    const { getAllByText, getByText } = render(<UnifiedAgentModelSelector selectedAgentId={null} onSelectAgent={onSelectAgent} />);
+    fireEvent.click(getAllByText('GPT Image 2')[0]);
+    const imageRow = getByText('Image').closest('[role="button"]');
+
+    expect(imageRow?.getAttribute('aria-disabled')).toBe('true');
+    expect(imageRow?.getAttribute('title')).toContain('not available through a Codex ChatGPT subscription');
+    fireEvent.click(getByText('Image'));
+    expect(onSelectAgent).not.toHaveBeenCalledWith('codex:gpt-image-2');
+
+    fireEvent.click(getAllByText('GPT-5.5')[0]);
+    fireEvent.click(getByText('High'));
+    expect(onSelectAgent).toHaveBeenCalledWith('codex:gpt-5.5:high');
+  });
+
+  it('allows Codex image models for API key profiles', () => {
+    const onSelectAgent = vi.fn();
+
+    const { getAllByText, getByText } = render(<UnifiedAgentModelSelector selectedAgentId={null} onSelectAgent={onSelectAgent} />);
+    fireEvent.click(getAllByText('GPT Image 2')[0]);
+    fireEvent.click(getByText('Image'));
+
+    expect(onSelectAgent).toHaveBeenCalledWith('codex:gpt-image-2');
   });
 
   it('dims and blocks models whose provider lacks a ready selected profile', () => {

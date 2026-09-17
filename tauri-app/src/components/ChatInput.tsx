@@ -85,6 +85,7 @@ import {
     type ComposerPermissionMode,
 } from '../lib/composerPermissions';
 import { buildAgentRuntimeArgs, parseRuntimeCliArgs } from '../lib/agentRuntimeArgs';
+import { appendInputArtifactsToPrompt } from '../lib/artifacts';
 import {
     scheduleMessagesRefreshWhenGraphIdle,
 } from '../lib/graphInteractionGate';
@@ -118,6 +119,10 @@ interface FileAttachment {
     status: AttachmentStatus;
     path?: string;
     publicUrl?: string | null;
+    localPath?: string | null;
+    sizeBytes?: number | null;
+    width?: number | null;
+    height?: number | null;
     error?: string;
     objectUrl?: string; // Local preview URL
 }
@@ -143,6 +148,30 @@ const getAttachmentId = (attachment: Attachment) => {
     if ('id' in attachment) return attachment.id;
     return attachment.path;
 };
+
+const fileToDataUrl = (file: File): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+        if (typeof reader.result === 'string') {
+            resolve(reader.result);
+        } else {
+            reject(new Error('Could not read attachment as data URL.'));
+        }
+    };
+    reader.onerror = () => reject(reader.error || new Error('Could not read attachment.'));
+    reader.readAsDataURL(file);
+});
+
+const getImageDimensions = (objectUrl: string | undefined): Promise<{ width: number; height: number } | null> => new Promise((resolve) => {
+    if (!objectUrl) {
+        resolve(null);
+        return;
+    }
+    const image = new Image();
+    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    image.onerror = () => resolve(null);
+    image.src = objectUrl;
+});
 
 interface WorktreeRuntimeInfo {
     worktreePath: string;
@@ -1803,14 +1832,105 @@ export function ChatInput({
     }, [isInProgressStatus, persistedMessages, selectedWorkspaceId]);
 
     const uploadFile = useCallback(async (attachmentId: string, file: File) => {
-        sendFlowDebug('Attachment ignored while upload is redesigned', { filename: file.name, attachmentId });
-        setAttachments((prev: Attachment[]) => prev.filter((att: Attachment) => getAttachmentId(att) !== attachmentId));
-        addToast({
-            title: 'Attachments are not available',
-            description: 'File attachments will be redesigned after the local-first migration.',
-            variant: 'info',
-        });
-    }, [addToast]);
+        if (!selectedWorkspaceId) {
+            setAttachments((prev: Attachment[]) => prev.map((att: Attachment) => (
+                getAttachmentId(att) === attachmentId && 'file' in att
+                    ? { ...att, status: 'error', error: 'Select a workspace before attaching files.' }
+                    : att
+            )));
+            return;
+        }
+
+        setAttachments((prev: Attachment[]) => prev.map((att: Attachment) => (
+            getAttachmentId(att) === attachmentId && 'file' in att
+                ? { ...att, status: 'uploading', error: undefined }
+                : att
+        )));
+
+        let localPath: string | null = null;
+        let sizeBytes: number | null = file.size || null;
+        let remotePath: string | null = null;
+        let publicUrl: string | null = null;
+
+        try {
+            const attachment = attachmentsRef.current.find((att: Attachment) => getAttachmentId(att) === attachmentId);
+            const objectUrl = attachment && 'objectUrl' in attachment ? attachment.objectUrl : undefined;
+            const [dataUrl, dimensions] = await Promise.all([
+                fileToDataUrl(file),
+                getImageDimensions(objectUrl),
+            ]);
+            const saved = await commands.saveComposerAttachment(
+                selectedWorkspaceId,
+                attachmentId,
+                file.name,
+                dataUrl,
+            );
+            localPath = saved.path;
+            sizeBytes = saved.size_bytes ?? sizeBytes;
+
+            try {
+                const signedUpload = await api.post<{
+                    signedUrl: string;
+                    path: string;
+                    publicUrl: string | null;
+                }>('/attachments/signed-url', {
+                    filename: file.name,
+                    contentType: file.type || 'application/octet-stream',
+                });
+                await axios.put(signedUpload.data.signedUrl, file, {
+                    headers: {
+                        'Content-Type': file.type || 'application/octet-stream',
+                    },
+                });
+                remotePath = signedUpload.data.path;
+                publicUrl = signedUpload.data.publicUrl || null;
+                try {
+                    const signedDownload = await api.get<{ signedUrl: string }>('/attachments/signed-download-url', {
+                        params: { path: signedUpload.data.path },
+                    });
+                    publicUrl = signedDownload.data.signedUrl || publicUrl;
+                } catch (downloadError) {
+                    console.warn('[ChatInput] Uploaded attachment but could not refresh signed download URL', downloadError);
+                }
+            } catch (cloudError) {
+                console.warn('[ChatInput] Cloud attachment upload failed; keeping local cached attachment.', cloudError);
+            }
+
+            setAttachments((prev: Attachment[]) => prev.map((att: Attachment) => (
+                getAttachmentId(att) === attachmentId && 'file' in att
+                    ? {
+                        ...att,
+                        status: 'uploaded',
+                        path: remotePath || localPath || undefined,
+                        publicUrl,
+                        localPath,
+                        sizeBytes,
+                        width: dimensions?.width ?? null,
+                        height: dimensions?.height ?? null,
+                        error: undefined,
+                    }
+                    : att
+            )));
+            sendFlowDebug('Attachment cached for agent context', {
+                filename: file.name,
+                attachmentId,
+                hasLocalPath: Boolean(localPath),
+                hasRemotePath: Boolean(remotePath),
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Upload failed';
+            setAttachments((prev: Attachment[]) => prev.map((att: Attachment) => (
+                getAttachmentId(att) === attachmentId && 'file' in att
+                    ? { ...att, status: 'error', error: message }
+                    : att
+            )));
+            addToast({
+                title: 'Attachment upload failed',
+                description: message,
+                variant: 'error',
+            });
+        }
+    }, [addToast, selectedWorkspaceId]);
 
     const addFileAttachment = useCallback((file: File) => {
         const newAttachmentId = `${file.name}-${file.lastModified}-${Math.random()}`;
@@ -2359,13 +2479,17 @@ export function ChatInput({
 
         // --- 2. PREPARE DATA ---
         const structuredAttachments: AttachmentMetadata[] = attachments
-            .map((att: Attachment) => {
+            .map((att: Attachment): AttachmentMetadata | null => {
                 if ('file' in att && att.status === 'uploaded' && att.path) {
                     return {
                         path: att.path,
                         publicUrl: att.publicUrl || null,
                         filename: att.file.name,
                         contentType: att.file.type,
+                        localPath: att.localPath || null,
+                        sizeBytes: att.sizeBytes ?? null,
+                        width: att.width ?? null,
+                        height: att.height ?? null,
                     };
                 }
                 if ('path' in att && 'filename' in att) {
@@ -2374,6 +2498,10 @@ export function ChatInput({
                         publicUrl: att.publicUrl || null,
                         filename: att.filename,
                         contentType: att.contentType,
+                        localPath: att.localPath || null,
+                        sizeBytes: att.sizeBytes ?? null,
+                        width: att.width ?? null,
+                        height: att.height ?? null,
                     };
                 }
                 return null;
@@ -2387,11 +2515,11 @@ export function ChatInput({
             selectedRunCount: agentRunItemsForSend.length,
         });
         const getSelectedLlmModel = (agent: typeof primarySelectedAgent) =>
-            (agent as any)?.model_config?.model ||
+            agent?.model_config?.model ||
             parseRuntimeCliArgs(agent?.cliArgs).model ||
             null;
         const getSelectedReasoningEffort = (agent: typeof primarySelectedAgent) =>
-            (agent as any)?.model_config?.reasoningEffort ||
+            agent?.model_config?.reasoningEffort ||
             parseRuntimeCliArgs(agent?.cliArgs).reasoningEffort ||
             null;
         const selectedLlmModel = getSelectedLlmModel(primarySelectedAgent);
@@ -2882,6 +3010,7 @@ export function ChatInput({
                         nodeId: run.assistantMessageId,
                         assistantMsg: run.assistantMessage as Message,
                         prompt: savedPrompt.trim(),
+                        attachments: structuredAttachments,
                         authToken: token,
                         autoCheckout: shouldAutoCheckout,
                         contextPolicy: sendContextPolicy,
@@ -3088,6 +3217,7 @@ export function ChatInput({
                         nodeId: realAssistantId,
                         assistantMsg: realAssistant,
                         prompt: savedPrompt.trim(),
+                        attachments: structuredAttachments,
                         authToken: token,
                         autoCheckout: shouldAutoCheckout,
                         contextPolicy: sendContextPolicy,
@@ -3353,6 +3483,7 @@ export function ChatInput({
         nodeId: string;
         assistantMsg: Message;
         prompt: string;
+        attachments?: AttachmentMetadata[];
         authToken: string;
         autoCheckout: boolean;
         contextPolicy: ContextPolicy;
@@ -3364,7 +3495,8 @@ export function ChatInput({
     }
 
     const runAgentSetupInBackground = async (params: AgentSetupParams): Promise<void> => {
-        const { nodeId, assistantMsg, prompt, authToken, autoCheckout, contextPolicy, baseMessageId, threadId, contextParentMessageId, contextStartMessageId } = params;
+        const { nodeId, assistantMsg, prompt, attachments: inputAttachments, authToken, autoCheckout, contextPolicy, baseMessageId, threadId, contextParentMessageId, contextStartMessageId } = params;
+        const agentPrompt = appendInputArtifactsToPrompt(prompt, inputAttachments);
         const isCodexAgent = selectedAgent?.type === 'codex';
         const runId = crypto.randomUUID();
 
@@ -3456,8 +3588,8 @@ export function ChatInput({
             const cliArgsStr = selectedAgent?.cliArgs || '--permission-mode plan';
             const parsedCliArgs = parseRuntimeCliArgs(cliArgsStr);
             const resolvedRunMode = permissionMode;
-            const resolvedModel = (selectedAgent as any)?.model_config?.model || parsedCliArgs.model || null;
-            const resolvedReasoningEffort = (selectedAgent as any)?.model_config?.reasoningEffort || parsedCliArgs.reasoningEffort || null;
+            const resolvedModel = selectedAgent?.model_config?.model || parsedCliArgs.model || null;
+            const resolvedReasoningEffort = selectedAgent?.model_config?.reasoningEffort || parsedCliArgs.reasoningEffort || null;
             const selectedProvider = selectedAgent?.type === 'claude' || selectedAgent?.type === 'codex'
                 ? selectedAgent.type
                 : null;
@@ -3477,7 +3609,7 @@ export function ChatInput({
             }
             const launchContext = buildAgentRunLaunchContext({
                 agentType: selectedAgent?.type,
-                userPrompt: prompt,
+                userPrompt: agentPrompt,
                 messages: messageLookupMessages,
                 messageMap: messageById,
                 contextParentMessageId: contextParentMessage?.id ?? null,
@@ -3491,6 +3623,7 @@ export function ChatInput({
                 ].filter((id): id is string => Boolean(id))),
                 nodeId,
                 targetNodeId: baseMessageId,
+                modelCapabilities: selectedAgent?.model_config?.capabilities ?? null,
                 threadTitleMode: !baseMessageId && threadId ? 'first_thread_message' : 'none',
             });
             const providerThreadStrategy = launchContext.providerThreadStrategy;
@@ -3611,7 +3744,7 @@ export function ChatInput({
                     repoPath,
                     parentCommit,
                     authorName: selectedAgent?.name ?? null,
-                    promptFallback: prompt,
+                    promptFallback: agentPrompt,
                 },
             };
             const spawnFlowId = getSendFlowIdForKey(nodeId);

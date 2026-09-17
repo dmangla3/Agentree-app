@@ -23,6 +23,9 @@ export interface AgentRunLaunchContextInput {
   nodeId?: string | null;
   targetNodeId?: string | null;
   providerParentMeta?: Record<string, unknown> | null;
+  modelCapabilities?: {
+    inputModalities?: string[];
+  } | null;
   isBranchFromInterior?: boolean;
   contextManifest?: ComposerContextManifest | null;
   threadTitleMode?: 'first_thread_message' | 'none';
@@ -102,6 +105,29 @@ const manifestStatsMeta = (
   agentree_context_block_count: manifest.blocks.length,
   agentree_context_stable_block_count: manifest.stableBlocks.length,
   agentree_context_volatile_block_count: manifest.volatileBlocks.length,
+  agentree_context_artifact_count: manifest.artifactInputs?.length ?? 0,
+});
+
+const isDataUrl = (value: string | undefined): boolean => Boolean(value?.startsWith('data:'));
+
+const buildProviderArtifactInput = (artifact: ComposerContextManifest['artifactInputs'][number]) => ({
+  id: artifact.id,
+  nodeId: artifact.nodeId,
+  role: artifact.role,
+  kind: artifact.kind,
+  mimeType: artifact.mimeType,
+  title: artifact.title,
+  filename: artifact.filename,
+  storage: {
+    backend: artifact.storage.backend,
+    ...(artifact.storage.path ? { path: artifact.storage.path } : {}),
+    ...(artifact.storage.key ? { key: artifact.storage.key } : {}),
+    ...(artifact.storage.url && !isDataUrl(artifact.storage.url) ? { url: artifact.storage.url } : {}),
+  },
+  ...(artifact.thumbnail && !isDataUrl(artifact.thumbnail.url) ? { thumbnail: artifact.thumbnail } : {}),
+  ...(artifact.width ? { width: artifact.width } : {}),
+  ...(artifact.height ? { height: artifact.height } : {}),
+  ...(artifact.sizeBytes ? { sizeBytes: artifact.sizeBytes } : {}),
 });
 
 export function buildAgentRunLaunchContext(input: AgentRunLaunchContextInput): AgentRunLaunchContextResult {
@@ -186,6 +212,17 @@ export function buildAgentRunLaunchContext(input: AgentRunLaunchContextInput): A
   const sourceProviderTurnIdForSpawn = providerThreadStrategy === 'fresh_thread'
     ? null
     : parentProviderTurnId;
+  const selectedArtifactInputs = contextManifest.artifactInputs ?? [];
+  const selectedImageArtifactInputs = selectedArtifactInputs.filter((artifact) =>
+    artifact.mimeType.startsWith('image/') || artifact.kind === 'image' || artifact.kind === 'screenshot'
+  );
+  const selectedModelSupportsImageInput = input.modelCapabilities?.inputModalities?.includes('image') === true;
+  const providerImageArtifactInputs = selectedProvider === 'codex' && selectedModelSupportsImageInput
+    ? selectedImageArtifactInputs.map(buildProviderArtifactInput)
+    : [];
+  const artifactInputsJson = providerImageArtifactInputs.length > 0
+    ? JSON.stringify(providerImageArtifactInputs)
+    : null;
 
   const providerInternalArgs = selectedProvider
     ? [
@@ -202,6 +239,7 @@ export function buildAgentRunLaunchContext(input: AgentRunLaunchContextInput): A
         : []),
       ...(input.targetNodeId ? ['--target-node-id', input.targetNodeId] : []),
       ...(input.nodeId ? ['--node-id', input.nodeId] : []),
+      ...(selectedProvider === 'codex' && artifactInputsJson ? ['--input-artifacts-json', artifactInputsJson] : []),
     ]
     : [];
 
@@ -250,6 +288,7 @@ export function buildAgentRunLaunchContext(input: AgentRunLaunchContextInput): A
       provider_target_user_turn_count: providerThreadStrategy === 'fork_then_rollback' ? parentProviderUserTurnCount : null,
       provider_target_turn_id: providerThreadStrategy === 'fork' ? parentProviderTurnId : null,
       provider_thread_strategy: providerThreadStrategy,
+      provider_image_input_artifact_count: providerImageArtifactInputs.length,
       ...(selectedProvider ? { provider: selectedProvider } : {}),
     },
   };

@@ -3,6 +3,7 @@ import type { RuntimeProvider } from '../lib/providerContinuation';
 import { sanitizeAgentStructuredMeta } from '../schemas/agentIngressSchemas';
 import type { AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
 import { useProviderLimitsStore } from '../stores/providerLimitsStore';
+import { extractArtifactsFromExecutionData, normalizeArtifactRef, upsertArtifact, type ArtifactRef } from '../lib/artifacts';
 
 type AgentDescriptor = {
   id: string;
@@ -147,6 +148,66 @@ const mergeExecutionData = (
   } : {}),
 });
 
+const extractProviderImageGenerationArtifact = (
+  data: any,
+  nodeId: string,
+): ArtifactRef | null => {
+  const itemType = data?.item_type ?? data?.itemType ?? data?.provider_item?.type ?? data?.toolOutput?.type;
+  const toolName = data?.toolName ?? data?.tool_name ?? data?.name;
+  if (itemType !== 'imageGeneration' && itemType !== 'image_generation_call' && toolName !== 'imageGeneration' && toolName !== 'image_generation') {
+    return null;
+  }
+  const payload = data?.provider_item ?? data?.providerItem ?? data?.toolOutput ?? data?.tool_output ?? data?.output ?? {};
+  const result = typeof payload?.result === 'string'
+    ? payload.result
+    : typeof payload?.b64_json === 'string'
+      ? payload.b64_json
+      : null;
+  const url = typeof payload?.url === 'string'
+    ? payload.url
+    : result
+      ? (result.startsWith('data:') ? result : `data:image/png;base64,${result}`)
+      : null;
+  if (!url) return null;
+  const id = typeof data?.toolUseId === 'string' || typeof data?.id === 'string'
+    ? `${nodeId}:provider-image:${data.toolUseId ?? data.id}`
+    : `${nodeId}:provider-image:${Date.now()}`;
+  return normalizeArtifactRef({
+    id,
+    nodeId,
+    role: 'output',
+    kind: 'image',
+    mimeType: 'image/png',
+    title: 'Generated image',
+    storage: {
+      backend: url.startsWith('data:') ? 'inline' : 'remote',
+      url,
+    },
+    thumbnail: { url },
+    source: 'provider_image_generation',
+    isPrimary: true,
+    publicSafe: false,
+  }, {
+    nodeId,
+    role: 'output',
+  });
+};
+
+const upsertArtifactOnRun = (
+  artifact: ArtifactRef,
+  context: Pick<AgentRunStreamDispatchContext, 'nodeId' | 'getProjection'>,
+) => {
+  const current = context.getProjection(context.nodeId);
+  const snapshot = agentRunManager.snapshot(context.nodeId);
+  const existingArtifacts = extractArtifactsFromExecutionData(snapshot?.executionData ?? current?.execution_data, {
+    nodeId: context.nodeId,
+    role: 'output',
+  });
+  dispatchAgentRunExecutionData(context.nodeId, {
+    artifacts: upsertArtifact(existingArtifacts, artifact),
+  }, context.getProjection);
+};
+
 export const dispatchAgentRunExecutionData = (
   nodeId: string,
   patch: Record<string, any>,
@@ -265,6 +326,20 @@ export const dispatchProviderStreamEvent = (
       eventType: data.type,
     });
     if (meta) mergeProviderMeta(meta);
+  } else if (data.type === 'artifact_registered' && data.artifact && typeof data.artifact === 'object') {
+    const artifact = normalizeArtifactRef(data.artifact, {
+      nodeId: context.nodeId,
+      role: 'output',
+    });
+    if (!artifact) return;
+    upsertArtifactOnRun(artifact, context);
+    dispatchTimelineEvent({
+      type: 'tool_result',
+      timestamp: Date.now(),
+      toolName: 'show_output',
+      toolOutput: artifact.title || artifact.filename || artifact.kind,
+      toolUseId: artifact.id,
+    }, context);
   } else if (data.type === 'thinking') {
     maybePromoteLiveActivity(data.thinking || data.content || null);
     dispatchTimelineEvent({
@@ -294,6 +369,10 @@ export const dispatchProviderStreamEvent = (
     }, context);
   } else if (data.type === 'tool_result') {
     maybePromoteLiveActivity(`Finished ${data.toolName || data.tool_name || data.name || 'tool'}`);
+    const providerImageArtifact = extractProviderImageGenerationArtifact(data, context.nodeId);
+    if (providerImageArtifact) {
+      upsertArtifactOnRun(providerImageArtifact, context);
+    }
     dispatchTimelineEvent({
       type: 'tool_result',
       timestamp: Date.now(),

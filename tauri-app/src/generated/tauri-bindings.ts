@@ -156,6 +156,7 @@ export const commands = {
 	setMcpWorkspaceId: (workspaceId: string) => __TAURI_INVOKE<null>("set_mcp_workspace_id", { workspaceId }),
 	getMcpServerUrl: () => __TAURI_INVOKE<string>("get_mcp_server_url"),
 	resolveOrchestrationMcpRequest: (requestId: string, responseJson: string | null, error: string | null) => __TAURI_INVOKE<null>("resolve_orchestration_mcp_request", { requestId, responseJson, error }),
+	saveComposerAttachment: (workspaceId: string, attachmentId: string, filename: string, dataBase64: string) => __TAURI_INVOKE<SavedComposerAttachment>("save_composer_attachment", { workspaceId, attachmentId, filename, dataBase64 }),
 	ensureAuthCallbackServerStarted: () => __TAURI_INVOKE<string>("ensure_auth_callback_server_started"),
 	getAuthCallbackBaseUrl: () => __TAURI_INVOKE<string>("get_auth_callback_base_url"),
 	saveAgentreeCloudSession: (sessionJson: string) => __TAURI_INVOKE<null>("save_agentree_cloud_session", { sessionJson }),
@@ -740,6 +741,11 @@ export type RuntimeReadiness = {
 	recommendedCommand: string | null,
 	message: string,
 	diagnostics: unknown,
+};
+
+export type SavedComposerAttachment = {
+	path: string,
+	size_bytes: number,
 };
 
 export type StartAgentRunIntent = {

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronRight, CircleGauge, KeyRound, Minus, Plus, Sparkles, X } from 'lucide-react';
 import { useAgents, type Agent } from '../hooks/useAgents';
-import { runtimeModels, type RuntimeProvider } from '../lib/runtimeModels';
+import { runtimeModels, type AgentModelConfig, type RuntimeProvider } from '../lib/runtimeModels';
 import { dispatchOpenLoginProfiles } from '../lib/loginNavigationEvents';
 import { ScrollArea } from "../../@/components/ui/scroll-area";
 import { Checkbox } from "../../@/components/ui/checkbox";
@@ -31,18 +31,8 @@ interface UnifiedAgentModelSelectorProps {
     externalRuntimeReadinessByProvider?: Record<string, RuntimeReadiness | null>;
 }
 
-type AgentModelConfig = {
-    model?: string;
-    familyKey?: string | null;
-    familyLabel?: string | null;
-    familyDescription?: string | null;
-    effortLabel?: string | null;
-    effortDescription?: string | null;
-    reasoningEffort?: string | null;
-};
-
 type AgentWithMeta = Agent & {
-    model_config?: AgentModelConfig;
+    model_config?: AgentModelConfig | null;
 };
 
 type AgentFamily = {
@@ -54,6 +44,11 @@ type AgentFamily = {
     models: AgentWithMeta[];
     defaultAgentId: string | null;
     selectedAgentId: string | null;
+};
+
+type ModelAvailability = {
+    selectable: boolean;
+    reason: string | null;
 };
 
 type PointerLocation = {
@@ -304,6 +299,21 @@ export function UnifiedAgentModelSelector({
         const diagnostics = fallbackReadiness?.diagnostics as Record<string, unknown> | undefined;
         const externallyReady = fallbackReadiness?.status === 'ready' && !diagnostics?.managedByAgentree;
         return compatible.length === 0 && externallyReady;
+    };
+
+    const getModelAvailability = (agent: AgentWithMeta): ModelAvailability => {
+        if (!isProviderSelectable(agent.type)) {
+            return { selectable: false, reason: 'Connect a ready login profile before choosing this model.' };
+        }
+        const outputsImages = agent.model_config?.capabilities?.outputModalities?.includes('image') === true;
+        const selectedProfile = getSelectedLoginProfileForProvider(agent.type);
+        if (agent.type === 'codex' && outputsImages && selectedProfile?.authType === 'codex_chatgpt_session') {
+            return {
+                selectable: false,
+                reason: 'GPT Image 2 is not available through a Codex ChatGPT subscription. Use a Codex OpenAI API key profile to select this model.',
+            };
+        }
+        return { selectable: true, reason: null };
     };
 
     const clearPendingFamilyActivation = () => {
@@ -786,6 +796,8 @@ export function UnifiedAgentModelSelector({
                                             const canRemove = totalSelectedRuns > count;
                                             const effortLabel = agent.model_config?.effortLabel ?? agent.model_config?.reasoningEffort ?? 'default';
                                             const effortDescription = agent.model_config?.effortDescription ?? 'Available mode';
+                                            const availability = getModelAvailability(agent);
+                                            const isModelSelectable = availability.selectable;
                                             const increment = () => updateAgentRunCount(agent.id, count + 1);
                                             const decrement = () => updateAgentRunCount(agent.id, count - 1);
                                             const remove = () => updateAgentRunCount(agent.id, 0);
@@ -794,8 +806,9 @@ export function UnifiedAgentModelSelector({
                                                     key={agent.id}
                                                     role="button"
                                                     tabIndex={0}
+                                                    title={availability.reason ?? undefined}
                                                     onClick={() => {
-                                                        if (!isProviderSelectable(agent.type)) return;
+                                                        if (!isModelSelectable) return;
                                                         if (supportsMultiRun) {
                                                             if (!isSelected) {
                                                                 updateAgentRunCount(agent.id, 1);
@@ -809,7 +822,7 @@ export function UnifiedAgentModelSelector({
                                                     onKeyDown={(event) => {
                                                         if (event.key !== 'Enter' && event.key !== ' ') return;
                                                         event.preventDefault();
-                                                        if (!isProviderSelectable(agent.type)) return;
+                                                        if (!isModelSelectable) return;
                                                         if (supportsMultiRun) {
                                                             updateAgentRunCount(agent.id, isSelected ? Math.max(1, count) : 1);
                                                             return;
@@ -819,9 +832,10 @@ export function UnifiedAgentModelSelector({
                                                     className={cn(
                                                         "group/effort flex w-full items-start justify-between gap-3 rounded-md px-2.5 py-2.5 text-left outline-none transition-[background-color,box-shadow,transform] duration-150 ease-out",
                                                         "hover:bg-[hsl(var(--app-bg-elevated))] focus-visible:bg-[hsl(var(--app-bg-elevated))] focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1 focus-visible:ring-offset-background active:scale-[0.96]",
-                                                        isSelected ? "bg-[hsl(var(--app-bg-elevated))] shadow-[0_10px_24px_-22px_rgba(15,23,42,0.7),inset_0_0_0_1px_hsl(var(--app-border)/0.8)]" : "bg-transparent"
+                                                        isSelected ? "bg-[hsl(var(--app-bg-elevated))] shadow-[0_10px_24px_-22px_rgba(15,23,42,0.7),inset_0_0_0_1px_hsl(var(--app-border)/0.8)]" : "bg-transparent",
+                                                        !isModelSelectable && "cursor-not-allowed opacity-45 hover:bg-transparent active:scale-100"
                                                     )}
-                                                    aria-disabled={!isProviderSelectable(agent.type)}
+                                                    aria-disabled={!isModelSelectable}
                                                 >
                                                     <div className="flex min-w-0 flex-1 gap-2.5 pr-1">
                                                         {supportsMultiRun ? (
@@ -834,9 +848,10 @@ export function UnifiedAgentModelSelector({
                                                                     checked={isSelected}
                                                                     indicatorMode="check"
                                                                     onCheckedChange={(checked) => {
+                                                                        if (!isModelSelectable) return;
                                                                         updateAgentRunCount(agent.id, checked === true ? Math.max(1, count) : 0);
                                                                     }}
-                                                                    disabled={isSelected && !canRemove}
+                                                                    disabled={!isModelSelectable || (isSelected && !canRemove)}
                                                                     aria-label={`${isSelected ? 'Remove' : 'Add'} ${effortLabel}`}
                                                                 />
                                                             </span>
@@ -877,7 +892,7 @@ export function UnifiedAgentModelSelector({
                                                                     <button
                                                                         type="button"
                                                                         onClick={remove}
-                                                                        disabled={!canRemove}
+                                                                        disabled={!isModelSelectable || !canRemove}
                                                                         className="flex h-6 w-6 items-center justify-center rounded bg-background text-muted-foreground shadow-[0_1px_2px_rgba(15,23,42,0.08),inset_0_0_0_1px_hsl(var(--app-border)/0.8)] transition-[background-color,color,transform,opacity] duration-150 hover:bg-red-50 hover:text-red-600 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35 dark:hover:bg-red-950/40 dark:hover:text-red-300"
                                                                         aria-label={`Remove ${effortLabel}`}
                                                                     >
@@ -887,7 +902,7 @@ export function UnifiedAgentModelSelector({
                                                                 <button
                                                                     type="button"
                                                                     onClick={decrement}
-                                                                    disabled={!isSelected || !canRemove}
+                                                                    disabled={!isModelSelectable || !isSelected || !canRemove}
                                                                     className="flex h-6 w-6 items-center justify-center rounded bg-background text-muted-foreground shadow-[0_1px_2px_rgba(15,23,42,0.08),inset_0_0_0_1px_hsl(var(--app-border)/0.8)] transition-[background-color,color,transform,opacity] duration-150 hover:bg-muted hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
                                                                     aria-label={`Decrease ${effortLabel}`}
                                                                 >
@@ -899,8 +914,9 @@ export function UnifiedAgentModelSelector({
                                                                 <button
                                                                     type="button"
                                                                     onClick={increment}
+                                                                    disabled={!isModelSelectable}
                                                                     className={cn(
-                                                                        "flex h-6 w-6 items-center justify-center rounded text-white shadow-[0_8px_18px_-12px_rgba(16,185,129,0.7)] transition-[background-color,transform,box-shadow] duration-150 active:scale-[0.96]",
+                                                                        "flex h-6 w-6 items-center justify-center rounded text-white shadow-[0_8px_18px_-12px_rgba(16,185,129,0.7)] transition-[background-color,transform,box-shadow] duration-150 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35",
                                                                         provider === 'claude' ? "bg-[#b6814f] hover:bg-[#a47346]" : "bg-emerald-600 hover:bg-emerald-700"
                                                                     )}
                                                                     aria-label={`Increase ${effortLabel}`}

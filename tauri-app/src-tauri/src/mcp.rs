@@ -1,16 +1,19 @@
 use axum::{
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::post,
     Json, Router,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::fs;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -263,6 +266,7 @@ pub fn resolve_orchestration_mcp_request(
 
 async fn handle_rpc(
     State(state): State<Arc<McpState>>,
+    uri: Uri,
     headers: HeaderMap,
     Json(payload): Json<JsonRpcRequest>,
 ) -> Response {
@@ -284,7 +288,7 @@ async fn handle_rpc(
     let response = match payload.method.as_str() {
         "initialize" => handle_initialize(id),
         "tools/list" => handle_tools_list(id),
-        "tools/call" => handle_tools_call(id, payload.params, headers, state).await,
+        "tools/call" => handle_tools_call(id, payload.params, headers, uri, state).await,
         _ => JsonRpcResponse {
             jsonrpc: "2.0",
             id,
@@ -493,6 +497,48 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                     }
                 },
                 {
+                    "name": "show_output",
+                    "description": "Show a previewable output file, screenshot, generated image, PDF, HTML export, video, audio, or other result alongside the current assistant response.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "node_id": {
+                                "type": "string",
+                                "description": "Optional internal override. Omit during normal agent runs; Agentree infers the current assistant node."
+                            },
+                            "id": { "type": "string", "description": "Optional stable artifact id. Agentree generates one when omitted." },
+                            "title": { "type": "string" },
+                            "caption": { "type": "string" },
+                            "filename": { "type": "string" },
+                            "kind": {
+                                "type": "string",
+                                "description": "image, screenshot, pdf, html, text, video, audio, or file"
+                            },
+                            "mime_type": { "type": "string" },
+                            "path": {
+                                "type": "string",
+                                "description": "Local filesystem path to an artifact file produced by the agent."
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "Renderable URL or data URL for the artifact."
+                            },
+                            "thumbnail_url": { "type": "string" },
+                            "width": { "type": "number" },
+                            "height": { "type": "number" },
+                            "size_bytes": { "type": "number" },
+                            "isPrimary": { "type": "boolean" },
+                            "public_safe": {
+                                "type": "boolean",
+                                "description": "Whether this artifact may be included in public share payloads. Defaults to false."
+                            },
+                            "source": { "type": "string" },
+                            "source_commit_sha": { "type": "string" }
+                        },
+                        "required": []
+                    }
+                },
+                {
                     "name": "graph_live_query",
                     "description": "Search local/projection graph state currently loaded in the app. Use this for active or recently started orchestration runs because persisted graph_query can lag local-first nodes. Results are explicitly marked as live/projection/local.",
                     "inputSchema": {
@@ -665,6 +711,7 @@ async fn handle_tools_call(
     id: serde_json::Value,
     params: Option<serde_json::Value>,
     _headers: HeaderMap,
+    uri: Uri,
     state: Arc<McpState>,
 ) -> JsonRpcResponse {
     let params = params.unwrap_or_else(|| serde_json::json!({}));
@@ -712,6 +759,10 @@ async fn handle_tools_call(
         Some("complete_orchestration") => {
             let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
             handle_complete_orchestration(id, state, args)
+        }
+        Some("show_output") | Some("register_artifact") => {
+            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
+            handle_show_output(id, state, args, mcp_request_node_id(&uri))
         }
         Some("graph_live_query") => {
             let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
@@ -1282,6 +1333,459 @@ fn missing_args_response(id: serde_json::Value, message: &str) -> JsonRpcRespons
     }
 }
 
+fn mcp_timestamp_string() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn read_arg_bool(args: &serde_json::Value, key: &str) -> Option<bool> {
+    args.get(key).and_then(|value| value.as_bool())
+}
+
+fn read_arg_u64(args: &serde_json::Value, key: &str) -> Option<u64> {
+    args.get(key).and_then(|value| value.as_u64())
+}
+
+fn mcp_request_node_id(uri: &Uri) -> Option<String> {
+    uri.query()?
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find_map(|(key, value)| {
+            if key == "agentree_node_id" || key == "node_id" {
+                let value = value.trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+            None
+        })
+}
+
+fn mime_type_from_path(path: &str) -> Option<&'static str> {
+    match Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => Some("image/png"),
+        Some("jpg") | Some("jpeg") => Some("image/jpeg"),
+        Some("gif") => Some("image/gif"),
+        Some("webp") => Some("image/webp"),
+        Some("svg") => Some("image/svg+xml"),
+        Some("pdf") => Some("application/pdf"),
+        Some("html") | Some("htm") => Some("text/html"),
+        Some("txt") | Some("md") | Some("log") => Some("text/plain"),
+        Some("json") => Some("application/json"),
+        Some("mp4") => Some("video/mp4"),
+        Some("webm") => Some("video/webm"),
+        Some("mp3") => Some("audio/mpeg"),
+        Some("wav") => Some("audio/wav"),
+        _ => None,
+    }
+}
+
+fn artifact_kind_from_mime(mime_type: &str) -> &'static str {
+    if mime_type.starts_with("image/") {
+        "image"
+    } else if mime_type.starts_with("video/") {
+        "video"
+    } else if mime_type.starts_with("audio/") {
+        "audio"
+    } else if mime_type == "application/pdf" {
+        "pdf"
+    } else if mime_type == "text/html" {
+        "html"
+    } else if mime_type.starts_with("text/") {
+        "text"
+    } else {
+        "file"
+    }
+}
+
+fn normalize_artifact_kind(raw: Option<String>, mime_type: &str) -> String {
+    match raw.as_deref() {
+        Some("image") | Some("screenshot") | Some("pdf") | Some("html") | Some("text")
+        | Some("video") | Some("audio") | Some("file") => raw.unwrap(),
+        _ => artifact_kind_from_mime(mime_type).to_string(),
+    }
+}
+
+fn local_image_data_url(path: &str, mime_type: &str) -> Option<String> {
+    const MAX_INLINE_IMAGE_BYTES: u64 = 2_000_000;
+    if !mime_type.starts_with("image/") {
+        return None;
+    }
+    let metadata = fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_INLINE_IMAGE_BYTES {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    Some(format!(
+        "data:{};base64,{}",
+        mime_type,
+        BASE64_STANDARD.encode(bytes)
+    ))
+}
+
+fn safe_artifact_filename(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if sanitized.is_empty() {
+        "artifact".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn durable_artifact_path(
+    app_handle: &AppHandle,
+    node_id: &str,
+    artifact_id: &str,
+    source_path: &str,
+    filename: Option<&str>,
+) -> Result<PathBuf, String> {
+    let artifacts_root = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve app data dir: {}", error))?
+        .join("artifacts");
+    durable_artifact_path_in_dir(artifacts_root, node_id, artifact_id, source_path, filename)
+}
+
+fn durable_artifact_path_in_dir(
+    artifacts_root: PathBuf,
+    node_id: &str,
+    artifact_id: &str,
+    source_path: &str,
+    filename: Option<&str>,
+) -> Result<PathBuf, String> {
+    let source = Path::new(source_path);
+    let metadata = fs::metadata(source).map_err(|error| {
+        format!(
+            "Could not read artifact file {}: {}",
+            source.display(),
+            error
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!("Artifact path is not a file: {}", source.display()));
+    }
+
+    let artifact_suffix = artifact_id
+        .rsplit(':')
+        .next()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("artifact");
+    let source_filename = filename
+        .or_else(|| source.file_name().and_then(|value| value.to_str()))
+        .unwrap_or("artifact");
+    let safe_name = format!(
+        "{}-{}",
+        safe_artifact_filename(artifact_suffix),
+        safe_artifact_filename(source_filename)
+    );
+    let artifacts_dir = artifacts_root.join(safe_artifact_filename(node_id));
+    fs::create_dir_all(&artifacts_dir).map_err(|error| {
+        format!(
+            "Could not create artifact directory {}: {}",
+            artifacts_dir.display(),
+            error
+        )
+    })?;
+    let destination = artifacts_dir.join(safe_name);
+    if source != destination {
+        fs::copy(source, &destination).map_err(|error| {
+            format!(
+                "Could not copy artifact file {} to {}: {}",
+                source.display(),
+                destination.display(),
+                error
+            )
+        })?;
+    }
+    Ok(destination)
+}
+
+fn handle_show_output(
+    id: serde_json::Value,
+    state: Arc<McpState>,
+    args: serde_json::Value,
+    request_node_id: Option<String>,
+) -> JsonRpcResponse {
+    let Some(node_id) = request_node_id
+        .or_else(|| read_arg_string(&args, "node_id"))
+        .or_else(|| read_arg_string(&args, "nodeId"))
+    else {
+        return missing_args_response(id, "current assistant node could not be inferred");
+    };
+
+    let telemetry = state.app_handle.state::<crate::db::TelemetryDb>();
+    let payload_json = match telemetry.get_local_node_payload(&node_id) {
+        Ok(Some(payload)) => payload,
+        Ok(None) => {
+            return JsonRpcResponse {
+                jsonrpc: "2.0",
+                id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32602,
+                    message: format!("Unknown local node {}", node_id),
+                }),
+            };
+        }
+        Err(err) => {
+            return JsonRpcResponse {
+                jsonrpc: "2.0",
+                id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32001,
+                    message: err,
+                }),
+            };
+        }
+    };
+
+    let mut payload: JsonValue = match serde_json::from_str(&payload_json) {
+        Ok(value) => value,
+        Err(err) => {
+            return JsonRpcResponse {
+                jsonrpc: "2.0",
+                id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32001,
+                    message: format!("Failed to parse local node payload: {}", err),
+                }),
+            };
+        }
+    };
+
+    let workspace_id = payload
+        .get("workspaceId")
+        .or_else(|| payload.get("workspace_id"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+        .or_else(|| read_arg_string(&args, "workspace_id"))
+        .or_else(|| MCP_WORKSPACE_ID.lock().ok().and_then(|guard| guard.clone()));
+    let Some(workspace_id) = workspace_id else {
+        return missing_args_response(id, "workspace_id could not be inferred for node");
+    };
+
+    let path = read_arg_string(&args, "path");
+    let url = read_arg_string(&args, "url");
+    if path.is_none() && url.is_none() {
+        return missing_args_response(id, "path or url is required");
+    }
+
+    let mime_type = read_arg_string(&args, "mime_type")
+        .or_else(|| read_arg_string(&args, "mimeType"))
+        .or_else(|| {
+            path.as_deref()
+                .and_then(mime_type_from_path)
+                .map(|value| value.to_string())
+        })
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let kind = normalize_artifact_kind(read_arg_string(&args, "kind"), &mime_type);
+    let artifact_id = read_arg_string(&args, "id")
+        .unwrap_or_else(|| format!("{}:artifact:{}", node_id, uuid::Uuid::new_v4()));
+    let title = read_arg_string(&args, "title")
+        .or_else(|| read_arg_string(&args, "filename"))
+        .or_else(|| {
+            path.as_deref()
+                .and_then(|value| Path::new(value).file_name())
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_string())
+        })
+        .unwrap_or_else(|| kind.clone());
+    let filename = read_arg_string(&args, "filename").or_else(|| {
+        path.as_deref()
+            .and_then(|value| Path::new(value).file_name())
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_string())
+    });
+    let public_safe = read_arg_bool(&args, "public_safe")
+        .or_else(|| read_arg_bool(&args, "publicSafe"))
+        .unwrap_or(false);
+    let durable_path = if let Some(path_value) = path.as_deref() {
+        match durable_artifact_path(
+            &state.app_handle,
+            &node_id,
+            &artifact_id,
+            path_value,
+            filename.as_deref(),
+        ) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                return JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32001,
+                        message: err,
+                    }),
+                };
+            }
+        }
+    } else {
+        None
+    };
+    let storage_path = durable_path
+        .as_ref()
+        .map(|value| value.to_string_lossy().to_string())
+        .or_else(|| path.clone());
+    let data_url = storage_path
+        .as_deref()
+        .and_then(|value| local_image_data_url(value, &mime_type));
+    let thumbnail_url = read_arg_string(&args, "thumbnail_url")
+        .or_else(|| read_arg_string(&args, "thumbnailUrl"))
+        .or_else(|| data_url.clone())
+        .or_else(|| url.clone().filter(|_| mime_type.starts_with("image/")));
+    let size_bytes = read_arg_u64(&args, "size_bytes")
+        .or_else(|| read_arg_u64(&args, "sizeBytes"))
+        .or_else(|| {
+            storage_path
+                .as_deref()
+                .and_then(|value| fs::metadata(value).ok())
+                .map(|metadata| metadata.len())
+        });
+    let is_primary =
+        read_arg_bool(&args, "isPrimary").or_else(|| read_arg_bool(&args, "is_primary"));
+
+    let storage_backend = if url
+        .as_deref()
+        .map(|value| value.starts_with("data:"))
+        .unwrap_or(false)
+    {
+        "inline"
+    } else if url.is_some() {
+        "remote"
+    } else {
+        "local"
+    };
+    let mut storage = serde_json::json!({
+        "backend": storage_backend,
+    });
+    if let Some(path_value) = storage_path.clone() {
+        storage["path"] = serde_json::json!(path_value);
+    }
+    if let Some(url_value) = url.clone() {
+        storage["url"] = serde_json::json!(url_value);
+    }
+
+    let mut artifact = serde_json::json!({
+        "id": artifact_id,
+        "nodeId": node_id,
+        "role": "output",
+        "kind": kind,
+        "mimeType": mime_type,
+        "title": title,
+        "storage": storage,
+        "publicSafe": public_safe,
+        "source": read_arg_string(&args, "source").unwrap_or_else(|| "agent_file".to_string()),
+        "createdAt": mcp_timestamp_string(),
+    });
+    if let Some(caption) = read_arg_string(&args, "caption") {
+        artifact["caption"] = serde_json::json!(caption);
+    }
+    if let Some(filename_value) = filename {
+        artifact["filename"] = serde_json::json!(filename_value);
+    }
+    if let Some(width) = read_arg_u64(&args, "width") {
+        artifact["width"] = serde_json::json!(width);
+    }
+    if let Some(height) = read_arg_u64(&args, "height") {
+        artifact["height"] = serde_json::json!(height);
+    }
+    if let Some(size) = size_bytes {
+        artifact["sizeBytes"] = serde_json::json!(size);
+    }
+    if let Some(primary) = is_primary {
+        artifact["isPrimary"] = serde_json::json!(primary);
+    }
+    if let Some(source_commit_sha) = read_arg_string(&args, "source_commit_sha")
+        .or_else(|| read_arg_string(&args, "sourceCommitSha"))
+    {
+        artifact["sourceCommitSha"] = serde_json::json!(source_commit_sha);
+    }
+    if let Some(thumbnail) = thumbnail_url {
+        artifact["thumbnail"] = serde_json::json!({
+            "url": thumbnail,
+            "width": read_arg_u64(&args, "width"),
+            "height": read_arg_u64(&args, "height"),
+        });
+    }
+
+    if !payload
+        .get("execution_data")
+        .map(|value| value.is_object())
+        .unwrap_or(false)
+    {
+        payload["execution_data"] = serde_json::json!({});
+    }
+    let (artifacts, artifact) = crate::artifacts::upsert_artifact_in_execution_data(
+        &mut payload["execution_data"],
+        artifact,
+    );
+    payload["artifacts"] = JsonValue::Array(artifacts);
+    payload["updatedAt"] = serde_json::json!(mcp_timestamp_string());
+
+    let serialized = match serde_json::to_string(&payload) {
+        Ok(value) => value,
+        Err(err) => {
+            return JsonRpcResponse {
+                jsonrpc: "2.0",
+                id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32001,
+                    message: format!("Failed to serialize updated node payload: {}", err),
+                }),
+            };
+        }
+    };
+    if let Err(err) = telemetry.upsert_local_node(&node_id, &workspace_id, &serialized) {
+        return JsonRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32001,
+                message: err,
+            }),
+        };
+    }
+
+    crate::agents::apply_and_emit_agent_event(
+        &state.app_handle,
+        &node_id,
+        &serde_json::json!({
+            "type": "artifact_registered",
+            "artifact": artifact,
+        }),
+    );
+
+    tool_text_response(
+        id,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "shown": true,
+            "artifact": artifact,
+        }))
+        .unwrap_or_else(|_| "{\"shown\":true}".to_string()),
+    )
+}
+
 fn handle_complete_orchestration(
     id: serde_json::Value,
     state: Arc<McpState>,
@@ -1528,6 +2032,29 @@ mod tests {
     }
 
     #[test]
+    fn durable_artifact_path_copies_local_file_to_artifact_storage() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let source = temp.path().join("source image.png");
+        fs::write(&source, b"png-bytes").expect("source file");
+
+        let durable = durable_artifact_path_in_dir(
+            temp.path().join("artifacts"),
+            "node:with/slashes",
+            "node:artifact:artifact-id",
+            source.to_str().expect("source path"),
+            Some("source image.png"),
+        )
+        .expect("durable path");
+
+        assert_ne!(durable, source);
+        assert!(durable.exists());
+        assert_eq!(fs::read(&durable).expect("durable bytes"), b"png-bytes");
+        assert!(durable
+            .to_string_lossy()
+            .contains("node-with-slashes/artifact-id-source-image.png"));
+    }
+
+    #[test]
     fn tools_list_exposes_current_graph_tools_without_project_id() {
         let response = handle_tools_list(serde_json::json!(1));
         let result = response.result.expect("tools/list should return result");
@@ -1546,6 +2073,7 @@ mod tests {
         assert!(names.contains(&"wait_for_runs"));
         assert!(names.contains(&"control_run"));
         assert!(names.contains(&"complete_orchestration"));
+        assert!(names.contains(&"show_output"));
         assert!(names.contains(&"list_thread_sessions"));
         assert!(names.contains(&"read_thread"));
         assert!(names.contains(&"query_commits"));

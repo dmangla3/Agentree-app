@@ -1,6 +1,6 @@
 [package]
 name = "agentree"
-version = "0.2.5"
+version = "0.3.0"
 description = "Agentree - AI-powered development workspace"
 authors = ["you"]
 edition = "2021"
@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["test", "specta"] }
+tauri = { version = "2", features = ["protocol-asset", "test", "specta"] }
 tauri-plugin-opener = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2.7.1"

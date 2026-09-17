@@ -17,6 +17,7 @@ export const EMPTY_COMPOSER_CONTEXT_MANIFEST: ComposerContextManifest = {
   stablePrefixText: '',
   volatileTailText: '',
   contextText: '',
+  artifactInputs: [],
   manifestHash: '811c9dc5',
   stablePrefixHash: '811c9dc5',
   volatileTailHash: '811c9dc5',

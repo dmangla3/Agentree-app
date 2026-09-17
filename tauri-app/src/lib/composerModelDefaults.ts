@@ -1,12 +1,9 @@
-import { getRuntimeModelKey, runtimeModels } from './runtimeModels';
+import { type AgentModelConfig, getRuntimeModelKey, runtimeModels } from './runtimeModels';
 
 type ComposerAgent = {
   id: string;
   type?: string | null;
-  model_config?: {
-    model?: string | null;
-    reasoningEffort?: string | null;
-  } | null;
+  model_config?: AgentModelConfig | null;
 };
 
 type ComposerParentMessage = {

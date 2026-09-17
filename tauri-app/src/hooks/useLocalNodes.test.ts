@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '../stores/workspaceStore';
 import type { LocalNodeMessage } from './useLocalNodes';
-import { isRetryableLocalOnlySync, parseLocalNode, upsertMessagesIntoLocalNodeCache } from './useLocalNodes';
+import {
+  getLocalNodeRetryPollIntervalMs,
+  hasDueRetryableLocalNode,
+  isRetryableLocalOnlySync,
+  parseLocalNode,
+  upsertMessagesIntoLocalNodeCache,
+} from './useLocalNodes';
 
 const message = (overrides: Partial<Message> & Pick<Message, 'id' | 'role'>): Message => {
   const { id, role, ...rest } = overrides;
@@ -161,5 +167,39 @@ describe('upsertMessagesIntoLocalNodeCache', () => {
         content: 'done',
       },
     });
+  });
+});
+
+describe('local node retry polling', () => {
+  it('does not poll permanently failed local nodes', () => {
+    const rows = [
+      localNode({
+        retryAttempt: 0,
+        lastUploadError: 'node.update_terminal failed with status 404 Not Found',
+      }),
+    ];
+
+    expect(hasDueRetryableLocalNode(rows, 100)).toBe(false);
+    expect(getLocalNodeRetryPollIntervalMs(rows, 100)).toBe(false);
+  });
+
+  it('waits until the next retryable local node is due', () => {
+    const rows = [
+      localNode({ retryAttempt: 3, nextRetryAt: 160 }),
+    ];
+
+    expect(hasDueRetryableLocalNode(rows, 100)).toBe(false);
+    expect(getLocalNodeRetryPollIntervalMs(rows, 100)).toBe(60_000);
+    expect(hasDueRetryableLocalNode(rows, 160)).toBe(true);
+    expect(getLocalNodeRetryPollIntervalMs(rows, 160)).toBe(60_000);
+  });
+
+  it('does not poll intentionally local-only nodes without retry metadata', () => {
+    const rows = [
+      localNode({ retryAttempt: 0, nextRetryAt: null, lastUploadError: null }),
+    ];
+
+    expect(hasDueRetryableLocalNode(rows, 100)).toBe(false);
+    expect(getLocalNodeRetryPollIntervalMs(rows, 100)).toBe(false);
   });
 });

@@ -215,4 +215,103 @@ describe('resolveProviderAssistantOutput', () => {
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
+
+  it('stores registered artifacts on execution data and projects them', () => {
+    agentRunManager.seed(message(), 'run-1');
+
+    dispatchProviderStreamEvent({
+      type: 'artifact_registered',
+      artifact: {
+        id: 'artifact-1',
+        nodeId: 'assistant-1',
+        role: 'output',
+        kind: 'screenshot',
+        mimeType: 'image/png',
+        title: 'Landing preview',
+        storage: {
+          backend: 'local',
+          path: 'screenshots/landing.png',
+        },
+        thumbnail: {
+          url: 'data:image/png;base64,abcd',
+        },
+        isPrimary: true,
+      },
+    }, dispatchContext);
+    dispatchProviderStreamEvent({
+      type: 'artifact_registered',
+      artifact: {
+        id: 'artifact-2',
+        nodeId: 'assistant-1',
+        role: 'output',
+        kind: 'image',
+        mimeType: 'image/png',
+        title: 'Detail preview',
+        storage: {
+          backend: 'remote',
+          url: 'https://cdn.example.com/detail.png',
+        },
+      },
+    }, dispatchContext);
+
+    const snapshot = agentRunManager.snapshot('assistant-1');
+    expect(snapshot?.executionData.artifacts).toEqual([
+      expect.objectContaining({
+        id: 'artifact-1',
+        role: 'output',
+        title: 'Landing preview',
+        isPrimary: true,
+      }),
+      expect.objectContaining({
+        id: 'artifact-2',
+        role: 'output',
+        title: 'Detail preview',
+      }),
+    ]);
+    expect(snapshot?.timeline).toEqual([
+      expect.objectContaining({
+        type: 'tool_result',
+        toolName: 'show_output',
+        toolUseId: 'artifact-1',
+      }),
+      expect.objectContaining({
+        type: 'tool_result',
+        toolName: 'show_output',
+        toolUseId: 'artifact-2',
+      }),
+    ]);
+    expect(useAgentRunProjectionStore.getState().projectionsById['assistant-1']?.execution_data?.artifacts).toHaveLength(2);
+  });
+
+  it('captures provider image generation tool results as output artifacts', () => {
+    agentRunManager.seed(message(), 'run-1');
+
+    dispatchProviderStreamEvent({
+      type: 'tool_result',
+      id: 'image-tool-1',
+      toolName: 'imageGeneration',
+      toolOutput: {
+        type: 'imageGeneration',
+        result: 'abcd',
+      },
+    }, dispatchContext);
+
+    const artifacts = agentRunManager.snapshot('assistant-1')?.executionData.artifacts;
+    expect(artifacts).toEqual([
+      expect.objectContaining({
+        id: 'assistant-1:provider-image:image-tool-1',
+        role: 'output',
+        kind: 'image',
+        mimeType: 'image/png',
+        storage: expect.objectContaining({
+          backend: 'inline',
+          url: 'data:image/png;base64,abcd',
+        }),
+        thumbnail: expect.objectContaining({
+          url: 'data:image/png;base64,abcd',
+        }),
+        source: 'provider_image_generation',
+      }),
+    ]);
+  });
 });

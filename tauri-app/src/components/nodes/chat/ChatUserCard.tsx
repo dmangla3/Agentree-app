@@ -8,6 +8,8 @@ import { ROLE_COLORS } from '../../../lib/visualTokens';
 import { cn } from '../../../lib/utils';
 import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import { useAgentreeSurface } from '../../graph/surfaceCapabilities';
+import { AttachmentPreview } from '../../AttachmentPreview';
+import { getMessageHighlights } from '../../../lib/messageHighlights';
 
 export const ChatUserCard = memo(({
   entity,
@@ -20,10 +22,11 @@ export const ChatUserCard = memo(({
   const { capabilities } = useAgentreeSurface();
   const { data: workspaces = [] } = useWorkspaces();
   const workspaceId = entity.message?.workspaceId ?? null;
-  const repoPath = useMemo(() => {
-    const workspace = workspaces.find((item) => item.id === workspaceId) ?? null;
-    return workspace?.git_repo_path ?? workspace?.folderPath ?? null;
-  }, [workspaces, workspaceId]);
+	  const repoPath = useMemo(() => {
+	    const workspace = workspaces.find((item) => item.id === workspaceId) ?? null;
+	    return workspace?.git_repo_path ?? workspace?.folderPath ?? null;
+	  }, [workspaces, workspaceId]);
+	  const highlights = useMemo(() => getMessageHighlights(entity.message), [entity.message?.annotations]);
   const timestamp = entity.message?.createdAt
     ? new Date(entity.message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : null;
@@ -76,8 +79,28 @@ export const ChatUserCard = memo(({
         "prose-p:my-1.5 prose-p:max-w-[74ch] prose-p:text-current prose-p:leading-[1.58] prose-li:max-w-[74ch] prose-li:leading-[1.56]",
         ROLE_COLORS.user_message.text
       )}>
-        <ChatMarkdown repoPath={repoPath}>{entity.message?.content || ''}</ChatMarkdown>
+	        <ChatMarkdown
+	          repoPath={repoPath}
+	          messageId={entity.message?.id ?? entity.messageId ?? null}
+	          highlights={highlights}
+	          highlightEnabled
+	        >
+	          {entity.message?.content || ''}
+	        </ChatMarkdown>
       </div>
+
+      {Array.isArray(entity.message?.attachments) && entity.message.attachments.length > 0 ? (
+        <div className="relative z-10 mt-3 flex min-w-0 flex-wrap gap-2">
+          {entity.message.attachments.map((attachment) => (
+            <AttachmentPreview
+              key={attachment.path}
+              attachment={attachment}
+              size="small"
+              className="h-16 w-14"
+            />
+          ))}
+        </div>
+      ) : null}
 
       {capabilities.canMutate ? (
         <button

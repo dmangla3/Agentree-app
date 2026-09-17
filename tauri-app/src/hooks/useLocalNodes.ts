@@ -21,6 +21,56 @@ export const localNodeKeys = {
   workspace: (workspaceId: string | null | undefined) => ['local-nodes', workspaceId] as const,
 };
 
+const LOCAL_NODE_RETRY_POLL_MS = 60_000;
+
+const isPermanentLocalNodeSyncError = (error: string | null | undefined): boolean => (
+  Boolean(error?.startsWith('node.update_terminal failed with status 404 Not Found'))
+);
+
+export const isRetryableLocalOnlySync = (row: {
+  syncStatus?: string | null;
+  retryAttempt?: number | null;
+  nextRetryAt?: number | null;
+  lastUploadError?: string | null;
+}): boolean => {
+  if (row.syncStatus !== 'local_only') return false;
+  if (isPermanentLocalNodeSyncError(row.lastUploadError)) return false;
+  if (typeof row.nextRetryAt === 'number' && Number.isFinite(row.nextRetryAt)) return true;
+  return Boolean(row.retryAttempt || row.lastUploadError);
+};
+
+const getRetryableAt = (row: LocalNodeMessage, nowSeconds: number): number | null => {
+  if (!isRetryableLocalOnlySync(row)) return null;
+  if (typeof row.nextRetryAt === 'number' && Number.isFinite(row.nextRetryAt)) {
+    return row.nextRetryAt;
+  }
+  return nowSeconds;
+};
+
+export const getLocalNodeRetryPollIntervalMs = (
+  rows: LocalNodeMessage[] | null | undefined,
+  nowSeconds = Math.floor(Date.now() / 1000),
+): number | false => {
+  const retryTimes = (rows ?? [])
+    .map((row) => getRetryableAt(row, nowSeconds))
+    .filter((value): value is number => value !== null);
+  if (retryTimes.length === 0) return false;
+  const nextRetryAt = Math.min(...retryTimes);
+  if (nextRetryAt <= nowSeconds) return LOCAL_NODE_RETRY_POLL_MS;
+  return Math.max(
+    LOCAL_NODE_RETRY_POLL_MS,
+    (nextRetryAt - nowSeconds) * 1000,
+  );
+};
+
+export const hasDueRetryableLocalNode = (
+  rows: LocalNodeMessage[] | null | undefined,
+  nowSeconds = Math.floor(Date.now() / 1000),
+) => (rows ?? []).some((row) => {
+  const retryAt = getRetryableAt(row, nowSeconds);
+  return retryAt !== null && retryAt <= nowSeconds;
+});
+
 const readMessageCreatedAtMs = (row: LocalNodeMessage): number => {
   const value = row.message.createdAt ?? row.message.updatedAt;
   const parsed = typeof value === 'string' ? new Date(value).getTime() : Number.NaN;
@@ -98,16 +148,6 @@ export const parseLocalNode = (row: LocalNodeRecord): LocalNodeMessage | null =>
   }
 };
 
-export const isRetryableLocalOnlySync = (row: {
-  syncStatus?: string | null;
-  retryAttempt?: number | null;
-  nextRetryAt?: number | null;
-  lastUploadError?: string | null;
-}): boolean => {
-  if (row.syncStatus !== 'local_only') return false;
-  return Boolean(row.nextRetryAt || row.retryAttempt || row.lastUploadError);
-};
-
 export const useLocalNodes = (
   workspaceId: string | null | undefined,
   options: { enabled?: boolean } = {},
@@ -137,13 +177,7 @@ export const useLocalNodes = (
     gcTime: 30 * 60 * 1000,
     refetchInterval: (query) => {
       if (!agentClient.hasRuntime()) return false;
-      const data = query.state.data;
-      const localOnlyRows = data?.filter(isRetryableLocalOnlySync) ?? [];
-      if (localOnlyRows.length === 0) return false;
-      const nowSeconds = Math.floor(Date.now() / 1000);
-      const nextRetryAt = Math.min(...localOnlyRows.map((row) => row.nextRetryAt ?? nowSeconds));
-      if (nextRetryAt <= nowSeconds) return 15000;
-      return Math.min(Math.max((nextRetryAt - nowSeconds) * 1000, 5000), 60000);
+      return getLocalNodeRetryPollIntervalMs(query.state.data);
     },
     refetchOnWindowFocus: false,
     refetchOnReconnect: true,
@@ -152,11 +186,7 @@ export const useLocalNodes = (
 
   useEffect(() => {
     if (!workspaceId || !agentClient.hasRuntime()) return;
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const hasRetryableLocalOnly = (localNodes ?? []).some((row) => (
-      isRetryableLocalOnlySync(row) && (row.nextRetryAt ?? nowSeconds) <= nowSeconds
-    ));
-    if (!hasRetryableLocalOnly) return;
+    if (!hasDueRetryableLocalNode(localNodes)) return;
     queueLocalSyncFlush({ reason: 'local-node-retryable' });
   }, [localNodes, workspaceId]);
 

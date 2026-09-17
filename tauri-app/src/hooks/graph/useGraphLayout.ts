@@ -8,6 +8,7 @@ import { recordPerfEvent } from '../../lib/perfRecorder';
 import { recordFundamentalCounter } from '../../perf/fundamentalCounters';
 import {
     createMessageHeightKey,
+    hasAssistantOutputPreview,
     buildOrchestrationGraphModel,
     mapMessagesToGraphElements,
     getLayoutedElements,
@@ -167,6 +168,7 @@ const createMessagesFingerprint = (messages: Message[]): string => {
         m.role,
         m.collapsed || false,
         getMessageOutputCommitSha(m) || '',
+        hasAssistantOutputPreview(m, 'assistant_message') ? 1 : 0,
     ].join('|')).join(';');
 };
 

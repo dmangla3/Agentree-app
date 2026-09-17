@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildComposerContextPathIds, buildComposerContextSelection } from './composerContext';
+import { buildComposerContextManifest, buildComposerContextPathIds, buildComposerContextSelection } from './composerContext';
 import type { Message } from '../stores/workspaceStore';
 
 const workspaceId = 'composer-context-test';
@@ -14,6 +14,8 @@ const message = (
   parentId: input.parentId,
   content: input.content ?? input.id,
   processedContent: input.processedContent,
+  attachments: input.attachments ?? null,
+  artifacts: input.artifacts ?? null,
   workspaceId,
   context_active: input.context_active,
   execution_data: input.execution_data ?? null,
@@ -165,6 +167,65 @@ describe('composer context', () => {
     expect(selection.defaultSelectedIds).toEqual([
       'user-1:user',
       'assistant-1:assistant',
+    ]);
+  });
+
+  it('adds artifact manifest blocks for uploaded files and assistant previews', () => {
+    const messages = [
+      message({
+        id: 'user-1',
+        role: 'user',
+        parentId: null,
+        content: 'Use this reference',
+        attachments: [{
+          path: 'uploads/reference.png',
+          publicUrl: 'https://cdn.example.com/reference.png',
+          filename: 'reference.png',
+          contentType: 'image/png',
+        }],
+      }, 1),
+      message({
+        id: 'assistant-1',
+        role: 'assistant',
+        parentId: 'user-1',
+        content: 'Built a landing page.',
+        execution_data: {
+          artifacts: [{
+            id: 'artifact-1',
+            role: 'output',
+            kind: 'screenshot',
+            mimeType: 'image/png',
+            title: 'Landing preview',
+            storage: { backend: 'local', path: 'screenshots/landing.png' },
+            thumbnail: { url: 'data:image/png;base64,abcd' },
+            isPrimary: true,
+          }],
+        },
+      }, 2),
+    ];
+
+    const selection = buildComposerContextSelection('assistant-1', messages);
+    const manifest = buildComposerContextManifest(
+      selection.turns,
+      new Set(selection.defaultSelectedIds),
+    );
+
+    expect(selection.defaultSelectedIds).toEqual([
+      'user-1:user',
+      'user-1:artifact',
+      'assistant-1:assistant',
+      'assistant-1:artifact',
+    ]);
+    expect(manifest.volatileBlocks.map((block) => block.id)).toEqual([
+      'user-1:artifact',
+      'assistant-1:artifact',
+    ]);
+    expect(manifest.contextText).toContain('[Turn 1] ARTIFACTS (user-1:artifact)');
+    expect(manifest.contextText).toContain('URL: https://cdn.example.com/reference.png');
+    expect(manifest.contextText).toContain('Path: screenshots/landing.png');
+    expect(manifest.artifactInputs.map((artifact) => artifact.id)).toEqual([
+      'user-1:attachment:uploads/reference.png',
+      'artifact-1',
     ]);
   });
 });

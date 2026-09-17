@@ -15,6 +15,7 @@ describe('runtimeModels', () => {
       'codex:gpt-5.5',
       'codex:gpt-5.4',
       'codex:gpt-5.4-mini',
+      'codex:gpt-image-2',
     ]);
     expect(codexFamilyKeys).not.toContain('codex:gpt-5.3-codex');
     expect(codexFamilyKeys).not.toContain('codex:gpt-5.2-codex');
@@ -59,5 +60,23 @@ describe('runtimeModels', () => {
       label: 'Claude Opus 4.8 High',
     });
     expect(opus?.cliArgs).toContain('--model claude-opus-4-8');
+  });
+
+  it('exposes GPT Image 2 as one image-capable Codex model without reasoning variants', () => {
+    const imageModels = runtimeModels.filter((model) => model.modelId === 'gpt-image-2');
+
+    expect(imageModels).toHaveLength(1);
+    expect(imageModels[0]).toMatchObject({
+      key: 'codex:gpt-image-2',
+      provider: 'codex',
+      reasoningEffort: null,
+      capabilities: {
+        inputModalities: ['text', 'image'],
+        outputModalities: ['text', 'image'],
+        reasoningEffort: false,
+      },
+    });
+    expect(imageModels[0].cliArgs).toBe('--model gpt-image-2');
+    expect(imageModels[0].cliArgs).not.toContain('--reasoning-effort');
   });
 });

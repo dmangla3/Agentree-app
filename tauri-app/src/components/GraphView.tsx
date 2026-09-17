@@ -19,7 +19,7 @@ import { buildComposerDraftKey, useWorkspaceStore, Message, Summary } from '../s
 import { getMergeSourcePrunePlan, getMergeTabRunIndicator, useIntegrationStore } from '../stores/integrationStore';
 
 // Hooks - Data
-import { useMessages, useSummaries, useDeleteMessageBranch, useToggleCollapse } from '../hooks/useMessages';
+import { useMessages, useSummaries, useDeleteMessageBranch, useDeleteHighlight, useToggleCollapse } from '../hooks/useMessages';
 
 import { useWorkspaces } from '../hooks/useWorkspaces';
 import { useModels } from '../hooks/useModels';
@@ -106,7 +106,7 @@ import { HorizontalThenVerticalEdge } from './HorizontalThenVerticalEdge';
 import { ContextSmoothStepEdge } from './ContextSmoothStepEdge';
 
 // Components - Graph (extracted)
-import { GraphControls, type LeafNodeNavigationItem, type ThreadNavigationItem, ViewMode } from './graph/GraphControls';
+import { GraphControls, type HighlightNavigationItem, type LeafNodeNavigationItem, type ThreadNavigationItem, ViewMode } from './graph/GraphControls';
 import { GraphLegend } from './graph/GraphLegend';
 import { MiniMapPanel } from './graph/MiniMapPanel';
 import { GraphCanvasIndexPanel, type GraphEdgeLegendId, type GraphNodeSectionId } from './graph/GraphCanvasIndexPanel';
@@ -114,6 +114,9 @@ import { GraphInteractionContext } from './graph/GraphInteractionContext';
 import { GraphHoverProjectionContext } from './graph/GraphHoverProjectionContext';
 import { TrackedBranchesPanel } from './TrackedBranchesPanel';
 import { FloatingSelectionMenu } from './graph/FloatingSelectionMenu';
+import { NodeHoverCardContent } from './NodeHoverCardContent';
+import { MessageHighlightActiveProvider } from './highlights/MessageHighlightActiveContext';
+import { getMessageHighlights } from '../lib/messageHighlights';
 
 // Components - Dialogs/Panels
 import { SummaryCreationDialog } from './SummaryCreationDialog';
@@ -581,6 +584,20 @@ const toLeafNodeNavigationItem = (
         statusTone: statusMeta.statusTone,
         timestampLabel: formatLeafTimestamp(message),
     };
+};
+
+const toHighlightNavigationItems = (message: Message): HighlightNavigationItem[] => {
+    const label = message.aiLabel?.trim()
+        || getLeafNavigationLabel(message)
+        || (message.role === 'user' ? 'User message' : 'Assistant message');
+    return getMessageHighlights(message).map((highlight) => ({
+        id: highlight.id,
+        messageId: message.id,
+        label,
+        exact: highlight.range.exact.replace(/\s+/g, ' ').trim(),
+        color: highlight.color,
+        timestampLabel: formatLeafTimestamp(message),
+    }));
 };
 
 const getGraphNodeNavigationTime = (message: Message): number => {
@@ -1640,11 +1657,21 @@ function GraphViewInternal({
         getLeafMessagesByRecency(visibleGraphMessages as Message[])
             .map((message) => toLeafNodeNavigationItem(message, agentLabelsById))
     ), [agentLabelsById, visibleGraphMessages]);
-    const allLeafNodeNavigationItems = useMemo(() => (
-        getLeafMessagesByRecency(graphMessages as Message[])
-            .map((message) => toLeafNodeNavigationItem(message, agentLabelsById))
-    ), [agentLabelsById, graphMessages]);
-    const graphNodeNavigationIds = useMemo(
+	    const allLeafNodeNavigationItems = useMemo(() => (
+	        getLeafMessagesByRecency(graphMessages as Message[])
+	            .map((message) => toLeafNodeNavigationItem(message, agentLabelsById))
+	    ), [agentLabelsById, graphMessages]);
+	    const highlightNavigationItems = useMemo(() => (
+	        (graphMessages as Message[])
+	            .flatMap(toHighlightNavigationItems)
+	            .sort((left, right) => right.timestampLabel.localeCompare(left.timestampLabel))
+	    ), [graphMessages]);
+	    useEffect(() => {
+	        if (!activeHighlightPreview) return;
+	        if (highlightNavigationItems.some((item) => item.id === activeHighlightPreview.id)) return;
+	        setActiveHighlightPreview(null);
+	    }, [activeHighlightPreview, highlightNavigationItems]);
+	    const graphNodeNavigationIds = useMemo(
         () => getGraphNodeNavigationIds(visibleGraphMessages as Message[]),
         [visibleGraphMessages],
     );
@@ -1862,8 +1889,9 @@ function GraphViewInternal({
     // ─────────────────────────────────────────────────────────────────────────
     // MUTATIONS
     // ─────────────────────────────────────────────────────────────────────────
-    const deleteMessageBranchMutation = useDeleteMessageBranch();
-    const deleteThreadSessionMutation = useDeleteThreadSession();
+	    const deleteMessageBranchMutation = useDeleteMessageBranch();
+	    const deleteHighlightMutation = useDeleteHighlight();
+	    const deleteThreadSessionMutation = useDeleteThreadSession();
     const createNodePublicShare = useCreateNodePublicShare();
     const { mutate: toggleCollapse } = useToggleCollapse();
     const { openDiff } = useDiff();
@@ -1898,8 +1926,9 @@ function GraphViewInternal({
     const [bulkDeletePhase, setBulkDeletePhase] = useState<DeleteBranchDialogPhase>('idle');
     const [nodeContextMenu, setNodeContextMenu] = useState<NodeContextMenuState | null>(null);
     const [addCommitTargetId, setAddCommitTargetId] = useState<string | null>(null);
-    const [graphRenderHoldUntil, setGraphRenderHoldUntil] = useState(0);
-    const [graphComposerDockState, setGraphComposerDockStateLocal] = useState<GraphComposerDockState>(() => getGraphComposerDockState());
+	    const [graphRenderHoldUntil, setGraphRenderHoldUntil] = useState(0);
+	    const [graphComposerDockState, setGraphComposerDockStateLocal] = useState<GraphComposerDockState>(() => getGraphComposerDockState());
+	    const [activeHighlightPreview, setActiveHighlightPreview] = useState<HighlightNavigationItem | null>(null);
 
     useEffect(() => {
         setDeletedGraphCommitShas(readDeletedGraphCommitShas(selectedWorkspaceId));
@@ -2736,9 +2765,9 @@ function GraphViewInternal({
         summaries: summaries as Summary[],
         disabledSummaryIds: disabledSummaryIdsSet,
     }), [disabledSummaryIdsSet, graphMessages, summaries]);
-    const workspaceProjection = useWorkspaceProjection(
-        graphProjectionMessages,
-        scopedSummaries,
+	    const workspaceProjection = useWorkspaceProjection(
+	        graphProjectionMessages,
+	        scopedSummaries,
         focusedMessageId,
         disabledSummaryIdsSet,
         'graph',
@@ -2746,9 +2775,12 @@ function GraphViewInternal({
         scopedVisibleSnapshotCommitParents,
         scopedVisibleSnapshotCommitObservations,
         emptyThreadRoot,
-        syntheticThreadRoots,
-        threadSessions,
-    );
+	        syntheticThreadRoots,
+	        threadSessions,
+	    );
+	    const activeHighlightPreviewEntity = activeHighlightPreview
+	        ? workspaceProjection.entitiesByMessageId.get(activeHighlightPreview.messageId) ?? null
+	        : null;
     const executionTimelineProjection = useWorkspaceProjection(
         graphMessages as Message[],
         summaries as Summary[],
@@ -3851,7 +3883,7 @@ function GraphViewInternal({
         threadGraphScope.activeThreadRootId,
     ]);
 
-    const handleLeafNodeFocus = useCallback((leafNodeId: string) => {
+	    const handleLeafNodeFocus = useCallback((leafNodeId: string) => {
         const targetThreadRootId = resolveLeafNodeFocusThreadRootId({
             leafNodeId,
             focusedThreadRootLookup,
@@ -3894,8 +3926,59 @@ function GraphViewInternal({
         markThreadVisited,
         nodeSelection.clearSelection,
         saveViewportForActiveThread,
-        threadGraphScope.activeThreadRootId,
-    ]);
+	        threadGraphScope.activeThreadRootId,
+	    ]);
+
+	    const handleHighlightFocus = useCallback((item: HighlightNavigationItem) => {
+	        const targetThreadRootId = resolveLeafNodeFocusThreadRootId({
+	            leafNodeId: item.messageId,
+	            focusedThreadRootLookup,
+	        });
+	        const activeThreadRootId = threadGraphScope.activeThreadRootId;
+	        const shouldSwitchThread = Boolean(targetThreadRootId && targetThreadRootId !== activeThreadRootId);
+
+	        if (shouldSwitchThread && targetThreadRootId) {
+	            saveViewportForActiveThread();
+	            if (activeThreadRootId) {
+	                markThreadVisited(activeThreadRootId);
+	            }
+	            setActiveThreadRootId(targetThreadRootId);
+	            markThreadVisited(targetThreadRootId);
+	            setViewMode('branch');
+	            nodeSelection.clearSelection();
+	        }
+
+	        setActiveHighlightPreview(item);
+	        handleFocus(item.messageId, {
+	            pointerDownAt: null,
+	            clickAt: performance.now(),
+	            metadata: {
+	                via: 'highlight-dropdown',
+	                highlightId: item.id,
+	                targetThreadRootId,
+	                switchedThread: shouldSwitchThread,
+	            },
+	        });
+	    }, [
+	        focusedThreadRootLookup,
+	        handleFocus,
+	        markThreadVisited,
+	        nodeSelection.clearSelection,
+	        saveViewportForActiveThread,
+	        threadGraphScope.activeThreadRootId,
+	    ]);
+
+	    const handleHighlightDelete = useCallback((item: HighlightNavigationItem) => {
+	        if (!selectedWorkspaceId) return;
+	        deleteHighlightMutation.mutate({
+	            workspaceId: selectedWorkspaceId,
+	            messageId: item.messageId,
+	            highlightId: item.id,
+	        });
+	        if (activeHighlightPreview?.id === item.id) {
+	            setActiveHighlightPreview(null);
+	        }
+	    }, [activeHighlightPreview?.id, deleteHighlightMutation, selectedWorkspaceId]);
 
     const handleThreadDoneChange = useCallback((threadRootId: string, done: boolean) => {
         const nextDoneThreadRootIds = new Set(doneThreadRootIds);
@@ -6363,10 +6446,14 @@ function GraphViewInternal({
                         onThreadDoneChange={handleThreadDoneChange}
                         doneThreadsCollapsed={doneThreadsCollapsed}
                         onDoneThreadsCollapsedChange={handleDoneThreadsCollapsedChange}
-                        leafNodes={leafNodeNavigationItems}
-                        allLeafNodes={allLeafNodeNavigationItems}
-                        onLeafNodeFocus={handleLeafNodeFocus}
-                        mergeSourceCount={mergeSourceCount}
+	                        leafNodes={leafNodeNavigationItems}
+	                        allLeafNodes={allLeafNodeNavigationItems}
+	                        onLeafNodeFocus={handleLeafNodeFocus}
+	                        highlightItems={highlightNavigationItems}
+	                        activeHighlightId={activeHighlightPreview?.id ?? null}
+	                        onHighlightFocus={handleHighlightFocus}
+	                        onHighlightDelete={handleHighlightDelete}
+	                        mergeSourceCount={mergeSourceCount}
                         mergeRunIndicator={mergeRunIndicator}
                         mergeAttentionNonce={mergeAttentionNonce}
                         renderMergePanel={(onClose) => (
@@ -6642,9 +6729,9 @@ function GraphViewInternal({
                                     graphEdges={graphEdgesForRender}
                                     threadRootIdByMessageId={threadGraphScope.isThreadScoped ? new Map() : threadRootIndex.threadRootIdByMessageId}
                                 />
-                                <GraphCanvasIndexPanel
-                                    isVisible={isIndexVisible}
-                                    onToggleVisible={setIsIndexVisible}
+	                                <GraphCanvasIndexPanel
+	                                    isVisible={isIndexVisible}
+	                                    onToggleVisible={setIsIndexVisible}
                                     onPreviewEdgeType={handlePreviewEdgeType}
                                     visibleEdgeTypes={visibleEdgeTypes}
                                     onToggleEdgeType={handleToggleEdgeType}
@@ -6652,10 +6739,42 @@ function GraphViewInternal({
                                     onToggleNodeSection={handleToggleNodeSection}
                                     nodeSectionCounts={graphNodeSectionCounts}
                                     messages={graphMessages as Message[]}
-                                    agentLabelsById={agentLabelsById}
-                                />
-                            </>
-                        )}
+	                                    agentLabelsById={agentLabelsById}
+	                                />
+	                                {activeHighlightPreview && activeHighlightPreviewEntity ? (
+	                                    <div className="absolute right-4 top-4 z-50 max-w-[min(920px,calc(100vw-2rem))]">
+	                                        <MessageHighlightActiveProvider activeHighlightId={activeHighlightPreview.id}>
+	                                            <NodeHoverCardContent
+	                                                entity={activeHighlightPreviewEntity}
+	                                                projection={workspaceProjection}
+	                                                showOrchestrationSummary={false}
+	                                                headerAccessory={(
+	                                                    <div className="mb-2 flex items-center justify-between gap-3 rounded-[16px] border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.46)] px-3 py-2">
+	                                                        <div className="min-w-0">
+	                                                            <p className="truncate text-xs font-semibold text-foreground">
+	                                                                Highlight Preview
+	                                                            </p>
+	                                                            <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+	                                                                {activeHighlightPreview.exact}
+	                                                            </p>
+	                                                        </div>
+	                                                        <button
+	                                                            type="button"
+	                                                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+	                                                            aria-label="Close highlight preview"
+	                                                            title="Close"
+	                                                            onClick={() => setActiveHighlightPreview(null)}
+	                                                        >
+	                                                            <X className="h-3.5 w-3.5" />
+	                                                        </button>
+	                                                    </div>
+	                                                )}
+	                                            />
+	                                        </MessageHighlightActiveProvider>
+	                                    </div>
+	                                ) : null}
+	                            </>
+	                        )}
                         {nodeSelection.showActionMenu && (
                             <FloatingSelectionMenu
                                 position={nodeSelection.actionMenuPosition}

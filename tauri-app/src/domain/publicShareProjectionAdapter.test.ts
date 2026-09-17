@@ -110,4 +110,37 @@ describe('publicPayloadToWorkspaceProjectionInput', () => {
     expect(executionData.timeline).toBeUndefined();
     expect(executionData.tool_calls).toBeUndefined();
   });
+
+  it('preserves public artifact references on projected messages', () => {
+    const payload = makePayload();
+    payload.graph.messages[1].artifacts = [{
+      id: 'artifact-1',
+      nodeId: 'assistant-1',
+      role: 'output',
+      kind: 'screenshot',
+      mimeType: 'image/png',
+      title: 'Landing preview',
+      storage: {
+        backend: 'remote',
+        url: 'https://cdn.example.com/landing.png',
+      },
+      thumbnail: {
+        url: 'https://cdn.example.com/landing-thumb.png',
+      },
+      isPrimary: true,
+      publicSafe: true,
+    }];
+
+    const input = publicPayloadToWorkspaceProjectionInput(payload);
+    const executionData = input.messages[1].execution_data as Record<string, any>;
+
+    expect(executionData.artifacts).toEqual([
+      expect.objectContaining({
+        id: 'artifact-1',
+        nodeId: 'assistant-1',
+        title: 'Landing preview',
+        publicSafe: true,
+      }),
+    ]);
+  });
 });

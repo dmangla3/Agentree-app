@@ -88,10 +88,12 @@ use std::sync::Mutex;
 use tauri_specta::{collect_commands, Builder as SpectaBuilder, ErrorHandlingMode};
 
 mod agents;
+mod artifacts;
 mod auth_callback;
 mod cli_path;
 mod codex_adapter;
 mod command_guards;
+mod composer_attachments;
 mod config;
 mod db;
 mod editors;
@@ -312,6 +314,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             mcp::set_mcp_workspace_id,
             mcp::get_mcp_server_url,
             mcp::resolve_orchestration_mcp_request,
+            composer_attachments::save_composer_attachment,
             auth_callback::ensure_auth_callback_server_started,
             auth_callback::get_auth_callback_base_url,
             auth_callback::save_agentree_cloud_session,

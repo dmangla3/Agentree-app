@@ -818,6 +818,33 @@
   color: hsl(var(--foreground));
 }
 
+::highlight(agentree-message-highlight-yellow) {
+  background-color: rgba(250, 204, 21, 0.42);
+  color: inherit;
+}
+
+::highlight(agentree-message-highlight-green) {
+  background-color: rgba(74, 222, 128, 0.34);
+  color: inherit;
+}
+
+::highlight(agentree-message-highlight-blue) {
+  background-color: rgba(96, 165, 250, 0.34);
+  color: inherit;
+}
+
+::highlight(agentree-message-highlight-rose) {
+  background-color: rgba(251, 113, 133, 0.34);
+  color: inherit;
+}
+
+::highlight(agentree-message-highlight-active) {
+  background-color: rgba(245, 158, 11, 0.58);
+  text-decoration: underline;
+  text-decoration-color: rgba(120, 53, 15, 0.7);
+  text-underline-offset: 0.16em;
+}
+
 @layer utilities {
   .text-\[9px\] {
     font-size: 10px;

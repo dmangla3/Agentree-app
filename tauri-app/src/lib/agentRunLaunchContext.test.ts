@@ -112,6 +112,89 @@ describe('buildAgentRunLaunchContext', () => {
     expect(result.meta.provider_cross_provider_fresh_thread).toBe(true);
   });
 
+  it('passes selected image artifacts to Codex as provider input artifacts', () => {
+    const result = buildAgentRunLaunchContext({
+      agentType: 'codex',
+      userPrompt: 'Use this image.',
+      contextPolicy: 'continue',
+      contextManifest: {
+        ...EMPTY_COMPOSER_CONTEXT_MANIFEST,
+        contextText: 'Artifact context',
+        artifactInputs: [{
+          id: 'artifact-1',
+          nodeId: 'assistant-1',
+          role: 'output',
+          kind: 'image',
+          mimeType: 'image/png',
+          storage: { backend: 'remote', url: 'https://cdn.example.com/image.png' },
+        }],
+      },
+      nodeId: 'assistant-new',
+      modelCapabilities: { inputModalities: ['text', 'image'] },
+    });
+
+    const index = result.providerInternalArgs.indexOf('--input-artifacts-json');
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(JSON.parse(result.providerInternalArgs[index + 1])).toMatchObject([{
+      id: 'artifact-1',
+      mimeType: 'image/png',
+    }]);
+    expect(result.meta.provider_image_input_artifact_count).toBe(1);
+  });
+
+  it('does not pass image artifacts to text-only Codex models', () => {
+    const result = buildAgentRunLaunchContext({
+      agentType: 'codex',
+      userPrompt: 'Use this image.',
+      contextPolicy: 'continue',
+      contextManifest: {
+        ...EMPTY_COMPOSER_CONTEXT_MANIFEST,
+        contextText: 'Artifact context',
+        artifactInputs: [{
+          id: 'artifact-1',
+          nodeId: 'assistant-1',
+          role: 'output',
+          kind: 'image',
+          mimeType: 'image/png',
+          storage: { backend: 'remote', url: 'https://cdn.example.com/image.png' },
+        }],
+      },
+      nodeId: 'assistant-new',
+      modelCapabilities: { inputModalities: ['text'] },
+    });
+
+    expect(result.providerInternalArgs).not.toContain('--input-artifacts-json');
+    expect(result.meta.provider_image_input_artifact_count).toBe(0);
+  });
+
+  it('strips inline data urls from provider artifact input args', () => {
+    const result = buildAgentRunLaunchContext({
+      agentType: 'codex',
+      userPrompt: 'Use this image.',
+      contextPolicy: 'continue',
+      contextManifest: {
+        ...EMPTY_COMPOSER_CONTEXT_MANIFEST,
+        contextText: 'Artifact context',
+        artifactInputs: [{
+          id: 'artifact-1',
+          nodeId: 'assistant-1',
+          role: 'output',
+          kind: 'image',
+          mimeType: 'image/png',
+          storage: { backend: 'local', path: '/tmp/generated.png', url: 'data:image/png;base64,large' },
+          thumbnail: { url: 'data:image/png;base64,large' },
+        }],
+      },
+      nodeId: 'assistant-new',
+      modelCapabilities: { inputModalities: ['text', 'image'] },
+    });
+
+    const index = result.providerInternalArgs.indexOf('--input-artifacts-json');
+    const artifact = JSON.parse(result.providerInternalArgs[index + 1])[0];
+    expect(artifact.storage).toEqual({ backend: 'local', path: '/tmp/generated.png' });
+    expect(artifact.thumbnail).toBeUndefined();
+  });
+
   it('passes saved default prompt overrides into launch prompt assembly', () => {
     useDefaultPromptStore.getState().upsertUserPrompt({
       id: 'dependency_guard',

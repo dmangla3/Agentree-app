@@ -143,6 +143,21 @@ fn payload_has_structured_timeline(payload: &JsonValue) -> bool {
         .unwrap_or(false)
 }
 
+fn execution_data_has_artifacts(execution_data: &JsonValue) -> bool {
+    execution_data
+        .get("artifacts")
+        .and_then(|value| value.as_array())
+        .map(|artifacts| !artifacts.is_empty())
+        .unwrap_or(false)
+}
+
+fn payload_has_artifacts(payload: &JsonValue) -> bool {
+    payload
+        .get("execution_data")
+        .map(execution_data_has_artifacts)
+        .unwrap_or(false)
+}
+
 fn timeline_tool_use_id(event: &JsonValue) -> Option<&str> {
     event
         .get("toolUseId")
@@ -2943,6 +2958,54 @@ impl TelemetryDb {
         Ok(())
     }
 
+    fn repair_payload_artifacts_if_needed(
+        conn: &Connection,
+        node_id: &str,
+        payload: &mut JsonValue,
+    ) -> Result<(), String> {
+        if payload_has_artifacts(payload) {
+            return Ok(());
+        }
+
+        if !payload.is_object() {
+            return Ok(());
+        }
+        let Some(payload_object) = payload.as_object_mut() else {
+            return Ok(());
+        };
+        let execution_data = payload_object
+            .entry("execution_data".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT payload
+                FROM agent_run_events
+                WHERE assistant_node_id = ?1
+                  AND event_type = 'artifact_registered'
+                ORDER BY seq ASC
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![node_id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        for payload_json in rows {
+            let Ok(event) = serde_json::from_str::<JsonValue>(&payload_json) else {
+                continue;
+            };
+            let Some(artifact) = event.get("artifact").cloned().filter(JsonValue::is_object) else {
+                continue;
+            };
+            crate::artifacts::upsert_artifact_in_execution_data(execution_data, artifact);
+        }
+        Ok(())
+    }
+
     pub fn repair_legacy_local_node_timelines(&self, limit: usize) -> Result<usize, String> {
         if limit == 0 {
             return Ok(0);
@@ -2976,6 +3039,26 @@ impl TelemetryDb {
                                   'user_steer_requested'
                               )
                           )
+                          OR (
+                              COALESCE(
+                                  json_array_length(
+                                      json_extract(
+                                          CASE
+                                              WHEN json_valid(COALESCE(n.execution_data_json, '')) THEN n.execution_data_json
+                                              ELSE '{}'
+                                          END,
+                                          '$.artifacts'
+                                      )
+                                  ),
+                                  0
+                              ) = 0
+                              AND EXISTS (
+                                  SELECT 1
+                                  FROM agent_run_events ev
+                                  WHERE ev.assistant_node_id = n.id
+                                    AND ev.event_type = 'artifact_registered'
+                              )
+                          )
                       )
                       AND EXISTS (
                           SELECT 1
@@ -2988,7 +3071,8 @@ impl TelemetryDb {
                                 'tool_output_delta',
                                 'error',
                                 'stderr',
-                                'user_steer_requested'
+                                'user_steer_requested',
+                                'artifact_registered'
                             )
                       )
                     ORDER BY n.local_updated_at ASC
@@ -3011,11 +3095,13 @@ impl TelemetryDb {
             let Ok(mut payload) = serde_json::from_str::<JsonValue>(&payload_json) else {
                 continue;
             };
-            if payload_has_structured_timeline(&payload) {
-                continue;
-            }
+            let had_structured_timeline = payload_has_structured_timeline(&payload);
+            let had_artifacts = payload_has_artifacts(&payload);
             Self::repair_payload_timeline_if_needed(&conn, &node_id, &mut payload)?;
-            if !payload_has_structured_timeline(&payload) {
+            Self::repair_payload_artifacts_if_needed(&conn, &node_id, &mut payload)?;
+            if had_structured_timeline == payload_has_structured_timeline(&payload)
+                && had_artifacts == payload_has_artifacts(&payload)
+            {
                 continue;
             }
             let payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
@@ -5622,10 +5708,10 @@ impl TelemetryDb {
 
         let now = unix_timestamp();
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let parent: Option<(String, Option<String>)> = conn
+        let parent: Option<(String, Option<String>, Option<i64>)> = conn
             .query_row(
                 r#"
-                SELECT status, last_error
+                SELECT status, last_error, next_attempt_at
                 FROM local_sync_events
                 WHERE entity_type = 'node'
                   AND entity_id = ?1
@@ -5639,12 +5725,12 @@ impl TelemetryDb {
                 LIMIT 1
                 "#,
                 params![parent_id, event.user_id.as_deref()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(|e| e.to_string())?;
 
-        if let Some((status, last_error)) = parent.as_ref() {
+        if let Some((status, last_error, parent_next_attempt_at)) = parent.as_ref() {
             if status == "dead" {
                 let parent_error = last_error
                     .as_deref()
@@ -5672,6 +5758,21 @@ impl TelemetryDb {
                 .map_err(|e| e.to_string())?;
                 return Ok(Some(parent_id.to_string()));
             }
+
+            let child_next_attempt_at = parent_next_attempt_at
+                .filter(|next_attempt_at| *next_attempt_at > now)
+                .unwrap_or(now + 60);
+            conn.execute(
+                r#"
+                UPDATE local_sync_events
+                SET next_attempt_at = ?2,
+                    updated_at = ?3
+                WHERE id = ?1
+                  AND status = 'pending'
+                "#,
+                params![&event.id, child_next_attempt_at, now],
+            )
+            .map_err(|e| e.to_string())?;
 
             conn.execute(
                 r#"
@@ -9740,6 +9841,74 @@ mod tests {
     }
 
     #[test]
+    fn repair_legacy_local_node_timelines_repairs_missing_artifacts_from_journal() {
+        let (_dir, db) = open_test_db();
+        upsert_run(&db, "assistant-missing-artifact", "completed", "cleaned");
+        db.append_agent_run_event(
+            "run-assistant-missing-artifact",
+            "assistant-missing-artifact",
+            "artifact_registered",
+            None,
+            None,
+            r#"{"type":"artifact_registered","artifact":{"id":"artifact-1","kind":"screenshot","title":"Preview","mimeType":"image/png","storage":{"backend":"local","path":"/tmp/preview.png"},"isPrimary":true},"timestamp":1778917769000}"#,
+        )
+        .expect("artifact registered");
+
+        {
+            let conn = db.conn.lock().expect("conn");
+            conn.execute(
+                r#"
+                INSERT INTO local_nodes (
+                    id, workspace_id, parent_id, role, content, status,
+                    execution_data_json, payload_json, created_at, updated_at,
+                    deleted_at, local_updated_at
+                )
+                VALUES (?1, ?2, ?3, 'assistant', 'summary', 'completed', ?4, ?5, ?6, ?6, NULL, ?7)
+                "#,
+                params![
+                    "assistant-missing-artifact",
+                    "workspace-1",
+                    "user-assistant-missing-artifact",
+                    r#"{"timeline":[{"type":"tool_result","toolName":"commandExecution","toolOutput":"ok"}]}"#,
+                    r#"{"id":"assistant-missing-artifact","workspaceId":"workspace-1","parentId":"user-assistant-missing-artifact","role":"assistant","content":"summary","status":"completed","execution_data":{"timeline":[{"type":"tool_result","toolName":"commandExecution","toolOutput":"ok"}]}}"#,
+                    "2026-05-16T00:00:00Z",
+                    1_i64,
+                ],
+            )
+            .expect("insert local node");
+        }
+
+        let repaired = db
+            .repair_legacy_local_node_timelines(25)
+            .expect("repair legacy artifacts");
+        assert_eq!(repaired, 1);
+
+        let rows = db
+            .list_local_nodes_for_workspace("workspace-1")
+            .expect("local nodes");
+        let payload: serde_json::Value =
+            serde_json::from_str(&rows[0].payload).expect("payload json");
+        assert_eq!(
+            payload["execution_data"]["artifacts"][0]["id"],
+            "artifact-1"
+        );
+        assert_eq!(payload["execution_data"]["artifacts"][0]["isPrimary"], true);
+
+        let execution_data_json: String = {
+            let conn = db.conn.lock().expect("conn");
+            conn.query_row(
+                "SELECT execution_data_json FROM local_nodes WHERE id = ?1",
+                params!["assistant-missing-artifact"],
+                |row| row.get(0),
+            )
+            .expect("execution data")
+        };
+        let execution_data: serde_json::Value =
+            serde_json::from_str(&execution_data_json).expect("execution data json");
+        assert_eq!(execution_data["artifacts"][0]["id"], "artifact-1");
+    }
+
+    #[test]
     fn server_hydration_does_not_override_pending_local_node_mutation() {
         let (_dir, db) = open_test_db();
         db.upsert_local_node(
@@ -10032,6 +10201,7 @@ mod tests {
             Some("parent-run"),
         )
         .expect("enqueue parent");
+        let before_defer = unix_timestamp();
         let child = db
             .enqueue_local_sync_event(
                 Some("workspace-1"),
@@ -10048,6 +10218,12 @@ mod tests {
             .expect("detect parent");
 
         assert_eq!(blocking_parent.as_deref(), Some("parent-assistant"));
+        let child = db
+            .get_local_sync_event(&child.id)
+            .expect("read child")
+            .expect("child event");
+        assert_eq!(child.status, "pending");
+        assert!(child.next_attempt_at.unwrap_or_default() >= before_defer + 60);
     }
 
     #[test]

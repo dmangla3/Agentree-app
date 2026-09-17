@@ -1,7 +1,7 @@
 {
   "name": "tauri-app",
   "private": true,
-  "version": "0.2.5",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "npm run dev:tauri",
@@ -26,6 +26,7 @@
     "smoke:send-flow:tauri": "node ./tests/perf/tauri-pilot-send-stream-status-smoke.mjs",
     "pilot:install": "cargo install tauri-pilot-cli --locked",
     "pilot:dev": "npm run dev",
+    "pilot:graph-node-hover": "node ./tests/pilot/graph-node-hover-probe.mjs",
     "pilot:smoke": "node ./tests/pilot/smoke-ui.mjs",
     "pilot:test-ui": "node ./tests/pilot/run-dev-and-smoke.mjs",
     "audit:agent-runs": "node ./scripts/audit-agent-run-lifecycle.mjs",

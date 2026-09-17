@@ -129,6 +129,41 @@ export interface AttachmentMetadata {
   publicUrl: string | null;
   filename: string;
   contentType: string;
+  localPath?: string | null;
+  sizeBytes?: number | null;
+  width?: number | null;
+  height?: number | null;
+}
+
+export interface ArtifactMetadata {
+  id: string;
+  nodeId: string;
+  role: 'input' | 'output';
+  kind: 'image' | 'screenshot' | 'pdf' | 'html' | 'text' | 'video' | 'audio' | 'file' | string;
+  mimeType: string;
+  title?: string;
+  caption?: string;
+  filename?: string;
+  storage: {
+    backend: 'local' | 'r2' | 'remote' | 'inline' | string;
+    path?: string;
+    key?: string;
+    url?: string;
+  };
+  thumbnail?: {
+    path?: string;
+    url?: string;
+    width?: number;
+    height?: number;
+  };
+  width?: number;
+  height?: number;
+  sizeBytes?: number;
+  isPrimary?: boolean;
+  publicSafe?: boolean;
+  source?: string;
+  sourceCommitSha?: string;
+  createdAt?: string;
 }
 
 export interface Citation {
@@ -141,6 +176,24 @@ export interface Citation {
 export interface Annotation {
   type: string;
   [key: string]: unknown;
+}
+
+export type MessageHighlightColor = 'yellow' | 'green' | 'blue' | 'rose';
+
+export interface MessageHighlightRange {
+  start: number;
+  end: number;
+  exact: string;
+  textHash: string;
+}
+
+export interface MessageHighlightAnnotation extends Annotation {
+  type: 'highlight';
+  id: string;
+  color: MessageHighlightColor;
+  range: MessageHighlightRange;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Comment {
@@ -162,6 +215,7 @@ export interface Message {
   llmProvider?: string | null;
   llmModel?: string | null;
   attachments?: AttachmentMetadata[] | null;
+  artifacts?: ArtifactMetadata[] | null;
   annotations?: Annotation[] | null;
   tags?: string[] | null;
   createdAt: string;

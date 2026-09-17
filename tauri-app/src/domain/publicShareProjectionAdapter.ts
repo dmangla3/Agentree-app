@@ -8,6 +8,7 @@ import type {
   Message,
   Summary,
 } from '../stores/workspaceStore';
+import type { ArtifactRef } from '../lib/artifacts';
 
 type PublicGraphRole = 'user' | 'assistant' | string;
 
@@ -76,6 +77,7 @@ type PublicGraphMessage = {
   output_commit_sha?: string | null;
   base_selected_from_node_id?: string | null;
   commit?: PublicCommitMeta | null;
+  artifacts?: ArtifactRef[] | null;
   collapsed?: boolean | null;
   context_active?: boolean | null;
   execution?: {
@@ -165,6 +167,7 @@ const buildPublicExecutionData = (message: PublicGraphMessage) => ({
   cache_usage: message.execution?.cacheUsage ?? undefined,
   work_logs: message.execution?.workLogs ?? undefined,
   timeline: publicWorkLogsToTimeline(message.execution?.workLogs),
+  artifacts: Array.isArray(message.artifacts) ? message.artifacts : undefined,
   meta: publicCommitMetaForExecution(message.commit),
   files_changed: message.commit?.files_changed ?? undefined,
 });

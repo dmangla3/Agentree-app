@@ -7,6 +7,7 @@ import { getOptionalCloudAuthToken } from '../lib/authSession';
 import { agentClient } from '../lib/agentClient';
 import { resolveWorkspaceRepoPath } from '../composer/headlessComposerSend';
 import { getThreadOriginNodeId } from '../lib/graphThreadRoots';
+import { getRuntimeModelByProviderAndId } from '../lib/runtimeModels';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache } from '../hooks/useLocalNodes';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
 import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../stores/agentRunProjectionStore';
@@ -707,6 +708,10 @@ export function useOrchestrationMcpBridge({
               const agentId = resolveAgentId(orchestrator, args, agentType);
               const authToken = await getOptionalCloudAuthToken();
               const launchDefaults = resolveOrchestrationRunLaunchDefaults(orchestrator, args);
+              const llmModel = readString(args, 'model')
+                ?? (typeof orchestrator.llmModel === 'string' ? orchestrator.llmModel : null)
+                ?? readString(meta, 'provider_model');
+              const modelCapabilities = getRuntimeModelByProviderAndId(agentType, llmModel)?.capabilities ?? null;
               const parentNodeId = launchDefaults.parentNodeId;
               const parentNode = latestMessagesRef.current.find((message) => message.id === parentNodeId) ?? null;
               const parentNodeMeta = (parentNode?.execution_data as { meta?: Record<string, unknown> } | null | undefined)?.meta ?? null;
@@ -724,9 +729,8 @@ export function useOrchestrationMcpBridge({
                 agentId,
                 agentType,
                 agentName: readString(args, 'agent_name') ?? readString(meta, 'agent_name'),
-                llmModel: readString(args, 'model')
-                  ?? (typeof orchestrator.llmModel === 'string' ? orchestrator.llmModel : null)
-                  ?? readString(meta, 'provider_model'),
+                llmModel,
+                modelCapabilities,
                 agentCliArgs: readString(args, 'cli_args') ?? readString(meta, 'agent_cli_args') ?? '',
                 agentPromptFlag: readString(args, 'prompt_flag') ?? readString(meta, 'agent_prompt_flag'),
                 permissionMode: (readString(args, 'permission_mode') ?? readString(meta, 'composer_permission_mode') ?? undefined) as any,

@@ -24,6 +24,10 @@ import { getNodeFailureReason, isNodeFailureStatus } from '../../../lib/nodeFail
 import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import { useAgentreeSurface } from '../../graph/surfaceCapabilities';
 import { TokenUsagePill } from '../../TokenUsagePill';
+import { getMessageArtifacts } from '../../../lib/artifacts';
+import { ArtifactGallery } from '../../artifacts/ArtifactPreview';
+import { getMessageHighlights } from '../../../lib/messageHighlights';
+import type { MessageHighlightAnnotation } from '../../../stores/workspaceStore';
 
 const AgentChip = ({
   agentId,
@@ -92,10 +96,14 @@ const StreamingMarkdown = memo(function StreamingMarkdown({
   text,
   isStreaming,
   repoPath,
+  messageId = null,
+  highlights = [],
 }: {
   text: string;
   isStreaming: boolean;
   repoPath?: string | null;
+  messageId?: string | null;
+  highlights?: MessageHighlightAnnotation[];
 }) {
   const targetText = typeof text === 'string' ? text : '';
   const [shouldRenderMarkdown, setShouldRenderMarkdown] = useState(!isStreaming);
@@ -151,7 +159,14 @@ const StreamingMarkdown = memo(function StreamingMarkdown({
   }
 
   return (
-    <ChatMarkdown repoPath={repoPath}>{targetText}</ChatMarkdown>
+    <ChatMarkdown
+      repoPath={repoPath}
+      messageId={messageId}
+      highlights={highlights}
+      highlightEnabled={!isStreaming}
+    >
+      {targetText}
+    </ChatMarkdown>
   );
 });
 
@@ -648,7 +663,13 @@ export const ChatAssistantCard = memo(({
     return workspace?.git_repo_path ?? workspace?.folderPath ?? null;
   }, [workspaces, workspaceId]);
   const tags = useMemo(() => message?.tags ?? [], [message?.tags]);
+  const highlights = useMemo(() => getMessageHighlights(message), [message?.annotations]);
   const executionData = (message?.execution_data as any) ?? null;
+  const outputArtifacts = useMemo(
+    () => getMessageArtifacts(message, { includeAttachments: false, role: 'output' })
+      .filter((artifact) => artifact.role === 'output'),
+    [message]
+  );
   const timeline = useMemo(() => {
     const rawTimeline = Array.isArray(executionData?.timeline) ? executionData.timeline : [];
     if (rawTimeline.length > 0) return rawTimeline;
@@ -663,11 +684,11 @@ export const ChatAssistantCard = memo(({
     () => hasStructuredTimeline ? buildTimelineRows(timeline) : [],
     [hasStructuredTimeline, timeline]
   );
-  const liveMessageRows = useMemo(
+  const liveMessageRows = useMemo<Array<{ key: string; content: string }>>(
     () => {
       if (hasStructuredTimeline || !shouldRevealStream) return [];
       return timeline
-        .map((event: any, index) => {
+        .map((event: any, index: number) => {
           if (event?.type !== 'message') return null;
           const content = typeof event.content === 'string' ? event.content : '';
           if (!content.trim()) return null;
@@ -678,7 +699,7 @@ export const ChatAssistantCard = memo(({
             content,
           };
         })
-        .filter((row): row is { key: string; content: string } => Boolean(row));
+        .filter((row: { key: string; content: string } | null): row is { key: string; content: string } => Boolean(row));
     },
     [hasStructuredTimeline, shouldRevealStream, timeline]
   );
@@ -902,6 +923,8 @@ export const ChatAssistantCard = memo(({
         allowToolExpansion={capabilities.canExpandToolCalls}
       />
 
+      <ArtifactGallery artifacts={outputArtifacts} defaultOpen />
+
       {/* Content */}
       <div className="relative z-10 min-w-0 max-w-full">
         {hasInterleavedTranscript && !showCompletedFinalOnly ? (
@@ -995,7 +1018,13 @@ export const ChatAssistantCard = memo(({
           </div>
         ) : (
           <div className="min-w-0 max-w-full prose dark:prose-invert prose-sm max-w-none break-words text-[14px] leading-[1.62] [overflow-wrap:anywhere] prose-p:my-1.5 prose-p:max-w-[74ch] prose-p:text-foreground/90 prose-p:leading-[1.62] prose-li:max-w-[74ch] prose-li:leading-[1.58] prose-pre:my-1.5 prose-pre:max-w-full prose-pre:whitespace-pre-wrap prose-pre:break-words prose-table:my-1.5 prose-th:py-1 prose-td:py-1">
-            <StreamingMarkdown text={message?.content || ''} isStreaming={shouldRevealStream} repoPath={repoPath} />
+	            <StreamingMarkdown
+	              text={message?.content || ''}
+	              isStreaming={shouldRevealStream}
+	              repoPath={repoPath}
+	              messageId={messageId}
+	              highlights={shouldRevealStream ? [] : highlights}
+	            />
           </div>
         )}
       </div>

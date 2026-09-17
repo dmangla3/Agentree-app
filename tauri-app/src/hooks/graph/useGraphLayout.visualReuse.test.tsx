@@ -243,6 +243,50 @@ describe('useGraphLayout visual reuse', () => {
     expect(node?.data.heightKey).toContain('status:completed');
   });
 
+  it('recomputes layout when an assistant output preview appears', () => {
+    const withoutPreview: Message[] = [
+      messages[0],
+      makeMessage({
+        id: 'assistant-1',
+        role: 'assistant',
+        parentId: 'user-1',
+        content: 'First reply.',
+        status: 'completed',
+        agent_id: 'codex:test',
+      }, 1),
+    ];
+    const withPreview: Message[] = [
+      withoutPreview[0],
+      {
+        ...withoutPreview[1],
+        execution_data: {
+          artifacts: [{
+            id: 'artifact-1',
+            role: 'output',
+            kind: 'screenshot',
+            mimeType: 'image/png',
+            title: 'Screenshot preview',
+            storage: { backend: 'local', path: '/tmp/screenshot.png' },
+            isPrimary: true,
+          }],
+        },
+      },
+    ];
+
+    const { result, rerender } = renderHook(
+      ({ inputMessages }) => renderLayout('assistant-1', ['user-1', 'assistant-1'], inputMessages),
+      { initialProps: { inputMessages: withoutPreview } },
+    );
+
+    expect(result.current.nodes.find((node) => node.id === 'assistant-1')?.style?.height).toBe(112);
+
+    rerender({ inputMessages: withPreview });
+
+    const node = result.current.nodes.find((candidate) => candidate.id === 'assistant-1');
+    expect(node?.style?.height).toBe(168);
+    expect(node?.data.heightKey).toContain('outputPreview:1');
+  });
+
   it('keeps separate layout cache entries for repeated thread scopes', () => {
     const threadAMessages: Message[] = [
       makeMessage({ id: 'thread-a', role: 'user', parentId: null, content: 'Thread A task.' }, 0),

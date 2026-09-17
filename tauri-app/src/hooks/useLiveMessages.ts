@@ -78,8 +78,9 @@ const toMessageFromLocal = (local: LocalNodeMessage, base: Message | null): Mess
     totalTokens: payload.totalTokens ?? base?.totalTokens ?? null,
     output_commit_sha: payload.output_commit_sha ?? base?.output_commit_sha ?? null,
     git_branch_name: payload.git_branch_name ?? base?.git_branch_name ?? null,
-    tags: base?.tags ?? payload.tags ?? null,
-    comments: base?.comments ?? payload.comments ?? null,
+    tags: payload.tags ?? base?.tags ?? null,
+    comments: payload.comments ?? base?.comments ?? null,
+    annotations: payload.annotations ?? base?.annotations ?? null,
     branchPointers: base?.branchPointers ?? payload.branchPointers ?? null,
   } as Message;
 };
@@ -148,6 +149,9 @@ export function mergeLiveMessage(base: Message | null, live: AgentRunProjectedMe
     totalTokens: live.totalTokens ?? base?.totalTokens ?? null,
     output_commit_sha: live.output_commit_sha ?? base?.output_commit_sha ?? null,
     git_branch_name: live.git_branch_name ?? base?.git_branch_name ?? null,
+    annotations: base?.annotations ?? live.annotations ?? null,
+    tags: base?.tags ?? live.tags ?? null,
+    comments: base?.comments ?? live.comments ?? null,
   };
 }
 
@@ -171,6 +175,9 @@ function mergeGraphMessage(base: Message | null, live: AgentRunProjectedMessage)
     totalTokens: base?.totalTokens ?? live.totalTokens ?? null,
     output_commit_sha: live.output_commit_sha ?? base?.output_commit_sha ?? null,
     git_branch_name: live.git_branch_name ?? base?.git_branch_name ?? null,
+    annotations: base?.annotations ?? live.annotations ?? null,
+    tags: base?.tags ?? live.tags ?? null,
+    comments: base?.comments ?? live.comments ?? null,
   };
 }
 

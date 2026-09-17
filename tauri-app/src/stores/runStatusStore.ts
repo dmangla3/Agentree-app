@@ -148,6 +148,9 @@ export const useRunStatusStore = create<RunStatusState>((set, get) => ({
   setRunStatus: (nodeId, entry) =>
     set((state) => {
       const existing = state.byNodeId[nodeId];
+      if (!existing && isTerminalRunStatus(entry.status)) {
+        return state;
+      }
       const requestedStatus = resolveAgentRunStatus(
         existing?.status as any,
         (entry.status ?? existing?.status ?? null) as any,

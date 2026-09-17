@@ -1,8 +1,9 @@
 import type { Message } from '../stores/workspaceStore';
 import { reconstructContext } from './contextUtils';
 import { isFirstClassCommitMessage } from './graph/turnUtils';
+import { buildArtifactContextText, getMessageArtifacts, type ArtifactRef } from './artifacts';
 
-export type ComposerContextEntryKind = 'user' | 'assistant' | 'tool';
+export type ComposerContextEntryKind = 'user' | 'assistant' | 'tool' | 'artifact';
 
 export interface ComposerContextEntry {
     id: string;
@@ -15,6 +16,7 @@ export interface ComposerContextEntry {
     tokens: number;
     defaultSelected: boolean;
     createdAt: string;
+    artifacts?: ArtifactRef[];
 }
 
 export interface ComposerContextTurn {
@@ -37,6 +39,7 @@ export interface ComposerContextManifestBlock {
     volatile: boolean;
     content: string;
     tokens: number;
+    artifacts?: ArtifactRef[];
 }
 
 export interface ComposerContextManifest {
@@ -47,6 +50,7 @@ export interface ComposerContextManifest {
     stablePrefixText: string;
     volatileTailText: string;
     contextText: string;
+    artifactInputs: ArtifactRef[];
     manifestHash: string;
     stablePrefixHash: string;
     volatileTailHash: string;
@@ -309,7 +313,8 @@ export function buildComposerContextSelection(
         kind: ComposerContextEntryKind,
         summary: string,
         content: string,
-        suffix: string
+        suffix: string,
+        artifacts?: ArtifactRef[],
     ) => {
         if (!currentTurn) {
             turnIndex += 1;
@@ -328,12 +333,13 @@ export function buildComposerContextSelection(
             turnId: currentTurn.id,
             turnIndex: currentTurn.index,
             kind,
-            label: kind === 'tool' ? 'Execution timeline' : kind,
+            label: kind === 'tool' ? 'Execution timeline' : kind === 'artifact' ? 'Artifacts' : kind,
             summary: normalizedSummary,
             content,
             tokens,
             defaultSelected: kind === 'tool' ? false : activityById.get(message.id) === true,
             createdAt: message.createdAt,
+            ...(artifacts?.length ? { artifacts } : {}),
         });
     };
 
@@ -355,10 +361,27 @@ export function buildComposerContextSelection(
 
         if (message.role === 'user') {
             pushEntry(message, 'user', summarySource, messageContent, 'user');
+            const inputArtifacts = getMessageArtifacts(message, {
+                includeAttachments: true,
+                role: 'input',
+            });
+            const artifactContext = buildArtifactContextText(inputArtifacts);
+            if (artifactContext) {
+                pushEntry(message, 'artifact', 'Uploaded files', artifactContext, 'artifact', inputArtifacts);
+            }
             continue;
         }
 
         pushEntry(message, 'assistant', summarySource, messageContent, 'assistant');
+
+        const assistantArtifacts = getMessageArtifacts(message, {
+            includeAttachments: false,
+            role: 'output',
+        }).filter((artifact) => artifact.role === 'output');
+        const assistantArtifactContext = buildArtifactContextText(assistantArtifacts);
+        if (assistantArtifactContext) {
+            pushEntry(message, 'artifact', 'Output previews', assistantArtifactContext, 'artifact', assistantArtifacts);
+        }
 
         const timelineEvents = getTimelineEvents(message).filter((event) =>
             event?.type === 'tool_use' || event?.type === 'tool_result' || event?.type === 'tool_error'
@@ -412,6 +435,7 @@ export function buildComposerContextManifest(
             stablePrefixText: empty,
             volatileTailText: empty,
             contextText: empty,
+            artifactInputs: [],
             manifestHash: fnv1aHash(empty),
             stablePrefixHash: fnv1aHash(empty),
             volatileTailHash: fnv1aHash(empty),
@@ -429,15 +453,27 @@ export function buildComposerContextManifest(
                 id: entry.id,
                 turnIndex: turn.index,
                 kind: entry.kind,
-                volatile: entry.kind === 'tool',
+                volatile: entry.kind === 'tool' || entry.kind === 'artifact',
                 content: normalizedContent,
                 tokens: estimateTokens(normalizedContent),
+                ...(entry.artifacts?.length ? { artifacts: entry.artifacts } : {}),
             });
         }
     }
 
+    const artifactInputs = Array.from(
+        blocks
+            .flatMap((block) => block.artifacts ?? [])
+            .reduce((map, artifact) => map.set(artifact.id, artifact), new Map<string, ArtifactRef>())
+            .values()
+    );
+
     const serializeBlock = (block: ComposerContextManifestBlock) => {
-        const label = block.kind === 'tool' ? 'EXECUTION TIMELINE' : block.kind.toUpperCase();
+        const label = block.kind === 'tool'
+            ? 'EXECUTION TIMELINE'
+            : block.kind === 'artifact'
+                ? 'ARTIFACTS'
+                : block.kind.toUpperCase();
         return `[Turn ${block.turnIndex}] ${label} (${block.id})\n${block.content}`;
     };
 
@@ -461,6 +497,14 @@ export function buildComposerContextManifest(
             kind: block.kind,
             volatile: block.volatile,
             content: block.content,
+            artifacts: block.artifacts?.map((artifact) => ({
+                id: artifact.id,
+                role: artifact.role,
+                kind: artifact.kind,
+                mimeType: artifact.mimeType,
+                storage: artifact.storage,
+                thumbnail: artifact.thumbnail,
+            })),
         })),
     });
 
@@ -472,6 +516,7 @@ export function buildComposerContextManifest(
         stablePrefixText,
         volatileTailText,
         contextText,
+        artifactInputs,
         manifestHash: fnv1aHash(manifestCanonical),
         stablePrefixHash: fnv1aHash(stablePrefixText),
         volatileTailHash: fnv1aHash(volatileTailText),

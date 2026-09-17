@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { StartAgentRunIntent } from '../lib/agentClient';
+import { EMPTY_COMPOSER_CONTEXT_MANIFEST } from '../lib/prompts';
 import {
   cancelOrchestration,
   completeSatisfiedWaitGroup,
@@ -243,6 +244,59 @@ describe('orchestration control plane', () => {
       provider_thread_id: 'claude-thread-1',
       provider_context_routing_mode: 'provider_native_only',
     }));
+  });
+
+  it('passes image artifact inputs when the orchestration model supports images', async () => {
+    const recordOrchestrationEvent = vi.fn(async () => 1);
+    const persistLocalNode = vi.fn(async () => undefined);
+    const startAgentRun = vi.fn(async (intent: StartAgentRunIntent) => startAgentRunResponse(intent));
+
+    await startOrchestrationRun({
+      workspaceId: 'workspace-1',
+      repoPath: '/repo',
+      authToken: 'token',
+      orchestratorRunId: 'run-orchestrator',
+      orchestratorNodeId: 'assistant-orchestrator',
+      decisionId: 'image-1',
+      parentNodeId: 'assistant-parent',
+      contextParentNodeId: 'assistant-parent',
+      baseNodeId: 'assistant-parent',
+      baseCommitSha: 'base-sha',
+      prompt: 'Edit this image',
+      agentId: 'agent-1',
+      agentType: 'codex',
+      agentName: 'GPT Image 2',
+      llmModel: 'gpt-image-2',
+      modelCapabilities: { inputModalities: ['text', 'image'] },
+      contextManifest: {
+        ...EMPTY_COMPOSER_CONTEXT_MANIFEST,
+        artifactInputs: [{
+          id: 'artifact-1',
+          nodeId: 'assistant-parent',
+          role: 'output',
+          kind: 'image',
+          mimeType: 'image/png',
+          storage: { backend: 'local', path: '/tmp/reference.png' },
+        }],
+      },
+      now: '2026-06-01T00:00:00.000Z',
+      userNodeId: 'user-child',
+      assistantNodeId: 'assistant-child',
+      runId: 'run-child',
+    }, {
+      newId: () => 'unused',
+      persistLocalNode,
+      startAgentRun,
+      recordOrchestrationEvent,
+    });
+
+    const intent = startAgentRun.mock.calls[0][0];
+    const artifactArgIndex = intent.args.indexOf('--input-artifacts-json');
+    expect(artifactArgIndex).toBeGreaterThanOrEqual(0);
+    expect(JSON.parse(intent.args[artifactArgIndex + 1])).toMatchObject([{
+      id: 'artifact-1',
+      storage: { path: '/tmp/reference.png' },
+    }]);
   });
 
   it('retries an orchestration run by starting a replacement and recording supersession', async () => {
