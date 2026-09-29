@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import { Highlighter } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import {
@@ -7,6 +8,10 @@ import {
 } from '../../lib/messageHighlights';
 import type { MessageHighlightColor, MessageHighlightRange } from '../../stores/workspaceStore';
 import { useAddHighlight } from '../../hooks/useMessages';
+import {
+  getHighlightRootForNode,
+  getTextOffsetInHighlightRoot,
+} from './messageHighlightDom';
 
 const COLOR_BUTTON_CLASSES: Record<MessageHighlightColor, string> = {
   yellow: 'bg-yellow-300 hover:bg-yellow-300/85 ring-yellow-500/70',
@@ -20,24 +25,6 @@ type SelectionPopoverState = {
   range: MessageHighlightRange;
   left: number;
   top: number;
-};
-
-const getTextOffset = (root: HTMLElement, targetNode: Node, targetOffset: number): number | null => {
-  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let offset = 0;
-  while (walker.nextNode()) {
-    const node = walker.currentNode;
-    if (node === targetNode) {
-      return offset + targetOffset;
-    }
-    offset += node.textContent?.length ?? 0;
-  }
-  return null;
-};
-
-const getRootForNode = (node: Node | null): HTMLElement | null => {
-  const element = node instanceof Element ? node : node?.parentElement ?? null;
-  return element?.closest<HTMLElement>('[data-agentree-highlight-content-root="true"]') ?? null;
 };
 
 export function MessageHighlightSelectionPopover({
@@ -58,8 +45,8 @@ export function MessageHighlightSelectionPopover({
     }
 
     const range = selection.getRangeAt(0);
-    const startRoot = getRootForNode(range.startContainer);
-    const endRoot = getRootForNode(range.endContainer);
+    const startRoot = getHighlightRootForNode(range.startContainer);
+    const endRoot = getHighlightRootForNode(range.endContainer);
     const surface = surfaceRef.current;
     if (!startRoot || startRoot !== endRoot || (surface && !surface.contains(startRoot))) {
       setSelectionState(null);
@@ -72,8 +59,8 @@ export function MessageHighlightSelectionPopover({
       return;
     }
 
-    const start = getTextOffset(startRoot, range.startContainer, range.startOffset);
-    const end = getTextOffset(startRoot, range.endContainer, range.endOffset);
+    const start = getTextOffsetInHighlightRoot(startRoot, range.startContainer, range.startOffset);
+    const end = getTextOffsetInHighlightRoot(startRoot, range.endContainer, range.endOffset);
     if (start === null || end === null) {
       setSelectionState(null);
       return;
@@ -132,9 +119,9 @@ export function MessageHighlightSelectionPopover({
     setSelectionState(null);
   };
 
-  if (!selectionState) return null;
+  if (!selectionState || typeof document === 'undefined') return null;
 
-  return (
+  return createPortal((
     <div
       className="fixed z-[1000] flex items-center gap-1 rounded-md border border-border/80 bg-popover px-1.5 py-1 text-popover-foreground shadow-lg"
       style={{
@@ -144,6 +131,8 @@ export function MessageHighlightSelectionPopover({
       }}
       role="toolbar"
       aria-label="Highlight selection"
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
     >
       <Highlighter size={14} className="mx-1 text-muted-foreground" aria-hidden="true" />
       {MESSAGE_HIGHLIGHT_COLORS.map((color) => (
@@ -161,5 +150,5 @@ export function MessageHighlightSelectionPopover({
         />
       ))}
     </div>
-  );
+  ), document.body);
 }

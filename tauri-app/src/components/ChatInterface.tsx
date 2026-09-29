@@ -32,6 +32,7 @@ import { recordFundamentalCounter } from '../perf/fundamentalCounters';
 import { getDeleteBranchPreview, getTopLevelDeleteBranchIds } from '../domain/deleteBranchPreview';
 import { getBranchPointerCommitSha, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { MessageHighlightSelectionPopover } from './highlights/MessageHighlightSelectionPopover';
+import { MessageHighlightHoverPopover } from './highlights/MessageHighlightHoverPopover';
 
 const getEntitySelectionId = (projection: any, entityId?: string): string | null => {
   if (!entityId) return null;
@@ -906,6 +907,7 @@ export function ChatInterface({ onMarkThreadDone }: ChatInterfaceProps = {}) {
         </Profiler>
       </ScrollArea>
       <MessageHighlightSelectionPopover workspaceId={selectedWorkspaceId} surfaceRef={viewportRef} />
+      <MessageHighlightHoverPopover workspaceId={selectedWorkspaceId} surfaceRef={viewportRef} />
 
       <div className="relative z-[40] overflow-visible p-4 border-t bg-background">
         <ChatInput />

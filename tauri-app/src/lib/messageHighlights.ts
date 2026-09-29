@@ -10,11 +10,6 @@ export const MESSAGE_HIGHLIGHT_COLORS: MessageHighlightColor[] = ['yellow', 'gre
 
 const MESSAGE_HIGHLIGHT_COLOR_SET = new Set<MessageHighlightColor>(MESSAGE_HIGHLIGHT_COLORS);
 
-export interface HighlightTextSegment {
-  text: string;
-  highlight: MessageHighlightAnnotation | null;
-}
-
 export const normalizeHighlightColor = (color: unknown): MessageHighlightColor => {
   return MESSAGE_HIGHLIGHT_COLOR_SET.has(color as MessageHighlightColor)
     ? color as MessageHighlightColor
@@ -129,46 +124,6 @@ export const createMessageHighlight = ({
   createdAt: now,
   updatedAt: now,
 });
-
-export const splitTextByHighlights = (
-  text: string,
-  textStartOffset: number,
-  highlights: MessageHighlightAnnotation[],
-  activeHighlightId?: string | null
-): HighlightTextSegment[] => {
-  if (!text || highlights.length === 0) return [{ text, highlight: null }];
-
-  const textEndOffset = textStartOffset + text.length;
-  const overlapping = highlights
-    .filter((highlight) => highlight.range.start < textEndOffset && highlight.range.end > textStartOffset)
-    .sort((left, right) => {
-      if (left.id === activeHighlightId) return 1;
-      if (right.id === activeHighlightId) return -1;
-      return left.range.start - right.range.start || right.range.end - left.range.end;
-    });
-
-  if (overlapping.length === 0) return [{ text, highlight: null }];
-
-  const segments: HighlightTextSegment[] = [];
-  let cursor = 0;
-
-  for (const highlight of overlapping) {
-    const localStart = Math.max(0, highlight.range.start - textStartOffset);
-    const localEnd = Math.min(text.length, highlight.range.end - textStartOffset);
-    if (localEnd <= cursor || localEnd <= localStart) continue;
-    if (localStart > cursor) {
-      segments.push({ text: text.slice(cursor, localStart), highlight: null });
-    }
-    segments.push({ text: text.slice(Math.max(cursor, localStart), localEnd), highlight });
-    cursor = localEnd;
-  }
-
-  if (cursor < text.length) {
-    segments.push({ text: text.slice(cursor), highlight: null });
-  }
-
-  return segments.length > 0 ? segments : [{ text, highlight: null }];
-};
 
 export const createHighlightRangeFromOffsets = (
   fullText: string,

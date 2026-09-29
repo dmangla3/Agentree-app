@@ -11,6 +11,7 @@ import {
   type AgentreeSurfaceMode,
 } from './graph/surfaceCapabilities';
 import { MessageHighlightSelectionPopover } from './highlights/MessageHighlightSelectionPopover';
+import { MessageHighlightHoverPopover } from './highlights/MessageHighlightHoverPopover';
 
 let appNodeHoverPreviewPreload: Promise<{ default: typeof import('./AppNodeHoverPreview').AppNodeHoverPreview }> | null = null;
 
@@ -245,6 +246,7 @@ export function NodeHoverCardContent({
       {headerAccessory}
       <div
         ref={previewScrollRef}
+        data-agentree-highlight-scroll-container="true"
         className="max-h-[calc(min(70vh,720px)-1.5rem)] w-full overflow-y-auto overscroll-contain"
         onWheelCapture={(event) => {
           event.stopPropagation();
@@ -280,6 +282,10 @@ export function NodeHoverCardContent({
       ) : null}
 	    </div>
 	    <MessageHighlightSelectionPopover
+	      workspaceId={entity.message?.workspaceId ?? null}
+	      surfaceRef={previewScrollRef}
+	    />
+	    <MessageHighlightHoverPopover
 	      workspaceId={entity.message?.workspaceId ?? null}
 	      surfaceRef={previewScrollRef}
 	    />

@@ -36,6 +36,8 @@ export interface SharedNodeProps {
   heightKey?: string;
   onMeasureHeight?: (id: string, height: number) => void;
   hoverCardContent?: ReactNode;
+  controlledHoverCardKey?: string | null;
+  onControlledHoverCardDismiss?: () => void;
   onFocus: (metrics?: FocusTriggerMetrics) => void;
   onSelect: (multi: boolean) => void;
   onContextMenu: (e: React.MouseEvent) => void;

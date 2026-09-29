@@ -6,7 +6,6 @@ import {
   createHighlightRangeFromOffsets,
   getMessageHighlights,
   removeMessageHighlight,
-  splitTextByHighlights,
   updateMessageHighlightColor,
 } from './messageHighlights';
 
@@ -70,20 +69,5 @@ describe('message highlight helpers', () => {
     });
     expect(createHighlightRangeFromOffsets(fullText, 2, 2)).toBeNull();
     expect(createHighlightRangeFromOffsets(fullText, 5, 6)).toBeNull();
-  });
-
-  it('splits rendered text by overlapping highlight ranges', () => {
-    const highlight = makeHighlight('h1', 3, 8, 'lo wo');
-
-    expect(splitTextByHighlights('hello world', 0, [highlight])).toEqual([
-      { text: 'hel', highlight: null },
-      { text: 'lo wo', highlight },
-      { text: 'rld', highlight: null },
-    ]);
-
-    expect(splitTextByHighlights('world', 6, [highlight])).toEqual([
-      { text: 'wo', highlight },
-      { text: 'rld', highlight: null },
-    ]);
   });
 });

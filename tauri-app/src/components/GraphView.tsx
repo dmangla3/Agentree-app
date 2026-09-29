@@ -114,7 +114,6 @@ import { GraphInteractionContext } from './graph/GraphInteractionContext';
 import { GraphHoverProjectionContext } from './graph/GraphHoverProjectionContext';
 import { TrackedBranchesPanel } from './TrackedBranchesPanel';
 import { FloatingSelectionMenu } from './graph/FloatingSelectionMenu';
-import { NodeHoverCardContent } from './NodeHoverCardContent';
 import { MessageHighlightActiveProvider } from './highlights/MessageHighlightActiveContext';
 import { getMessageHighlights } from '../lib/messageHighlights';
 
@@ -1653,6 +1652,7 @@ function GraphViewInternal({
     const visibleGraphMessages = useMemo(() => (
         scopedGraphMessages.filter((message) => !hiddenConversationMessageIds.has(message.id))
     ), [hiddenConversationMessageIds, scopedGraphMessages]);
+    const [activeHighlightPreview, setActiveHighlightPreview] = useState<HighlightNavigationItem | null>(null);
     const leafNodeNavigationItems = useMemo(() => (
         getLeafMessagesByRecency(visibleGraphMessages as Message[])
             .map((message) => toLeafNodeNavigationItem(message, agentLabelsById))
@@ -1928,7 +1928,6 @@ function GraphViewInternal({
     const [addCommitTargetId, setAddCommitTargetId] = useState<string | null>(null);
 	    const [graphRenderHoldUntil, setGraphRenderHoldUntil] = useState(0);
 	    const [graphComposerDockState, setGraphComposerDockStateLocal] = useState<GraphComposerDockState>(() => getGraphComposerDockState());
-	    const [activeHighlightPreview, setActiveHighlightPreview] = useState<HighlightNavigationItem | null>(null);
 
     useEffect(() => {
         setDeletedGraphCommitShas(readDeletedGraphCommitShas(selectedWorkspaceId));
@@ -2778,9 +2777,6 @@ function GraphViewInternal({
 	        syntheticThreadRoots,
 	        threadSessions,
 	    );
-	    const activeHighlightPreviewEntity = activeHighlightPreview
-	        ? workspaceProjection.entitiesByMessageId.get(activeHighlightPreview.messageId) ?? null
-	        : null;
     const executionTimelineProjection = useWorkspaceProjection(
         graphMessages as Message[],
         summaries as Summary[],
@@ -5360,6 +5356,7 @@ function GraphViewInternal({
         selected: boolean;
         attentionBadgeCount?: number;
         attentionBadgeItems?: AttentionBadgeItem[];
+        controlledHoverCardKey?: string | null;
         prepared: Node<any>;
     }>());
     const graphNodeDetailCacheRef = useRef(new Map<string, {
@@ -5374,11 +5371,15 @@ function GraphViewInternal({
             selected: boolean;
             attentionBadgeCount?: number;
             attentionBadgeItems?: AttentionBadgeItem[];
+            controlledHoverCardKey?: string | null;
             prepared: Node<any>;
         }>();
         let reusedCount = 0;
         const result = layoutNodes.map((node) => {
             const nodeFocusId = node.data?.entity?.focusMessageId ?? node.data?.entity?.messageId ?? null;
+            const controlledHoverCardKey = activeHighlightPreview && nodeFocusId === activeHighlightPreview.messageId
+                ? `highlight:${activeHighlightPreview.messageId}:${activeHighlightPreview.id}`
+                : null;
             const selected = nodeSelection.selectedNodeIds.has(node.id)
                 || (typeof nodeFocusId === 'string' && nodeSelection.selectedNodeIds.has(nodeFocusId));
             const entity = node.data?.entity as { kind?: string; messageId?: string | null } | undefined;
@@ -5392,6 +5393,7 @@ function GraphViewInternal({
                 && cached.selected === selected
                 && cached.attentionBadgeCount === attentionBadgeCount
                 && cached.attentionBadgeItems === attentionBadgeItems
+                && cached.controlledHoverCardKey === controlledHoverCardKey
             ) {
                 nextCache.set(node.id, cached);
                 reusedCount += 1;
@@ -5400,26 +5402,24 @@ function GraphViewInternal({
             let baseNode = Boolean(node.selected) === selected
                 ? node
                 : { ...node, selected };
-            if ((baseNode.data as any)?.attentionBadgeCount !== attentionBadgeCount) {
+            if (
+                (baseNode.data as any)?.attentionBadgeCount !== attentionBadgeCount
+                || (baseNode.data as any)?.attentionBadgeItems !== attentionBadgeItems
+                || (baseNode.data as any)?.controlledHoverCardKey !== controlledHoverCardKey
+            ) {
                 baseNode = {
                     ...baseNode,
                     data: {
                         ...(baseNode.data ?? {}),
                         attentionBadgeCount,
                         attentionBadgeItems,
-                    },
-                };
-            } else if ((baseNode.data as any)?.attentionBadgeItems !== attentionBadgeItems) {
-                baseNode = {
-                    ...baseNode,
-                    data: {
-                        ...(baseNode.data ?? {}),
-                        attentionBadgeItems,
+                        controlledHoverCardKey,
+                        onControlledHoverCardDismiss: () => setActiveHighlightPreview(null),
                     },
                 };
             }
             const prepared = withExplicitReactFlowNodeDimensions(baseNode);
-            nextCache.set(node.id, { source: node, selected, attentionBadgeCount, attentionBadgeItems, prepared });
+            nextCache.set(node.id, { source: node, selected, attentionBadgeCount, attentionBadgeItems, controlledHoverCardKey, prepared });
             return prepared;
         });
         preparedGraphNodeCacheRef.current = nextCache;
@@ -5431,7 +5431,7 @@ function GraphViewInternal({
             activeSendFlow: activeSendFlowFocus?.workspaceId === selectedWorkspaceId,
         }, performance.now() - startedAt);
         return result;
-    }, [activeSendFlowFocus?.workspaceId, attentionByParentId, layoutNodes, nodeSelection.selectedNodeIds, selectedWorkspaceId]);
+    }, [activeHighlightPreview, activeSendFlowFocus?.workspaceId, attentionByParentId, layoutNodes, nodeSelection.selectedNodeIds, selectedWorkspaceId]);
     const branchNodesForRender = baseBranchNodesForRender;
     const graphEdgesForRender = previewEdges;
     const activeGraphRenderHold = runningCount > 0 || activeSendFlowFocus?.workspaceId === selectedWorkspaceId;
@@ -6523,6 +6523,7 @@ function GraphViewInternal({
                         onWheelCapture={handleBranchViewportWheelCapture}
                     >
                         <GraphInteractionContext.Provider value={graphInteractionContextValue}>
+                        <MessageHighlightActiveProvider activeHighlightId={activeHighlightPreview?.id ?? null}>
                             <GraphHoverProjectionContext.Provider
                                 value={{
                                     messages: messages as Message[],
@@ -6721,6 +6722,7 @@ function GraphViewInternal({
                                 )}
                             </div>
                             </GraphHoverProjectionContext.Provider>
+                        </MessageHighlightActiveProvider>
                         </GraphInteractionContext.Provider>
                         {!sendFlowGraphDiagFlags.disableGraphSurface && (
                             <>
@@ -6738,41 +6740,9 @@ function GraphViewInternal({
                                     visibleNodeSections={visibleNodeSections}
                                     onToggleNodeSection={handleToggleNodeSection}
                                     nodeSectionCounts={graphNodeSectionCounts}
-                                    messages={graphMessages as Message[]}
+	                                    messages={graphMessages as Message[]}
 	                                    agentLabelsById={agentLabelsById}
 	                                />
-	                                {activeHighlightPreview && activeHighlightPreviewEntity ? (
-	                                    <div className="absolute right-4 top-4 z-50 max-w-[min(920px,calc(100vw-2rem))]">
-	                                        <MessageHighlightActiveProvider activeHighlightId={activeHighlightPreview.id}>
-	                                            <NodeHoverCardContent
-	                                                entity={activeHighlightPreviewEntity}
-	                                                projection={workspaceProjection}
-	                                                showOrchestrationSummary={false}
-	                                                headerAccessory={(
-	                                                    <div className="mb-2 flex items-center justify-between gap-3 rounded-[16px] border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.46)] px-3 py-2">
-	                                                        <div className="min-w-0">
-	                                                            <p className="truncate text-xs font-semibold text-foreground">
-	                                                                Highlight Preview
-	                                                            </p>
-	                                                            <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-	                                                                {activeHighlightPreview.exact}
-	                                                            </p>
-	                                                        </div>
-	                                                        <button
-	                                                            type="button"
-	                                                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-	                                                            aria-label="Close highlight preview"
-	                                                            title="Close"
-	                                                            onClick={() => setActiveHighlightPreview(null)}
-	                                                        >
-	                                                            <X className="h-3.5 w-3.5" />
-	                                                        </button>
-	                                                    </div>
-	                                                )}
-	                                            />
-	                                        </MessageHighlightActiveProvider>
-	                                    </div>
-	                                ) : null}
 	                            </>
 	                        )}
                         {nodeSelection.showActionMenu && (

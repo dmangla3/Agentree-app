@@ -15,6 +15,8 @@ interface GraphCanonicalCommitNodeProps {
   detailLevel?: GraphNodeDetailLevel;
   disableHoverCard?: boolean;
   hoverCardContent?: React.ReactNode;
+  controlledHoverCardKey?: string | null;
+  onControlledHoverCardDismiss?: () => void;
   onFocus?: (metrics?: FocusTriggerMetrics) => void;
   onSelect?: (multi: boolean) => void;
   onContextMenu?: (e: React.MouseEvent) => void;
@@ -36,6 +38,8 @@ export const GraphCanonicalCommitNode = memo(({
   detailLevel = 'full',
   disableHoverCard,
   hoverCardContent,
+  controlledHoverCardKey,
+  onControlledHoverCardDismiss,
   onFocus = () => {},
   onSelect = () => {},
   onContextMenu = () => {},
@@ -57,6 +61,8 @@ export const GraphCanonicalCommitNode = memo(({
       disableHoverCard={disableHoverCard}
       hoverOpenDelay={180}
       hoverCardContent={hoverCardContent}
+      controlledHoverCardKey={controlledHoverCardKey}
+      onControlledHoverCardDismiss={onControlledHoverCardDismiss}
       onFocus={onFocus}
       onSelect={onSelect}
       onContextMenu={onContextMenu}

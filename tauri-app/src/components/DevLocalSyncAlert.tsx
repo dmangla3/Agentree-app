@@ -1,5 +1,5 @@
 import React from 'react';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, X } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '../../@/components/ui/alert';
 import { Button } from '../../@/components/ui/button';
 import {
@@ -54,8 +54,18 @@ export function DevLocalSyncAlert() {
 
     return (
         <div className="fixed left-1/2 top-3 z-[120] w-[min(48rem,calc(100vw-2rem))] -translate-x-1/2">
-            <Alert className="border-amber-500/40 bg-amber-500/10 text-amber-950 shadow-lg backdrop-blur dark:text-amber-100">
+            <Alert className="relative border-amber-500/40 bg-amber-500/10 pr-10 text-amber-950 shadow-lg backdrop-blur dark:text-amber-100">
                 <AlertCircle className="text-amber-500" />
+                <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    aria-label="Dismiss local sync warning"
+                    className="absolute right-2 top-2 h-7 w-7 text-amber-950 hover:bg-amber-500/20 dark:text-amber-100"
+                    onClick={clearLocalSyncPause}
+                >
+                    <X className="h-4 w-4" />
+                </Button>
                 <AlertTitle>Dev local sync paused</AlertTitle>
                 <AlertDescription>
                     <div className="space-y-2">

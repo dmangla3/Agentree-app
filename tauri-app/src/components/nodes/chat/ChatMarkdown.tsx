@@ -8,6 +8,10 @@ import { ChatMermaidBlock } from './ChatMermaidBlock';
 import type { MessageHighlightAnnotation } from '../../../stores/workspaceStore';
 import { MESSAGE_HIGHLIGHT_COLORS } from '../../../lib/messageHighlights';
 import { useActiveMessageHighlightId } from '../../highlights/MessageHighlightActiveContext';
+import {
+  createRangeFromHighlightOffsets,
+  HIGHLIGHT_SCROLL_CONTAINER_SELECTOR,
+} from '../../highlights/messageHighlightDom';
 
 const chatMarkdownPlugins = [remarkGfm, remarkBreaks];
 const HIGHLIGHT_REGISTRY_NAMES = {
@@ -57,55 +61,68 @@ const refreshCssHighlights = () => {
   });
 };
 
-const createRangeFromTextOffsets = (root: HTMLElement, start: number, end: number): Range | null => {
-  const ownerDocument = root.ownerDocument;
-  const walker = ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let offset = 0;
-  let startNode: Text | null = null;
-  let endNode: Text | null = null;
-  let startOffset = 0;
-  let endOffset = 0;
-
-  while (walker.nextNode()) {
-    const node = walker.currentNode as Text;
-    const nodeStart = offset;
-    const nodeEnd = nodeStart + node.data.length;
-    if (!startNode && start >= nodeStart && start <= nodeEnd) {
-      startNode = node;
-      startOffset = start - nodeStart;
-    }
-    if (!endNode && end >= nodeStart && end <= nodeEnd) {
-      endNode = node;
-      endOffset = end - nodeStart;
-      break;
-    }
-    offset = nodeEnd;
+const getHighlightScrollContainer = (root: HTMLElement): HTMLElement | null => {
+  const explicitContainer = root.closest<HTMLElement>(HIGHLIGHT_SCROLL_CONTAINER_SELECTOR);
+  if (explicitContainer && explicitContainer.scrollHeight > explicitContainer.clientHeight) {
+    return explicitContainer;
   }
 
-  if (!startNode || !endNode) return null;
-  const range = ownerDocument.createRange();
-  range.setStart(startNode, startOffset);
-  range.setEnd(endNode, endOffset);
-  return range;
+  let container: HTMLElement | null = root.parentElement;
+  while (container) {
+    const style = window.getComputedStyle(container);
+    const canScroll = /(auto|scroll)/.test(`${style.overflow}${style.overflowY}`) && container.scrollHeight > container.clientHeight;
+    if (canScroll) return container;
+    container = container.parentElement;
+  }
+
+  return null;
 };
 
 const scrollRangeIntoView = (root: HTMLElement, range: Range) => {
   const rangeRect = range.getBoundingClientRect();
   if (!rangeRect.width && !rangeRect.height) return;
-  let container: HTMLElement | null = root.parentElement;
-  while (container) {
-    const style = window.getComputedStyle(container);
-    const canScroll = /(auto|scroll)/.test(`${style.overflow}${style.overflowY}`) && container.scrollHeight > container.clientHeight;
-    if (canScroll) break;
-    container = container.parentElement;
-  }
+  const container = getHighlightScrollContainer(root);
   if (container) {
     const containerRect = container.getBoundingClientRect();
     const delta = rangeRect.top - containerRect.top - (containerRect.height / 2) + (rangeRect.height / 2);
-    container.scrollTo({ top: container.scrollTop + delta, behavior: 'smooth' });
+    const nextScrollTop = Math.max(0, Math.min(
+      container.scrollTop + delta,
+      container.scrollHeight - container.clientHeight
+    ));
+    container.scrollTo({ top: nextScrollTop, behavior: 'auto' });
     return;
   }
-  rangeRect.top && window.scrollBy({ top: rangeRect.top - (window.innerHeight / 2), behavior: 'smooth' });
+  rangeRect.top && window.scrollBy({ top: rangeRect.top - (window.innerHeight / 2), behavior: 'auto' });
+};
+
+const scheduleActiveHighlightScroll = (
+  root: HTMLElement,
+  highlight: MessageHighlightAnnotation
+) => {
+  let cancelled = false;
+  const timeoutIds: number[] = [];
+  const frameIds: number[] = [];
+
+  const scroll = () => {
+    if (cancelled) return;
+    const range = createRangeFromHighlightOffsets(root, highlight.range.start, highlight.range.end);
+    if (!range) return;
+    scrollRangeIntoView(root, range);
+  };
+
+  scroll();
+  frameIds.push(window.requestAnimationFrame(() => {
+    scroll();
+    frameIds.push(window.requestAnimationFrame(scroll));
+  }));
+  timeoutIds.push(window.setTimeout(scroll, 80));
+  timeoutIds.push(window.setTimeout(scroll, 220));
+
+  return () => {
+    cancelled = true;
+    frameIds.forEach((frameId) => window.cancelAnimationFrame(frameId));
+    timeoutIds.forEach((timeoutId) => window.clearTimeout(timeoutId));
+  };
 };
 
 export const createChatMarkdownComponents = (repoPath?: string | null) => {
@@ -211,19 +228,21 @@ export const ChatMarkdown = memo(function ChatMarkdown({
     }
 
     const bucket = createEmptyHighlightBucket();
+    let cancelActiveHighlightScroll: (() => void) | null = null;
     highlights.forEach((highlight) => {
-      const range = createRangeFromTextOffsets(root, highlight.range.start, highlight.range.end);
+      const range = createRangeFromHighlightOffsets(root, highlight.range.start, highlight.range.end);
       if (!range) return;
       bucket[highlight.color].push(range);
       if (highlight.id === resolvedActiveHighlightId) {
         bucket.active.push(range);
-        scrollRangeIntoView(root, range);
+        cancelActiveHighlightScroll = scheduleActiveHighlightScroll(root, highlight);
       }
     });
     mountedHighlightBuckets.set(rootId, bucket);
     refreshCssHighlights();
 
     return () => {
+      cancelActiveHighlightScroll?.();
       mountedHighlightBuckets.delete(rootId);
       refreshCssHighlights();
     };

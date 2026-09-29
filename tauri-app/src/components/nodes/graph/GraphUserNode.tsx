@@ -15,6 +15,8 @@ export const GraphUserNode = memo(({
   heightKey,
   onMeasureHeight,
   hoverCardContent,
+  controlledHoverCardKey,
+  onControlledHoverCardDismiss,
   onFocus,
   onSelect,
   onContextMenu,
@@ -36,6 +38,8 @@ export const GraphUserNode = memo(({
       style={{ width: 200, height: 82 }}
       onMeasureHeight={onMeasureHeight}
       hoverCardContent={hoverCardContent}
+      controlledHoverCardKey={controlledHoverCardKey}
+      onControlledHoverCardDismiss={onControlledHoverCardDismiss}
       onFocus={onFocus}
       onSelect={onSelect}
       onContextMenu={onContextMenu}

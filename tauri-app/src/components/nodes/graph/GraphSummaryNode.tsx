@@ -15,6 +15,8 @@ export const GraphSummaryNode = memo(({
   heightKey,
   onMeasureHeight,
   hoverCardContent,
+  controlledHoverCardKey,
+  onControlledHoverCardDismiss,
   onFocus,
   onSelect,
   onContextMenu,
@@ -36,6 +38,8 @@ export const GraphSummaryNode = memo(({
       style={{ width: 180, minHeight: 64 }}
       onMeasureHeight={onMeasureHeight}
       hoverCardContent={hoverCardContent}
+      controlledHoverCardKey={controlledHoverCardKey}
+      onControlledHoverCardDismiss={onControlledHoverCardDismiss}
       onFocus={onFocus}
       onSelect={onSelect}
       onContextMenu={onContextMenu}

@@ -230,6 +230,8 @@ export const GraphAssistantNode = memo(({
   heightKey,
   onMeasureHeight,
   hoverCardContent,
+  controlledHoverCardKey,
+  onControlledHoverCardDismiss,
   onFocus,
   onSelect,
   onContextMenu,
@@ -277,6 +279,8 @@ export const GraphAssistantNode = memo(({
       onMeasureHeight={onMeasureHeight}
       hoverCardContent={hoverCardContent}
       hoverHydrationEnabled={resolvedHoverHydrationEnabled}
+      controlledHoverCardKey={controlledHoverCardKey}
+      onControlledHoverCardDismiss={onControlledHoverCardDismiss}
       onFocus={onFocus}
       onSelect={onSelect}
       onContextMenu={onContextMenu}

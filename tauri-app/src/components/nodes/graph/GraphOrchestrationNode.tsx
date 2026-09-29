@@ -39,6 +39,8 @@ interface GraphOrchestrationNodeProps {
   disableHoverCard?: boolean;
   heightKey?: string;
   hoverCardContent?: ReactNode;
+  controlledHoverCardKey?: string | null;
+  onControlledHoverCardDismiss?: () => void;
   onFocus?: (metrics?: FocusTriggerMetrics) => void;
   onSelect?: (multi: boolean) => void;
   onContextMenu?: (e: ReactMouseEvent) => void;
@@ -182,6 +184,8 @@ export const GraphOrchestrationNode = memo(({
   disableHoverCard = false,
   heightKey,
   hoverCardContent,
+  controlledHoverCardKey,
+  onControlledHoverCardDismiss,
   onFocus = () => {},
   onSelect = () => {},
   onContextMenu = () => {},
@@ -320,6 +324,8 @@ export const GraphOrchestrationNode = memo(({
       hoverOpenDelay={220}
       hoverHydrationEnabled={controllerHoverHydrationEnabled}
       hoverCardContent={resolvedHoverCardContent}
+      controlledHoverCardKey={controlledHoverCardKey}
+      onControlledHoverCardDismiss={onControlledHoverCardDismiss}
       onFocus={onFocus}
       onSelect={onSelect}
       onContextMenu={onContextMenu}

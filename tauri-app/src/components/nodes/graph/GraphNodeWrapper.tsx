@@ -25,6 +25,8 @@ interface GraphNodeWrapperProps {
   bodyClassName?: string;
   hoverOpenDelay?: number;
   hoverHydrationEnabled?: boolean;
+  controlledHoverCardKey?: string | null;
+  onControlledHoverCardDismiss?: () => void;
   style?: CSSProperties;
   heightKey?: string;
   onMeasureHeight?: (id: string, height: number) => void;
@@ -39,6 +41,8 @@ interface GraphNodeHoverCardShellProps {
   disabled?: boolean;
   hoverOpenDelay?: number;
   hoverHydrationEnabled?: boolean;
+  controlledOpenKey?: string | null;
+  onControlledOpenDismiss?: () => void;
   hoverCardContent?: ReactNode;
   onHoverOpenChange?: (open: boolean) => void;
   children: ReactNode;
@@ -49,6 +53,8 @@ export const GraphNodeHoverCardShell = ({
   disabled,
   hoverOpenDelay = 250,
   hoverHydrationEnabled = false,
+  controlledOpenKey = null,
+  onControlledOpenDismiss,
   hoverCardContent,
   onHoverOpenChange,
   children,
@@ -57,12 +63,21 @@ export const GraphNodeHoverCardShell = ({
   const pointerInsideHoverContentRef = useRef(false);
   const pointerInsideTriggerRef = useRef(false);
   const [hoverOpen, setHoverOpen] = useState(false);
-  const shouldDisableHoverCard = Boolean(disabled);
+  const isControlledOpen = Boolean(controlledOpenKey);
+  const shouldDisableHoverCard = Boolean(disabled) && !isControlledOpen;
+  const effectiveHoverOpen = !shouldDisableHoverCard && (hoverOpen || isControlledOpen);
 
-  const closeHoverCard = () => {
+  const closeHoverCard = (options: { dismissControlled?: boolean } = {}) => {
+    if (isControlledOpen && !options.dismissControlled) {
+      setHoverOpen(true);
+      return;
+    }
     pointerInsideHoverContentRef.current = false;
     pointerInsideTriggerRef.current = false;
     setHoverOpen(false);
+    if (isControlledOpen && options.dismissControlled) {
+      onControlledOpenDismiss?.();
+    }
   };
 
   const closeHoverCardUnlessFocusRemainsInside = () => {
@@ -79,33 +94,41 @@ export const GraphNodeHoverCardShell = ({
   }, [shouldDisableHoverCard]);
 
   useEffect(() => {
-    if (!hoverCardContent || !hoverOpen) return;
-    window.addEventListener('agentree:graph-viewport-interaction-start', closeHoverCard);
-    return () => {
-      window.removeEventListener('agentree:graph-viewport-interaction-start', closeHoverCard);
-    };
-  }, [hoverCardContent, hoverOpen]);
+    if (isControlledOpen) {
+      setHoverOpen(true);
+    }
+  }, [controlledOpenKey, isControlledOpen]);
 
   useEffect(() => {
-    if (!hoverCardContent || !hoverOpen) return;
+    if (!hoverCardContent || !effectiveHoverOpen) return;
+    const handleViewportInteractionStart = () => closeHoverCard({ dismissControlled: true });
+    window.addEventListener('agentree:graph-viewport-interaction-start', handleViewportInteractionStart);
+    return () => {
+      window.removeEventListener('agentree:graph-viewport-interaction-start', handleViewportInteractionStart);
+    };
+  }, [effectiveHoverOpen, hoverCardContent, isControlledOpen]);
+
+  useEffect(() => {
+    if (!hoverCardContent || !effectiveHoverOpen) return;
     const closeHoverCardForHiddenDocument = () => {
       if (document.visibilityState === 'hidden') {
-        closeHoverCard();
+        closeHoverCard({ dismissControlled: true });
       }
     };
+    const closeForWindowBlur = () => closeHoverCard({ dismissControlled: true });
     document.addEventListener('visibilitychange', closeHoverCardForHiddenDocument);
-    window.addEventListener('blur', closeHoverCard);
+    window.addEventListener('blur', closeForWindowBlur);
     return () => {
       document.removeEventListener('visibilitychange', closeHoverCardForHiddenDocument);
-      window.removeEventListener('blur', closeHoverCard);
+      window.removeEventListener('blur', closeForWindowBlur);
     };
-  }, [hoverCardContent, hoverOpen]);
+  }, [effectiveHoverOpen, hoverCardContent, isControlledOpen]);
 
-  useAgentRunHoverHydration(nodeId, hoverOpen && !shouldDisableHoverCard && hoverHydrationEnabled);
+  useAgentRunHoverHydration(nodeId, effectiveHoverOpen && hoverHydrationEnabled);
 
   useEffect(() => {
-    onHoverOpenChange?.(hoverOpen && !shouldDisableHoverCard);
-  }, [hoverOpen, onHoverOpenChange, shouldDisableHoverCard]);
+    onHoverOpenChange?.(effectiveHoverOpen);
+  }, [effectiveHoverOpen, onHoverOpenChange]);
 
   if (!hoverCardContent) {
     return <>{children}</>;
@@ -113,7 +136,7 @@ export const GraphNodeHoverCardShell = ({
 
   return (
     <HoverCard
-      open={shouldDisableHoverCard ? false : hoverOpen}
+      open={effectiveHoverOpen}
       onOpenChange={(open) => {
         if (shouldDisableHoverCard) {
           closeHoverCard();
@@ -127,7 +150,7 @@ export const GraphNodeHoverCardShell = ({
           setHoverOpen(true);
           return;
         }
-        setHoverOpen(false);
+        closeHoverCard();
       }}
       openDelay={hoverOpenDelay}
       closeDelay={120}
@@ -164,20 +187,21 @@ export const GraphNodeHoverCardShell = ({
           pointerInsideHoverContentRef.current = true;
         }}
         onPointerLeave={() => {
+          if (isControlledOpen) return;
           closeHoverCardUnlessFocusRemainsInside();
         }}
         onBlurCapture={(event) => {
           const nextFocus = event.relatedTarget as Node | null;
           if (nextFocus && event.currentTarget.contains(nextFocus)) return;
           if (pointerInsideHoverContentRef.current) return;
-          closeHoverCard();
+          closeHoverCard({ dismissControlled: true });
         }}
         onKeyDownCapture={(event) => {
           if (event.key !== 'Escape') return;
-          closeHoverCard();
+          closeHoverCard({ dismissControlled: true });
         }}
       >
-        {hoverOpen ? hoverCardContent : null}
+        {effectiveHoverOpen ? hoverCardContent : null}
       </HoverCardContent>
     </HoverCard>
   );
@@ -199,6 +223,8 @@ export const GraphNodeWrapper = memo(({
   onMeasureHeight,
   hoverCardContent,
   hoverHydrationEnabled = false,
+  controlledHoverCardKey = null,
+  onControlledHoverCardDismiss,
   onFocus,
   onSelect,
   onContextMenu
@@ -385,6 +411,8 @@ export const GraphNodeWrapper = memo(({
       disabled={shouldDisableHoverCard}
       hoverOpenDelay={hoverOpenDelay}
       hoverHydrationEnabled={hoverHydrationEnabled}
+      controlledOpenKey={controlledHoverCardKey}
+      onControlledOpenDismiss={onControlledHoverCardDismiss}
       hoverCardContent={hoverCardContent}
     >
       {nodeBody}

@@ -34,6 +34,8 @@ export interface GraphNodeData {
   isComposerBaseCommit?: boolean;
   attentionBadgeCount?: number;
   attentionBadgeItems?: AttentionBadgeItem[];
+  controlledHoverCardKey?: string | null;
+  onControlledHoverCardDismiss?: () => void;
   detailLevel?: GraphNodeDetailLevel;
   graphNodeHeight?: number;
   heightKey?: string;
@@ -58,16 +60,19 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
   const isFocused = !!data.isFocused;
   const isComposerBaseCommit = !!data.isComposerBaseCommit;
   const detailLevel = data.detailLevel ?? 'full';
+  const controlledHoverCardKey = typeof data.controlledHoverCardKey === 'string' ? data.controlledHoverCardKey : null;
+  const isControlledHoverCardOpen = Boolean(controlledHoverCardKey);
   const isRedirectedUserNode = data.entity?.kind === 'user_message'
     && !!data.entity.focusMessageId
     && data.entity.focusMessageId !== data.entity.messageId;
   const isThreadNode = data.entity?.kind === 'thread_origin' || data.entity?.kind === 'thread_link';
-  const enableHoverCard = !isThreadNode && shouldEnableGraphNodeHover({
+  const enableHoverCard = !isThreadNode && (isControlledHoverCardOpen || shouldEnableGraphNodeHover({
     detailLevel,
     isFocused,
     isSelected,
     isComposerBaseCommit,
-  });
+  }));
+  const disableHoverCard = !enableHoverCard || (!isControlledHoverCardOpen && (isSelectionGestureActive || isViewportInteracting));
 
   useEffect(() => {
     if (surfaceMode !== 'app') return;
@@ -191,7 +196,9 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
         capabilities={capabilities}
       />
     ) : undefined,
-    disableHoverCard: !enableHoverCard || isSelectionGestureActive || isViewportInteracting,
+    controlledHoverCardKey,
+    onControlledHoverCardDismiss: data.onControlledHoverCardDismiss,
+    disableHoverCard,
     onFocus: handleFocus,
     onSelect: handleSelect,
     onContextMenu: handleContextMenu,
@@ -220,7 +227,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
         isSelected={isSelected}
         isComposerBaseCommit={isComposerBaseCommit}
         detailLevel={detailLevel}
-        disableHoverCard={!enableHoverCard || isSelectionGestureActive || isViewportInteracting}
+        disableHoverCard={disableHoverCard}
         onFocus={handleCanonicalCommitFocus}
         onContextMenu={handleCanonicalCommitContextMenu}
         hoverCardContent={enableHoverCard ? (
@@ -231,6 +238,8 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
             capabilities={capabilities}
           />
         ) : undefined}
+        controlledHoverCardKey={controlledHoverCardKey}
+        onControlledHoverCardDismiss={data.onControlledHoverCardDismiss}
       />
     );
   }
@@ -247,7 +256,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
         focusFeedbackEnabled
         detailLevel={detailLevel}
         heightKey={data.heightKey}
-        disableHoverCard={!enableHoverCard || isSelectionGestureActive || isViewportInteracting}
+        disableHoverCard={disableHoverCard}
         hoverCardContent={enableHoverCard ? (
           <GraphNodeHoverCardContent
             entity={data.entity}
@@ -256,6 +265,8 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
             capabilities={capabilities}
           />
         ) : undefined}
+        controlledHoverCardKey={controlledHoverCardKey}
+        onControlledHoverCardDismiss={data.onControlledHoverCardDismiss}
         onFocus={handleFocus}
         onSelect={handleSelect}
         onContextMenu={handleContextMenu}

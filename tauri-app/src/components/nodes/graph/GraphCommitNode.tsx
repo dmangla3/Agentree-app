@@ -17,6 +17,8 @@ export const GraphCommitNode = memo(({
   detailLevel = 'full',
   heightKey,
   hoverCardContent,
+  controlledHoverCardKey,
+  onControlledHoverCardDismiss,
   onFocus,
   onSelect,
   onContextMenu,
@@ -63,6 +65,8 @@ export const GraphCommitNode = memo(({
       hoverOpenDelay={180}
       onMeasureHeight={undefined}
       hoverCardContent={hoverCardContent}
+      controlledHoverCardKey={controlledHoverCardKey}
+      onControlledHoverCardDismiss={onControlledHoverCardDismiss}
       onFocus={onFocus}
       onSelect={onSelect}
       onContextMenu={onContextMenu}
