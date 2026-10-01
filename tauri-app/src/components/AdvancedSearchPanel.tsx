@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Search, X, Filter, Clock, Tag, User, Bot, Code, Bookmark, ExternalLink, ArrowLeft, Trash2, Brain, FileText, GitBranch, SlidersHorizontal, ChevronDown } from 'lucide-react';
+import { Search, X, Filter, Clock, Tag, User, Bot, Code, Bookmark, ExternalLink, ArrowLeft, Trash2, Brain, FileText, GitBranch, SlidersHorizontal, ChevronDown, Copy } from 'lucide-react';
 import { Button } from '../../@/components/ui/button';
 import { Input } from '../../@/components/ui/input';
 import { Badge } from '../../@/components/ui/badge';
@@ -14,6 +14,7 @@ import { RuntimeCatalogModel } from '../stores/modelStore';
 import { api } from '../lib/api';
 import { cn } from '../lib/utils';
 import { useCloseSearchHotkey } from '../hotkeys/searchHotkeys';
+import { copyAgentreeLink } from '../lib/agentreeDeepLinks';
 
 interface SearchResult {
   id: string;
@@ -815,6 +816,17 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
                         <span className="text-xs text-muted-foreground truncate max-w-[200px]">
                           {result.workspaceName || 'Untitled'}
                         </span>
+
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label="Copy link to search result"
+                          onClick={() => void copyAgentreeLink({ workspaceId: result.workspaceId, nodeId: result.id })}
+                          className="h-7 px-2.5 text-xs gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                          Copy link
+                        </Button>
 
                         {/* View Button */}
                         <Button

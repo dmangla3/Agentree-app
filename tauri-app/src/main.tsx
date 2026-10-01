@@ -13,6 +13,7 @@ import { devLogLazy } from './lib/appLogger';
 import { getKindeRedirectUri, initKindeDeepLinkHandler, restoreDesktopCloudSession, shouldUseDesktopBrowserAuth } from './lib/kindeDesktopAuth';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from './lib/perfRecorder';
 import { registerAgentRunEffectsQueryClient } from './agent-runs/agentRunEffects';
+import { initAgentreeDeepLinkHandler } from './lib/agentreeDeepLinks';
 
 const ReactQueryDevtools = lazy(() =>
   import('@tanstack/react-query-devtools').then((module) => ({
@@ -96,6 +97,9 @@ const bootstrap = async () => {
   }, { source: 'main.tsx' });
 
   const deepLinkStartedAt = performance.now();
+  await initAgentreeDeepLinkHandler().catch((error) => {
+    console.error('[DeepLink] Failed to initialize Agentree deep-link handler:', error);
+  });
   await initKindeDeepLinkHandler().catch((error) => {
     console.error('[Auth] Failed to initialize Kinde deep-link handler:', error);
     recordPerfEvent('main.bootstrap.deep-link.error', {

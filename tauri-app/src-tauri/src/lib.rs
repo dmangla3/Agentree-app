@@ -367,6 +367,7 @@ pub fn run() {
     }
 
     builder = builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("agentree-auth-callback-navigation-guard")
                 .on_navigation(|webview, url| {
@@ -413,6 +414,11 @@ pub fn run() {
             let specta_builder = specta_builder.clone();
             move |app| {
                 let start = std::time::Instant::now();
+                #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+                {
+                    use tauri_plugin_deep_link::DeepLinkExt;
+                    app.deep_link().register_all()?;
+                }
                 #[cfg(desktop)]
                 {
                     let mut updater_builder = tauri_plugin_updater::Builder::new();

@@ -58,6 +58,13 @@
     ]
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "agentree"
+        ]
+      }
+    },
     "updater": {
       "pubkey": ""
     }

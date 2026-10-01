@@ -41,6 +41,17 @@ describe('resolveLinkActivationTarget', () => {
     });
   });
 
+  it('recognizes internal and external Agentree links as app navigation', () => {
+    expect(resolveLinkActivationTarget('/workspaces/workspace-1?nodeId=node-1')).toEqual({
+      kind: 'internal',
+      path: '/workspaces/workspace-1?nodeId=node-1',
+    });
+    expect(resolveLinkActivationTarget('agentree://workspaces/workspace-1?threadId=thread-1')).toEqual({
+      kind: 'internal',
+      path: '/workspaces/workspace-1?threadId=thread-1',
+    });
+  });
+
   it('resolves relative file links against the workspace repo path', () => {
     expect(resolveLinkActivationTarget('src/App.tsx:12:3', '/Users/example/project')).toEqual({
       kind: 'file',

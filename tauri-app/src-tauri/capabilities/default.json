@@ -9,6 +9,7 @@
     "core:default",
     "opener:default",
     "dialog:default",
+    "deep-link:default",
     "shell:default",
     "clipboard-manager:allow-write-text",
     "pilot:default",

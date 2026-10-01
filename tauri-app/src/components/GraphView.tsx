@@ -5215,6 +5215,7 @@ function GraphViewInternal({
         }, { source: 'GraphView' });
         onThreadNavigationModelChange({
             workspaceId: selectedWorkspaceId,
+            messageIds: new Set((graphMessages as Message[]).map((message) => message.id)),
             threadItems: threadIndexItems,
             threadHoverProjectionInput,
             doneThreadsCollapsed,

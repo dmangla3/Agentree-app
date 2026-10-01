@@ -27,6 +27,8 @@ import { useAppFontSizeHotkeys } from '../hotkeys/appFontSizeHotkeys';
 import { useOpenSearchHotkey } from '../hotkeys/searchHotkeys';
 import { useCreateThreadHotkey } from '../hotkeys/threadHotkeys';
 import { agentClient } from '../lib/agentClient';
+import { buildAgentreePath, isAgentreeTargetAvailable } from '../lib/agentreeDeepLinks';
+import { useToast } from '../components/Toast';
 import { PanelRightClose, PanelRightOpen, X } from 'lucide-react';
 
 const AdvancedSearchPanel = lazy(() => import('../components/AdvancedSearchPanel').then((module) => ({ default: module.AdvancedSearchPanel })));
@@ -61,12 +63,15 @@ export function HomePage() {
     isFloatingChatInputOpen,
     floatingChatInputParentId,
     closeFloatingChatInput,
+    dispatchFocus,
   } = useWorkspaceStore();
   const { data: workspacesData, isLoading: isLoadingWorkspaces, isFetching: isFetchingWorkspaces } = useWorkspaces();
   const navigate = useNavigate();
   const { workspaceId } = useParams();
   const [searchParams] = useSearchParams();
-  const messageId = searchParams.get('messageId');
+  const nodeId = searchParams.get('nodeId')?.trim() || searchParams.get('messageId')?.trim() || null;
+  const threadId = nodeId ? null : searchParams.get('threadId')?.trim() || null;
+  const { addToast } = useToast();
 
   const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
   const [activeView, setActiveView] = useState<'chat' | 'orchestration' | 'tracking' | 'knowledge' | 'logins'>('chat');
@@ -76,6 +81,8 @@ export function HomePage() {
   const [isChatCollapsed, setIsChatCollapsed] = useState(true);
   const [worktreePolicyPromptRepoPath, setWorktreePolicyPromptRepoPath] = useState<string | null>(null);
   const shellReadyLoggedRef = useRef(false);
+  const handledDeepLinkTargetRef = useRef<string | null>(null);
+  const reportedMissingWorkspaceRef = useRef<string | null>(null);
   const graphPanelRef = useRef<ImperativePanelHandle>(null);
   const chatPanelRef = useRef<ImperativePanelHandle>(null);
   const rememberedGraphChatSplitRef = useRef(readRememberedGraphChatSplit() ?? DEFAULT_GRAPH_CHAT_SPLIT);
@@ -99,13 +106,12 @@ export function HomePage() {
     };
   }, []);
 
-  const navigateToWorkspace = useCallback((id: string, options?: { replace?: boolean; messageId?: string | null }) => {
-    const search = options?.messageId ? `?messageId=${encodeURIComponent(options.messageId)}` : '';
-    navigate(`/workspaces/${encodeURIComponent(id)}${search}`, { replace: options?.replace ?? false });
+  const navigateToWorkspace = useCallback((id: string, options?: { replace?: boolean; nodeId?: string | null; threadId?: string | null }) => {
+    navigate(buildAgentreePath({ workspaceId: id, nodeId: options?.nodeId, threadId: options?.threadId }), { replace: options?.replace ?? false });
   }, [navigate]);
   const selectAndNavigateWorkspace = useCallback((id: string, initialFocusId?: string | null, options?: { replace?: boolean }) => {
     selectWorkspace(id, initialFocusId);
-    navigateToWorkspace(id, { replace: options?.replace, messageId: initialFocusId });
+    navigateToWorkspace(id, { replace: options?.replace, nodeId: initialFocusId });
   }, [navigateToWorkspace, selectWorkspace]);
   const handleNavigatorWorkspaceSelect = useCallback((id: string, options?: { replace?: boolean }) => {
     recordPerfEvent('query.workspace-switch.selected', {
@@ -177,25 +183,92 @@ export function HomePage() {
     }
 
     if (routeState.type === 'select') {
-      devLogLazy(() => [`[HomePage] URL has workspaceId: ${routeState.workspaceId}, messageId: ${messageId}`]);
-      selectWorkspace(routeState.workspaceId, messageId);
+      devLogLazy(() => [`[HomePage] URL has workspaceId: ${routeState.workspaceId}, nodeId: ${nodeId}, threadId: ${threadId}`]);
+      selectWorkspace(routeState.workspaceId, nodeId);
       setActiveView('chat');
       return;
     }
 
     if (routeState.type === 'redirect') {
+      if (workspaceId && reportedMissingWorkspaceRef.current !== workspaceId) {
+        reportedMissingWorkspaceRef.current = workspaceId;
+        addToast({
+          title: 'Workspace not found',
+          description: 'The linked workspace is unavailable. Agentree opened the closest available workspace instead.',
+          variant: 'warning',
+        });
+      }
       selectAndNavigateWorkspace(routeState.workspaceId, null, { replace: true });
       setActiveView('chat');
       return;
     }
 
     if (routeState.type === 'clear') {
+      if (workspaceId && reportedMissingWorkspaceRef.current !== workspaceId) {
+        reportedMissingWorkspaceRef.current = workspaceId;
+        addToast({
+          title: 'Workspace not found',
+          description: 'The linked workspace is unavailable, and there is no local workspace to open.',
+          variant: 'warning',
+        });
+      }
       clearSelectedWorkspace();
       if (workspaceId) {
         navigate('/', { replace: true });
       }
     }
-  }, [clearSelectedWorkspace, messageId, navigate, routeState, selectAndNavigateWorkspace, selectWorkspace, workspaceId]);
+  }, [addToast, clearSelectedWorkspace, navigate, nodeId, routeState, selectAndNavigateWorkspace, selectWorkspace, threadId, workspaceId]);
+
+  useEffect(() => {
+    if (!workspaceId || selectedWorkspaceId !== workspaceId || routeState.type === 'wait' || routeState.type === 'redirect' || routeState.type === 'clear') return;
+
+    if (nodeId) {
+      if (selectedThreadNavigationModel?.workspaceId !== workspaceId) return;
+      const targetKey = `${workspaceId}:node:${nodeId}`;
+      if (handledDeepLinkTargetRef.current === targetKey) return;
+      handledDeepLinkTargetRef.current = targetKey;
+
+      const availableTargets = {
+        messageIds: selectedThreadNavigationModel.messageIds,
+        threadIds: new Set(selectedThreadNavigationModel.threadItems.map((item) => item.threadRootId)),
+      };
+      if (isAgentreeTargetAvailable({ nodeId }, availableTargets)) {
+        dispatchFocus({ messageId: nodeId, source: 'system', metadata: { reason: 'deep-link' } });
+        return;
+      }
+
+      dispatchFocus({ messageId: null, source: 'system', metadata: { reason: 'deep-link-target-missing' } });
+      navigateToWorkspace(workspaceId, { replace: true });
+      addToast({
+        title: 'Node not found',
+        description: 'The linked node is unavailable. Agentree opened its workspace instead.',
+        variant: 'warning',
+      });
+      return;
+    }
+
+    if (threadId) {
+      if (selectedThreadNavigationModel?.workspaceId !== workspaceId) return;
+      const targetKey = `${workspaceId}:thread:${threadId}`;
+      if (handledDeepLinkTargetRef.current === targetKey) return;
+      handledDeepLinkTargetRef.current = targetKey;
+
+      if (isAgentreeTargetAvailable({ threadId }, {
+        messageIds: selectedThreadNavigationModel.messageIds,
+        threadIds: new Set(selectedThreadNavigationModel.threadItems.map((item) => item.threadRootId)),
+      })) {
+        selectedThreadNavigationModel.onThreadFocus(threadId);
+        return;
+      }
+
+      navigateToWorkspace(workspaceId, { replace: true });
+      addToast({
+        title: 'Thread not found',
+        description: 'The linked thread is unavailable. Agentree opened its workspace instead.',
+        variant: 'warning',
+      });
+    }
+  }, [addToast, dispatchFocus, navigateToWorkspace, nodeId, routeState.type, selectedThreadNavigationModel, selectedWorkspaceId, threadId, workspaceId]);
 
   useEffect(() => {
     if (!effectiveUserId || hasCompletedOnboarding || workspaces.length === 0) return;
@@ -255,7 +328,8 @@ export function HomePage() {
   const handleNavigatorThreadOpen = useCallback((threadRootId: string) => {
     setActiveView('chat');
     selectedThreadNavigationModel?.onThreadFocus(threadRootId);
-  }, [selectedThreadNavigationModel]);
+    if (selectedWorkspaceId) navigateToWorkspace(selectedWorkspaceId, { threadId: threadRootId });
+  }, [navigateToWorkspace, selectedThreadNavigationModel, selectedWorkspaceId]);
 
   const handleNavigatorCreateThread = useCallback(() => {
     setActiveView('chat');

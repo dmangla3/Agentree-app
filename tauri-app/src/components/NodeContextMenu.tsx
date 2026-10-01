@@ -9,6 +9,8 @@ import {
 import type { WorkspaceProjection } from '../domain/workspaceProjection';
 import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { resolveOrchestrationRunRetryTarget } from '../orchestration/retry';
+import { useWorkspaceStore } from '../stores/workspaceStore';
+import { copyAgentreeLink } from '../lib/agentreeDeepLinks';
 
 export interface NodeContextMenuState {
   x: number;
@@ -222,6 +224,7 @@ export function NodeContextMenu({
   onShareNode,
   onRetryOrchestrationRun,
 }: NodeContextMenuProps) {
+  const selectedWorkspaceId = useWorkspaceStore((state) => state.selectedWorkspaceId);
   const targetIds = contextMenu?.targetIds ?? [];
   const targetKey = targetIds.join('\u0000');
   const [markThreadDoneAfterMerge, setMarkThreadDoneAfterMerge] = useState(true);
@@ -248,8 +251,9 @@ export function NodeContextMenu({
   const canConvertSubgraphToThread = !!convertSubgraphNodeId && !!onConvertSubgraphToThread;
   const canShareNode = !!actionNodeId && !!onShareNode;
   const canRetryOrchestrationRun = !!retryOrchestrationRunNodeId && !!onRetryOrchestrationRun;
+  const canCopyLink = !!selectedWorkspaceId && !!actionNodeId;
 
-  if (!canDelete && !canAddToMergePanel && !canAddCommit && !canFocusThread && !canMarkThreadDone && !canHideSubgraph && !canViewSubgraph && !canConvertSubgraphToThread && !canShareNode && !canRetryOrchestrationRun) {
+  if (!canDelete && !canAddToMergePanel && !canAddCommit && !canFocusThread && !canMarkThreadDone && !canHideSubgraph && !canViewSubgraph && !canConvertSubgraphToThread && !canShareNode && !canRetryOrchestrationRun && !canCopyLink) {
     return null;
   }
 
@@ -276,6 +280,17 @@ export function NodeContextMenu({
         />
       </DropdownMenuTrigger>
       <DropdownMenuContent className="w-56" onCloseAutoFocus={(e) => e.preventDefault()}>
+        {canCopyLink ? (
+          <DropdownMenuItem
+            onClick={() => {
+              void copyAgentreeLink({ workspaceId: selectedWorkspaceId!, nodeId: actionNodeId! });
+              onClose();
+            }}
+          >
+            Copy link
+          </DropdownMenuItem>
+        ) : null}
+
         {canFocusThread ? (
           <DropdownMenuItem
             onClick={() => {

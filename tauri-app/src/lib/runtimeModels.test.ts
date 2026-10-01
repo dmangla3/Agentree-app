@@ -12,16 +12,34 @@ describe('runtimeModels', () => {
     ];
 
     expect(codexFamilyKeys).toEqual([
+      'codex:gpt-5.6-sol',
+      'codex:gpt-5.6-terra',
+      'codex:gpt-5.6-luna',
       'codex:gpt-5.5',
-      'codex:gpt-5.4',
-      'codex:gpt-5.4-mini',
       'codex:gpt-image-2',
     ]);
+    expect(codexFamilyKeys).not.toContain('codex:gpt-5.6');
+    expect(codexFamilyKeys).not.toContain('codex:gpt-5.4');
+    expect(codexFamilyKeys).not.toContain('codex:gpt-5.4-mini');
     expect(codexFamilyKeys).not.toContain('codex:gpt-5.3-codex');
     expect(codexFamilyKeys).not.toContain('codex:gpt-5.2-codex');
     expect(codexFamilyKeys).not.toContain('codex:gpt-5.2');
     expect(codexFamilyKeys).not.toContain('codex:gpt-5.1-codex-max');
     expect(codexFamilyKeys).not.toContain('codex:gpt-5.1-codex-mini');
+  });
+
+  it('uses the canonical GPT-5.6 variant IDs for Codex selector runs', () => {
+    const variants = runtimeModels.filter((model) => (
+      model.provider === 'codex' && model.modelId.startsWith('gpt-5.6-')
+    ));
+
+    expect([...new Set(variants.map((model) => model.modelId))]).toEqual([
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
+    ]);
+    expect(variants).toHaveLength(12);
+    expect(variants.every((model) => model.cliArgs.includes(`--model ${model.modelId}`))).toBe(true);
   });
 
   it('includes the current Claude model families exposed by Anthropic', () => {

@@ -4,8 +4,10 @@ import type { MouseEvent } from 'react';
 import { commands } from '../generated/tauri-bindings';
 import type { Editor } from '../generated/tauri-bindings';
 import { isTauriEnvironment } from '../hooks/useTauriWorkspace';
+import { buildAgentreePath, navigateToAgentreeDeepLink, parseAgentreeDeepLink } from './agentreeDeepLinks';
 
 export type LinkActivationTarget =
+  | { kind: 'internal'; path: string }
   | { kind: 'external'; url: string }
   | { kind: 'file'; path: string; line: number | null; column: number | null }
   | { kind: 'blocked'; reason: string };
@@ -48,6 +50,11 @@ export function resolveLinkActivationTarget(
   const trimmed = (href ?? '').trim();
   if (!trimmed) return { kind: 'blocked', reason: 'empty-link' };
   if (trimmed.startsWith('#')) return { kind: 'blocked', reason: 'in-page-anchor' };
+
+  const agentreeTarget = parseAgentreeDeepLink(trimmed);
+  if (agentreeTarget) {
+    return { kind: 'internal', path: buildAgentreePath(agentreeTarget) };
+  }
 
   const schemeMatch = trimmed.match(/^([a-zA-Z][a-zA-Z\d+.-]*:)/);
   const scheme = schemeMatch?.[1]?.toLowerCase() ?? null;
@@ -109,6 +116,11 @@ const chooseEditor = async (): Promise<Editor> => {
 export async function activateLink(href: string, workspaceRepoPath?: string | null): Promise<LinkActivationTarget> {
   const target = resolveLinkActivationTarget(href, workspaceRepoPath);
   if (target.kind === 'blocked') return target;
+
+  if (target.kind === 'internal') {
+    navigateToAgentreeDeepLink(target.path);
+    return target;
+  }
 
   if (target.kind === 'external') {
     if (isTauriEnvironment()) {

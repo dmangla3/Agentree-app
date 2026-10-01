@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronRight,
   Cloud,
+  Copy,
   Eye,
   FolderGit,
   FolderOpen,
@@ -61,6 +62,7 @@ import { finalizeCreatedWorkspace } from '../../lib/finalizeCreatedWorkspace';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../../lib/perfRecorder';
 import { normalizeThreadSession } from '../../lib/threadSessions';
 import { resolveLocalWorkspaceRepoPath } from '../../lib/workspaceRepoPath';
+import { copyAgentreeLink } from '../../lib/agentreeDeepLinks';
 import { cn } from '../../lib/utils';
 import { useToast } from '../Toast';
 import { ChangedFilesSummary } from '../ChangedFilesSummary';
@@ -78,6 +80,7 @@ import {
 
 export interface WorkspaceThreadNavigationModel {
   workspaceId: string | null;
+  messageIds: Set<string>;
   threadItems: ThreadNavigationItem[];
   threadHoverProjectionInput?: ThreadHoverProjectionInput;
   doneThreadsCollapsed: boolean;
@@ -208,6 +211,7 @@ function ThreadRow({
   onThreadDoneChange: (threadRootId: string, done: boolean) => void;
   onThreadDelete?: (threadRootId: string) => void;
 }) {
+  const selectedWorkspaceId = useWorkspaceStore((state) => state.selectedWorkspaceId);
   const unreadCompletedLeafCount = getThreadUnreadBadgeCount(thread);
   const metadata = formatThreadMetadata(thread);
   const activityLabel = thread.runningCount > 1 ? `${thread.runningCount} running` : 'Running';
@@ -311,6 +315,12 @@ function ThreadRow({
           />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" sideOffset={2} className="w-40">
+          {selectedWorkspaceId ? (
+            <DropdownMenuItem onClick={() => void copyAgentreeLink({ workspaceId: selectedWorkspaceId, threadId: thread.threadRootId })}>
+              <Copy className="mr-2 h-4 w-4" />
+              Copy link
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem onClick={() => onThreadDoneChange(thread.threadRootId, !thread.done)}>
             {thread.done ? 'Reopen thread' : 'Close thread'}
           </DropdownMenuItem>
@@ -597,6 +607,10 @@ function WorkspaceRow({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-40">
+            <DropdownMenuItem onClick={() => void copyAgentreeLink({ workspaceId: workspace.id })}>
+              <Copy className="mr-2 h-4 w-4" />
+              Copy link
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={() => onRequestRename(workspace)}>
               <Pencil className="mr-2 h-4 w-4" />
               Rename

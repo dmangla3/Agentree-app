@@ -185,19 +185,24 @@ const claudeModelBases = [
 
 const codexModelBases = [
   {
+    id: 'gpt-5.6-sol',
+    label: 'GPT-5.6 Sol',
+    description: 'Flagship GPT-5.6 model for the most demanding work',
+  },
+  {
+    id: 'gpt-5.6-terra',
+    label: 'GPT-5.6 Terra',
+    description: 'Balanced GPT-5.6 model for everyday work',
+  },
+  {
+    id: 'gpt-5.6-luna',
+    label: 'GPT-5.6 Luna',
+    description: 'Fastest and most cost-efficient GPT-5.6 model',
+  },
+  {
     id: 'gpt-5.5',
     label: 'GPT-5.5',
-    description: 'Latest frontier agentic coding model',
-  },
-  {
-    id: 'gpt-5.4',
-    label: 'GPT-5.4',
     description: 'Previous frontier agentic coding model',
-  },
-  {
-    id: 'gpt-5.4-mini',
-    label: 'GPT-5.4 Mini',
-    description: 'Smaller, faster GPT-5.4 variant',
   },
 ] as const;
 
