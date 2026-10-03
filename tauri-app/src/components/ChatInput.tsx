@@ -3675,7 +3675,6 @@ export function ChatInput({
                     parent_provider_thread_id: launchContext.providerParentThreadId,
                     parent_provider_turn_id: launchContext.providerParentTurnId,
                     parent_provider_lineage_id: launchContext.providerParentLineageId,
-                    parent_provider_user_turn_count: launchContext.providerParentUserTurnCount,
                     branch_from_interior: isBranchFromInterior,
                 },
             });

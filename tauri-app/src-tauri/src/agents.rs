@@ -879,7 +879,7 @@ pub fn start_agent_run_watchdog(app_handle: AppHandle) {
                 _ => {}
             }
             let telemetry = app_handle.state::<crate::db::TelemetryDb>();
-            match telemetry.reconcile_stale_prelaunch_local_nodes(60) {
+            match telemetry.reconcile_stale_prelaunch_local_nodes(60, "watchdog") {
                 Ok(count) if count > 0 => {
                     crate::app_log!(
                         "[AGENT_WATCHDOG] event=prelaunch_local_failed_setup count={}",
@@ -3701,6 +3701,20 @@ pub async fn start_agent_run(
 ) -> Result<StartAgentRunResponse, String> {
     let mut intent = intent;
     let telemetry = app.state::<crate::db::TelemetryDb>();
+    let record_prelaunch_stage = |stage: &str| {
+        if let Err(err) =
+            telemetry.record_agent_prelaunch_stage(&intent.assistant_node_id, &intent.run_id, stage)
+        {
+            crate::app_log!(
+                "[AGENT_PRELAUNCH] event=stage_persist_failed node_id={} run_id={} stage={} err={}",
+                intent.assistant_node_id,
+                intent.run_id,
+                stage,
+                err
+            );
+        }
+    };
+    record_prelaunch_stage("native_command_received");
     if let Some(workspace_id) = intent
         .workspace_id
         .as_deref()
@@ -3719,12 +3733,14 @@ pub async fn start_agent_run(
                 .to_string(),
         );
     }
+    record_prelaunch_stage("worktree_preview_started");
     let preview = crate::git_workspace::preview_agent_worktree(
         intent.repo_path.clone(),
         intent.assistant_node_id.clone(),
         intent.parent_commit.clone(),
     )
     .await?;
+    record_prelaunch_stage("worktree_preview_completed");
     if let Some(profile_id) = intent.login_profile_id.as_deref() {
         let profile = telemetry.get_login_profile(profile_id)?;
         if profile.provider != intent.agent_type {

@@ -1,5 +1,5 @@
 export type RuntimeProvider = 'claude' | 'codex';
-export type ProviderThreadStrategy = 'fresh_thread' | 'resume' | 'fork' | 'fork_then_rollback';
+export type ProviderThreadStrategy = 'fresh_thread' | 'resume' | 'fork_at_turn';
 export type ProviderThreadStrategyRequested = ProviderThreadStrategy | 'cross_provider_fresh_thread';
 export type PromptContextMode = 'provider_native_only' | 'agentree_context' | 'cross_provider_packet' | 'none';
 
@@ -9,7 +9,6 @@ export interface ProviderContinuationDecision {
     sourceThreadId: string | null;
     sourceTurnId: string | null;
     sourceLineageId: string | null;
-    sourceUserTurnCount: number | null;
     parentProvider: RuntimeProvider | 'unknown' | null;
     selectedProvider: RuntimeProvider;
     isCrossProvider: boolean;
@@ -49,11 +48,6 @@ const stringValue = (value: unknown): string | null => (
     typeof value === 'string' && value.trim() ? value : null
 );
 
-const numberValue = (value: unknown): number | null => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-};
-
 export function resolveProviderContinuation(params: {
     selectedProvider: RuntimeProvider;
     parentMeta: Record<string, unknown>;
@@ -63,7 +57,6 @@ export function resolveProviderContinuation(params: {
     const parentThreadId = stringValue(params.parentMeta.provider_thread_id);
     const parentTurnId = stringValue(params.parentMeta.provider_turn_id);
     const parentLineageId = stringValue(params.parentMeta.provider_lineage_id) || parentThreadId;
-    const parentUserTurnCount = numberValue(params.parentMeta.provider_user_turn_count);
     const canUseProviderThread = parentProvider === params.selectedProvider && Boolean(parentThreadId);
 
     if (!canUseProviderThread) {
@@ -75,7 +68,6 @@ export function resolveProviderContinuation(params: {
             sourceThreadId: null,
             sourceTurnId: null,
             sourceLineageId: null,
-            sourceUserTurnCount: null,
             parentProvider,
             selectedProvider: params.selectedProvider,
             isCrossProvider: Boolean(parentProvider && parentProvider !== params.selectedProvider),
@@ -90,37 +82,6 @@ export function resolveProviderContinuation(params: {
             sourceThreadId: parentThreadId,
             sourceTurnId: parentTurnId,
             sourceLineageId: parentLineageId,
-            sourceUserTurnCount: parentUserTurnCount,
-            parentProvider,
-            selectedProvider: params.selectedProvider,
-            isCrossProvider: false,
-            canUseProviderThread: true,
-        };
-    }
-
-    if (params.selectedProvider === 'claude' && parentTurnId) {
-        return {
-            adapterStrategy: 'fork',
-            requestedStrategy: 'fork',
-            sourceThreadId: parentThreadId,
-            sourceTurnId: parentTurnId,
-            sourceLineageId: parentLineageId,
-            sourceUserTurnCount: parentUserTurnCount,
-            parentProvider,
-            selectedProvider: params.selectedProvider,
-            isCrossProvider: false,
-            canUseProviderThread: true,
-        };
-    }
-
-    if (params.selectedProvider === 'codex' && parentUserTurnCount != null) {
-        return {
-            adapterStrategy: 'fork_then_rollback',
-            requestedStrategy: 'fork_then_rollback',
-            sourceThreadId: parentThreadId,
-            sourceTurnId: parentTurnId,
-            sourceLineageId: parentLineageId,
-            sourceUserTurnCount: parentUserTurnCount,
             parentProvider,
             selectedProvider: params.selectedProvider,
             isCrossProvider: false,
@@ -129,16 +90,15 @@ export function resolveProviderContinuation(params: {
     }
 
     return {
-        adapterStrategy: 'fresh_thread',
-        requestedStrategy: 'fresh_thread',
-        sourceThreadId: null,
-        sourceTurnId: null,
-        sourceLineageId: null,
-        sourceUserTurnCount: null,
+        adapterStrategy: 'fork_at_turn',
+        requestedStrategy: 'fork_at_turn',
+        sourceThreadId: parentThreadId,
+        sourceTurnId: parentTurnId,
+        sourceLineageId: parentLineageId,
         parentProvider,
         selectedProvider: params.selectedProvider,
         isCrossProvider: false,
-        canUseProviderThread: false,
+        canUseProviderThread: true,
     };
 }
 

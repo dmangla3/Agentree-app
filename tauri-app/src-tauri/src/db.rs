@@ -2340,11 +2340,11 @@ impl TelemetryDb {
     pub fn reconcile_stale_prelaunch_local_nodes(
         &self,
         stale_after_secs: i64,
+        recovery_trigger: &str,
     ) -> Result<usize, String> {
         let now = unix_timestamp();
         let cutoff = now.saturating_sub(stale_after_secs.max(0));
         let updated_at = utc_iso_now();
-        let reason = "App restarted before this run was accepted by the native agent runner. No native session or ledger was found.";
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let stale_rows: Vec<(String, String, String, Option<String>)> = {
             let mut stmt = conn
@@ -2416,15 +2416,25 @@ impl TelemetryDb {
             if !execution_data.is_object() {
                 execution_data = serde_json::json!({});
             }
+            let prelaunch_stage = execution_data
+                .pointer("/meta/prelaunch_stage")
+                .and_then(JsonValue::as_str);
+            let reason = match (recovery_trigger, prelaunch_stage) {
+                ("startup", Some(stage)) => format!(
+                    "App restarted while native agent setup was at stage '{stage}', before the run was accepted."
+                ),
+                ("startup", None) => "App restarted before this run reached the native agent runner. No native session or ledger was found.".to_string(),
+                (_, Some(stage)) => format!(
+                    "Native agent setup stalled at stage '{stage}' before the run was accepted. No native session or ledger was created."
+                ),
+                (_, None) => "The send flow did not reach the native agent runner before the setup timeout. No native session or ledger was created.".to_string(),
+            };
             if let Some(object) = execution_data.as_object_mut() {
                 object.insert(
                     "last_terminal_status".to_string(),
                     JsonValue::String("failed_setup".to_string()),
                 );
-                object.insert(
-                    "stop_reason".to_string(),
-                    JsonValue::String(reason.to_string()),
-                );
+                object.insert("stop_reason".to_string(), JsonValue::String(reason.clone()));
                 let meta = object
                     .entry("meta".to_string())
                     .or_insert_with(|| serde_json::json!({}));
@@ -2441,12 +2451,16 @@ impl TelemetryDb {
                         JsonValue::String("prelaunch_reconciliation".to_string()),
                     );
                     meta_object.insert(
+                        "native_recovery_trigger".to_string(),
+                        JsonValue::String(recovery_trigger.to_string()),
+                    );
+                    meta_object.insert(
                         "provider_error_message".to_string(),
-                        JsonValue::String(reason.to_string()),
+                        JsonValue::String(reason.clone()),
                     );
                     meta_object.insert(
                         "failure_reason".to_string(),
-                        JsonValue::String(reason.to_string()),
+                        JsonValue::String(reason.clone()),
                     );
                     meta_object.insert(
                         "needs_user_action_reason".to_string(),
@@ -3487,6 +3501,40 @@ impl TelemetryDb {
             WHERE id = ?1
             "#,
             params![node_id, unix_timestamp().to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn record_agent_prelaunch_stage(
+        &self,
+        node_id: &str,
+        run_id: &str,
+        stage: &str,
+    ) -> Result<(), String> {
+        let recorded_at = utc_iso_now();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            r#"
+            UPDATE local_nodes
+            SET
+                payload_json = json_set(
+                    CASE WHEN json_valid(COALESCE(payload_json, ''))
+                        THEN json(payload_json) ELSE json('{}') END,
+                    '$.execution_data.meta.prelaunch_run_id', ?2,
+                    '$.execution_data.meta.prelaunch_stage', ?3,
+                    '$.execution_data.meta.prelaunch_stage_at', ?4
+                ),
+                execution_data_json = json_set(
+                    CASE WHEN json_valid(COALESCE(execution_data_json, ''))
+                        THEN json(execution_data_json) ELSE json('{}') END,
+                    '$.meta.prelaunch_run_id', ?2,
+                    '$.meta.prelaunch_stage', ?3,
+                    '$.meta.prelaunch_stage_at', ?4
+                )
+            WHERE id = ?1 AND deleted_at IS NULL
+            "#,
+            params![node_id, run_id, stage, recorded_at],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -9214,7 +9262,7 @@ mod tests {
         .expect("prelaunch local node");
 
         let updated = db
-            .reconcile_stale_prelaunch_local_nodes(0)
+            .reconcile_stale_prelaunch_local_nodes(0, "startup")
             .expect("reconcile prelaunch nodes");
         assert_eq!(updated, 1);
         assert!(db
@@ -9237,6 +9285,58 @@ mod tests {
             payload["execution_data"]["meta"]["native_recovery_status"],
             "failed_setup"
         );
+        assert_eq!(
+            payload["execution_data"]["meta"]["native_recovery_trigger"],
+            "startup"
+        );
+        assert!(payload["execution_data"]["meta"]["failure_reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("App restarted"));
+    }
+
+    #[test]
+    fn watchdog_recovery_reports_the_last_durable_prelaunch_boundary() {
+        let (_dir, db) = open_test_db();
+        db.upsert_local_node(
+            "assistant-prelaunch",
+            "workspace-1",
+            r#"{"id":"assistant-prelaunch","workspaceId":"workspace-1","role":"assistant","content":"","status":"pending","execution_data":{"meta":{}}}"#,
+        )
+        .expect("prelaunch local node");
+        db.record_agent_prelaunch_stage(
+            "assistant-prelaunch",
+            "run-prelaunch",
+            "worktree_preview_started",
+        )
+        .expect("record prelaunch stage");
+
+        let updated = db
+            .reconcile_stale_prelaunch_local_nodes(0, "watchdog")
+            .expect("reconcile prelaunch nodes");
+        assert_eq!(updated, 1);
+
+        let rows = db
+            .list_local_nodes_for_workspace("workspace-1")
+            .expect("local nodes");
+        let payload: serde_json::Value =
+            serde_json::from_str(&rows[0].payload).expect("payload json");
+        assert_eq!(
+            payload["execution_data"]["meta"]["native_recovery_trigger"],
+            "watchdog"
+        );
+        assert_eq!(
+            payload["execution_data"]["meta"]["prelaunch_run_id"],
+            "run-prelaunch"
+        );
+        assert!(payload["execution_data"]["meta"]["failure_reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("worktree_preview_started"));
+        assert!(!payload["execution_data"]["meta"]["failure_reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("App restarted"));
     }
 
     #[test]
@@ -9250,7 +9350,7 @@ mod tests {
         .expect("quick reply local node");
 
         let updated = db
-            .reconcile_stale_prelaunch_local_nodes(0)
+            .reconcile_stale_prelaunch_local_nodes(0, "startup")
             .expect("reconcile prelaunch nodes");
         assert_eq!(updated, 1);
         assert!(db

@@ -27,7 +27,7 @@ import { useAppFontSizeHotkeys } from '../hotkeys/appFontSizeHotkeys';
 import { useOpenSearchHotkey } from '../hotkeys/searchHotkeys';
 import { useCreateThreadHotkey } from '../hotkeys/threadHotkeys';
 import { agentClient } from '../lib/agentClient';
-import { buildAgentreePath, isAgentreeTargetAvailable } from '../lib/agentreeDeepLinks';
+import { buildAgentreePath, resolveAgentreeTargetAvailability } from '../lib/agentreeDeepLinks';
 import { useToast } from '../components/Toast';
 import { PanelRightClose, PanelRightOpen, X } from 'lucide-react';
 
@@ -226,13 +226,14 @@ export function HomePage() {
       if (selectedThreadNavigationModel?.workspaceId !== workspaceId) return;
       const targetKey = `${workspaceId}:node:${nodeId}`;
       if (handledDeepLinkTargetRef.current === targetKey) return;
-      handledDeepLinkTargetRef.current = targetKey;
-
       const availableTargets = {
         messageIds: selectedThreadNavigationModel.messageIds,
         threadIds: new Set(selectedThreadNavigationModel.threadItems.map((item) => item.threadRootId)),
       };
-      if (isAgentreeTargetAvailable({ nodeId }, availableTargets)) {
+      const availability = resolveAgentreeTargetAvailability({ nodeId }, availableTargets, selectedThreadNavigationModel.messagesReady);
+      if (availability === 'pending') return;
+      handledDeepLinkTargetRef.current = targetKey;
+      if (availability === 'available') {
         dispatchFocus({ messageId: nodeId, source: 'system', metadata: { reason: 'deep-link' } });
         return;
       }
@@ -251,12 +252,13 @@ export function HomePage() {
       if (selectedThreadNavigationModel?.workspaceId !== workspaceId) return;
       const targetKey = `${workspaceId}:thread:${threadId}`;
       if (handledDeepLinkTargetRef.current === targetKey) return;
-      handledDeepLinkTargetRef.current = targetKey;
-
-      if (isAgentreeTargetAvailable({ threadId }, {
+      const availability = resolveAgentreeTargetAvailability({ threadId }, {
         messageIds: selectedThreadNavigationModel.messageIds,
         threadIds: new Set(selectedThreadNavigationModel.threadItems.map((item) => item.threadRootId)),
-      })) {
+      }, selectedThreadNavigationModel.messagesReady);
+      if (availability === 'pending') return;
+      handledDeepLinkTargetRef.current = targetKey;
+      if (availability === 'available') {
         selectedThreadNavigationModel.onThreadFocus(threadId);
         return;
       }

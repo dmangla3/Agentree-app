@@ -4526,6 +4526,7 @@ function GraphViewInternal({
 
         const focusEventKey = [
             selectedWorkspaceId ?? 'none',
+            messagesQuery.isSuccess ? 'messages-ready' : 'messages-pending',
             branchViewActivationNonce,
             focusNonce,
             focusedMessageId,
@@ -5197,6 +5198,7 @@ function GraphViewInternal({
         createThreadDisabled,
         createThreadDisabledReason,
         doneThreadsCollapsed,
+        messagesQuery.isSuccess,
         selectedWorkspaceId,
         threadBarCollapsed,
         threadIndexItems,
@@ -5215,6 +5217,7 @@ function GraphViewInternal({
         }, { source: 'GraphView' });
         onThreadNavigationModelChange({
             workspaceId: selectedWorkspaceId,
+            messagesReady: messagesQuery.isSuccess,
             messageIds: new Set((graphMessages as Message[]).map((message) => message.id)),
             threadItems: threadIndexItems,
             threadHoverProjectionInput,

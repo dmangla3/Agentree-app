@@ -241,7 +241,7 @@ function main() {
       COUNT(*) AS assistant_runs,
       SUM(CASE WHEN COALESCE(m.strategy, json_extract(n.execution_data_json, '$.meta.provider_thread_strategy')) = 'resume' THEN 1 ELSE 0 END) AS resumes,
       SUM(CASE WHEN COALESCE(m.strategy, json_extract(n.execution_data_json, '$.meta.provider_thread_strategy')) = 'fresh_thread' THEN 1 ELSE 0 END) AS fresh_threads,
-      SUM(CASE WHEN COALESCE(m.strategy, json_extract(n.execution_data_json, '$.meta.provider_thread_strategy')) IN ('fork', 'fork_then_rollback') THEN 1 ELSE 0 END) AS forks,
+      SUM(CASE WHEN COALESCE(m.strategy, json_extract(n.execution_data_json, '$.meta.provider_thread_strategy')) = 'fork_at_turn' THEN 1 ELSE 0 END) AS forks,
       COUNT(DISTINCT COALESCE(m.provider_thread_id, json_extract(n.execution_data_json, '$.meta.provider_thread_id'))) AS distinct_provider_threads,
       MAX(n.created_at) AS last_created
     FROM local_nodes n
@@ -290,7 +290,6 @@ function main() {
       COALESCE(json_extract(n.execution_data_json, '$.context_profile.context_parent_node_id'), n.parent_id) AS context_parent,
       json_extract(parent.execution_data_json, '$.meta.provider_thread_id') AS parent_provider_thread_id,
       json_extract(parent.execution_data_json, '$.meta.provider_turn_id') AS parent_provider_turn_id,
-      json_extract(parent.execution_data_json, '$.meta.provider_user_turn_count') AS parent_user_turn_count,
       u.input_tokens,
       u.cached_input_tokens,
       1.0 * u.cached_input_tokens / NULLIF(u.input_tokens, 0) AS cache_hit_ratio

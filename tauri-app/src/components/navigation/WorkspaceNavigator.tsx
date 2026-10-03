@@ -80,6 +80,7 @@ import {
 
 export interface WorkspaceThreadNavigationModel {
   workspaceId: string | null;
+  messagesReady: boolean;
   messageIds: Set<string>;
   threadItems: ThreadNavigationItem[];
   threadHoverProjectionInput?: ThreadHoverProjectionInput;

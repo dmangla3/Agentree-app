@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildAgentreeLink,
   buildAgentreePath,
-  isAgentreeTargetAvailable,
+  resolveAgentreeTargetAvailability,
   navigateToAgentreeDeepLink,
   parseAgentreeDeepLink,
 } from './agentreeDeepLinks';
@@ -55,15 +55,16 @@ describe('Agentree deep links', () => {
     expect(parseAgentreeDeepLink('agentree://user@workspaces/workspace-1')).toBeNull();
   });
 
-  it('checks loaded node and thread targets before navigation', () => {
+  it('waits for loading before classifying node and thread targets', () => {
     const available = {
       messageIds: new Set(['node-1']),
       threadIds: new Set(['thread-1']),
     };
-    expect(isAgentreeTargetAvailable({ nodeId: 'node-1' }, available)).toBe(true);
-    expect(isAgentreeTargetAvailable({ nodeId: 'missing-node' }, available)).toBe(false);
-    expect(isAgentreeTargetAvailable({ threadId: 'thread-1' }, available)).toBe(true);
-    expect(isAgentreeTargetAvailable({ threadId: 'missing-thread' }, available)).toBe(false);
+    expect(resolveAgentreeTargetAvailability({ threadId: 'thread-1' }, available, false)).toBe('pending');
+    expect(resolveAgentreeTargetAvailability({ nodeId: 'node-1' }, available, true)).toBe('available');
+    expect(resolveAgentreeTargetAvailability({ nodeId: 'missing-node' }, available, true)).toBe('missing');
+    expect(resolveAgentreeTargetAvailability({ threadId: 'thread-1' }, available, true)).toBe('available');
+    expect(resolveAgentreeTargetAvailability({ threadId: 'missing-thread' }, available, true)).toBe('missing');
   });
 
   it('updates browser routing for a valid external link', () => {

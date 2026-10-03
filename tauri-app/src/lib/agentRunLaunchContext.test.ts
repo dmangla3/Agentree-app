@@ -78,7 +78,7 @@ describe('buildAgentRunLaunchContext', () => {
       targetNodeId: 'assistant-parent',
     });
 
-    expect(result.providerThreadStrategy).toBe('fork');
+    expect(result.providerThreadStrategy).toBe('fork_at_turn');
     expect(result.providerInternalArgs).toEqual(expect.arrayContaining([
       '--source-provider-thread-id',
       'claude-thread-1',
@@ -86,6 +86,70 @@ describe('buildAgentRunLaunchContext', () => {
       'turn-1',
     ]));
     expect(result.meta.provider_target_turn_id).toBe('turn-1');
+  });
+
+  it('forks Codex from the exact interior parent turn', () => {
+    const result = buildAgentRunLaunchContext({
+      agentType: 'codex',
+      userPrompt: 'Branch',
+      messages: [
+        message({
+          id: 'assistant-parent',
+          execution_data: {
+            meta: {
+              provider: 'codex',
+              provider_thread_id: 'codex-thread-1',
+              provider_turn_id: 'turn-1',
+            },
+          },
+        }),
+        message({ id: 'existing-child', role: 'user', parentId: 'assistant-parent' }),
+      ],
+      contextParentMessageId: 'assistant-parent',
+      baseMessageId: 'assistant-parent',
+      nodeId: 'assistant-branch',
+      targetNodeId: 'assistant-parent',
+    });
+
+    expect(result.providerThreadStrategy).toBe('fork_at_turn');
+    expect(result.providerInternalArgs).toEqual(expect.arrayContaining([
+      '--source-provider-thread-id',
+      'codex-thread-1',
+      '--target-provider-turn-id',
+      'turn-1',
+    ]));
+    expect(result.meta.provider_target_turn_id).toBe('turn-1');
+  });
+
+  it('does not fall back when an interior Codex parent is missing its provider turn id', () => {
+    const result = buildAgentRunLaunchContext({
+      agentType: 'codex',
+      userPrompt: 'Branch',
+      messages: [
+        message({
+          id: 'assistant-parent',
+          execution_data: {
+            meta: {
+              provider: 'codex',
+              provider_thread_id: 'codex-thread-1',
+            },
+          },
+        }),
+        message({ id: 'existing-child', role: 'user', parentId: 'assistant-parent' }),
+      ],
+      contextParentMessageId: 'assistant-parent',
+      baseMessageId: 'assistant-parent',
+      nodeId: 'assistant-branch',
+      targetNodeId: 'assistant-parent',
+    });
+
+    expect(result.providerThreadStrategy).toBe('fork_at_turn');
+    expect(result.providerInternalArgs).toEqual(expect.arrayContaining([
+      '--source-provider-thread-id',
+      'codex-thread-1',
+    ]));
+    expect(result.providerInternalArgs).not.toContain('--target-provider-turn-id');
+    expect(result.meta.provider_target_turn_id).toBeNull();
   });
 
   it('uses Agentree context for cross-provider starts instead of native continuation', () => {

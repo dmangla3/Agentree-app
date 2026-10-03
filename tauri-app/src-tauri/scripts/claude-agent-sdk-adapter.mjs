@@ -830,11 +830,11 @@ async function main() {
     return 1;
   }
 
-  const requestedStrategy = ['resume', 'fork', 'fork_then_rollback', 'fresh_thread'].includes(args.providerThreadStrategy)
+  const requestedStrategy = ['resume', 'fork_at_turn', 'fresh_thread'].includes(args.providerThreadStrategy)
     ? args.providerThreadStrategy
     : 'fresh_thread';
   const sourceThreadId = args.sourceProviderThreadId || args.providerThreadId || null;
-  if (['resume', 'fork', 'fork_then_rollback'].includes(requestedStrategy) && !sourceThreadId) {
+  if (['resume', 'fork_at_turn'].includes(requestedStrategy) && !sourceThreadId) {
     const message = providerThreadReuseMessage(
       'Claude',
       requestedStrategy === 'resume' ? 'resume' : 'fork',
@@ -872,9 +872,9 @@ async function main() {
   }
 
   const canResume = requestedStrategy === 'resume' && sourceThreadId;
-  const canFork = ['fork', 'fork_then_rollback'].includes(requestedStrategy) && sourceThreadId;
+  const canFork = requestedStrategy === 'fork_at_turn' && sourceThreadId;
   const shouldResume = canResume || canFork;
-  const threadStrategy = canFork ? 'fork' : canResume ? 'resume' : 'fresh_thread';
+  const threadStrategy = canFork ? 'fork_at_turn' : canResume ? 'resume' : 'fresh_thread';
   const resumeSessionAt = canFork ? (args.targetProviderTurnId || args.providerTurnId || null) : null;
 
   if (canFork && !resumeSessionAt) {

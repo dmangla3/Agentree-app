@@ -8,13 +8,17 @@ export interface AgentreeDeepLinkTarget {
   threadId?: string | null;
 }
 
-export const isAgentreeTargetAvailable = (
+export type AgentreeTargetAvailability = 'pending' | 'available' | 'missing';
+
+export const resolveAgentreeTargetAvailability = (
   target: Pick<AgentreeDeepLinkTarget, 'nodeId' | 'threadId'>,
   available: { messageIds: ReadonlySet<string>; threadIds: ReadonlySet<string> },
-): boolean => {
-  if (target.nodeId) return available.messageIds.has(target.nodeId);
-  if (target.threadId) return available.threadIds.has(target.threadId);
-  return true;
+  ready: boolean,
+): AgentreeTargetAvailability => {
+  if (!ready) return 'pending';
+  if (target.nodeId) return available.messageIds.has(target.nodeId) ? 'available' : 'missing';
+  if (target.threadId) return available.threadIds.has(target.threadId) ? 'available' : 'missing';
+  return 'available';
 };
 
 const WORKSPACE_ROUTE_PREFIX = '/workspaces/';

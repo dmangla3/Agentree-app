@@ -469,7 +469,7 @@ pub fn run() {
                         );
                     }
                     let reconciled_prelaunch_local_nodes =
-                        telemetry.reconcile_stale_prelaunch_local_nodes(60)?;
+                        telemetry.reconcile_stale_prelaunch_local_nodes(60, "startup")?;
                     if reconciled_prelaunch_local_nodes > 0 {
                         crate::app_log!(
                             "[AGENT_RECOVERY] event=startup_reconcile.prelaunch_local_failed_setup count={}",

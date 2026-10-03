@@ -20,11 +20,10 @@ struct AdapterArgs {
     reasoning_effort: Option<String>,
     permission_mode: Option<String>,
     provider_thread_id: Option<String>,
-    provider_turn_id: Option<String>,
     provider_thread_strategy: Option<String>,
     source_provider_thread_id: Option<String>,
     source_provider_lineage_id: Option<String>,
-    target_provider_user_turn_count: Option<i64>,
+    target_provider_turn_id: Option<String>,
     target_node_id: Option<String>,
     node_id: Option<String>,
     raw_events: bool,
@@ -179,11 +178,10 @@ fn parse_args(argv: Vec<String>) -> Result<AdapterArgs, AdapterError> {
         reasoning_effort: None,
         permission_mode: None,
         provider_thread_id: None,
-        provider_turn_id: None,
         provider_thread_strategy: None,
         source_provider_thread_id: None,
         source_provider_lineage_id: None,
-        target_provider_user_turn_count: None,
+        target_provider_turn_id: None,
         target_node_id: None,
         node_id: None,
         raw_events: false,
@@ -208,7 +206,6 @@ fn parse_args(argv: Vec<String>) -> Result<AdapterArgs, AdapterError> {
             "--reasoning-effort" => args.reasoning_effort = Some(take_value(&mut index)?),
             "--permission-mode" => args.permission_mode = Some(take_value(&mut index)?),
             "--provider-thread-id" => args.provider_thread_id = Some(take_value(&mut index)?),
-            "--provider-turn-id" => args.provider_turn_id = Some(take_value(&mut index)?),
             "--provider-thread-strategy" => {
                 args.provider_thread_strategy = Some(take_value(&mut index)?)
             }
@@ -218,8 +215,8 @@ fn parse_args(argv: Vec<String>) -> Result<AdapterArgs, AdapterError> {
             "--source-provider-lineage-id" => {
                 args.source_provider_lineage_id = Some(take_value(&mut index)?)
             }
-            "--target-provider-user-turn-count" => {
-                args.target_provider_user_turn_count = take_value(&mut index)?.parse().ok()
+            "--target-provider-turn-id" => {
+                args.target_provider_turn_id = Some(take_value(&mut index)?)
             }
             "--target-node-id" => args.target_node_id = Some(take_value(&mut index)?),
             "--node-id" => args.node_id = Some(take_value(&mut index)?),
@@ -398,12 +395,7 @@ fn run_turn(args: AdapterArgs) -> Result<i32, AdapterError> {
         .source_provider_thread_id
         .clone()
         .or_else(|| args.provider_thread_id.clone());
-    let mut source_provider_user_turn_count: Option<i64> = None;
-    let mut computed_trailing_turn_count: Option<i64> = None;
-    let mut rollback_turn_count: Option<i64> = None;
-    let mut branch_point_mapping_confidence = "unknown".to_string();
     let mut forked_provider_thread_id: Option<String> = None;
-    let failed_fork_discarded = false;
     let mut thread_strategy = "fresh_thread".to_string();
 
     let permission_mode = normalize_permission_mode(args.permission_mode.as_deref());
@@ -418,7 +410,7 @@ fn run_turn(args: AdapterArgs) -> Result<i32, AdapterError> {
     }
 
     let thread_id = match requested_strategy.as_str() {
-        "resume" | "fork" | "fork_then_rollback" if source_thread_id.is_none() => {
+        "resume" | "fork_at_turn" if source_thread_id.is_none() => {
             return Ok(fail_provider_thread_reuse(
                 &mut state,
                 "provider_source_thread_missing",
@@ -428,7 +420,7 @@ fn run_turn(args: AdapterArgs) -> Result<i32, AdapterError> {
                 ),
                 &requested_strategy,
                 source_thread_id.as_deref(),
-                args.provider_turn_id.as_deref(),
+                args.target_provider_turn_id.as_deref(),
                 json!({}),
             ));
         }
@@ -441,74 +433,26 @@ fn run_turn(args: AdapterArgs) -> Result<i32, AdapterError> {
             thread_strategy = "resume".to_string();
             extract_thread_id(&response)?
         }
-        "fork" | "fork_then_rollback" => {
+        "fork_at_turn" => {
             let source = source_thread_id.clone().unwrap_or_default();
-            if requested_strategy == "fork_then_rollback" {
-                let read = client.request(
-                    "thread/read",
-                    json!({ "threadId": source, "includeTurns": true }),
-                )?;
-                source_provider_user_turn_count = thread_user_turn_count(&read);
-                if let (Some(source_count), Some(target_count)) = (
-                    source_provider_user_turn_count,
-                    args.target_provider_user_turn_count,
-                ) {
-                    computed_trailing_turn_count = Some(source_count - target_count);
-                    branch_point_mapping_confidence = if source_count - target_count >= 0 {
-                        "high".to_string()
-                    } else {
-                        "invalid".to_string()
-                    };
-                } else {
-                    return Ok(fail_provider_thread_reuse(
-                        &mut state,
-                        "rollback_target_mapping_missing",
-                        "Codex could not compute a safe rollback point for this branch. The parent node is missing provider user-turn metadata.",
-                        &requested_strategy,
-                        source_thread_id.as_deref(),
-                        args.provider_turn_id.as_deref(),
-                        json!({}),
-                    ));
-                }
-            }
+            let Some(target_turn_id) = args.target_provider_turn_id.as_deref() else {
+                return Ok(fail_provider_thread_reuse(
+                    &mut state,
+                    "provider_target_turn_missing",
+                    "Codex could not fork at the selected branch point because Agentree did not have its provider turn id.",
+                    &requested_strategy,
+                    source_thread_id.as_deref(),
+                    None,
+                    json!({}),
+                ));
+            };
             let fork = client.request(
                 "thread/fork",
-                merge_object(json!({ "threadId": source }), thread_params.clone()),
+                build_fork_at_turn_params(&source, target_turn_id, thread_params.clone()),
             )?;
             let forked = extract_thread_id(&fork)?;
             forked_provider_thread_id = Some(forked.clone());
-            thread_strategy = "fork".to_string();
-            if requested_strategy == "fork_then_rollback" {
-                let trailing = computed_trailing_turn_count.unwrap_or(0);
-                if trailing > 0 {
-                    rollback_turn_count = Some(trailing);
-                    if let Err(error) = client.request(
-                        "thread/rollback",
-                        json!({ "threadId": forked, "numTurns": trailing }),
-                    ) {
-                        return Ok(fail_provider_thread_reuse(
-                            &mut state,
-                            "rollback_failed",
-                            &format!("Codex forked provider thread, but rollback to the branch point failed: {error}"),
-                            &requested_strategy,
-                            source_thread_id.as_deref(),
-                            args.provider_turn_id.as_deref(),
-                            json!({ "provider_forked_thread_id": forked_provider_thread_id }),
-                        ));
-                    }
-                    thread_strategy = "fork_then_rollback".to_string();
-                } else if trailing < 0 {
-                    return Ok(fail_provider_thread_reuse(
-                        &mut state,
-                        "rollback_turn_count_negative",
-                        "Codex could not safely branch from this provider thread because the computed rollback turn count was negative.",
-                        &requested_strategy,
-                        source_thread_id.as_deref(),
-                        args.provider_turn_id.as_deref(),
-                        json!({ "provider_forked_thread_id": forked_provider_thread_id }),
-                    ));
-                }
-            }
+            thread_strategy = "fork_at_turn".to_string();
             forked
         }
         _ => {
@@ -537,15 +481,9 @@ fn run_turn(args: AdapterArgs) -> Result<i32, AdapterError> {
             "provider_initial_strategy_selected": requested_strategy,
             "provider_fallback_strategy_selected": null,
             "provider_fallback_reason_code": null,
-            "provider_failed_fork_discarded": failed_fork_discarded,
             "provider_forked_thread_id": forked_provider_thread_id,
-            "provider_source_user_turn_count": source_provider_user_turn_count,
-            "provider_target_user_turn_count": args.target_provider_user_turn_count,
-            "provider_computed_trailing_turn_count": computed_trailing_turn_count,
-            "provider_rollback_turn_count": rollback_turn_count,
-            "provider_branch_point_mapping_confidence": branch_point_mapping_confidence,
             "provider_branch_target_node_id": args.target_node_id,
-            "provider_turn_id": args.provider_turn_id,
+            "provider_target_turn_id": args.target_provider_turn_id,
             "provider_model": args.model,
             "provider_reasoning_effort": args.reasoning_effort,
             "provider_run_mode": args.permission_mode,
@@ -723,7 +661,6 @@ fn run_turn(args: AdapterArgs) -> Result<i32, AdapterError> {
         }
         if method == "turn/completed" {
             return Ok(handle_turn_completed(
-                &mut client,
                 &mut state,
                 &payload,
                 forked_provider_thread_id,
@@ -1683,7 +1620,6 @@ fn emit_provider_image_artifacts(state: &TurnState, item: &JsonValue, item_id: O
 }
 
 fn handle_turn_completed(
-    client: &mut JsonRpcClient,
     state: &mut TurnState,
     payload: &JsonValue,
     forked_provider_thread_id: Option<String>,
@@ -1730,15 +1666,6 @@ fn handle_turn_completed(
         "turn_completed",
         json!({ "status": status, "provider_turn_id": state.active_turn_id }),
     );
-    let final_provider_user_turn_count = state.active_thread_id.as_deref().and_then(|thread_id| {
-        client
-            .request(
-                "thread/read",
-                json!({ "threadId": thread_id, "includeTurns": true }),
-            )
-            .ok()
-            .and_then(|read| thread_user_turn_count(&read))
-    });
     let mut raw_methods = state.raw_methods.iter().cloned().collect::<Vec<_>>();
     raw_methods.sort();
     emit(json!({
@@ -1752,7 +1679,6 @@ fn handle_turn_completed(
             },
             "provider_error_code": state.last_provider_error.as_ref().and_then(|v| v.get("provider_error_code")).cloned(),
             "provider_error_message": state.last_provider_error.as_ref().and_then(|v| v.get("provider_error_message")).cloned(),
-            "provider_user_turn_count": final_provider_user_turn_count,
             "provider_forked_thread_id": forked_provider_thread_id,
             "provider_source_thread_id": source_thread_id,
             "provider_thread_strategy": thread_strategy,
@@ -1967,32 +1893,23 @@ fn extract_turn_id(response: &JsonValue) -> Option<String> {
         .map(str::to_string)
 }
 
-fn thread_user_turn_count(read_response: &JsonValue) -> Option<i64> {
-    let turns = value_at(read_response, &["thread", "turns"])?.as_array()?;
-    let count = turns
-        .iter()
-        .filter(|turn| {
-            turn.get("items")
-                .and_then(JsonValue::as_array)
-                .map(|items| {
-                    items.iter().any(|item| {
-                        let root = item.get("root").unwrap_or(item);
-                        root.get("type").and_then(JsonValue::as_str) == Some("userMessage")
-                    })
-                })
-                .unwrap_or(false)
-        })
-        .count();
-    Some(count as i64)
-}
-
 fn normalize_strategy(value: Option<&str>) -> String {
     match value.unwrap_or("").trim().to_lowercase().as_str() {
         "resume" => "resume".to_string(),
-        "fork" => "fork".to_string(),
-        "fork_then_rollback" => "fork_then_rollback".to_string(),
+        "fork_at_turn" => "fork_at_turn".to_string(),
         _ => "fresh_thread".to_string(),
     }
+}
+
+fn build_fork_at_turn_params(
+    thread_id: &str,
+    last_turn_id: &str,
+    thread_params: JsonValue,
+) -> JsonValue {
+    merge_object(
+        json!({ "threadId": thread_id, "lastTurnId": last_turn_id }),
+        thread_params,
+    )
 }
 
 fn merge_object(mut left: JsonValue, right: JsonValue) -> JsonValue {
@@ -2659,5 +2576,24 @@ mod tests {
             "type": "cancel",
             "content": "Stop",
         })));
+    }
+
+    #[test]
+    fn builds_exact_turn_fork_request() {
+        let params = build_fork_at_turn_params(
+            "thread-1",
+            "turn-2",
+            json!({ "model": "gpt-5.5", "cwd": "/repo" }),
+        );
+
+        assert_eq!(
+            params,
+            json!({
+                "threadId": "thread-1",
+                "lastTurnId": "turn-2",
+                "model": "gpt-5.5",
+                "cwd": "/repo",
+            })
+        );
     }
 }

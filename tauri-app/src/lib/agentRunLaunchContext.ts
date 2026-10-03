@@ -53,7 +53,6 @@ export interface AgentRunLaunchContextResult {
   providerParentThreadId: string | null;
   providerParentTurnId: string | null;
   providerParentLineageId: string | null;
-  providerParentUserTurnCount: number | null;
   isBranchFromInterior: boolean;
   meta: Record<string, unknown>;
 }
@@ -202,7 +201,6 @@ export function buildAgentRunLaunchContext(input: AgentRunLaunchContextInput): A
   const parentProviderThreadId = providerContinuation?.sourceThreadId ?? null;
   const parentProviderTurnId = providerContinuation?.sourceTurnId ?? null;
   const parentProviderLineageId = providerContinuation?.sourceLineageId ?? null;
-  const parentProviderUserTurnCount = providerContinuation?.sourceUserTurnCount ?? null;
   const sourceProviderThreadIdForSpawn = providerThreadStrategy === 'fresh_thread'
     ? null
     : providerContinuation?.sourceThreadId ?? null;
@@ -231,10 +229,7 @@ export function buildAgentRunLaunchContext(input: AgentRunLaunchContextInput): A
       ...((sourceProviderThreadIdForSpawn && providerThreadStrategy === 'resume') ? ['--provider-thread-id', sourceProviderThreadIdForSpawn] : []),
       ...((sourceProviderThreadIdForSpawn && providerThreadStrategy !== 'resume') ? ['--source-provider-thread-id', sourceProviderThreadIdForSpawn] : []),
       ...((parentProviderLineageId && providerThreadStrategy !== 'fresh_thread') ? ['--source-provider-lineage-id', parentProviderLineageId] : []),
-      ...((providerThreadStrategy === 'fork_then_rollback' && parentProviderUserTurnCount != null)
-        ? ['--target-provider-user-turn-count', String(parentProviderUserTurnCount)]
-        : []),
-      ...((providerThreadStrategy === 'fork' && parentProviderTurnId)
+      ...((providerThreadStrategy === 'fork_at_turn' && parentProviderTurnId)
         ? ['--target-provider-turn-id', parentProviderTurnId]
         : []),
       ...(input.targetNodeId ? ['--target-node-id', input.targetNodeId] : []),
@@ -267,7 +262,6 @@ export function buildAgentRunLaunchContext(input: AgentRunLaunchContextInput): A
     providerParentThreadId: parentProviderThreadId,
     providerParentTurnId: parentProviderTurnId,
     providerParentLineageId: parentProviderLineageId,
-    providerParentUserTurnCount: parentProviderUserTurnCount,
     isBranchFromInterior: branchFromInterior,
     meta: {
       ...manifestStatsMeta(contextManifest, agentreeContextInjectedChars, shouldInjectAgentreeContext),
@@ -285,8 +279,7 @@ export function buildAgentRunLaunchContext(input: AgentRunLaunchContextInput): A
       provider_parent_turn_id_available: parentProviderTurnId,
       provider_parent_lineage_id_available: parentProviderLineageId,
       provider_lineage_id: sourceProviderLineageIdForSpawn,
-      provider_target_user_turn_count: providerThreadStrategy === 'fork_then_rollback' ? parentProviderUserTurnCount : null,
-      provider_target_turn_id: providerThreadStrategy === 'fork' ? parentProviderTurnId : null,
+      provider_target_turn_id: providerThreadStrategy === 'fork_at_turn' ? parentProviderTurnId : null,
       provider_thread_strategy: providerThreadStrategy,
       provider_image_input_artifact_count: providerImageArtifactInputs.length,
       ...(selectedProvider ? { provider: selectedProvider } : {}),
