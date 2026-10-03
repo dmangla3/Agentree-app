@@ -1,5 +1,10 @@
-import { useMemo, useState } from 'react';
-import ReactDiffViewer, { DiffMethod } from 'react-diff-viewer-continued';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import {
+    FileDiff as PierreFileDiff,
+    parseDiffFromFile,
+    type FileDiffMetadata,
+    type FileDiffOptions,
+} from '@pierre/diffs';
 import { cn } from '../../lib/utils';
 import { Button } from '../../../@/components/ui/button';
 import { SplitSquareHorizontal, AlignJustify, Copy, Check } from 'lucide-react';
@@ -35,133 +40,54 @@ export interface DiffViewerProps {
     maxHeight?: string;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// STYLES
-// ═══════════════════════════════════════════════════════════════════════════
+const getIsDarkMode = (): boolean => (
+    typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
+);
 
-const lightStyles = {
-    variables: {
-        light: {
-            diffViewerBackground: '#fafbfc',
-            diffViewerColor: '#24292e',
-            addedBackground: '#e6ffec',
-            addedColor: '#22863a',
-            removedBackground: '#ffebe9',
-            removedColor: '#cb2431',
-            wordAddedBackground: '#acf2bd',
-            wordRemovedBackground: '#fdb8c0',
-            addedGutterBackground: '#cdffd8',
-            removedGutterBackground: '#ffdce0',
-            gutterBackground: '#f7f7f7',
-            gutterBackgroundDark: '#f3f3f3',
-            highlightBackground: '#fffbdd',
-            highlightGutterBackground: '#fff5b1',
-            codeFoldGutterBackground: '#dbedff',
-            codeFoldBackground: '#f1f8ff',
-            emptyLineBackground: '#fafbfc',
-            gutterColor: '#6a737d',
-            addedGutterColor: '#22863a',
-            removedGutterColor: '#cb2431',
-            codeFoldContentColor: '#0366d6',
-            diffViewerTitleBackground: '#f1f8ff',
-            diffViewerTitleColor: '#24292e',
-            diffViewerTitleBorderColor: '#e1e4e8',
-        },
-    },
-    line: {
-        padding: '2px 10px',
-        '&:hover': {
-            background: '#f1f8ff',
-        },
-    },
-    contentText: {
-        fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-        fontSize: '12px',
-        lineHeight: '20px',
-        whiteSpace: 'pre',
-    },
-    gutter: {
-        minWidth: '40px',
-        padding: '0 10px',
-        '&:hover': {
-            cursor: 'pointer',
-            background: '#d0d0d0',
-        },
-    },
-    marker: {
-        padding: '0 6px',
-    },
-    codeFold: {
-        fontSize: '11px',
-        fontWeight: 500,
-    },
-    titleBlock: {
-        padding: '8px 10px',
-        borderBottom: '1px solid #e1e4e8',
-    },
-};
+const diffHostStyle = {
+    '--diffs-font-size': '12px',
+    '--diffs-line-height': '20px',
+    '--diffs-light-bg': '#fafbfc',
+    '--diffs-dark-bg': '#0d1117',
+    '--diffs-light': '#24292e',
+    '--diffs-dark': '#c9d1d9',
+    '--diffs-light-addition-color': '#22863a',
+    '--diffs-dark-addition-color': '#3fb950',
+    '--diffs-light-deletion-color': '#cb2431',
+    '--diffs-dark-deletion-color': '#f85149',
+} as CSSProperties;
 
-const darkStyles = {
-    variables: {
-        dark: {
-            diffViewerBackground: '#0d1117',
-            diffViewerColor: '#c9d1d9',
-            addedBackground: '#12261e',
-            addedColor: '#3fb950',
-            removedBackground: '#2d1517',
-            removedColor: '#f85149',
-            wordAddedBackground: '#033a16',
-            wordRemovedBackground: '#67060c',
-            addedGutterBackground: '#0a3d1c',
-            removedGutterBackground: '#4a1010',
-            gutterBackground: '#161b22',
-            gutterBackgroundDark: '#0d1117',
-            highlightBackground: '#3d3214',
-            highlightGutterBackground: '#4d4019',
-            codeFoldGutterBackground: '#161b22',
-            codeFoldBackground: '#161b22',
-            emptyLineBackground: '#0d1117',
-            gutterColor: '#8b949e',
-            addedGutterColor: '#3fb950',
-            removedGutterColor: '#f85149',
-            codeFoldContentColor: '#58a6ff',
-            diffViewerTitleBackground: '#161b22',
-            diffViewerTitleColor: '#c9d1d9',
-            diffViewerTitleBorderColor: '#30363d',
-        },
-    },
-    line: {
-        padding: '2px 10px',
-        '&:hover': {
-            background: '#1c2128',
-        },
-    },
-    contentText: {
-        fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-        fontSize: '12px',
-        lineHeight: '20px',
-        whiteSpace: 'pre',
-    },
-    gutter: {
-        minWidth: '40px',
-        padding: '0 10px',
-        '&:hover': {
-            cursor: 'pointer',
-            background: '#30363d',
-        },
-    },
-    marker: {
-        padding: '0 6px',
-    },
-    codeFold: {
-        fontSize: '11px',
-        fontWeight: 500,
-    },
-    titleBlock: {
-        padding: '8px 10px',
-        borderBottom: '1px solid #30363d',
-    },
-};
+const buildHighlightStyles = (lines: number[]): string => (
+    [...new Set(lines)]
+        .filter((line) => Number.isInteger(line) && line > 0)
+        .map((line) => `
+            [data-line="${line}"], [data-column-number="${line}"] {
+                --diffs-line-bg: light-dark(#fffbdd, #3d3214);
+            }
+        `)
+        .join('\n')
+);
+
+function PierreDiffRenderer({
+    fileDiff,
+    options,
+}: {
+    fileDiff: FileDiffMetadata;
+    options: FileDiffOptions<undefined>;
+}) {
+    const containerRef = useRef<HTMLDivElement>(null);
+
+    useLayoutEffect(() => {
+        const container = containerRef.current;
+        if (!container) return undefined;
+
+        const renderer = new PierreFileDiff(options);
+        renderer.render({ fileDiff, containerWrapper: container });
+        return () => renderer.cleanUp();
+    }, [fileDiff, options]);
+
+    return <div ref={containerRef} data-diff-renderer="pierre" style={diffHostStyle} />;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // COMPONENT
@@ -174,20 +100,39 @@ export function DiffViewer({
     newLabel = 'After',
     splitView: initialSplitView = true,
     language,
-    highlightLines: _highlightLines = [],
+    highlightLines = [],
     showLineNumbers = true,
     className,
     showViewToggle = true,
     onViewModeChange,
+    maxHeight,
 }: DiffViewerProps) {
     const [splitView, setSplitView] = useState(initialSplitView);
     const [copied, setCopied] = useState<'old' | 'new' | null>(null);
+    const [isDarkMode, setIsDarkMode] = useState(getIsDarkMode);
 
-    // Detect dark mode
-    const isDarkMode = useMemo(() => {
-        if (typeof window === 'undefined') return false;
-        return document.documentElement.classList.contains('dark');
+    useEffect(() => {
+        const observer = new MutationObserver(() => setIsDarkMode(getIsDarkMode()));
+        observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+        return () => observer.disconnect();
     }, []);
+
+    const fileDiff = useMemo(() => parseDiffFromFile(
+        { name: 'file', contents: oldCode, ...(language ? { lang: language } : {}) },
+        { name: 'file', contents: newCode, ...(language ? { lang: language } : {}) },
+    ), [language, newCode, oldCode]);
+    const highlightStyles = useMemo(() => buildHighlightStyles(highlightLines), [highlightLines]);
+    const diffOptions = useMemo<FileDiffOptions<undefined>>(() => ({
+        diffStyle: splitView ? 'split' : 'unified',
+        disableFileHeader: true,
+        disableLineNumbers: !showLineNumbers,
+        expandUnchanged: false,
+        collapsedContextThreshold: 3,
+        lineDiffType: 'word',
+        overflow: 'scroll',
+        themeType: isDarkMode ? 'dark' : 'light',
+        unsafeCSS: highlightStyles,
+    }), [highlightStyles, isDarkMode, showLineNumbers, splitView]);
 
     const handleViewModeChange = (newSplitView: boolean) => {
         setSplitView(newSplitView);
@@ -203,9 +148,6 @@ export function DiffViewer({
             console.error('Failed to copy:', err);
         }
     };
-
-    // Convert highlight lines to format expected by react-diff-viewer
-    // Note: highlighting support can be added in future iterations
 
     // No changes check
     const hasChanges = oldCode !== newCode;
@@ -282,25 +224,12 @@ export function DiffViewer({
 
             {/* Diff content */}
             <div
-                className="min-w-0 w-full max-w-full overflow-x-auto"
+                className="min-w-0 w-full max-w-full overflow-auto"
+                style={{ maxHeight }}
             >
-                <ReactDiffViewer
-                    oldValue={oldCode}
-                    newValue={newCode}
-                    splitView={splitView}
-                    useDarkTheme={isDarkMode}
-                    styles={isDarkMode ? darkStyles : lightStyles}
-                    showDiffOnly={true}
-                    extraLinesSurroundingDiff={3}
-                    compareMethod={DiffMethod.WORDS}
-                    hideLineNumbers={!showLineNumbers}
-                    leftTitle={oldLabel}
-                    rightTitle={newLabel}
-                    renderContent={(source) => {
-                        // Basic syntax highlighting could be added here
-                        // For now, just return the source with monospace styling
-                        return <span>{source}</span>;
-                    }}
+                <PierreDiffRenderer
+                    fileDiff={fileDiff}
+                    options={diffOptions}
                 />
             </div>
 
