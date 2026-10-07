@@ -59,6 +59,10 @@ const baseProps = {
   onContextMenu: vi.fn(),
 };
 
+const ThrowingHoverContent = () => {
+  throw new Error('Preview failed');
+};
+
 describe('GraphNodeWrapper', () => {
   beforeEach(async () => {
     const { ensureAgentRunHydrated } = await import('../../../agent-runs/agentRunHydration');
@@ -97,7 +101,24 @@ describe('GraphNodeWrapper', () => {
     expect(screen.queryByText('expensive hover content')).toBeNull();
   });
 
-  it('uses a 300ms graph hover delay and does not open directly on pointer enter', () => {
+  it('contains hover preview render failures', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    render(
+      <GraphNodeWrapper {...baseProps} hoverCardContent={<ThrowingHoverContent />}>
+        <div>node body</div>
+      </GraphNodeWrapper>
+    );
+
+    fireEvent.click(screen.getByText('open hover'));
+
+    expect(screen.getByText('node body')).toBeTruthy();
+    expect(screen.getByText('Preview unavailable')).toBeTruthy();
+    expect(screen.getByText('This node preview could not be displayed.')).toBeTruthy();
+    consoleError.mockRestore();
+  });
+
+  it('uses a 250ms graph hover delay and does not open directly on pointer enter', () => {
     render(
       <GraphNodeWrapper {...baseProps} hoverCardContent={<div>expensive hover content</div>}>
         <div>node body</div>
@@ -105,7 +126,7 @@ describe('GraphNodeWrapper', () => {
     );
 
     const hoverRoot = screen.getByText('open hover').parentElement;
-    expect(hoverRoot?.getAttribute('data-open-delay')).toBe('300');
+    expect(hoverRoot?.getAttribute('data-open-delay')).toBe('250');
 
     fireEvent.pointerEnter(screen.getByText('node body'));
 

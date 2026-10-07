@@ -281,14 +281,18 @@ export function NodeHoverCardContent({
         </Suspense>
       ) : null}
 	    </div>
-	    <MessageHighlightSelectionPopover
-	      workspaceId={entity.message?.workspaceId ?? null}
-	      surfaceRef={previewScrollRef}
-	    />
-	    <MessageHighlightHoverPopover
-	      workspaceId={entity.message?.workspaceId ?? null}
-	      surfaceRef={previewScrollRef}
-	    />
+	    {resolvedCapabilities.canMutate ? (
+	      <>
+	        <MessageHighlightSelectionPopover
+	          workspaceId={entity.message?.workspaceId ?? null}
+	          surfaceRef={previewScrollRef}
+	        />
+	        <MessageHighlightHoverPopover
+	          workspaceId={entity.message?.workspaceId ?? null}
+	          surfaceRef={previewScrollRef}
+	        />
+	      </>
+	    ) : null}
 	    </AgentreeSurfaceProvider>
 	  );
 	}

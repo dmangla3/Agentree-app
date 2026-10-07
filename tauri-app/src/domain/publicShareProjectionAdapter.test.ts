@@ -115,7 +115,6 @@ describe('publicPayloadToWorkspaceProjectionInput', () => {
     const payload = makePayload();
     payload.graph.messages[1].artifacts = [{
       id: 'artifact-1',
-      nodeId: 'assistant-1',
       role: 'output',
       kind: 'screenshot',
       mimeType: 'image/png',

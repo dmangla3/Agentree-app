@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ChatAssistantCard } from './ChatAssistantCard';
 import { ChatUserCard } from './ChatUserCard';
+import { AgentreeSurfaceProvider, publicShareCapabilities } from '../../graph/surfaceCapabilities';
 import type { ProjectedNodeEntity } from '../../../domain/workspaceProjection';
 
 vi.mock('../../../hooks/useAgents', () => ({
@@ -201,6 +202,43 @@ describe('ChatAssistantCard identity', () => {
     expect(screen.getByText('stop')).toBeTruthy();
     expect(screen.getByText('Run npm test')).toBeTruthy();
     expect(screen.getAllByText('Final answer only.')).toHaveLength(1);
+  });
+
+  it('keeps public-share work logs collapsed until the viewer opens them', () => {
+    render(
+      <AgentreeSurfaceProvider surfaceMode="public-share" capabilities={publicShareCapabilities}>
+        <ChatAssistantCard
+          entity={makeAssistantEntity({
+            status: 'completed' as any,
+            message: {
+              status: 'completed' as any,
+              content: 'Shared final answer.',
+              execution_data: {
+                timeline: [
+                  { type: 'thinking', timestamp: 1, content: 'Private work detail.' },
+                  { type: 'message', timestamp: 2, content: 'Shared final answer.' },
+                ],
+              },
+            } as any,
+          })}
+          isFocused={false}
+          isSelected={false}
+          layout="chat"
+          onFocus={() => {}}
+          onSelect={() => {}}
+          onContextMenu={() => {}}
+        />
+      </AgentreeSurfaceProvider>
+    );
+
+    const workLogsButton = screen.getByRole('button', { name: /work logs/i });
+    expect(workLogsButton.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('Private work detail.')).toBeNull();
+
+    fireEvent.click(workLogsButton);
+
+    expect(workLogsButton.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('Private work detail.')).toBeTruthy();
   });
 
   it('copies only the final assistant output for completed structured runs', () => {

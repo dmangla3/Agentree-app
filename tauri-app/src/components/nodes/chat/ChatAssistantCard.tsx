@@ -919,7 +919,7 @@ export const ChatAssistantCard = memo(({
       <WorkLogsPanel
         rows={workLogRows}
         repoPath={repoPath}
-        defaultOpen={isPublicShare || shouldRevealStream}
+        defaultOpen={!isPublicShare && shouldRevealStream}
         allowToolExpansion={capabilities.canExpandToolCalls}
       />
 

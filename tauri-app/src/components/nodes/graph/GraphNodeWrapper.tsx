@@ -1,6 +1,7 @@
-import { cloneElement, isValidElement, memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { cloneElement, Component, isValidElement, memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type {
   CSSProperties,
+  ErrorInfo,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   ReactElement,
@@ -46,6 +47,37 @@ interface GraphNodeHoverCardShellProps {
   hoverCardContent?: ReactNode;
   onHoverOpenChange?: (open: boolean) => void;
   children: ReactNode;
+}
+
+class GraphNodeHoverCardErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('[GraphNodeHoverCard] Failed to render hover preview:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          data-agentree-node-hover-error="true"
+          className="w-72 rounded-2xl border border-[hsl(var(--app-border)/0.76)] bg-[hsl(var(--app-panel)/0.96)] px-4 py-3 text-foreground shadow-lg"
+        >
+          <div className="text-sm font-semibold">Preview unavailable</div>
+          <div className="mt-1 text-xs text-muted-foreground">This node preview could not be displayed.</div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
 }
 
 export const GraphNodeHoverCardShell = ({
@@ -201,7 +233,9 @@ export const GraphNodeHoverCardShell = ({
           closeHoverCard({ dismissControlled: true });
         }}
       >
-        {effectiveHoverOpen ? hoverCardContent : null}
+        <GraphNodeHoverCardErrorBoundary key={nodeId ?? 'graph-node-hover'}>
+          {effectiveHoverOpen ? hoverCardContent : null}
+        </GraphNodeHoverCardErrorBoundary>
       </HoverCardContent>
     </HoverCard>
   );

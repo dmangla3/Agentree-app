@@ -7,6 +7,7 @@ import { DiffViewer } from './DiffViewer';
 
 const pierreMocks = vi.hoisted(() => ({
     rendererOptions: [] as Array<Record<string, unknown>>,
+    renderedFileDiffs: [] as Array<Record<string, unknown>>,
     renderContainers: [] as HTMLElement[],
     cleanupCount: 0,
     parseDiffFromFile: vi.fn(() => ({ name: 'file', type: 'change', hunks: [] })),
@@ -20,11 +21,12 @@ vi.mock('@pierre/diffs', () => ({
             pierreMocks.rendererOptions.push(options);
         }
 
-        render({ containerWrapper }: { containerWrapper: HTMLElement }) {
+        render({ fileDiff, containerWrapper }: { fileDiff: Record<string, unknown>; containerWrapper: HTMLElement }) {
             this.renderedNode = document.createElement('div');
             this.renderedNode.dataset.pierreMock = 'rendered';
             containerWrapper.appendChild(this.renderedNode);
             pierreMocks.renderContainers.push(containerWrapper);
+            pierreMocks.renderedFileDiffs.push(fileDiff);
             return true;
         }
 
@@ -43,6 +45,7 @@ const latestOptions = (): Record<string, unknown> => (
 describe('DiffViewer', () => {
     beforeEach(() => {
         pierreMocks.rendererOptions.length = 0;
+        pierreMocks.renderedFileDiffs.length = 0;
         pierreMocks.renderContainers.length = 0;
         pierreMocks.cleanupCount = 0;
         pierreMocks.parseDiffFromFile.mockClear();
@@ -77,6 +80,24 @@ describe('DiffViewer', () => {
             overflow: 'scroll',
             themeType: 'light',
         });
+    });
+
+    it('renders parsed patch metadata without re-diffing synthetic files', () => {
+        const fileDiff = {
+            name: 'src/example.ts',
+            type: 'change' as const,
+            hunks: [{ deletionStart: 100, additionStart: 100 }],
+            splitLineCount: 1,
+            unifiedLineCount: 2,
+            isPartial: true,
+            deletionLines: ['old'],
+            additionLines: ['new'],
+        };
+
+        render(<DiffViewer oldCode="old" newCode="new" fileDiff={fileDiff as never} />);
+
+        expect(pierreMocks.parseDiffFromFile).not.toHaveBeenCalled();
+        expect(pierreMocks.renderedFileDiffs[pierreMocks.renderedFileDiffs.length - 1]).toBe(fileDiff);
     });
 
     it('keeps the imperative renderer mounted through React Strict Mode cleanup', () => {

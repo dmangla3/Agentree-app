@@ -18,6 +18,8 @@ export interface DiffViewerProps {
     oldCode: string;
     /** New (after) code content */
     newCode: string;
+    /** Pre-parsed patch metadata. When provided, preserves original hunk positions. */
+    fileDiff?: FileDiffMetadata;
     /** Label for old version (e.g., "Parent Node") */
     oldLabel?: string;
     /** Label for new version (e.g., "Current Node") */
@@ -96,6 +98,7 @@ function PierreDiffRenderer({
 export function DiffViewer({
     oldCode,
     newCode,
+    fileDiff: parsedFileDiff,
     oldLabel = 'Before',
     newLabel = 'After',
     splitView: initialSplitView = true,
@@ -117,10 +120,10 @@ export function DiffViewer({
         return () => observer.disconnect();
     }, []);
 
-    const fileDiff = useMemo(() => parseDiffFromFile(
+    const fileDiff = useMemo(() => parsedFileDiff ?? parseDiffFromFile(
         { name: 'file', contents: oldCode, ...(language ? { lang: language } : {}) },
         { name: 'file', contents: newCode, ...(language ? { lang: language } : {}) },
-    ), [language, newCode, oldCode]);
+    ), [language, newCode, oldCode, parsedFileDiff]);
     const highlightStyles = useMemo(() => buildHighlightStyles(highlightLines), [highlightLines]);
     const diffOptions = useMemo<FileDiffOptions<undefined>>(() => ({
         diffStyle: splitView ? 'split' : 'unified',

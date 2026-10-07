@@ -8,7 +8,7 @@ import type {
   Message,
   Summary,
 } from '../stores/workspaceStore';
-import type { ArtifactRef } from '../lib/artifacts';
+import { normalizeArtifactRef } from '../lib/artifacts';
 
 type PublicGraphRole = 'user' | 'assistant' | string;
 
@@ -77,7 +77,7 @@ type PublicGraphMessage = {
   output_commit_sha?: string | null;
   base_selected_from_node_id?: string | null;
   commit?: PublicCommitMeta | null;
-  artifacts?: ArtifactRef[] | null;
+  artifacts?: unknown[] | null;
   collapsed?: boolean | null;
   context_active?: boolean | null;
   execution?: {
@@ -160,17 +160,25 @@ const modelFromAgentId = (agentId: string | null | undefined): { provider: strin
   return { provider, model };
 };
 
-const buildPublicExecutionData = (message: PublicGraphMessage) => ({
-  started_at: message.execution?.startedAt ?? null,
-  ended_at: message.execution?.endedAt ?? null,
-  usage: message.execution?.usage ?? undefined,
-  cache_usage: message.execution?.cacheUsage ?? undefined,
-  work_logs: message.execution?.workLogs ?? undefined,
-  timeline: publicWorkLogsToTimeline(message.execution?.workLogs),
-  artifacts: Array.isArray(message.artifacts) ? message.artifacts : undefined,
-  meta: publicCommitMetaForExecution(message.commit),
-  files_changed: message.commit?.files_changed ?? undefined,
-});
+const buildPublicExecutionData = (message: PublicGraphMessage) => {
+  const artifacts = Array.isArray(message.artifacts)
+    ? message.artifacts
+      .map((artifact, index) => normalizeArtifactRef(artifact, { nodeId: message.id, index }))
+      .filter((artifact) => artifact !== null)
+    : undefined;
+
+  return {
+    started_at: message.execution?.startedAt ?? null,
+    ended_at: message.execution?.endedAt ?? null,
+    usage: message.execution?.usage ?? undefined,
+    cache_usage: message.execution?.cacheUsage ?? undefined,
+    work_logs: message.execution?.workLogs ?? undefined,
+    timeline: publicWorkLogsToTimeline(message.execution?.workLogs),
+    artifacts,
+    meta: publicCommitMetaForExecution(message.commit),
+    files_changed: message.commit?.files_changed ?? undefined,
+  };
+};
 
 const publicMessageToWorkspaceMessage = (message: PublicGraphMessage): Message => {
   const agentModel = modelFromAgentId(message.agent_id);

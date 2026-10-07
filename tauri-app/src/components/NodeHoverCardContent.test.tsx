@@ -25,6 +25,10 @@ const cancelMocks = vi.hoisted(() => ({
   dispatchAgentRun: vi.fn(),
   scheduleRefresh: vi.fn(),
 }));
+const highlightMocks = vi.hoisted(() => ({
+  selection: vi.fn(),
+  hover: vi.fn(),
+}));
 
 vi.mock('./NodePreviewRenderer', () => ({
   NodePreviewRenderer: ({ entity }: { entity?: ProjectedNodeEntity }) => (
@@ -33,6 +37,20 @@ vi.mock('./NodePreviewRenderer', () => ({
       <div>hover content: {entity?.message?.content}</div>
     </div>
   ),
+}));
+
+vi.mock('./highlights/MessageHighlightSelectionPopover', () => ({
+  MessageHighlightSelectionPopover: () => {
+    highlightMocks.selection();
+    return <div data-testid="highlight-selection-popover" />;
+  },
+}));
+
+vi.mock('./highlights/MessageHighlightHoverPopover', () => ({
+  MessageHighlightHoverPopover: () => {
+    highlightMocks.hover();
+    return <div data-testid="highlight-hover-popover" />;
+  },
 }));
 
 vi.mock('../hooks/useHeadlessQuickReply', () => ({
@@ -155,6 +173,8 @@ describe('NodeHoverCardContent', () => {
     cancelMocks.dispatchAgentRun.mockReset();
     cancelMocks.scheduleRefresh.mockReset();
     cancelMocks.scheduleRefresh.mockResolvedValue(undefined);
+    highlightMocks.selection.mockReset();
+    highlightMocks.hover.mockReset();
     useAgentRunProjectionStore.getState().clearAllProjections();
     clearHoverQuickReplyDraftsForTest();
   });
@@ -271,6 +291,15 @@ describe('NodeHoverCardContent', () => {
 
     expect(screen.getByText('hover body: assistant_message preview')).toBeTruthy();
     expect(screen.queryByText('Quick Reply')).toBeNull();
+    expect(highlightMocks.selection).not.toHaveBeenCalled();
+    expect(highlightMocks.hover).not.toHaveBeenCalled();
+  });
+
+  it('keeps highlight controls on mutable app hover cards', () => {
+    render(<NodeHoverCardContent entity={makeEntity('assistant_message')} projection={makeProjection()} />);
+
+    expect(highlightMocks.selection).toHaveBeenCalledOnce();
+    expect(highlightMocks.hover).toHaveBeenCalledOnce();
   });
 
   it('renders public assistant details through the shared chat card without tool-call expansion', () => {

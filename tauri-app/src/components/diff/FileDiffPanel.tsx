@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
+import { processFile, type FileDiffMetadata } from '@pierre/diffs';
 import { FileDiff, FileStatus, DiffHunk } from '../../lib/agentClient';
 import { DiffViewer } from './DiffViewer';
 import { BlameViewer } from './BlameViewer';
@@ -153,38 +154,21 @@ function getLanguageFromExtension(ext: string): string | undefined {
     return languageMap[ext.toLowerCase()];
 }
 
-function hunksToCode(hunks: DiffHunk[] | null | undefined): { oldCode: string; newCode: string } {
-    if (!hunks || hunks.length === 0) {
-        return { oldCode: '', newCode: '' };
-    }
+export function buildFileDiffPatch(fileDiff: FileDiff): string {
+    const oldPath = fileDiff.old_path ?? fileDiff.path;
+    const oldHeader = fileDiff.status === 'added' ? '/dev/null' : `a/${oldPath}`;
+    const newHeader = fileDiff.status === 'deleted' ? '/dev/null' : `b/${fileDiff.path}`;
+    const hunks = (fileDiff.hunks ?? []).map((hunk: DiffHunk) => {
+        const content = hunk.content.endsWith('\n') ? hunk.content : `${hunk.content}\n`;
+        return `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@\n${content}`;
+    }).join('');
 
-    // Combine all hunk contents
-    // Each hunk.content is a unified diff snippet
-    const oldLines: string[] = [];
-    const newLines: string[] = [];
-
-    for (const hunk of hunks) {
-        const lines = hunk.content.split('\n');
-        for (const line of lines) {
-            if (line.startsWith('-')) {
-                oldLines.push(line.slice(1));
-            } else if (line.startsWith('+')) {
-                newLines.push(line.slice(1));
-            } else if (line.startsWith(' ')) {
-                oldLines.push(line.slice(1));
-                newLines.push(line.slice(1));
-            } else if (line.length > 0 && !line.startsWith('\\')) {
-                // Context line without prefix
-                oldLines.push(line);
-                newLines.push(line);
-            }
-        }
-    }
-
-    return {
-        oldCode: oldLines.join('\n'),
-        newCode: newLines.join('\n'),
-    };
+    return [
+        `diff --git a/${oldPath} b/${fileDiff.path}`,
+        `--- ${oldHeader}`,
+        `+++ ${newHeader}`,
+        hunks,
+    ].join('\n');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -238,10 +222,16 @@ export function FileDiffPanel({
     const hasHunks = fileDiff.hunks && fileDiff.hunks.length > 0;
     const isTruncated = fileDiff.truncated;
 
-    const { oldCode, newCode } = useMemo(() => {
-        if (!hasHunks) return { oldCode: '', newCode: '' };
-        return hunksToCode(fileDiff.hunks);
-    }, [fileDiff.hunks, hasHunks]);
+    const pierreFileDiff = useMemo<FileDiffMetadata | undefined>(() => {
+        if (!hasHunks) return undefined;
+        const parsed = processFile(buildFileDiffPatch(fileDiff), {
+            isGitDiff: true,
+            throwOnError: true,
+        });
+        return parsed && language ? { ...parsed, lang: language } : parsed;
+    }, [fileDiff, hasHunks, language]);
+    const oldCode = pierreFileDiff?.deletionLines.join('\n') ?? '';
+    const newCode = pierreFileDiff?.additionLines.join('\n') ?? '';
 
     // File basename for display
     const fileName = fileDiff.path.split('/').pop() || fileDiff.path;
@@ -406,6 +396,7 @@ export function FileDiffPanel({
                                     <DiffViewer
                                         oldCode={oldCode}
                                         newCode={newCode}
+                                        fileDiff={pierreFileDiff}
                                         oldLabel={fromLabel}
                                         newLabel={toLabel}
                                         language={language}
@@ -463,6 +454,7 @@ export function FileDiffPanel({
                         <DiffViewer
                             oldCode={oldCode}
                             newCode={newCode}
+                            fileDiff={pierreFileDiff}
                             oldLabel={fromLabel}
                             newLabel={toLabel}
                             language={language}
