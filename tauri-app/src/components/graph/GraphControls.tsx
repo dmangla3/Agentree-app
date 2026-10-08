@@ -152,6 +152,7 @@ export interface HighlightNavigationItem {
 export interface ThreadNavigationItem {
     threadRootId: string;
     label: string;
+    fullLabel?: string;
     turnCount: number;
     commitCount: number;
     baseCommitSha?: string | null;

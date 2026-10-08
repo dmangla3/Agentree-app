@@ -33,7 +33,22 @@ export const removeThreadSessionFromCache = (
   threadId: string,
 ): ThreadSession[] => (current ?? []).filter((thread) => thread.id !== threadId);
 
-type CachedGraphSnapshotThreadSession = { id?: unknown };
+type CachedGraphSnapshotThreadSession = Partial<ThreadSession> & { id?: unknown };
+
+export const mergeThreadSessionIntoGraphSnapshotCache = <T extends { threadSessions?: CachedGraphSnapshotThreadSession[] } | undefined>(
+  current: T,
+  next: ThreadSession,
+): T => {
+  if (!current) return current;
+  const threadSessions = current.threadSessions ?? [];
+  const hasExisting = threadSessions.some((thread) => thread.id === next.id);
+  return {
+    ...current,
+    threadSessions: hasExisting
+      ? threadSessions.map((thread) => (thread.id === next.id ? next : thread))
+      : [...threadSessions, next],
+  };
+};
 
 export const removeThreadSessionFromGraphSnapshotCache = <T extends { threadSessions?: CachedGraphSnapshotThreadSession[] } | undefined>(
   current: T,
@@ -112,6 +127,56 @@ export const useCreateThreadSession = () => {
         threadSessionKeys.workspace(thread.workspaceId),
         (current) => mergeThreadSessionIntoCache(current, thread),
       );
+    },
+  });
+};
+
+export const useRenameThreadSession = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (input: {
+      workspaceId: string;
+      threadId: string;
+      title: string;
+    }): Promise<ThreadSession> => {
+      const title = input.title.trim();
+      if (!title) throw new Error('Thread title is required.');
+
+      const currentSessions = queryClient.getQueryData<ThreadSession[]>(threadSessionKeys.workspace(input.workspaceId)) ?? [];
+      const graphSnapshot = queryClient.getQueryData<GraphSnapshot | undefined>(['graph-snapshot', input.workspaceId]);
+      const current = currentSessions.find((thread) => thread.id === input.threadId)
+        ?? graphSnapshot?.threadSessions?.find((thread) => thread.id === input.threadId)
+        ?? null;
+      const now = new Date().toISOString();
+      const payload = {
+        id: input.threadId,
+        workspaceId: input.workspaceId,
+        title,
+        status: current?.status ?? 'active',
+        createdAt: current?.createdAt ?? now,
+        updatedAt: now,
+        baseCommitSha: current?.baseCommitSha ?? null,
+        firstMessageId: current?.firstMessageId ?? null,
+        source: current?.source ?? 'user',
+      };
+      const updated = agentClient.hasRuntime()
+        ? await agentClient.upsertThreadSession(payload)
+        : (await api.patch(`/workspaces/${input.workspaceId}/threads/${input.threadId}`, payload)).data;
+      const normalized = normalizeThreadSession(updated);
+      if (!normalized) throw new Error('Invalid thread session response.');
+      return normalized;
+    },
+    onSuccess: (thread) => {
+      queryClient.setQueryData<ThreadSession[]>(
+        threadSessionKeys.workspace(thread.workspaceId),
+        (current) => mergeThreadSessionIntoCache(current, thread),
+      );
+      queryClient.setQueryData<GraphSnapshot | undefined>(
+        ['graph-snapshot', thread.workspaceId],
+        (current) => mergeThreadSessionIntoGraphSnapshotCache(current, thread),
+      );
+      void queryClient.invalidateQueries({ queryKey: ['graph-snapshot', thread.workspaceId], refetchType: 'active' });
     },
   });
 };

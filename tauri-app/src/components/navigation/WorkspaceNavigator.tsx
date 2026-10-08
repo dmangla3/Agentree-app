@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { open as openFolderDialog } from '@tauri-apps/plugin-dialog';
 import {
@@ -56,7 +56,7 @@ import {
 } from '../../hooks/useWorkspaces';
 import { localNodeKeys, parseLocalNode } from '../../hooks/useLocalNodes';
 import { applyLocalNodeMessages } from '../../hooks/useLiveMessages';
-import { threadSessionKeys } from '../../hooks/useThreadSessions';
+import { threadSessionKeys, useRenameThreadSession } from '../../hooks/useThreadSessions';
 import { agentClient } from '../../lib/agentClient';
 import { finalizeCreatedWorkspace } from '../../lib/finalizeCreatedWorkspace';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../../lib/perfRecorder';
@@ -199,17 +199,89 @@ function getWorkspacesForRepo(workspaces: Workspace[], repoPath: string): Worksp
     .sort(compareWorkspaceCreation);
 }
 
+function ThreadRenameDialog({
+  thread,
+  isRenaming = false,
+  onOpenChange,
+  onRename,
+}: {
+  thread: ThreadNavigationItem | null;
+  isRenaming?: boolean;
+  onOpenChange: (open: boolean) => void;
+  onRename: (thread: ThreadNavigationItem, title: string) => Promise<void>;
+}) {
+  const [title, setTitle] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setTitle(thread?.fullLabel ?? thread?.label ?? '');
+  }, [thread]);
+
+  useEffect(() => {
+    if (!thread) return;
+    const timeout = window.setTimeout(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [thread]);
+
+  const currentTitle = (thread?.fullLabel ?? thread?.label ?? '').trim();
+  const trimmedTitle = title.trim();
+  const canSubmit = Boolean(thread && trimmedTitle && trimmedTitle !== currentTitle && !isRenaming);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!thread || !canSubmit) return;
+    await onRename(thread, trimmedTitle);
+  };
+
+  return (
+    <Dialog open={thread !== null} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Rename Thread</DialogTitle>
+        </DialogHeader>
+        <form className="space-y-4" onSubmit={handleSubmit}>
+          <Input
+            ref={inputRef}
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            disabled={isRenaming}
+            aria-label="Thread name"
+          />
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={isRenaming}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!canSubmit}>
+              Rename
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function ThreadRow({
   thread,
   threadHoverProjectionInput,
   onOpenThread,
   onThreadDoneChange,
+  onThreadRename,
   onThreadDelete,
 }: {
   thread: ThreadNavigationItem;
   threadHoverProjectionInput?: ThreadHoverProjectionInput;
   onOpenThread: (threadRootId: string) => void;
   onThreadDoneChange: (threadRootId: string, done: boolean) => void;
+  onThreadRename: (thread: ThreadNavigationItem) => void;
   onThreadDelete?: (threadRootId: string) => void;
 }) {
   const selectedWorkspaceId = useWorkspaceStore((state) => state.selectedWorkspaceId);
@@ -322,6 +394,10 @@ function ThreadRow({
               Copy link
             </DropdownMenuItem>
           ) : null}
+          <DropdownMenuItem onClick={() => onThreadRename(thread)}>
+            <Pencil className="mr-2 h-4 w-4" />
+            Rename thread
+          </DropdownMenuItem>
           <DropdownMenuItem onClick={() => onThreadDoneChange(thread.threadRootId, !thread.done)}>
             {thread.done ? 'Reopen thread' : 'Close thread'}
           </DropdownMenuItem>
@@ -360,12 +436,14 @@ function WorkspaceThreadSection({
   model,
   onOpenThread,
   onCreateThread,
+  onThreadRename,
   threadsFocused = false,
   onThreadsFocusedChange,
 }: {
   model: WorkspaceThreadNavigationModel | null;
   onOpenThread: (threadRootId: string) => void;
   onCreateThread: () => void;
+  onThreadRename: (thread: ThreadNavigationItem) => void;
   threadsFocused?: boolean;
   onThreadsFocusedChange?: (focused: boolean) => void;
 }) {
@@ -460,6 +538,7 @@ function WorkspaceThreadSection({
             threadHoverProjectionInput={model.threadHoverProjectionInput}
             onOpenThread={onOpenThread}
             onThreadDoneChange={model.onThreadDoneChange}
+            onThreadRename={onThreadRename}
             onThreadDelete={model.onThreadDelete}
           />
         ))}
@@ -484,6 +563,7 @@ function WorkspaceThreadSection({
                   threadHoverProjectionInput={model.threadHoverProjectionInput}
                   onOpenThread={onOpenThread}
                   onThreadDoneChange={model.onThreadDoneChange}
+                  onThreadRename={onThreadRename}
                   onThreadDelete={model.onThreadDelete}
                 />
               ))}
@@ -502,6 +582,7 @@ function WorkspaceRow({
   onSelectWorkspace,
   onOpenThread,
   onCreateThread,
+  onThreadRename,
   onRequestRename,
   onRequestDelete,
   onEnableBackup,
@@ -516,6 +597,7 @@ function WorkspaceRow({
   onSelectWorkspace: (workspaceId: string) => void;
   onOpenThread: (threadRootId: string) => void;
   onCreateThread: () => void;
+  onThreadRename: (thread: ThreadNavigationItem) => void;
   onRequestRename: (workspace: Workspace) => void;
   onRequestDelete: (workspace: Workspace) => void;
   onEnableBackup: (workspace: Workspace) => void;
@@ -638,6 +720,7 @@ function WorkspaceRow({
           model={threadModel}
           onOpenThread={onOpenThread}
           onCreateThread={onCreateThread}
+          onThreadRename={onThreadRename}
           threadsFocused={threadsFocused}
           onThreadsFocusedChange={onThreadsFocusedChange}
         />
@@ -653,6 +736,7 @@ function RepoItem({
   onSelectWorkspace,
   onOpenThread,
   onCreateThread,
+  onThreadRename,
   onAddWorkspaceToRepo,
   onRequestRenameWorkspace,
   onRequestDeleteWorkspace,
@@ -668,6 +752,7 @@ function RepoItem({
   onSelectWorkspace: (workspaceId: string) => void;
   onOpenThread: (threadRootId: string) => void;
   onCreateThread: () => void;
+  onThreadRename: (thread: ThreadNavigationItem) => void;
   onAddWorkspaceToRepo: (folderPath: string) => void;
   onRequestRenameWorkspace: (workspace: Workspace) => void;
   onRequestDeleteWorkspace: (workspace: Workspace) => void;
@@ -776,6 +861,7 @@ function RepoItem({
                 onSelectWorkspace={onSelectWorkspace}
                 onOpenThread={onOpenThread}
                 onCreateThread={onCreateThread}
+                onThreadRename={onThreadRename}
                 onRequestRename={onRequestRenameWorkspace}
                 onRequestDelete={onRequestDeleteWorkspace}
                 onEnableBackup={onEnableWorkspaceBackup}
@@ -874,11 +960,13 @@ export function WorkspaceNavigator({
   const { data: workspacesData, isLoading, error, refetch } = useWorkspaces();
   const createWorkspace = useCreateWorkspace();
   const renameWorkspace = useRenameWorkspace();
+  const renameThreadSession = useRenameThreadSession();
   const deleteWorkspace = useDeleteWorkspace();
   const enableWorkspaceBackup = useEnableWorkspaceCloudBackup();
   const { addToast } = useToast();
   const [workspacePendingDelete, setWorkspacePendingDelete] = useState<Workspace | null>(null);
   const [workspacePendingRename, setWorkspacePendingRename] = useState<Workspace | null>(null);
+  const [threadPendingRename, setThreadPendingRename] = useState<ThreadNavigationItem | null>(null);
   const [setupRequirement, setSetupRequirement] = useState<RepoPrepareActionRequiredError['requirement'] | null>(null);
   const [pendingFolderPath, setPendingFolderPath] = useState<string | null>(null);
   const [pendingPolicyPromptAfterSetup, setPendingPolicyPromptAfterSetup] = useState(false);
@@ -1060,6 +1148,24 @@ export function WorkspaceNavigator({
     await renameWorkspace.mutateAsync({ id: workspace.id, name });
     setWorkspacePendingRename(null);
   }, [renameWorkspace]);
+
+  const handleConfirmRenameThread = useCallback(async (thread: ThreadNavigationItem, title: string) => {
+    if (!selectedWorkspaceId) return;
+    try {
+      await renameThreadSession.mutateAsync({
+        workspaceId: selectedWorkspaceId,
+        threadId: thread.threadRootId,
+        title,
+      });
+      setThreadPendingRename(null);
+    } catch (caught) {
+      addToast({
+        title: 'Rename failed',
+        description: caught instanceof Error ? caught.message : 'Failed to rename the thread.',
+        variant: 'error',
+      });
+    }
+  }, [addToast, renameThreadSession, selectedWorkspaceId]);
 
   const handlePrefetchWorkspace = useCallback((workspaceId: string) => {
     if (!workspaceId || !agentClient.hasRuntime()) return;
@@ -1277,6 +1383,7 @@ export function WorkspaceNavigator({
             model={selectedThreadModel}
             onOpenThread={onOpenThread}
             onCreateThread={onCreateThread}
+            onThreadRename={setThreadPendingRename}
             threadsFocused={threadsFocused}
             onThreadsFocusedChange={setThreadsFocused}
           />
@@ -1291,6 +1398,7 @@ export function WorkspaceNavigator({
                 onSelectWorkspace={onSelectWorkspace}
                 onOpenThread={onOpenThread}
                 onCreateThread={onCreateThread}
+                onThreadRename={setThreadPendingRename}
                 onAddWorkspaceToRepo={handleAddWorkspaceToRepo}
                 onRequestRenameWorkspace={setWorkspacePendingRename}
                 onRequestDeleteWorkspace={setWorkspacePendingDelete}
@@ -1327,6 +1435,14 @@ export function WorkspaceNavigator({
           if (!open && !renameWorkspace.isPending) setWorkspacePendingRename(null);
         }}
         onRename={handleConfirmRenameWorkspace}
+      />
+      <ThreadRenameDialog
+        thread={threadPendingRename}
+        isRenaming={renameThreadSession.isPending}
+        onOpenChange={(open) => {
+          if (!open && !renameThreadSession.isPending) setThreadPendingRename(null);
+        }}
+        onRename={handleConfirmRenameThread}
       />
     </aside>
   );

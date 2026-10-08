@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  mergeThreadSessionIntoGraphSnapshotCache,
   mergeThreadSessionIntoCache,
   removeThreadSessionFromCache,
   removeThreadSessionFromGraphSnapshotCache,
@@ -92,6 +93,70 @@ describe('removeThreadSessionFromCache', () => {
     ];
 
     expect(removeThreadSessionFromCache(current, 'thread-1').map((thread) => thread.id)).toEqual(['thread-2']);
+  });
+});
+
+describe('mergeThreadSessionIntoGraphSnapshotCache', () => {
+  it('updates a renamed thread session in a cached graph snapshot', () => {
+    const snapshot = {
+      version: 2,
+      threadSessions: [
+        {
+          id: 'thread-1',
+          workspaceId: 'workspace-1',
+          title: 'Original',
+          status: 'active' as const,
+          createdAt: '2026-05-28T00:00:00.000Z',
+          updatedAt: '2026-05-28T00:00:00.000Z',
+          baseCommitSha: null,
+          firstMessageId: null,
+          source: 'user' as const,
+        },
+      ],
+      messages: [{ id: 'message-1' }],
+    };
+
+    expect(mergeThreadSessionIntoGraphSnapshotCache(snapshot, {
+      id: 'thread-1',
+      workspaceId: 'workspace-1',
+      title: 'Renamed thread',
+      status: 'active',
+      createdAt: '2026-05-28T00:00:00.000Z',
+      updatedAt: '2026-05-28T00:02:00.000Z',
+      baseCommitSha: null,
+      firstMessageId: null,
+      source: 'user',
+    })?.threadSessions).toEqual([{
+      id: 'thread-1',
+      workspaceId: 'workspace-1',
+      title: 'Renamed thread',
+      status: 'active',
+      createdAt: '2026-05-28T00:00:00.000Z',
+      updatedAt: '2026-05-28T00:02:00.000Z',
+      baseCommitSha: null,
+      firstMessageId: null,
+      source: 'user',
+    }]);
+  });
+
+  it('adds a newly persisted renamed session to a cached graph snapshot', () => {
+    const snapshot = {
+      version: 2,
+      threadSessions: [],
+      messages: [{ id: 'message-1' }],
+    };
+
+    expect(mergeThreadSessionIntoGraphSnapshotCache(snapshot, {
+      id: 'thread-1',
+      workspaceId: 'workspace-1',
+      title: 'Persisted thread name',
+      status: 'active',
+      createdAt: '2026-05-28T00:00:00.000Z',
+      updatedAt: '2026-05-28T00:01:00.000Z',
+      baseCommitSha: null,
+      firstMessageId: null,
+      source: 'user',
+    })?.threadSessions).toHaveLength(1);
   });
 });
 

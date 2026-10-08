@@ -1545,6 +1545,7 @@ function GraphViewInternal({
             const done = doneThreadRootIds.has(threadRootId);
             return {
                 threadRootId,
+                fullLabel: label,
                 label: label.length > 56 ? `${label.slice(0, 56)}...` : label,
                 turnCount,
                 commitCount,
@@ -5181,6 +5182,7 @@ function GraphViewInternal({
             ...threadIndexItems.map((thread) => [
                 thread.threadRootId,
                 thread.label,
+                thread.fullLabel ?? '',
                 thread.turnCount,
                 thread.commitCount,
                 thread.baseCommitSha ?? '',

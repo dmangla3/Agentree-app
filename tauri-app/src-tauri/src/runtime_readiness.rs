@@ -324,23 +324,38 @@ fn codex_path_fallback_summary() -> String {
 
 #[tauri::command]
 #[specta::specta]
-pub fn check_managed_runtime_doctor(
+pub async fn check_managed_runtime_doctor(
     app: AppHandle,
 ) -> Result<Vec<ManagedRuntimeDoctorEntry>, String> {
-    Ok(vec![
-        doctor_entry(&app, crate::managed_runtime::COMPONENT_NODE, "Node runtime"),
-        doctor_entry(
-            &app,
-            crate::managed_runtime::COMPONENT_CLAUDE_SDK,
-            "Claude runtime",
-        ),
-        doctor_entry(&app, crate::managed_runtime::COMPONENT_CODEX, "Codex CLI"),
-    ])
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(vec![
+            doctor_entry(&app, crate::managed_runtime::COMPONENT_NODE, "Node runtime"),
+            doctor_entry(
+                &app,
+                crate::managed_runtime::COMPONENT_CLAUDE_SDK,
+                "Claude runtime",
+            ),
+            doctor_entry(&app, crate::managed_runtime::COMPONENT_CODEX, "Codex CLI"),
+        ])
+    })
+    .await
+    .map_err(|error| format!("Managed runtime doctor task failed: {}", error))?
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn repair_managed_runtime_component(
+pub async fn repair_managed_runtime_component(
+    app: AppHandle,
+    component: String,
+) -> Result<ManagedRuntimeDoctorEntry, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        repair_managed_runtime_component_blocking(app, component)
+    })
+    .await
+    .map_err(|error| format!("Managed runtime repair task failed: {}", error))?
+}
+
+fn repair_managed_runtime_component_blocking(
     app: AppHandle,
     component: String,
 ) -> Result<ManagedRuntimeDoctorEntry, String> {
