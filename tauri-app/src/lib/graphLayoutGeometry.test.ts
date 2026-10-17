@@ -647,6 +647,7 @@ const buildMappedGraph = (
   },
   hiddenThreadRootIds: Set<string> = new Set(),
   projectionMessages?: Message[],
+  commitHistoryVisibility: 'quiet' | 'complete' | 'surface-default' = 'complete',
 ) => {
   const projection = buildWorkspaceProjection({
     messages: projectionMessages ?? messages,
@@ -682,6 +683,9 @@ const buildMappedGraph = (
     filterState?.constrainedCommitFiltering,
     filterState?.pinnedCommitShas,
     hiddenThreadRootIds,
+    undefined,
+    undefined,
+    commitHistoryVisibility === 'surface-default' ? undefined : commitHistoryVisibility,
   );
 };
 
@@ -1265,6 +1269,89 @@ describe('graph layout geometry QA', () => {
     expect(groupNode.type).toBe('layout_derived_commit_group');
     expect((groupNode.data as any).group.commitShas).toEqual(group.commitShas);
     expect(mapped.nodes.some((node) => node.id === 'imported0001')).toBe(false);
+  });
+
+  it('keeps mixed conversation and commit surfaces quiet while retaining a directly used imported base', () => {
+    const messages = [
+      makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
+      makeMessage({
+        id: 'assistant-1',
+        role: 'assistant',
+        parentId: 'user-1',
+        status: 'completed',
+        base_commit_sha: 'imported0004',
+      }, 1),
+    ];
+    const mapped = buildMappedGraph(
+      messages,
+      'assistant-1',
+      buildCanonicalImportedCommitChain(),
+      undefined,
+      new Set(['conversation', 'commits']),
+      undefined,
+      undefined,
+      undefined,
+      'surface-default',
+    );
+
+    expect(mapped.nodes.some((node) => node.id === 'user-1')).toBe(true);
+    expect(mapped.nodes.some((node) => node.id === 'assistant-1')).toBe(true);
+    expect(mapped.nodes.some((node) => node.type === 'layout_derived_commit_group')).toBe(false);
+    expect((getNode(mapped.nodes, 'imported0004').data as any).isReferenceOnly).toBe(true);
+    expect(mapped.nodes.some((node) => node.id === 'imported0001')).toBe(false);
+  });
+
+  it('renders complete canonical history when only the commits surface is visible', () => {
+    const messages = [
+      makeMessage({ id: 'user-1', role: 'user', parentId: null }, 0),
+      makeMessage({ id: 'assistant-1', role: 'assistant', parentId: 'user-1', status: 'completed' }, 1),
+    ];
+    const commitGraph = buildCanonicalImportedCommitChain();
+    const mapped = buildMappedGraph(
+      messages,
+      'assistant-1',
+      commitGraph,
+      undefined,
+      new Set(['commits']),
+      undefined,
+      undefined,
+      undefined,
+      'surface-default',
+    );
+    const group = mapped.nodes.find((node) => node.type === 'layout_derived_commit_group');
+
+    expect(mapped.nodes.some((node) => node.id === 'user-1')).toBe(false);
+    expect(mapped.nodes.some((node) => node.id === 'assistant-1')).toBe(false);
+    expect((group?.data as any)?.group?.commitShas).toEqual([
+      'imported0001',
+      'imported0002',
+      'imported0003',
+      'imported0004',
+    ]);
+
+    const shortMapped = buildMappedGraph(
+      messages,
+      'assistant-1',
+      {
+        commits: commitGraph.commits.slice(0, 2),
+        commitParents: commitGraph.commitParents.slice(0, 2),
+        commitObservations: commitGraph.commitObservations.slice(0, 2),
+      },
+      undefined,
+      new Set(['commits']),
+      undefined,
+      undefined,
+      undefined,
+      'surface-default',
+    );
+    const parentEdge = shortMapped.edges.find((edge) => (
+      edge.source === 'imported0001' && edge.target === 'imported0002'
+    ));
+
+    expect(getNode(shortMapped.nodes, 'imported0001').type).toBe('canonical_commit');
+    expect(getNode(shortMapped.nodes, 'imported0002').type).toBe('canonical_commit');
+    expect((parentEdge?.data as any)?.relationship).toBe('git-parent');
+    expect((parentEdge?.data as any)?.layout).toBe(true);
   });
 
   it('renders short canonical imported commit-only chains as individual commit nodes', () => {

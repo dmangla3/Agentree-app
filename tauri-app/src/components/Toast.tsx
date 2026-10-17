@@ -185,17 +185,22 @@ function ToastItem({
         >
             {/* Icon */}
             <div className={cn('flex-shrink-0 mt-0.5', config.iconClass)}>
-                <Icon size={18} />
+                <Icon size={18} aria-hidden="true" />
             </div>
 
             {/* Content */}
             <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm text-foreground">{toast.title}</p>
-                {toast.description && (
-                    <p className="text-xs text-muted-foreground mt-0.5 break-words">
-                        {toast.description}
-                    </p>
-                )}
+                <div
+                    role={toast.variant === 'error' ? 'alert' : 'status'}
+                    aria-atomic="true"
+                >
+                    <p className="font-medium text-sm text-foreground">{toast.title}</p>
+                    {toast.description && (
+                        <p className="text-xs text-muted-foreground mt-0.5 break-words">
+                            {toast.description}
+                        </p>
+                    )}
+                </div>
                 {toast.action && (
                     toast.action.component ? (
                         <div className="mt-2">{toast.action.component}</div>
@@ -207,7 +212,7 @@ function ToastItem({
                                 onClick={toast.action.onClick}
                                 className="mt-2 h-7 text-xs gap-1"
                             >
-                                <ExternalLink size={12} />
+                                <ExternalLink size={12} aria-hidden="true" />
                                 {toast.action.label}
                             </Button>
                         )
@@ -217,10 +222,12 @@ function ToastItem({
 
             {/* Close button */}
             <button
+                type="button"
+                aria-label={`Dismiss ${toast.title}`}
                 onClick={handleRemove}
-                className="flex-shrink-0 p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                className="flex-shrink-0 p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
-                <X size={14} />
+                <X size={14} aria-hidden="true" />
             </button>
 
             {/* Progress bar for timed toasts */}

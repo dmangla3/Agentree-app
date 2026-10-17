@@ -60,6 +60,35 @@ interface AdvancedSearchPanelProps {
   onNavigateToMessage?: (messageId: string, workspaceId: string) => void;
 }
 
+export const HighlightedSearchText = ({
+  content,
+  searchQuery,
+}: {
+  content: string;
+  searchQuery: string;
+}) => {
+  const escapedTerms = searchQuery
+    .split(/\s+/)
+    .filter(term => term.length > 2)
+    .map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+
+  if (escapedTerms.length === 0) return content;
+
+  const parts = content.split(new RegExp(`(${escapedTerms.join('|')})`, 'gi'));
+  return (
+    <>
+      {parts.map((part, index) => index % 2 === 1 ? (
+        <mark
+          key={index}
+          className="bg-primary/20 text-primary dark:bg-primary/30 rounded px-0.5 font-medium"
+        >
+          {part}
+        </mark>
+      ) : part)}
+    </>
+  );
+};
+
 // Segmented control component for cleaner toggle groups
 const SegmentedControl = <T extends string>({
   value,
@@ -253,8 +282,8 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
   }, [suggestions.length]);
 
   // Perform search
-  const performSearch = useCallback(async () => {
-    if (!query.trim()) return;
+  const performSearch = useCallback(async (searchQuery: string = query) => {
+    if (!searchQuery.trim()) return;
 
     setIsSearching(true);
     setViewMode('results');
@@ -266,7 +295,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
       }
 
       const response = await api.post('/search', {
-        query,
+        query: searchQuery,
         searchType,
         searchArea,
         filters: searchFilters,
@@ -309,7 +338,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
   const handleSuggestionClick = (suggestion: string) => {
     setQuery(suggestion);
     setSuggestions([]);
-    performSearch();
+    performSearch(suggestion);
   };
 
   const updateFilters = (key: keyof SearchFilters, value: SearchFilters[keyof SearchFilters]) => {
@@ -331,24 +360,6 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
   const truncateContent = (content: string, maxLength: number = 200) => {
     if (content.length <= maxLength) return content;
     return content.substring(0, maxLength) + '...';
-  };
-
-  const highlightSearchTerms = (content: string, searchQuery: string) => {
-    if (!searchQuery) return content;
-
-    const terms = searchQuery.toLowerCase().split(/\s+/).filter(t => t.length > 2);
-    let highlighted = content;
-
-    terms.forEach(term => {
-      try {
-        const regex = new RegExp(`(${term})`, 'gi');
-        highlighted = highlighted.replace(regex, '<mark class="bg-primary/20 text-primary dark:bg-primary/30 rounded px-0.5 font-medium">$1</mark>');
-      } catch (e) {
-        console.error("Error creating regex for highlighting:", e);
-      }
-    });
-
-    return highlighted;
   };
 
   const activeFiltersCount = useMemo(() => {
@@ -782,10 +793,12 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
                     </div>
 
                     {/* Content */}
-                    <div
-                      className="text-sm leading-relaxed text-foreground/90 line-clamp-3"
-                      dangerouslySetInnerHTML={{ __html: highlightSearchTerms(truncateContent(result.content), query) }}
-                    />
+                    <div className="text-sm leading-relaxed text-foreground/90 line-clamp-3">
+                      <HighlightedSearchText
+                        content={truncateContent(result.content)}
+                        searchQuery={query}
+                      />
+                    </div>
 
                     {/* Footer */}
                     <div className="flex items-center justify-between pt-1">

@@ -550,8 +550,20 @@ pub fn delete_login_profile_with_vault(
             let _ = pending.child.wait();
         }
     }
-    db.delete_login_profile_metadata(profile_id)?;
-    vault.delete_secret(&secret_account_id(profile_id, "primary"))
+    let deleted_metadata = db.delete_login_profile_metadata(profile_id)?;
+    if let Err(delete_error) = vault.delete_secret(&secret_account_id(profile_id, "primary")) {
+        if let Some(metadata) = deleted_metadata.as_ref() {
+            db.restore_login_profile_metadata(metadata)
+                .map_err(|restore_error| {
+                    format!(
+                        "{}; also failed to restore login profile after credential deletion failed: {}",
+                        delete_error, restore_error
+                    )
+                })?;
+        }
+        return Err(delete_error);
+    }
+    Ok(())
 }
 
 pub fn resolve_runtime_credentials(
@@ -3344,13 +3356,22 @@ mod tests {
 
     struct MemoryVault {
         secrets: Mutex<HashMap<String, String>>,
+        delete_failures_remaining: Mutex<usize>,
     }
 
     impl MemoryVault {
         fn new() -> Self {
             Self {
                 secrets: Mutex::new(HashMap::new()),
+                delete_failures_remaining: Mutex::new(0),
             }
+        }
+
+        fn fail_next_delete(&self) {
+            *self
+                .delete_failures_remaining
+                .lock()
+                .expect("delete failure lock") = 1;
         }
     }
 
@@ -3373,6 +3394,15 @@ mod tests {
         }
 
         fn delete_secret(&self, account: &str) -> Result<(), String> {
+            let mut failures_remaining = self
+                .delete_failures_remaining
+                .lock()
+                .map_err(|error| error.to_string())?;
+            if *failures_remaining > 0 {
+                *failures_remaining -= 1;
+                return Err("simulated credential deletion failure".to_string());
+            }
+            drop(failures_remaining);
             self.secrets
                 .lock()
                 .map_err(|error| error.to_string())?
@@ -3739,6 +3769,80 @@ mod tests {
         assert!(edited.is_default);
         assert_eq!(edited.created_at, created.created_at);
         assert_eq!(edited.last_checked_at, Some(1234));
+    }
+
+    #[test]
+    fn credential_delete_failure_restores_profile_for_retry() {
+        let (_dir, db) = open_test_db();
+        let vault = MemoryVault::new();
+        let created = upsert_login_profile_with_vault(
+            &db,
+            &vault,
+            UpsertLoginProfileRequest {
+                id: Some("profile-to-delete".to_string()),
+                provider: "codex".to_string(),
+                display_name: "Codex Work".to_string(),
+                auth_type: "codex_api_key".to_string(),
+                secret: Some("sk-proj-1234567890abcdef".to_string()),
+                config: Some(serde_json::json!({ "openai_project_id": "project-1" })),
+                make_default: Some(true),
+            },
+        )
+        .expect("create profile");
+        let sibling = upsert_login_profile_with_vault(
+            &db,
+            &vault,
+            UpsertLoginProfileRequest {
+                id: Some("profile-sibling".to_string()),
+                provider: "codex".to_string(),
+                display_name: "Codex Personal".to_string(),
+                auth_type: "codex_api_key".to_string(),
+                secret: Some("sk-proj-abcdef1234567890".to_string()),
+                config: None,
+                make_default: Some(false),
+            },
+        )
+        .expect("create sibling profile");
+        let expected = db
+            .mark_login_profile_status(
+                &created.id,
+                "ready",
+                Some("Login is ready"),
+                Some("pro"),
+                1234,
+            )
+            .expect("mark profile ready");
+
+        vault.fail_next_delete();
+        let error = delete_login_profile_with_vault(&db, &vault, &created.id)
+            .expect_err("credential deletion should fail");
+
+        assert_eq!(error, "simulated credential deletion failure");
+        let restored = db
+            .get_login_profile(&created.id)
+            .expect("profile should remain available for retry");
+        assert_eq!(
+            serde_json::to_value(restored).expect("serialize restored profile"),
+            serde_json::to_value(expected).expect("serialize expected profile")
+        );
+        assert_eq!(
+            serde_json::to_value(
+                db.get_login_profile(&sibling.id)
+                    .expect("sibling profile should be unchanged")
+            )
+            .expect("serialize sibling profile"),
+            serde_json::to_value(sibling).expect("serialize expected sibling")
+        );
+        assert!(vault
+            .get_secret(&secret_account_id(&created.id, "primary"))
+            .is_ok());
+
+        delete_login_profile_with_vault(&db, &vault, &created.id)
+            .expect("retry should delete profile and credentials");
+        assert!(db.get_login_profile(&created.id).is_err());
+        assert!(vault
+            .get_secret(&secret_account_id(&created.id, "primary"))
+            .is_err());
     }
 
     #[test]

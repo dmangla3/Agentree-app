@@ -1387,6 +1387,7 @@ export const mapMessagesToGraphElements = (
   hiddenThreadRootIds: Set<string> = new Set(),
   onOpenThread: (threadRootId: string) => void = () => { },
   attachedThreadMessages: Message[] = messages,
+  commitHistoryVisibility?: 'quiet' | 'complete',
 ): { nodes: Node<LlmNodeData | SummaryNodeData | Record<string, unknown> | any>[]; edges: Edge[] } => {
   if ((!messages || messages.length === 0) && projection.threadRootIds.length === 0) {
     return { nodes: [], edges: [] };
@@ -1779,7 +1780,9 @@ export const mapMessagesToGraphElements = (
     }
 
     const hasHiddenThreadRoots = hiddenThreadRootIds.size > 0;
-    const hideBackgroundCommits = true;
+    const hideBackgroundCommits = commitHistoryVisibility
+      ? commitHistoryVisibility === 'quiet'
+      : showConversationNodes;
     const directDependencyCommitShas = new Set<string>();
     const addDirectDependencyCommitSha = (sha: string | null | undefined) => {
       const normalized = typeof sha === 'string' ? sha.trim() : '';

@@ -15,12 +15,17 @@ type CoordinatorDeps = {
   getSelectedWorkspaceId: () => string | null;
 };
 
+const NATIVE_SUBSCRIPTION_RETRY_DELAY_MS = 1_000;
+const MAX_NATIVE_SUBSCRIPTION_RETRIES = 3;
+
 const trackedMessages = new Map<string, Message>();
 const streamStates = new Map<string, AgentRunStreamIngestState>();
 
 let activeCoordinatorCount = 0;
 let nativeUnlisten: StopSubscription | null = null;
 let nativeSubscriptionPromise: Promise<StopSubscription> | null = null;
+let nativeSubscriptionRetryCount = 0;
+let nativeSubscriptionRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
 const cleanString = (value: unknown): string | null => {
   if (typeof value !== 'string') return null;
@@ -141,34 +146,73 @@ export const clearTrackedAgentRunLiveStreams = () => {
   streamStates.clear();
 };
 
+const clearNativeSubscriptionRetry = () => {
+  if (nativeSubscriptionRetryTimer !== null) {
+    clearTimeout(nativeSubscriptionRetryTimer);
+    nativeSubscriptionRetryTimer = null;
+  }
+};
+
+const subscribeToNativeStream = (deps: CoordinatorDeps) => {
+  if (
+    activeCoordinatorCount <= 0
+    || nativeUnlisten
+    || nativeSubscriptionPromise
+    || nativeSubscriptionRetryTimer !== null
+  ) {
+    return;
+  }
+
+  nativeSubscriptionPromise = agentClient.onEvent(({ nodeId, event }) => {
+    if (!nodeId || !event) return;
+    receiveNativeEvent(nodeId, event, deps);
+  }).then((unlisten) => {
+    nativeUnlisten = unlisten;
+    nativeSubscriptionPromise = null;
+    nativeSubscriptionRetryCount = 0;
+    if (activeCoordinatorCount <= 0) {
+      nativeUnlisten();
+      nativeUnlisten = null;
+    }
+    return unlisten;
+  }).catch((error) => {
+    nativeSubscriptionPromise = null;
+    console.error('[AgentRunLiveStreamCoordinator] Failed to subscribe to Tauri agent stream:', error);
+
+    if (
+      activeCoordinatorCount <= 0
+      || nativeSubscriptionRetryCount >= MAX_NATIVE_SUBSCRIPTION_RETRIES
+    ) {
+      return () => undefined;
+    }
+
+    const retryDelay = NATIVE_SUBSCRIPTION_RETRY_DELAY_MS * (2 ** nativeSubscriptionRetryCount);
+    nativeSubscriptionRetryCount += 1;
+    nativeSubscriptionRetryTimer = setTimeout(() => {
+      nativeSubscriptionRetryTimer = null;
+      subscribeToNativeStream(deps);
+    }, retryDelay);
+    return () => undefined;
+  });
+};
+
 export const startAgentRunLiveStreamCoordinator = (deps: CoordinatorDeps): StopSubscription => {
+  const isFreshMount = activeCoordinatorCount === 0;
   activeCoordinatorCount += 1;
   let stopped = false;
 
-  if (!nativeUnlisten && !nativeSubscriptionPromise) {
-    nativeSubscriptionPromise = agentClient.onEvent(({ nodeId, event }) => {
-      if (!nodeId || !event) return;
-      receiveNativeEvent(nodeId, event, deps);
-    }).then((unlisten) => {
-      nativeUnlisten = unlisten;
-      nativeSubscriptionPromise = null;
-      if (activeCoordinatorCount <= 0) {
-        nativeUnlisten?.();
-        nativeUnlisten = null;
-      }
-      return unlisten;
-    }).catch((error) => {
-      nativeSubscriptionPromise = null;
-      console.error('[AgentRunLiveStreamCoordinator] Failed to subscribe to Tauri agent stream:', error);
-      return () => undefined;
-    });
+  if (isFreshMount) {
+    nativeSubscriptionRetryCount = 0;
   }
+  subscribeToNativeStream(deps);
 
   return () => {
     if (stopped) return;
     stopped = true;
     activeCoordinatorCount = Math.max(0, activeCoordinatorCount - 1);
     if (activeCoordinatorCount > 0) return;
+    clearNativeSubscriptionRetry();
+    nativeSubscriptionRetryCount = 0;
     if (nativeUnlisten) {
       nativeUnlisten();
       nativeUnlisten = null;

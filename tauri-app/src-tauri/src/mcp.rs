@@ -374,24 +374,25 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                 },
                 {
                     "name": "spawn_thread",
-                    "description": "Create one empty child thread as a shared workspace for a delegated task. Agentree infers the parent thread from the current agent. Reuse the returned threadId for all related send_message calls instead of creating one thread per worker.",
+                    "description": "Create one empty child thread as a shared workspace for a delegated task. Optionally anchor its link beneath any accessible completed assistant node; otherwise Agentree anchors it beneath the caller. Reuse the returned threadId for related send_message calls.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "title": { "type": "string", "description": "Optional title for the new child thread." }
+                            "title": { "type": "string", "description": "Optional title for the new child thread." },
+                            "parent_node_id": { "type": "string", "description": "Optional accessible completed assistant node beneath which to place the child-thread link." }
                         },
                         "required": []
                     }
                 },
                 {
                     "name": "send_message",
-                    "description": "Create and start an agent message in an Agentree thread. Omit parent_node_id to place it at the thread root with fresh context; provide a completed assistant node to branch with that node's context and commit.",
+                    "description": "Create and start an agent message in an Agentree thread. Omit parent_node_id to place it at the thread root with fresh context; provide any accessible completed assistant node to branch with that node's context and commit. Agentree infers the target thread from parent_node_id.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "message": { "type": "string" },
-                            "thread_id": { "type": "string", "description": "Defaults to the current thread." },
-                            "parent_node_id": { "type": "string", "description": "Optional completed assistant node in the target thread." },
+                            "thread_id": { "type": "string", "description": "Defaults to the parent node's thread when parent_node_id is present, otherwise the current thread." },
+                            "parent_node_id": { "type": "string", "description": "Optional accessible completed assistant node. Its thread is inferred automatically." },
                             "agent_type": { "type": "string", "enum": ["codex", "claude"] },
                             "model": { "type": "string", "description": "Agentree runtime model id. Required when switching providers." }
                         },
@@ -399,26 +400,13 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                     }
                 },
                 {
-                    "name": "steer_agent",
-                    "description": "Steer an actively running assistant without creating another graph node.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "assistant_node_id": { "type": "string" },
-                            "message": { "type": "string" }
-                        },
-                        "required": ["assistant_node_id", "message"]
-                    }
-                },
-                {
                     "name": "wait_for_agents",
-                    "description": "Wait efficiently for selected assistant runs. A checkpoint response means the wait window elapsed, not that a run timed out.",
+                    "description": "Suspend until selected assistant runs created directly by the caller satisfy the requested condition. Agentree wakes this call from lifecycle events; a human steer of the waiting caller interrupts it.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "assistant_node_ids": { "type": "array", "items": { "type": "string" } },
-                            "condition": { "type": "string", "enum": ["all_done", "any_done", "any_failed"] },
-                            "timeout_ms": { "type": "number" }
+                            "condition": { "type": "string", "enum": ["all_done", "any_done", "any_failed"] }
                         },
                         "required": ["assistant_node_ids"]
                     }
@@ -436,7 +424,7 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                 },
                 {
                     "name": "stop_agent",
-                    "description": "Stop an assistant run. Agentree automatically stops all active agents it spawned, deepest descendants first, before stopping the requested agent.",
+                    "description": "Stop an assistant run created directly by the caller. Agentree automatically stops that run's active descendants, deepest first, before stopping the requested agent.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -678,7 +666,6 @@ async fn handle_tools_call(
         }
         Some("spawn_thread")
         | Some("send_message")
-        | Some("steer_agent")
         | Some("wait_for_agents")
         | Some("show_thread")
         | Some("stop_agent") => {
@@ -1866,7 +1853,7 @@ mod tests {
         assert!(names.contains(&"get_prompt_template"));
         assert!(names.contains(&"spawn_thread"));
         assert!(names.contains(&"send_message"));
-        assert!(names.contains(&"steer_agent"));
+        assert!(!names.contains(&"steer_agent"));
         assert!(names.contains(&"wait_for_agents"));
         assert!(names.contains(&"show_thread"));
         assert!(names.contains(&"stop_agent"));
@@ -1899,6 +1886,7 @@ mod tests {
             .and_then(|properties| properties.as_object())
             .expect("spawn_thread properties");
         assert!(spawn_properties.contains_key("title"));
+        assert!(spawn_properties.contains_key("parent_node_id"));
         assert!(!spawn_properties.contains_key("message"));
         assert!(!spawn_properties.contains_key("agent_type"));
         assert!(!spawn_properties.contains_key("model"));
@@ -1910,6 +1898,17 @@ mod tests {
         assert!(send_message["inputSchema"]["required"]
             .as_array()
             .is_some_and(|required| required.contains(&serde_json::json!("message"))));
+
+        let wait_for_agents = tools
+            .iter()
+            .find(|tool| tool.get("name").and_then(|name| name.as_str()) == Some("wait_for_agents"))
+            .expect("wait_for_agents tool");
+        let wait_properties = wait_for_agents["inputSchema"]["properties"]
+            .as_object()
+            .expect("wait_for_agents properties");
+        assert!(wait_properties.contains_key("assistant_node_ids"));
+        assert!(wait_properties.contains_key("condition"));
+        assert!(!wait_properties.contains_key("timeout_ms"));
 
         let stop_agent = tools
             .iter()

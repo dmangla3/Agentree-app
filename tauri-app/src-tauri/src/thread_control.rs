@@ -1,7 +1,6 @@
 use serde::Serialize;
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
@@ -10,9 +9,6 @@ use crate::agents::AgentState;
 use crate::db::{LocalWorkspaceRow, TelemetryDb, ThreadSessionPayload};
 use crate::git_workspace::{GitLocalRefInfo, GitRefSnapshot};
 
-const DEFAULT_WAIT_TIMEOUT_MS: u64 = 5 * 60 * 1000;
-const MIN_WAIT_TIMEOUT_MS: u64 = 1_000;
-const MAX_WAIT_TIMEOUT_MS: u64 = 5 * 60 * 1000;
 const MAIN_GIT_REF: &str = "refs/heads/main";
 
 fn launch_response_json(started: AgentLaunchResponse) -> JsonValue {
@@ -87,10 +83,9 @@ impl ThreadControlService {
                 self.send_message(&caller_node_id, &caller, &args, &call_id)
                     .await
             }
-            "steer_agent" => self.steer_agent(&args, &call_id),
-            "wait_for_agents" => self.wait_for_agents(&args).await,
+            "wait_for_agents" => self.wait_for_agents(&caller_node_id, &args).await,
             "show_thread" => self.show_thread(&caller, &args),
-            "stop_agent" => self.stop_agent(&args),
+            "stop_agent" => self.stop_agent(&caller_node_id, &args),
             _ => Err(format!("Unsupported thread-control tool: {tool_name}")),
         }
     }
@@ -141,11 +136,36 @@ impl ThreadControlService {
         &self,
         caller: &AuthorizedNode,
         args: &JsonMap<String, JsonValue>,
+        parent: Option<&AuthorizedNode>,
     ) -> Result<ThreadSessionPayload, String> {
-        let thread_id = read_string(args, "thread_id")
-            .or_else(|| node_thread_id(&caller.payload))
-            .ok_or_else(|| "Could not infer a thread. Pass thread_id explicitly.".to_string())?;
-        self.authorized_thread(&thread_id)
+        let requested_thread_id = read_string(args, "thread_id");
+        let parent_thread_id = parent.and_then(|node| node_thread_id(&node.payload));
+        let caller_thread_id = node_thread_id(&caller.payload);
+        let thread_id = select_target_thread_id(
+            caller_thread_id.as_deref(),
+            requested_thread_id.as_deref(),
+            parent_thread_id.as_deref(),
+        )?;
+        let thread = self.authorized_thread(&thread_id)?;
+        if let Some(parent) = parent {
+            if parent.workspace_id != thread.workspace_id {
+                return Err("parent_node_id must belong to the target thread.".to_string());
+            }
+        }
+        Ok(thread)
+    }
+
+    fn completed_assistant_node(&self, node_id: &str) -> Result<AuthorizedNode, String> {
+        let node = self.authorized_node(node_id)?;
+        if node_role(&node.payload) != "assistant"
+            || self.run_status(node_id)?.status != "completed"
+        {
+            return Err("parent_node_id must be a completed assistant node.".to_string());
+        }
+        if node_thread_id(&node.payload).is_none() {
+            return Err("parent_node_id is not attached to a persisted thread.".to_string());
+        }
+        Ok(node)
     }
 
     async fn spawn_thread(
@@ -155,22 +175,38 @@ impl ThreadControlService {
         args: &JsonMap<String, JsonValue>,
         call_id: &str,
     ) -> Result<JsonValue, String> {
-        let parent_thread_id = node_thread_id(&caller.payload)
-            .ok_or_else(|| "The caller is not attached to a persisted thread.".to_string())?;
+        let requested_parent_node_id = read_string(args, "parent_node_id");
+        let parent = requested_parent_node_id
+            .as_deref()
+            .map(|node_id| self.completed_assistant_node(node_id))
+            .transpose()?;
+        let parent_node_id = requested_parent_node_id
+            .as_deref()
+            .unwrap_or(caller_node_id);
+        let parent_payload = parent
+            .as_ref()
+            .map(|node| &node.payload)
+            .unwrap_or(&caller.payload);
+        let parent_workspace_id = parent
+            .as_ref()
+            .map(|node| node.workspace_id.as_str())
+            .unwrap_or(caller.workspace_id.as_str());
+        let parent_thread_id = node_thread_id(parent_payload)
+            .ok_or_else(|| "The parent node is not attached to a persisted thread.".to_string())?;
         let parent_thread = self.authorized_thread(&parent_thread_id)?;
-        if parent_thread.workspace_id != caller.workspace_id {
+        if parent_thread.workspace_id != parent_workspace_id {
             return Err(
-                "The caller node and parent thread belong to different workspaces.".to_string(),
+                "The parent node and parent thread belong to different workspaces.".to_string(),
             );
         }
-        let workspace = self.authorized_workspace(&caller.workspace_id)?;
+        let workspace = self.authorized_workspace(parent_workspace_id)?;
         let request_id = format!("{caller_node_id}\u{1f}{call_id}");
-        if let Some(existing) = self.find_thread_by_request(&caller.workspace_id, &request_id)? {
+        if let Some(existing) = self.find_thread_by_request(parent_workspace_id, &request_id)? {
             return Ok(existing);
         }
 
         let base_commit = self
-            .resolve_child_thread_base_commit(&caller.payload, &parent_thread, &workspace)
+            .resolve_child_thread_base_commit(parent_payload, &parent_thread, &workspace)
             .await?
             .ok_or_else(|| "Could not resolve a base commit for the child thread.".to_string())?;
         let child_thread_id = Uuid::new_v4().to_string();
@@ -181,7 +217,7 @@ impl ThreadControlService {
         let now = now_iso();
         let child_thread = ThreadSessionPayload {
             id: child_thread_id.clone(),
-            workspace_id: caller.workspace_id.clone(),
+            workspace_id: parent_workspace_id.to_string(),
             title: title.clone(),
             status: "active".to_string(),
             created_at: Some(now.clone()),
@@ -196,15 +232,14 @@ impl ThreadControlService {
             .local_first_create_thread_session(Some(&local_user_id), child_thread)?;
 
         let link_node_id = format!("thread-link:{child_thread_id}");
-        let caller_paths = node_path_ids(&caller.payload);
-        let mut link_paths = caller_paths;
+        let mut link_paths = node_path_ids(parent_payload);
         link_paths.push(link_node_id.clone());
         let link = json!({
             "id": link_node_id,
             "role": "user",
             "content": link_title,
-            "parentId": caller_node_id,
-            "workspaceId": caller.workspace_id,
+            "parentId": parent_node_id,
+            "workspaceId": parent_workspace_id,
             "createdAt": now,
             "updatedAt": now,
             "aiLabel": "Delegated work",
@@ -215,22 +250,24 @@ impl ThreadControlService {
             "execution_data": { "meta": {
                 "node_kind": "subgraph_thread_link",
                 "target_thread_root_id": child_thread_id,
-                "delegation_request_id": request_id
+                "delegation_request_id": request_id,
+                "controlled_by_node_id": caller_node_id
             }}
         });
-        if let Err(error) = self.persist_node(&caller.workspace_id, &link) {
+        if let Err(error) = self.persist_node(parent_workspace_id, &link) {
             let _ = self.telemetry().local_first_archive_thread_session(
                 Some(&local_user_id),
-                &caller.workspace_id,
+                parent_workspace_id,
                 &child_thread_id,
             );
             return Err(error);
         }
-        self.emit_changed(&caller.workspace_id, Some(&parent_thread_id));
+        self.emit_changed(parent_workspace_id, Some(&parent_thread_id));
         Ok(json!({
             "threadId": child_thread_id,
             "title": title,
             "parentThreadId": parent_thread_id,
+            "parentNodeId": parent_node_id,
             "baseCommitSha": base_commit,
             "created": true
         }))
@@ -244,6 +281,13 @@ impl ThreadControlService {
         call_id: &str,
     ) -> Result<JsonValue, String> {
         let request_id = format!("{caller_node_id}\u{1f}{call_id}");
+        let message = required_string(args, "message")?;
+        let requested_parent_node_id = read_string(args, "parent_node_id");
+        let parent = requested_parent_node_id
+            .as_deref()
+            .map(|node_id| self.completed_assistant_node(node_id))
+            .transpose()?;
+        let thread = self.resolve_target_thread(caller, args, parent.as_ref())?;
 
         if self
             .telemetry()
@@ -256,8 +300,8 @@ impl ThreadControlService {
             if let Some(started) = AgentLaunchService::new(self.app.clone())
                 .resume_existing(
                     &request_id,
-                    Some(&caller.workspace_id),
-                    None,
+                    Some(&thread.workspace_id),
+                    Some(&thread.id),
                     auth_token,
                     identity.local_user_id,
                     None,
@@ -268,29 +312,10 @@ impl ThreadControlService {
             }
         }
 
-        let message = required_string(args, "message")?;
-        let thread = self.resolve_target_thread(caller, args)?;
-
-        let parent_node = if let Some(parent_node_id) = read_string(args, "parent_node_id") {
-            let parent = self.authorized_node(&parent_node_id)?;
-            if parent.workspace_id != thread.workspace_id
-                || node_thread_id(&parent.payload).as_deref() != Some(thread.id.as_str())
-            {
-                return Err("parent_node_id must belong to the target thread.".to_string());
-            }
-            if node_role(&parent.payload) != "assistant"
-                || !self.run_status(&parent_node_id)?.status.eq("completed")
-            {
-                return Err("parent_node_id must be a completed assistant node.".to_string());
-            }
-            Some((parent_node_id, parent.payload))
-        } else {
-            None
-        };
-        let base_commit = parent_node
+        let base_commit = parent
             .as_ref()
-            .and_then(|(_, payload)| {
-                node_output_commit(payload).or_else(|| node_base_commit(payload))
+            .and_then(|node| {
+                node_output_commit(&node.payload).or_else(|| node_base_commit(&node.payload))
             })
             .or_else(|| thread.base_commit_sha.clone())
             .or_else(|| {
@@ -301,7 +326,7 @@ impl ThreadControlService {
             .ok_or_else(|| "Could not resolve a base commit for this message.".to_string())?;
         let user_node_id = Uuid::new_v4().to_string();
         let assistant_node_id = Uuid::new_v4().to_string();
-        if parent_node.is_none() {
+        if parent.is_none() {
             self.telemetry().claim_thread_first_message(
                 &thread.workspace_id,
                 &thread.id,
@@ -314,9 +339,10 @@ impl ThreadControlService {
             message: &message,
             thread_id: &thread.id,
             workspace_id: &thread.workspace_id,
-            parent_node: parent_node
+            parent_node: parent
                 .as_ref()
-                .map(|(id, payload)| (id.as_str(), payload)),
+                .zip(requested_parent_node_id.as_deref())
+                .map(|(node, node_id)| (node_id, &node.payload)),
             base_commit: &base_commit,
             user_node_id: &user_node_id,
             assistant_node_id: &assistant_node_id,
@@ -529,32 +555,24 @@ impl ThreadControlService {
         })
     }
 
-    fn steer_agent(
+    fn stop_agent(
         &self,
+        caller_node_id: &str,
         args: &JsonMap<String, JsonValue>,
-        call_id: &str,
     ) -> Result<JsonValue, String> {
         let assistant_node_id = required_string(args, "assistant_node_id")?;
-        let message = required_string(args, "message")?;
-        let node = self.authorized_node(&assistant_node_id)?;
-        if node_role(&node.payload) != "assistant" {
-            return Err("assistant_node_id must identify an assistant node.".to_string());
-        }
-        crate::agents::steer_agent_run_internal(
-            &self.app,
-            &self.agent_state(),
-            &assistant_node_id,
-            &message,
-            call_id,
-        )?;
-        Ok(json!({ "controlled": true, "action": "steer", "assistantNodeId": assistant_node_id }))
-    }
-
-    fn stop_agent(&self, args: &JsonMap<String, JsonValue>) -> Result<JsonValue, String> {
-        let assistant_node_id = required_string(args, "assistant_node_id")?;
         let reason = required_string(args, "reason")?;
-        self.authorized_node(&assistant_node_id)?;
+        self.ensure_directly_controlled(caller_node_id, &assistant_node_id)?;
         let previous = self.run_status(&assistant_node_id)?;
+        crate::agents::apply_and_emit_agent_event(
+            &self.app,
+            &assistant_node_id,
+            &json!({
+                "type": "controller_stop_requested",
+                "controlled_by_node_id": caller_node_id,
+                "stop_reason": reason,
+            }),
+        );
         let stopped = crate::agents::stop_agent_with_descendants(
             &self.app,
             &self.agent_state(),
@@ -564,7 +582,8 @@ impl ThreadControlService {
             "controlled": true,
             "action": "stop",
             "assistantNodeId": assistant_node_id,
-            "status": previous.status,
+            "previousStatus": previous.status,
+            "requestedStatus": "cancelled",
             "reason": reason,
             "stoppedAssistantNodeIds": stopped
         }))
@@ -572,6 +591,7 @@ impl ThreadControlService {
 
     async fn wait_for_agents(
         &self,
+        caller_node_id: &str,
         args: &JsonMap<String, JsonValue>,
     ) -> Result<JsonValue, String> {
         let ids = read_string_array(args, "assistant_node_ids");
@@ -579,53 +599,66 @@ impl ThreadControlService {
             return Err("assistant_node_ids must contain at least one node.".to_string());
         }
         for id in &ids {
-            let node = self.authorized_node(id)?;
-            if node_role(&node.payload) != "assistant" {
-                return Err(format!("Node {id} is not an assistant node."));
-            }
+            self.ensure_directly_controlled(caller_node_id, id)?;
         }
         let condition = read_string(args, "condition").unwrap_or_else(|| "all_done".to_string());
         if !matches!(condition.as_str(), "all_done" | "any_done" | "any_failed") {
             return Err("condition must be all_done, any_done, or any_failed.".to_string());
         }
-        let timeout_ms = args
-            .get("timeout_ms")
-            .and_then(JsonValue::as_u64)
-            .unwrap_or(DEFAULT_WAIT_TIMEOUT_MS)
-            .clamp(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS);
-        let started = tokio::time::Instant::now();
+        let state = self.agent_state();
+        let mut activity = state.subscribe_activity();
+        let initial_steer_epoch = state.user_steer_epoch(caller_node_id)?;
         loop {
             let statuses = ids
                 .iter()
                 .map(|id| self.run_status(id))
                 .collect::<Result<Vec<_>, _>>()?;
-            let satisfied = match condition.as_str() {
-                "all_done" => statuses
-                    .iter()
-                    .all(|status| !status.running && is_terminal(&status.status)),
-                "any_done" => statuses
-                    .iter()
-                    .any(|status| !status.running && is_terminal(&status.status)),
-                "any_failed" => statuses.iter().any(|status| is_failure(&status.status)),
-                _ => false,
-            };
-            if satisfied {
+            if state.user_steer_epoch(caller_node_id)? != initial_steer_epoch {
+                return Ok(json!({
+                    "completed": false,
+                    "interrupted": true,
+                    "reason": "caller_steered",
+                    "condition": condition,
+                    "agents": statuses
+                }));
+            }
+            if wait_condition_satisfied(&condition, &statuses) {
                 return Ok(
                     json!({ "completed": true, "condition": condition, "agents": statuses }),
                 );
             }
-            if started.elapsed() >= Duration::from_millis(timeout_ms) {
-                return Ok(json!({
-                    "completed": false,
-                    "checkpoint": true,
-                    "checkpointElapsed": true,
-                    "condition": condition,
-                    "timeoutMs": timeout_ms,
-                    "agents": statuses
-                }));
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            activity
+                .changed()
+                .await
+                .map_err(|_| "Agent lifecycle notification channel closed.".to_string())?;
         }
+    }
+
+    fn ensure_directly_controlled(
+        &self,
+        caller_node_id: &str,
+        assistant_node_id: &str,
+    ) -> Result<(), String> {
+        self.authorized_node(caller_node_id)?;
+        let target = self.authorized_node(assistant_node_id)?;
+        if node_role(&target.payload) != "assistant" {
+            return Err("assistant_node_id must identify an assistant node.".to_string());
+        }
+        let controllers = self
+            .telemetry()
+            .list_local_nodes_for_workspace(&target.workspace_id)?
+            .into_iter()
+            .filter_map(|row| {
+                row.controlled_by_node_id
+                    .map(|controller| (row.node_id, controller))
+            })
+            .collect::<HashMap<_, _>>();
+        if !is_directly_controlled(caller_node_id, assistant_node_id, &controllers) {
+            return Err(format!(
+                "Agent {assistant_node_id} was not created by caller {caller_node_id}."
+            ));
+        }
+        Ok(())
     }
 
     fn show_thread(
@@ -633,7 +666,7 @@ impl ThreadControlService {
         caller: &AuthorizedNode,
         args: &JsonMap<String, JsonValue>,
     ) -> Result<JsonValue, String> {
-        let thread = self.resolve_target_thread(caller, args)?;
+        let thread = self.resolve_target_thread(caller, args, None)?;
         let mut nodes: Vec<JsonValue> = self
             .telemetry()
             .list_local_nodes_for_workspace(&thread.workspace_id)?
@@ -775,6 +808,7 @@ impl ThreadControlService {
                 "threadId": thread.id,
                 "title": thread.title,
                 "parentThreadId": thread.parent_thread_id,
+                "parentNodeId": value_string(&payload, "parentId"),
                 "baseCommitSha": thread.base_commit_sha,
                 "created": false,
                 "existing": true
@@ -1057,6 +1091,46 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+fn wait_condition_satisfied(condition: &str, statuses: &[RunStatus]) -> bool {
+    match condition {
+        "all_done" => statuses
+            .iter()
+            .all(|status| !status.running && is_terminal(&status.status)),
+        "any_done" => statuses
+            .iter()
+            .any(|status| !status.running && is_terminal(&status.status)),
+        "any_failed" => statuses.iter().any(|status| is_failure(&status.status)),
+        _ => false,
+    }
+}
+
+fn select_target_thread_id(
+    caller_thread_id: Option<&str>,
+    requested_thread_id: Option<&str>,
+    parent_thread_id: Option<&str>,
+) -> Result<String, String> {
+    if let Some(parent_thread_id) = parent_thread_id {
+        if requested_thread_id.is_some_and(|requested| requested != parent_thread_id) {
+            return Err(
+                "thread_id conflicts with the thread inferred from parent_node_id.".to_string(),
+            );
+        }
+        return Ok(parent_thread_id.to_string());
+    }
+    requested_thread_id
+        .or(caller_thread_id)
+        .map(str::to_string)
+        .ok_or_else(|| "Could not infer a thread. Pass thread_id explicitly.".to_string())
+}
+
+fn is_directly_controlled(
+    caller_node_id: &str,
+    target_node_id: &str,
+    controllers: &HashMap<String, String>,
+) -> bool {
+    controllers.get(target_node_id).map(String::as_str) == Some(caller_node_id)
+}
+
 fn is_terminal(status: &str) -> bool {
     matches!(
         status,
@@ -1110,6 +1184,89 @@ mod tests {
         assert!(is_terminal("failed_spawn"));
         assert!(is_failure("failed_runtime"));
         assert!(!is_terminal("running"));
+    }
+
+    #[test]
+    fn wait_conditions_require_terminal_non_running_agents() {
+        let running = RunStatus {
+            assistant_node_id: "running".to_string(),
+            status: "running".to_string(),
+            running: true,
+            failure_reason: None,
+        };
+        let completed = RunStatus {
+            assistant_node_id: "completed".to_string(),
+            status: "completed".to_string(),
+            running: false,
+            failure_reason: None,
+        };
+        let failed = RunStatus {
+            assistant_node_id: "failed".to_string(),
+            status: "failed_runtime".to_string(),
+            running: false,
+            failure_reason: Some("provider failed".to_string()),
+        };
+
+        assert!(!wait_condition_satisfied(
+            "all_done",
+            &[running.clone(), completed.clone()]
+        ));
+        assert!(wait_condition_satisfied(
+            "any_done",
+            &[running.clone(), completed.clone()]
+        ));
+        assert!(wait_condition_satisfied(
+            "all_done",
+            &[completed, failed.clone()]
+        ));
+        assert!(wait_condition_satisfied("any_failed", &[running, failed]));
+    }
+
+    #[test]
+    fn parent_node_infers_target_thread_and_rejects_conflicts() {
+        assert_eq!(
+            select_target_thread_id(Some("caller-thread"), None, Some("parent-thread"))
+                .expect("parent thread"),
+            "parent-thread"
+        );
+        assert_eq!(
+            select_target_thread_id(
+                Some("caller-thread"),
+                Some("parent-thread"),
+                Some("parent-thread")
+            )
+            .expect("matching explicit thread"),
+            "parent-thread"
+        );
+        assert_eq!(
+            select_target_thread_id(Some("caller-thread"), Some("target-thread"), None)
+                .expect("explicit thread"),
+            "target-thread"
+        );
+        assert!(select_target_thread_id(
+            Some("caller-thread"),
+            Some("other-thread"),
+            Some("parent-thread")
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn control_authority_is_limited_to_direct_creator() {
+        let controllers = HashMap::from([
+            ("child".to_string(), "caller".to_string()),
+            ("grandchild".to_string(), "child".to_string()),
+            ("sibling".to_string(), "other".to_string()),
+        ]);
+
+        assert!(is_directly_controlled("caller", "child", &controllers));
+        assert!(!is_directly_controlled(
+            "caller",
+            "grandchild",
+            &controllers
+        ));
+        assert!(!is_directly_controlled("caller", "caller", &controllers));
+        assert!(!is_directly_controlled("caller", "sibling", &controllers));
     }
 
     #[test]

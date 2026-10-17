@@ -84,8 +84,6 @@ use db::TelemetryDb;
 use merge_review::MergeReviewState;
 #[cfg(test)]
 use specta_typescript::Typescript;
-use std::collections::HashMap;
-use std::sync::Mutex;
 use tauri_specta::{collect_commands, Builder as SpectaBuilder, ErrorHandlingMode};
 
 mod agent_launch;
@@ -424,13 +422,7 @@ pub fn run() {
     }
 
     builder
-        .manage(AgentState {
-            children: Mutex::new(HashMap::new()),
-            sessions: Mutex::new(HashMap::new()),
-            stdins: Mutex::new(HashMap::new()),
-            session_tokens: Mutex::new(HashMap::new()),
-            run_states: Mutex::new(HashMap::new()),
-        })
+        .manage(AgentState::new())
         .manage(MergeReviewState::default())
         .setup({
             let specta_builder = specta_builder.clone();

@@ -98,9 +98,31 @@ export function WorkspaceShareDialog({
                 <span className="text-xs text-muted-foreground">{shares.length}</span>
               </div>
               <div className="max-h-72 space-y-2 overflow-y-auto overflow-x-hidden pr-1">
+                {sharesQuery.isError ? (
+                  <div role="alert" className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-destructive">
+                        {shares.length > 0 ? 'Unable to refresh shared node links.' : 'Unable to load shared node links.'}
+                      </div>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {shares.length > 0 ? 'Showing previously loaded links.' : 'Active public links may still exist.'}
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={sharesQuery.isFetching}
+                      onClick={() => void sharesQuery.refetch()}
+                      className="shrink-0"
+                    >
+                      {sharesQuery.isFetching ? 'Trying again...' : 'Try again'}
+                    </Button>
+                  </div>
+                ) : null}
                 {sharesQuery.isLoading ? (
                   <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">Loading shared nodes...</div>
-                ) : shares.length === 0 ? (
+                ) : shares.length === 0 && !sharesQuery.isError ? (
                   <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">No active public node links.</div>
                 ) : shares.map((share) => {
                   const created = new Date(share.createdAt);

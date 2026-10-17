@@ -15,6 +15,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::sync::watch;
 
 const AGENT_RUN_WATCHDOG_IDLE_TIMEOUT_MS: i64 = 10 * 60 * 1000;
 const AGENT_RUN_WATCHDOG_POLL_INTERVAL_MS: u64 = 30 * 1000;
@@ -179,6 +180,52 @@ pub struct AgentState {
     pub stdins: Mutex<HashMap<String, Arc<Mutex<ChildStdin>>>>,
     pub session_tokens: Mutex<HashMap<String, String>>,
     pub run_states: Mutex<HashMap<String, Arc<Mutex<AgentRunState>>>>,
+    activity_tx: watch::Sender<u64>,
+    user_steer_epochs: Mutex<HashMap<String, u64>>,
+}
+
+impl AgentState {
+    pub(crate) fn new() -> Self {
+        let (activity_tx, _) = watch::channel(0);
+        Self {
+            children: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
+            stdins: Mutex::new(HashMap::new()),
+            session_tokens: Mutex::new(HashMap::new()),
+            run_states: Mutex::new(HashMap::new()),
+            activity_tx,
+            user_steer_epochs: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn subscribe_activity(&self) -> watch::Receiver<u64> {
+        self.activity_tx.subscribe()
+    }
+
+    fn notify_activity(&self) {
+        self.activity_tx.send_modify(|epoch| {
+            *epoch = epoch.wrapping_add(1);
+        });
+    }
+
+    pub(crate) fn user_steer_epoch(&self, assistant_node_id: &str) -> Result<u64, String> {
+        self.user_steer_epochs
+            .lock()
+            .map_err(|error| error.to_string())
+            .map(|epochs| epochs.get(assistant_node_id).copied().unwrap_or_default())
+    }
+
+    fn record_user_steer(&self, assistant_node_id: &str) -> Result<(), String> {
+        let mut epochs = self
+            .user_steer_epochs
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let epoch = epochs.entry(assistant_node_id.to_string()).or_default();
+        *epoch = epoch.wrapping_add(1);
+        drop(epochs);
+        self.notify_activity();
+        Ok(())
+    }
 }
 
 // AgentEvent struct removed - events are now constructed inline using serde_json::json!
@@ -491,6 +538,19 @@ pub(crate) fn emit_agent_event(
         "event": event,
     });
     let _ = app_handle.emit("agent:event", payload);
+    if matches!(
+        event.get("type").and_then(JsonValue::as_str),
+        Some(
+            "agent:lifecycle"
+                | "controller_stop_requested"
+                | "exit"
+                | "finalize_ack"
+                | "provider_stop"
+                | "stop"
+        )
+    ) {
+        app_handle.state::<AgentState>().notify_activity();
+    }
 }
 
 pub(crate) fn apply_and_emit_agent_event(
@@ -1304,6 +1364,12 @@ fn normalize_timeline_event(event: &JsonValue) -> Option<JsonValue> {
             "content": event.get("content").cloned().unwrap_or(JsonValue::Null),
             "idempotency_key": event.get("idempotency_key").cloned().unwrap_or(JsonValue::Null),
         })),
+        "controller_stop_requested" => Some(serde_json::json!({
+            "type": "controller_stop_requested",
+            "timestamp": timestamp,
+            "controlled_by_node_id": event.get("controlled_by_node_id").cloned().unwrap_or(JsonValue::Null),
+            "stop_reason": event.get("stop_reason").cloned().unwrap_or(JsonValue::Null),
+        })),
         "artifact_registered" => {
             let artifact = event.get("artifact")?;
             if !artifact.is_object() {
@@ -1604,6 +1670,12 @@ fn update_run_state_from_event(run_state: &mut AgentRunState, event: &JsonValue)
             }
         }
         "trace" => update_latency_trace(run_state, event),
+        "controller_stop_requested" => {
+            run_state.cancel_requested = true;
+            if let Some(stop_reason) = event.get("stop_reason").and_then(JsonValue::as_str) {
+                run_state.stop_reason = Some(stop_reason.to_string());
+            }
+        }
         "stop" | "provider_stop" => {
             if let Some(status) = event
                 .get("provider_status")
@@ -3677,6 +3749,8 @@ fn spawn_agent_internal(
                     tokens.remove(&session_id_for_wait);
                     let mut run_states = app_state.run_states.lock().unwrap();
                     run_states.remove(&session_id_for_wait);
+                    let mut steer_epochs = app_state.user_steer_epochs.lock().unwrap();
+                    steer_epochs.remove(&session_id_for_wait);
                 }
 
                 let payload = serde_json::json!({
@@ -4118,7 +4192,6 @@ pub(crate) fn steer_agent_run_internal(
     if content.is_empty() {
         return Err("Steering message cannot be empty.".to_string());
     }
-
     let stdin = {
         let stdins = state.stdins.lock().map_err(|e| e.to_string())?;
         stdins.get(assistant_node_id).cloned()
@@ -4137,6 +4210,7 @@ pub(crate) fn steer_agent_run_internal(
             assistant_node_id
         ));
     };
+    state.record_user_steer(assistant_node_id)?;
 
     let requested = serde_json::json!({
         "type": "user_steer_requested",
@@ -4414,7 +4488,7 @@ mod tests {
         run_ledger_user_node_id_from_context, should_forward_tool_output_event,
         should_persist_failure_reason, snapshot_from_replayed_journal, startup_resume_args,
         terminal_status_for_runtime_activity, update_run_state_from_event, AgentRunContext,
-        AgentRunSnapshot, AgentRunState, STARTUP_RESUME_PROMPT,
+        AgentRunSnapshot, AgentRunState, AgentState, STARTUP_RESUME_PROMPT,
     };
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
@@ -4430,6 +4504,44 @@ mod tests {
             prompt_fallback: None,
             auth_user_id: None,
         })
+    }
+
+    #[test]
+    fn agent_state_notifies_waiters_and_tracks_human_steers() {
+        let state = AgentState::new();
+        let mut activity = state.subscribe_activity();
+
+        assert!(!activity.has_changed().expect("activity channel"));
+        assert_eq!(state.user_steer_epoch("parent").expect("initial epoch"), 0);
+
+        state.record_user_steer("parent").expect("record steer");
+
+        assert!(activity.has_changed().expect("activity notification"));
+        activity.borrow_and_update();
+        assert_eq!(state.user_steer_epoch("parent").expect("steer epoch"), 1);
+        assert!(!activity.has_changed().expect("notification consumed"));
+    }
+
+    #[test]
+    fn controller_stop_request_persists_reason_and_cancellation_intent() {
+        let mut state = test_run_state();
+
+        update_run_state_from_event(
+            &mut state,
+            &json!({
+                "type": "controller_stop_requested",
+                "controlled_by_node_id": "parent",
+                "stop_reason": "User changed the task",
+                "timestamp": 42,
+            }),
+        );
+
+        assert!(state.cancel_requested);
+        assert_eq!(state.stop_reason.as_deref(), Some("User changed the task"));
+        assert!(state.timeline.iter().any(|event| {
+            event.get("type").and_then(serde_json::Value::as_str)
+                == Some("controller_stop_requested")
+        }));
     }
 
     fn test_snapshot(execution_data: serde_json::Value, final_content: &str) -> AgentRunSnapshot {

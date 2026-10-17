@@ -289,6 +289,12 @@ pub struct TelemetryDb {
     db_path: PathBuf,
 }
 
+#[derive(Debug)]
+pub(crate) struct DeletedLoginProfileMetadata {
+    profile: crate::login_profiles::LoginProfile,
+    secret_ref: Option<String>,
+}
+
 fn login_profile_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<crate::login_profiles::LoginProfile> {
@@ -2178,11 +2184,20 @@ impl TelemetryDb {
         profile: &crate::login_profiles::LoginProfile,
         secret_ref: Option<&str>,
     ) -> Result<crate::login_profiles::LoginProfile, String> {
+        self.write_login_profile_metadata(profile, secret_ref, true)
+    }
+
+    fn write_login_profile_metadata(
+        &self,
+        profile: &crate::login_profiles::LoginProfile,
+        secret_ref: Option<&str>,
+        clear_provider_default: bool,
+    ) -> Result<crate::login_profiles::LoginProfile, String> {
         let conn = self.conn.lock().map_err(|error| error.to_string())?;
         let tx = conn
             .unchecked_transaction()
             .map_err(|error| error.to_string())?;
-        if profile.is_default {
+        if clear_provider_default && profile.is_default {
             tx.execute(
                 "UPDATE login_profiles SET is_default = 0, updated_at = ?2 WHERE provider = ?1",
                 params![profile.provider, unix_timestamp()],
@@ -2234,7 +2249,10 @@ impl TelemetryDb {
         self.get_login_profile(&profile.id)
     }
 
-    pub fn delete_login_profile_metadata(&self, profile_id: &str) -> Result<(), String> {
+    pub(crate) fn delete_login_profile_metadata(
+        &self,
+        profile_id: &str,
+    ) -> Result<Option<DeletedLoginProfileMetadata>, String> {
         let active_runs = self
             .list_active_login_profile_runs()?
             .into_iter()
@@ -2247,12 +2265,45 @@ impl TelemetryDb {
             ));
         }
         let conn = self.conn.lock().map_err(|error| error.to_string())?;
-        conn.execute(
-            "DELETE FROM login_profiles WHERE id = ?1",
-            params![profile_id],
-        )
-        .map_err(|error| error.to_string())?;
-        Ok(())
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|error| error.to_string())?;
+        let deleted = tx
+            .query_row(
+                r#"
+                SELECT id, provider, display_name, auth_type, redacted_hint, config_json,
+                       status, status_message, plan_type, is_default, created_at, updated_at,
+                       last_checked_at, secret_ref
+                FROM login_profiles
+                WHERE id = ?1
+                "#,
+                params![profile_id],
+                |row| {
+                    Ok(DeletedLoginProfileMetadata {
+                        profile: login_profile_from_row(row)?,
+                        secret_ref: row.get(13)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if deleted.is_some() {
+            tx.execute(
+                "DELETE FROM login_profiles WHERE id = ?1",
+                params![profile_id],
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(deleted)
+    }
+
+    pub(crate) fn restore_login_profile_metadata(
+        &self,
+        metadata: &DeletedLoginProfileMetadata,
+    ) -> Result<(), String> {
+        self.write_login_profile_metadata(&metadata.profile, metadata.secret_ref.as_deref(), false)
+            .map(|_| ())
     }
 
     pub fn set_default_login_profile(
