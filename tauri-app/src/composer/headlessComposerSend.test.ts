@@ -72,26 +72,20 @@ describe('sendHeadlessComposerReply', () => {
     expect(onAssistantMessageCreated).toHaveBeenCalledWith(localAssistantMessage);
     expect(startAgentRun).toHaveBeenCalledWith(expect.objectContaining({
       runId: 'run-1',
+      userNodeId: localUserMessage.id,
       assistantNodeId: localAssistantMessage.id,
       workspaceId: 'workspace-1',
-      repoPath: '/repo',
-      parentCommit: 'root-output',
+      baseCommit: 'root-output',
       agentType: 'codex',
       authToken: 'token-1',
-      runContext: expect.objectContaining({
-        gitBranchName: `agentree/${localAssistantMessage.id}`,
-        parentCommit: 'root-output',
-        promptFallback: 'Ship it',
-        executionData: expect.objectContaining({
+      userPrompt: 'Ship it',
+      assistantNode: expect.objectContaining({
+        execution_data: expect.objectContaining({
           agent_id: 'codex-agent',
-          meta: expect.objectContaining({
-            agent_id: 'codex-agent',
-          }),
         }),
       }),
     }));
-    expect(startAgentRun.mock.calls[0][0].args[0]).toBe('--model');
-    expect(startAgentRun.mock.calls[0][0].args.at(-1)).toContain('Ship it');
+    expect(startAgentRun.mock.calls[0][0].agentCliArgs).toContain('--model');
     expect(dispatchAgentRun).toHaveBeenCalledWith(localAssistantMessage.id, {
       type: 'status',
       status: 'running',
@@ -176,17 +170,12 @@ describe('sendHeadlessComposerReply', () => {
       nowIso: () => '2026-05-27T01:02:03.000Z',
     });
 
-    const intent = startAgentRun.mock.calls[0][0];
-    expect(intent.args).toEqual(expect.arrayContaining([
-      '--provider-thread-strategy',
-      'resume',
-      '--provider-thread-id',
-      'claude-thread-1',
-    ]));
-    expect(intent.runContext.executionData.meta).toEqual(expect.objectContaining({
-      provider_thread_strategy: 'resume',
-      provider_thread_id: 'claude-thread-1',
-      provider_context_routing_mode: 'provider_native_only',
+    const request = startAgentRun.mock.calls[0][0];
+    expect(request).toEqual(expect.objectContaining({
+      agentType: 'claude',
+      contextParentNodeId: 'parent-claude',
+      contextPolicy: 'continue',
+      contextMode: 'active',
     }));
   });
 
@@ -278,7 +267,7 @@ describe('sendHeadlessComposerReply', () => {
     expect(startAgentRun).toHaveBeenCalledTimes(1);
     const intent = startAgentRun.mock.calls[0][0];
     expect(intent.loginProfileId).toBe('profile-codex-work');
-    expect(intent.runContext.executionData.meta.login_profile_id).toBe('profile-codex-work');
+    expect(intent.assistantNode.execution_data.meta.login_profile_id).toBe('profile-codex-work');
   });
 
   it('lets the composer permission mode override stored agent cli permission flags', async () => {
@@ -313,9 +302,9 @@ describe('sendHeadlessComposerReply', () => {
     });
 
     const intent = startAgentRun.mock.calls[0][0];
-    expect(intent.args).toEqual(expect.arrayContaining(['--permission-mode', 'fully-isolated']));
-    expect(intent.args).not.toContain('auto');
-    expect(intent.runContext.executionData.meta.composer_permission_mode).toBe('fully-isolated');
+    expect(intent.permissionMode).toBe('fully-isolated');
+    expect(intent.agentCliArgs).toContain('--permission-mode auto');
+    expect(intent.assistantNode.execution_data.meta.composer_permission_mode).toBe('fully-isolated');
   });
 
   it('sends the first-class thread id and legacy thread origin for new graph threads', async () => {
@@ -391,6 +380,7 @@ describe('sendHeadlessComposerReply', () => {
     const onMessagesCreated = vi.fn();
     const seedAgentRun = vi.fn();
     const dispatchAgentRun = vi.fn();
+    const getAccessToken = vi.fn().mockResolvedValue('token-1');
 
     await sendHeadlessComposerMessage({
       workspaceId: 'workspace-1',
@@ -413,7 +403,7 @@ describe('sendHeadlessComposerReply', () => {
       },
       workspaces: [{ id: 'workspace-1', local_repo_path: '/repo' } as Workspace],
       startAgentRun,
-      getAccessToken: vi.fn().mockResolvedValue('token-1'),
+      getAccessToken,
       seedAgentRun,
       dispatchAgentRun,
       persistLocalNode,
@@ -423,21 +413,28 @@ describe('sendHeadlessComposerReply', () => {
     });
 
     expect(persistLocalNode).toHaveBeenCalledTimes(2);
-    const userMessage = persistLocalNode.mock.calls[0][2] as Message;
-    const assistantMessage = persistLocalNode.mock.calls[1][2] as Message;
+    expect(Math.max(...persistLocalNode.mock.invocationCallOrder)).toBeLessThan(
+      getAccessToken.mock.invocationCallOrder[0],
+    );
+    const launchRequest = startAgentRun.mock.calls[0][0];
+    const userMessage = launchRequest.userNode as Message;
+    const assistantMessage = launchRequest.assistantNode as Message;
     expect(userMessage.role).toBe('user');
     expect(userMessage.content).toBe('Use local first');
     expect(userMessage.parentId).toBe('parent-1');
     expect(assistantMessage.role).toBe('assistant');
     expect(assistantMessage.parentId).toBe(userMessage.id);
     expect(assistantMessage.base_commit_sha).toBe('base-sha');
-    expect(onMessagesCreated).toHaveBeenCalledWith([userMessage, assistantMessage]);
+    expect(onMessagesCreated).toHaveBeenCalledWith([
+      expect.objectContaining({ id: userMessage.id }),
+      expect.objectContaining({ id: assistantMessage.id }),
+    ]);
     expect(seedAgentRun).toHaveBeenCalledWith(userMessage);
-    expect(seedAgentRun).toHaveBeenCalledWith(assistantMessage);
+    expect(seedAgentRun).toHaveBeenCalledWith(expect.objectContaining({ id: assistantMessage.id }));
     expect(startAgentRun).toHaveBeenCalledWith(expect.objectContaining({
       runId: 'run-local',
       assistantNodeId: assistantMessage.id,
-      parentCommit: 'base-sha',
+      baseCommit: 'base-sha',
     }));
     expect(dispatchAgentRun).toHaveBeenCalledWith(assistantMessage.id, {
       type: 'status',
@@ -481,7 +478,7 @@ describe('sendHeadlessComposerReply', () => {
     expect(persistLocalNode).toHaveBeenCalledTimes(2);
     expect(startAgentRun).toHaveBeenCalledWith(expect.objectContaining({
       runId: 'run-local-preferred',
-      parentCommit: 'base-sha',
+      baseCommit: 'base-sha',
     }));
   });
 
@@ -523,16 +520,20 @@ describe('sendHeadlessComposerReply', () => {
     });
 
     expect(persistLocalNode).toHaveBeenCalledTimes(2);
-    const userMessage = persistLocalNode.mock.calls[0][2] as Message;
-    const assistantMessage = persistLocalNode.mock.calls[1][2] as Message;
+    const launchRequest = startAgentRun.mock.calls[0][0];
+    const userMessage = launchRequest.userNode as Message;
+    const assistantMessage = launchRequest.assistantNode as Message;
     expect(userMessage.threadId).toBe('thread-session-1');
     expect(assistantMessage.threadId).toBe('thread-session-1');
     expect(assistantMessage.base_commit_sha).toBe('main-tip');
-    expect(onMessagesCreated).toHaveBeenCalledWith([userMessage, assistantMessage]);
+    expect(onMessagesCreated).toHaveBeenCalledWith([
+      expect.objectContaining({ id: userMessage.id }),
+      expect.objectContaining({ id: assistantMessage.id }),
+    ]);
     expect(startAgentRun).toHaveBeenCalledWith(expect.objectContaining({
       runId: 'run-local-thread',
       assistantNodeId: assistantMessage.id,
-      parentCommit: 'main-tip',
+      baseCommit: 'main-tip',
     }));
     expect(response.userMessage?.id).toBe(userMessage.id);
     expect(response.assistantMessages?.[0]?.id).toBe(assistantMessage.id);
@@ -574,14 +575,14 @@ describe('sendHeadlessComposerReply', () => {
       createRunId: () => 'run-context-start',
     });
 
-    const runtimePrompt = startAgentRun.mock.calls[0][0].args.at(-1);
-    expect(runtimePrompt).toContain('new context');
-    expect(runtimePrompt).toContain('new answer');
-    expect(runtimePrompt).not.toContain('old context');
-    expect(runtimePrompt).toContain('Continue from here');
+    const request = startAgentRun.mock.calls[0][0];
+    expect(request.contextManifest.contextText).toContain('new context');
+    expect(request.contextManifest.contextText).toContain('new answer');
+    expect(request.contextManifest.contextText).not.toContain('old context');
+    expect(request.userPrompt).toBe('Continue from here');
   });
 
-  it('starts orchestration sends as persisted orchestrator runs and records a preview', async () => {
+  it('starts delegation-capable requests as normal agent sends', async () => {
     const order: string[] = [];
     const startAgentRun = vi.fn(async () => {
       order.push('startAgentRun');
@@ -616,37 +617,46 @@ describe('sendHeadlessComposerReply', () => {
       dispatchAgentRun: vi.fn(),
       persistLocalNode,
       onMessagesCreated,
-      orchestrationMode: true,
+      threadId: 'parent-thread',
       createRunId: () => 'run-orchestrator',
       nowIso: () => '2026-05-27T01:02:03.000Z',
     });
 
-    const assistantMessage = response.assistantMessages?.[0];
+    const assistantMessage = response.assistantMessages?.[0] as Message;
     expect(assistantMessage).toBeDefined();
-    expect(assistantMessage?.controlled_by_node_id).toBeNull();
+    expect(response.assistantMessages).toEqual([assistantMessage]);
+    expect(response.userMessage?.parentId).toBe('parent-1');
+    expect(response.userMessage?.threadId).toBe('parent-thread');
+    expect(assistantMessage?.parentId).toBe(response.userMessage?.id);
+    expect(assistantMessage?.threadId).toBe('parent-thread');
+    expect(assistantMessage?.controlled_by_node_id).toBeUndefined();
     expect(assistantMessage?.execution_data?.meta).toEqual(expect.objectContaining({
-      node_kind: 'orchestrator',
-      orchestrator_run_id: 'run-orchestrator',
       base_commit_sha: 'base-sha',
+    }));
+    expect(assistantMessage?.execution_data?.meta).not.toEqual(expect.objectContaining({
+      node_kind: 'orchestrator',
     }));
     expect((assistantMessage?.execution_data?.meta as Record<string, unknown>).controlled_by_node_id).toBeUndefined();
     expect(startAgentRun).toHaveBeenCalledWith(expect.objectContaining({
       runId: 'run-orchestrator',
       assistantNodeId: assistantMessage?.id,
-      parentCommit: 'base-sha',
-      runContext: expect.objectContaining({
-        promptFallback: 'Create three parallel #planner.',
-      }),
+      baseCommit: 'base-sha',
+      parentNodeId: 'parent-1',
+      contextParentNodeId: 'parent-1',
+      threadId: 'parent-thread',
+      userPrompt: 'Create three parallel #planner.',
     }));
-    expect(onMessagesCreated).toHaveBeenCalledWith([response.userMessage, assistantMessage]);
+    const createdMessages = onMessagesCreated.mock.calls.flatMap(([items]) => items as Message[]);
+    expect(createdMessages).toEqual(expect.arrayContaining([response.userMessage, assistantMessage]));
+    expect(response).not.toHaveProperty('orchestrationThreadId');
     expect(order).toEqual(['startAgentRun']);
     expect(response).not.toHaveProperty('orchestrationPreview');
     expect(response).not.toHaveProperty('orchestrationExecutionContext');
     expect(response).not.toHaveProperty('orchestrationExecutionResult');
   });
 
-  it('starts local orchestration sends when Agentree Cloud auth is disconnected', async () => {
-    const startAgentRun = vi.fn(async () => undefined);
+  it('starts normal agents when cloud auth is disconnected', async () => {
+    const startAgentRun = vi.fn(async (_request: Record<string, unknown>) => undefined);
     const persistLocalNode = vi.fn(async () => undefined);
 
     const response = await sendHeadlessComposerMessage({
@@ -674,18 +684,21 @@ describe('sendHeadlessComposerReply', () => {
       seedAgentRun: vi.fn(),
       dispatchAgentRun: vi.fn(),
       persistLocalNode,
-      orchestrationMode: true,
+      threadId: 'parent-thread',
       createRunId: () => 'run-orchestrator',
       nowIso: () => '2026-05-27T01:02:03.000Z',
     });
 
-    const assistantMessage = response.assistantMessages?.[0];
-    expect(assistantMessage?.execution_data?.meta).toEqual(expect.objectContaining({
+    const assistantMessage = response.assistantMessages?.[0] as Message;
+    expect(assistantMessage?.execution_data?.meta).not.toEqual(expect.objectContaining({
       node_kind: 'orchestrator',
-      orchestrator_run_id: 'run-orchestrator',
     }));
-    expect(persistLocalNode).toHaveBeenCalledWith('workspace-1', response.userMessage?.id, response.userMessage);
-    expect(persistLocalNode).toHaveBeenCalledWith('workspace-1', assistantMessage?.id, expect.objectContaining({
+    expect(persistLocalNode).toHaveBeenCalledWith(
+      'workspace-1',
+      response.userMessage?.id,
+      expect.objectContaining({ id: response.userMessage?.id, role: 'user', threadId: 'parent-thread' }),
+    );
+    expect((startAgentRun.mock.calls[0]?.[0] as any).assistantNode).toEqual(expect.objectContaining({
       id: assistantMessage?.id,
       role: 'assistant',
     }));
@@ -696,7 +709,58 @@ describe('sendHeadlessComposerReply', () => {
     }));
   });
 
-  it('passes saved orchestration template mentions through to the orchestrator without app-side expansion', async () => {
+  it('keeps a failed normal send durable in its source thread', async () => {
+    const order: string[] = [];
+    const persistLocalNode = vi.fn(async (_workspaceId: string, nodeId: string, _message: Message) => {
+      order.push(`persist:${nodeId}`);
+    });
+    const startAgentRun = vi.fn(async () => {
+      order.push('start');
+      throw new Error('provider process failed to start');
+    });
+    const onMessagesCreated = vi.fn();
+
+    await expect(sendHeadlessComposerMessage({
+      workspaceId: 'workspace-1',
+      parentMessageId: null,
+      contextParentId: null,
+      contextPolicy: 'fresh',
+      prompt: 'Coordinate a migration.',
+      messages: [],
+      agent: {
+        id: 'codex-agent',
+        type: 'codex',
+        name: 'Codex',
+        cliArgs: '--model gpt-5.5 --reasoning-effort high',
+        promptFlag: null,
+        model_config: { model: 'gpt-5.5', reasoningEffort: 'high' },
+      },
+      base: { commitSha: 'base-sha', selectedFromNodeId: null },
+      workspaces: [{ id: 'workspace-1', local_repo_path: '/repo' } as Workspace],
+      startAgentRun,
+      getAccessToken: vi.fn().mockResolvedValue('token-1'),
+      seedAgentRun: vi.fn(),
+      dispatchAgentRun: vi.fn(),
+      persistLocalNode,
+      onMessagesCreated,
+      threadId: 'parent-thread',
+      createRunId: () => 'run-orchestrator',
+      nowIso: () => '2026-05-27T01:02:03.000Z',
+    })).rejects.toThrow('provider process failed to start');
+
+    const persistedMessages = persistLocalNode.mock.calls.map(([, , persisted]) => persisted as Message);
+    expect(persistedMessages).toHaveLength(2);
+    expect(persistedMessages.every((message) => message.threadId === 'parent-thread')).toBe(true);
+    expect(persistedMessages.some((message) => (
+      (message.execution_data?.meta as Record<string, unknown> | undefined)?.orchestration_thread_link === true
+    ))).toBe(false);
+    expect(order.findIndex((entry) => entry.startsWith('persist:'))).toBeLessThan(order.indexOf('start'));
+    expect(onMessagesCreated.mock.calls.flatMap(([items]) => items as Message[])).toEqual(
+      expect.arrayContaining(persistedMessages),
+    );
+  });
+
+  it('passes saved orchestration template mentions through without app-side expansion', async () => {
     const startAgentRun = vi.fn(async () => undefined);
 
     const response = await sendHeadlessComposerMessage({
@@ -724,7 +788,7 @@ describe('sendHeadlessComposerReply', () => {
       seedAgentRun: vi.fn(),
       dispatchAgentRun: vi.fn(),
       persistLocalNode: vi.fn().mockResolvedValue(undefined),
-      orchestrationMode: true,
+      threadId: 'parent-thread',
       createRunId: () => 'run-orchestrator',
       nowIso: () => '2026-05-27T01:02:03.000Z',
     });
@@ -732,16 +796,14 @@ describe('sendHeadlessComposerReply', () => {
     expect(startAgentRun).toHaveBeenCalledWith(
       expect.objectContaining({
         runId: 'run-orchestrator',
-        assistantNodeId: response.assistantMessages?.[0]?.id,
-        runContext: expect.objectContaining({
-          promptFallback: '#migration_review Agentree orchestration migration',
-        }),
+        assistantNodeId: (response.assistantMessages?.[0] as Message)?.id,
+        userPrompt: '#migration_review Agentree orchestration migration',
       }),
     );
     expect(response).not.toHaveProperty('orchestrationPreview');
   });
 
-  it('does not execute simple orchestration runs from the composer', async () => {
+  it('launches requests as one normal agent run', async () => {
     const order: string[] = [];
     const startAgentRun = vi.fn(async (intent: any) => {
       order.push(`startAgentRun:${intent.assistantNodeId}`);
@@ -780,13 +842,13 @@ describe('sendHeadlessComposerReply', () => {
       seedAgentRun: vi.fn(),
       dispatchAgentRun: vi.fn(),
       persistLocalNode: vi.fn().mockResolvedValue(undefined),
-      orchestrationMode: true,
+      threadId: 'parent-thread',
       createRunId: () => 'run-orchestrator',
       nowIso: () => '2026-05-27T01:02:03.000Z',
     });
 
     expect(order).toEqual([
-      `startAgentRun:${response.assistantMessages?.[0]?.id}`,
+      `startAgentRun:${(response.assistantMessages?.[0] as Message)?.id}`,
     ]);
     expect(response).not.toHaveProperty('orchestrationExecutionResult');
   });

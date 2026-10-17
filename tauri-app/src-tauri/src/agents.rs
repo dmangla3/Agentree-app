@@ -3,7 +3,7 @@ use libc;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -568,11 +568,13 @@ fn cleanup_agent_run_worktree_internal(
         )?;
         return Err("Cleanup requested before terminal classification.".to_string());
     }
+    let requires_server_finalization = cleanup_requires_server_final_persisted(terminal_status)
+        && telemetry.workspace_cloud_backup_enabled(ledger.workspace_id.as_deref())?;
     let has_retryable_terminal_sync = !ledger.server_final_persisted
-        && cleanup_requires_server_final_persisted(terminal_status)
+        && requires_server_finalization
         && telemetry.has_retryable_terminal_node_sync(node_id)?;
     if !ledger.server_final_persisted
-        && cleanup_requires_server_final_persisted(terminal_status)
+        && requires_server_finalization
         && !has_retryable_terminal_sync
     {
         telemetry.mark_agent_run_needs_user_action(
@@ -698,13 +700,13 @@ fn finalize_run_state_if_ready(
     session_id: &str,
     auth_token: &str,
 ) -> Option<String> {
-    let run_state = {
+    let run_state_handle = {
         let app_state = app_handle.state::<AgentState>();
         let run_states = app_state.run_states.lock().unwrap();
         run_states.get(session_id).cloned()
     }?;
 
-    let mut run_state = run_state.lock().unwrap();
+    let mut run_state = run_state_handle.lock().unwrap();
     crate::app_log!(
         "[AGENT_WORKTREE] event=finalize_state.enter node_id={} terminal_status={:?} cancel_requested={} already_finalized={} repo={:?} parent_commit={:?}",
         session_id,
@@ -762,6 +764,9 @@ fn finalize_run_state_if_ready(
                 );
             }
             Err(err) => {
+                if let Ok(mut run_state) = run_state_handle.lock() {
+                    run_state.finalized = false;
+                }
                 if let Err(persist_err) = persist_local_node_snapshot(app_handle, snapshot) {
                     crate::app_log!(
                         "[RCSTRM] finalize_failed_snapshot_persist_failed session_id={} err={}",
@@ -1085,8 +1090,11 @@ fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
         .map(String::as_str)
 }
 
-fn codex_chatgpt_session_supports_model(model: Option<&str>) -> bool {
-    !matches!(model, Some("gpt-image-2"))
+pub(crate) fn codex_chatgpt_session_supports_model(model: Option<&str>) -> bool {
+    matches!(
+        model,
+        None | Some("gpt-5.6-sol") | Some("gpt-5.6-terra") | Some("gpt-5.6-luna") | Some("gpt-5.5")
+    )
 }
 
 fn append_message_timeline_segment_for_item(
@@ -2212,47 +2220,6 @@ pub fn resume_interrupted_agent_runs_on_startup(app_handle: &AppHandle) -> Resul
     }
 
     Ok(resumed)
-}
-
-fn post_json_with_retry(
-    client: &reqwest::blocking::Client,
-    auth_token: &str,
-    url: &str,
-    body: &JsonValue,
-    attempts: usize,
-    label: &str,
-) -> Result<JsonValue, String> {
-    let mut last_error = None;
-    for attempt in 0..attempts {
-        match client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", auth_token))
-            .json(body)
-            .send()
-        {
-            Ok(response) if response.status().is_success() => {
-                return match response.json::<JsonValue>() {
-                    Ok(body) => Ok(body),
-                    Err(_) => Ok(JsonValue::Null),
-                };
-            }
-            Ok(response) => {
-                last_error = Some(format!(
-                    "{} failed with status {}",
-                    label,
-                    response.status()
-                ));
-            }
-            Err(err) => {
-                last_error = Some(format!("{} transport error: {}", label, err));
-            }
-        }
-        if attempt + 1 < attempts {
-            let backoff_ms = 250u64.saturating_mul(1u64 << attempt.min(5));
-            thread::sleep(Duration::from_millis(backoff_ms));
-        }
-    }
-    Err(last_error.unwrap_or_else(|| format!("{} failed", label)))
 }
 
 fn persist_local_node_snapshot(
@@ -3699,6 +3666,13 @@ pub async fn start_agent_run(
     _state: State<'_, AgentState>,
     intent: StartAgentRunIntent,
 ) -> Result<StartAgentRunResponse, String> {
+    start_agent_run_internal(app, intent).await
+}
+
+pub(crate) async fn start_agent_run_internal(
+    app: AppHandle,
+    intent: StartAgentRunIntent,
+) -> Result<StartAgentRunResponse, String> {
     let mut intent = intent;
     let telemetry = app.state::<crate::db::TelemetryDb>();
     let record_prelaunch_stage = |stage: &str| {
@@ -3769,22 +3743,38 @@ pub async fn start_agent_run(
         phase: "accepted".to_string(),
         login_profile_id: intent.login_profile_id.clone(),
     };
-    telemetry.upsert_agent_run_ledger(&initial_run)?;
-    telemetry.append_agent_run_event(
-        &intent.run_id,
-        &intent.assistant_node_id,
-        "agent:lifecycle",
-        Some("accepted"),
-        Some("accepted"),
-        &serde_json::json!({
-            "type": "agent:lifecycle",
-            "status": "accepted",
-            "phase": "accepted",
-            "run_id": intent.run_id.clone(),
-            "nodeId": intent.assistant_node_id.clone(),
-        })
-        .to_string(),
-    )?;
+    let accepted_event_payload = serde_json::json!({
+        "type": "agent:lifecycle",
+        "status": "accepted",
+        "phase": "accepted",
+        "run_id": intent.run_id.clone(),
+        "nodeId": intent.assistant_node_id.clone(),
+    })
+    .to_string();
+    match telemetry.admit_agent_run(&initial_run, &accepted_event_payload)? {
+        crate::db::AgentRunAdmission::Accepted => {}
+        crate::db::AgentRunAdmission::Existing {
+            worktree_path,
+            branch_name,
+            status,
+            pid,
+        } => {
+            crate::app_log!(
+                "[AGENT_PRELAUNCH] event=duplicate_start_reused node_id={} run_id={} status={}",
+                intent.assistant_node_id,
+                intent.run_id,
+                status
+            );
+            return Ok(StartAgentRunResponse {
+                run_id: intent.run_id,
+                assistant_node_id: intent.assistant_node_id,
+                worktree_path: worktree_path.unwrap_or(preview.worktree_path),
+                branch_name: branch_name.unwrap_or(preview.branch_name),
+                pid: pid.and_then(|value| u32::try_from(value).ok()),
+                initial_status: status,
+            });
+        }
+    }
 
     crate::mcp::set_mcp_current_context(&intent.auth_token, intent.workspace_id.as_deref())?;
 
@@ -3833,7 +3823,7 @@ fn run_agent_lifecycle_background(
                     "failed_setup",
                     Some(&err),
                 );
-                let _ = finalize_setup_failure(&app, &intent, "failed_setup", &err);
+                let _ = finalize_setup_failure(&app, &intent, "failed_setup");
                 return Err(err);
             }
         };
@@ -3891,7 +3881,7 @@ fn run_agent_lifecycle_background(
                 "failed_spawn",
                 Some(&err),
             );
-            let _ = finalize_setup_failure(&app, &intent, "failed_spawn", &err);
+            let _ = finalize_setup_failure(&app, &intent, "failed_spawn");
             cleanup_worktree_after_finalize(
                 &app,
                 &intent.assistant_node_id,
@@ -3907,37 +3897,9 @@ fn finalize_setup_failure(
     app: &AppHandle,
     intent: &StartAgentRunIntent,
     status: &str,
-    failure_reason: &str,
 ) -> Result<(), String> {
-    let mut execution_data = intent.run_context.execution_data.clone();
-    if let Some(object) = execution_data.as_object_mut() {
-        object.insert("ended_at".to_string(), serde_json::json!(chrono_like_now()));
-        object.insert("setup_error".to_string(), serde_json::json!(failure_reason));
-        object.insert(
-            "last_terminal_status".to_string(),
-            serde_json::json!(status),
-        );
-    }
-    let payload = serde_json::json!({
-        "nodeId": intent.assistant_node_id,
-        "runId": intent.run_id,
-        "status": status,
-        "finalContent": "",
-        "executionData": execution_data,
-        "outputCommitSha": JsonValue::Null,
-        "gitBranchName": JsonValue::Null,
-    });
-    let client = reqwest::blocking::Client::new();
-    post_json_with_retry(
-        &client,
-        &intent.auth_token,
-        &format!("{}/stream/finalize", crate::config::server_base_url()),
-        &payload,
-        4,
-        "setup_finalize",
-    )?;
     app.state::<crate::db::TelemetryDb>()
-        .mark_agent_run_finalized(&intent.assistant_node_id, status, true, None)?;
+        .mark_agent_run_finalized(&intent.assistant_node_id, status, false, None)?;
     Ok(())
 }
 
@@ -3954,6 +3916,16 @@ pub fn steer_agent_run(
     content: String,
     idempotency_key: String,
 ) -> Result<(), String> {
+    steer_agent_run_internal(&app, &state, &assistant_node_id, &content, &idempotency_key)
+}
+
+pub(crate) fn steer_agent_run_internal(
+    app: &AppHandle,
+    state: &AgentState,
+    assistant_node_id: &str,
+    content: &str,
+    idempotency_key: &str,
+) -> Result<(), String> {
     let content = content.trim().to_string();
     if content.is_empty() {
         return Err("Steering message cannot be empty.".to_string());
@@ -3961,7 +3933,7 @@ pub fn steer_agent_run(
 
     let stdin = {
         let stdins = state.stdins.lock().map_err(|e| e.to_string())?;
-        stdins.get(&assistant_node_id).cloned()
+        stdins.get(assistant_node_id).cloned()
     };
     let Some(stdin) = stdin else {
         let failure = serde_json::json!({
@@ -3971,7 +3943,7 @@ pub fn steer_agent_run(
             "content": content.clone(),
             "error": "No active agent control channel found.",
         });
-        emit_agent_event(&app, &assistant_node_id, &failure);
+        emit_agent_event(app, assistant_node_id, &failure);
         return Err(format!(
             "No active agent control channel found for {}",
             assistant_node_id
@@ -3988,13 +3960,13 @@ pub fn steer_agent_run(
         .run_states
         .lock()
         .map_err(|e| e.to_string())?
-        .get(&assistant_node_id)
+        .get(assistant_node_id)
         .cloned()
     {
         let mut run_state = run_state.lock().map_err(|e| e.to_string())?;
         update_run_state_from_event(&mut run_state, &requested);
     }
-    emit_agent_event(&app, &assistant_node_id, &requested);
+    emit_agent_event(app, assistant_node_id, &requested);
 
     let control = serde_json::json!({
         "type": "steer_agent_run",
@@ -4021,7 +3993,7 @@ pub fn steer_agent_run(
                 "assistant_node_id": assistant_node_id.clone(),
                 "idempotency_key": idempotency_key.clone(),
             });
-            emit_agent_event(&app, &assistant_node_id, &ack);
+            emit_agent_event(app, assistant_node_id, &ack);
             Ok(())
         }
         Err(err) => {
@@ -4032,7 +4004,7 @@ pub fn steer_agent_run(
                 "content": content.clone(),
                 "error": err.clone(),
             });
-            emit_agent_event(&app, &assistant_node_id, &failure);
+            emit_agent_event(app, assistant_node_id, &failure);
             Err(err)
         }
     }
@@ -4041,24 +4013,134 @@ pub fn steer_agent_run(
 #[tauri::command]
 #[specta::specta]
 pub fn stop_agent(
-    _app: AppHandle,
+    app: AppHandle,
     state: State<AgentState>,
     session_id: String,
 ) -> Result<(), String> {
+    stop_agent_with_descendants(&app, &state, &session_id).map(|_| ())
+}
+
+pub(crate) fn stop_agent_with_descendants(
+    app: &AppHandle,
+    state: &AgentState,
+    session_id: &str,
+) -> Result<Vec<String>, String> {
+    let telemetry = app.state::<crate::db::TelemetryDb>();
+    let workspace_id = telemetry
+        .get_local_node_payload(session_id)?
+        .and_then(|payload| serde_json::from_str::<JsonValue>(&payload).ok())
+        .and_then(|payload| {
+            payload
+                .get("workspaceId")
+                .or_else(|| payload.get("workspace_id"))
+                .and_then(JsonValue::as_str)
+                .map(str::to_string)
+        })
+        .ok_or_else(|| format!("Agent node {session_id} was not found."))?;
+    // Freeze the controller before discovering descendants so it cannot accept
+    // more thread-control calls while the descendant-first shutdown is running.
+    mark_agent_cancel_requested(state, session_id)?;
+    let rows = telemetry.list_local_nodes_for_workspace(&workspace_id)?;
+    let mut children: HashMap<String, Vec<String>> = HashMap::new();
+    for row in rows {
+        let Some(controller_id) = row.controlled_by_node_id else {
+            continue;
+        };
+        let Ok(payload) = serde_json::from_str::<JsonValue>(&row.payload) else {
+            continue;
+        };
+        if payload.get("role").and_then(JsonValue::as_str) != Some("assistant") {
+            continue;
+        }
+        children.entry(controller_id).or_default().push(row.node_id);
+    }
+    for child_ids in children.values_mut() {
+        child_ids.sort();
+    }
+    let running: HashSet<String> = state
+        .sessions
+        .lock()
+        .map_err(|error| error.to_string())?
+        .keys()
+        .cloned()
+        .collect();
+    let order = descendant_first_stop_order(session_id, &children, &running);
+    if order.is_empty() {
+        return Err(format!("No active agent sessions found for {session_id}"));
+    }
+    for node_id in &order {
+        mark_agent_cancel_requested(state, node_id)?;
+    }
+    let mut errors = Vec::new();
+    for node_id in &order {
+        if let Err(error) = stop_agent_internal(state, node_id) {
+            errors.push(format!("{node_id}: {error}"));
+        }
+    }
+    if !errors.is_empty() {
+        return Err(format!(
+            "Failed to stop one or more agent sessions: {}",
+            errors.join("; ")
+        ));
+    }
+    Ok(order)
+}
+
+fn descendant_first_stop_order(
+    session_id: &str,
+    children: &HashMap<String, Vec<String>>,
+    running: &HashSet<String>,
+) -> Vec<String> {
+    let mut descendants = Vec::new();
+    let mut visiting = HashSet::new();
+    fn visit(
+        node_id: &str,
+        depth: usize,
+        children: &HashMap<String, Vec<String>>,
+        visiting: &mut HashSet<String>,
+        descendants: &mut Vec<(usize, String)>,
+    ) {
+        if !visiting.insert(node_id.to_string()) {
+            return;
+        }
+        descendants.push((depth, node_id.to_string()));
+        for child_id in children.get(node_id).into_iter().flatten() {
+            visit(child_id, depth + 1, children, visiting, descendants);
+        }
+    }
+    visit(session_id, 0, children, &mut visiting, &mut descendants);
+    descendants.sort_by(|(left_depth, left_id), (right_depth, right_id)| {
+        right_depth
+            .cmp(left_depth)
+            .then_with(|| left_id.cmp(right_id))
+    });
+    descendants
+        .into_iter()
+        .filter_map(|(_, node_id)| running.contains(&node_id).then_some(node_id))
+        .collect()
+}
+
+pub(crate) fn stop_agent_internal(state: &AgentState, session_id: &str) -> Result<(), String> {
     let pid = {
         let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-        sessions.get(&session_id).copied()
+        sessions.get(session_id).copied()
     };
 
     let Some(pid) = pid else {
         return Err(format!("No agent session found for {}", session_id));
     };
 
+    mark_agent_cancel_requested(state, session_id)?;
+
+    terminate_agent_child(state, session_id, pid, true)
+}
+
+fn mark_agent_cancel_requested(state: &AgentState, session_id: &str) -> Result<(), String> {
     if let Some(run_state) = state
         .run_states
         .lock()
         .map_err(|e| e.to_string())?
-        .get(&session_id)
+        .get(session_id)
         .cloned()
     {
         let mut run_state = run_state.lock().map_err(|e| e.to_string())?;
@@ -4067,8 +4149,44 @@ pub fn stop_agent(
             run_state.terminal_status = Some("cancelled".to_string());
         }
     }
+    Ok(())
+}
 
-    terminate_agent_child(&*state, &session_id, pid, true)
+pub(crate) fn session_auth_token(state: &AgentState, session_id: &str) -> Result<String, String> {
+    let token = state
+        .session_tokens
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| format!("No active agent session found for {}", session_id))?;
+    if let Some(run_state) = state
+        .run_states
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(session_id)
+        .cloned()
+    {
+        if run_state
+            .lock()
+            .map_err(|error| error.to_string())?
+            .cancel_requested
+        {
+            return Err(format!("Agent session {} is stopping", session_id));
+        }
+    }
+    Ok(token)
+}
+
+pub(crate) fn is_agent_session_running(
+    state: &AgentState,
+    session_id: &str,
+) -> Result<bool, String> {
+    Ok(state
+        .sessions
+        .lock()
+        .map_err(|error| error.to_string())?
+        .contains_key(session_id))
 }
 
 #[tauri::command]
@@ -4102,14 +4220,15 @@ mod tests {
         cleanup_requires_server_final_persisted, cleanup_terminal_status_allows_cleanup,
         codex_chatgpt_session_supports_model, commit_body_from_execution_data,
         commit_message_for_snapshot, commit_subject_from_execution_data,
-        decide_agent_run_watchdog_timeout, ensure_context_recovery_fields,
-        is_terminal_runtime_status, latest_provider_thread_id, local_node_payload_for_snapshot,
-        run_ledger_user_node_id_from_context, should_persist_failure_reason,
-        snapshot_from_replayed_journal, startup_resume_args, terminal_status_for_runtime_activity,
-        update_run_state_from_event, AgentRunContext, AgentRunSnapshot, AgentRunState,
-        STARTUP_RESUME_PROMPT,
+        decide_agent_run_watchdog_timeout, descendant_first_stop_order,
+        ensure_context_recovery_fields, is_terminal_runtime_status, latest_provider_thread_id,
+        local_node_payload_for_snapshot, run_ledger_user_node_id_from_context,
+        should_persist_failure_reason, snapshot_from_replayed_journal, startup_resume_args,
+        terminal_status_for_runtime_activity, update_run_state_from_event, AgentRunContext,
+        AgentRunSnapshot, AgentRunState, STARTUP_RESUME_PROMPT,
     };
     use serde_json::json;
+    use std::collections::{HashMap, HashSet};
 
     fn test_run_state() -> AgentRunState {
         AgentRunState::new(AgentRunContext {
@@ -4144,6 +4263,45 @@ mod tests {
     }
 
     #[test]
+    fn cascade_stop_orders_deepest_running_descendants_before_controller() {
+        let children = HashMap::from([
+            (
+                "root".to_string(),
+                vec!["child-b".to_string(), "child-a".to_string()],
+            ),
+            ("child-a".to_string(), vec!["grandchild".to_string()]),
+        ]);
+        let running = HashSet::from([
+            "root".to_string(),
+            "child-a".to_string(),
+            "child-b".to_string(),
+            "grandchild".to_string(),
+        ]);
+
+        assert_eq!(
+            descendant_first_stop_order("root", &children, &running),
+            vec!["grandchild", "child-a", "child-b", "root"]
+        );
+    }
+
+    #[test]
+    fn cascade_stop_traverses_through_completed_controllers() {
+        let children = HashMap::from([
+            ("root".to_string(), vec!["completed-child".to_string()]),
+            (
+                "completed-child".to_string(),
+                vec!["running-grandchild".to_string()],
+            ),
+        ]);
+        let running = HashSet::from(["running-grandchild".to_string()]);
+
+        assert_eq!(
+            descendant_first_stop_order("root", &children, &running),
+            vec!["running-grandchild"]
+        );
+    }
+
+    #[test]
     fn cleanup_blocks_non_terminal_statuses() {
         assert!(!cleanup_terminal_status_allows_cleanup("running"));
         assert!(!cleanup_terminal_status_allows_cleanup(
@@ -4169,14 +4327,16 @@ mod tests {
     }
 
     #[test]
-    fn codex_chatgpt_session_rejects_image_model() {
+    fn codex_chatgpt_session_accepts_only_subscription_models() {
         let args = vec!["--model".to_string(), "gpt-image-2".to_string()];
 
         assert_eq!(arg_value(&args, "--model"), Some("gpt-image-2"));
         assert!(!codex_chatgpt_session_supports_model(arg_value(
             &args, "--model"
         )));
+        assert!(!codex_chatgpt_session_supports_model(Some("gpt-5-nano")));
         assert!(codex_chatgpt_session_supports_model(Some("gpt-5.5")));
+        assert!(codex_chatgpt_session_supports_model(Some("gpt-5.6-luna")));
     }
 
     #[test]

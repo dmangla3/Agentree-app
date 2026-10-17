@@ -6,13 +6,13 @@ import { ToastProvider } from './components/Toast';
 import { DiffProvider } from './contexts/DiffContext';
 import { MergeSelectionOverlay } from './components/SyncButton';
 import { configureAuthSession } from './lib/authSession';
-import { isDesktopBrowserAuthenticated, readDesktopUserFromSession, shouldUseDesktopBrowserAuth } from './lib/kindeDesktopAuth';
+import { readDesktopUserFromSession, shouldUseDesktopBrowserAuth } from './lib/kindeDesktopAuth';
 import { TooltipProvider } from '../@/components/ui/tooltip';
 import { UpdateManager } from './components/updates/UpdateManager';
-import { DevLocalSyncAlert } from './components/DevLocalSyncAlert';
-import { identifyUser, trackScreenViewed } from './lib/analytics';
+import { trackScreenViewed } from './lib/analytics';
 import { devLogLazy } from './lib/appLogger';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from './lib/perfRecorder';
+import { hasAppAccess } from './lib/appAccess';
 import './App.css';
 
 const Agentation = lazy(() => import('agentation').then((module) => ({ default: module.Agentation })));
@@ -84,36 +84,13 @@ function RouteLoading() {
 }
 
 // Component to protect routes requiring authentication
-function ProtectedRoute({ children }: { children: React.JSX.Element }) {
-  const { isAuthenticated, isLoading } = useKindeAuth();
-  const desktopUser = useAuthStore((state) => state.user);
-  const desktopSession = useAuthStore((state) => state.desktopSession);
-  const devBypass = import.meta.env.VITE_DEV_AUTH_BYPASS === 'true';
-  const useDesktopAuth = shouldUseDesktopBrowserAuth();
-  const authLoading = useDesktopAuth ? false : isLoading;
-  const isDesktopAuthenticated = useDesktopAuth && !!desktopUser && !!desktopSession;
-  devLogLazy(() => [
-    `[ROUTE][ProtectedRoute] desktop=${useDesktopAuth} devBypass=${devBypass} isLoading=${authLoading} kindeAuth=${isAuthenticated} desktopUser=${!!desktopUser} desktopSession=${!!desktopSession}`
-  ]);
-
-  if (authLoading) {
-    devLogLazy(() => ['[ROUTE][ProtectedRoute] Rendering loading state']);
-    return <AppShellSkeleton label="Checking session" />;
-  }
-
-  if (useDesktopAuth) {
-    devLogLazy(() => [
-      `[ROUTE][ProtectedRoute] Rendering local-first desktop route cloudConnected=${devBypass || isDesktopAuthenticated}`
-    ]);
-    return children;
-  }
-
-  if (!devBypass && !isAuthenticated) {
-    devLogLazy(() => ['[ROUTE][ProtectedRoute] Redirecting to /login because web auth is missing']);
+function ProtectedRoute({ children, hasAccess }: { children: React.JSX.Element; hasAccess: boolean }) {
+  if (!hasAccess) {
+    devLogLazy(() => ['[ROUTE][ProtectedRoute] Redirecting to /login because authentication is missing']);
     return <Navigate to="/login" replace />;
   }
 
-  devLogLazy(() => ['[ROUTE][ProtectedRoute] Rendering protected web route']);
+  devLogLazy(() => ['[ROUTE][ProtectedRoute] Rendering authenticated route']);
   return children;
 }
 
@@ -169,7 +146,6 @@ function AppContent() {
               pictureUrl: undefined
             });
           }
-          identifyUser({ id: devUserId, email: devEmail });
           return;
         }
 
@@ -183,16 +159,12 @@ function AppContent() {
           )) {
             setUser(sessionUser);
           }
-          identifyUser(sessionUser ? { id: sessionUser.id, email: sessionUser.email || null } : null);
           return;
         }
 
         if (useDesktopAuth) {
-          if (desktopUser && desktopSession) {
-            identifyUser({ id: desktopUser.id, email: desktopUser.email || null });
-          } else {
+          if (!desktopUser || !desktopSession) {
             setUser(null);
-            identifyUser(null);
           }
           return;
         }
@@ -205,15 +177,12 @@ function AppContent() {
             name: kindeUser.givenName || kindeUser.email || '',
             pictureUrl: kindeUser.picture || undefined
           });
-          identifyUser({ id: kindeUser.id || '', email: kindeUser.email || null });
         } else if (!authLoading && !isAuthenticated) {
           setUser(null);
-          identifyUser(null);
         }
       } catch (error) {
         console.error('[App] Failed to synchronize auth state:', error);
         setUser(null);
-        identifyUser(null);
       } finally {
         devLogLazy(() => [`[PERF][App] syncAuth complete in ${(performance.now() - syncStartTime).toFixed(1)}ms, setting isSyncing=false`]);
         setIsSyncing(false);
@@ -233,16 +202,23 @@ function AppContent() {
     return <AppShellSkeleton label="Synchronizing session" />;
   }
 
+  const isLoggedIn = hasAppAccess({
+    devAuthBypass: devBypass,
+    usesDesktopAuth: useDesktopAuth,
+    hasDesktopUser: Boolean(desktopUser),
+    hasDesktopSession: Boolean(desktopSession),
+    isKindeAuthenticated: isAuthenticated,
+  });
+
   if (!appReadyLoggedRef.current) {
     appReadyLoggedRef.current = true;
     recordPerfEvent('app.auth-ready', {
       elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
       useDesktopAuth,
-      isLoggedIn: devBypass || (useDesktopAuth ? isDesktopBrowserAuthenticated() : isAuthenticated),
+      isLoggedIn,
     }, { source: 'AppContent' });
   }
 
-  const isLoggedIn = devBypass || (useDesktopAuth ? isDesktopBrowserAuthenticated() : isAuthenticated);
   devLogLazy(() => [`[ROUTE][AppContent] Ready desktop=${useDesktopAuth} isLoggedIn=${isLoggedIn}`]);
 
   return (
@@ -255,7 +231,7 @@ function AppContent() {
         <Route
           path="/"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute hasAccess={isLoggedIn}>
               <Suspense fallback={<RouteLoading />}>
                 <HomePage />
               </Suspense>
@@ -265,7 +241,7 @@ function AppContent() {
         <Route
           path="/workspaces/:workspaceId"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute hasAccess={isLoggedIn}>
               <Suspense fallback={<RouteLoading />}>
                 <HomePage />
               </Suspense>
@@ -300,7 +276,6 @@ function App() {
           <UpdateManager>
             <DiffProvider>
               <AppContent />
-              <DevLocalSyncAlert />
               {/* Merge UI Components */}
               <MergeSelectionOverlay />
               <Suspense fallback={null}>

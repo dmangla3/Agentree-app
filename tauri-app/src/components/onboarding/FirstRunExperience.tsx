@@ -40,7 +40,7 @@ import { ChangedFilesSummary } from '../ChangedFilesSummary';
 import { LoginProfileEditor } from '../logins/LoginProfileEditor';
 import type { Workspace } from '../../stores/workspaceStore';
 import logoSrc from '../../assets/logo.png';
-import { track, trackOnboardingStepViewed } from '../../lib/analytics';
+import { bucketCount, track, trackOnboardingStepViewed } from '../../lib/analytics';
 
 type StepId = 'environment' | 'workspace';
 
@@ -420,9 +420,7 @@ export function FirstRunExperience({
     }
 
     if (existingWorkspaceForSelection?.id) {
-      track('Onboarding Existing Workspace Selected', {
-        workspace_id: existingWorkspaceForSelection.id,
-      });
+      track('Onboarding Existing Workspace Selected');
       completeWithWorkspace(existingWorkspaceForSelection.id);
       return;
     }
@@ -439,9 +437,7 @@ export function FirstRunExperience({
       setSetupRequirement(null);
       if (created?.id) {
         const createdRepoPath = created.git_repo_path || created.repo_path || created.folderPath || selectedFolderPath;
-        track('Onboarding Completed', {
-          workspace_id: created.id,
-        });
+        track('Onboarding Completed');
         if (createdRepoPath) {
           onRepositoryConnected?.(createdRepoPath, created.id);
         }
@@ -466,7 +462,7 @@ export function FirstRunExperience({
       if (error instanceof RepoPrepareActionRequiredError) {
         track('Onboarding Workspace Setup Action Required', {
           requirement_type: error.requirement.type,
-          changed_files_count: error.requirement.workspace.changed_files.length,
+          changed_files_count_bucket: bucketCount(error.requirement.workspace.changed_files.length),
         });
         setSetupRequirement(error.requirement);
         setCheckpointMessage(error.requirement.defaultCommitMessage);

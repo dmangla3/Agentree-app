@@ -6,7 +6,6 @@ import {
   ChevronLeft,
   ChevronDown,
   ChevronRight,
-  Cloud,
   Copy,
   Eye,
   FolderGit,
@@ -49,7 +48,6 @@ import {
   RepoPrepareActionRequiredError,
   useCreateWorkspace,
   useDeleteWorkspace,
-  useEnableWorkspaceCloudBackup,
   useRenameWorkspace,
   useWorkspaces,
   type RepoDirtyStrategy,
@@ -77,6 +75,7 @@ import {
   type ThreadHoverProjectionInput,
   type ThreadNavigationItem,
 } from '../graph/GraphControls';
+import { orderThreadFamiliesNewestFirst } from './threadNavigationHierarchy';
 
 export interface WorkspaceThreadNavigationModel {
   workspaceId: string | null;
@@ -301,6 +300,7 @@ function ThreadRow({
   const row = (
     <div
       onContextMenu={handleContextMenu}
+      style={thread.depth ? { marginLeft: `${Math.min(thread.depth, 4) * 12}px` } : undefined}
       className={cn(
         'group/thread relative flex min-w-0 items-stretch overflow-hidden rounded-lg border shadow-[inset_0_1px_0_hsl(var(--foreground)/0.022)] transition-[background-color,border-color,box-shadow,opacity,transform] duration-200 ease-out',
         thread.current
@@ -319,6 +319,14 @@ function ThreadRow({
         onClick={() => onOpenThread(thread.threadRootId)}
       >
         <span className="flex min-w-0 items-center gap-1.5">
+          {(thread.depth ?? 0) > 0 ? (
+            <span
+              aria-hidden="true"
+              className="-ml-0.5 shrink-0 font-mono text-[10px] leading-none text-muted-foreground/45"
+            >
+              └
+            </span>
+          ) : null}
           <span
             className={cn(
               'shrink-0 rounded-full',
@@ -448,11 +456,15 @@ function WorkspaceThreadSection({
   onThreadsFocusedChange?: (focused: boolean) => void;
 }) {
   const activeThreadItems = useMemo(
-    () => model?.threadItems.filter((thread) => !thread.done || thread.runningCount > 0) ?? [],
+    () => orderThreadFamiliesNewestFirst(
+      model?.threadItems.filter((thread) => !thread.done || thread.runningCount > 0) ?? [],
+    ),
     [model?.threadItems],
   );
   const closedThreadItems = useMemo(
-    () => model?.threadItems.filter((thread) => thread.done && thread.runningCount === 0) ?? [],
+    () => orderThreadFamiliesNewestFirst(
+      model?.threadItems.filter((thread) => thread.done && thread.runningCount === 0) ?? [],
+    ),
     [model?.threadItems],
   );
   const runningCount = useMemo(
@@ -531,7 +543,7 @@ function WorkspaceThreadSection({
         </div>
       </div>
       <div className="space-y-1">
-        {[...activeThreadItems].reverse().map((thread) => (
+        {activeThreadItems.map((thread) => (
           <MemoThreadRow
             key={thread.threadRootId}
             thread={thread}
@@ -556,7 +568,7 @@ function WorkspaceThreadSection({
           </button>
           {!model.doneThreadsCollapsed ? (
             <div className="mt-1 space-y-1">
-              {[...closedThreadItems].reverse().map((thread) => (
+              {closedThreadItems.map((thread) => (
                 <MemoThreadRow
                   key={thread.threadRootId}
                   thread={thread}
@@ -585,7 +597,6 @@ function WorkspaceRow({
   onThreadRename,
   onRequestRename,
   onRequestDelete,
-  onEnableBackup,
   onPrefetchWorkspace,
   showThreadSection,
   threadsFocused,
@@ -600,7 +611,6 @@ function WorkspaceRow({
   onThreadRename: (thread: ThreadNavigationItem) => void;
   onRequestRename: (workspace: Workspace) => void;
   onRequestDelete: (workspace: Workspace) => void;
-  onEnableBackup: (workspace: Workspace) => void;
   onPrefetchWorkspace: (workspaceId: string) => void;
   showThreadSection: boolean;
   threadsFocused: boolean;
@@ -618,7 +628,6 @@ function WorkspaceRow({
   const closedCount = hasThreadModel ? threadModel!.threadItems.filter((thread) => thread.done && thread.runningCount === 0).length : null;
   const runningCount = hasThreadModel ? threadModel!.threadItems.reduce((total, thread) => total + thread.runningCount, 0) : null;
   const status = workspace.connection_status ?? workspace.connectionStatus ?? workspace.sync_status ?? workspace.syncStatus ?? null;
-  const cloudBackupEnabled = Boolean(workspace.cloud_backup_enabled ?? workspace.cloudBackupEnabled);
   const statusLabel = status && status !== 'connected' && status !== 'synced' ? String(status).replace(/_/g, ' ') : null;
   const createdAt = workspaceCreatedMs(workspace);
   const createdDate = createdAt > 0 ? new Date(createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : null;
@@ -698,12 +707,6 @@ function WorkspaceRow({
               <Pencil className="mr-2 h-4 w-4" />
               Rename
             </DropdownMenuItem>
-            {!cloudBackupEnabled ? (
-              <DropdownMenuItem onClick={() => onEnableBackup(workspace)}>
-                <Cloud className="mr-2 h-4 w-4" />
-                Enable backup
-              </DropdownMenuItem>
-            ) : null}
             <DropdownMenuSeparator />
             <DropdownMenuItem
               className="text-destructive focus:text-destructive"
@@ -740,7 +743,6 @@ function RepoItem({
   onAddWorkspaceToRepo,
   onRequestRenameWorkspace,
   onRequestDeleteWorkspace,
-  onEnableWorkspaceBackup,
   onPrefetchWorkspace,
   showThreadSections,
   threadsFocused,
@@ -756,7 +758,6 @@ function RepoItem({
   onAddWorkspaceToRepo: (folderPath: string) => void;
   onRequestRenameWorkspace: (workspace: Workspace) => void;
   onRequestDeleteWorkspace: (workspace: Workspace) => void;
-  onEnableWorkspaceBackup: (workspace: Workspace) => void;
   onPrefetchWorkspace: (workspaceId: string) => void;
   showThreadSections: boolean;
   threadsFocused: boolean;
@@ -864,7 +865,6 @@ function RepoItem({
                 onThreadRename={onThreadRename}
                 onRequestRename={onRequestRenameWorkspace}
                 onRequestDelete={onRequestDeleteWorkspace}
-                onEnableBackup={onEnableWorkspaceBackup}
                 onPrefetchWorkspace={onPrefetchWorkspace}
                 showThreadSection={showThreadSections}
                 threadsFocused={threadsFocused}
@@ -962,7 +962,6 @@ export function WorkspaceNavigator({
   const renameWorkspace = useRenameWorkspace();
   const renameThreadSession = useRenameThreadSession();
   const deleteWorkspace = useDeleteWorkspace();
-  const enableWorkspaceBackup = useEnableWorkspaceCloudBackup();
   const { addToast } = useToast();
   const [workspacePendingDelete, setWorkspacePendingDelete] = useState<Workspace | null>(null);
   const [workspacePendingRename, setWorkspacePendingRename] = useState<Workspace | null>(null);
@@ -1402,7 +1401,6 @@ export function WorkspaceNavigator({
                 onAddWorkspaceToRepo={handleAddWorkspaceToRepo}
                 onRequestRenameWorkspace={setWorkspacePendingRename}
                 onRequestDeleteWorkspace={setWorkspacePendingDelete}
-                onEnableWorkspaceBackup={(workspace) => enableWorkspaceBackup.mutate(workspace.id)}
                 onPrefetchWorkspace={handlePrefetchWorkspace}
                 showThreadSections={showThreadSections}
                 threadsFocused={threadsFocused}

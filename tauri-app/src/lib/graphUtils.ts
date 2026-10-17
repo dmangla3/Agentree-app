@@ -1,7 +1,7 @@
 import { Edge, Node, Position } from '@xyflow/react';
 import dagre from 'dagre';
 import { BranchPointer, Message, Summary } from '../stores/workspaceStore';
-import { isActiveAgentStatus, isFailureAgentStatus, type AgentStatus } from '@shared/agentStatus';
+import { isActiveAgentStatus, type AgentStatus } from '@shared/agentStatus';
 import { RuntimeCatalogModel } from '../stores/modelStore';
 import { getGraphParentId } from './graph/lineage';
 import { classifyMessageNodeKind, getAssistantCommitCount, getToolCallCount } from '../domain/nodes';
@@ -13,6 +13,10 @@ import { getMessageBaseCommitSha, getMessageOutputCommitSha } from './graph/comm
 import { getVisibleCommitProjection } from './graphCommitVisibility';
 import { getThreadOriginNodeId } from './graphThreadRoots';
 import { getMessageArtifacts } from './artifacts';
+import {
+  buildAttachedThreadLinkIndex,
+  type AttachedThreadLink,
+} from './graphSubgraphThreads';
 
 // --- Interface ---
 export interface LlmNodeData {
@@ -48,6 +52,7 @@ export interface LlmNodeData {
   onToggleCollapse?: (id: string, collapsed: boolean) => void; // Callback to toggle collapse
   hiddenDescendantCount?: number; // Number of hidden descendants
   isContextActive?: boolean; // Whether this node is active for context
+  attachedThreads?: AttachedThreadLink[];
 }
 
 export interface SummaryNodeData {
@@ -109,6 +114,7 @@ export const createMessageHeightKey = ({
   toolCallCount,
   commitCount,
   changedFilesCount,
+  attachedThreadCount = 0,
 }: {
   message: Message;
   entity: ProjectedNodeEntity;
@@ -117,6 +123,7 @@ export const createMessageHeightKey = ({
   toolCallCount?: number;
   commitCount?: number;
   changedFilesCount?: number;
+  attachedThreadCount?: number;
 }): string => {
   const previewBucket = getPreviewHeightBucket(entity.preview, nodeKind === 'user_message' ? 3 : 2);
   const pointerNames = branchPointers.map((pointer) => pointer.name).sort().join(',');
@@ -143,6 +150,7 @@ export const createMessageHeightKey = ({
     `author:${entity.authorName ? 1 : 0}`,
     `external:${entity.importedFromRef ? 1 : 0}`,
     `pointers:${pointerNames}`,
+    `attachedThreads:${attachedThreadCount}`,
   ].join('|');
 };
 
@@ -185,94 +193,14 @@ const TURN_CONVERSATION_NODE_WIDTH = 200;
 const TURN_COMMIT_NODE_WIDTH = 120;
 const TURN_ASSISTANT_NODE_HEIGHT = 112;
 const TURN_ASSISTANT_OUTPUT_PREVIEW_NODE_HEIGHT = 168;
+export const ATTACHED_THREADS_TRAY_HEIGHT = 64;
 const TURN_COMMIT_NODE_HEIGHT = 112;
-const ORCHESTRATION_NODE_WIDTH = TURN_CONVERSATION_NODE_WIDTH;
-const ORCHESTRATION_NODE_HEIGHT = 190;
-
-const isHullNodeType = (type?: string | null) => type === 'turn_group_hull' || type === 'orchestration_hull';
+const isHullNodeType = (type?: string | null) => type === 'turn_group_hull';
 const isTurnHullNodeType = (type?: string | null) => type === 'turn_group_hull';
-const isOrchestrationHullNodeType = (type?: string | null) => type === 'orchestration_hull';
 const isSummaryNodeType = (type?: string | null) => CANONICAL_SUMMARY_NODE_TYPES.has(type || '');
 const isMessageNodeType = (type?: string | null) => CANONICAL_MESSAGE_NODE_TYPES.has(type || '');
 const isPrimaryLayoutNodeType = (type?: string | null) => !isHullNodeType(type) && type !== 'default';
 
-interface OrchestrationGraphModel {
-  label: string;
-  totalOrchestrationRuns: number;
-  activeOrchestrationRuns: number;
-  failedOrchestrationRuns: number;
-  completedOrchestrationRuns: number;
-  cancelledOrchestrationRuns: number;
-  miniChildren: Array<{
-    id: string;
-    label: string;
-    status?: AgentStatus | null;
-    entity: ProjectedNodeEntity;
-  }>;
-  miniAnchors: Array<{
-    id: string;
-  }>;
-  miniEdges: Array<{
-    sourceId: string;
-    targetId: string;
-  }>;
-  controllerEntity: ProjectedNodeEntity;
-  projection: WorkspaceProjection;
-}
-
-export const buildOrchestrationGraphModel = (
-  entity: ProjectedNodeEntity,
-  projection: WorkspaceProjection,
-  messageMap: Map<string, Message>,
-): OrchestrationGraphModel | null => {
-  if (entity.nodeKind !== 'orchestrator' || !entity.messageId || !entity.orchestrationSummary) return null;
-  if (entity.kind !== 'assistant_message') return null;
-
-  const summary = entity.orchestrationSummary;
-  const runEntities = summary.orchestrationRunAssistantEntityIds
-    .map((entityId) => projection.entitiesById.get(entityId) ?? null)
-    .filter((run): run is ProjectedNodeEntity => Boolean(run?.messageId));
-  const orchestrationRunEntities = runEntities.filter((run) => run.messageId !== entity.messageId);
-  const miniRunEntities = orchestrationRunEntities.length > 0 ? orchestrationRunEntities : [entity];
-  const rootAnchorId = `orchestration-root:${entity.entityId}`;
-  const miniMessageIdToDotId = new Map<string, string>();
-  miniRunEntities.forEach((run) => {
-    if (run.messageId) miniMessageIdToDotId.set(run.messageId, run.entityId);
-  });
-  const miniEdges = miniRunEntities.flatMap((run) => {
-    const messageId = run.messageId;
-    if (!messageId) return [];
-    if (messageId === entity.messageId) return [];
-    const message = messageMap.get(messageId);
-    const graphParentId = message ? getGraphParentId(message, messageMap) : null;
-    const graphParent = graphParentId ? messageMap.get(graphParentId) ?? null : null;
-    const sourceMessageId = graphParent?.role === 'user'
-      ? getGraphParentId(graphParent, messageMap)
-      : graphParentId;
-    const sourceId = sourceMessageId ? miniMessageIdToDotId.get(sourceMessageId) : null;
-    if (!sourceId) return [{ sourceId: rootAnchorId, targetId: run.entityId }];
-    return sourceId ? [{ sourceId, targetId: run.entityId }] : [];
-  });
-
-  return {
-    label: entity.message?.aiLabel?.trim() || 'Orchestration',
-    totalOrchestrationRuns: miniRunEntities.length,
-    activeOrchestrationRuns: miniRunEntities.filter((run) => isActiveAgentStatus(run.status)).length,
-    failedOrchestrationRuns: miniRunEntities.filter((run) => isFailureAgentStatus(run.status)).length,
-    completedOrchestrationRuns: miniRunEntities.filter((run) => run.status === 'completed').length,
-    cancelledOrchestrationRuns: miniRunEntities.filter((run) => run.status === 'cancelled').length,
-    miniChildren: miniRunEntities.map((run) => ({
-      id: run.entityId,
-      label: run.message?.content?.trim() || run.preview || run.shortLabel || 'Orchestration run',
-      status: run.status ?? null,
-      entity: run,
-    })),
-    miniAnchors: orchestrationRunEntities.length > 0 ? [{ id: rootAnchorId }] : [],
-    miniEdges,
-    controllerEntity: entity,
-    projection,
-  };
-};
 
 const getNodeWidth = (node: Node<any>): number => {
   const explicitWidth = typeof node.style?.width === 'number' ? node.style.width : null;
@@ -281,7 +209,6 @@ const getNodeWidth = (node: Node<any>): number => {
   if (node.type === 'thread_link') return TURN_CONVERSATION_NODE_WIDTH;
   if (node.type === 'assistant_message') return TURN_CONVERSATION_NODE_WIDTH;
   if (node.type === 'user_message') return TURN_CONVERSATION_NODE_WIDTH;
-  if (node.type === 'orchestration_node') return ORCHESTRATION_NODE_WIDTH;
   if (node.type === 'commit_message') return TURN_COMMIT_NODE_WIDTH;
   if (node.type === 'canonical_commit') return TURN_COMMIT_NODE_WIDTH;
   if (node.type === 'layout_derived_commit_group') return TURN_COMMIT_NODE_WIDTH;
@@ -299,7 +226,6 @@ const getNodeHeight = (node: Node<any>): number => {
   if (node.type === 'thread_link') return 64;
   if (node.type === 'assistant_message') return TURN_ASSISTANT_NODE_HEIGHT;
   if (node.type === 'user_message') return 82;
-  if (node.type === 'orchestration_node') return ORCHESTRATION_NODE_HEIGHT;
   return NODE_HEIGHT;
 };
 
@@ -1157,55 +1083,6 @@ const applyTurnGroupHullBounds = <T extends Node<any>>(nodes: T[]): T[] => {
   return result;
 };
 
-const applyOrchestrationHullBounds = <T extends Node<any>>(nodes: T[]): T[] => {
-  const result = nodes.map(node => ({ ...node })) as T[];
-  const nodesById = new Map(result.map(node => [node.id, node]));
-
-  result.forEach((node) => {
-    if (!isOrchestrationHullNodeType(node.type) || !(node.data as any)?.memberIds) return;
-
-    const memberIds = (node.data as any).memberIds as string[];
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-
-    memberIds.forEach((memberId) => {
-      const memberNode = nodesById.get(memberId);
-      if (!memberNode || isHullNodeType(memberNode.type)) return;
-      const width = getNodeWidth(memberNode);
-      const height = getNodeHeight(memberNode);
-      minX = Math.min(minX, memberNode.position.x);
-      minY = Math.min(minY, memberNode.position.y);
-      maxX = Math.max(maxX, memberNode.position.x + width);
-      maxY = Math.max(maxY, memberNode.position.y + height);
-    });
-
-    if (minX === Infinity) return;
-
-    const paddingX = 38;
-    const paddingTop = 42;
-    const paddingBottom = 30;
-    const minWidth = 280;
-    const minHeight = 160;
-    const width = Math.max(minWidth, (maxX - minX) + paddingX * 2);
-    const height = Math.max(minHeight, (maxY - minY) + paddingTop + paddingBottom);
-    const centerX = (minX + maxX) / 2;
-
-    node.position = {
-      x: centerX - width / 2,
-      y: minY - paddingTop,
-    };
-    node.style = {
-      ...node.style,
-      width,
-      height,
-      zIndex: 0,
-    };
-  });
-
-  return result;
-};
 
 const addContextBoundaryAnchors = (nodes: Node<any>[], edges: Edge[]): Edge[] => {
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
@@ -1250,6 +1127,8 @@ const curatedLlmColorMap: Record<string, string> = {
   'gpt-5.5': 'bg-gradient-to-br from-emerald-400 to-teal-500',
   'gpt-5.2-codex': 'bg-gradient-to-br from-emerald-400 to-teal-500',
   'claude-fable-5': 'bg-gradient-to-br from-orange-600 to-rose-500',
+  'claude-opus-5': 'bg-gradient-to-br from-orange-500 to-rose-600',
+  'claude-sonnet-5': 'bg-gradient-to-br from-amber-400 to-orange-500',
   'claude-sonnet-4-6': 'bg-gradient-to-br from-amber-400 to-yellow-500',
   'claude-opus-4-8': 'bg-gradient-to-br from-orange-500 to-amber-600',
   'claude-haiku-4-5-20251001': 'bg-gradient-to-br from-yellow-300 to-amber-400',
@@ -1507,8 +1386,7 @@ export const mapMessagesToGraphElements = (
   pinnedCommitShas: Set<string> = new Set(),
   hiddenThreadRootIds: Set<string> = new Set(),
   onOpenThread: (threadRootId: string) => void = () => { },
-  onToggleOrchestrationCollapse: (controllerMessageId: string, collapsed: boolean) => void = () => { },
-  collapsedOrchestrationControllerIds: Set<string> = new Set()
+  attachedThreadMessages: Message[] = messages,
 ): { nodes: Node<LlmNodeData | SummaryNodeData | Record<string, unknown> | any>[]; edges: Edge[] } => {
   if ((!messages || messages.length === 0) && projection.threadRootIds.length === 0) {
     return { nodes: [], edges: [] };
@@ -1517,6 +1395,7 @@ export const mapMessagesToGraphElements = (
   const nodes: Node<LlmNodeData | SummaryNodeData | Record<string, unknown>>[] = [];
   const edges: Edge[] = [];
   const messageMap = new Map<string, Message>(messages.map(m => [m.id, m]));
+  const attachedThreadLinkIndex = buildAttachedThreadLinkIndex(attachedThreadMessages);
   const messageIdByCommitSha = new Map<string, string>();
   const renderedCommitNodeIdBySha = new Map<string, string>();
   const producedCommitByNodeId = new Map<string, ProjectedCommitEntity>();
@@ -1747,6 +1626,12 @@ export const mapMessagesToGraphElements = (
         });
       });
 
+      attachedThreadLinkIndex.byAssistantId.forEach((attachedThreads, assistantId) => {
+        if (attachedThreads.some((thread) => matchingMessageIds.has(thread.linkMessageId))) {
+          seedAssistantIds.add(assistantId);
+        }
+      });
+
       const markAncestorsVisible = (assistantId: string) => {
         let currentId: string | null = assistantId;
         const visited = new Set<string>();
@@ -1788,7 +1673,9 @@ export const mapMessagesToGraphElements = (
 
     const shouldRenderMessageNode = (messageId: string): boolean => {
       if (!filterActive || !hasNodeTypeFilter) return true;
-      return matchingMessageIds.has(messageId);
+      if (matchingMessageIds.has(messageId)) return true;
+      return attachedThreadLinkIndex.byAssistantId.get(messageId)
+        ?.some((thread) => matchingMessageIds.has(thread.linkMessageId)) ?? false;
     };
 
     const isMessageInVisibleBranch = (messageId: string): boolean => {
@@ -2146,6 +2033,7 @@ export const mapMessagesToGraphElements = (
     // Create Nodes and Edges
     messages.forEach((msg) => {
       if (isOriginWelcomeMessage(msg)) return;
+      if (attachedThreadLinkIndex.dockedLinkMessageIds.has(msg.id)) return;
       if (hiddenNodes.has(msg.id)) return;
       if (msg.role === 'assistant' && externalClusterByAssistantId.has(msg.id)) return;
       if (msg.role === 'assistant' && !isAssistantVisible(msg.id)) return;
@@ -2168,7 +2056,6 @@ export const mapMessagesToGraphElements = (
         && !!graphParentId
         && entity.threadRootId === graphParentId
         && entity.threadRootId !== projection.originMessageId;
-      const matchesTagFilter = !filterActive || matchingMessageIds.has(msg.id);
       const isContextActive = msg.context_active !== false;
       const llmColor = msg.role === 'user'
         ? 'bg-gradient-to-br from-slate-500 to-slate-700'
@@ -2179,6 +2066,12 @@ export const mapMessagesToGraphElements = (
       const width = nodeKind === 'commit_message' ? TURN_COMMIT_NODE_WIDTH : TURN_CONVERSATION_NODE_WIDTH;
       const nodeState = resolveNodeState(msg, null);
       const hasOutputPreview = hasAssistantOutputPreview(msg, nodeKind);
+      const attachedThreads = nodeKind === 'assistant_message'
+        ? attachedThreadLinkIndex.byAssistantId.get(msg.id) ?? []
+        : [];
+      const matchesTagFilter = !filterActive
+        || matchingMessageIds.has(msg.id)
+        || attachedThreads.some((thread) => matchingMessageIds.has(thread.linkMessageId));
       const baseHeight = (
         nodeKind === 'thread_link'
           ? 64
@@ -2190,10 +2083,13 @@ export const mapMessagesToGraphElements = (
               ? 82
               : TURN_COMMIT_NODE_HEIGHT
       );
+      const reservedHeight = attachedThreads.length > 0
+        ? baseHeight + ATTACHED_THREADS_TRAY_HEIGHT
+        : baseHeight;
       const measuredHeight = nodeKind === 'commit_message' || nodeKind === 'assistant_message'
         ? undefined
         : measuredNodeHeights.get(msg.id);
-      const height = measuredHeight ?? baseHeight;
+      const height = measuredHeight ?? reservedHeight;
       const branchPointers = branchPointersByNodeId.get(msg.id) ?? [];
       const toolCallCount = getToolCallCount(msg);
       const messageCommitCount = getAssistantCommitCount(msg, messages, messageMap);
@@ -2220,6 +2116,7 @@ export const mapMessagesToGraphElements = (
               toolCallCount,
               commitCount,
               changedFilesCount,
+              attachedThreadCount: attachedThreads.length,
             }),
             onMeasureHeight: onMeasureNodeHeight,
             onFocus,
@@ -2257,6 +2154,7 @@ export const mapMessagesToGraphElements = (
             toolCallCount,
             commitCount,
             changedFilesCount,
+            attachedThreads,
             agentStatus: nodeState.status ?? (msg.agent_id ? 'pending' : null),
             isAgentRunning: isActiveAgentStatus(nodeState.status),
             agentId: msg.agent_id ?? null,
@@ -2954,416 +2852,6 @@ export const mapMessagesToGraphElements = (
         });
     }
 
-    const collapsedOrchestrationVisibleNodeIds = new Set<string>();
-    const collapsedOrchestrationCommitAdoptions = new Map<string, { controllerEntity: ProjectedNodeEntity; controllerMessageId: string }>();
-    const expandedOrchestrationHiddenNodeIds = new Set<string>();
-
-    if (showConversationNodes) {
-      const renderedNodeIds = new Set(nodes.map((node) => node.id));
-      projection.entities.forEach((entity) => {
-        if (entity.nodeKind !== 'orchestrator' || !entity.messageId || !entity.orchestrationSummary) return;
-        if (entity.kind !== 'assistant_message') return;
-        if (entity.controlledByNodeId) return;
-        if (!renderedNodeIds.has(entity.messageId)) return;
-
-        const orchestrationModel = buildOrchestrationGraphModel(entity, projection, messageMap);
-        if (!orchestrationModel) return;
-        const summary = entity.orchestrationSummary;
-        const collapsed = collapsedOrchestrationControllerIds.has(entity.messageId);
-        const controlledEntities = summary.controlledEntityIds
-          .map((entityId) => projection.entitiesById.get(entityId) ?? null)
-          .filter((child): child is ProjectedNodeEntity => Boolean(child?.messageId));
-        const controllerMessage = messageMap.get(entity.messageId);
-        const controllerGraphParentId = controllerMessage ? getGraphParentId(controllerMessage, messageMap) : null;
-
-        const visibleControlledMessageIds = controlledEntities
-          .map((child) => child.messageId!)
-          .filter((messageId) => renderedNodeIds.has(messageId));
-        const collapsedMemberIds = Array.from(new Set([entity.messageId, ...visibleControlledMessageIds]));
-        const expandedMemberIds = Array.from(new Set(visibleControlledMessageIds));
-        if (collapsedMemberIds.length === 0) return;
-
-        const orchestrationNodeId = `orchestration:${entity.messageId}`;
-
-        if (collapsed) {
-          nodes.push({
-            id: orchestrationNodeId,
-            type: 'orchestration_node',
-            position: { x: 0, y: 0 },
-            data: {
-              entity,
-              controllerMessageId: entity.messageId,
-              label: orchestrationModel.label,
-              sortTs: entity.sortTs,
-              collapsedMemberIds,
-              totalOrchestrationRuns: orchestrationModel.totalOrchestrationRuns,
-              activeOrchestrationRuns: orchestrationModel.activeOrchestrationRuns,
-              failedOrchestrationRuns: orchestrationModel.failedOrchestrationRuns,
-              completedOrchestrationRuns: orchestrationModel.completedOrchestrationRuns,
-              cancelledOrchestrationRuns: orchestrationModel.cancelledOrchestrationRuns,
-              miniChildren: orchestrationModel.miniChildren,
-              miniAnchors: orchestrationModel.miniAnchors,
-              miniEdges: orchestrationModel.miniEdges,
-              controllerEntity: orchestrationModel.controllerEntity,
-              projection: orchestrationModel.projection,
-              onToggleCollapse: onToggleOrchestrationCollapse,
-            },
-            draggable: false,
-            selectable: true,
-            style: { width: ORCHESTRATION_NODE_WIDTH, height: ORCHESTRATION_NODE_HEIGHT, zIndex: 1 },
-          } as Node<any>);
-
-          const latestAssistantWithCommit = controlledEntities
-            .filter((child) => child.kind === 'assistant_message' && child.messageId)
-            .filter((child) => {
-              const childMessage = messageMap.get(child.messageId!);
-              return Boolean(childMessage && (getMessageOutputCommitSha(childMessage) || producedCommitByNodeId.has(childMessage.id)));
-            })
-            .sort((left, right) => right.sortTs - left.sortTs || right.entityId.localeCompare(left.entityId))[0] ?? null;
-          const latestAssistantMessage = latestAssistantWithCommit?.messageId
-            ? messageMap.get(latestAssistantWithCommit.messageId) ?? null
-            : null;
-          if (latestAssistantWithCommit && latestAssistantMessage) {
-            const outputCommitSha = getMessageOutputCommitSha(latestAssistantMessage)
-              ?? producedCommitByNodeId.get(latestAssistantMessage.id)?.sha
-              ?? null;
-            const ownerCommitShas = producedCommitShasByNodeId.get(latestAssistantMessage.id) ?? new Set<string>();
-            const visibleCommitNodeIds = new Set<string>();
-            const visitedCommitShas = new Set<string>();
-            let cursorSha = outputCommitSha;
-            while (cursorSha && !visitedCommitShas.has(cursorSha)) {
-              visitedCommitShas.add(cursorSha);
-              const commitNodeId = renderedCommitNodeIdBySha.get(cursorSha);
-              if (commitNodeId && nodes.some((node) => node.id === commitNodeId)) {
-                visibleCommitNodeIds.add(commitNodeId);
-              }
-              const commit = projection.commitBySha.get(cursorSha);
-              const parentSha = commit?.layoutParentSha ?? commit?.parentShas[0] ?? null;
-              if (!parentSha || !ownerCommitShas.has(parentSha)) break;
-              cursorSha = parentSha;
-            }
-            if (visibleCommitNodeIds.size === 0) {
-              const commitNodeId = getAssistantOutputCommitNodeId(latestAssistantMessage.id);
-              if (nodes.some((node) => node.id === commitNodeId)) visibleCommitNodeIds.add(commitNodeId);
-            }
-            visibleCommitNodeIds.forEach((commitNodeId) => {
-              collapsedOrchestrationVisibleNodeIds.add(commitNodeId);
-              collapsedOrchestrationCommitAdoptions.set(commitNodeId, {
-                controllerEntity: entity,
-                controllerMessageId: entity.messageId!,
-              });
-            });
-          }
-
-          const memberIdSet = new Set(collapsedMemberIds);
-          const routedEdges: Edge[] = [];
-          edges.forEach((edge) => {
-            const sourceIsMember = memberIdSet.has(edge.source);
-            const targetIsMember = memberIdSet.has(edge.target);
-            if (sourceIsMember === targetIsMember) return;
-
-            const source = sourceIsMember ? orchestrationNodeId : edge.source;
-            const target = targetIsMember ? orchestrationNodeId : edge.target;
-            if (source === target) return;
-
-            const relationship = (edge.data as any)?.relationship ?? 'conversation';
-            if (edges.some((candidate) => (
-              candidate.source === source
-              && candidate.target === target
-              && (candidate.data as any)?.relationship === relationship
-            )) || routedEdges.some((candidate) => (
-              candidate.source === source
-              && candidate.target === target
-              && (candidate.data as any)?.relationship === relationship
-            ))) return;
-
-            routedEdges.push({
-              ...edge,
-              id: `${source}->${target}:orchestration-collapsed:${edge.id}`,
-              source,
-              target,
-              sourceHandle: 'bottom-source',
-              targetHandle: 'top-target',
-              type: edge.type ?? 'compactLineage',
-              data: {
-                ...((edge.data as Record<string, unknown> | undefined) ?? {}),
-                relationship,
-                edgeRole: (edge.data as any)?.edgeRole ?? 'conversation',
-                routedThroughOrchestration: true,
-                orchestrationControllerMessageId: entity.messageId,
-              },
-            });
-          });
-          edges.push(...routedEdges);
-
-          if (
-            controllerGraphParentId
-            && !memberIdSet.has(controllerGraphParentId)
-            && renderedNodeIds.has(controllerGraphParentId)
-            && !edges.some((edge) => (
-              edge.source === controllerGraphParentId
-              && edge.target === orchestrationNodeId
-              && (edge.data as any)?.relationship === 'conversation'
-            ))
-          ) {
-            edges.push({
-              id: `${controllerGraphParentId}->${orchestrationNodeId}:orchestration-collapsed-controller`,
-              source: controllerGraphParentId,
-              target: orchestrationNodeId,
-              sourceHandle: 'bottom-source',
-              targetHandle: 'top-target',
-              type: 'compactLineage',
-              animated: false,
-              data: {
-                edgeLegendType: 'conversation',
-                relationship: 'conversation',
-                edgeRole: 'conversation',
-                routedThroughOrchestration: true,
-                orchestrationControllerMessageId: entity.messageId,
-              },
-              style: {
-                stroke: INACTIVE_EDGE_STROKE,
-                strokeWidth: DEFAULT_EDGE_STROKE_WIDTH,
-              },
-              className: 'dark:[stroke:#94a3b8]',
-              zIndex: 0,
-            });
-          }
-          return;
-        }
-
-        expandedOrchestrationHiddenNodeIds.add(entity.messageId);
-        expandedOrchestrationHiddenNodeIds.add(getAssistantOutputCommitNodeId(entity.messageId));
-        if (controllerGraphParentId && renderedNodeIds.has(controllerGraphParentId)) {
-          const expandedMemberIdSet = new Set(expandedMemberIds);
-          const reroutedEdges: Edge[] = [];
-          edges.forEach((edge) => {
-            if (edge.source !== entity.messageId || !expandedMemberIdSet.has(edge.target)) return;
-            const relationship = (edge.data as any)?.relationship ?? 'conversation';
-            if (relationship !== 'conversation') return;
-            if (edges.some((candidate) => (
-              candidate.source === controllerGraphParentId
-              && candidate.target === edge.target
-              && ((candidate.data as any)?.relationship ?? 'conversation') === relationship
-            )) || reroutedEdges.some((candidate) => (
-              candidate.source === controllerGraphParentId
-              && candidate.target === edge.target
-              && ((candidate.data as any)?.relationship ?? 'conversation') === relationship
-            ))) return;
-
-            reroutedEdges.push({
-              ...edge,
-              id: `${controllerGraphParentId}->${edge.target}:orchestration-expanded-reroute:${edge.id}`,
-              source: controllerGraphParentId,
-              target: edge.target,
-              sourceHandle: 'bottom-source',
-              targetHandle: 'top-target',
-              type: edge.type ?? 'compactLineage',
-              data: {
-                ...((edge.data as Record<string, unknown> | undefined) ?? {}),
-                relationship,
-                edgeRole: (edge.data as any)?.edgeRole ?? 'conversation',
-                routedThroughOrchestration: true,
-                orchestrationControllerMessageId: entity.messageId,
-              },
-            });
-          });
-          controlledEntities.forEach((controlledEntity) => {
-            if (controlledEntity.kind !== 'user_message' || !controlledEntity.messageId) return;
-            if (!expandedMemberIdSet.has(controlledEntity.messageId)) return;
-            const controlledMessage = messageMap.get(controlledEntity.messageId);
-            if (!controlledMessage || getGraphParentId(controlledMessage, messageMap) !== controllerGraphParentId) return;
-            const relationship = 'conversation';
-            if (edges.some((candidate) => (
-              candidate.source === controllerGraphParentId
-              && candidate.target === controlledEntity.messageId
-              && ((candidate.data as any)?.relationship ?? 'conversation') === relationship
-            )) || reroutedEdges.some((candidate) => (
-              candidate.source === controllerGraphParentId
-              && candidate.target === controlledEntity.messageId
-              && ((candidate.data as any)?.relationship ?? 'conversation') === relationship
-            ))) return;
-
-            reroutedEdges.push({
-              id: `${controllerGraphParentId}->${controlledEntity.messageId}:orchestration-expanded-run-root`,
-              source: controllerGraphParentId,
-              target: controlledEntity.messageId,
-              sourceHandle: 'bottom-source',
-              targetHandle: 'top-target',
-              type: 'compactLineage',
-              animated: false,
-              data: {
-                edgeLegendType: 'conversation',
-                relationship,
-                edgeRole: 'conversation',
-                routedThroughOrchestration: true,
-                orchestrationControllerMessageId: entity.messageId,
-              },
-              style: {
-                stroke: INACTIVE_EDGE_STROKE,
-                strokeWidth: DEFAULT_EDGE_STROKE_WIDTH,
-              },
-              className: 'dark:[stroke:#94a3b8]',
-              zIndex: 0,
-            });
-          });
-          edges.push(...reroutedEdges);
-        }
-        nodes.push({
-          id: orchestrationNodeId,
-          type: 'orchestration_hull',
-          position: { x: 0, y: 0 },
-          data: {
-            controllerMessageId: entity.messageId,
-            label: orchestrationModel.label,
-            memberIds: expandedMemberIds.length > 0 ? expandedMemberIds : [entity.messageId],
-            totalOrchestrationRuns: orchestrationModel.totalOrchestrationRuns,
-            activeOrchestrationRuns: orchestrationModel.activeOrchestrationRuns,
-            failedOrchestrationRuns: orchestrationModel.failedOrchestrationRuns,
-            completedOrchestrationRuns: orchestrationModel.completedOrchestrationRuns,
-            cancelledOrchestrationRuns: orchestrationModel.cancelledOrchestrationRuns,
-            controllerEntity: orchestrationModel.controllerEntity,
-            projection: orchestrationModel.projection,
-            onToggleCollapse: onToggleOrchestrationCollapse,
-          },
-          draggable: false,
-          selectable: false,
-          style: { zIndex: 0 },
-        } as Node<any>);
-      });
-    }
-
-    if (expandedOrchestrationHiddenNodeIds.size > 0) {
-      nodes.forEach((node) => {
-        const nodeData = node.data as any;
-        const focusMessageId = nodeData?.entity?.focusMessageId;
-        const parentMessageId = nodeData?.message?.parentId;
-        if (
-          node.type === 'commit_message' &&
-          (
-            (typeof focusMessageId === 'string' && expandedOrchestrationHiddenNodeIds.has(focusMessageId)) ||
-            (typeof parentMessageId === 'string' && expandedOrchestrationHiddenNodeIds.has(parentMessageId))
-          )
-        ) {
-          expandedOrchestrationHiddenNodeIds.add(node.id);
-        }
-      });
-      const updatedNodes = nodes.map((node) => {
-        if (!expandedOrchestrationHiddenNodeIds.has(node.id) || isHullNodeType(node.type)) return node;
-        return {
-          ...node,
-          hidden: true,
-          selectable: false,
-          draggable: false,
-        };
-      });
-      nodes.splice(0, nodes.length, ...updatedNodes);
-      const visibleExpandedOrchestrationEdges = edges.filter((edge) => (
-        !expandedOrchestrationHiddenNodeIds.has(edge.source)
-        && !expandedOrchestrationHiddenNodeIds.has(edge.target)
-      ));
-      edges.splice(0, edges.length, ...visibleExpandedOrchestrationEdges);
-    }
-
-    const collapsedOrchestrationMemberIds = new Set<string>();
-    nodes.forEach((node) => {
-      if (node.type !== 'orchestration_node') return;
-      ((node.data as any)?.collapsedMemberIds as string[] | undefined)?.forEach((memberId) => {
-        collapsedOrchestrationMemberIds.add(memberId);
-      });
-    });
-    if (collapsedOrchestrationMemberIds.size > 0) {
-      const collapsedOrchestrationHiddenNodeIds = new Set<string>(collapsedOrchestrationMemberIds);
-      collapsedOrchestrationMemberIds.forEach((memberId) => {
-        const commitNodeId = getAssistantOutputCommitNodeId(memberId);
-        if (!collapsedOrchestrationVisibleNodeIds.has(commitNodeId)) {
-          collapsedOrchestrationHiddenNodeIds.add(commitNodeId);
-        }
-      });
-      nodes.forEach((node) => {
-        if (collapsedOrchestrationVisibleNodeIds.has(node.id)) return;
-        const nodeData = node.data as any;
-        const focusMessageId = nodeData?.entity?.focusMessageId;
-        const parentMessageId = nodeData?.message?.parentId;
-        if (
-          node.type === 'commit_message' &&
-          (
-            (typeof focusMessageId === 'string' && collapsedOrchestrationMemberIds.has(focusMessageId)) ||
-            (typeof parentMessageId === 'string' && collapsedOrchestrationMemberIds.has(parentMessageId))
-          )
-        ) {
-          collapsedOrchestrationHiddenNodeIds.add(node.id);
-        }
-      });
-      const adoptedCommitNodeIds = new Set(collapsedOrchestrationCommitAdoptions.keys());
-      const updatedNodes = nodes.map((node) => {
-        if (isTurnHullNodeType(node.type)) {
-          const originalMemberIds = ((node.data as any)?.memberIds as string[] | undefined) ?? [];
-          let memberIds = originalMemberIds.filter((memberId) => !adoptedCommitNodeIds.has(memberId));
-          collapsedOrchestrationCommitAdoptions.forEach((adoption, commitNodeId) => {
-            if (node.id === `hull:${adoption.controllerEntity.turnGroupId}` && !memberIds.includes(commitNodeId)) {
-              memberIds = [...memberIds, commitNodeId];
-            }
-          });
-          const nodeWithAdjustedMembers = memberIds.length === originalMemberIds.length && memberIds.every((memberId, index) => memberId === originalMemberIds[index])
-            ? node
-            : {
-              ...node,
-              data: {
-                ...((node.data as Record<string, unknown> | undefined) ?? {}),
-                memberIds,
-              },
-            };
-          if (memberIds.length > 0 && memberIds.every((memberId) => collapsedOrchestrationHiddenNodeIds.has(memberId))) {
-            return {
-              ...nodeWithAdjustedMembers,
-              hidden: true,
-              selectable: false,
-              draggable: false,
-            };
-          }
-          return nodeWithAdjustedMembers;
-        }
-        const adoption = collapsedOrchestrationCommitAdoptions.get(node.id);
-        if (adoption) {
-          const nodeData = (node.data as Record<string, unknown> | undefined) ?? {};
-          const entity = nodeData.entity as ProjectedNodeEntity | undefined;
-          const message = (nodeData.message as Message | undefined) ?? entity?.message;
-          const adoptedMessage = message ? { ...message, parentId: adoption.controllerMessageId } : undefined;
-          return {
-            ...node,
-            data: {
-              ...nodeData,
-              entity: entity ? {
-                ...entity,
-                focusMessageId: adoption.controllerMessageId,
-                parentEntityId: adoption.controllerEntity.entityId,
-                turnGroupId: adoption.controllerEntity.turnGroupId,
-                message: adoptedMessage ?? entity.message,
-              } : entity,
-              message: adoptedMessage ?? nodeData.message,
-              orchestrationControllerMessageId: adoption.controllerMessageId,
-            },
-            hidden: false,
-            selectable: node.selectable,
-            draggable: node.draggable,
-          };
-        }
-        if (!collapsedOrchestrationHiddenNodeIds.has(node.id) || isHullNodeType(node.type)) return node;
-        return {
-          ...node,
-          hidden: true,
-          selectable: false,
-          draggable: false,
-        };
-      });
-      nodes.splice(0, nodes.length, ...updatedNodes);
-      const visibleOrchestrationEdges = edges.filter((edge) => (
-        !collapsedOrchestrationHiddenNodeIds.has(edge.source)
-        && !collapsedOrchestrationHiddenNodeIds.has(edge.target)
-      ));
-      edges.splice(0, edges.length, ...visibleOrchestrationEdges);
-    }
 
     const renderedNodeIds = new Set(nodes.map((node) => node.id));
     const visibleEdges = edges.filter((edge) => renderedNodeIds.has(edge.source) && renderedNodeIds.has(edge.target));
@@ -3542,7 +3030,7 @@ export const getLayoutedElements = (nodes: Node<LlmNodeData | SummaryNodeData | 
     });
   }
 
-  layoutedNodes = applyOrchestrationHullBounds(applyTurnGroupHullBounds(layoutedNodes));
+  layoutedNodes = applyTurnGroupHullBounds(layoutedNodes);
 
   return { nodes: layoutedNodes, edges: addContextBoundaryAnchors(layoutedNodes, edges) };
 
@@ -3891,7 +3379,7 @@ export const getLaneLayoutedElements = (
     }
   });
 
-  finalNodes = applyOrchestrationHullBounds(applyTurnGroupHullBounds(finalNodes));
+  finalNodes = applyTurnGroupHullBounds(finalNodes);
 
   return { nodes: finalNodes, edges: addContextBoundaryAnchors(finalNodes, edges) };
 };
@@ -4276,7 +3764,7 @@ export const getTidyTreeLayoutedElements = (
     }
   });
 
-  finalNodes = applyOrchestrationHullBounds(applyTurnGroupHullBounds(finalNodes));
+  finalNodes = applyTurnGroupHullBounds(finalNodes);
 
   return { nodes: finalNodes, edges: addContextBoundaryAnchors(finalNodes, edges) };
 };
@@ -4547,7 +4035,7 @@ export const getSugiyamaLayoutedElements = (
     }
   });
 
-  finalNodes = applyOrchestrationHullBounds(applyTurnGroupHullBounds(finalNodes));
+  finalNodes = applyTurnGroupHullBounds(finalNodes);
 
   return { nodes: finalNodes, edges: addContextBoundaryAnchors(finalNodes, edges) };
 };

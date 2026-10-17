@@ -133,6 +133,16 @@ const shouldUseGraphContent = (base: Message | null, live: AgentRunProjectedMess
   return isTerminalAgentStatus(liveStatus) && (live.content?.length ?? 0) > (base?.content?.length ?? 0);
 };
 
+const cleanParentId = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+};
+
+const resolveMergedParentId = (base: Message | null, live: AgentRunProjectedMessage): string | null => (
+  cleanParentId(live.parentId) ?? cleanParentId(base?.parentId) ?? null
+);
+
 export function mergeLiveMessage(base: Message | null, live: AgentRunProjectedMessage): Message {
   const liveStatus = live._optimisticStatus ?? live.status ?? null;
   const resolved = resolveNodeState(base, live);
@@ -141,6 +151,7 @@ export function mergeLiveMessage(base: Message | null, live: AgentRunProjectedMe
   return {
     ...(base || live),
     ...live,
+    parentId: resolveMergedParentId(base, live),
     status: nextStatus,
     content: shouldUseLiveContent(base, live) ? (live.content ?? '') : (base?.content ?? live.content ?? ''),
     execution_data: live.execution_data ?? base?.execution_data ?? null,
@@ -163,6 +174,7 @@ function mergeGraphMessage(base: Message | null, live: AgentRunProjectedMessage)
   return {
     ...(base || live),
     ...live,
+    parentId: resolveMergedParentId(base, live),
     status: nextStatus,
     updatedAt: base?.updatedAt ?? live.updatedAt ?? '',
     // Graph should not receive continuous streamed body text, but terminal text is safe.
@@ -187,6 +199,7 @@ function toProjectedOnlyMessage(live: AgentRunProjectedMessage): Message {
 
   return {
     ...live,
+    parentId: cleanParentId(live.parentId),
     content: live.role === 'user' || isTerminalAgentStatus(nextStatus) ? (live.content ?? '') : '',
     execution_data: live.role === 'user' || isTerminalAgentStatus(nextStatus) ? (live.execution_data ?? null) : null,
     promptTokens: live.role === 'user' || isTerminalAgentStatus(nextStatus) ? (live.promptTokens ?? null) : null,

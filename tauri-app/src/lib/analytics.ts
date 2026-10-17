@@ -1,37 +1,190 @@
 import type * as Amplitude from '@amplitude/analytics-browser';
 
-type AnalyticsProperties = Record<string, string | number | boolean | null | undefined>;
+export type CountBucket = '0' | '1' | '2-5' | '6-20' | '21+';
+export type CharacterCountBucket = '0' | '1-100' | '101-500' | '501-2000' | '2001+';
+export type AnalyticsFailureCategory = 'aborted' | 'network' | 'runtime' | 'unknown';
 
-interface AnalyticsUser {
-  id: string;
-  email?: string | null;
+type EmptyProperties = Record<string, never>;
+
+interface AnalyticsEventProperties {
+  'App Launched': { app_version: string };
+  'Screen Viewed': {
+    screen: 'login' | 'workspace' | 'onboarding';
+    active_view?: string;
+    has_workspace?: boolean;
+    workspace_count_bucket?: CountBucket;
+  };
+  'Onboarding Step Viewed': { step: string };
+  'Onboarding Environment Checked': {
+    git_installed: boolean;
+    codex_authenticated: boolean;
+    codex_readiness_status: string;
+    claude_authenticated: boolean;
+    claude_readiness_status: string;
+  };
+  'Onboarding Environment Check Failed': EmptyProperties;
+  'Onboarding Folder Picker Opened': EmptyProperties;
+  'Onboarding Folder Selected': EmptyProperties;
+  'Onboarding Existing Workspace Selected': EmptyProperties;
+  'Onboarding Completed': EmptyProperties;
+  'Onboarding Workspace Setup Action Required': {
+    requirement_type: string;
+    changed_files_count_bucket: CountBucket;
+  };
+  'Onboarding Workspace Setup Failed': EmptyProperties;
+  'Workspace Created': {
+    source: string;
+    allow_git_init?: boolean;
+    dirty_strategy?: string;
+  };
+  'Agent Message Submitted': {
+    agent_provider?: string;
+    agent_run_count_bucket: CountBucket;
+    prompt_chars_bucket: CharacterCountBucket;
+    attachment_count_bucket: CountBucket;
+    context_entry_count_bucket: CountBucket;
+    has_parent: boolean;
+    edit_and_run: boolean;
+  };
+  'Agent Run Started': {
+    agent_provider?: string;
+    provider_thread_strategy: string;
+    branch_from_interior: boolean;
+    auto_checkout_requested: boolean;
+    explicit_context_chars_bucket: CharacterCountBucket;
+    injected_context_chars_bucket: CharacterCountBucket;
+    provider_context_routing_mode: string;
+  };
+  'Agent Spawn Succeeded': { agent_provider?: string };
+  'Agent Spawn Dispatched': { agent_provider?: string };
+  'Agent Run Failed': {
+    agent_provider?: string;
+    error_phase: 'spawn' | 'setup';
+    failure_category: AnalyticsFailureCategory;
+  };
 }
+
+type AnalyticsEventName = keyof AnalyticsEventProperties;
+type PropertyKind = 'boolean' | 'string';
+
+const EVENT_PROPERTY_SCHEMA = {
+  'App Launched': { app_version: 'string' },
+  'Screen Viewed': {
+    screen: 'string',
+    active_view: 'string',
+    has_workspace: 'boolean',
+    workspace_count_bucket: 'string',
+  },
+  'Onboarding Step Viewed': { step: 'string' },
+  'Onboarding Environment Checked': {
+    git_installed: 'boolean',
+    codex_authenticated: 'boolean',
+    codex_readiness_status: 'string',
+    claude_authenticated: 'boolean',
+    claude_readiness_status: 'string',
+  },
+  'Onboarding Environment Check Failed': {},
+  'Onboarding Folder Picker Opened': {},
+  'Onboarding Folder Selected': {},
+  'Onboarding Existing Workspace Selected': {},
+  'Onboarding Completed': {},
+  'Onboarding Workspace Setup Action Required': {
+    requirement_type: 'string',
+    changed_files_count_bucket: 'string',
+  },
+  'Onboarding Workspace Setup Failed': {},
+  'Workspace Created': {
+    source: 'string',
+    allow_git_init: 'boolean',
+    dirty_strategy: 'string',
+  },
+  'Agent Message Submitted': {
+    agent_provider: 'string',
+    agent_run_count_bucket: 'string',
+    prompt_chars_bucket: 'string',
+    attachment_count_bucket: 'string',
+    context_entry_count_bucket: 'string',
+    has_parent: 'boolean',
+    edit_and_run: 'boolean',
+  },
+  'Agent Run Started': {
+    agent_provider: 'string',
+    provider_thread_strategy: 'string',
+    branch_from_interior: 'boolean',
+    auto_checkout_requested: 'boolean',
+    explicit_context_chars_bucket: 'string',
+    injected_context_chars_bucket: 'string',
+    provider_context_routing_mode: 'string',
+  },
+  'Agent Spawn Succeeded': { agent_provider: 'string' },
+  'Agent Spawn Dispatched': { agent_provider: 'string' },
+  'Agent Run Failed': {
+    agent_provider: 'string',
+    error_phase: 'string',
+    failure_category: 'string',
+  },
+} as const satisfies Record<AnalyticsEventName, Record<string, PropertyKind>>;
 
 let initialized = false;
 let amplitude: typeof Amplitude | null = null;
 let warnedMissingKey = false;
-let lastIdentifiedUserId: string | null = null;
 
 const parseBoolean = (value: unknown): boolean =>
   ['1', 'true', 'yes', 'on'].includes(String(value ?? '').trim().toLowerCase());
 
-const parseSampleRate = (value: unknown): number => {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return 0;
-  return Math.min(1, Math.max(0, parsed));
-};
-
 const isAnalyticsDisabled = () =>
-  import.meta.env.VITE_AGENTREE_OFFICIAL_CLOUD !== 'true' ||
   parseBoolean(import.meta.env.VITE_AMPLITUDE_DISABLED) ||
   parseBoolean(import.meta.env.VITE_ANALYTICS_DISABLED);
 
-const getEmailDomain = (email?: string | null): string | null => {
-  const domain = email?.split('@')[1]?.trim().toLowerCase();
-  return domain || null;
-};
-
 const getAppVersion = (): string => import.meta.env.VITE_APP_VERSION || '0.1.0';
+
+const isAnalyticsEventName = (eventName: string): eventName is AnalyticsEventName =>
+  Object.prototype.hasOwnProperty.call(EVENT_PROPERTY_SCHEMA, eventName);
+
+export function bucketCount(value: number): CountBucket {
+  if (value <= 0) return '0';
+  if (value === 1) return '1';
+  if (value <= 5) return '2-5';
+  if (value <= 20) return '6-20';
+  return '21+';
+}
+
+export function bucketCharacterCount(value: number): CharacterCountBucket {
+  if (value <= 0) return '0';
+  if (value <= 100) return '1-100';
+  if (value <= 500) return '101-500';
+  if (value <= 2_000) return '501-2000';
+  return '2001+';
+}
+
+export function analyticsFailureCategory(error: unknown): AnalyticsFailureCategory {
+  const name = error instanceof Error ? error.name.toLowerCase() : '';
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error ?? '').toLowerCase();
+  if (name === 'aborterror' || message.includes('aborted') || message.includes('cancelled')) return 'aborted';
+  if (message.includes('network') || message.includes('timeout') || message.includes('timed out')) return 'network';
+  if (name.includes('tauri') || message.includes('invoke') || message.includes('runtime')) return 'runtime';
+  return 'unknown';
+}
+
+export function sanitizeAnalyticsEvent(
+  eventName: string,
+  properties: Record<string, unknown> = {},
+): { eventName: AnalyticsEventName; properties: Record<string, string | boolean> } | null {
+  if (!isAnalyticsEventName(eventName)) return null;
+  const schema = EVENT_PROPERTY_SCHEMA[eventName] as Record<string, PropertyKind>;
+  const sanitized: Record<string, string | boolean> = {};
+
+  for (const [key, kind] of Object.entries(schema)) {
+    const value = properties[key];
+    if (kind === 'boolean' && typeof value === 'boolean') {
+      sanitized[key] = value;
+    } else if (kind === 'string' && typeof value === 'string' && value.trim()) {
+      sanitized[key] = value.trim().slice(0, 64);
+    }
+  }
+
+  return { eventName, properties: sanitized };
+}
 
 export async function initAnalytics(): Promise<void> {
   if (initialized || isAnalyticsDisabled()) return;
@@ -45,72 +198,46 @@ export async function initAnalytics(): Promise<void> {
     return;
   }
 
-  const replaySampleRate = parseSampleRate(import.meta.env.VITE_AMPLITUDE_SESSION_REPLAY_SAMPLE_RATE);
   amplitude = await import('@amplitude/analytics-browser');
-
-  if (replaySampleRate > 0) {
-    const { sessionReplayPlugin } = await import('@amplitude/plugin-session-replay-browser');
-    amplitude.add(sessionReplayPlugin({
-      sampleRate: replaySampleRate,
-      privacyConfig: {
-        defaultMaskLevel: 'conservative',
-        blockSelector: ['.amp-block', '[data-analytics-block="true"]'],
-      },
-    }));
-  }
-
   amplitude.init(apiKey, {
     appVersion: getAppVersion(),
-    defaultTracking: {
-      attribution: false,
-      fileDownloads: false,
-      formInteractions: false,
-      pageViews: false,
-      sessions: true,
+    deviceId: crypto.randomUUID(),
+    identityStorage: 'none',
+    userId: undefined,
+    defaultTracking: false,
+    autocapture: false,
+    customEnrichment: false,
+    fetchRemoteConfig: false,
+    remoteConfig: { fetchRemoteConfig: false },
+    enableDiagnostics: false,
+    trackingOptions: {
+      ipAddress: false,
+      language: false,
+      platform: false,
     },
   });
 
   initialized = true;
-  track('App Launched', {
+  track('App Launched', { app_version: getAppVersion() });
+}
+
+export function track<EventName extends AnalyticsEventName>(
+  eventName: EventName,
+  properties?: AnalyticsEventProperties[EventName],
+): void {
+  if (!initialized || !amplitude || isAnalyticsDisabled()) return;
+  const sanitized = sanitizeAnalyticsEvent(eventName, properties ?? {});
+  if (!sanitized) return;
+  amplitude.track(sanitized.eventName, {
     app_context: 'tauri',
-    app_version: getAppVersion(),
-    session_replay_enabled: replaySampleRate > 0,
-    session_replay_sample_rate: replaySampleRate,
+    ...sanitized.properties,
   });
 }
 
-export function track(eventName: string, properties: AnalyticsProperties = {}): void {
-  if (!initialized || !amplitude || isAnalyticsDisabled()) return;
-  amplitude.track(eventName, {
-    app_context: 'tauri',
-    ...properties,
-  });
-}
-
-export function identifyUser(user: AnalyticsUser | null): void {
-  if (!initialized || !amplitude || isAnalyticsDisabled()) return;
-
-  if (!user?.id) {
-    lastIdentifiedUserId = null;
-    amplitude.reset();
-    return;
-  }
-
-  amplitude.setUserId(user.id);
-  if (lastIdentifiedUserId === user.id) return;
-
-  const identify = new amplitude.Identify();
-  const emailDomain = getEmailDomain(user.email);
-  if (emailDomain) {
-    identify.set('email_domain', emailDomain);
-  }
-  identify.set('app_context', 'tauri');
-  identify.set('app_version', getAppVersion());
-  amplitude.identify(identify);
-  lastIdentifiedUserId = user.id;
-}
-
-export function trackScreenViewed(screen: string, properties: AnalyticsProperties = {}): void {
+export function trackScreenViewed(
+  screen: AnalyticsEventProperties['Screen Viewed']['screen'],
+  properties: Omit<AnalyticsEventProperties['Screen Viewed'], 'screen'> = {},
+): void {
   track('Screen Viewed', { screen, ...properties });
 }
 
@@ -118,18 +245,17 @@ export function trackOnboardingStepViewed(step: string): void {
   track('Onboarding Step Viewed', { step });
 }
 
-export function trackWorkspaceCreated(source: string, properties: AnalyticsProperties = {}): void {
+export function trackWorkspaceCreated(
+  source: string,
+  properties: Omit<AnalyticsEventProperties['Workspace Created'], 'source'> = {},
+): void {
   track('Workspace Created', { source, ...properties });
 }
 
-export function trackAgentRunStarted(properties: AnalyticsProperties = {}): void {
+export function trackAgentRunStarted(properties: AnalyticsEventProperties['Agent Run Started']): void {
   track('Agent Run Started', properties);
 }
 
-export function trackAgentRunCompleted(properties: AnalyticsProperties = {}): void {
-  track('Agent Run Completed', properties);
-}
-
-export function trackAgentRunFailed(properties: AnalyticsProperties = {}): void {
+export function trackAgentRunFailed(properties: AnalyticsEventProperties['Agent Run Failed']): void {
   track('Agent Run Failed', properties);
 }

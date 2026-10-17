@@ -15,6 +15,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import {
+  claudeSdkNpmInstallArgs,
+  npmEnvironmentWithOptionalDependencies,
+  validateClaudeSdkInstall,
+  validateClaudeSdkVersionAlignment,
+} from './runtime-archive-layout.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = path.join(projectRoot, 'runtime-manifest.json');
@@ -23,6 +29,7 @@ const outputDir = path.join(projectRoot, 'src-tauri', 'target', 'runtime-archive
 const PLATFORMS = {
   'linux-x86_64': {
     nodeDist: 'linux-x64',
+    claudePackageSuffix: 'linux-x64',
     codexVersionSuffix: 'linux-x64',
     codexTriple: 'x86_64-unknown-linux-musl',
     npmOs: 'linux',
@@ -30,6 +37,7 @@ const PLATFORMS = {
   },
   'darwin-aarch64': {
     nodeDist: 'darwin-arm64',
+    claudePackageSuffix: 'darwin-arm64',
     codexVersionSuffix: 'darwin-arm64',
     codexTriple: 'aarch64-apple-darwin',
     npmOs: 'darwin',
@@ -46,6 +54,8 @@ const requestedPlatforms =
     : Object.keys(PLATFORMS);
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
+validateClaudeSdkVersionAlignment(packageJson, manifest);
 const releaseBase = manifest.releaseBase.replace(/\/$/, '');
 
 function run(command, commandArgs, options = {}) {
@@ -75,7 +85,13 @@ function archiveName(component, version, platformKey) {
 // tar with a root-content layout: entries land directly at archive root.
 function packDirectory(sourceDir, destinationFile) {
   fs.mkdirSync(path.dirname(destinationFile), { recursive: true });
-  run('tar', ['-czf', destinationFile, '-C', sourceDir, '.']);
+  const temporaryFile = `${destinationFile}.tmp-${process.pid}`;
+  try {
+    run('tar', ['--no-xattrs', '-czf', temporaryFile, '-C', sourceDir, '.']);
+    fs.renameSync(temporaryFile, destinationFile);
+  } finally {
+    fs.rmSync(temporaryFile, { force: true });
+  }
 }
 
 function withTempDir(prefix, work) {
@@ -108,27 +124,29 @@ function buildNodeArchive(version, platformKey, destination) {
 }
 
 function buildClaudeSdkArchive(version, platformKey, destination) {
-  const { npmOs, npmCpu } = PLATFORMS[platformKey];
+  const { claudePackageSuffix, npmOs, npmCpu } = PLATFORMS[platformKey];
   withTempDir('agentree-claude-sdk-', (tempDir) => {
     fs.writeFileSync(
       path.join(tempDir, 'package.json'),
       JSON.stringify({ name: 'agentree-claude-runtime', private: true }, null, 2)
     );
-    run(
-      'npm',
-      [
-        'install',
-        '--omit=dev',
-        '--no-audit',
-        '--no-fund',
-        '--ignore-scripts',
-        `--os=${npmOs}`,
-        `--cpu=${npmCpu}`,
-        '--force',
-        `@anthropic-ai/claude-agent-sdk@${version}`,
-      ],
-      { cwd: tempDir }
-    );
+    run('npm', claudeSdkNpmInstallArgs(version, npmOs, npmCpu), {
+      cwd: tempDir,
+      env: npmEnvironmentWithOptionalDependencies(),
+    });
+    const nativePackageName = `claude-agent-sdk-${claudePackageSuffix}`;
+    const nativeSpec = `@anthropic-ai/${nativePackageName}@${version}`;
+    const packed = run('npm', ['pack', nativeSpec, '--pack-destination', tempDir])
+      .trim()
+      .split('\n')
+      .pop();
+    const nativeDir = path.join(tempDir, 'node_modules', '@anthropic-ai', nativePackageName);
+    fs.mkdirSync(nativeDir, { recursive: true });
+    run('tar', ['-xzf', path.join(tempDir, packed), '-C', nativeDir, '--strip-components=1']);
+    if (!fs.existsSync(path.join(nativeDir, 'claude'))) {
+      throw new Error(`Claude native binary missing in ${nativeSpec}`);
+    }
+    validateClaudeSdkInstall(path.join(tempDir, 'node_modules'), { version, npmOs, npmCpu });
     const staging = path.join(tempDir, 'staging');
     fs.mkdirSync(staging, { recursive: true });
     fs.cpSync(path.join(tempDir, 'node_modules'), path.join(staging, 'node_modules'), {
@@ -136,6 +154,20 @@ function buildClaudeSdkArchive(version, platformKey, destination) {
     });
     packDirectory(staging, destination);
   });
+}
+
+function validateClaudeSdkArchive(version, platformKey, archivePath) {
+  const { npmOs, npmCpu } = PLATFORMS[platformKey];
+  withTempDir('agentree-claude-sdk-validate-', (tempDir) => {
+    run('tar', ['-xzf', archivePath, '-C', tempDir]);
+    validateClaudeSdkInstall(path.join(tempDir, 'node_modules'), { version, npmOs, npmCpu });
+  });
+}
+
+function validateBuiltArchive(component, version, platformKey, archivePath) {
+  if (component === 'claude-sdk') {
+    validateClaudeSdkArchive(version, platformKey, archivePath);
+  }
 }
 
 function buildCodexArchive(version, platformKey, destination) {
@@ -182,12 +214,25 @@ for (const [component, spec] of Object.entries(manifest.components)) {
       continue;
     }
 
+    if (fs.existsSync(destination) && spawnSync('tar', ['-tzf', destination]).status !== 0) {
+      console.log(`Discarding invalid archive ${fileName}`);
+      fs.rmSync(destination);
+    }
+    if (fs.existsSync(destination)) {
+      try {
+        validateBuiltArchive(component, spec.version, platformKey, destination);
+      } catch (error) {
+        console.warn(`Discarding invalid cached ${fileName}: ${error.message}`);
+        fs.rmSync(destination);
+      }
+    }
     if (!fs.existsSync(destination)) {
       console.log(`Building ${fileName} ...`);
       builders[component](spec.version, platformKey, destination);
     } else {
       console.log(`Reusing existing ${fileName}`);
     }
+    validateBuiltArchive(component, spec.version, platformKey, destination);
     const checksum = sha256OfFile(destination);
     if (spec.platforms[platformKey].sha256 !== checksum || spec.platforms[platformKey].url !== url) {
       spec.platforms[platformKey] = { url, sha256: checksum };

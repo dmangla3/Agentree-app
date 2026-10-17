@@ -29,6 +29,7 @@ vi.mock('../lib/agentClient', () => ({
     stopAgent: hookMocks.stopAgent,
     hasRuntime: vi.fn(() => true),
     startAgentRun: hookMocks.startAgentRun,
+    launchAgentMessage: hookMocks.startAgentRun,
     upsertLocalNode: hookMocks.upsertLocalNode,
     listProviderSkills: hookMocks.listProviderSkills,
     listFilesAtCommit: hookMocks.listFilesAtCommit,
@@ -50,14 +51,24 @@ vi.mock('../lib/graphInteractionGate', () => ({
 
 vi.mock('../hooks/useAgents', () => ({
   useAgents: () => ({
-    data: [{
-      id: 'codex:test',
-      name: 'Codex Test',
-      type: 'codex',
-      model_config: { model: 'gpt-test' },
-      cliArgs: '',
-      promptFlag: null,
-    }],
+    data: [
+      {
+        id: 'codex:test',
+        name: 'Codex Test',
+        type: 'codex',
+        model_config: { model: 'gpt-test' },
+        cliArgs: '',
+        promptFlag: null,
+      },
+      {
+        id: 'claude:test',
+        name: 'Claude Test',
+        type: 'claude',
+        model_config: { model: 'claude-test' },
+        cliArgs: '',
+        promptFlag: null,
+      },
+    ],
   }),
 }));
 
@@ -97,7 +108,12 @@ vi.mock('../hooks/useTrackedRefs', () => ({
 }));
 
 vi.mock('../components/UnifiedAgentModelSelector', () => ({
-  UnifiedAgentModelSelector: () => <div data-testid="model-selector" />,
+  UnifiedAgentModelSelector: ({ onSelectAgent }: { onSelectAgent: (agentId: string) => void }) => (
+    <div data-testid="model-selector">
+      <button type="button" onClick={() => onSelectAgent('codex:test')}>Choose Codex Test</button>
+      <button type="button" onClick={() => onSelectAgent('claude:test')}>Choose Claude Test</button>
+    </div>
+  ),
 }));
 
 const message = (input: Partial<Message> & Pick<Message, 'id'>): Message => ({
@@ -256,7 +272,8 @@ describe('GraphDockComposer steering behavior', () => {
     });
 
     const sendButton = await screen.findByRole('button', { name: 'Steer running agent' });
-    expect((screen.getByRole('button', { name: 'Select model' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Change Codex Test' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Add model' }) as HTMLButtonElement).disabled).toBe(true);
     expect((sendButton as HTMLButtonElement).disabled).toBe(true);
 
     const composer = screen.getByLabelText('Graph composer prompt');
@@ -273,6 +290,26 @@ describe('GraphDockComposer steering behavior', () => {
       );
     });
     expect((composer as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('replaces models from chips and adds models from the footer button', async () => {
+    const user = userEvent.setup();
+    renderComposer([]);
+
+    await user.click(screen.getByRole('button', { name: 'Increase Codex Test' }));
+    expect(screen.getByText('2x')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Change Codex Test' }));
+    await user.click(await screen.findByRole('button', { name: 'Choose Claude Test' }));
+
+    expect(screen.getByRole('button', { name: 'Change Claude Test' })).toBeTruthy();
+    expect(screen.getByText('2x')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Add model' }));
+    await user.click(await screen.findByRole('button', { name: 'Choose Codex Test' }));
+
+    expect(screen.getByRole('button', { name: 'Change Claude Test' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Change Codex Test' })).toBeTruthy();
   });
 
   it('shows a cancel button for live-running assistant targets', async () => {
@@ -309,7 +346,7 @@ describe('GraphDockComposer steering behavior', () => {
     );
   });
 
-  it('inserts orchestration prompt mentions from # suggestions and enables orchestration', async () => {
+  it('inserts orchestration prompt mentions without requiring a composer mode', async () => {
     const user = userEvent.setup();
     useOrchestrationTemplateStore.getState().upsertUserTemplate({
       id: '#migration_review',
@@ -332,7 +369,7 @@ describe('GraphDockComposer steering behavior', () => {
     await user.click(screen.getByRole('button', { name: /#migration_review/i }));
 
     expect(promptInput.value).toBe('#migration_review ');
-    expect((screen.getByLabelText('Enable orchestration') as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByLabelText('Enable orchestration')).toBeNull();
   });
 
   it('sends the graph dock composer message on Enter', async () => {
@@ -352,13 +389,11 @@ describe('GraphDockComposer steering behavior', () => {
     await user.keyboard('{Enter}');
 
     await waitFor(() => {
-      expect(hookMocks.upsertLocalNode).toHaveBeenCalledTimes(2);
       expect(hookMocks.startAgentRun).toHaveBeenCalledWith(expect.objectContaining({
-        repoPath: '/repo',
-        parentCommit: 'parent-output',
+        baseCommit: 'parent-output',
       }));
     });
-    const userMessage = hookMocks.upsertLocalNode.mock.calls[0][2] as Message;
+    const userMessage = hookMocks.startAgentRun.mock.calls[0][0].userNode as Message;
     expect(userMessage.content).toBe('Send from keyboard');
     expect(userMessage.parentId).toBe('assistant-live');
   });
@@ -413,10 +448,11 @@ describe('GraphDockComposer steering behavior', () => {
     await user.click(screen.getByRole('button', { name: 'Send graph composer message' }));
 
     await waitFor(() => {
-      expect(hookMocks.upsertLocalNode).toHaveBeenCalledTimes(2);
+      expect(hookMocks.startAgentRun).toHaveBeenCalledTimes(1);
     });
-    const userMessage = hookMocks.upsertLocalNode.mock.calls[0][2] as Message;
-    const assistantMessage = hookMocks.upsertLocalNode.mock.calls[1][2] as Message;
+    const launchRequest = hookMocks.startAgentRun.mock.calls[0][0];
+    const userMessage = launchRequest.userNode as Message;
+    const assistantMessage = launchRequest.assistantNode as Message;
     expect(userMessage.parentId).toBeNull();
     expect(userMessage.threadId).toBe('pending-thread');
     expect(userMessage.execution_data?.meta?.context_policy).toBe('fresh');
@@ -501,7 +537,7 @@ describe('GraphDockComposer steering behavior', () => {
     await user.click(screen.getByRole('button', { name: 'Send graph composer message' }));
 
     await waitFor(() => {
-      expect(hookMocks.upsertLocalNode).toHaveBeenCalledTimes(2);
+      expect(hookMocks.startAgentRun).toHaveBeenCalledTimes(1);
     });
     await waitFor(() => {
       expect(screen.getByText('Reply to')).toBeTruthy();
@@ -552,9 +588,9 @@ describe('GraphDockComposer steering behavior', () => {
     await user.click(screen.getByRole('button', { name: 'Send graph composer message' }));
 
     await waitFor(() => {
-      expect(hookMocks.upsertLocalNode).toHaveBeenCalledTimes(2);
+      expect(hookMocks.startAgentRun).toHaveBeenCalledTimes(1);
     });
-    const userMessage = hookMocks.upsertLocalNode.mock.calls[0][2] as Message;
+    const userMessage = hookMocks.startAgentRun.mock.calls[0][0].userNode as Message;
     expect(userMessage.parentId).toBe('assistant-parent');
     expect(userMessage.content).toBe('Revised graph prompt');
   });
@@ -596,10 +632,10 @@ describe('GraphDockComposer steering behavior', () => {
     await user.click(screen.getByRole('button', { name: 'Send graph composer message' }));
 
     await waitFor(() => {
-      expect(hookMocks.upsertLocalNode).toHaveBeenCalledTimes(2);
+      expect(hookMocks.startAgentRun).toHaveBeenCalledTimes(1);
     });
     expect(hookMocks.createThreadSession).not.toHaveBeenCalled();
-    const userMessage = hookMocks.upsertLocalNode.mock.calls[0][2] as Message;
+    const userMessage = hookMocks.startAgentRun.mock.calls[0][0].userNode as Message;
     expect(userMessage.parentId).toBeNull();
     expect(userMessage.threadId).toBe('thread-session-1');
     expect(userMessage.execution_data?.meta?.thread_origin_id).toBe('thread-session-1');

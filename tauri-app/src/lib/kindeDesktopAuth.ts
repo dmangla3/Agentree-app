@@ -141,7 +141,7 @@ export const readDesktopUserFromSession = (session: DesktopAuthSessionLike | nul
   };
 };
 
-const persistDesktopSession = async (tokens: {
+export const persistDesktopSession = async (tokens: {
   accessToken: string;
   expiresAt: number | null;
   idToken: string;
@@ -149,14 +149,6 @@ const persistDesktopSession = async (tokens: {
 }) => {
   const user = readDesktopUserFromSession(tokens);
 
-  useAuthStore.getState().setDesktopSession({
-    accessToken: tokens.accessToken,
-    idToken: tokens.idToken,
-    refreshToken: tokens.refreshToken,
-    expiresAt: tokens.expiresAt,
-  });
-  useAuthStore.getState().setUser(user);
-  useAuthStore.getState().clearAuthErrorReason();
   await invoke('save_agentree_cloud_session', {
     sessionJson: JSON.stringify({
       accessToken: tokens.accessToken,
@@ -165,12 +157,20 @@ const persistDesktopSession = async (tokens: {
       expiresAt: tokens.expiresAt,
     }),
   });
+  useAuthStore.getState().setDesktopSession({
+    accessToken: tokens.accessToken,
+    idToken: tokens.idToken,
+    refreshToken: tokens.refreshToken,
+    expiresAt: tokens.expiresAt,
+  });
+  useAuthStore.getState().setUser(user);
+  useAuthStore.getState().clearAuthErrorReason();
 };
 
 const clearDesktopSession = async () => {
   clearPendingDesktopAuth();
-  useAuthStore.getState().clearSession();
   await invoke('clear_agentree_cloud_session');
+  useAuthStore.getState().clearSession();
 };
 
 const buildDesktopLogoutRedirectUri = () => {
@@ -225,8 +225,8 @@ const exchangeAuthorizationCode = async (params: {
   return await response.json() as TokenResponse;
 };
 
-const refreshDesktopTokens = async (forceRefresh = false) => {
-  const { desktopSession, markSessionExpired } = useAuthStore.getState();
+export const refreshDesktopTokens = async (forceRefresh = false) => {
+  const { desktopSession } = useAuthStore.getState();
   if (!desktopSession) return undefined;
 
   const expiresAt = desktopSession.expiresAt ?? 0;
@@ -250,7 +250,14 @@ const refreshDesktopTokens = async (forceRefresh = false) => {
   if (!response.ok) {
     const text = await response.text();
     console.error('[Auth] Desktop token refresh failed:', text);
-    markSessionExpired('Your session has expired. Please log in again.');
+    try {
+      await clearDesktopSession();
+    } catch (error) {
+      console.error('[Auth] Failed to clear expired desktop session:', error);
+    } finally {
+      useAuthStore.getState().clearSession();
+    }
+    useAuthStore.getState().setAuthErrorReason('Your session has expired. Please log in again.');
     throw new Error(`Token refresh failed: ${response.status} ${text}`);
   }
 
@@ -329,7 +336,13 @@ const routeKindeCallbackUrl = async (url: string) => {
     window.dispatchEvent(new PopStateEvent('popstate'));
   } catch (error) {
     console.error('[Auth] Failed to finish desktop browser auth:', error);
-    await clearDesktopSession();
+    try {
+      await clearDesktopSession();
+    } catch (clearError) {
+      console.error('[Auth] Failed to clear incomplete desktop session:', clearError);
+    } finally {
+      useAuthStore.getState().clearSession();
+    }
     useAuthStore.getState().setAuthErrorReason(
       error instanceof Error ? error.message : 'Could not finish browser authentication. Please try again.',
     );

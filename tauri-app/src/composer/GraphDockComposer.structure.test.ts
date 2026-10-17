@@ -9,7 +9,7 @@ describe('GraphDockComposer structure', () => {
     expect(source).not.toContain('TooltipTrigger asChild');
     expect(source).toContain('<DropdownMenuTrigger asChild>');
     expect(source).not.toContain('<PopoverTrigger asChild>');
-    expect(source).toContain('<PopoverTrigger');
+    expect(source).toContain('<PopoverAnchor asChild>');
   });
 
   it('keeps prompt text in an isolated autosizing textarea and debounces draft persistence', () => {
@@ -53,7 +53,8 @@ describe('GraphDockComposer structure', () => {
 
     expect(source).toContain('Select reusable node prompts or orchestration prompts.');
     expect(source).toContain("'Orchestration' : 'Node'");
-    expect(source).toContain('promptIncludesOrchestrationTemplate');
+    expect(source).not.toContain('promptIncludesOrchestrationTemplate');
+    expect(source).not.toContain('aria-label="Enable orchestration"');
     expect(source).not.toContain('Select pre-defined nodes or flows');
     expect(source).not.toContain("'Flow' : 'Node'");
     expect(source).not.toContain('promptIncludesFlowTemplate');

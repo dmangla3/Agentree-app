@@ -8,7 +8,6 @@ import {
 } from '../../@/components/ui/dropdown-menu';
 import type { WorkspaceProjection } from '../domain/workspaceProjection';
 import { getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
-import { resolveOrchestrationRunRetryTarget } from '../orchestration/retry';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { copyAgentreeLink } from '../lib/agentreeDeepLinks';
 
@@ -33,7 +32,6 @@ interface NodeContextMenuProps {
   onViewSubgraph?: (messageId: string) => void;
   onConvertSubgraphToThread?: (messageId: string) => void;
   onShareNode?: (messageId: string) => void;
-  onRetryOrchestrationRun?: (assistantNodeId: string) => void;
 }
 
 export interface NodeContextMenuActions {
@@ -45,7 +43,6 @@ export interface NodeContextMenuActions {
   actionThreadRootId: string | null;
   convertSubgraphNodeId: string | null;
   mergeThreadRootId: string | null;
-  retryOrchestrationRunNodeId: string | null;
 }
 
 export function resolveNodeContextMenuActions(
@@ -60,7 +57,6 @@ export function resolveNodeContextMenuActions(
   let singleThreadRootId: string | null = null;
   let singleConvertSubgraphNodeId: string | null = null;
   let singleMergeThreadRootId: string | null = null;
-  let singleRetryOrchestrationRunNodeId: string | null = null;
   let hasMultipleMergeThreadRoots = false;
 
   const addMessageId = (messageId: string | null | undefined) => {
@@ -179,10 +175,6 @@ export function resolveNodeContextMenuActions(
       ) {
         singleConvertSubgraphNodeId = entity.messageId;
       }
-      const retryTarget = resolveOrchestrationRunRetryTarget(projection.messages, entity.messageId);
-      if (retryTarget.ok) {
-        singleRetryOrchestrationRunNodeId = retryTarget.target.assistantNodeId;
-      }
     }
 
     if (entity.kind === 'user_message' || entity.kind === 'assistant_message' || entity.kind === 'commit_message') {
@@ -203,7 +195,6 @@ export function resolveNodeContextMenuActions(
     actionThreadRootId: singleThreadRootId,
     convertSubgraphNodeId: singleConvertSubgraphNodeId,
     mergeThreadRootId: hasMultipleMergeThreadRoots ? null : singleMergeThreadRootId,
-    retryOrchestrationRunNodeId: singleRetryOrchestrationRunNodeId,
   };
 }
 
@@ -222,7 +213,6 @@ export function NodeContextMenu({
   onViewSubgraph,
   onConvertSubgraphToThread,
   onShareNode,
-  onRetryOrchestrationRun,
 }: NodeContextMenuProps) {
   const selectedWorkspaceId = useWorkspaceStore((state) => state.selectedWorkspaceId);
   const targetIds = contextMenu?.targetIds ?? [];
@@ -233,7 +223,7 @@ export function NodeContextMenu({
     if (contextMenu) setMarkThreadDoneAfterMerge(true);
   }, [contextMenu, targetKey]);
 
-  const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, mergeableCommitShas, actionNodeId, actionThreadRootId, convertSubgraphNodeId, mergeThreadRootId, retryOrchestrationRunNodeId } = useMemo(
+  const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, mergeableCommitShas, actionNodeId, actionThreadRootId, convertSubgraphNodeId, mergeThreadRootId } = useMemo(
     () => resolveNodeContextMenuActions(projection, targetIds),
     [projection, targetKey],
   );
@@ -250,10 +240,9 @@ export function NodeContextMenu({
   const canViewSubgraph = !!actionNodeId && !!onViewSubgraph;
   const canConvertSubgraphToThread = !!convertSubgraphNodeId && !!onConvertSubgraphToThread;
   const canShareNode = !!actionNodeId && !!onShareNode;
-  const canRetryOrchestrationRun = !!retryOrchestrationRunNodeId && !!onRetryOrchestrationRun;
   const canCopyLink = !!selectedWorkspaceId && !!actionNodeId;
 
-  if (!canDelete && !canAddToMergePanel && !canAddCommit && !canFocusThread && !canMarkThreadDone && !canHideSubgraph && !canViewSubgraph && !canConvertSubgraphToThread && !canShareNode && !canRetryOrchestrationRun && !canCopyLink) {
+  if (!canDelete && !canAddToMergePanel && !canAddCommit && !canFocusThread && !canMarkThreadDone && !canHideSubgraph && !canViewSubgraph && !canConvertSubgraphToThread && !canShareNode && !canCopyLink) {
     return null;
   }
 
@@ -332,17 +321,6 @@ export function NodeContextMenu({
             }}
           >
             Share node subgraph
-          </DropdownMenuItem>
-        ) : null}
-
-        {canRetryOrchestrationRun ? (
-          <DropdownMenuItem
-            onClick={() => {
-              onRetryOrchestrationRun?.(retryOrchestrationRunNodeId!);
-              onClose();
-            }}
-          >
-            Retry orchestration run
           </DropdownMenuItem>
         ) : null}
 

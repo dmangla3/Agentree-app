@@ -239,6 +239,7 @@ export const dispatchStreamingAssistantText = (
   nextContent: string,
   options: Pick<AgentRunStreamDispatchContext, 'nodeId' | 'parentId' | 'workspaceId' | 'agentId'> & {
     appendedText?: string;
+    timelineContent?: string;
     providerItemId?: string | null;
     timestamp?: number;
     streamSeq?: number | null;
@@ -248,6 +249,7 @@ export const dispatchStreamingAssistantText = (
     type: 'content',
     content: nextContent,
     appendedText: options.appendedText || '',
+    ...(options.timelineContent !== undefined ? { timelineContent: options.timelineContent } : {}),
     providerItemId: options.providerItemId ?? null,
     timestamp: options.timestamp ?? Date.now(),
     streamSeq: options.streamSeq ?? null,

@@ -120,8 +120,37 @@ describe('ChatAssistantCard identity', () => {
     expect(screen.getByText('High').className).toContain('normal-case');
   });
 
-  it('puts the persisted failure reason on the failed status tooltip only', () => {
+  it('shows the assistant base commit chip with the full commit in the title', () => {
+    const baseCommitSha = 'abcdef1234567890abcdef1234567890abcdef12';
+
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          message: {
+            base_commit_sha: baseCommitSha,
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByText('Base abcdef12')).toBeTruthy();
+    expect(screen.getByTitle(`Base commit: ${baseCommitSha}`)).toBeTruthy();
+    expect(screen.getByTitle(`Copy commit SHA: ${baseCommitSha}`)).toBeTruthy();
+  });
+
+  it('keeps partial assistant output and shows the failure reason separately', () => {
     const reason = "ImportError: cannot import name 'ParamSpec' from 'typing'";
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
 
     render(
       <ChatAssistantCard
@@ -144,8 +173,44 @@ describe('ChatAssistantCard identity', () => {
     );
 
     expect(screen.getByTitle(`Agent Failed: ${reason}`)).toBeTruthy();
-    expect(screen.queryByText('Failure reason')).toBeNull();
-    expect(screen.queryByText(reason)).toBeNull();
+    expect(screen.getByText('Assistant content')).toBeTruthy();
+    expect(screen.getByText('Run failed')).toBeTruthy();
+    expect(screen.getByText(reason)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy assistant response' }));
+    expect(writeText).toHaveBeenCalledWith(`Assistant content\n\nFailure: ${reason}`);
+  });
+
+  it('replaces a raw provider error payload with its human-readable failure reason', () => {
+    const reason = "The 'gpt-5-nano' model is not supported with a ChatGPT account.";
+    const rawProviderError = JSON.stringify({
+      error: { message: reason },
+      willRetry: false,
+    });
+
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          status: 'failed' as any,
+          message: {
+            status: 'failed' as any,
+            content: rawProviderError,
+            execution_data: {
+              failure_reason: rawProviderError,
+            },
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByText(reason)).toBeTruthy();
+    expect(screen.queryByText(rawProviderError)).toBeNull();
   });
 
   it('shows only final output for completed structured runs and keeps work details in collapsed logs', () => {
@@ -202,6 +267,46 @@ describe('ChatAssistantCard identity', () => {
     expect(screen.getByText('stop')).toBeTruthy();
     expect(screen.getByText('Run npm test')).toBeTruthy();
     expect(screen.getAllByText('Final answer only.')).toHaveLength(1);
+  });
+
+  it('keeps failed-run activity in collapsed logs beside the visible failure summary', () => {
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          status: 'failed' as any,
+          message: {
+            status: 'failed' as any,
+            content: 'Last safe update.',
+            execution_data: {
+              failure_reason: 'Provider disconnected.',
+              timeline: [
+                { type: 'message', timestamp: 1, content: 'Last safe update.' },
+                {
+                  type: 'tool_use',
+                  timestamp: 2,
+                  toolName: 'bash',
+                  toolInput: { command: 'npm test' },
+                  toolUseId: 'tool-1',
+                },
+              ],
+            },
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByText('Provider disconnected.')).toBeTruthy();
+    expect(screen.getByText('Last safe update.')).toBeTruthy();
+    expect(screen.queryByText('Run npm test')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /work logs/i }));
+    expect(screen.getByText('Run npm test')).toBeTruthy();
   });
 
   it('keeps public-share work logs collapsed until the viewer opens them', () => {
@@ -307,6 +412,36 @@ describe('ChatAssistantCard identity', () => {
     expect(writeText).toHaveBeenCalledWith('Run the formatter before testing.');
   });
 
+  it('shows and copies the user message ID', () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    render(
+      <ChatUserCard
+        entity={makeUserEntity({
+          messageId: 'user-message-123',
+          message: {
+            id: 'user-message-123',
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByText('user-mes')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy message ID' }));
+
+    expect(writeText).toHaveBeenCalledWith('user-message-123');
+  });
+
   it('keeps interleaved work visible while structured runs are active', () => {
     render(
       <ChatAssistantCard
@@ -397,7 +532,7 @@ describe('ChatAssistantCard identity', () => {
     expect(screen.queryByText(/^working$/i)).toBeNull();
   });
 
-  it('routes active tool-only timelines through open work logs before content and the running cue', () => {
+  it('renders active tool-only timelines inline after loaded content and before the running cue', () => {
     render(
       <ChatAssistantCard
         entity={makeAssistantEntity({
@@ -430,14 +565,16 @@ describe('ChatAssistantCard identity', () => {
     );
 
     const content = screen.getByText('Current streamed output.');
-    const workLogs = screen.getByRole('button', { name: /work logs/i });
+    const thinking = screen.getByText('Inspecting the runtime.');
+    const tool = screen.getByText('Run npm test');
+    const error = screen.getByText('Retrying after transient failure.');
     const runningCue = screen.getByText('Writing response');
-    expect(workLogs.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(workLogs.compareDocumentPosition(runningCue) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(content.compareDocumentPosition(thinking) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(thinking.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(tool.compareDocumentPosition(error) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(error.compareDocumentPosition(runningCue) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /work logs/i })).toBeNull();
     expect(screen.queryByText(/Actions/i)).toBeNull();
-    expect(screen.getByText('Inspecting the runtime.')).toBeTruthy();
-    expect(screen.getByText('Run npm test')).toBeTruthy();
-    expect(screen.getByText('Retrying after transient failure.')).toBeTruthy();
   });
 
   it('uses theme foreground tokens for the running cue label', () => {
@@ -466,7 +603,9 @@ describe('ChatAssistantCard identity', () => {
     render(
       <ChatAssistantCard
         entity={makeAssistantEntity({
+          status: 'running' as any,
           message: {
+            status: 'running' as any,
             content: '',
             execution_data: {
               timeline: [

@@ -11,6 +11,7 @@ import { threadSessionKeys } from '../hooks/useThreadSessions';
 import type { GraphSnapshot } from '../hooks/useGraphSnapshot';
 import type { ThreadSession } from '../lib/threadSessions';
 import type { Message } from '../stores/workspaceStore';
+import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
 
 const CLEANUP_DELAY_MS = 3000;
 
@@ -180,6 +181,7 @@ export const applyAgentRunFinalizeSnapshotEffects = (
     includeCommitGraph: Boolean(cachePatch.outputCommitSha),
     catchUpHotDeltas: Boolean(cachePatch.outputCommitSha),
   });
+  queueLocalSyncFlush({ reason: 'agent-run-finalized' });
   const generatedThreadTitle = readGeneratedThreadTitle(snapshot);
   if (generatedThreadTitle) {
     queryClient.setQueryData<ThreadSession[]>(

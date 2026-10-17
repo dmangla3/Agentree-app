@@ -1,4 +1,3 @@
-import { useQuery } from '@tanstack/react-query';
 import {
     type AgentModelConfig,
     defaultRuntimeModelKey,
@@ -17,6 +16,26 @@ export interface Agent {
     color?: string;    // Color theme for the agent
 }
 
+export const runtimeAgents: Agent[] = runtimeModels.map((model) => ({
+    id: model.key,
+    name: model.label,
+    type: model.provider,
+    tools: [],
+    model_config: {
+        model: model.modelId,
+        familyKey: model.familyKey,
+        familyLabel: model.familyLabel,
+        familyDescription: model.familyDescription,
+        effortLabel: model.effortLabel,
+        effortDescription: model.effortDescription,
+        reasoningEffort: model.reasoningEffort ?? null,
+        capabilities: model.capabilities,
+    },
+    cliArgs: model.cliArgs,
+    promptFlag: model.promptFlag,
+    color: model.color,
+}));
+
 export function findDefaultCodexAgentId(agents: Agent[]): string | null {
     const preferred = getRuntimeModelByKey(defaultRuntimeModelKey);
     if (preferred) {
@@ -32,48 +51,5 @@ export function findDefaultCodexAgentId(agents: Agent[]): string | null {
 }
 
 export function useAgents() {
-    return useQuery({
-        queryKey: ['agents'],
-        queryFn: async (): Promise<Agent[]> => {
-            return runtimeModels.map((model) => ({
-                id: model.key,
-                name: model.label,
-                type: model.provider,
-                tools: [],
-                model_config: {
-                    model: model.modelId,
-                    familyKey: model.familyKey,
-                    familyLabel: model.familyLabel,
-                    familyDescription: model.familyDescription,
-                    effortLabel: model.effortLabel,
-                    effortDescription: model.effortDescription,
-                    reasoningEffort: model.reasoningEffort ?? null,
-                    capabilities: model.capabilities,
-                },
-                cliArgs: model.cliArgs,
-                promptFlag: model.promptFlag,
-                color: model.color,
-            }));
-        },
-        initialData: runtimeModels.map((model) => ({
-            id: model.key,
-            name: model.label,
-            type: model.provider,
-            tools: [],
-            model_config: {
-                model: model.modelId,
-                familyKey: model.familyKey,
-                familyLabel: model.familyLabel,
-                familyDescription: model.familyDescription,
-                effortLabel: model.effortLabel,
-                effortDescription: model.effortDescription,
-                reasoningEffort: model.reasoningEffort ?? null,
-                capabilities: model.capabilities,
-            },
-            cliArgs: model.cliArgs,
-            promptFlag: model.promptFlag,
-            color: model.color,
-        })),
-        staleTime: Infinity,
-    });
+    return { data: runtimeAgents };
 }

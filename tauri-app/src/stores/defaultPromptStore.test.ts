@@ -89,19 +89,12 @@ describe('default prompt store', () => {
         text: 'Context: {{contextText}}\nRequest missing',
       },
       {
-        id: 'orchestration_control',
-        text: 'Control {{orchestratorRunId}}',
-      },
-      {
         id: 'thread_title_none',
         text: 'No variables needed here.',
       },
     ]);
 
     expect(prompts.find((prompt) => prompt.id === 'agentree_context_envelope')).toEqual(expect.objectContaining({
-      source: 'built_in',
-    }));
-    expect(prompts.find((prompt) => prompt.id === 'orchestration_control')).toEqual(expect.objectContaining({
       source: 'built_in',
     }));
     expect(prompts.find((prompt) => prompt.id === 'thread_title_none')).toEqual(expect.objectContaining({

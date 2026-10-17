@@ -45,18 +45,33 @@ const textReasoningCapabilities: RuntimeModelCapabilities = {
   reasoningEffort: true,
 };
 
-const claudeEfforts = [
-  { id: 'low', label: 'Low', description: 'Minimal thinking, fastest responses' },
-  { id: 'medium', label: 'Medium', description: 'Moderate thinking' },
-  { id: 'high', label: 'High', description: 'Deep reasoning' },
-] as const;
+export const reasoningEffortsByProvider = {
+  claude: [
+    { id: 'low', label: 'Low', description: 'Fastest responses with minimal reasoning' },
+    { id: 'medium', label: 'Medium', description: 'Balanced reasoning and token use' },
+    { id: 'high', label: 'High', description: 'Deep reasoning for complex work' },
+    { id: 'xhigh', label: 'Extra High', description: 'Extended reasoning for demanding agentic work' },
+    { id: 'max', label: 'Max', description: 'Maximum reasoning for the most demanding work' },
+  ],
+  codex: [
+    { id: 'low', label: 'Low', description: 'Fastest supported Codex reasoning level' },
+    { id: 'medium', label: 'Medium', description: 'Balanced Codex reasoning level' },
+    { id: 'high', label: 'High', description: 'Deeper Codex reasoning level' },
+    { id: 'xhigh', label: 'Extra High', description: 'Very deep Codex reasoning level' },
+    { id: 'max', label: 'Max', description: 'Maximum Codex reasoning level' },
+    { id: 'ultra', label: 'Ultra', description: 'Highest supported Codex reasoning level' },
+  ],
+} as const;
 
-const codexReasoningEfforts = [
-  { id: 'low', label: 'Low', description: 'Fastest supported Codex reasoning level' },
-  { id: 'medium', label: 'Medium', description: 'Balanced Codex reasoning level' },
-  { id: 'high', label: 'High', description: 'Deeper Codex reasoning level' },
-  { id: 'xhigh', label: 'Extra High', description: 'Maximum supported Codex reasoning level' },
-] as const;
+export const getReasoningEffortSortOrder = (
+  provider: string,
+  effort: string | null | undefined
+): number => {
+  if (provider !== 'claude' && provider !== 'codex') return 99;
+  const normalized = String(effort || '').trim().toLowerCase();
+  const index = reasoningEffortsByProvider[provider].findIndex((option) => option.id === normalized);
+  return index === -1 ? 99 : index;
+};
 
 const makeClaudeModel = ({
   id,
@@ -70,7 +85,7 @@ const makeClaudeModel = ({
   modelId: string;
   label: string;
   modelAlias: string;
-  effort: typeof claudeEfforts[number] | { id: 'max'; label: 'Max'; description: string };
+  effort: typeof reasoningEffortsByProvider.claude[number];
   description?: string;
 }): RuntimeModel => ({
   key: `claude:${id}:${effort.id}`,
@@ -101,7 +116,7 @@ const makeCodexModel = ({
   id: string;
   label: string;
   description: string;
-  effort: typeof codexReasoningEfforts[number];
+  effort: typeof reasoningEffortsByProvider.codex[number];
 }): RuntimeModel => ({
   key: `codex:${id}:${effort.id}`,
   id: `${id}:${effort.id}`,
@@ -163,6 +178,13 @@ const claudeModelBases = [
     description: 'Anthropic frontier model for complex reasoning and agentic work',
   },
   {
+    id: 'claude-opus-5',
+    modelId: 'claude-opus-5',
+    label: 'Claude Opus 5',
+    modelAlias: 'opus',
+    description: 'Anthropic advanced model for complex agentic coding and enterprise work',
+  },
+  {
     id: 'claude-opus-4-8',
     modelId: 'claude-opus-4-8',
     label: 'Claude Opus 4.8',
@@ -170,16 +192,11 @@ const claudeModelBases = [
     description: 'Anthropic frontier model for complex reasoning and long-horizon agentic coding',
   },
   {
-    id: 'claude-sonnet-4-6',
-    modelId: 'claude-sonnet-4-6',
-    label: 'Claude Sonnet 4.6',
+    id: 'claude-sonnet-5',
+    modelId: 'claude-sonnet-5',
+    label: 'Claude Sonnet 5',
     modelAlias: 'sonnet',
-  },
-  {
-    id: 'claude-haiku-4-5-20251001',
-    modelId: 'claude-haiku-4-5-20251001',
-    label: 'Claude Haiku 4.5',
-    modelAlias: 'haiku',
+    description: 'Anthropic model balancing speed and intelligence for agentic coding',
   },
 ] as const;
 
@@ -214,17 +231,12 @@ const codexImageModelBases = [
   },
 ] as const;
 
-const claudeModels: RuntimeModel[] = [
-  ...claudeModelBases.flatMap((model) => claudeEfforts.map((effort) => makeClaudeModel({ ...model, effort }))),
-  makeClaudeModel({
-    ...claudeModelBases[0],
-    effort: { id: 'max', label: 'Max', description: 'Maximum effort for Claude Opus 4.8' },
-    description: 'Maximum effort for Claude Opus 4.8',
-  }),
-];
+const claudeModels: RuntimeModel[] = claudeModelBases.flatMap((model) =>
+  reasoningEffortsByProvider.claude.map((effort) => makeClaudeModel({ ...model, effort }))
+);
 
 const codexModels: RuntimeModel[] = codexModelBases.flatMap((model) =>
-  codexReasoningEfforts.map((effort) => makeCodexModel({ ...model, effort }))
+  reasoningEffortsByProvider.codex.map((effort) => makeCodexModel({ ...model, effort }))
 );
 
 const codexImageModels: RuntimeModel[] = codexImageModelBases.map((model) =>

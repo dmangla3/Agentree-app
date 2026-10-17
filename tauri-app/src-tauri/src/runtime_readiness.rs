@@ -223,21 +223,30 @@ fn doctor_entry(app: &AppHandle, component: &str, label: &str) -> ManagedRuntime
     let installed = crate::managed_runtime::installed_component_dir(app, component)
         .ok()
         .flatten();
+    let validation_error =
+        crate::managed_runtime::component_install_validation_error(app, component)
+            .ok()
+            .flatten();
     let downloadable = crate::managed_runtime::component_available_for_download(component);
 
-    let (status, detail) = match (&installed, downloadable) {
-        (Some(dir), _) => (
+    let (status, detail) = match (&installed, validation_error, downloadable) {
+        (Some(dir), _, _) => (
             "ready",
             format!("{} {} installed at {}.", label, pinned_version, dir.display()),
         ),
-        (None, true) => (
+        (None, Some(error), true) => (
+            "missing",
+            format!("{} Repair will download a verified replacement.", error),
+        ),
+        (None, _, true) => (
             "missing",
             format!(
                 "{} {} is not installed yet. It downloads automatically on first use, or install it now.",
                 label, pinned_version
             ),
         ),
-        (None, false) => (
+        (None, Some(error), false) => ("unpublished", error),
+        (None, _, false) => (
             "unpublished",
             format!(
                 "{} {} has no published archive for {} (development build). Provider features fall back to tools found on PATH.",

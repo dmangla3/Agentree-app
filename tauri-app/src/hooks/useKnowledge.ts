@@ -1,5 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api } from '../lib/api';
+import {
+    AGENTREE_DATA_PLANE_DISABLED_MESSAGE,
+    AGENTREE_DATA_PLANE_ENABLED,
+    api,
+} from '../lib/api';
 import { KnowledgeFile } from '../stores/knowledgeStore';
 
 export const useKnowledgeTree = () => {
@@ -9,6 +13,7 @@ export const useKnowledgeTree = () => {
             const response = await api.get('/knowledge/tree');
             return response.data;
         },
+        enabled: AGENTREE_DATA_PLANE_ENABLED,
     });
 };
 
@@ -33,7 +38,7 @@ export const useFileContent = (fileId: string | null) => {
             const response = await api.get(`/knowledge/${fileId}/content`);
             return response.data;
         },
-        enabled: !!fileId,
+        enabled: AGENTREE_DATA_PLANE_ENABLED && !!fileId,
     });
 };
 
@@ -41,6 +46,7 @@ export const useUploadFiles = () => {
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async (formData: FormData) => {
+            if (!AGENTREE_DATA_PLANE_ENABLED) throw new Error(AGENTREE_DATA_PLANE_DISABLED_MESSAGE);
             const response = await api.post('/knowledge/upload', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
             });
@@ -59,6 +65,7 @@ export const useCreateFolder = () => {
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async ({ name, parentId }: { name: string; parentId?: string | null }) => {
+            if (!AGENTREE_DATA_PLANE_ENABLED) throw new Error(AGENTREE_DATA_PLANE_DISABLED_MESSAGE);
             const response = await api.post('/knowledge/folders', { name, parentId });
             return response.data;
         },
@@ -72,6 +79,7 @@ export const useDeleteFile = () => {
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async (id: string) => {
+            if (!AGENTREE_DATA_PLANE_ENABLED) throw new Error(AGENTREE_DATA_PLANE_DISABLED_MESSAGE);
             await api.delete(`/knowledge/${id}`);
         },
         onSuccess: () => {

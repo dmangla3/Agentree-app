@@ -32,7 +32,7 @@ interface LoginProfileEditorProps {
 
 const authTypesByProvider = {
   codex: [
-    ['codex_chatgpt_session', 'Managed ChatGPT session'],
+    ['codex_chatgpt_session', 'ChatGPT subscription'],
     ['codex_api_key', 'OpenAI API key'],
   ],
   claude: [
@@ -57,15 +57,15 @@ const authTypeCopy: Record<string, { title: string; body: string }> = {
     body: 'Direct OpenAI API access for Codex runs.',
   },
   codex_chatgpt_session: {
-    title: 'ChatGPT session',
-    body: 'A managed profile home with persisted session rotation.',
+    title: 'ChatGPT subscription',
+    body: 'Browser sign in for a ChatGPT subscription account.',
   },
   claude_api_key: {
     title: 'API key',
     body: 'Direct Anthropic API access for Claude runs.',
   },
   claude_oauth: {
-    title: 'Subscription',
+    title: 'Claude subscription',
     body: 'Browser sign in for a Claude subscription account.',
   },
 };

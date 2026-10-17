@@ -1,7 +1,7 @@
 import type { Message } from '../stores/workspaceStore';
 
 export type ThreadSessionStatus = 'active' | 'done' | 'archived';
-export type ThreadSessionSource = 'workspace_default' | 'user' | 'legacy';
+export type ThreadSessionSource = 'workspace_default' | 'user' | 'flow' | 'legacy' | 'delegation';
 
 export interface ThreadSession {
   id: string;
@@ -12,6 +12,7 @@ export interface ThreadSession {
   updatedAt: string;
   baseCommitSha: string | null;
   firstMessageId: string | null;
+  parentThreadId?: string | null;
   source: ThreadSessionSource;
 }
 
@@ -35,7 +36,10 @@ export const normalizeThreadSession = (input: Record<string, unknown> | null | u
   const updatedAt = readString(input, 'updatedAt', 'updated_at') || createdAt;
   if (!id || !workspaceId || !createdAt) return null;
   const status = input.status === 'done' || input.status === 'archived' ? input.status : 'active';
-  const source = input.source === 'workspace_default' || input.source === 'legacy'
+  const source = input.source === 'workspace_default'
+    || input.source === 'flow'
+    || input.source === 'legacy'
+    || input.source === 'delegation'
     ? input.source
     : 'user';
   return {
@@ -47,6 +51,7 @@ export const normalizeThreadSession = (input: Record<string, unknown> | null | u
     updatedAt,
     baseCommitSha: trimOrNull(input.baseCommitSha) ?? trimOrNull(input.base_commit_sha),
     firstMessageId: trimOrNull(input.firstMessageId) ?? trimOrNull(input.first_message_id),
+    parentThreadId: trimOrNull(input.parentThreadId) ?? trimOrNull(input.parent_thread_id),
     source,
   };
 };
@@ -118,6 +123,7 @@ export const mergeThreadSessionsWithBackfills = (
       title: persisted.title ?? backfilled?.title ?? null,
       firstMessageId: persisted.firstMessageId ?? backfilled?.firstMessageId ?? null,
       baseCommitSha: persisted.baseCommitSha ?? backfilled?.baseCommitSha ?? null,
+      parentThreadId: persisted.parentThreadId ?? backfilled?.parentThreadId ?? null,
     });
   }
   return Array.from(byId.values()).sort(compareThreadSessions);
@@ -153,6 +159,7 @@ export const deriveBackfilledThreadSessions = (
         updatedAt,
         baseCommitSha: trimOrNull(message.base_commit_sha),
         firstMessageId: message.role === 'user' ? message.id : (generatedThreadTitle ? trimOrNull(message.parentId) : null),
+        parentThreadId: null,
         source: 'legacy',
       });
       continue;

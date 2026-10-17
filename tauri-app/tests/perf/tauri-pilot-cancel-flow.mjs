@@ -259,7 +259,7 @@ const installProbe = async () => pilotEval(`
     const startedAt = performance.now();
     while (performance.now() - startedAt < 30000) {
       const current = sample('wait-cancel-button');
-      if (current.buttonLabel === 'Cancel sending message' || current.buttonLabel === 'Cancel') {
+      if (chatHotPath.isCancelLabel(current.buttonLabel)) {
         probe.cancelVisibleAtIso = probe.cancelVisibleAtIso ?? new Date().toISOString();
         return current;
       }
@@ -272,7 +272,7 @@ const installProbe = async () => pilotEval(`
     const button = statusButton();
     if (!button) throw new Error('cancel button missing');
     const labelText = buttonLabel();
-    if (labelText !== 'Cancel sending message' && labelText !== 'Cancel') {
+    if (!chatHotPath.isCancelLabel(labelText)) {
       throw new Error('expected cancel button, got ' + labelText);
     }
     probe.cancelClickedAtIso = new Date().toISOString();
@@ -302,7 +302,7 @@ const installProbe = async () => pilotEval(`
       await clickCancel();
       await waitForCancelled();
       const final = sample('done');
-      if (final.buttonLabel === 'Cancel sending message' || final.buttonLabel === 'Cancel') {
+      if (chatHotPath.isCancelLabel(final.buttonLabel)) {
         probe.errors.push({ message: 'composer still shows cancel after cancelled lifecycle' });
       }
       if (final.textareaDisabled) {

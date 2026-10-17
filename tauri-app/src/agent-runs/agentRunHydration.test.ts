@@ -258,6 +258,56 @@ describe('agent run hydration', () => {
     ]);
   });
 
+  it('restores a provider message row when loaded content already matches its completion', () => {
+    const input = {
+      workspaceId: 'workspace-1',
+      parentId: 'user-1',
+      role: 'assistant' as const,
+      agentId: 'codex',
+      runId: 'run-1',
+      status: 'running' as const,
+      executionData: {
+        current_run_id: 'run-1',
+        timeline: [{
+          type: 'tool_use',
+          toolName: 'commandExecution',
+          toolUseId: 'tool-1',
+          timestamp: 10,
+        }],
+      },
+    };
+    const streamState = {
+      output: 'Auditing compatibility now.',
+      providerItemId: null,
+    };
+
+    agentRunManager.dispatch('assistant-1', {
+      type: 'status',
+      status: 'running',
+    }, {
+      ...input,
+      content: streamState.output,
+    });
+
+    ingestAgentRunStreamEvent('assistant-1', {
+      type: 'message_completed',
+      content: 'Auditing compatibility now.',
+      provider_item_id: 'msg-1',
+      stream_seq: 2,
+      timestamp: 20,
+    }, input, streamState);
+
+    const snapshot = agentRunManager.snapshot('assistant-1');
+    expect(snapshot?.timeline).toEqual([
+      expect.objectContaining({ type: 'tool_use', toolUseId: 'tool-1' }),
+      expect.objectContaining({
+        type: 'message',
+        provider_item_id: 'msg-1',
+        content: 'Auditing compatibility now.',
+      }),
+    ]);
+  });
+
   it('ignores stale finalize acks before they can mutate the current run', () => {
     agentRunManager.dispatch('assistant-1', {
       type: 'status',

@@ -17,7 +17,7 @@ import { useWorkspaces } from '../hooks/useWorkspaces';
 import { useHotSendMessageDeltas } from '../hooks/useHotSendMessageDeltas';
 import { AppHeader } from '../components/AppHeader';
 import { useOnboardingStore } from '../stores/onboardingStore';
-import { trackScreenViewed } from '../lib/analytics';
+import { bucketCount, trackScreenViewed } from '../lib/analytics';
 import { devLogLazy } from '../lib/appLogger';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 import { DEFAULT_GRAPH_CHAT_SPLIT, getGraphChatRestoreSplit, readRememberedGraphChatSplit, rememberGraphChatSplit } from '../lib/graphChatSplitLayout';
@@ -80,6 +80,7 @@ export function HomePage() {
   const [workspaceNavigatorThreadsFocused, setWorkspaceNavigatorThreadsFocused] = useState(false);
   const [isChatCollapsed, setIsChatCollapsed] = useState(true);
   const [worktreePolicyPromptRepoPath, setWorktreePolicyPromptRepoPath] = useState<string | null>(null);
+  const [allowContinueWithDefaultPolicy, setAllowContinueWithDefaultPolicy] = useState(false);
   const shellReadyLoggedRef = useRef(false);
   const handledDeepLinkTargetRef = useRef<string | null>(null);
   const reportedMissingWorkspaceRef = useRef<string | null>(null);
@@ -160,7 +161,7 @@ export function HomePage() {
     trackScreenViewed(hasCompletedOnboarding ? 'workspace' : 'onboarding', {
       active_view: activeView,
       has_workspace: Boolean(selectedWorkspaceId),
-      workspace_count: workspaces.length,
+      workspace_count_bucket: bucketCount(workspaces.length),
     });
   }, [activeView, hasCompletedOnboarding, selectedWorkspaceId, user, workspaces.length]);
 
@@ -295,6 +296,12 @@ export function HomePage() {
   };
 
   const handleRepositoryConnected = useCallback((repoPath: string) => {
+    setAllowContinueWithDefaultPolicy(false);
+    setWorktreePolicyPromptRepoPath(repoPath);
+  }, []);
+
+  const handleOnboardingRepositoryConnected = useCallback((repoPath: string) => {
+    setAllowContinueWithDefaultPolicy(true);
     setWorktreePolicyPromptRepoPath(repoPath);
   }, []);
 
@@ -348,6 +355,7 @@ export function HomePage() {
   const handleWorktreePolicyOpenChange = useCallback((open: boolean) => {
     if (!open) {
       setWorktreePolicyPromptRepoPath(null);
+      setAllowContinueWithDefaultPolicy(false);
     }
   }, []);
 
@@ -408,7 +416,7 @@ export function HomePage() {
           workspaces={workspaces}
           onSelectWorkspace={(workspaceId) => selectAndNavigateWorkspace(workspaceId, null, { replace: true })}
           onComplete={(workspaceId) => markCompletedOnboarding(effectiveUserId, workspaceId)}
-          onRepositoryConnected={handleRepositoryConnected}
+          onRepositoryConnected={handleOnboardingRepositoryConnected}
         />
       </Suspense>
     );
@@ -431,6 +439,9 @@ export function HomePage() {
       <AppHeader
         selectedWorkspaceId={selectedWorkspaceId}
         selectedWorkspaceName={selectedWorkspace?.name || null}
+        selectedWorkspaceCloudSyncEnabled={Boolean(
+          selectedWorkspace?.cloud_backup_enabled ?? selectedWorkspace?.cloudBackupEnabled
+        )}
         onOpenSearch={() => setIsSearchPanelOpen(true)}
       />
 
@@ -443,6 +454,7 @@ export function HomePage() {
           selectedWorkspaceRepoPath={worktreePolicyRepoPath}
           worktreePolicyOpen={worktreePolicyPromptRepoPath ? true : undefined}
           onWorktreePolicyOpenChange={worktreePolicyPromptRepoPath ? handleWorktreePolicyOpenChange : undefined}
+          allowContinueWithDefaultPolicy={allowContinueWithDefaultPolicy}
         />
         {activeView === 'chat' ? (
           <WorkspaceNavigator

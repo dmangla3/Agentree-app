@@ -20,13 +20,16 @@ import { resolveNodeState } from '../../../lib/runStateResolver';
 import { agentRunManager } from '../../../agent-runs/agentRunManager';
 import { recordAssistantTextVisible } from '../../../perf/agentRunVisibilityPerf';
 import { getAssistantIdentityParts, getAssistantReasoningEffortFromExecutionData } from '../../../lib/assistantIdentity';
-import { getNodeFailureReason, isNodeFailureStatus } from '../../../lib/nodeFailureReason';
+import { cleanNodeFailureReason, getNodeFailureReason, isNodeFailureStatus } from '../../../lib/nodeFailureReason';
 import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import { useAgentreeSurface } from '../../graph/surfaceCapabilities';
 import { TokenUsagePill } from '../../TokenUsagePill';
 import { getMessageArtifacts } from '../../../lib/artifacts';
 import { ArtifactGallery } from '../../artifacts/ArtifactPreview';
 import { getMessageHighlights } from '../../../lib/messageHighlights';
+import { formatMessageTimestamp } from '../../../lib/messageTimestamp';
+import { getMessageBaseCommitSha } from '../../../lib/graph/commitAccessors';
+import { CopyCommitShaButton } from '../../CopyCommitShaButton';
 import type { MessageHighlightAnnotation } from '../../../stores/workspaceStore';
 
 const AgentChip = ({
@@ -76,6 +79,22 @@ const AiLabelChip = ({ aiLabel }: { aiLabel?: string | null }) => {
     >
       <Tag size={9} strokeWidth={2.5} />
       <span className="truncate">{label}</span>
+    </span>
+  );
+};
+
+const BaseCommitChip = ({ commitSha }: { commitSha?: string | null }) => {
+  const shortCommitSha = commitSha?.slice(0, 8);
+  if (!commitSha || !shortCommitSha) return null;
+
+  return (
+    <span
+      className="inline-flex min-w-0 items-center gap-1 rounded-full border border-border/60 bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground tabular-nums"
+      title={`Base commit: ${commitSha}`}
+    >
+      <GitCommitHorizontal size={9} strokeWidth={2.5} />
+      <span className="shrink-0">Base {shortCommitSha}</span>
+      <CopyCommitShaButton commitSha={commitSha} className="h-3.5 w-3.5" />
     </span>
   );
 };
@@ -173,18 +192,14 @@ const StreamingMarkdown = memo(function StreamingMarkdown({
 const LIVE_DELTA_ACTIVE_MS = 900;
 
 function getStreamingTailText({
-  hasInterleavedTranscript,
-  transcriptRows,
+  rows,
   content,
 }: {
-  hasInterleavedTranscript: boolean;
-  transcriptRows: TimelineRow[];
+  rows: TimelineRow[];
   content: string;
 }) {
-  if (!hasInterleavedTranscript) return content;
-
-  for (let index = transcriptRows.length - 1; index >= 0; index -= 1) {
-    const row = transcriptRows[index];
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
     if (row.kind === 'message' && row.content) {
       return row.content;
     }
@@ -466,21 +481,126 @@ function InterleavedExplorationCard({
   );
 }
 
+function TimelineRows({
+  rows,
+  repoPath,
+  isStreaming,
+  allowToolExpansion = true,
+  compact = false,
+}: {
+  rows: TimelineRow[];
+  repoPath?: string | null;
+  isStreaming: boolean;
+  allowToolExpansion?: boolean;
+  compact?: boolean;
+}) {
+  return (
+    <div className="min-w-0 max-w-full space-y-3">
+      {rows.map((row, index) => {
+        const keyPrefix = compact ? 'work' : 'active';
+        if (row.kind === 'message') {
+          if (!row.content) return null;
+          return (
+            <div
+              key={getTimelineRowReactKey(row, index, `${keyPrefix}-message`)}
+              className={cn(
+                "min-w-0 max-w-full border border-border/40 bg-background/75 px-3 shadow-sm",
+                compact ? "rounded-lg py-2" : "rounded-xl py-2.5"
+              )}
+            >
+              <div className={cn(
+                "min-w-0 max-w-full prose dark:prose-invert prose-sm max-w-none break-words [overflow-wrap:anywhere]",
+                compact
+                  ? "text-[13px] leading-[1.55] prose-p:my-1 prose-li:my-0.5 prose-pre:my-1"
+                  : "text-[14px] leading-[1.62] prose-p:my-1.5 prose-p:max-w-[74ch] prose-p:text-foreground/90 prose-p:leading-[1.62] prose-li:max-w-[74ch] prose-li:leading-[1.58] prose-pre:my-1.5 prose-pre:max-w-full prose-pre:whitespace-pre-wrap prose-pre:break-words prose-table:my-1.5 prose-th:py-1 prose-td:py-1"
+              )}>
+                <StreamingMarkdown text={row.content} isStreaming={isStreaming} repoPath={repoPath} />
+              </div>
+            </div>
+          );
+        }
+
+        if (row.kind === 'tool') {
+          return <InterleavedToolCard key={getTimelineRowReactKey(row, index, `${keyPrefix}-tool`)} row={row} allowExpansion={allowToolExpansion} />;
+        }
+
+        if (row.kind === 'exploration') {
+          return <InterleavedExplorationCard key={getTimelineRowReactKey(row, index, `${keyPrefix}-exploration`)} row={row} allowExpansion={allowToolExpansion} />;
+        }
+
+        if (row.kind === 'thinking') {
+          if (!row.content) return null;
+          return (
+            <div
+              key={getTimelineRowReactKey(row, index, `${keyPrefix}-thinking`)}
+              className={cn(
+                "min-w-0 max-w-full border border-blue-200/70 bg-blue-50/50 px-3 py-2 text-[11px] text-blue-900/80 dark:border-blue-900/70 dark:bg-blue-950/20 dark:text-blue-200/80",
+                compact ? "rounded-lg" : "rounded-xl"
+              )}
+            >
+              <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
+                <Sparkles size={12} />
+                <span>Thinking</span>
+              </div>
+              <p className="whitespace-pre-wrap break-words">{row.content}</p>
+            </div>
+          );
+        }
+
+        if (row.kind === 'user_steer') {
+          if (!row.content) return null;
+          return (
+            <div
+              key={getTimelineRowReactKey(row, index, `${keyPrefix}-user-steer`)}
+              className={cn(
+                "min-w-0 max-w-full border border-violet-200/70 bg-violet-50/55 px-3 py-2 text-[11px] text-violet-950/85 dark:border-violet-900/70 dark:bg-violet-950/20 dark:text-violet-100/85",
+                compact ? "rounded-lg" : "rounded-xl"
+              )}
+            >
+              <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
+                <MessageSquarePlus size={12} />
+                <span>User Steer</span>
+              </div>
+              <p className="whitespace-pre-wrap break-words">{row.content}</p>
+            </div>
+          );
+        }
+
+        if (row.kind === 'error') {
+          if (!row.content) return null;
+          return (
+            <div
+              key={getTimelineRowReactKey(row, index, `${keyPrefix}-error`)}
+              className={cn(
+                "min-w-0 max-w-full border border-red-200/70 bg-red-50/60 px-3 py-2 text-[11px] text-red-900/90 dark:border-red-900/70 dark:bg-red-950/20 dark:text-red-200/90",
+                compact ? "rounded-lg" : "rounded-xl"
+              )}
+            >
+              <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
+                <AlertTriangle size={12} />
+                <span>Error</span>
+              </div>
+              <p className="whitespace-pre-wrap break-words">{row.content}</p>
+            </div>
+          );
+        }
+
+        return null;
+      })}
+    </div>
+  );
+}
+
 function WorkLogsPanel({
   rows,
   repoPath,
-  defaultOpen = false,
   allowToolExpansion = true,
 }: {
   rows: TimelineRow[];
   repoPath?: string | null;
-  defaultOpen?: boolean;
   allowToolExpansion?: boolean;
 }) {
-  const [isOpen, setIsOpen] = useState(defaultOpen);
-  useEffect(() => {
-    if (defaultOpen) setIsOpen(true);
-  }, [defaultOpen]);
+  const [isOpen, setIsOpen] = useState(false);
   if (rows.length === 0) return null;
 
   return (
@@ -509,79 +629,13 @@ function WorkLogsPanel({
 
       {isOpen ? (
         <div className="min-w-0 max-w-full space-y-3 border-t border-border/40 px-3 py-3">
-          {rows.map((row, index) => {
-            if (row.kind === 'message') {
-              if (!row.content) return null;
-              return (
-                <div
-                  key={getTimelineRowReactKey(row, index, 'work-message')}
-                  className="min-w-0 max-w-full rounded-lg border border-border/40 bg-background/75 px-3 py-2"
-                >
-                  <div className="min-w-0 max-w-full prose dark:prose-invert prose-sm max-w-none break-words text-[13px] leading-[1.55] [overflow-wrap:anywhere] prose-p:my-1 prose-li:my-0.5 prose-pre:my-1">
-                    <StreamingMarkdown text={row.content} isStreaming={false} repoPath={repoPath} />
-                  </div>
-                </div>
-              );
-            }
-
-            if (row.kind === 'tool') {
-              return <InterleavedToolCard key={getTimelineRowReactKey(row, index, 'work-tool')} row={row} allowExpansion={allowToolExpansion} />;
-            }
-
-            if (row.kind === 'exploration') {
-              return <InterleavedExplorationCard key={getTimelineRowReactKey(row, index, 'work-exploration')} row={row} allowExpansion={allowToolExpansion} />;
-            }
-
-            if (row.kind === 'thinking') {
-              if (!row.content) return null;
-              return (
-                <div
-                  key={getTimelineRowReactKey(row, index, 'work-thinking')}
-                  className="min-w-0 max-w-full rounded-lg border border-blue-200/70 bg-blue-50/50 px-3 py-2 text-[11px] text-blue-900/80 dark:border-blue-900/70 dark:bg-blue-950/20 dark:text-blue-200/80"
-                >
-                  <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
-                    <Sparkles size={12} />
-                    <span>Thinking</span>
-                  </div>
-                  <p className="whitespace-pre-wrap break-words">{row.content}</p>
-                </div>
-              );
-            }
-
-            if (row.kind === 'user_steer') {
-              if (!row.content) return null;
-              return (
-                <div
-                  key={getTimelineRowReactKey(row, index, 'work-user-steer')}
-                  className="min-w-0 max-w-full rounded-lg border border-violet-200/70 bg-violet-50/55 px-3 py-2 text-[11px] text-violet-950/85 dark:border-violet-900/70 dark:bg-violet-950/20 dark:text-violet-100/85"
-                >
-                  <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
-                    <MessageSquarePlus size={12} />
-                    <span>User Steer</span>
-                  </div>
-                  <p className="whitespace-pre-wrap break-words">{row.content}</p>
-                </div>
-              );
-            }
-
-            if (row.kind === 'error') {
-              if (!row.content) return null;
-              return (
-                <div
-                  key={getTimelineRowReactKey(row, index, 'work-error')}
-                  className="min-w-0 max-w-full rounded-lg border border-red-200/70 bg-red-50/60 px-3 py-2 text-[11px] text-red-900/90 dark:border-red-900/70 dark:bg-red-950/20 dark:text-red-200/90"
-                >
-                  <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
-                    <AlertTriangle size={12} />
-                    <span>Error</span>
-                  </div>
-                  <p className="whitespace-pre-wrap break-words">{row.content}</p>
-                </div>
-              );
-            }
-
-            return null;
-          })}
+          <TimelineRows
+            rows={rows}
+            repoPath={repoPath}
+            isStreaming={false}
+            allowToolExpansion={allowToolExpansion}
+            compact
+          />
         </div>
       ) : null}
     </div>
@@ -623,7 +677,7 @@ export const ChatAssistantCard = memo(({
   onSelect,
   onContextMenu,
 }: SharedNodeProps) => {
-  const { surfaceMode, capabilities } = useAgentreeSurface();
+  const { surfaceMode, capabilities, messageTimestampMode } = useAgentreeSurface();
   const isPublicShare = surfaceMode === 'public-share';
   const [copiedMessageId, setCopiedMessageId] = useState(false);
   const updateTagsMutation = useUpdateTags();
@@ -681,40 +735,33 @@ export const ChatAssistantCard = memo(({
   );
   const shouldRevealStream = isStreamingStatus(displayStatus as any);
   const transcriptRows = useMemo(
-    () => hasStructuredTimeline ? buildTimelineRows(timeline) : [],
-    [hasStructuredTimeline, timeline]
+    () => buildTimelineRows(timeline),
+    [timeline]
   );
-  const liveMessageRows = useMemo<Array<{ key: string; content: string }>>(
-    () => {
-      if (hasStructuredTimeline || !shouldRevealStream) return [];
-      return timeline
-        .map((event: any, index: number) => {
-          if (event?.type !== 'message') return null;
-          const content = typeof event.content === 'string' ? event.content : '';
-          if (!content.trim()) return null;
-          const providerItemId = typeof event.provider_item_id === 'string' ? event.provider_item_id : null;
-          const timestamp = event.timestamp != null ? String(event.timestamp) : 'unknown';
-          return {
-            key: `live-message:${providerItemId ?? timestamp}:${index}`,
-            content,
-          };
-        })
-        .filter((row: { key: string; content: string } | null): row is { key: string; content: string } => Boolean(row));
-    },
-    [hasStructuredTimeline, shouldRevealStream, timeline]
-  );
-  const hasLiveMessageChunks = liveMessageRows.length > 1;
-  const hasInterleavedTranscript = useMemo(
-    () => hasStructuredTimeline && transcriptRows.some((row) => row.kind === 'message' || row.kind === 'user_steer'),
-    [hasStructuredTimeline, transcriptRows]
-  );
-  const showCompletedFinalOnly = displayStatus === 'completed' && hasStructuredTimeline;
   const usage = executionData?.usage ?? null;
   const providerErrorCode = executionData?.meta?.provider_error_code ?? null;
   const providerErrorMessage = executionData?.meta?.provider_error_message ?? null;
   const failureReason = isNodeFailureStatus(displayStatus)
-    ? getNodeFailureReason(executionData, providerErrorMessage)
+    ? getNodeFailureReason(executionData, providerErrorMessage ?? message?.content)
     : null;
+  const messageContent = message?.content ?? '';
+  const contentIsFailurePayload = Boolean(
+    failureReason && cleanNodeFailureReason(messageContent) === failureReason
+  );
+  const displayContent = contentIsFailurePayload ? '' : messageContent;
+  const activeTranscriptRows = useMemo(() => {
+    if (!shouldRevealStream || transcriptRows.length === 0) return [];
+    const hasMessageRow = transcriptRows.some((row) => row.kind === 'message' && row.content?.trim());
+    if (hasMessageRow || !displayContent.trim()) return transcriptRows;
+    return [
+      { kind: 'message' as const, key: 'loaded-active-content', content: displayContent },
+      ...transcriptRows,
+    ];
+  }, [displayContent, shouldRevealStream, transcriptRows]);
+  const showActiveTimeline = activeTranscriptRows.length > 0;
+  const copyContent = failureReason
+    ? (displayContent.trim() ? `${displayContent}\n\nFailure: ${failureReason}` : failureReason)
+    : displayContent;
   const promptTokens = message?.promptTokens ?? usage?.input_tokens ?? usage?.prompt_tokens ?? null;
   const completionTokens = message?.completionTokens ?? usage?.output_tokens ?? usage?.completion_tokens ?? null;
   const cachedInputTokens = typeof usage?.cached_input_tokens === 'number' ? usage.cached_input_tokens : null;
@@ -726,34 +773,23 @@ export const ChatAssistantCard = memo(({
   );
 
   const workLogRows = useMemo(() => {
-    if (!hasStructuredTimeline) return [];
-    if (showCompletedFinalOnly) {
-      const normalizedFinalContent = (message?.content || '').replace(/\s+/g, ' ').trim();
-      return transcriptRows.filter((row) => {
-        if (row.kind !== 'message') return true;
-        const normalizedRowContent = (row.content || '').replace(/\s+/g, ' ').trim();
-        return normalizedRowContent !== '' && normalizedRowContent !== normalizedFinalContent;
-      });
-    }
-    if (hasInterleavedTranscript) return [];
-    return transcriptRows.filter((row) => (
-      row.kind === 'tool' ||
-      row.kind === 'exploration' ||
-      row.kind === 'thinking' ||
-      row.kind === 'error'
-    ));
-  }, [hasInterleavedTranscript, hasStructuredTimeline, message?.content, showCompletedFinalOnly, transcriptRows]);
+    if (!hasStructuredTimeline || shouldRevealStream) return [];
+    const normalizedFinalContent = displayContent.replace(/\s+/g, ' ').trim();
+    return transcriptRows.filter((row) => {
+      if (row.kind !== 'message') return true;
+      const normalizedRowContent = (row.content || '').replace(/\s+/g, ' ').trim();
+      return normalizedRowContent !== '' && normalizedRowContent !== normalizedFinalContent;
+    });
+  }, [displayContent, hasStructuredTimeline, shouldRevealStream, transcriptRows]);
 
-  const timestamp = message?.createdAt
-    ? new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : null;
+  const timestamp = formatMessageTimestamp(message?.createdAt, { mode: messageTimestampMode });
+  const baseCommitSha = getMessageBaseCommitSha(message);
   const streamingTailText = useMemo(
     () => getStreamingTailText({
-      hasInterleavedTranscript,
-      transcriptRows,
-      content: message?.content || '',
+      rows: activeTranscriptRows,
+      content: displayContent,
     }),
-    [hasInterleavedTranscript, message?.content, transcriptRows]
+    [activeTranscriptRows, displayContent]
   );
 
   const handleRemoveTag = (tagToRemove: string) => {
@@ -831,9 +867,17 @@ export const ChatAssistantCard = memo(({
                     {entity.commitCount}
                   </span>
                 ) : null}
-                {timestamp && (
-                  <span className="basis-full text-[10px] text-muted-foreground/60 tabular-nums sm:ml-auto sm:basis-auto">
-                    {timestamp}
+                {(baseCommitSha || timestamp) && (
+                  <span className="inline-flex basis-full items-center gap-1.5 sm:ml-auto sm:basis-auto">
+                    <BaseCommitChip commitSha={baseCommitSha} />
+                    {timestamp && (
+                      <span
+                        className="text-[10px] text-muted-foreground/60 tabular-nums"
+                        title={timestamp.title}
+                      >
+                        {timestamp.label}
+                      </span>
+                    )}
                   </span>
                 )}
               </div>
@@ -916,10 +960,21 @@ export const ChatAssistantCard = memo(({
         </div>
       )}
 
+      {failureReason && providerErrorCode !== 'usage_limit_exceeded' && (
+        <div className="relative z-10 mb-4 flex min-w-0 max-w-full items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-950 dark:border-red-900/70 dark:bg-red-950/30 dark:text-red-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
+          <div className="min-w-0">
+            <div className="font-medium">Run failed</div>
+            <div className="mt-0.5 break-words text-red-900/90 dark:text-red-100/90">
+              {failureReason}
+            </div>
+          </div>
+        </div>
+      )}
+
       <WorkLogsPanel
         rows={workLogRows}
         repoPath={repoPath}
-        defaultOpen={!isPublicShare && shouldRevealStream}
         allowToolExpansion={capabilities.canExpandToolCalls}
       />
 
@@ -927,99 +982,17 @@ export const ChatAssistantCard = memo(({
 
       {/* Content */}
       <div className="relative z-10 min-w-0 max-w-full">
-        {hasInterleavedTranscript && !showCompletedFinalOnly ? (
-          <div className="min-w-0 max-w-full space-y-3">
-            {transcriptRows.map((row, index) => {
-              if (row.kind === 'message') {
-                if (!row.content) return null;
-                return (
-                  <div
-                    key={getTimelineRowReactKey(row, index, 'message')}
-                    className="min-w-0 max-w-full rounded-xl border border-border/40 bg-background/80 px-3 py-2.5 shadow-sm"
-                  >
-                    <div className="min-w-0 max-w-full prose dark:prose-invert prose-sm max-w-none break-words text-[14px] leading-[1.62] [overflow-wrap:anywhere] prose-p:my-1.5 prose-p:max-w-[74ch] prose-p:text-foreground/90 prose-p:leading-[1.62] prose-li:max-w-[74ch] prose-li:leading-[1.58] prose-pre:my-1.5 prose-pre:max-w-full prose-pre:whitespace-pre-wrap prose-pre:break-words prose-table:my-1.5 prose-th:py-1 prose-td:py-1">
-                      <StreamingMarkdown text={row.content} isStreaming={shouldRevealStream} repoPath={repoPath} />
-                    </div>
-                  </div>
-                );
-              }
-
-              if (row.kind === 'tool') {
-                return <InterleavedToolCard key={getTimelineRowReactKey(row, index, 'tool')} row={row} allowExpansion={capabilities.canExpandToolCalls} />;
-              }
-
-              if (row.kind === 'exploration') {
-                return <InterleavedExplorationCard key={getTimelineRowReactKey(row, index, 'exploration')} row={row} allowExpansion={capabilities.canExpandToolCalls} />;
-              }
-
-              if (row.kind === 'thinking') {
-                if (!row.content) return null;
-                return (
-                  <div
-                    key={getTimelineRowReactKey(row, index, 'thinking')}
-                    className="min-w-0 max-w-full rounded-xl border border-blue-200/70 bg-blue-50/50 px-3 py-2 text-[11px] text-blue-900/80 dark:border-blue-900/70 dark:bg-blue-950/20 dark:text-blue-200/80"
-                  >
-                    <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
-                      <Sparkles size={12} />
-                      <span>Thinking</span>
-                    </div>
-                    <p className="whitespace-pre-wrap break-words">{row.content}</p>
-                  </div>
-                );
-              }
-
-              if (row.kind === 'user_steer') {
-                if (!row.content) return null;
-                return (
-                  <div
-                    key={getTimelineRowReactKey(row, index, 'user-steer')}
-                    className="min-w-0 max-w-full rounded-xl border border-violet-200/70 bg-violet-50/55 px-3 py-2 text-[11px] text-violet-950/85 dark:border-violet-900/70 dark:bg-violet-950/20 dark:text-violet-100/85"
-                  >
-                    <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
-                      <MessageSquarePlus size={12} />
-                      <span>User Steer</span>
-                    </div>
-                    <p className="whitespace-pre-wrap break-words">{row.content}</p>
-                  </div>
-                );
-              }
-
-              if (row.kind === 'error') {
-                if (!row.content) return null;
-                return (
-                  <div
-                    key={getTimelineRowReactKey(row, index, 'error')}
-                    className="min-w-0 max-w-full rounded-xl border border-red-200/70 bg-red-50/60 px-3 py-2 text-[11px] text-red-900/90 dark:border-red-900/70 dark:bg-red-950/20 dark:text-red-200/90"
-                  >
-                    <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
-                      <AlertTriangle size={12} />
-                      <span>Error</span>
-                    </div>
-                    <p className="whitespace-pre-wrap break-words">{row.content}</p>
-                  </div>
-                );
-              }
-
-              return null;
-            })}
-          </div>
-        ) : hasLiveMessageChunks ? (
-          <div className="min-w-0 max-w-full space-y-3">
-            {liveMessageRows.map((row, index) => (
-              <div
-                key={`${row.key}:${index}`}
-                className="min-w-0 max-w-full rounded-xl border border-border/40 bg-background/80 px-3 py-2.5 shadow-sm"
-              >
-                <div className="min-w-0 max-w-full prose dark:prose-invert prose-sm max-w-none break-words text-[14px] leading-[1.62] [overflow-wrap:anywhere] prose-p:my-1.5 prose-p:max-w-[74ch] prose-p:text-foreground/90 prose-p:leading-[1.62] prose-li:max-w-[74ch] prose-li:leading-[1.58] prose-pre:my-1.5 prose-pre:max-w-full prose-pre:whitespace-pre-wrap prose-pre:break-words prose-table:my-1.5 prose-th:py-1 prose-td:py-1">
-                  <StreamingMarkdown text={row.content} isStreaming={shouldRevealStream} repoPath={repoPath} />
-                </div>
-              </div>
-            ))}
-          </div>
+        {showActiveTimeline ? (
+          <TimelineRows
+            rows={activeTranscriptRows}
+            repoPath={repoPath}
+            isStreaming
+            allowToolExpansion={capabilities.canExpandToolCalls}
+          />
         ) : (
           <div className="min-w-0 max-w-full prose dark:prose-invert prose-sm max-w-none break-words text-[14px] leading-[1.62] [overflow-wrap:anywhere] prose-p:my-1.5 prose-p:max-w-[74ch] prose-p:text-foreground/90 prose-p:leading-[1.62] prose-li:max-w-[74ch] prose-li:leading-[1.58] prose-pre:my-1.5 prose-pre:max-w-full prose-pre:whitespace-pre-wrap prose-pre:break-words prose-table:my-1.5 prose-th:py-1 prose-td:py-1">
 	            <StreamingMarkdown
-	              text={message?.content || ''}
+	              text={displayContent}
 	              isStreaming={shouldRevealStream}
 	              repoPath={repoPath}
 	              messageId={messageId}
@@ -1030,7 +1003,7 @@ export const ChatAssistantCard = memo(({
       </div>
 
       <CopyMessageContentButton
-        text={message?.content}
+	        text={copyContent}
         ariaLabel="Copy assistant response"
         title="Copy response"
         className={cn(

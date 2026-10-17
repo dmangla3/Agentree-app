@@ -1,9 +1,24 @@
 import { isFailureAgentStatus } from '@shared/agentStatus';
 
-export function cleanNodeFailureReason(value: unknown): string | null {
+function cleanNodeFailureReasonAtDepth(value: unknown, depth: number): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
+  if (trimmed.length === 0) return null;
+  if (depth >= 4 || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) return trimmed;
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    const nestedMessage = parsed?.error?.message
+      ?? parsed?.message
+      ?? (typeof parsed?.error === 'string' ? parsed.error : null);
+    return cleanNodeFailureReasonAtDepth(nestedMessage, depth + 1) ?? trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+export function cleanNodeFailureReason(value: unknown): string | null {
+  return cleanNodeFailureReasonAtDepth(value, 0);
 }
 
 export function isNodeFailureStatus(status: unknown): boolean {

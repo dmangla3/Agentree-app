@@ -137,6 +137,47 @@ const buildTurnWithAssistantOutputArtifact = (): Message[] => [
   }, 1),
 ];
 
+const buildTurnWithDelegatedThreadLinks = (): Message[] => [
+  makeMessage({
+    id: 'user-1',
+    role: 'user',
+    parentId: null,
+    content: 'Delegate focused checks.',
+  }, 0),
+  makeMessage({
+    id: 'assistant-1',
+    role: 'assistant',
+    parentId: 'user-1',
+    content: 'Delegated the checks.',
+    status: 'completed',
+  }, 1),
+  makeMessage({
+    id: 'thread-link:child-1',
+    role: 'user',
+    parentId: 'assistant-1',
+    content: 'Check graph geometry',
+    execution_data: {
+      meta: {
+        node_kind: 'subgraph_thread_link',
+        target_thread_root_id: 'child-1',
+        delegation_request_id: 'request-1',
+      },
+    },
+  }, 2),
+  makeMessage({
+    id: 'thread-link:manual',
+    role: 'user',
+    parentId: 'assistant-1',
+    content: 'Manually converted thread',
+    execution_data: {
+      meta: {
+        node_kind: 'subgraph_thread_link',
+        target_thread_root_id: 'manual-thread',
+      },
+    },
+  }, 3),
+];
+
 const buildTurnWithLocalAssistantCommitStack = (): Message[] => [
   makeMessage({
     id: 'user-1',
@@ -930,6 +971,68 @@ describe('graph layout geometry QA', () => {
     expect(numberStyle(assistant.style?.height)).toBe(168);
     expect((assistant.data as any).graphNodeHeight).toBe(168);
     expect((assistant.data as any).heightKey).toContain('outputPreview:1');
+  });
+
+  it('docks delegated thread links into their assistant without changing manual thread links', () => {
+    const mapped = buildMappedGraph(buildTurnWithDelegatedThreadLinks());
+    const assistant = getNode(mapped.nodes, 'assistant-1');
+
+    expect(mapped.nodes.some((node) => node.id === 'thread-link:child-1')).toBe(false);
+    expect(mapped.edges.some((edge) => edge.source === 'thread-link:child-1' || edge.target === 'thread-link:child-1')).toBe(false);
+    expect(mapped.nodes.some((node) => node.id === 'thread-link:manual')).toBe(true);
+    expect(numberStyle(assistant.style?.height)).toBe(176);
+    expect((assistant.data as any).graphNodeHeight).toBe(176);
+    expect((assistant.data as any).heightKey).toContain('attachedThreads:1');
+    expect((assistant.data as any).attachedThreads).toEqual([
+      expect.objectContaining({
+        linkMessageId: 'thread-link:child-1',
+        threadRootId: 'child-1',
+        title: 'Check graph geometry',
+      }),
+    ]);
+  });
+
+  it('carries attached-thread assistant height through all graph layouts and hulls', () => {
+    const mapped = buildMappedGraph(buildTurnWithDelegatedThreadLinks());
+
+    [
+      { name: 'dagre', layoutFn: getLayoutedElements },
+      { name: 'lane', layoutFn: getLaneLayoutedElements },
+      { name: 'tidy', layoutFn: getTidyTreeLayoutedElements },
+      { name: 'sugiyama', layoutFn: getSugiyamaLayoutedElements },
+    ].forEach(({ name, layoutFn }) => {
+      const layouted = layoutFn(mapped.nodes as any, mapped.edges as any);
+      const assistant = getNode(layouted.nodes, 'assistant-1');
+      const hull = getHullByMember(layouted.nodes, 'assistant-1');
+      const assistantBottom = assistant.position.y + numberStyle(assistant.style?.height);
+      const hullBottom = hull.position.y + numberStyle(hull.style?.height);
+
+      expect(numberStyle(assistant.style?.height), name).toBe(176);
+      expect(hullBottom, name).toBeGreaterThanOrEqual(assistantBottom);
+    });
+  });
+
+  it('retains and highlights the owning assistant when a delegated thread title matches a filter', () => {
+    const messages = buildTurnWithDelegatedThreadLinks();
+    const mapped = buildMappedGraph(
+      messages,
+      'assistant-1',
+      undefined,
+      undefined,
+      undefined,
+      {
+        matchingMessageIds: new Set(['thread-link:child-1']),
+        filterActive: true,
+        hasNodeTypeFilter: false,
+        keepAncestors: true,
+        keepDescendants: true,
+        constrainedCommitFiltering: false,
+      },
+    );
+    const assistant = getNode(mapped.nodes, 'assistant-1');
+
+    expect((assistant.data as any).matchesTagFilter).toBe(true);
+    expect(mapped.nodes.some((node) => node.id === 'thread-link:child-1')).toBe(false);
   });
 
   it('does not let stale small measurements shrink output-preview assistant nodes', () => {

@@ -14,6 +14,7 @@ import { getKindeRedirectUri, initKindeDeepLinkHandler, restoreDesktopCloudSessi
 import { getElapsedSinceAppStartMs, recordPerfEvent } from './lib/perfRecorder';
 import { registerAgentRunEffectsQueryClient } from './agent-runs/agentRunEffects';
 import { initAgentreeDeepLinkHandler } from './lib/agentreeDeepLinks';
+import { ThreadControlObserver } from './thread-control/ThreadControlObserver';
 
 const ReactQueryDevtools = lazy(() =>
   import('@tanstack/react-query-devtools').then((module) => ({
@@ -125,6 +126,7 @@ const bootstrap = async () => {
     <StrictMode>
       <AppErrorBoundary>
         <QueryClientProvider client={queryClient}>
+          <ThreadControlObserver />
           <KindeProvider
             clientId={import.meta.env.VITE_KINDE_CLIENT_ID}
             domain={import.meta.env.VITE_KINDE_DOMAIN}

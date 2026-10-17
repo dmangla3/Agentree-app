@@ -1,19 +1,14 @@
 import { AGENT_STATUS } from '@shared/agentStatus';
 import type { Message, Workspace } from '../stores/workspaceStore';
 import type { Agent } from '../hooks/useAgents';
-import type { StartAgentRunIntent, StartAgentRunResponse } from '../lib/agentClient';
 import { createSendFlowId, recordSendFlowEvent } from '../perf/sendFlow';
 import { getLegacyThreadIdForMessage, getMessageThreadSessionId } from '../lib/threadSessions';
 import { resolveLocalWorkspaceRepoPath } from '../lib/workspaceRepoPath';
-import { buildAgentRunLaunchContext } from '../lib/agentRunLaunchContext';
-import { buildAgentRuntimeArgs } from '../lib/agentRuntimeArgs';
+import { buildAgentRunContextManifest } from '../lib/agentRunLaunchContext';
 import {
   DEFAULT_COMPOSER_PERMISSION_MODE,
   type ComposerPermissionMode,
 } from '../lib/composerPermissions';
-import {
-  startOrchestratorRun,
-} from '../orchestration/controlPlane';
 import { getOptionalCloudAuthToken } from '../lib/authSession';
 
 export interface HeadlessComposerBase {
@@ -51,6 +46,7 @@ export interface HeadlessComposerMessageInput extends Omit<HeadlessComposerReply
   parentMessageId: string | null;
   contextParentId?: string | null;
   contextPolicy?: 'continue' | 'fresh';
+  contextMode?: 'active' | 'none';
   contextStartId?: string | null;
   perfFlowId?: string;
   perfSource?: string;
@@ -60,7 +56,6 @@ export interface HeadlessComposerMessageInput extends Omit<HeadlessComposerReply
   permissionMode?: ComposerPermissionMode;
   threadId?: string | null;
   threadOriginId?: string | null;
-  orchestrationMode?: boolean;
 }
 
 const createLocalHeadlessMessages = (input: {
@@ -157,23 +152,6 @@ const createLocalHeadlessMessages = (input: {
   return { userMessage, assistantMessage };
 };
 
-export const buildHeadlessComposerAgentArgs = (
-  agent: Agent,
-  prompt: string,
-  permissionMode: ComposerPermissionMode = DEFAULT_COMPOSER_PERMISSION_MODE,
-  providerInternalArgs: string[] = [],
-): string[] => {
-  return buildAgentRuntimeArgs({
-    agentType: agent.type,
-    cliArgs: agent.cliArgs,
-    promptFlag: agent.promptFlag,
-    prompt,
-    permissionMode,
-    providerInternalArgs,
-    createClaudeSessionId: () => crypto.randomUUID(),
-  }).args;
-};
-
 export const resolveWorkspaceRepoPath = (workspace: Workspace | null | undefined): string | null => (
   resolveLocalWorkspaceRepoPath(workspace)
 );
@@ -211,91 +189,6 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
     optimisticAssistantMessageId: null,
   }, { source: perfSource });
 
-  if (input.orchestrationMode) {
-    if (!input.persistLocalNode) {
-      throw new Error('Local node persistence is required for orchestration sends.');
-    }
-    const workspace = input.workspaces.find((candidate) => candidate.id === input.workspaceId) ?? null;
-    const repoPath = resolveWorkspaceRepoPath(workspace);
-    if (!repoPath) {
-      throw new Error('Workspace repository path is required for composer sends.');
-    }
-
-    const nowIso = input.nowIso?.() ?? new Date().toISOString();
-    const runId = input.createRunId?.() ?? crypto.randomUUID();
-    const userNodeId = crypto.randomUUID();
-    const assistantNodeId = crypto.randomUUID();
-    const contextParentId = input.contextPolicy === 'fresh'
-      ? null
-      : input.contextParentId ?? input.parentMessageId;
-    const launchContext = buildAgentRunLaunchContext({
-      agentType: input.agent.type,
-      userPrompt: prompt,
-      messages: input.messages,
-      messageMap,
-      contextParentMessageId: contextParentId,
-      baseMessageId: input.parentMessageId,
-      contextPolicy: input.contextPolicy ?? 'continue',
-      contextStartMessageId: input.contextStartId ?? null,
-      modelCapabilities: input.agent.model_config?.capabilities ?? null,
-      targetNodeId: input.parentMessageId,
-      nodeId: assistantNodeId,
-      threadTitleMode: 'none',
-      orchestrationLabelMode: 'orchestrator',
-      orchestrationControl: {
-        orchestratorRunId: runId,
-        orchestratorNodeId: assistantNodeId,
-      },
-    });
-    const authToken = await getOptionalCloudAuthToken(input.getAccessToken);
-    const startResult = await startOrchestratorRun({
-      workspaceId: input.workspaceId,
-      repoPath,
-      authToken,
-      parentNodeId: input.parentMessageId,
-      contextParentNodeId: contextParentId,
-      baseNodeId: input.base.selectedFromNodeId,
-      baseCommitSha: input.base.commitSha,
-      prompt,
-      agentId: input.agent.id,
-      agentType: input.agent.type,
-      agentCliArgs: input.agent.cliArgs,
-      agentPromptFlag: input.agent.promptFlag,
-      agentName: input.agent.name,
-      llmModel: input.agent.model_config?.model ?? null,
-      modelCapabilities: input.agent.model_config?.capabilities ?? null,
-      permissionMode: input.permissionMode,
-      loginProfileId: input.selectedLoginProfileId ?? null,
-      contextManifest: launchContext.contextManifest,
-      providerParentMeta: (contextParentId ? (messageMap.get(contextParentId)?.execution_data as any)?.meta : null) ?? null,
-      isBranchFromInterior: launchContext.isBranchFromInterior,
-      threadId: effectiveThreadId,
-      threadOriginId: effectiveThreadOriginId,
-      now: nowIso,
-      userNodeId,
-      assistantNodeId,
-      runId,
-    }, {
-      newId: () => crypto.randomUUID(),
-      persistLocalNode: async (workspaceId, nodeId, message) => {
-        await input.persistLocalNode?.(workspaceId, nodeId, message);
-      },
-      startAgentRun: async (intent: StartAgentRunIntent): Promise<StartAgentRunResponse> => (
-        input.startAgentRun(intent as unknown as Record<string, unknown>) as Promise<StartAgentRunResponse>
-      ),
-      seedAgentRun: input.seedAgentRun,
-      dispatchAgentRun: input.dispatchAgentRun,
-    });
-    const createdMessages = [startResult.userNode, startResult.assistantNode];
-    input.onMessagesCreated?.(createdMessages);
-    input.onAssistantMessageCreated?.(startResult.assistantNode);
-
-    return {
-      userMessage: startResult.userNode,
-      assistantMessages: [startResult.assistantNode],
-    };
-  }
-
   const nowIso = input.nowIso?.() ?? new Date().toISOString();
   const localPair = createLocalHeadlessMessages({
     workspaceId: input.workspaceId,
@@ -327,6 +220,7 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
 
   const createdMessages = [userMessage, assistantMessage].filter((message): message is Message => Boolean(message));
   if (createdMessages.length > 0) {
+    // Preserve the accepted prompt even if token lookup or launch preflight fails.
     if (input.persistLocalNode) {
       await Promise.all(createdMessages.map((message) => (
         input.persistLocalNode?.(input.workspaceId, message.id, message)
@@ -378,19 +272,11 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
     const contextParentId = input.contextPolicy === 'fresh'
       ? null
       : input.contextParentId ?? input.parentMessageId;
-    const launchContext = buildAgentRunLaunchContext({
-      agentType: input.agent.type,
-      userPrompt: prompt,
+    const contextManifest = buildAgentRunContextManifest({
       messages: input.messages,
-      messageMap,
       contextParentMessageId: contextParentId,
-      baseMessageId: input.parentMessageId,
       contextPolicy: input.contextPolicy ?? 'continue',
       contextStartMessageId: input.contextStartId ?? null,
-      modelCapabilities: input.agent.model_config?.capabilities ?? null,
-      targetNodeId: input.parentMessageId,
-      nodeId: assistantMessage.id,
-      threadTitleMode: !input.parentMessageId && effectiveThreadId ? 'first_thread_message' : 'none',
     });
     const executionData = {
       ...(assistantMessage.execution_data ?? {}),
@@ -403,7 +289,6 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
         ...(((assistantMessage.execution_data as any)?.meta ?? {}) as Record<string, unknown>),
         base_commit_sha: input.base.commitSha,
         ...(input.meta ?? {}),
-        ...launchContext.meta,
         agent_id: input.agent.id,
         provider_run_mode: input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE,
         composer_permission_mode: input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE,
@@ -427,30 +312,38 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
     }, { source: perfSource });
     try {
       await input.startAgentRun({
+        requestId: `composer:${assistantMessage.id}`,
         runId,
+        userNodeId: userMessage.id,
         assistantNodeId: assistantMessage.id,
         workspaceId: input.workspaceId,
-        repoPath,
-        parentCommit: input.base.commitSha,
+        threadId: effectiveThreadId,
+        parentNodeId: input.parentMessageId,
+        contextParentNodeId: contextParentId,
+        baseNodeId: input.parentMessageId,
+        baseCommit: input.base.commitSha,
+        userPrompt: prompt,
         agentType: input.agent.type,
-        args: buildHeadlessComposerAgentArgs(
-          input.agent,
-          launchContext.prompt,
-          input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE,
-          launchContext.providerInternalArgs
-        ),
+        model: input.agent.model_config?.model ?? null,
+        reasoningEffort: input.agent.model_config?.reasoningEffort ?? null,
+        permissionMode: input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE,
+        loginProfileId: input.selectedLoginProfileId ?? null,
+        agentId: input.agent.id,
+        agentName: input.agent.name ?? null,
+        agentCliArgs: input.agent.cliArgs,
+        agentPromptFlag: input.agent.promptFlag,
         authToken,
         traceId: null,
-        loginProfileId: input.selectedLoginProfileId ?? null,
-        runContext: {
-          runId,
-          executionData,
-          gitBranchName: `agentree/${assistantMessage.id}`,
-          repoPath,
-          parentCommit: input.base.commitSha,
-          authorName: input.agent.name ?? null,
-          promptFallback: prompt,
-        },
+        contextPolicy: input.contextPolicy ?? 'continue',
+        contextMode: input.contextMode ?? (input.contextPolicy === 'fresh' ? 'none' : 'active'),
+        contextManifest: contextManifest as unknown as Record<string, unknown>,
+        modelCapabilities: (input.agent.model_config?.capabilities ?? {}) as unknown as Record<string, unknown>,
+        threadTitleMode: !input.parentMessageId && effectiveThreadId ? 'first_thread_message' : 'none',
+        userNode: userMessage as unknown as Record<string, unknown>,
+        assistantNode: {
+          ...assistantMessage,
+          execution_data: executionData,
+        } as unknown as Record<string, unknown>,
       });
       recordSendFlowEvent('agent-setup.spawn.returned', {
         flowId,

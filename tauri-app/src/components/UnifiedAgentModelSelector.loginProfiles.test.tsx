@@ -21,6 +21,18 @@ vi.mock('../hooks/useAgents', () => ({
         },
       },
       {
+        id: 'codex:gpt-5.5:xhigh',
+        type: 'codex',
+        name: 'Codex Extra High',
+        model_config: {
+          model: 'gpt-5.5',
+          familyKey: 'codex:gpt-5.5',
+          familyLabel: 'GPT-5.5',
+          reasoningEffort: 'xhigh',
+          effortLabel: 'Extra High',
+        },
+      },
+      {
         id: 'codex:gpt-6:low',
         type: 'codex',
         name: 'Codex Low',
@@ -100,6 +112,7 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
     vi.stubGlobal('document', dom.window.document);
     vi.stubGlobal('HTMLElement', dom.window.HTMLElement);
     vi.stubGlobal('Element', dom.window.Element);
+    vi.stubGlobal('getComputedStyle', dom.window.getComputedStyle);
     vi.stubGlobal('ResizeObserver', class {
       observe() {}
       unobserve() {}
@@ -124,6 +137,76 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
     fireEvent.click(getByText('High'));
 
     expect(onSelectAgent).toHaveBeenCalledWith('codex:gpt-5.5:high');
+  });
+
+  it('hides excluded models from the selector', () => {
+    const { getByText, queryByText } = render(
+      <UnifiedAgentModelSelector
+        selectedAgentId={null}
+        onSelectAgent={() => {}}
+        excludedAgentIds={['codex:gpt-5.5:high', 'codex:gpt-5.5:xhigh', 'claude:opus-4.5:high']}
+      />
+    );
+
+    expect(queryByText('GPT-5.5')).toBeNull();
+    expect(queryByText('Opus 4.5')).toBeNull();
+    expect(getByText('GPT-6')).toBeTruthy();
+  });
+
+  it('shows providers as tabs and scopes the model families to the active provider', () => {
+    const { getByRole, getByText, queryByText } = render(
+      <UnifiedAgentModelSelector
+        selectedAgentId="codex:gpt-5.5:high"
+        onSelectAgent={() => {}}
+      />
+    );
+
+    const codexTab = getByRole('tab', { name: /Codex/ });
+    const claudeTab = getByRole('tab', { name: /Claude/ });
+    expect(codexTab.getAttribute('aria-selected')).toBe('true');
+    expect(queryByText('Opus 4.5')).toBeNull();
+
+    fireEvent.click(claudeTab);
+
+    expect(claudeTab.getAttribute('aria-selected')).toBe('true');
+    expect(getByText('Opus 4.5')).toBeTruthy();
+    expect(queryByText('GPT-5.5')).toBeNull();
+  });
+
+  it('opens the provider tab for the explicitly selected model when multiple providers have run counts', () => {
+    const { getByRole, getByText, queryByText } = render(
+      <UnifiedAgentModelSelector
+        selectedAgentId="claude:opus-4.5:high"
+        agentRunCounts={{
+          'codex:gpt-5.5:high': 1,
+          'claude:opus-4.5:high': 1,
+        }}
+        onSelectAgent={() => {}}
+      />
+    );
+
+    expect(getByRole('tab', { name: /Claude/ }).getAttribute('aria-selected')).toBe('true');
+    expect(getByText('Opus 4.5')).toBeTruthy();
+    expect(queryByText('GPT-5.5')).toBeNull();
+  });
+
+  it('shows an all-selected state when every model is excluded', () => {
+    const { getByText } = render(
+      <UnifiedAgentModelSelector
+        selectedAgentId={null}
+        onSelectAgent={() => {}}
+        excludedAgentIds={[
+          'codex:gpt-5.5:high',
+          'codex:gpt-5.5:xhigh',
+          'codex:gpt-6:low',
+          'codex:gpt-image-2',
+          'claude:opus-4.5:high',
+        ]}
+      />
+    );
+
+    expect(getByText('All models selected')).toBeTruthy();
+    expect(getByText('Every available model is already included in this run.')).toBeTruthy();
   });
 
   it('blocks Codex image models for ChatGPT session profiles', () => {
@@ -156,16 +239,41 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
     expect(onSelectAgent).toHaveBeenCalledWith('codex:gpt-image-2');
   });
 
+  it('contains long effort labels and multi-run controls in narrow selector columns', () => {
+    const { container, getByText, getByRole } = render(
+      <UnifiedAgentModelSelector
+        selectedAgentId="codex:gpt-5.5:xhigh"
+        agentRunCounts={{ 'codex:gpt-5.5:xhigh': 1 }}
+        onSelectAgent={() => {}}
+        onAgentRunCountChange={() => {}}
+      />
+    );
+
+    const effortRow = getByText('Extra High').closest('[role="button"]');
+    const controls = getByRole('button', { name: 'Increase Extra High' }).parentElement;
+    const effortColumn = container.querySelector('[data-model-effort-column="true"]');
+
+    expect(container.querySelector('[data-model-selector-body="true"]')?.className).toContain('grid-cols-[minmax(156px,0.85fr)_minmax(0,1fr)]');
+    expect(effortColumn?.className).toContain('overflow-x-hidden');
+    expect(effortColumn?.className).toContain('overflow-y-auto');
+    expect(effortRow?.className).toContain('min-w-0');
+    expect(effortRow?.className).toContain('flex-wrap');
+    expect(effortRow?.className).toContain('overflow-hidden');
+    expect(getByText('Extra High').className).toContain('truncate');
+    expect(controls?.className).toContain('max-w-full');
+  });
+
   it('dims and blocks models whose provider lacks a ready selected profile', () => {
     const onSelectAgent = vi.fn();
     const loginIntent = vi.fn();
     window.addEventListener(LOGIN_PROFILES_NAVIGATION_EVENT, loginIntent);
 
-    const { getByText } = render(<UnifiedAgentModelSelector selectedAgentId={null} onSelectAgent={onSelectAgent} />);
+    const { getAllByText, getByRole, getByText } = render(<UnifiedAgentModelSelector selectedAgentId={null} onSelectAgent={onSelectAgent} />);
+    fireEvent.click(getByRole('tab', { name: /Claude/ }));
     expect(getByText('Opus 4.5').closest('section')?.getAttribute('data-login-provider-active')).toBe('false');
     fireEvent.click(getByText('Opus 4.5'));
 
-    fireEvent.click(getByText('Login to Claude'));
+    fireEvent.click(getAllByText('Login to Claude')[0]);
     expect(loginIntent).toHaveBeenCalled();
     expect((loginIntent.mock.calls[0][0] as CustomEvent).detail).toEqual({ provider: 'claude' });
     expect(onSelectAgent).not.toHaveBeenCalled();

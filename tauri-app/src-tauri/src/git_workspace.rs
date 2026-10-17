@@ -294,45 +294,11 @@ fn run_git_success(repo_path: &str, args: &[&str]) -> bool {
     }
 }
 
-fn sanitize_commit_author_name(author_name: Option<&str>) -> String {
-    let raw = author_name.unwrap_or("Agentree").trim();
-    let sanitized: String = raw.chars().filter(|c| *c != '\n' && *c != '\r').collect();
-    if sanitized.is_empty() {
-        "Agentree".to_string()
-    } else {
-        sanitized
-    }
-}
-
-fn run_git_commit_with_author(
-    repo_path: &str,
-    args: &[&str],
-    author_name: Option<&str>,
-) -> Result<String, String> {
-    let author = sanitize_commit_author_name(author_name);
-    let user_name_cfg = format!("user.name={}", author);
-    let output = Command::new("git")
-        .args([
-            "-c",
-            user_name_cfg.as_str(),
-            "-c",
-            "user.email=agentree@local",
-        ])
-        .args(args)
-        .current_dir(repo_path)
-        .output()
-        .map_err(|e| format!("git commit failed: {}", e))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if !stderr.is_empty() { stderr } else { stdout };
-        return Err(format!("git {:?} failed: {}", args, detail));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
 fn run_git_commit(repo_path: &str, args: &[&str]) -> Result<String, String> {
-    run_git_commit_with_author(repo_path, args, None)
+    // Git resolves both author and committer from the repository-aware config
+    // stack (worktree, local, includeIf, global). Model identity belongs in
+    // Agentree metadata and must never replace the user's Git identity.
+    run_git(repo_path, args)
 }
 
 fn ensure_directory(path: &Path) -> Result<(), String> {
@@ -902,77 +868,128 @@ fn link_dependencies(
     Ok(linked_paths)
 }
 
-fn split_nul_paths(output: &str) -> impl Iterator<Item = String> + '_ {
-    output
-        .split('\0')
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(ToString::to_string)
-}
-
-fn collect_git_changed_paths(worktree_path: &str) -> Result<HashSet<String>, String> {
-    let mut paths = HashSet::new();
-
-    let tracked_changes = run_git(worktree_path, &["diff", "--name-only", "-z", "HEAD"])?;
-    paths.extend(split_nul_paths(&tracked_changes));
-
-    let staged_changes = run_git(
-        worktree_path,
-        &["diff", "--cached", "--name-only", "-z", "HEAD"],
-    )?;
-    paths.extend(split_nul_paths(&staged_changes));
-
-    let untracked = run_git(
-        worktree_path,
-        &["ls-files", "--others", "--exclude-standard", "-z"],
-    )?;
-    paths.extend(split_nul_paths(&untracked));
-
-    Ok(paths)
+#[derive(Default)]
+struct WorktreeStagePlan {
+    committable_paths: Vec<String>,
+    paths_to_stage: Vec<String>,
+    paths_to_unstage: Vec<String>,
 }
 
 fn committable_changed_paths(repo_path: &str, worktree_path: &str) -> Result<Vec<String>, String> {
     let config = crate::worktree_config::load_agent_worktree_config(repo_path)?;
-    committable_changed_paths_with_config(repo_path, worktree_path, &config)
+    stage_plan_with_config(repo_path, worktree_path, &config).map(|plan| plan.committable_paths)
 }
 
-fn committable_changed_paths_with_config(
+fn stage_plan_with_config(
     repo_path: &str,
     worktree_path: &str,
     config: &AgentWorktreeConfig,
-) -> Result<Vec<String>, String> {
+) -> Result<WorktreeStagePlan, String> {
     let scaffolding_paths = collect_worktree_scaffolding_paths(repo_path, worktree_path, config)?;
     let commit_exclude_matcher = crate::worktree_config::compile_gitignore_patterns(
         Path::new(repo_path),
         &config.commit_exclude_patterns,
         "worktree.commitExcludePatterns",
     )?;
-    let mut paths = collect_git_changed_paths(worktree_path)?
-        .into_iter()
-        .filter(|path| !scaffolding_paths.contains(path))
-        .filter(|path| {
-            !crate::worktree_config::path_matches_patterns(
-                &commit_exclude_matcher,
-                Path::new(path),
-                false,
-            )
-        })
+    let status = run_git(
+        worktree_path,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
+    let mut committable_paths = HashSet::new();
+    let mut paths_to_stage = HashSet::new();
+    let mut paths_to_unstage = HashSet::new();
+
+    let entries = status
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
         .collect::<Vec<_>>();
-    paths.sort();
-    Ok(paths)
+    let mut index = 0usize;
+    while index < entries.len() {
+        let entry = entries[index];
+        if entry.len() < 4 {
+            index += 1;
+            continue;
+        }
+        let bytes = entry.as_bytes();
+        let index_status = bytes[0] as char;
+        let worktree_status = bytes[1] as char;
+        let path = entry[3..].to_string();
+        let is_rename = index_status == 'R' || worktree_status == 'R';
+        let is_copy = index_status == 'C' || worktree_status == 'C';
+        let original_path = if is_rename || is_copy {
+            entries.get(index + 1).map(|path| (*path).to_string())
+        } else {
+            None
+        };
+        index += if original_path.is_some() { 2 } else { 1 };
+
+        let path_is_excluded = |path: &str| {
+            scaffolding_paths.contains(path)
+                || crate::worktree_config::path_matches_patterns(
+                    &commit_exclude_matcher,
+                    Path::new(path),
+                    false,
+                )
+        };
+        let is_excluded =
+            path_is_excluded(&path) || original_path.as_deref().is_some_and(&path_is_excluded);
+
+        if is_excluded {
+            if index_status != ' ' && index_status != '?' {
+                paths_to_unstage.insert(path);
+                if let Some(original_path) = original_path {
+                    paths_to_unstage.insert(original_path);
+                }
+            }
+            continue;
+        }
+
+        committable_paths.insert(path.clone());
+        if is_rename {
+            if let Some(original_path) = original_path.as_ref() {
+                committable_paths.insert(original_path.clone());
+            }
+        }
+        if index_status == '?' || worktree_status != ' ' {
+            paths_to_stage.insert(path);
+            if worktree_status == 'R' {
+                if let Some(original_path) = original_path {
+                    paths_to_stage.insert(original_path);
+                }
+            }
+        }
+    }
+
+    let mut plan = WorktreeStagePlan {
+        committable_paths: committable_paths.into_iter().collect(),
+        paths_to_stage: paths_to_stage.into_iter().collect(),
+        paths_to_unstage: paths_to_unstage.into_iter().collect(),
+    };
+    plan.committable_paths.sort();
+    plan.paths_to_stage.sort();
+    plan.paths_to_unstage.sort();
+    Ok(plan)
 }
 
 fn stage_committable_paths(repo_path: &str, worktree_path: &str) -> Result<Vec<String>, String> {
     let config = crate::worktree_config::load_agent_worktree_config(repo_path)?;
-    let paths = committable_changed_paths_with_config(repo_path, worktree_path, &config)?;
-    if paths.is_empty() {
-        return Ok(paths);
+    let plan = stage_plan_with_config(repo_path, worktree_path, &config)?;
+    if !plan.paths_to_unstage.is_empty() {
+        let mut args = vec![
+            "reset".to_string(),
+            "-q".to_string(),
+            "HEAD".to_string(),
+            "--".to_string(),
+        ];
+        args.extend(plan.paths_to_unstage.iter().cloned());
+        run_git_owned(worktree_path, args)?;
     }
-
-    let mut args = vec!["add".to_string(), "-A".to_string(), "--".to_string()];
-    args.extend(paths.iter().cloned());
-    run_git_owned(worktree_path, args)?;
-    Ok(paths)
+    if !plan.paths_to_stage.is_empty() {
+        let mut args = vec!["add".to_string(), "-A".to_string(), "--".to_string()];
+        args.extend(plan.paths_to_stage.iter().cloned());
+        run_git_owned(worktree_path, args)?;
+    }
+    Ok(plan.committable_paths)
 }
 
 fn is_git_ignored(repo_path: &str, relative_path: &str) -> Result<bool, String> {
@@ -1877,7 +1894,7 @@ pub async fn finalize_agent_worktree(
     repo_path: String,
     node_id: String,
     commit_message: String,
-    author_name: Option<String>,
+    _author_name: Option<String>,
 ) -> Result<FinalizeAgentWorktreeResult, String> {
     let worktree_path = resolve_agent_worktree_path(&repo_path, &node_id)?;
     let worktree_path_string = worktree_path.to_string_lossy().to_string();
@@ -1886,7 +1903,7 @@ pub async fn finalize_agent_worktree(
         &repo_path,
         &node_id,
         &worktree_path,
-        &format!("author_present={}", author_name.is_some()),
+        "identity_source=git_config",
     );
     with_repo_git_lock(&repo_path, "worktree_finalize", || {
         let staged_paths = match stage_committable_paths(&repo_path, &worktree_path_string) {
@@ -1931,11 +1948,8 @@ pub async fn finalize_agent_worktree(
                 commit_created: false,
             });
         }
-        if let Err(err) = run_git_commit_with_author(
-            &worktree_path_string,
-            &["commit", "-m", &commit_message],
-            author_name.as_deref(),
-        ) {
+        if let Err(err) = run_git_commit(&worktree_path_string, &["commit", "-m", &commit_message])
+        {
             log_agent_worktree_lifecycle(
                 "finalize.commit.error",
                 &repo_path,
@@ -2061,7 +2075,7 @@ pub fn finalize_agent_merge_worktree(
     target_commit: &str,
     source_commits: &[String],
     commit_message: &str,
-    author_name: Option<&str>,
+    _author_name: Option<&str>,
     target_branch: Option<&str>,
     update_target_branch: bool,
 ) -> Result<(GitCommitMetadata, bool), String> {
@@ -2110,7 +2124,7 @@ pub fn finalize_agent_merge_worktree(
         commit_args.push("-m".to_string());
         commit_args.push(commit_message.to_string());
         let commit_arg_refs = commit_args.iter().map(String::as_str).collect::<Vec<_>>();
-        let commit_sha = run_git_commit_with_author(repo_path, &commit_arg_refs, author_name)?
+        let commit_sha = run_git_commit(repo_path, &commit_arg_refs)?
             .trim()
             .to_string();
 
@@ -2593,12 +2607,24 @@ mod tests {
             repo_path,
             node_id.to_string(),
             "Assistant output".to_string(),
-            Some("Agentree Test".to_string()),
+            Some("GPT Test Model".to_string()),
         ))
         .expect("finalize agent worktree");
         let commit_sha = result.commit_sha.expect("commit sha");
 
         assert!(result.commit_created);
+        assert_eq!(
+            run_test_git(
+                &worktree_path,
+                &[
+                    "show",
+                    "-s",
+                    "--format=%an%x00%ae%x00%cn%x00%ce",
+                    &commit_sha,
+                ],
+            ),
+            "Agentree Test\0agentree@example.com\0Agentree Test\0agentree@example.com"
+        );
         assert_eq!(
             run_test_git(
                 &worktree_path,
@@ -2612,6 +2638,154 @@ mod tests {
         );
         assert!(tree_files.lines().any(|path| path == "assistant.txt"));
         assert!(!tree_files.lines().any(|path| path == "generated/out.txt"));
+    }
+
+    #[test]
+    fn finalize_agent_worktree_unstages_excluded_paths() {
+        let dir = init_test_repo();
+        let config_path = dir.path().join(".agentree/config.json");
+        fs::create_dir_all(config_path.parent().unwrap()).expect("create config dir");
+        fs::write(
+            &config_path,
+            r#"{"worktree":{"commitExcludePatterns":["generated/**"]}}"#,
+        )
+        .expect("write config");
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-staged-exclude-config";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        fs::create_dir_all(worktree_path.join("generated")).expect("create generated dir");
+        fs::write(worktree_path.join("generated/out.txt"), "generated\n")
+            .expect("write generated output");
+        run_test_git(&worktree_path, &["add", "generated/out.txt"]);
+        fs::write(worktree_path.join("assistant.txt"), "assistant output\n")
+            .expect("write assistant output");
+
+        let result = tauri::async_runtime::block_on(finalize_agent_worktree(
+            repo_path,
+            node_id.to_string(),
+            "Assistant output".to_string(),
+            Some("Agentree Test".to_string()),
+        ))
+        .expect("finalize agent worktree");
+        let commit_sha = result.commit_sha.expect("commit sha");
+
+        assert!(result.commit_created);
+        let tree_files = run_test_git(
+            &worktree_path,
+            &["ls-tree", "-r", "--name-only", &commit_sha],
+        );
+        assert!(tree_files.lines().any(|path| path == "assistant.txt"));
+        assert!(!tree_files.lines().any(|path| path == "generated/out.txt"));
+    }
+
+    #[test]
+    fn finalize_agent_worktree_omits_entire_rename_into_excluded_path() {
+        let dir = init_test_repo();
+        fs::write(dir.path().join("safe.txt"), "keep me\n").expect("write tracked source");
+        run_test_git(dir.path(), &["add", "safe.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "add tracked source"]);
+        let config_path = dir.path().join(".agentree/config.json");
+        fs::create_dir_all(config_path.parent().unwrap()).expect("create config dir");
+        fs::write(
+            &config_path,
+            r#"{"worktree":{"commitExcludePatterns":["generated/**"]}}"#,
+        )
+        .expect("write config");
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-excluded-rename";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        fs::create_dir_all(worktree_path.join("generated")).expect("create generated dir");
+        run_test_git(&worktree_path, &["mv", "safe.txt", "generated/out.txt"]);
+        fs::write(worktree_path.join("assistant.txt"), "assistant output\n")
+            .expect("write assistant output");
+
+        let result = tauri::async_runtime::block_on(finalize_agent_worktree(
+            repo_path,
+            node_id.to_string(),
+            "Assistant output".to_string(),
+            Some("Agentree Test".to_string()),
+        ))
+        .expect("finalize agent worktree");
+        let commit_sha = result.commit_sha.expect("commit sha");
+        let tree_files = run_test_git(
+            &worktree_path,
+            &["ls-tree", "-r", "--name-only", &commit_sha],
+        );
+
+        assert!(tree_files.lines().any(|path| path == "assistant.txt"));
+        assert!(tree_files.lines().any(|path| path == "safe.txt"));
+        assert!(!tree_files.lines().any(|path| path == "generated/out.txt"));
+    }
+
+    #[test]
+    fn finalize_agent_worktree_commits_already_staged_deletion() {
+        let dir = init_test_repo();
+        fs::write(dir.path().join("obsolete.txt"), "obsolete\n").expect("write obsolete file");
+        run_test_git(dir.path(), &["add", "obsolete.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "add obsolete file"]);
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-staged-deletion";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        run_test_git(&worktree_path, &["rm", "obsolete.txt"]);
+
+        let result = tauri::async_runtime::block_on(finalize_agent_worktree(
+            repo_path,
+            node_id.to_string(),
+            "Remove obsolete file".to_string(),
+            Some("Agentree Test".to_string()),
+        ))
+        .expect("finalize agent worktree");
+        let commit_sha = result.commit_sha.expect("commit sha");
+
+        assert!(result.commit_created);
+        let tree_files = run_test_git(
+            &worktree_path,
+            &["ls-tree", "-r", "--name-only", &commit_sha],
+        );
+        assert!(!tree_files.lines().any(|path| path == "obsolete.txt"));
+    }
+
+    #[test]
+    fn finalize_agent_worktree_commits_mixed_staged_deletion_and_unstaged_changes() {
+        let dir = init_test_repo();
+        fs::write(dir.path().join("obsolete.txt"), "obsolete\n").expect("write obsolete file");
+        run_test_git(dir.path(), &["add", "obsolete.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "add obsolete file"]);
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-mixed-staged-deletion";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        run_test_git(&worktree_path, &["rm", "obsolete.txt"]);
+        fs::write(worktree_path.join("base.txt"), "base changed\n").expect("modify base");
+        fs::write(worktree_path.join("new.txt"), "new file\n").expect("write new file");
+
+        let result = tauri::async_runtime::block_on(finalize_agent_worktree(
+            repo_path,
+            node_id.to_string(),
+            "Mixed changes".to_string(),
+            Some("Agentree Test".to_string()),
+        ))
+        .expect("finalize agent worktree");
+        let commit_sha = result.commit_sha.expect("commit sha");
+
+        assert!(result.commit_created);
+        let tree_files = run_test_git(
+            &worktree_path,
+            &["ls-tree", "-r", "--name-only", &commit_sha],
+        );
+        assert!(!tree_files.lines().any(|path| path == "obsolete.txt"));
+        assert!(tree_files.lines().any(|path| path == "new.txt"));
+        assert_eq!(
+            run_test_git(&worktree_path, &["show", &format!("{commit_sha}:base.txt")]),
+            "base changed"
+        );
     }
 
     #[test]
@@ -2910,7 +3084,7 @@ mod tests {
             &target_commit,
             &[source_commit.clone()],
             "AI merge result",
-            None,
+            Some("GPT Test Model"),
             Some("main"),
             true,
         )
@@ -2923,6 +3097,18 @@ mod tests {
         );
         assert_eq!(merge_commit.subject, "AI merge result");
         assert_eq!(
+            run_test_git(
+                dir.path(),
+                &[
+                    "show",
+                    "-s",
+                    "--format=%an%x00%ae%x00%cn%x00%ce",
+                    &merge_commit.sha,
+                ],
+            ),
+            "Agentree Test\0agentree@example.com\0Agentree Test\0agentree@example.com"
+        );
+        assert_eq!(
             run_test_git(dir.path(), &["rev-parse", "main"]),
             merge_commit.sha
         );
@@ -2933,6 +3119,114 @@ mod tests {
             ),
             "ai decision"
         );
+    }
+
+    #[test]
+    fn finalize_agent_merge_worktree_commits_already_staged_deletion() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        run_test_git(dir.path(), &["branch", "-M", "main"]);
+        fs::write(dir.path().join("obsolete.txt"), "obsolete\n").expect("write obsolete file");
+        run_test_git(dir.path(), &["add", "obsolete.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "add obsolete file"]);
+        let target_commit = run_test_git(dir.path(), &["rev-parse", "main"]);
+
+        run_test_git(dir.path(), &["checkout", "-b", "feature", "main"]);
+        fs::write(dir.path().join("feature.txt"), "feature\n").expect("write feature file");
+        run_test_git(dir.path(), &["add", "feature.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "feature commit"]);
+        let source_commit = run_test_git(dir.path(), &["rev-parse", "feature"]);
+        run_test_git(dir.path(), &["checkout", "main"]);
+
+        let node_id = "assistant-merge-staged-deletion";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &target_commit);
+        run_test_git(&worktree_path, &["rm", "obsolete.txt"]);
+        fs::write(worktree_path.join("feature.txt"), "feature resolved\n")
+            .expect("write resolved feature");
+
+        let (merge_commit, target_updated) = finalize_agent_merge_worktree(
+            &repo_path,
+            node_id,
+            &target_commit,
+            &[source_commit.clone()],
+            "AI merge result",
+            None,
+            Some("main"),
+            false,
+        )
+        .expect("finalize merge worktree");
+
+        assert!(!target_updated);
+        assert_eq!(
+            merge_commit.parents,
+            vec![target_commit.clone(), source_commit]
+        );
+        let tree_files = run_test_git(
+            &worktree_path,
+            &["ls-tree", "-r", "--name-only", &merge_commit.sha],
+        );
+        assert!(!tree_files.lines().any(|path| path == "obsolete.txt"));
+        assert_eq!(
+            run_test_git(
+                &worktree_path,
+                &["show", &format!("{}:feature.txt", merge_commit.sha)]
+            ),
+            "feature resolved"
+        );
+    }
+
+    #[test]
+    fn finalize_agent_merge_worktree_omits_entire_rename_into_excluded_path() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        run_test_git(dir.path(), &["branch", "-M", "main"]);
+        fs::write(dir.path().join("safe.txt"), "keep me\n").expect("write tracked source");
+        run_test_git(dir.path(), &["add", "safe.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "add tracked source"]);
+        let target_commit = run_test_git(dir.path(), &["rev-parse", "main"]);
+        let config_path = dir.path().join(".agentree/config.json");
+        fs::create_dir_all(config_path.parent().unwrap()).expect("create config dir");
+        fs::write(
+            &config_path,
+            r#"{"worktree":{"commitExcludePatterns":["generated/**"]}}"#,
+        )
+        .expect("write config");
+
+        run_test_git(dir.path(), &["checkout", "-b", "feature", "main"]);
+        fs::write(dir.path().join("feature.txt"), "feature\n").expect("write feature file");
+        run_test_git(dir.path(), &["add", "feature.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "feature commit"]);
+        let source_commit = run_test_git(dir.path(), &["rev-parse", "feature"]);
+        run_test_git(dir.path(), &["checkout", "main"]);
+
+        let node_id = "assistant-merge-excluded-rename";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &target_commit);
+        fs::create_dir_all(worktree_path.join("generated")).expect("create generated dir");
+        run_test_git(&worktree_path, &["mv", "safe.txt", "generated/out.txt"]);
+        fs::write(worktree_path.join("feature.txt"), "feature resolved\n")
+            .expect("write resolved feature");
+
+        let (merge_commit, _) = finalize_agent_merge_worktree(
+            &repo_path,
+            node_id,
+            &target_commit,
+            &[source_commit],
+            "AI merge result",
+            None,
+            Some("main"),
+            false,
+        )
+        .expect("finalize merge worktree");
+        let tree_files = run_test_git(
+            &worktree_path,
+            &["ls-tree", "-r", "--name-only", &merge_commit.sha],
+        );
+
+        assert!(tree_files.lines().any(|path| path == "feature.txt"));
+        assert!(tree_files.lines().any(|path| path == "safe.txt"));
+        assert!(!tree_files.lines().any(|path| path == "generated/out.txt"));
     }
 
     #[test]
@@ -3092,7 +3386,7 @@ pub async fn checkout_commit_detached(
     .to_string();
     let status = run_git(&repo_path, &["status", "--porcelain"])?;
     if !status.trim().is_empty() {
-        return Err("Repository has uncommitted changes. Commit, stash, or discard them before auto checkout can detach HEAD.".to_string());
+        return Err("Repository has uncommitted changes. Commit, stash, or discard them before checking out this commit.".to_string());
     }
 
     run_git(&repo_path, &["checkout", "--detach", &normalized_commit])?;

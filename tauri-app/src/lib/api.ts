@@ -2,6 +2,9 @@ import axios from 'axios';
 import { getAccessToken, handleSessionExpired } from './authSession';
 
 const OFFICIAL_AGENTREE_API_URL = 'https://api.agentree.app';
+export const AGENTREE_DATA_PLANE_ENABLED = false;
+export const AGENTREE_DATA_PLANE_DISABLED_MESSAGE =
+    'Agentree server data features are disabled while the app is local-first.';
 const DEFAULT_API_URL = import.meta.env.DEV
   ? 'http://localhost:3000'
   : import.meta.env.VITE_AGENTREE_OFFICIAL_CLOUD === 'true'
@@ -16,6 +19,9 @@ export const api = axios.create({
 });
 
 api.interceptors.request.use(async (config) => {
+    if (!AGENTREE_DATA_PLANE_ENABLED) {
+        throw new Error(AGENTREE_DATA_PLANE_DISABLED_MESSAGE);
+    }
     if (!API_URL) {
         throw new Error('Agentree Cloud API is not configured for this build.');
     }

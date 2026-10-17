@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it } from 'vitest';
 import type { Message } from '../stores/workspaceStore';
-import { removeMessageBranchFromCache } from './useMessages';
+import { agentRunManager } from '../agent-runs/agentRunManager';
+import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
+import { cleanupMessageBranchRunState, removeMessageBranchFromCache } from './useMessages';
 
 const message = (overrides: Partial<Message> & Pick<Message, 'id'>): Message => ({
   id: overrides.id,
@@ -15,6 +18,10 @@ const message = (overrides: Partial<Message> & Pick<Message, 'id'>): Message => 
 });
 
 describe('removeMessageBranchFromCache', () => {
+  afterEach(() => {
+    agentRunManager.clearAll();
+  });
+
   it('removes the deleted root and all cached descendants', () => {
     const messages = [
       message({ id: 'root' }),
@@ -27,5 +34,25 @@ describe('removeMessageBranchFromCache', () => {
     const remaining = removeMessageBranchFromCache(messages, 'deleted-root');
 
     expect(remaining.map((item) => item.id)).toEqual(['root', 'sibling']);
+  });
+
+  it('clears deleted user and descendant projections so they cannot reappear', () => {
+    const deletedUser = message({ id: 'deleted-user', role: 'user', parentId: 'root' });
+    const deletedAssistant = message({ id: 'deleted-assistant', parentId: 'deleted-user' });
+    const siblingUser = message({ id: 'sibling-user', role: 'user', parentId: 'root' });
+
+    agentRunManager.seed(deletedUser);
+    agentRunManager.seed(deletedAssistant);
+    agentRunManager.seed(siblingUser);
+
+    cleanupMessageBranchRunState(
+      [siblingUser],
+      deletedUser.id,
+    );
+
+    const projections = useAgentRunProjectionStore.getState().projectionsById;
+    expect(projections[deletedUser.id]).toBeUndefined();
+    expect(projections[deletedAssistant.id]).toBeUndefined();
+    expect(projections[siblingUser.id]).toBeDefined();
   });
 });

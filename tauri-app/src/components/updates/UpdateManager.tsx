@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { ArrowUpCircle, Download, Loader2, RefreshCw } from 'lucide-react';
+import { getVersion } from '@tauri-apps/api/app';
 import { check, type DownloadEvent, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { Button } from '../../../@/components/ui/button';
@@ -26,13 +27,40 @@ interface UpdateContextValue {
 
 const UpdateContext = createContext<UpdateContextValue | null>(null);
 const BACKGROUND_UPDATE_CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000;
-const updatesEnabled = () => import.meta.env.MODE === 'test' || import.meta.env.VITE_AGENTREE_OFFICIAL_CLOUD === 'true';
+const RESUME_UPDATE_CHECK_MIN_INTERVAL_MS = 15 * 60 * 1000;
+const UPDATE_CHECK_STATE_STORAGE_KEY = 'agentree.updater.last-check.v1';
+const updatesEnabled = () => import.meta.env.VITE_AGENTREE_OFFICIAL_CLOUD === 'true';
+
+type UpdateCheckOutcome = 'available' | 'current' | 'failed';
+
+interface PersistedUpdateCheckState {
+  attemptedAt: string;
+  outcome: UpdateCheckOutcome;
+  currentVersion?: string;
+  availableVersion?: string;
+  error?: string;
+}
+
+const errorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : typeof error === 'string' ? error : fallback;
+
+const persistUpdateCheckState = (state: PersistedUpdateCheckState) => {
+  try {
+    window.localStorage.setItem(UPDATE_CHECK_STATE_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Update checks must continue even when storage is unavailable.
+  }
+};
 
 export function UpdateManager({ children }: { children: ReactNode }) {
   const { addToast, removeToast } = useToast();
   const updateRef = useRef<Update | null>(null);
   const availableToastIdRef = useRef<string | null>(null);
-  const autoCheckStartedRef = useRef(false);
+  const checkInFlightRef = useRef(false);
+  const installInFlightRef = useRef(false);
+  const lastCheckAttemptAtRef = useRef(0);
+  const lastCheckFailedRef = useRef(false);
+  const currentVersionRef = useRef<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [availableVersion, setAvailableVersion] = useState<string | null>(null);
@@ -45,8 +73,9 @@ export function UpdateManager({ children }: { children: ReactNode }) {
   }, [removeToast]);
 
   const installUpdate = useCallback(async () => {
-    if (!updateRef.current || installing) return;
+    if (!updateRef.current || installInFlightRef.current) return;
 
+    installInFlightRef.current = true;
     setInstalling(true);
     try {
       let downloadedBytes = 0;
@@ -68,16 +97,18 @@ export function UpdateManager({ children }: { children: ReactNode }) {
       setAvailableVersion(null);
       await relaunch();
     } catch (error) {
+      console.error('[Updater] Update installation failed', error);
       addToast({
         title: 'Update install failed',
-        description: error instanceof Error ? error.message : 'Failed to download and install the update.',
+        description: errorMessage(error, 'Failed to download and install the update.'),
         variant: 'error',
         duration: 8000,
       });
     } finally {
+      installInFlightRef.current = false;
       setInstalling(false);
     }
-  }, [addToast, clearAvailableToast, installing]);
+  }, [addToast, clearAvailableToast]);
 
   const notifyUpdateAvailable = useCallback(
     (update: Update) => {
@@ -96,9 +127,8 @@ export function UpdateManager({ children }: { children: ReactNode }) {
                 onClick={() => {
                   void installUpdate();
                 }}
-                disabled={installing}
               >
-                {installing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                <Download className="h-3.5 w-3.5" />
                 Install
               </Button>
               <Button
@@ -116,21 +146,43 @@ export function UpdateManager({ children }: { children: ReactNode }) {
         },
       });
     },
-    [addToast, clearAvailableToast, installUpdate, installing]
+    [addToast, clearAvailableToast, installUpdate]
   );
 
   const checkForUpdates = useCallback(
     async ({ silent = false }: { silent?: boolean } = {}) => {
-      if (checking || installing || import.meta.env.DEV || !updatesEnabled()) return;
+      if (checkInFlightRef.current || installInFlightRef.current || import.meta.env.DEV || !updatesEnabled()) return;
 
+      checkInFlightRef.current = true;
+      lastCheckAttemptAtRef.current = Date.now();
       setChecking(true);
       try {
+        let resolvedCurrentVersion = currentVersionRef.current;
+        if (!resolvedCurrentVersion) {
+          try {
+            resolvedCurrentVersion = await getVersion();
+            currentVersionRef.current = resolvedCurrentVersion;
+            setCurrentVersion(resolvedCurrentVersion);
+          } catch (error) {
+            console.warn('[Updater] Failed to read the current app version', error);
+          }
+        }
+
         const update = await check();
         if (!update) {
+          lastCheckFailedRef.current = false;
+          persistUpdateCheckState({
+            attemptedAt: new Date(lastCheckAttemptAtRef.current).toISOString(),
+            outcome: 'current',
+            ...(resolvedCurrentVersion ? { currentVersion: resolvedCurrentVersion } : {}),
+          });
+          console.info('[Updater] Update check completed; build is current', { currentVersion: resolvedCurrentVersion });
           if (!silent) {
             addToast({
               title: 'No updates found',
-              description: currentVersion ? `You are already on version ${currentVersion}.` : 'This build is already current.',
+              description: resolvedCurrentVersion
+                ? `You are already on version ${resolvedCurrentVersion}.`
+                : 'This build is already current.',
               variant: 'success',
             });
           }
@@ -141,29 +193,49 @@ export function UpdateManager({ children }: { children: ReactNode }) {
         }
 
         updateRef.current = update;
+        currentVersionRef.current = update.currentVersion;
+        lastCheckFailedRef.current = false;
         setCurrentVersion(update.currentVersion);
         setAvailableVersion(update.version);
+        persistUpdateCheckState({
+          attemptedAt: new Date(lastCheckAttemptAtRef.current).toISOString(),
+          outcome: 'available',
+          currentVersion: update.currentVersion,
+          availableVersion: update.version,
+        });
+        console.info('[Updater] Update available', {
+          currentVersion: update.currentVersion,
+          availableVersion: update.version,
+        });
         notifyUpdateAvailable(update);
       } catch (error) {
+        const message = errorMessage(error, 'Failed to check for updates.');
+        lastCheckFailedRef.current = true;
+        persistUpdateCheckState({
+          attemptedAt: new Date(lastCheckAttemptAtRef.current).toISOString(),
+          outcome: 'failed',
+          ...(currentVersionRef.current ? { currentVersion: currentVersionRef.current } : {}),
+          error: message.slice(0, 1000),
+        });
+        console.warn('[Updater] Update check failed', error);
         if (!silent) {
           addToast({
             title: 'Update check failed',
-            description: error instanceof Error ? error.message : 'Failed to check for updates.',
+            description: message,
             variant: 'error',
             duration: 8000,
           });
         }
       } finally {
+        checkInFlightRef.current = false;
         setChecking(false);
       }
     },
-    [addToast, checking, clearAvailableToast, currentVersion, installing, notifyUpdateAvailable]
+    [addToast, clearAvailableToast, notifyUpdateAvailable]
   );
 
   useEffect(() => {
     if (import.meta.env.DEV || !updatesEnabled()) return;
-    if (autoCheckStartedRef.current) return;
-    autoCheckStartedRef.current = true;
     void checkForUpdates({ silent: true });
   }, [checkForUpdates]);
 
@@ -175,6 +247,30 @@ export function UpdateManager({ children }: { children: ReactNode }) {
     }, BACKGROUND_UPDATE_CHECK_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
+  }, [checkForUpdates]);
+
+  useEffect(() => {
+    if (import.meta.env.DEV || !updatesEnabled()) return;
+
+    const checkAfterResume = (forceAfterFailure = false) => {
+      const elapsed = Date.now() - lastCheckAttemptAtRef.current;
+      if ((!forceAfterFailure || !lastCheckFailedRef.current) && elapsed < RESUME_UPDATE_CHECK_MIN_INTERVAL_MS) return;
+      void checkForUpdates({ silent: true });
+    };
+    const handleFocus = () => checkAfterResume();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') checkAfterResume();
+    };
+    const handleOnline = () => checkAfterResume(true);
+
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('online', handleOnline);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('online', handleOnline);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [checkForUpdates]);
 
   const value = useMemo<UpdateContextValue>(
@@ -203,7 +299,7 @@ export function useUpdateManager() {
 export function UpdateToolbarButton() {
   const { checking, installing, availableVersion, checkForUpdates, installUpdate } = useUpdateManager();
 
-  if (import.meta.env.DEV) return null;
+  if (import.meta.env.DEV || !updatesEnabled()) return null;
 
   const label = availableVersion ? `Update ${availableVersion}` : 'Updates';
 

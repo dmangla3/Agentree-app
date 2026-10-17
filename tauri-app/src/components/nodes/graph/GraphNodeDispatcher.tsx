@@ -8,7 +8,6 @@ import { GraphCommitNode } from './GraphCommitNode';
 import { GraphCanonicalCommitNode } from './GraphCanonicalCommitNode';
 import { GraphDerivedCommitGroupNode } from './GraphDerivedCommitGroupNode';
 import { GraphSummaryNode } from './GraphSummaryNode';
-import { GraphOrchestrationNode } from './GraphOrchestrationNode';
 import type { ProjectedCommitEntity, ProjectedCommitGroup, ProjectedNodeEntity, WorkspaceProjection } from '../../../domain/workspaceProjection';
 import { preloadNodeHoverPreview } from '../../NodeHoverCardContent';
 import { useGraphInteractionContext } from '../../graph/GraphInteractionContext';
@@ -20,6 +19,7 @@ import { shouldEnableGraphNodeHover, type GraphNodeDetailLevel } from '../../../
 import { dispatchGraphComposerDockExpand } from '../../../lib/graphComposerDockEvents';
 import { useAgentreeSurface } from '../../graph/surfaceCapabilities';
 import { GraphNodeHoverCardContent } from './GraphNodeHoverCardContent';
+import type { AttachedThreadLink } from '../../../lib/graphSubgraphThreads';
 
 
 export interface GraphNodeData {
@@ -39,6 +39,7 @@ export interface GraphNodeData {
   detailLevel?: GraphNodeDetailLevel;
   graphNodeHeight?: number;
   heightKey?: string;
+  attachedThreads?: AttachedThreadLink[];
   onMeasureHeight?: (id: string, height: number) => void;
   onFocus: (id: string, metrics?: FocusTriggerMetrics) => void;
   onOpenThread?: (threadRootId: string) => void;
@@ -187,6 +188,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
     layout: 'graph' as const,
     graphNodeHeight: typeof data.graphNodeHeight === 'number' ? data.graphNodeHeight : undefined,
     heightKey: data.heightKey,
+    attachedThreads: Array.isArray(data.attachedThreads) ? data.attachedThreads : undefined,
     onMeasureHeight: data.onMeasureHeight,
     hoverCardContent: enableHoverCard ? (
       <GraphNodeHoverCardContent
@@ -200,6 +202,7 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
     onControlledHoverCardDismiss: data.onControlledHoverCardDismiss,
     disableHoverCard,
     onFocus: handleFocus,
+    onOpenThread: data.onOpenThread,
     onSelect: handleSelect,
     onContextMenu: handleContextMenu,
   };
@@ -245,34 +248,6 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
   }
 
   if (!data.entity) return null;
-
-  if (props.type === 'orchestration_node') {
-    return (
-      <GraphOrchestrationNode
-        data={data as any}
-        nodeId={data.entity.focusMessageId ?? data.entity.messageId ?? props.id}
-        isFocused={isFocused}
-        isSelected={isSelected}
-        focusFeedbackEnabled
-        detailLevel={detailLevel}
-        heightKey={data.heightKey}
-        disableHoverCard={disableHoverCard}
-        hoverCardContent={enableHoverCard ? (
-          <GraphNodeHoverCardContent
-            entity={data.entity}
-            fallbackProjection={data.projection}
-            surfaceMode={surfaceMode}
-            capabilities={capabilities}
-          />
-        ) : undefined}
-        controlledHoverCardKey={controlledHoverCardKey}
-        onControlledHoverCardDismiss={data.onControlledHoverCardDismiss}
-        onFocus={handleFocus}
-        onSelect={handleSelect}
-        onContextMenu={handleContextMenu}
-      />
-    );
-  }
 
   switch (data.entity.kind) {
     case 'thread_origin':

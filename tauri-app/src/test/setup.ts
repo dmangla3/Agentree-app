@@ -1,6 +1,5 @@
-import { afterAll, afterEach, beforeAll, vi } from 'vitest';
+import { afterEach, beforeAll, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
-import { server } from '../mocks/node';
 
 const installMemoryLocalStorage = () => {
   const values = new Map<string, string>();
@@ -62,7 +61,6 @@ beforeAll(() => {
     configurable: true,
     value: MockResizeObserver,
   });
-  server.listen({ onUnhandledRequest: 'error' });
 });
 
 afterEach(() => {
@@ -70,10 +68,5 @@ afterEach(() => {
   if (typeof window?.localStorage?.clear === 'function') {
     window.localStorage.clear();
   }
-  server.resetHandlers();
   vi.clearAllMocks();
-});
-
-afterAll(() => {
-  server.close();
 });

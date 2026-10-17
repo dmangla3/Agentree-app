@@ -3,6 +3,7 @@ import type { MouseEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { GitBranch, Loader2 } from 'lucide-react';
 import { agentClient } from '../lib/agentClient';
+import { describeCheckoutFailure } from '../lib/checkoutFailure';
 import { gitRefSnapshotKeys } from '../hooks/useGitRefSnapshot';
 import { cn } from '../lib/utils';
 import { useToast } from './Toast';
@@ -43,11 +44,8 @@ export const CommitCheckoutButton = memo(({
         variant: 'success',
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not checkout this commit.';
       addToast({
-        title: message.toLowerCase().includes('uncommitted changes') ? 'Checkout Skipped' : 'Checkout Failed',
-        description: message,
-        variant: message.toLowerCase().includes('uncommitted changes') ? 'warning' : 'error',
+        ...describeCheckoutFailure(error, 'manual'),
         duration: 9000,
       });
     } finally {

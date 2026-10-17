@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '../../../test/setup';
 import type { ReactNode } from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GraphAssistantNode } from './GraphAssistantNode';
 import type { ProjectedNodeEntity } from '../../../domain/workspaceProjection';
@@ -11,10 +11,19 @@ vi.mock('./GraphNodeWrapper', () => ({
   GraphNodeWrapper: ({
     children,
     hoverHydrationEnabled,
+    onFocus,
   }: {
     children: ReactNode;
     hoverHydrationEnabled?: boolean;
-  }) => <div data-hover-hydration-enabled={String(Boolean(hoverHydrationEnabled))}>{children}</div>,
+    onFocus?: () => void;
+  }) => (
+    <div
+      data-hover-hydration-enabled={String(Boolean(hoverHydrationEnabled))}
+      onClick={onFocus}
+    >
+      {children}
+    </div>
+  ),
 }));
 
 const makeAssistantEntity = (overrides: Partial<ProjectedNodeEntity> = {}): ProjectedNodeEntity => {
@@ -210,6 +219,104 @@ describe('GraphAssistantNode identity', () => {
     expect(screen.getByText('Assistant is working.')).toBeTruthy();
     expect(screen.getByText('Please hover to check progress.')).toBeTruthy();
     expect(screen.queryByText('Assistant message')).toBeNull();
+  });
+
+  it('opens each visible attached thread without focusing the owning assistant', () => {
+    const onFocus = vi.fn();
+    const onOpenThread = vi.fn();
+    render(
+      <GraphAssistantNode
+        entity={makeAssistantEntity()}
+        attachedThreads={[
+          {
+            linkMessageId: 'link-1',
+            threadRootId: 'thread-1',
+            title: 'Check layout',
+            status: null,
+            statusNodeId: null,
+          },
+          {
+            linkMessageId: 'link-2',
+            threadRootId: 'thread-2',
+            title: 'Review filtering',
+            status: 'completed',
+            statusNodeId: 'thread-2-assistant',
+          },
+        ]}
+        isFocused={false}
+        isSelected={false}
+        layout="graph"
+        onFocus={onFocus}
+        onOpenThread={onOpenThread}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Open attached thread: Check layout' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open attached thread: Check layout' }));
+
+    expect(onOpenThread).toHaveBeenCalledWith('thread-1');
+    expect(onFocus).not.toHaveBeenCalled();
+  });
+
+  it('shows three attached thread buttons and opens remaining threads from +N overflow', () => {
+    const onOpenThread = vi.fn();
+    const attachedThreads = Array.from({ length: 5 }, (_, index) => ({
+      linkMessageId: `link-${index + 1}`,
+      threadRootId: `thread-${index + 1}`,
+      title: `Thread ${index + 1}`,
+      status: null,
+      statusNodeId: null,
+    }));
+    render(
+      <GraphAssistantNode
+        entity={makeAssistantEntity()}
+        attachedThreads={attachedThreads}
+        isFocused={false}
+        isSelected={false}
+        layout="graph"
+        onFocus={() => {}}
+        onOpenThread={onOpenThread}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getAllByRole('button', { name: /Open attached thread:/ })).toHaveLength(3);
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Show 2 more attached threads' }));
+    fireEvent.click(screen.getByText('Thread 5'));
+
+    expect(onOpenThread).toHaveBeenCalledWith('thread-5');
+  });
+
+  it('shows live status for an attached thread when its assistant is running', () => {
+    useRunStatusStore.getState().setRunStatus('thread-assistant', {
+      workspaceId: 'workspace-1',
+      role: 'assistant',
+      status: 'running',
+    });
+    render(
+      <GraphAssistantNode
+        entity={makeAssistantEntity()}
+        attachedThreads={[{
+          linkMessageId: 'link-1',
+          threadRootId: 'thread-1',
+          title: 'Live child',
+          status: 'pending',
+          statusNodeId: 'thread-assistant',
+        }]}
+        isFocused={false}
+        isSelected={false}
+        layout="graph"
+        onFocus={() => {}}
+        onOpenThread={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(screen.getByTitle('Thread Running')).toBeTruthy();
   });
 
 });

@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
+import { ToolFileChangesDiff } from './diff/ToolFileChangesDiff';
 
 const MAX_TIMELINE_TEXT_CONTENT_CHARS = 6000;
 const TIMELINE_TEXT_TRUNCATION_NOTICE = '\n\n... [truncated for display]';
@@ -528,16 +529,11 @@ export function buildTimelineRows(events: TimelineEvent[]): TimelineRow[] {
         if (event.type === 'message') {
             const content = event.content ?? '';
             if (!content) continue;
-            const lastRow = rows[rows.length - 1];
-            if (lastRow?.kind === 'message') {
-                lastRow.content = appendTimelineText(lastRow.content, content);
-            } else {
-                rows.push({
-                    kind: 'message',
-                    key: buildRowKey('message', event),
-                    content: truncateTimelineText(content),
-                });
-            }
+            rows.push({
+                kind: 'message',
+                key: buildRowKey('message', event),
+                content: truncateTimelineText(content),
+            });
             continue;
         }
 
@@ -964,6 +960,9 @@ export function ToolPayloadDisplay({
     if (variant === 'summary' && fileChangesSummary) {
         return <FileChangesSummaryView summary={fileChangesSummary} className={className} />;
     }
+    if (variant === 'raw' && fileChangesSummary) {
+        return <ToolFileChangesDiff payload={payload} className={className} />;
+    }
 
     return (
         <pre className={cn(
@@ -1018,22 +1017,30 @@ export function getToolSummary(toolName: string, toolInput: any): string {
 
 function summarizeAgentreeMcpTool(toolName: string, input: Record<string, any>): string | null {
     const name = toolName.replace(/^mcp__/, '').replace(/^agentree[._-]/, '');
-    const promptLine = typeof input.prompt === 'string' ? firstNonEmptyLine(input.prompt) : null;
     const templateId = typeof input.template_id === 'string' ? input.template_id : null;
-    const decisionId = typeof input.decision_id === 'string' ? input.decision_id : null;
+    const messageLine = typeof input.message === 'string' ? firstNonEmptyLine(input.message) : null;
 
-    if (name === 'start_orchestration_run') {
-        const label = templateId || decisionId || 'run';
-        return promptLine ? `Start ${label}: ${promptLine}` : `Start ${label}`;
+    if (name === 'spawn_thread') {
+        const titleLine = typeof input.title === 'string' ? firstNonEmptyLine(input.title) : null;
+        return titleLine ? `Create child thread: ${titleLine}` : 'Create child thread';
     }
-    if (name === 'wait_for_runs') {
+    if (name === 'send_message') {
+        return messageLine ? `Send agent: ${messageLine}` : 'Send agent message';
+    }
+    if (name === 'show_thread') {
+        return typeof input.thread_id === 'string' ? `Show thread ${input.thread_id.slice(0, 8)}` : 'Show current thread';
+    }
+    if (name === 'steer_agent' || name === 'stop_agent') {
+        const action = name === 'steer_agent' ? 'Steer' : 'Stop';
+        const assistantNodeId = typeof input.assistant_node_id === 'string' ? input.assistant_node_id.slice(0, 8) : 'agent';
+        return `${action} ${assistantNodeId}`;
+    }
+
+    if (name === 'wait_for_agents') {
         const ids = Array.isArray(input.assistant_node_ids) ? input.assistant_node_ids.length : null;
-        const condition = typeof input.condition === 'string' ? input.condition : 'terminal';
-        return ids ? `Wait for ${ids} ${ids === 1 ? 'run' : 'runs'} (${condition})` : `Wait for runs (${condition})`;
-    }
-    if (name === 'graph_live_query') {
-        const nodeId = typeof input.node_id === 'string' ? input.node_id : null;
-        return nodeId ? `Live graph query for ${nodeId.slice(0, 8)}` : 'Live graph query';
+        const condition = typeof input.condition === 'string' ? input.condition : 'all_done';
+        const noun = 'agent';
+        return ids ? `Wait for ${ids} ${ids === 1 ? noun : `${noun}s`} (${condition})` : `Wait for ${noun}s (${condition})`;
     }
     if (name === 'list_prompt_templates') {
         const kind = typeof input.kind === 'string' ? input.kind : null;
@@ -1042,18 +1049,6 @@ function summarizeAgentreeMcpTool(toolName: string, input: Record<string, any>):
     if (name === 'get_prompt_template') {
         return templateId ? `Read ${templateId}` : 'Read prompt template';
     }
-    if (name === 'complete_orchestration') {
-        const ids = Array.isArray(input.terminal_orchestration_run_assistant_node_ids)
-            ? input.terminal_orchestration_run_assistant_node_ids.length
-            : null;
-        return ids ? `Complete orchestration with ${ids} terminal ${ids === 1 ? 'run' : 'runs'}` : 'Complete orchestration';
-    }
-    if (name === 'control_run') {
-        const action = typeof input.action === 'string' ? input.action : 'control';
-        const assistantNodeId = typeof input.assistant_node_id === 'string' ? input.assistant_node_id.slice(0, 8) : 'run';
-        return `${action[0]?.toUpperCase() ?? 'C'}${action.slice(1)} ${assistantNodeId}`;
-    }
-
     return null;
 }
 

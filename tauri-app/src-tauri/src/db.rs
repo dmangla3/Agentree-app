@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -80,25 +80,6 @@ fn controlled_by_node_id_from_payload(payload: &JsonValue) -> Option<&str> {
                         .or_else(|| clean_payload_string(meta.get("controlledBy")))
                 })
         })
-}
-
-fn is_orchestration_event_type(event_type: &str) -> bool {
-    matches!(
-        event_type,
-        "orchestration:run_requested"
-            | "orchestration:run_started"
-            | "orchestration:run_superseded"
-            | "orchestration:child_requested"
-            | "orchestration:child_started"
-            | "orchestration:wait_started"
-            | "orchestration:wait_completed"
-            | "orchestration:retry_requested"
-            | "orchestration:child_superseded"
-            | "orchestration:cancel_requested"
-            | "orchestration:cancelled"
-            | "orchestration:completed"
-            | "orchestration:needs_user_action"
-    )
 }
 
 fn is_structured_timeline_event_type(event_type: &str) -> bool {
@@ -341,6 +322,17 @@ pub struct AgentRunLedgerUpsert {
     pub login_profile_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentRunAdmission {
+    Accepted,
+    Existing {
+        worktree_path: Option<String>,
+        branch_name: Option<String>,
+        status: String,
+        pid: Option<i64>,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRunLedgerRow {
@@ -369,6 +361,27 @@ pub struct AgentRunLedgerRow {
     pub needs_user_action_reason: Option<String>,
     pub cleanup_completed: bool,
     pub login_profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AgentLaunchRequestRow {
+    pub request_id: String,
+    pub workspace_id: String,
+    pub thread_id: Option<String>,
+    pub user_node_id: String,
+    pub assistant_node_id: String,
+    pub run_id: String,
+    pub status: String,
+    pub request_json: String,
+    pub failure_reason: Option<String>,
+    pub lease_owner: Option<String>,
+    pub lease_expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AgentLaunchClaim {
+    pub row: AgentLaunchRequestRow,
+    pub acquired: bool,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -680,6 +693,7 @@ pub struct ThreadSessionPayload {
     pub updated_at: Option<String>,
     pub base_commit_sha: Option<String>,
     pub first_message_id: Option<String>,
+    pub parent_thread_id: Option<String>,
     pub source: String,
 }
 
@@ -931,6 +945,26 @@ impl TelemetryDb {
             CREATE INDEX IF NOT EXISTS idx_agent_run_ledger_status ON agent_run_ledger(status);
             CREATE INDEX IF NOT EXISTS idx_agent_run_ledger_repo ON agent_run_ledger(repo_path);
 
+            CREATE TABLE IF NOT EXISTS agent_launch_requests (
+                request_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                thread_id TEXT,
+                user_node_id TEXT NOT NULL,
+                assistant_node_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                request_json TEXT NOT NULL,
+                failure_reason TEXT,
+                lease_owner TEXT,
+                lease_expires_at INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_launch_requests_assistant
+                ON agent_launch_requests(assistant_node_id);
+            CREATE INDEX IF NOT EXISTS idx_agent_launch_requests_status
+                ON agent_launch_requests(status, lease_expires_at);
+
             CREATE TABLE IF NOT EXISTS login_profiles (
                 id TEXT PRIMARY KEY,
                 provider TEXT NOT NULL,
@@ -1022,6 +1056,7 @@ impl TelemetryDb {
                 status TEXT NOT NULL DEFAULT 'active',
                 base_commit_sha TEXT,
                 first_message_id TEXT,
+                parent_thread_id TEXT,
                 source TEXT NOT NULL DEFAULT 'user',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -1324,6 +1359,14 @@ impl TelemetryDb {
         );
         let _ = conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_local_nodes_controlled_by ON local_nodes(controlled_by_node_id)",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE thread_sessions ADD COLUMN parent_thread_id TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_thread_sessions_parent ON thread_sessions(parent_thread_id, deleted_at, updated_at)",
             [],
         );
         let _ = conn.execute(
@@ -1675,6 +1718,414 @@ impl TelemetryDb {
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Atomically claims an assistant node for its one durable run and records
+    /// the initial lifecycle event. Replaying the same run is idempotent; a
+    /// different run can never replace the node's ledger or live worktree.
+    pub(crate) fn admit_agent_run(
+        &self,
+        run: &AgentRunLedgerUpsert,
+        accepted_event_payload: &str,
+    ) -> Result<AgentRunAdmission, String> {
+        let now = unix_timestamp();
+        let admitted_at = utc_iso_now();
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+
+        let existing_run = tx
+            .query_row(
+                r#"
+                SELECT assistant_node_id, worktree_path, branch_name, status, pid
+                FROM agent_run_ledger
+                WHERE run_id = ?1
+                "#,
+                params![run.run_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        if let Some((assistant_node_id, worktree_path, branch_name, status, pid)) = existing_run {
+            if assistant_node_id != run.assistant_node_id {
+                return Err(format!(
+                    "Agent run {} already belongs to assistant node {}; refusing to reuse it for {}.",
+                    run.run_id, assistant_node_id, run.assistant_node_id
+                ));
+            }
+            tx.commit().map_err(|e| e.to_string())?;
+            return Ok(AgentRunAdmission::Existing {
+                worktree_path,
+                branch_name,
+                status,
+                pid,
+            });
+        }
+
+        let existing_node_run = tx
+            .query_row(
+                r#"
+                SELECT run_id, status
+                FROM agent_run_ledger
+                WHERE assistant_node_id = ?1
+                "#,
+                params![run.assistant_node_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        if let Some((existing_run_id, status)) = existing_node_run {
+            return Err(format!(
+                "Assistant node {} already belongs to run {} (status: {}); refusing to start conflicting run {}.",
+                run.assistant_node_id, existing_run_id, status, run.run_id
+            ));
+        }
+
+        tx.execute(
+            r#"
+            INSERT INTO agent_run_ledger (
+                run_id, user_node_id, assistant_node_id, workspace_id, repo_path,
+                worktree_path, branch_name, parent_commit, pid, agent_type,
+                status, phase, last_seq, started_at, updated_at, login_profile_id
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, ?13, ?13, ?14)
+            "#,
+            params![
+                run.run_id,
+                run.user_node_id,
+                run.assistant_node_id,
+                run.workspace_id,
+                run.repo_path,
+                run.worktree_path,
+                run.branch_name,
+                run.parent_commit,
+                run.pid,
+                run.agent_type,
+                run.status,
+                run.phase,
+                now,
+                run.login_profile_id,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            r#"
+            INSERT INTO agent_run_events (
+                run_id, assistant_node_id, seq, event_type, status, phase, payload, timestamp
+            )
+            VALUES (?1, ?2, 1, 'agent:lifecycle', 'accepted', 'accepted', ?3, ?4)
+            "#,
+            params![
+                run.run_id,
+                run.assistant_node_id,
+                accepted_event_payload,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            r#"
+            UPDATE local_nodes
+            SET
+                payload_json = json_set(
+                    CASE WHEN json_valid(COALESCE(payload_json, ''))
+                        THEN json(payload_json) ELSE json('{}') END,
+                    '$.execution_data.meta.prelaunch_run_id', ?2,
+                    '$.execution_data.meta.prelaunch_stage', 'native_run_admitted',
+                    '$.execution_data.meta.prelaunch_stage_at', ?3
+                ),
+                execution_data_json = json_set(
+                    CASE WHEN json_valid(COALESCE(execution_data_json, ''))
+                        THEN json(execution_data_json) ELSE json('{}') END,
+                    '$.meta.prelaunch_run_id', ?2,
+                    '$.meta.prelaunch_stage', 'native_run_admitted',
+                    '$.meta.prelaunch_stage_at', ?3
+                )
+            WHERE id = ?1 AND deleted_at IS NULL
+            "#,
+            params![run.assistant_node_id, run.run_id, admitted_at],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(AgentRunAdmission::Accepted)
+    }
+
+    pub(crate) fn claim_agent_launch_request(
+        &self,
+        request_id: &str,
+        workspace_id: &str,
+        thread_id: Option<&str>,
+        user_node_id: &str,
+        assistant_node_id: &str,
+        run_id: &str,
+        request_json: &str,
+        lease_owner: &str,
+        lease_duration_seconds: i64,
+    ) -> Result<AgentLaunchClaim, String> {
+        let now = unix_timestamp();
+        let lease_expires_at = now.saturating_add(lease_duration_seconds.max(1));
+        let mut conn = self.conn.lock().map_err(|error| error.to_string())?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        tx.execute(
+            r#"
+            INSERT INTO agent_launch_requests (
+                request_id, workspace_id, thread_id, user_node_id, assistant_node_id,
+                run_id, status, request_json, lease_owner, lease_expires_at,
+                created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'preparing', ?7, ?8, ?9, ?10, ?10)
+            ON CONFLICT(request_id) DO NOTHING
+            "#,
+            params![
+                request_id,
+                workspace_id,
+                thread_id,
+                user_node_id,
+                assistant_node_id,
+                run_id,
+                request_json,
+                lease_owner,
+                lease_expires_at,
+                now,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+
+        let mut row = tx
+            .query_row(
+                r#"
+                SELECT request_id, workspace_id, thread_id, user_node_id,
+                       assistant_node_id, run_id, status, request_json,
+                       failure_reason, lease_owner, lease_expires_at
+                FROM agent_launch_requests
+                WHERE request_id = ?1
+                "#,
+                params![request_id],
+                |row| {
+                    Ok(AgentLaunchRequestRow {
+                        request_id: row.get(0)?,
+                        workspace_id: row.get(1)?,
+                        thread_id: row.get(2)?,
+                        user_node_id: row.get(3)?,
+                        assistant_node_id: row.get(4)?,
+                        run_id: row.get(5)?,
+                        status: row.get(6)?,
+                        request_json: row.get(7)?,
+                        failure_reason: row.get(8)?,
+                        lease_owner: row.get(9)?,
+                        lease_expires_at: row.get(10)?,
+                    })
+                },
+            )
+            .map_err(|error| error.to_string())?;
+
+        if row.workspace_id != workspace_id
+            || row.thread_id.as_deref() != thread_id
+            || row.user_node_id != user_node_id
+            || row.assistant_node_id != assistant_node_id
+            || row.run_id != run_id
+        {
+            return Err(format!(
+                "Launch request {request_id} was already used with different launch parameters."
+            ));
+        }
+
+        let owns_current_lease = row.lease_owner.as_deref() == Some(lease_owner);
+        let lease_expired = row.lease_expires_at.unwrap_or(0) <= now;
+        let recoverable = matches!(row.status.as_str(), "preparing" | "starting");
+        let acquired = owns_current_lease || (recoverable && lease_expired);
+        if acquired && !owns_current_lease {
+            tx.execute(
+                r#"
+                UPDATE agent_launch_requests
+                SET lease_owner = ?2,
+                    lease_expires_at = ?3,
+                    request_json = ?4,
+                    updated_at = ?5
+                WHERE request_id = ?1
+                  AND status IN ('preparing', 'starting')
+                  AND COALESCE(lease_expires_at, 0) <= ?5
+                "#,
+                params![request_id, lease_owner, lease_expires_at, request_json, now],
+            )
+            .map_err(|error| error.to_string())?;
+            row.lease_owner = Some(lease_owner.to_string());
+            row.lease_expires_at = Some(lease_expires_at);
+            row.request_json = request_json.to_string();
+        }
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(AgentLaunchClaim { row, acquired })
+    }
+
+    pub(crate) fn get_agent_launch_request(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<AgentLaunchRequestRow>, String> {
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        conn.query_row(
+            r#"
+            SELECT request_id, workspace_id, thread_id, user_node_id,
+                   assistant_node_id, run_id, status, request_json,
+                   failure_reason, lease_owner, lease_expires_at
+            FROM agent_launch_requests
+            WHERE request_id = ?1
+            "#,
+            params![request_id],
+            |row| {
+                Ok(AgentLaunchRequestRow {
+                    request_id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    thread_id: row.get(2)?,
+                    user_node_id: row.get(3)?,
+                    assistant_node_id: row.get(4)?,
+                    run_id: row.get(5)?,
+                    status: row.get(6)?,
+                    request_json: row.get(7)?,
+                    failure_reason: row.get(8)?,
+                    lease_owner: row.get(9)?,
+                    lease_expires_at: row.get(10)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn list_expired_agent_launch_requests(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<AgentLaunchRequestRow>, String> {
+        let now = unix_timestamp();
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT request_id, workspace_id, thread_id, user_node_id,
+                       assistant_node_id, run_id, status, request_json,
+                       failure_reason, lease_owner, lease_expires_at
+                FROM agent_launch_requests
+                WHERE status IN ('preparing', 'starting')
+                  AND COALESCE(lease_expires_at, 0) <= ?1
+                ORDER BY updated_at ASC
+                LIMIT ?2
+                "#,
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map(params![now, limit.max(1) as i64], |row| {
+                Ok(AgentLaunchRequestRow {
+                    request_id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    thread_id: row.get(2)?,
+                    user_node_id: row.get(3)?,
+                    assistant_node_id: row.get(4)?,
+                    run_id: row.get(5)?,
+                    status: row.get(6)?,
+                    request_json: row.get(7)?,
+                    failure_reason: row.get(8)?,
+                    lease_owner: row.get(9)?,
+                    lease_expires_at: row.get(10)?,
+                })
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        Ok(rows)
+    }
+
+    pub(crate) fn reconcile_agent_launch_request_accepted(
+        &self,
+        request_id: &str,
+    ) -> Result<(), String> {
+        let now = unix_timestamp();
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        conn.execute(
+            r#"
+            UPDATE agent_launch_requests
+            SET status = 'accepted',
+                failure_reason = NULL,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = ?2
+            WHERE request_id = ?1
+              AND EXISTS (
+                SELECT 1
+                FROM agent_run_ledger AS ledger
+                WHERE ledger.assistant_node_id = agent_launch_requests.assistant_node_id
+              )
+            "#,
+            params![request_id, now],
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub(crate) fn update_agent_launch_request(
+        &self,
+        request_id: &str,
+        lease_owner: &str,
+        status: &str,
+        failure_reason: Option<&str>,
+    ) -> Result<(), String> {
+        let now = unix_timestamp();
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        let changed = conn
+            .execute(
+                r#"
+                UPDATE agent_launch_requests
+                SET status = ?3,
+                    failure_reason = ?4,
+                    lease_owner = CASE WHEN ?3 IN ('accepted', 'failed') THEN NULL ELSE lease_owner END,
+                    lease_expires_at = CASE WHEN ?3 IN ('accepted', 'failed') THEN NULL ELSE lease_expires_at END,
+                    updated_at = ?5
+                WHERE request_id = ?1
+                  AND lease_owner = ?2
+                "#,
+                params![request_id, lease_owner, status, failure_reason, now],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed == 0 {
+            return Err(format!(
+                "Launch request {request_id} is no longer owned by this launcher."
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn renew_agent_launch_request_lease(
+        &self,
+        request_id: &str,
+        lease_owner: &str,
+        lease_duration_seconds: i64,
+    ) -> Result<bool, String> {
+        let now = unix_timestamp();
+        let lease_expires_at = now.saturating_add(lease_duration_seconds.max(1));
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        let changed = conn
+            .execute(
+                r#"
+                UPDATE agent_launch_requests
+                SET lease_expires_at = ?3,
+                    updated_at = ?4
+                WHERE request_id = ?1
+                  AND lease_owner = ?2
+                  AND status IN ('preparing', 'starting')
+                "#,
+                params![request_id, lease_owner, lease_expires_at, now],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(changed == 1)
     }
 
     pub fn list_login_profiles(&self) -> Result<Vec<crate::login_profiles::LoginProfile>, String> {
@@ -2799,23 +3250,6 @@ impl TelemetryDb {
         Ok(next_seq)
     }
 
-    pub fn record_orchestration_event(
-        &self,
-        run_id: &str,
-        assistant_node_id: &str,
-        event_type: &str,
-        payload: &str,
-    ) -> Result<i64, String> {
-        if !is_orchestration_event_type(event_type) {
-            return Err(format!(
-                "unsupported orchestration event type: {event_type}"
-            ));
-        }
-        serde_json::from_str::<JsonValue>(payload)
-            .map_err(|error| format!("invalid orchestration event payload: {error}"))?;
-        self.append_agent_run_event(run_id, assistant_node_id, event_type, None, None, payload)
-    }
-
     pub fn list_agent_run_events_after(
         &self,
         run_id: &str,
@@ -3330,6 +3764,312 @@ impl TelemetryDb {
         Ok(())
     }
 
+    pub fn local_first_update_node_tags(
+        &self,
+        workspace_id: &str,
+        user_id: Option<&str>,
+        node_id: &str,
+        tags: Vec<String>,
+        action: &str,
+    ) -> Result<String, String> {
+        if action != "add" && action != "remove" {
+            return Err("Tag action must be 'add' or 'remove'.".to_string());
+        }
+        let requested_tags = tags
+            .into_iter()
+            .map(|tag| tag.trim().to_string())
+            .filter(|tag| !tag.is_empty())
+            .collect::<HashSet<_>>();
+        if requested_tags.is_empty() {
+            return Err("At least one non-empty tag is required.".to_string());
+        }
+
+        let now = unix_timestamp();
+        let updated_at = utc_iso_now();
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let payload_json = tx
+            .query_row(
+                r#"
+                SELECT payload_json
+                FROM local_nodes
+                WHERE id = ?1 AND workspace_id = ?2 AND deleted_at IS NULL
+                "#,
+                params![node_id, workspace_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .ok_or_else(|| "Local message not found.".to_string())?;
+        let mut payload: JsonValue = serde_json::from_str(&payload_json)
+            .map_err(|e| format!("Invalid local message payload: {e}"))?;
+        let object = payload
+            .as_object_mut()
+            .ok_or_else(|| "Local message payload must be a JSON object.".to_string())?;
+        let mut current_tags = object
+            .get("tags")
+            .and_then(JsonValue::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(JsonValue::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if action == "add" {
+            for tag in &requested_tags {
+                if !current_tags.iter().any(|existing| existing == tag) {
+                    current_tags.push(tag.clone());
+                }
+            }
+        } else {
+            current_tags.retain(|tag| !requested_tags.contains(tag));
+        }
+        current_tags.sort();
+        object.insert("tags".to_string(), serde_json::json!(current_tags));
+        object.insert(
+            "updatedAt".to_string(),
+            JsonValue::String(updated_at.clone()),
+        );
+        let updated_payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+        tx.execute(
+            r#"
+            UPDATE local_nodes
+            SET payload_json = ?3,
+                updated_at = ?4,
+                local_updated_at = ?5
+            WHERE id = ?1 AND workspace_id = ?2 AND deleted_at IS NULL
+            "#,
+            params![node_id, workspace_id, updated_payload_json, updated_at, now],
+        )
+        .map_err(|e| e.to_string())?;
+
+        let mut sync_tags = requested_tags.into_iter().collect::<Vec<_>>();
+        sync_tags.sort();
+        let sync_payload = serde_json::json!({
+            "tags": sync_tags,
+            "action": action,
+        });
+        Self::enqueue_local_sync_event_locked(
+            &tx,
+            now,
+            Some(workspace_id),
+            user_id,
+            "node",
+            node_id,
+            if action == "add" {
+                "node.tags.add"
+            } else {
+                "node.tags.remove"
+            },
+            &serde_json::to_string(&sync_payload).map_err(|e| e.to_string())?,
+            None,
+        )?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(updated_payload_json)
+    }
+
+    pub fn local_first_update_node_highlight(
+        &self,
+        workspace_id: &str,
+        user_id: Option<&str>,
+        node_id: &str,
+        action: &str,
+        highlight_json: &str,
+    ) -> Result<String, String> {
+        if !matches!(action, "add" | "update" | "delete") {
+            return Err("Highlight action must be 'add', 'update', or 'delete'.".to_string());
+        }
+        let highlight: JsonValue = serde_json::from_str(highlight_json)
+            .map_err(|e| format!("Invalid highlight payload: {e}"))?;
+        let highlight_id = highlight
+            .get("id")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Highlight id is required.".to_string())?;
+        if action != "delete" {
+            let color = highlight
+                .get("color")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| "Highlight color is required.".to_string())?;
+            if !matches!(color, "yellow" | "green" | "blue" | "rose") {
+                return Err("Highlight color is invalid.".to_string());
+            }
+        }
+        if action == "add" {
+            let range = highlight
+                .get("range")
+                .and_then(JsonValue::as_object)
+                .ok_or_else(|| "Highlight range is required.".to_string())?;
+            let start = range.get("start").and_then(JsonValue::as_u64);
+            let end = range.get("end").and_then(JsonValue::as_u64);
+            if start.zip(end).is_none_or(|(start, end)| end <= start)
+                || range.get("exact").and_then(JsonValue::as_str).is_none()
+                || range.get("textHash").and_then(JsonValue::as_str).is_none()
+            {
+                return Err("Highlight range is invalid.".to_string());
+            }
+        }
+
+        let now = unix_timestamp();
+        let updated_at = utc_iso_now();
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let payload_json = tx
+            .query_row(
+                r#"
+                SELECT payload_json
+                FROM local_nodes
+                WHERE id = ?1 AND workspace_id = ?2 AND deleted_at IS NULL
+                "#,
+                params![node_id, workspace_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .ok_or_else(|| "Local message not found.".to_string())?;
+        let mut payload: JsonValue = serde_json::from_str(&payload_json)
+            .map_err(|e| format!("Invalid local message payload: {e}"))?;
+        let object = payload
+            .as_object_mut()
+            .ok_or_else(|| "Local message payload must be a JSON object.".to_string())?;
+        let mut annotations = object
+            .get("annotations")
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let position = annotations.iter().position(|annotation| {
+            annotation.get("type").and_then(JsonValue::as_str) == Some("highlight")
+                && annotation.get("id").and_then(JsonValue::as_str) == Some(highlight_id)
+        });
+        match action {
+            "add" => {
+                if let Some(position) = position {
+                    annotations[position] = highlight.clone();
+                } else {
+                    annotations.push(highlight.clone());
+                }
+            }
+            "update" => {
+                let position = position.ok_or_else(|| "Highlight not found.".to_string())?;
+                let annotation = annotations[position]
+                    .as_object_mut()
+                    .ok_or_else(|| "Stored highlight is invalid.".to_string())?;
+                annotation.insert(
+                    "color".to_string(),
+                    highlight.get("color").cloned().unwrap_or(JsonValue::Null),
+                );
+                annotation.insert(
+                    "updatedAt".to_string(),
+                    JsonValue::String(updated_at.clone()),
+                );
+            }
+            "delete" => {
+                let position = position.ok_or_else(|| "Highlight not found.".to_string())?;
+                annotations.remove(position);
+            }
+            _ => unreachable!(),
+        }
+        object.insert("annotations".to_string(), JsonValue::Array(annotations));
+        object.insert(
+            "updatedAt".to_string(),
+            JsonValue::String(updated_at.clone()),
+        );
+        let updated_payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+        tx.execute(
+            r#"
+            UPDATE local_nodes
+            SET payload_json = ?3,
+                updated_at = ?4,
+                local_updated_at = ?5
+            WHERE id = ?1 AND workspace_id = ?2 AND deleted_at IS NULL
+            "#,
+            params![node_id, workspace_id, updated_payload_json, updated_at, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Self::enqueue_local_sync_event_locked(
+            &tx,
+            now,
+            Some(workspace_id),
+            user_id,
+            "node",
+            node_id,
+            match action {
+                "add" => "node.highlight.add",
+                "update" => "node.highlight.update",
+                "delete" => "node.highlight.delete",
+                _ => unreachable!(),
+            },
+            highlight_json,
+            None,
+        )?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(updated_payload_json)
+    }
+
+    pub fn local_first_set_node_collapsed(
+        &self,
+        workspace_id: &str,
+        user_id: Option<&str>,
+        node_id: &str,
+        collapsed: bool,
+    ) -> Result<String, String> {
+        let now = unix_timestamp();
+        let updated_at = utc_iso_now();
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let payload_json = tx
+            .query_row(
+                r#"
+                SELECT payload_json
+                FROM local_nodes
+                WHERE id = ?1 AND workspace_id = ?2 AND deleted_at IS NULL
+                "#,
+                params![node_id, workspace_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .ok_or_else(|| "Local message not found.".to_string())?;
+        let mut payload: JsonValue = serde_json::from_str(&payload_json)
+            .map_err(|e| format!("Invalid local message payload: {e}"))?;
+        let object = payload
+            .as_object_mut()
+            .ok_or_else(|| "Local message payload must be a JSON object.".to_string())?;
+        object.insert("collapsed".to_string(), JsonValue::Bool(collapsed));
+        object.insert(
+            "updatedAt".to_string(),
+            JsonValue::String(updated_at.clone()),
+        );
+        let updated_payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+        tx.execute(
+            r#"
+            UPDATE local_nodes
+            SET payload_json = ?3,
+                updated_at = ?4,
+                local_updated_at = ?5
+            WHERE id = ?1 AND workspace_id = ?2 AND deleted_at IS NULL
+            "#,
+            params![node_id, workspace_id, updated_payload_json, updated_at, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Self::enqueue_local_sync_event_locked(
+            &tx,
+            now,
+            Some(workspace_id),
+            user_id,
+            "node",
+            node_id,
+            "node.collapsed.set",
+            &serde_json::json!({ "collapsed": collapsed }).to_string(),
+            None,
+        )?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(updated_payload_json)
+    }
+
     pub fn hydrate_local_nodes_from_server(
         &self,
         workspace_id: &str,
@@ -3532,7 +4272,13 @@ impl TelemetryDb {
                     '$.meta.prelaunch_stage', ?3,
                     '$.meta.prelaunch_stage_at', ?4
                 )
-            WHERE id = ?1 AND deleted_at IS NULL
+            WHERE id = ?1
+              AND deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM agent_run_ledger
+                  WHERE assistant_node_id = ?1
+              )
             "#,
             params![node_id, run_id, stage, recorded_at],
         )
@@ -3777,8 +4523,7 @@ impl TelemetryDb {
         Ok(rows)
     }
 
-    pub fn upsert_thread_session(
-        &self,
+    fn normalize_thread_session_payload(
         payload: ThreadSessionPayload,
     ) -> Result<ThreadSessionPayload, String> {
         let id = payload.id.trim().to_string();
@@ -3796,10 +4541,10 @@ impl TelemetryDb {
             _ => "active".to_string(),
         };
         let source = match payload.source.as_str() {
-            "workspace_default" | "legacy" => payload.source,
+            "workspace_default" | "flow" | "legacy" | "delegation" => payload.source,
             _ => "user".to_string(),
         };
-        let normalized = ThreadSessionPayload {
+        Ok(ThreadSessionPayload {
             id,
             workspace_id,
             title: payload.title.and_then(|value| {
@@ -3815,23 +4560,30 @@ impl TelemetryDb {
             updated_at: Some(updated_at),
             base_commit_sha: payload.base_commit_sha,
             first_message_id: payload.first_message_id,
+            parent_thread_id: payload.parent_thread_id,
             source,
-        };
-        let now = unix_timestamp();
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        })
+    }
+
+    fn upsert_thread_session_locked(
+        conn: &Connection,
+        normalized: &ThreadSessionPayload,
+        now: i64,
+    ) -> Result<(), String> {
         conn.execute(
             r#"
             INSERT INTO thread_sessions (
                 id, workspace_id, title, status, base_commit_sha, first_message_id,
-                source, created_at, updated_at, deleted_at, local_updated_at
+                parent_thread_id, source, created_at, updated_at, deleted_at, local_updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11)
             ON CONFLICT(id) DO UPDATE SET
                 workspace_id = excluded.workspace_id,
                 title = excluded.title,
                 status = excluded.status,
                 base_commit_sha = excluded.base_commit_sha,
                 first_message_id = COALESCE(excluded.first_message_id, thread_sessions.first_message_id),
+                parent_thread_id = excluded.parent_thread_id,
                 source = excluded.source,
                 updated_at = excluded.updated_at,
                 deleted_at = thread_sessions.deleted_at,
@@ -3844,6 +4596,7 @@ impl TelemetryDb {
                 normalized.status,
                 normalized.base_commit_sha,
                 normalized.first_message_id,
+                normalized.parent_thread_id,
                 normalized.source,
                 normalized.created_at,
                 normalized.updated_at,
@@ -3851,14 +4604,45 @@ impl TelemetryDb {
             ],
         )
         .map_err(|e| e.to_string())?;
-        Ok(normalized)
+        Ok(())
     }
 
-    pub fn create_thread_session(
+    #[cfg(test)]
+    pub fn upsert_thread_session(
         &self,
         payload: ThreadSessionPayload,
     ) -> Result<ThreadSessionPayload, String> {
-        self.upsert_thread_session(payload)
+        let normalized = Self::normalize_thread_session_payload(payload)?;
+        let now = unix_timestamp();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        Self::upsert_thread_session_locked(&conn, &normalized, now)?;
+        Ok(normalized)
+    }
+
+    pub fn local_first_create_thread_session(
+        &self,
+        user_id: Option<&str>,
+        payload: ThreadSessionPayload,
+    ) -> Result<ThreadSessionPayload, String> {
+        let normalized = Self::normalize_thread_session_payload(payload)?;
+        let now = unix_timestamp();
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        Self::upsert_thread_session_locked(&tx, &normalized, now)?;
+        let payload_json = serde_json::to_string(&normalized).map_err(|e| e.to_string())?;
+        Self::enqueue_local_sync_event_locked(
+            &tx,
+            now,
+            Some(&normalized.workspace_id),
+            user_id,
+            "thread",
+            &normalized.id,
+            "thread.create",
+            &payload_json,
+            Some(&format!("thread.create:{}", normalized.id)),
+        )?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(normalized)
     }
 
     pub fn list_thread_sessions_for_workspace(
@@ -3871,7 +4655,7 @@ impl TelemetryDb {
                 r#"
                 SELECT
                     id, workspace_id, title, status, created_at, updated_at,
-                    base_commit_sha, first_message_id, source
+                    base_commit_sha, first_message_id, parent_thread_id, source
                 FROM thread_sessions
                 WHERE workspace_id = ?1
                   AND deleted_at IS NULL
@@ -3897,7 +4681,8 @@ impl TelemetryDb {
                     updated_at: row.get(5)?,
                     base_commit_sha: row.get(6)?,
                     first_message_id: row.get(7)?,
-                    source: row.get(8)?,
+                    parent_thread_id: row.get(8)?,
+                    source: row.get(9)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -3906,6 +4691,109 @@ impl TelemetryDb {
         Ok(rows)
     }
 
+    pub(crate) fn get_thread_session_by_id(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<ThreadSessionPayload>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            r#"
+            SELECT
+                id, workspace_id, title, status, created_at, updated_at,
+                base_commit_sha, first_message_id, parent_thread_id, source
+            FROM thread_sessions
+            WHERE id = ?1
+              AND deleted_at IS NULL
+            LIMIT 1
+            "#,
+            params![thread_id],
+            |row| {
+                Ok(ThreadSessionPayload {
+                    id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    title: row.get(2)?,
+                    status: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                    base_commit_sha: row.get(6)?,
+                    first_message_id: row.get(7)?,
+                    parent_thread_id: row.get(8)?,
+                    source: row.get(9)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    pub(crate) fn claim_thread_first_message(
+        &self,
+        workspace_id: &str,
+        thread_id: &str,
+        message_id: &str,
+    ) -> Result<bool, String> {
+        let now = unix_timestamp();
+        let updated_at = chrono_like_now();
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let current_first_message_id = tx
+            .query_row(
+                r#"
+                SELECT first_message_id
+                FROM thread_sessions
+                WHERE workspace_id = ?1
+                  AND id = ?2
+                  AND deleted_at IS NULL
+                "#,
+                params![workspace_id, thread_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Thread {thread_id} does not exist."))?;
+        if current_first_message_id.is_some() {
+            tx.commit().map_err(|e| e.to_string())?;
+            return Ok(false);
+        }
+
+        let existing_root_id = tx
+            .query_row(
+                r#"
+                SELECT id
+                FROM local_nodes
+                WHERE workspace_id = ?1
+                  AND thread_id = ?2
+                  AND parent_id IS NULL
+                  AND role = 'user'
+                  AND deleted_at IS NULL
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+                "#,
+                params![workspace_id, thread_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let first_message_id = existing_root_id.as_deref().unwrap_or(message_id);
+        tx.execute(
+            r#"
+            UPDATE thread_sessions
+            SET first_message_id = ?3,
+                updated_at = ?4,
+                local_updated_at = ?5
+            WHERE workspace_id = ?1
+              AND id = ?2
+              AND first_message_id IS NULL
+              AND deleted_at IS NULL
+            "#,
+            params![workspace_id, thread_id, first_message_id, updated_at, now],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(existing_root_id.is_none())
+    }
+
+    #[cfg(test)]
     pub fn archive_thread_session(
         &self,
         workspace_id: &str,
@@ -3939,6 +4827,57 @@ impl TelemetryDb {
         Ok(())
     }
 
+    pub fn local_first_archive_thread_session(
+        &self,
+        user_id: Option<&str>,
+        workspace_id: &str,
+        thread_id: &str,
+    ) -> Result<(), String> {
+        let workspace_id = workspace_id.trim();
+        let thread_id = thread_id.trim();
+        if workspace_id.is_empty() {
+            return Err("workspace_id is required".to_string());
+        }
+        if thread_id.is_empty() {
+            return Err("thread_id is required".to_string());
+        }
+        let now = unix_timestamp();
+        let deleted_at = chrono_like_now();
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let changed = tx
+            .execute(
+                r#"
+                UPDATE thread_sessions
+                SET status = 'archived',
+                    deleted_at = ?3,
+                    updated_at = ?3,
+                    local_updated_at = ?4
+                WHERE workspace_id = ?1
+                  AND id = ?2
+                  AND deleted_at IS NULL
+                "#,
+                params![workspace_id, thread_id, deleted_at, now],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err("Thread session not found.".to_string());
+        }
+        Self::enqueue_local_sync_event_locked(
+            &tx,
+            now,
+            Some(workspace_id),
+            user_id,
+            "thread",
+            thread_id,
+            "thread.delete",
+            &serde_json::json!({ "workspaceId": workspace_id }).to_string(),
+            Some(&format!("thread.delete:{thread_id}")),
+        )?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn get_local_node_payload(&self, node_id: &str) -> Result<Option<String>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.query_row(
@@ -3948,6 +4887,26 @@ impl TelemetryDb {
         )
         .optional()
         .map(|value| value.flatten())
+        .map_err(|e| e.to_string())
+    }
+
+    pub(crate) fn get_local_node_workspace_and_payload(
+        &self,
+        node_id: &str,
+    ) -> Result<Option<(String, String)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            r#"
+            SELECT workspace_id, payload_json
+            FROM local_nodes
+            WHERE id = ?1
+              AND deleted_at IS NULL
+            LIMIT 1
+            "#,
+            params![node_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
         .map_err(|e| e.to_string())
     }
 
@@ -3968,6 +4927,13 @@ impl TelemetryDb {
         workspace_id: &str,
     ) -> Result<LocalCommitGraphSnapshot, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        Self::list_local_commit_graph_locked(&conn, workspace_id)
+    }
+
+    fn list_local_commit_graph_locked(
+        conn: &Connection,
+        workspace_id: &str,
+    ) -> Result<LocalCommitGraphSnapshot, String> {
         let mut commit_stmt = conn
             .prepare(
                 r#"
@@ -5661,7 +6627,9 @@ impl TelemetryDb {
                   created_at ASC,
                   CASE
                     WHEN entity_type = 'workspace' AND event_type = 'workspace.create' THEN 0
-                    ELSE 1
+                    WHEN entity_type = 'thread' AND event_type = 'thread.create' THEN 1
+                    WHEN entity_type = 'thread' AND event_type = 'thread.delete' THEN 3
+                    ELSE 2
                   END,
                   updated_at ASC
                 LIMIT ?3
@@ -5679,10 +6647,29 @@ impl TelemetryDb {
         Ok(rows)
     }
 
+    #[cfg(test)]
     pub fn list_due_local_sync_events_for_user_and_cloud(
         &self,
         user_id: &str,
         cloud_account_id: &str,
+        workspace_id: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<LocalSyncEventRow>, String> {
+        self.list_due_local_sync_events_for_user_and_cloud_by_type(
+            user_id,
+            cloud_account_id,
+            workspace_id,
+            None,
+            limit,
+        )
+    }
+
+    fn list_due_local_sync_events_for_user_and_cloud_by_type(
+        &self,
+        user_id: &str,
+        cloud_account_id: &str,
+        workspace_id: Option<&str>,
+        event_type: Option<&str>,
         limit: i64,
     ) -> Result<Vec<LocalSyncEventRow>, String> {
         let now = unix_timestamp();
@@ -5697,21 +6684,53 @@ impl TelemetryDb {
                 WHERE status = 'pending'
                   AND user_id = ?2
                   AND cloud_account_id = ?3
-                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
+                  AND (?4 IS NULL OR workspace_id = ?4)
+                  AND (?5 IS NULL OR event_type = ?5)
+                  AND EXISTS (
+                    SELECT 1
+                    FROM local_workspaces workspace
+                    WHERE workspace.id = local_sync_events.workspace_id
+                      AND workspace.cloud_backup_enabled = 1
+                      AND workspace.cloud_account_id = ?3
+                  )
+                  AND (
+                    event_type = 'workspace.bootstrap'
+                    OR NOT EXISTS (
+                      SELECT 1
+                      FROM local_sync_events bootstrap
+                      WHERE bootstrap.workspace_id = local_sync_events.workspace_id
+                        AND bootstrap.event_type = 'workspace.bootstrap'
+                        AND bootstrap.status IN ('pending', 'in_flight')
+                    )
+                  )
+                  AND (
+                    ?5 = 'workspace.bootstrap'
+                    OR next_attempt_at IS NULL
+                    OR next_attempt_at <= ?1
+                  )
                 ORDER BY
                   created_at ASC,
                   CASE
-                    WHEN entity_type = 'workspace' AND event_type = 'workspace.create' THEN 0
-                    ELSE 1
+                    WHEN entity_type = 'workspace' AND event_type IN ('workspace.bootstrap', 'workspace.create') THEN 0
+                    WHEN entity_type = 'thread' AND event_type = 'thread.create' THEN 1
+                    WHEN entity_type = 'thread' AND event_type = 'thread.delete' THEN 3
+                    ELSE 2
                   END,
                   updated_at ASC
-                LIMIT ?4
+                LIMIT ?6
                 "#,
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(
-                params![now, user_id, cloud_account_id, limit],
+                params![
+                    now,
+                    user_id,
+                    cloud_account_id,
+                    workspace_id,
+                    event_type,
+                    limit
+                ],
                 Self::local_sync_event_row_from_sql,
             )
             .map_err(|e| e.to_string())?
@@ -6040,6 +7059,15 @@ impl TelemetryDb {
         .map_err(|e| e.to_string())
     }
 
+    pub(crate) fn get_local_workspace_for_user(
+        &self,
+        workspace_id: &str,
+        user_id: &str,
+    ) -> Result<Option<LocalWorkspaceRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        Self::select_local_workspace_locked(&conn, workspace_id, user_id)
+    }
+
     pub fn list_local_workspaces(
         &self,
         user_id: &str,
@@ -6060,7 +7088,13 @@ impl TelemetryDb {
                     END AS cloud_backup_enabled,
                     cloud_account_id
                 FROM local_workspaces
-                WHERE user_id = ?1 AND deleted_at IS NULL
+                WHERE user_id = ?1
+                  AND deleted_at IS NULL
+                  AND (
+                      local_repo_path IS NOT NULL
+                      OR cloud_account_id IS NULL
+                      OR cloud_account_id = ?2
+                  )
                 ORDER BY local_updated_at DESC, updated_at DESC
                 "#,
             )
@@ -6378,8 +7412,9 @@ impl TelemetryDb {
         let now = unix_timestamp();
         let now_text = chrono_like_now();
         let local_change_id = format!("workspace.rename:{}:{}", workspace_id, now);
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let updated = conn
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let updated = tx
             .execute(
                 r#"
                 UPDATE local_workspaces
@@ -6393,7 +7428,6 @@ impl TelemetryDb {
                     name_dirty = 1,
                     last_local_change_id = ?6
                 WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL
-                  AND (cloud_account_id IS NULL OR cloud_account_id = ?3)
                 "#,
                 params![
                     workspace_id,
@@ -6408,22 +7442,25 @@ impl TelemetryDb {
         if updated == 0 {
             return Err("Workspace not found for active account.".to_string());
         }
-        let row = Self::select_local_workspace_locked(&conn, workspace_id, user_id)?
+        let row = Self::select_local_workspace_locked(&tx, workspace_id, user_id)?
             .ok_or_else(|| "Workspace not found for active account.".to_string())?;
-        drop(conn);
         let payload = serde_json::json!({
             "id": workspace_id,
             "name": trimmed_name,
         });
-        self.enqueue_local_sync_event_for_user(
+        let payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+        Self::enqueue_local_sync_event_locked(
+            &tx,
+            now,
             Some(workspace_id),
             Some(user_id),
             "workspace",
             workspace_id,
             "workspace.update",
-            &serde_json::to_string(&payload).map_err(|e| e.to_string())?,
+            &payload_json,
             Some(local_change_id.as_str()),
         )?;
+        tx.commit().map_err(|e| e.to_string())?;
         Ok(row)
     }
 
@@ -6514,9 +7551,19 @@ impl TelemetryDb {
         }
         let now = unix_timestamp();
         let now_text = chrono_like_now();
-        let local_change_id = format!("workspace.enable_backup:{}:{}", workspace_id, now);
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let updated = conn
+        let snapshot_id = uuid::Uuid::new_v4().to_string();
+        let local_change_id = format!("workspace.enable_backup:{workspace_id}:{snapshot_id}");
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let existing = Self::select_local_workspace_locked(&tx, workspace_id, user_id)?
+            .ok_or_else(|| "Workspace not found for local identity.".to_string())?;
+        if existing.cloud_backup_enabled
+            && existing.cloud_account_id.as_deref() == Some(cloud_account_id)
+        {
+            tx.commit().map_err(|e| e.to_string())?;
+            return Ok(existing);
+        }
+        let updated = tx
             .execute(
                 r#"
                 UPDATE local_workspaces
@@ -6542,37 +7589,33 @@ impl TelemetryDb {
         if updated == 0 {
             return Err("Workspace not found for local identity.".to_string());
         }
-        let row = Self::select_local_workspace_locked(&conn, workspace_id, user_id)?
+        let row = Self::select_local_workspace_locked(&tx, workspace_id, user_id)?
             .ok_or_else(|| "Workspace not found for local identity.".to_string())?;
-        drop(conn);
-        let payload = serde_json::json!({
-            "id": row.id,
-            "name": row.name,
-            "folderPath": row.local_repo_path,
-            "repoPath": row.local_repo_path,
-            "baseCommitSha": row.base_commit_sha,
-        });
-        self.enqueue_local_sync_event_for_user(
+        let payload =
+            Self::build_workspace_cloud_bootstrap_payload_locked(&tx, &row, &snapshot_id, now)?;
+        Self::enqueue_local_sync_event_locked(
+            &tx,
+            now,
             Some(workspace_id),
             Some(user_id),
             "workspace",
             workspace_id,
-            "workspace.create",
-            &serde_json::to_string(&payload).map_err(|e| e.to_string())?,
-            Some(local_change_id.as_str()),
+            "workspace.bootstrap",
+            &payload.to_string(),
+            Some(&snapshot_id),
         )?;
-        self.enqueue_workspace_cloud_backup_backfill(workspace_id, user_id, now)?;
+        tx.commit().map_err(|e| e.to_string())?;
         Ok(row)
     }
 
-    fn enqueue_workspace_cloud_backup_backfill(
-        &self,
-        workspace_id: &str,
-        user_id: &str,
-        snapshot_at: i64,
-    ) -> Result<(), String> {
-        let (node_snapshots, insight_snapshots) = {
-            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+    fn build_workspace_cloud_bootstrap_payload_locked(
+        conn: &Connection,
+        workspace: &LocalWorkspaceRow,
+        snapshot_id: &str,
+        captured_at: i64,
+    ) -> Result<JsonValue, String> {
+        let workspace_id = workspace.id.as_str();
+        let node_pairs = {
             let mut node_stmt = conn
                 .prepare(
                     r#"
@@ -6640,7 +7683,58 @@ impl TelemetryDb {
                 .map_err(|e| e.to_string())?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())?;
+            let mut pairs = Vec::with_capacity(node_snapshots.len());
+            for (
+                _assistant_id,
+                user_payload_json,
+                assistant_payload_json,
+                final_content,
+                status,
+                execution_data_json,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                output_commit_sha,
+                git_branch_name,
+                run_id,
+            ) in node_snapshots
+            {
+                let (Some(user_payload_json), Some(assistant_payload_json)) =
+                    (user_payload_json, assistant_payload_json)
+                else {
+                    continue;
+                };
+                let user_message = serde_json::from_str::<JsonValue>(&user_payload_json)
+                    .unwrap_or(JsonValue::Null);
+                let assistant_message = serde_json::from_str::<JsonValue>(&assistant_payload_json)
+                    .unwrap_or(JsonValue::Null);
+                if user_message.is_null() || assistant_message.is_null() {
+                    continue;
+                }
+                let execution_data = execution_data_json
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<JsonValue>(raw).ok())
+                    .unwrap_or(JsonValue::Null);
+                pairs.push(serde_json::json!({
+                    "userMessage": user_message,
+                    "assistantMessage": assistant_message,
+                    "finalize": {
+                        "runId": run_id,
+                        "status": status,
+                        "finalContent": final_content,
+                        "executionData": execution_data,
+                        "promptTokens": prompt_tokens,
+                        "completionTokens": completion_tokens,
+                        "totalTokens": total_tokens,
+                        "outputCommitSha": output_commit_sha,
+                        "gitBranchName": git_branch_name,
+                    }
+                }));
+            }
+            pairs
+        };
 
+        let insights = {
             let mut insight_stmt = conn
                 .prepare(
                     r#"
@@ -6660,147 +7754,111 @@ impl TelemetryDb {
                 .map_err(|e| e.to_string())?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())?;
-
-            (node_snapshots, insight_snapshots)
+            insight_snapshots
+                .into_iter()
+                .filter_map(|(_id, payload_json)| {
+                    serde_json::from_str::<JsonValue>(&payload_json).ok()
+                })
+                .filter(|value| !value.is_null())
+                .collect::<Vec<_>>()
         };
 
-        for (
-            assistant_id,
-            user_payload_json,
-            assistant_payload_json,
-            final_content,
-            status,
-            execution_data_json,
-            prompt_tokens,
-            completion_tokens,
-            total_tokens,
-            output_commit_sha,
-            git_branch_name,
-            run_id,
-        ) in node_snapshots
-        {
-            let Some(user_payload_json) = user_payload_json else {
-                continue;
-            };
-            let Some(assistant_payload_json) = assistant_payload_json else {
-                continue;
-            };
-            let user_message =
-                serde_json::from_str::<JsonValue>(&user_payload_json).unwrap_or(JsonValue::Null);
-            let assistant_message = serde_json::from_str::<JsonValue>(&assistant_payload_json)
-                .unwrap_or(JsonValue::Null);
-            if user_message.is_null() || assistant_message.is_null() {
-                continue;
-            }
-            let execution_data = execution_data_json
-                .as_deref()
-                .and_then(|raw| serde_json::from_str::<JsonValue>(raw).ok())
-                .unwrap_or(JsonValue::Null);
-            let payload = serde_json::json!({
-                "workspaceId": workspace_id,
-                "userMessage": user_message,
-                "assistantMessage": assistant_message,
-                "finalize": {
-                    "runId": run_id,
-                    "status": status,
-                    "finalContent": final_content,
-                    "executionData": execution_data,
-                    "promptTokens": prompt_tokens,
-                    "completionTokens": completion_tokens,
-                    "totalTokens": total_tokens,
-                    "outputCommitSha": output_commit_sha,
-                    "gitBranchName": git_branch_name,
-                }
-            });
-            let mutation_id = format!("initial-backup:{snapshot_at}:node:{assistant_id}");
-            self.enqueue_local_sync_event_for_user(
-                Some(workspace_id),
-                Some(user_id),
-                "node",
-                &assistant_id,
-                "node.update_terminal",
-                &serde_json::to_string(&payload).map_err(|e| e.to_string())?,
-                Some(&mutation_id),
-            )?;
-        }
-
-        for (insight_id, payload_json) in insight_snapshots {
-            let insight =
-                serde_json::from_str::<JsonValue>(&payload_json).unwrap_or(JsonValue::Null);
-            if insight.is_null() {
-                continue;
-            }
-            let payload = serde_json::json!({
-                "action": "upsert",
-                "workspaceId": workspace_id,
-                "insight": insight,
-            });
-            let mutation_id = format!("initial-backup:{snapshot_at}:insight:{insight_id}");
-            self.enqueue_local_sync_event_for_user(
-                Some(workspace_id),
-                Some(user_id),
-                "insight",
-                &insight_id,
-                "insight.upsert",
-                &serde_json::to_string(&payload).map_err(|e| e.to_string())?,
-                Some(&mutation_id),
-            )?;
-        }
-
-        let graph = self.list_local_commit_graph(workspace_id)?;
-        if !graph.commits.is_empty() {
-            let parents_by_child = graph.commit_parents.iter().fold(
-                HashMap::<String, Vec<String>>::new(),
-                |mut map, parent| {
-                    map.entry(parent.child_sha.clone())
-                        .or_default()
-                        .push(parent.parent_sha.clone());
-                    map
-                },
-            );
-            let commits = graph
-                .commits
-                .iter()
-                .map(|commit| {
-                    serde_json::json!({
-                        "sha": commit.sha,
-                        "parents": parents_by_child
-                            .get(&commit.sha)
-                            .cloned()
-                            .or_else(|| commit.first_parent_sha.clone().map(|sha| vec![sha]))
-                            .unwrap_or_default(),
-                        "subject": commit.subject,
-                        "authorName": commit.author_name,
-                        "authorEmail": commit.author_email,
-                        "authoredAt": commit.authored_at,
-                        "filesChangedCount": commit.files_changed_count,
-                        "totalAdditions": commit.total_additions,
-                        "totalDeletions": commit.total_deletions,
-                    })
+        let threads = {
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                    SELECT id, title, status, base_commit_sha, first_message_id, source,
+                           created_at, updated_at
+                    FROM thread_sessions
+                    WHERE workspace_id = ?1 AND deleted_at IS NULL
+                    ORDER BY created_at ASC, id ASC
+                    "#,
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![workspace_id], |row| {
+                    Ok(serde_json::json!({
+                        "id": row.get::<_, String>(0)?,
+                        "title": row.get::<_, Option<String>>(1)?,
+                        "status": row.get::<_, String>(2)?,
+                        "baseCommitSha": row.get::<_, Option<String>>(3)?,
+                        "firstMessageId": row.get::<_, Option<String>>(4)?,
+                        "source": row.get::<_, String>(5)?,
+                        "createdAt": row.get::<_, Option<String>>(6)?,
+                        "updatedAt": row.get::<_, Option<String>>(7)?,
+                    }))
                 })
-                .collect::<Vec<_>>();
-            let tip_commit_sha = graph.commits.last().map(|commit| commit.sha.clone());
-            let payload = serde_json::json!({
-                "refs": [{
-                    "gitRef": "refs/agentree/backup/current",
-                    "allowUntrackedImport": true,
-                    "tipCommitSha": tip_commit_sha,
-                    "commits": commits,
-                }]
-            });
-            let mutation_id = format!("initial-backup:{snapshot_at}:commit-graph");
-            self.enqueue_local_sync_event_for_user(
-                Some(workspace_id),
-                Some(user_id),
-                "commit_graph",
-                workspace_id,
-                "commit_graph.git_sync_ingest",
-                &serde_json::to_string(&payload).map_err(|e| e.to_string())?,
-                Some(&mutation_id),
-            )?;
-        }
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            rows
+        };
 
-        Ok(())
+        let graph = Self::list_local_commit_graph_locked(conn, workspace_id)?;
+        let parents_by_child = graph.commit_parents.iter().fold(
+            HashMap::<String, Vec<String>>::new(),
+            |mut map, parent| {
+                map.entry(parent.child_sha.clone())
+                    .or_default()
+                    .push(parent.parent_sha.clone());
+                map
+            },
+        );
+        let commits = graph
+            .commits
+            .iter()
+            .map(|commit| {
+                serde_json::json!({
+                    "sha": commit.sha,
+                    "parents": parents_by_child
+                        .get(&commit.sha)
+                        .cloned()
+                        .or_else(|| commit.first_parent_sha.clone().map(|sha| vec![sha]))
+                        .unwrap_or_default(),
+                    "subject": commit.subject,
+                    "authorName": commit.author_name,
+                    "authorEmail": commit.author_email,
+                    "authoredAt": commit.authored_at,
+                    "committedAt": commit.committed_at,
+                    "sourceKind": commit.source_kind,
+                    "producedByNodeId": commit.produced_by_node_id,
+                    "filesChangedCount": commit.files_changed_count,
+                    "totalAdditions": commit.total_additions,
+                    "totalDeletions": commit.total_deletions,
+                })
+            })
+            .collect::<Vec<_>>();
+        let observations = graph
+            .commit_observations
+            .iter()
+            .map(|observation| {
+                serde_json::json!({
+                    "commitSha": observation.commit_sha,
+                    "gitRef": observation.git_ref,
+                    "sourceKind": observation.source_kind,
+                    "firstSeenAt": observation.first_seen_at,
+                    "lastSeenAt": observation.last_seen_at,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        Ok(serde_json::json!({
+            "schemaVersion": 1,
+            "snapshotId": snapshot_id,
+            "capturedAt": captured_at,
+            "workspace": {
+                "id": workspace.id,
+                "name": workspace.name,
+                "baseCommitSha": workspace.base_commit_sha,
+            },
+            "threads": threads,
+            "nodePairs": node_pairs,
+            "insights": insights,
+            "commitGraph": {
+                "commits": commits,
+                "observations": observations,
+            },
+        }))
     }
 
     pub fn mark_local_workspace_persisted(
@@ -6814,12 +7872,14 @@ impl TelemetryDb {
             .and_then(|value| value.as_str())
             .unwrap_or(&now_text);
         let payload = serde_json::from_str::<JsonValue>(&event.payload_json).ok();
-        let clear_name_dirty = event.event_type == "workspace.update"
-            && payload
-                .as_ref()
-                .and_then(|value| value.as_object())
-                .map_or(false, |object| object.contains_key("name"));
-        let clear_metadata_dirty = event.event_type == "workspace.create"
+        let clear_name_dirty = event.event_type == "workspace.bootstrap"
+            || event.event_type == "workspace.update"
+                && payload
+                    .as_ref()
+                    .and_then(|value| value.as_object())
+                    .map_or(false, |object| object.contains_key("name"));
+        let clear_metadata_dirty = event.event_type == "workspace.bootstrap"
+            || event.event_type == "workspace.create"
             || (event.event_type == "workspace.update"
                 && payload
                     .as_ref()
@@ -7178,18 +8238,6 @@ pub fn replay_agent_run_events(
 
 #[tauri::command]
 #[specta::specta]
-pub fn record_orchestration_event(
-    telemetry: State<TelemetryDb>,
-    run_id: String,
-    assistant_node_id: String,
-    event_type: String,
-    payload: String,
-) -> Result<i64, String> {
-    telemetry.record_orchestration_event(&run_id, &assistant_node_id, &event_type, &payload)
-}
-
-#[tauri::command]
-#[specta::specta]
 pub fn list_local_nodes(
     telemetry: State<TelemetryDb>,
     workspace_id: String,
@@ -7293,20 +8341,12 @@ pub fn hydrate_local_nodes_from_server(
 
 #[tauri::command]
 #[specta::specta]
-pub fn create_thread_session(
+pub fn local_first_create_thread_session(
     telemetry: State<TelemetryDb>,
+    current_user_id: String,
     payload: ThreadSessionPayload,
 ) -> Result<ThreadSessionPayload, String> {
-    telemetry.create_thread_session(payload)
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn upsert_thread_session(
-    telemetry: State<TelemetryDb>,
-    payload: ThreadSessionPayload,
-) -> Result<ThreadSessionPayload, String> {
-    telemetry.upsert_thread_session(payload)
+    telemetry.local_first_create_thread_session(Some(current_user_id.as_str()), payload)
 }
 
 #[tauri::command]
@@ -7333,12 +8373,17 @@ pub fn list_thread_sessions(
 
 #[tauri::command]
 #[specta::specta]
-pub fn delete_thread_session(
+pub fn local_first_delete_thread_session(
     telemetry: State<TelemetryDb>,
+    current_user_id: String,
     workspace_id: String,
     thread_id: String,
 ) -> Result<(), String> {
-    telemetry.archive_thread_session(&workspace_id, &thread_id)
+    telemetry.local_first_archive_thread_session(
+        Some(current_user_id.as_str()),
+        &workspace_id,
+        &thread_id,
+    )
 }
 
 #[tauri::command]
@@ -7350,6 +8395,61 @@ pub fn upsert_local_node(
     payload: String,
 ) -> Result<(), String> {
     telemetry.upsert_local_node(&node_id, &workspace_id, &payload)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn local_first_update_node_tags(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+    current_user_id: String,
+    node_id: String,
+    tags: Vec<String>,
+    action: String,
+) -> Result<String, String> {
+    telemetry.local_first_update_node_tags(
+        &workspace_id,
+        Some(current_user_id.as_str()),
+        &node_id,
+        tags,
+        &action,
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn local_first_update_node_highlight(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+    current_user_id: String,
+    node_id: String,
+    action: String,
+    highlight_json: String,
+) -> Result<String, String> {
+    telemetry.local_first_update_node_highlight(
+        &workspace_id,
+        Some(current_user_id.as_str()),
+        &node_id,
+        &action,
+        &highlight_json,
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn local_first_set_node_collapsed(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+    current_user_id: String,
+    node_id: String,
+    collapsed: bool,
+) -> Result<String, String> {
+    telemetry.local_first_set_node_collapsed(
+        &workspace_id,
+        Some(current_user_id.as_str()),
+        &node_id,
+        collapsed,
+    )
 }
 
 #[tauri::command]
@@ -7535,6 +8635,181 @@ fn sync_event(
     auth_token: &str,
     event: &LocalSyncEventRow,
 ) -> Result<Option<JsonValue>, String> {
+    if event.entity_type == "workspace" && event.event_type == "workspace.bootstrap" {
+        let payload: JsonValue =
+            serde_json::from_str(&event.payload_json).map_err(|err| err.to_string())?;
+        let response = client
+            .post(format!(
+                "{}/workspaces/{}/sync/bootstrap",
+                crate::config::server_base_url(),
+                event.entity_id
+            ))
+            .header("Authorization", format!("Bearer {}", auth_token))
+            .header("Idempotency-Key", &event.idempotency_key)
+            .timeout(Duration::from_secs(30))
+            .json(&payload)
+            .send()
+            .map_err(|err| format!("{} transport error: {}", event.event_type, err))?;
+        if response.status().is_success() {
+            return match response.json::<JsonValue>() {
+                Ok(body) => Ok(Some(body)),
+                Err(_) => Ok(None),
+            };
+        }
+        return Err(local_sync_response_error(&event.event_type, response));
+    }
+
+    if event.entity_type == "thread"
+        && (event.event_type == "thread.create" || event.event_type == "thread.delete")
+    {
+        let workspace_id = event
+            .workspace_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("{} event is missing workspace id", event.event_type))?;
+        let request = if event.event_type == "thread.create" {
+            let payload: JsonValue =
+                serde_json::from_str(&event.payload_json).map_err(|err| err.to_string())?;
+            client
+                .post(format!(
+                    "{}/workspaces/{}/threads",
+                    crate::config::server_base_url(),
+                    workspace_id
+                ))
+                .json(&payload)
+        } else {
+            client.delete(format!(
+                "{}/workspaces/{}/threads/{}",
+                crate::config::server_base_url(),
+                workspace_id,
+                event.entity_id
+            ))
+        };
+        let response = request
+            .header("Authorization", format!("Bearer {}", auth_token))
+            .header("Idempotency-Key", &event.idempotency_key)
+            .send()
+            .map_err(|err| format!("{} transport error: {}", event.event_type, err))?;
+        if response.status().is_success()
+            || (event.event_type == "thread.delete" && response.status().as_u16() == 404)
+        {
+            return Ok(response.json::<JsonValue>().ok());
+        }
+        return Err(local_sync_response_error(&event.event_type, response));
+    }
+
+    if event.entity_type == "node" && event.event_type == "node.collapsed.set" {
+        let payload: JsonValue =
+            serde_json::from_str(&event.payload_json).map_err(|err| err.to_string())?;
+        let response = client
+            .patch(format!(
+                "{}/messages/{}",
+                crate::config::server_base_url(),
+                event.entity_id
+            ))
+            .header("Authorization", format!("Bearer {}", auth_token))
+            .header("Idempotency-Key", &event.idempotency_key)
+            .json(&payload)
+            .send()
+            .map_err(|err| format!("{} transport error: {}", event.event_type, err))?;
+        if response.status().is_success() {
+            return Ok(response.json::<JsonValue>().ok());
+        }
+        return Err(local_sync_response_error(&event.event_type, response));
+    }
+
+    if event.entity_type == "node" && event.event_type.starts_with("node.highlight.") {
+        let highlight: JsonValue =
+            serde_json::from_str(&event.payload_json).map_err(|err| err.to_string())?;
+        let highlight_id = highlight
+            .get("id")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| format!("{} payload is missing id", event.event_type))?;
+        let mut url = reqwest::Url::parse(&crate::config::server_base_url())
+            .map_err(|err| format!("Invalid server URL: {err}"))?;
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| "Server URL cannot be used for highlight sync.".to_string())?;
+        segments.extend(["messages", event.entity_id.as_str(), "highlights"]);
+        if event.event_type != "node.highlight.add" {
+            segments.push(highlight_id);
+        }
+        drop(segments);
+
+        let request = match event.event_type.as_str() {
+            "node.highlight.add" => client.post(url).json(&serde_json::json!({
+                "id": highlight_id,
+                "color": highlight.get("color"),
+                "range": highlight.get("range"),
+            })),
+            "node.highlight.update" => client.patch(url).json(&serde_json::json!({
+                "color": highlight.get("color"),
+            })),
+            "node.highlight.delete" => client.delete(url),
+            _ => return Err(format!("No sync handler for {}", event.event_type)),
+        };
+        let response = request
+            .header("Authorization", format!("Bearer {}", auth_token))
+            .header("Idempotency-Key", &event.idempotency_key)
+            .send()
+            .map_err(|err| format!("{} transport error: {}", event.event_type, err))?;
+        if response.status().is_success()
+            || (event.event_type == "node.highlight.delete" && response.status().as_u16() == 404)
+        {
+            return Ok(response.json::<JsonValue>().ok());
+        }
+        return Err(local_sync_response_error(&event.event_type, response));
+    }
+
+    if event.entity_type == "node"
+        && (event.event_type == "node.tags.add" || event.event_type == "node.tags.remove")
+    {
+        let payload: JsonValue =
+            serde_json::from_str(&event.payload_json).map_err(|err| err.to_string())?;
+        let tags = payload
+            .get("tags")
+            .and_then(JsonValue::as_array)
+            .ok_or_else(|| format!("{} payload is missing tags", event.event_type))?;
+        if event.event_type == "node.tags.add" {
+            let response = client
+                .post(format!(
+                    "{}/messages/{}/tags",
+                    crate::config::server_base_url(),
+                    event.entity_id
+                ))
+                .header("Authorization", format!("Bearer {}", auth_token))
+                .header("Idempotency-Key", &event.idempotency_key)
+                .json(&serde_json::json!({ "tags": tags }))
+                .send()
+                .map_err(|err| format!("{} transport error: {}", event.event_type, err))?;
+            if response.status().is_success() {
+                return Ok(response.json::<JsonValue>().ok());
+            }
+            return Err(local_sync_response_error(&event.event_type, response));
+        }
+
+        for tag in tags.iter().filter_map(JsonValue::as_str) {
+            let mut url = reqwest::Url::parse(&crate::config::server_base_url())
+                .map_err(|err| format!("Invalid server URL: {err}"))?;
+            url.path_segments_mut()
+                .map_err(|_| "Server URL cannot be used for tag sync.".to_string())?
+                .extend(["messages", event.entity_id.as_str(), "tags", tag]);
+            let response = client
+                .delete(url)
+                .header("Authorization", format!("Bearer {}", auth_token))
+                .header(
+                    "Idempotency-Key",
+                    format!("{}:{}", event.idempotency_key, tag),
+                )
+                .send()
+                .map_err(|err| format!("{} transport error: {}", event.event_type, err))?;
+            if !response.status().is_success() && response.status().as_u16() != 404 {
+                return Err(local_sync_response_error(&event.event_type, response));
+            }
+        }
+        return Ok(None);
+    }
+
     if event.entity_type == "node" && event.event_type == "node.update_terminal" {
         let payload: JsonValue =
             serde_json::from_str(&event.payload_json).map_err(|err| err.to_string())?;
@@ -7696,6 +8971,8 @@ pub async fn process_local_sync_events(
     auth_token: String,
     current_user_id: String,
     cloud_account_id: String,
+    workspace_id: Option<String>,
+    bootstrap_only: Option<bool>,
     limit: Option<i64>,
 ) -> Result<usize, String> {
     if current_user_id.trim().is_empty() {
@@ -7707,9 +8984,13 @@ pub async fn process_local_sync_events(
         );
     }
     let telemetry = app.state::<TelemetryDb>();
-    let events = telemetry.list_due_local_sync_events_for_user_and_cloud(
+    let events = telemetry.list_due_local_sync_events_for_user_and_cloud_by_type(
         current_user_id.trim(),
         cloud_account_id.trim(),
+        workspace_id.as_deref(),
+        bootstrap_only
+            .unwrap_or(false)
+            .then_some("workspace.bootstrap"),
         limit.unwrap_or(25).clamp(1, 100),
     )?;
     // Pre-compute all in-flight marks while we still have access to the telemetry State.
@@ -7841,6 +9122,262 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = TelemetryDb::open(dir.path()).expect("open telemetry db");
         (dir, db)
+    }
+
+    fn acknowledge_workspace_bootstrap(db: &TelemetryDb, user_id: &str, cloud_account_id: &str) {
+        let bootstrap = db
+            .list_due_local_sync_events_for_user_and_cloud(user_id, cloud_account_id, None, 25)
+            .expect("list bootstrap event")
+            .into_iter()
+            .find(|event| event.event_type == "workspace.bootstrap")
+            .expect("workspace bootstrap event");
+        db.mark_local_sync_event_synced(&bootstrap.id)
+            .expect("acknowledge workspace bootstrap");
+    }
+
+    fn admission_run(run_id: &str, assistant_node_id: &str) -> AgentRunLedgerUpsert {
+        AgentRunLedgerUpsert {
+            run_id: run_id.to_string(),
+            user_node_id: Some(format!("user-{assistant_node_id}")),
+            assistant_node_id: assistant_node_id.to_string(),
+            workspace_id: Some("workspace-1".to_string()),
+            repo_path: Some("/tmp/repo".to_string()),
+            worktree_path: Some(format!("/tmp/worktrees/{assistant_node_id}")),
+            branch_name: Some(format!("agentree/{assistant_node_id}")),
+            parent_commit: Some("parent-sha".to_string()),
+            pid: None,
+            agent_type: Some("codex".to_string()),
+            status: "accepted".to_string(),
+            phase: "accepted".to_string(),
+            login_profile_id: None,
+        }
+    }
+
+    #[test]
+    fn agent_run_admission_is_idempotent_and_rejects_conflicting_run() {
+        let (_dir, db) = open_test_db();
+        let original = admission_run("run-1", "assistant-1");
+        let payload = r#"{"type":"agent:lifecycle","status":"accepted"}"#;
+        db.upsert_local_node(
+            "assistant-1",
+            "workspace-1",
+            r#"{"id":"assistant-1","workspaceId":"workspace-1","role":"assistant","status":"pending","execution_data":{"meta":{}}}"#,
+        )
+        .expect("local assistant node");
+
+        assert_eq!(
+            db.admit_agent_run(&original, payload)
+                .expect("accept first run"),
+            AgentRunAdmission::Accepted
+        );
+        assert_eq!(
+            db.admit_agent_run(&original, payload)
+                .expect("replay first run"),
+            AgentRunAdmission::Existing {
+                worktree_path: original.worktree_path.clone(),
+                branch_name: original.branch_name.clone(),
+                status: "accepted".to_string(),
+                pid: None,
+            }
+        );
+
+        let event_count: i64 = db
+            .conn
+            .lock()
+            .expect("database lock")
+            .query_row(
+                "SELECT COUNT(*) FROM agent_run_events WHERE run_id = 'run-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("event count");
+        assert_eq!(event_count, 1, "an idempotent replay must not add events");
+
+        let conflict = db
+            .admit_agent_run(&admission_run("run-2", "assistant-1"), payload)
+            .expect_err("different run for same node must conflict");
+        assert!(conflict.contains("already belongs to run run-1"));
+        db.record_agent_prelaunch_stage("assistant-1", "run-2", "worktree_preview_completed")
+            .expect("conflicting prelaunch stage is ignored");
+        let ledger = db
+            .get_agent_run_ledger_by_assistant("assistant-1")
+            .expect("read ledger")
+            .expect("ledger exists");
+        assert_eq!(ledger.run_id, "run-1");
+        let local_node = db
+            .get_local_node_payload("assistant-1")
+            .expect("read local node")
+            .expect("local node exists");
+        let local_node: JsonValue = serde_json::from_str(&local_node).expect("local node payload");
+        assert_eq!(
+            local_node["execution_data"]["meta"]["prelaunch_run_id"],
+            "run-1"
+        );
+        assert_eq!(
+            local_node["execution_data"]["meta"]["prelaunch_stage"],
+            "native_run_admitted"
+        );
+    }
+
+    #[test]
+    fn agent_run_admission_rejects_run_id_reused_for_another_node() {
+        let (_dir, db) = open_test_db();
+        let payload = r#"{"type":"agent:lifecycle","status":"accepted"}"#;
+        db.admit_agent_run(&admission_run("run-1", "assistant-1"), payload)
+            .expect("accept first run");
+
+        let conflict = db
+            .admit_agent_run(&admission_run("run-1", "assistant-2"), payload)
+            .expect_err("same run id for another node must conflict");
+        assert!(conflict.contains("already belongs to assistant node assistant-1"));
+        assert!(db
+            .get_agent_run_ledger_by_assistant("assistant-2")
+            .expect("read second node")
+            .is_none());
+    }
+
+    #[test]
+    fn concurrent_agent_run_admission_has_exactly_one_winner() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first_db = TelemetryDb::open(dir.path()).expect("open first database connection");
+        let second_db = TelemetryDb::open(dir.path()).expect("open second database connection");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let attempts = [(first_db, "run-1"), (second_db, "run-2")]
+            .into_iter()
+            .map(|(db, run_id)| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    db.admit_agent_run(
+                        &admission_run(run_id, "assistant-1"),
+                        r#"{"type":"agent:lifecycle","status":"accepted"}"#,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let results = attempts
+            .into_iter()
+            .map(|attempt| attempt.join().expect("admission thread"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Ok(AgentRunAdmission::Accepted)))
+                .count(),
+            1
+        );
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+
+        let verifier = TelemetryDb::open(dir.path()).expect("open verifier connection");
+        let event_count: i64 = verifier
+            .conn
+            .lock()
+            .expect("database lock")
+            .query_row("SELECT COUNT(*) FROM agent_run_events", [], |row| {
+                row.get(0)
+            })
+            .expect("event count");
+        assert_eq!(event_count, 1);
+    }
+
+    #[test]
+    fn agent_launch_request_claims_are_exclusive_and_recover_expired_work() {
+        let (_dir, db) = open_test_db();
+        let first = db
+            .claim_agent_launch_request(
+                "request-1",
+                "workspace-1",
+                Some("thread-1"),
+                "user-1",
+                "assistant-1",
+                "run-1",
+                "{}",
+                "owner-1",
+                120,
+            )
+            .expect("first claim");
+        assert!(first.acquired);
+
+        let concurrent = db
+            .claim_agent_launch_request(
+                "request-1",
+                "workspace-1",
+                Some("thread-1"),
+                "user-1",
+                "assistant-1",
+                "run-1",
+                "{}",
+                "owner-2",
+                120,
+            )
+            .expect("concurrent claim");
+        assert!(!concurrent.acquired);
+        assert!(db
+            .renew_agent_launch_request_lease("request-1", "owner-1", 120)
+            .expect("renew owned lease"));
+        assert!(!db
+            .renew_agent_launch_request_lease("request-1", "owner-2", 120)
+            .expect("reject foreign lease renewal"));
+
+        {
+            let conn = db.conn.lock().expect("lock db");
+            conn.execute(
+                "UPDATE agent_launch_requests SET lease_expires_at = 0 WHERE request_id = ?1",
+                params!["request-1"],
+            )
+            .expect("expire claim");
+        }
+        let expired = db
+            .list_expired_agent_launch_requests(10)
+            .expect("list expired claims");
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].request_id, "request-1");
+        let recovered = db
+            .claim_agent_launch_request(
+                "request-1",
+                "workspace-1",
+                Some("thread-1"),
+                "user-1",
+                "assistant-1",
+                "run-1",
+                "{}",
+                "owner-2",
+                120,
+            )
+            .expect("recovered claim");
+        assert!(recovered.acquired);
+        assert_eq!(recovered.row.lease_owner.as_deref(), Some("owner-2"));
+
+        db.upsert_agent_run_ledger(&AgentRunLedgerUpsert {
+            run_id: "run-1".to_string(),
+            user_node_id: Some("user-1".to_string()),
+            assistant_node_id: "assistant-1".to_string(),
+            workspace_id: Some("workspace-1".to_string()),
+            repo_path: None,
+            worktree_path: None,
+            branch_name: None,
+            parent_commit: None,
+            pid: None,
+            agent_type: Some("codex".to_string()),
+            status: "accepted".to_string(),
+            phase: "accepted".to_string(),
+            login_profile_id: None,
+        })
+        .expect("persist run ledger");
+        db.reconcile_agent_launch_request_accepted("request-1")
+            .expect("reconcile accepted launch");
+        let reconciled = db
+            .get_agent_launch_request("request-1")
+            .expect("read launch request")
+            .expect("launch request exists");
+        assert_eq!(reconciled.status, "accepted");
+        assert!(reconciled.lease_owner.is_none());
+        assert!(db
+            .list_expired_agent_launch_requests(10)
+            .expect("accepted requests are not recoverable")
+            .is_empty());
     }
 
     #[test]
@@ -7980,6 +9517,49 @@ mod tests {
     }
 
     #[test]
+    fn opening_existing_thread_sessions_without_parent_thread_id_migrates_schema() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("telemetry.db");
+        {
+            let conn = Connection::open(&db_path).expect("create legacy db");
+            conn.execute_batch(
+                r#"
+                CREATE TABLE thread_sessions (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    title TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    base_commit_sha TEXT,
+                    first_message_id TEXT,
+                    source TEXT NOT NULL DEFAULT 'user',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted_at TEXT,
+                    local_updated_at INTEGER NOT NULL,
+                    server_ack_at TEXT,
+                    server_version TEXT
+                );
+                "#,
+            )
+            .expect("legacy thread_sessions schema");
+        }
+
+        let db = TelemetryDb::open(dir.path()).expect("migrate existing db");
+        let conn = db.conn.lock().expect("lock db");
+        assert!(conn
+            .prepare("SELECT parent_thread_id FROM thread_sessions LIMIT 0")
+            .is_ok());
+        let has_parent_index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_thread_sessions_parent'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("parent index count");
+        assert_eq!(has_parent_index, 1);
+    }
+
+    #[test]
     fn local_node_runtime_activity_updates_compact_metadata_only() {
         let (_dir, db) = open_test_db();
         db.upsert_local_node(
@@ -8101,6 +9681,7 @@ mod tests {
             updated_at: Some("2026-05-28T00:01:00.000Z".to_string()),
             base_commit_sha: Some("base-sha".to_string()),
             first_message_id: None,
+            parent_thread_id: None,
             source: "user".to_string(),
         };
 
@@ -8128,6 +9709,7 @@ mod tests {
             updated_at: Some("2026-05-28T00:01:00.000Z".to_string()),
             base_commit_sha: None,
             first_message_id: None,
+            parent_thread_id: None,
             source: "user".to_string(),
         })
         .expect("upsert thread");
@@ -8139,6 +9721,80 @@ mod tests {
             .list_thread_sessions_for_workspace("workspace-1")
             .expect("list threads");
         assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn local_first_thread_create_and_delete_commit_outbox_atomically() {
+        let (_db_dir, db) = open_test_db();
+        let (repo_dir, shas) = init_test_repo_with_commits(1);
+        let local_path = std::fs::canonicalize(repo_dir.path())
+            .expect("canonical repo")
+            .to_string_lossy()
+            .to_string();
+        db.local_first_create_workspace(LocalWorkspaceMutationRequest {
+            workspace_id: "workspace-threads".to_string(),
+            current_user_id: "user-1".to_string(),
+            name: Some("Threads".to_string()),
+            local_repo_path: Some(local_path),
+            base_commit_sha: Some(shas[0].clone()),
+            repo_fingerprint: Some(format!("base:{}", shas[0])),
+            mutation_id: Some("workspace.create:workspace-threads".to_string()),
+        })
+        .expect("create local workspace");
+        db.enable_workspace_cloud_backup("workspace-threads", "user-1", "cloud-1")
+            .expect("enable backup");
+        acknowledge_workspace_bootstrap(&db, "user-1", "cloud-1");
+
+        let session = db
+            .local_first_create_thread_session(
+                Some("user-1"),
+                ThreadSessionPayload {
+                    id: "thread-1".to_string(),
+                    workspace_id: "workspace-threads".to_string(),
+                    title: Some("Offline thread".to_string()),
+                    status: "active".to_string(),
+                    created_at: Some("2026-07-22T00:00:00Z".to_string()),
+                    updated_at: Some("2026-07-22T00:00:00Z".to_string()),
+                    base_commit_sha: Some(shas[0].clone()),
+                    first_message_id: None,
+                    parent_thread_id: None,
+                    source: "user".to_string(),
+                },
+            )
+            .expect("create thread locally");
+        assert_eq!(session.id, "thread-1");
+        let create_event = db
+            .list_due_local_sync_events_for_user_and_cloud("user-1", "cloud-1", None, 25)
+            .expect("list create event")
+            .into_iter()
+            .find(|event| event.event_type == "thread.create")
+            .expect("thread create event");
+        assert_eq!(create_event.entity_id, "thread-1");
+
+        db.local_first_archive_thread_session(Some("user-1"), "workspace-threads", "thread-1")
+            .expect("archive thread locally");
+        assert!(db
+            .list_thread_sessions_for_workspace("workspace-threads")
+            .expect("list threads")
+            .is_empty());
+        let delete_event = db
+            .list_due_local_sync_events_for_user_and_cloud("user-1", "cloud-1", None, 25)
+            .expect("list delete event")
+            .into_iter()
+            .find(|event| event.event_type == "thread.delete")
+            .expect("thread delete event");
+        assert_eq!(delete_event.entity_id, "thread-1");
+        let ordered_thread_events = db
+            .list_due_local_sync_events_for_user_and_cloud("user-1", "cloud-1", None, 25)
+            .expect("list ordered thread events")
+            .into_iter()
+            .filter(|event| event.entity_type == "thread")
+            .map(|event| event.event_type)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered_thread_events,
+            vec!["thread.create".to_string(), "thread.delete".to_string()]
+        );
     }
 
     #[test]
@@ -8235,6 +9891,37 @@ mod tests {
     }
 
     #[test]
+    fn claiming_first_thread_message_is_single_assignment() {
+        let (_dir, db) = open_test_db();
+        db.upsert_thread_session(ThreadSessionPayload {
+            id: "thread-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+            title: None,
+            status: "active".to_string(),
+            created_at: Some("2026-05-31T00:00:00.000Z".to_string()),
+            updated_at: Some("2026-05-31T00:00:00.000Z".to_string()),
+            base_commit_sha: None,
+            first_message_id: None,
+            parent_thread_id: None,
+            source: "orchestration".to_string(),
+        })
+        .expect("thread session");
+
+        assert!(db
+            .claim_thread_first_message("workspace-1", "thread-1", "user-1")
+            .expect("claim first message"));
+        assert!(!db
+            .claim_thread_first_message("workspace-1", "thread-1", "user-2")
+            .expect("reject second claim"));
+
+        let thread = db
+            .get_thread_session_by_id("thread-1")
+            .expect("read thread")
+            .expect("thread exists");
+        assert_eq!(thread.first_message_id.as_deref(), Some("user-1"));
+    }
+
+    #[test]
     fn first_assistant_thread_title_names_thread_session() {
         let (_dir, db) = open_test_db();
         db.upsert_thread_session(ThreadSessionPayload {
@@ -8246,6 +9933,7 @@ mod tests {
             updated_at: Some("2026-05-31T00:00:00.000Z".to_string()),
             base_commit_sha: None,
             first_message_id: None,
+            parent_thread_id: None,
             source: "user".to_string(),
         })
         .expect("thread session");
@@ -8283,6 +9971,7 @@ mod tests {
             updated_at: Some("2026-05-31T00:00:00.000Z".to_string()),
             base_commit_sha: None,
             first_message_id: None,
+            parent_thread_id: None,
             source: "user".to_string(),
         })
         .expect("thread session");
@@ -9494,79 +11183,6 @@ mod tests {
     }
 
     #[test]
-    fn record_orchestration_event_validates_event_family_and_payload() {
-        let (_dir, db) = open_test_db();
-        db.upsert_agent_run_ledger(&AgentRunLedgerUpsert {
-            run_id: "run-orchestrator".to_string(),
-            user_node_id: Some("user-orchestrator".to_string()),
-            assistant_node_id: "assistant-orchestrator".to_string(),
-            workspace_id: Some("workspace-1".to_string()),
-            repo_path: Some("/repo".to_string()),
-            worktree_path: None,
-            branch_name: None,
-            parent_commit: None,
-            pid: None,
-            agent_type: Some("codex".to_string()),
-            status: "running".to_string(),
-            phase: "running".to_string(),
-            login_profile_id: None,
-        })
-        .expect("ledger");
-
-        let seq = db
-            .record_orchestration_event(
-                "run-orchestrator",
-                "assistant-orchestrator",
-                "orchestration:run_requested",
-                r#"{"decisionId":"planner-1"}"#,
-            )
-            .expect("record orchestration event");
-        assert_eq!(seq, 1);
-        let legacy_seq = db
-            .record_orchestration_event(
-                "run-orchestrator",
-                "assistant-orchestrator",
-                "orchestration:child_started",
-                r#"{"decisionId":"planner-1","runAssistantNodeId":"assistant-child"}"#,
-            )
-            .expect("record legacy orchestration event");
-        assert_eq!(legacy_seq, 2);
-        let cancel_seq = db
-            .record_orchestration_event(
-                "run-orchestrator",
-                "assistant-orchestrator",
-                "orchestration:cancelled",
-                r#"{"reason":"cancelled"}"#,
-            )
-            .expect("record cancelled orchestration event");
-        assert_eq!(cancel_seq, 3);
-        assert!(db
-            .record_orchestration_event(
-                "run-orchestrator",
-                "assistant-orchestrator",
-                "tool_use",
-                r#"{}"#,
-            )
-            .is_err());
-        assert!(db
-            .record_orchestration_event(
-                "run-orchestrator",
-                "assistant-orchestrator",
-                "orchestration:run_requested",
-                "not json",
-            )
-            .is_err());
-
-        let events = db
-            .list_agent_run_events_after("run-orchestrator", 0)
-            .expect("events");
-        assert_eq!(events.len(), 3);
-        assert_eq!(events[0].event_type, "orchestration:run_requested");
-        assert_eq!(events[1].event_type, "orchestration:child_started");
-        assert_eq!(events[2].event_type, "orchestration:cancelled");
-    }
-
-    #[test]
     fn server_hydration_does_not_replace_existing_local_node() {
         let (_dir, db) = open_test_db();
         db.upsert_local_node(
@@ -10362,6 +11978,150 @@ mod tests {
     }
 
     #[test]
+    fn local_first_tag_update_commits_payload_and_outbox_together() {
+        let (_db_dir, db) = open_test_db();
+        let (repo_dir, shas) = init_test_repo_with_commits(1);
+        let local_path = std::fs::canonicalize(repo_dir.path())
+            .expect("canonical repo")
+            .to_string_lossy()
+            .to_string();
+        db.local_first_create_workspace(LocalWorkspaceMutationRequest {
+            workspace_id: "workspace-tags".to_string(),
+            current_user_id: "user-1".to_string(),
+            name: Some("Tags".to_string()),
+            local_repo_path: Some(local_path),
+            base_commit_sha: Some(shas[0].clone()),
+            repo_fingerprint: Some(format!("base:{}", shas[0])),
+            mutation_id: Some("workspace.create:workspace-tags".to_string()),
+        })
+        .expect("create local workspace");
+        db.enable_workspace_cloud_backup("workspace-tags", "user-1", "cloud-1")
+            .expect("enable backup");
+        acknowledge_workspace_bootstrap(&db, "user-1", "cloud-1");
+        db.upsert_local_node(
+            "node-1",
+            "workspace-tags",
+            r#"{"id":"node-1","workspaceId":"workspace-tags","role":"assistant","content":"hello","tags":["existing"]}"#,
+        )
+        .expect("seed local node");
+
+        let payload = db
+            .local_first_update_node_tags(
+                "workspace-tags",
+                Some("user-1"),
+                "node-1",
+                vec!["new".to_string(), "existing".to_string()],
+                "add",
+            )
+            .expect("add tags locally");
+        let payload: JsonValue = serde_json::from_str(&payload).expect("updated payload");
+        assert_eq!(
+            payload.get("tags"),
+            Some(&serde_json::json!(["existing", "new"]))
+        );
+
+        let event = db
+            .list_due_local_sync_events_for_user_and_cloud("user-1", "cloud-1", None, 25)
+            .expect("list sync events")
+            .into_iter()
+            .find(|event| event.entity_id == "node-1" && event.event_type == "node.tags.add")
+            .expect("tag outbox event");
+        let event_payload: JsonValue =
+            serde_json::from_str(&event.payload_json).expect("tag event payload");
+        let event_tags = event_payload
+            .get("tags")
+            .and_then(JsonValue::as_array)
+            .expect("event tags");
+        assert!(event_tags.contains(&JsonValue::String("existing".to_string())));
+        assert!(event_tags.contains(&JsonValue::String("new".to_string())));
+    }
+
+    #[test]
+    fn local_first_node_ui_updates_commit_payload_and_outbox_together() {
+        let (_db_dir, db) = open_test_db();
+        let (repo_dir, shas) = init_test_repo_with_commits(1);
+        let local_path = std::fs::canonicalize(repo_dir.path())
+            .expect("canonical repo")
+            .to_string_lossy()
+            .to_string();
+        db.local_first_create_workspace(LocalWorkspaceMutationRequest {
+            workspace_id: "workspace-highlights".to_string(),
+            current_user_id: "user-1".to_string(),
+            name: Some("Highlights".to_string()),
+            local_repo_path: Some(local_path),
+            base_commit_sha: Some(shas[0].clone()),
+            repo_fingerprint: Some(format!("base:{}", shas[0])),
+            mutation_id: Some("workspace.create:workspace-highlights".to_string()),
+        })
+        .expect("create local workspace");
+        db.enable_workspace_cloud_backup("workspace-highlights", "user-1", "cloud-1")
+            .expect("enable backup");
+        acknowledge_workspace_bootstrap(&db, "user-1", "cloud-1");
+        db.upsert_local_node(
+            "node-1",
+            "workspace-highlights",
+            r#"{"id":"node-1","workspaceId":"workspace-highlights","role":"assistant","content":"hello","annotations":[]}"#,
+        )
+        .expect("seed local node");
+        let highlight = serde_json::json!({
+            "type": "highlight",
+            "id": "highlight-1",
+            "color": "yellow",
+            "range": { "start": 0, "end": 5, "exact": "hello", "textHash": "hash" },
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z"
+        });
+
+        let payload = db
+            .local_first_update_node_highlight(
+                "workspace-highlights",
+                Some("user-1"),
+                "node-1",
+                "add",
+                &highlight.to_string(),
+            )
+            .expect("add highlight locally");
+        let payload: JsonValue = serde_json::from_str(&payload).expect("updated payload");
+        assert_eq!(
+            payload
+                .get("annotations")
+                .and_then(JsonValue::as_array)
+                .and_then(|annotations| annotations.first())
+                .and_then(|annotation| annotation.get("id"))
+                .and_then(JsonValue::as_str),
+            Some("highlight-1")
+        );
+
+        let event = db
+            .list_due_local_sync_events_for_user_and_cloud("user-1", "cloud-1", None, 25)
+            .expect("list sync events")
+            .into_iter()
+            .find(|event| event.entity_id == "node-1" && event.event_type == "node.highlight.add")
+            .expect("highlight outbox event");
+        assert_eq!(event.payload_json, highlight.to_string());
+
+        let payload = db
+            .local_first_set_node_collapsed("workspace-highlights", Some("user-1"), "node-1", true)
+            .expect("collapse node locally");
+        let payload: JsonValue = serde_json::from_str(&payload).expect("collapsed payload");
+        assert_eq!(
+            payload.get("collapsed").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        let collapsed_event = db
+            .list_due_local_sync_events_for_user_and_cloud("user-1", "cloud-1", None, 25)
+            .expect("list collapse sync event")
+            .into_iter()
+            .find(|event| event.entity_id == "node-1" && event.event_type == "node.collapsed.set")
+            .expect("collapse outbox event");
+        assert_eq!(
+            serde_json::from_str::<JsonValue>(&collapsed_event.payload_json)
+                .expect("collapse event payload"),
+            serde_json::json!({ "collapsed": true })
+        );
+    }
+
+    #[test]
     fn server_workspace_merge_preserves_local_binding_and_dirty_name() {
         let (_db_dir, db) = open_test_db();
         let (repo_dir, shas) = init_test_repo_with_commits(1);
@@ -10447,8 +12207,8 @@ mod tests {
             .list_due_local_sync_events_for_user("user-1", 25)
             .expect("list sync events")
             .into_iter()
-            .find(|event| event.event_type == "workspace.create")
-            .expect("create event");
+            .find(|event| event.event_type == "workspace.bootstrap")
+            .expect("bootstrap event");
 
         db.local_first_rename_workspace("workspace-1", "user-1", "Dirty local name")
             .expect("rename local workspace");
@@ -10476,6 +12236,51 @@ mod tests {
         assert_eq!(local.name, "Dirty local name");
         assert!(local.name_dirty);
         assert!(!local.metadata_dirty);
+    }
+
+    #[test]
+    fn local_first_rename_cloud_backed_workspace_updates_and_enqueues_atomically() {
+        let (_db_dir, db) = open_test_db();
+        let (repo_dir, shas) = init_test_repo_with_commits(1);
+        let local_path = std::fs::canonicalize(repo_dir.path())
+            .expect("canonical repo")
+            .to_string_lossy()
+            .to_string();
+        db.local_first_create_workspace(LocalWorkspaceMutationRequest {
+            workspace_id: "workspace-cloud".to_string(),
+            current_user_id: "user-1".to_string(),
+            name: Some("Initial name".to_string()),
+            local_repo_path: Some(local_path),
+            base_commit_sha: Some(shas[0].clone()),
+            repo_fingerprint: Some(format!("base:{}", shas[0])),
+            mutation_id: Some("workspace.create:workspace-cloud".to_string()),
+        })
+        .expect("create local workspace");
+        db.enable_workspace_cloud_backup("workspace-cloud", "user-1", "cloud-account-1")
+            .expect("enable cloud backup");
+        acknowledge_workspace_bootstrap(&db, "user-1", "cloud-account-1");
+
+        let renamed = db
+            .local_first_rename_workspace("workspace-cloud", "user-1", "Renamed locally")
+            .expect("rename cloud-backed workspace");
+
+        assert_eq!(renamed.name, "Renamed locally");
+        assert_eq!(renamed.cloud_account_id.as_deref(), Some("cloud-account-1"));
+        assert_eq!(renamed.sync_status, "sync_pending");
+        let update = db
+            .list_due_local_sync_events_for_user_and_cloud("user-1", "cloud-account-1", None, 25)
+            .expect("list cloud sync events")
+            .into_iter()
+            .find(|event| {
+                event.entity_id == "workspace-cloud" && event.event_type == "workspace.update"
+            })
+            .expect("workspace update event");
+        let payload: JsonValue =
+            serde_json::from_str(&update.payload_json).expect("workspace update payload");
+        assert_eq!(
+            payload.get("name").and_then(JsonValue::as_str),
+            Some("Renamed locally")
+        );
     }
 
     #[test]
@@ -10570,39 +12375,130 @@ mod tests {
             .expect("enable backup");
 
         let events = db
-            .list_due_local_sync_events_for_user_and_cloud("user-1", "cloud-1", 25)
+            .list_due_local_sync_events_for_user_and_cloud("user-1", "cloud-1", None, 25)
             .expect("list cloud-scoped events");
-        assert!(events
-            .iter()
-            .any(|event| event.event_type == "workspace.create"));
-        assert!(events.iter().any(|event| {
-            event.event_type == "node.update_terminal" && event.entity_id == "assistant-node-1"
-        }));
-        assert!(events.iter().any(|event| {
-            event.event_type == "insight.upsert" && event.entity_id == "insight-1"
-        }));
-        let commit_graph_event = events
-            .iter()
-            .find(|event| {
-                event.event_type == "commit_graph.git_sync_ingest"
-                    && event.entity_id == "workspace-1"
-            })
-            .expect("commit graph backup event");
-        let commit_graph_payload =
-            serde_json::from_str::<JsonValue>(&commit_graph_event.payload_json)
-                .expect("commit graph payload");
-        let commits = commit_graph_payload
-            .get("refs")
-            .and_then(|refs| refs.get(0))
-            .and_then(|ref_payload| ref_payload.get("commits"))
+        assert_eq!(events.len(), 1, "initial backup must use one durable event");
+        let bootstrap = &events[0];
+        assert_eq!(bootstrap.event_type, "workspace.bootstrap");
+        assert_eq!(bootstrap.entity_id, "workspace-1");
+        let payload = serde_json::from_str::<JsonValue>(&bootstrap.payload_json)
+            .expect("workspace bootstrap payload");
+        assert_eq!(
+            payload.get("schemaVersion").and_then(JsonValue::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            payload
+                .pointer("/workspace/name")
+                .and_then(JsonValue::as_str),
+            Some("Local workspace")
+        );
+        assert!(payload.pointer("/workspace/folderPath").is_none());
+        assert!(payload.pointer("/workspace/repoPath").is_none());
+        assert!(!bootstrap.payload_json.contains(&local_path));
+        assert_eq!(
+            payload
+                .get("nodePairs")
+                .and_then(JsonValue::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            payload
+                .get("insights")
+                .and_then(JsonValue::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        let commits = payload
+            .pointer("/commitGraph/commits")
             .and_then(|commits| commits.as_array())
             .expect("commit graph commits");
         assert!(commits
             .iter()
             .any(|commit| { commit.get("sha").and_then(|sha| sha.as_str()) == Some("child-sha") }));
-        assert!(events
-            .iter()
-            .all(|event| event.cloud_account_id.as_deref() == Some("cloud-1")));
+        assert_eq!(bootstrap.cloud_account_id.as_deref(), Some("cloud-1"));
+
+        db.enable_workspace_cloud_backup("workspace-1", "user-1", "cloud-1")
+            .expect("re-enable backup idempotently");
+        let replay_events = db
+            .list_due_local_sync_events_for_user_and_cloud("user-1", "cloud-1", None, 25)
+            .expect("list events after idempotent enable");
+        assert_eq!(
+            replay_events.len(),
+            1,
+            "retries must reuse the same snapshot"
+        );
+
+        db.upsert_local_insight_payload_for_user(
+            "workspace-1",
+            Some("user-1"),
+            "insight-2",
+            &serde_json::json!({
+                "id": "insight-2",
+                "content": "Created after the snapshot boundary",
+                "parentNodeId": "assistant-node-1"
+            })
+            .to_string(),
+            Some("insight-after-backup"),
+        )
+        .expect("upsert post-bootstrap insight");
+        let events_with_increment = db
+            .list_due_local_sync_events_for_user_and_cloud("user-1", "cloud-1", None, 25)
+            .expect("list bootstrap and later increment");
+        assert_eq!(events_with_increment.len(), 1);
+        assert_eq!(events_with_increment[0].event_type, "workspace.bootstrap");
+        db.mark_local_sync_event_synced(&events_with_increment[0].id)
+            .expect("ack bootstrap event");
+        let increment_after_bootstrap = db
+            .list_due_local_sync_events_for_user_and_cloud("user-1", "cloud-1", None, 25)
+            .expect("list later increment after bootstrap acknowledgement");
+        assert_eq!(increment_after_bootstrap.len(), 1);
+        assert!(increment_after_bootstrap.iter().any(|event| {
+            event.event_type == "insight.upsert" && event.entity_id == "insight-2"
+        }));
+    }
+
+    #[test]
+    fn due_sync_query_never_delivers_events_for_local_only_workspace() {
+        let (_db_dir, db) = open_test_db();
+        let conn = db.conn.lock().expect("lock db");
+        conn.execute(
+            r#"
+            INSERT INTO local_workspaces (
+                id, user_id, name, connection_status, sync_status, created_at, updated_at,
+                local_updated_at, cloud_backup_enabled, cloud_account_id
+            ) VALUES ('workspace-local', 'user-1', 'Local', 'connected', 'local_only',
+                      '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'cloud-1')
+            "#,
+            [],
+        )
+        .expect("insert local-only workspace");
+        conn.execute(
+            r#"
+            INSERT INTO local_sync_events (
+                id, workspace_id, user_id, cloud_account_id, entity_type, entity_id,
+                event_type, payload_json, idempotency_key, status, attempt_count,
+                next_attempt_at, created_at, updated_at
+            ) VALUES ('event-local', 'workspace-local', 'user-1', 'cloud-1', 'node',
+                      'node-1', 'node.update_terminal', '{}', 'local-only-event',
+                      'pending', 0, 1, 1, 1)
+            "#,
+            [],
+        )
+        .expect("insert stale pending event");
+        drop(conn);
+
+        let events = db
+            .list_due_local_sync_events_for_user_and_cloud(
+                "user-1",
+                "cloud-1",
+                Some("workspace-local"),
+                25,
+            )
+            .expect("query due events");
+
+        assert!(events.is_empty());
     }
 
     #[test]

@@ -31,11 +31,18 @@ import {
     type ChatInputSurface,
 } from '../lib/chatInputSurface';
 import axios from 'axios';
-import { api } from '../lib/api';
+import { AGENTREE_DATA_PLANE_ENABLED, api } from '../lib/api';
 import { getOptionalCloudAuthToken } from '../lib/authSession';
 import { getMessageById, resolveNodeCommit } from '../lib/gitNodeUtils';
-import { track, trackAgentRunFailed, trackAgentRunStarted } from '../lib/analytics';
-import { buildAgentRunLaunchContext } from '../lib/agentRunLaunchContext';
+import {
+    analyticsFailureCategory,
+    bucketCharacterCount,
+    bucketCount,
+    track,
+    trackAgentRunFailed,
+    trackAgentRunStarted,
+} from '../lib/analytics';
+import { buildAgentRunContextManifest } from '../lib/agentRunLaunchContext';
 import { ScrollArea } from "../../@/components/ui/scroll-area";
 import { Popover, PopoverContent, PopoverAnchor, PopoverTrigger } from '../../@/components/ui/popover'; // Added Popover components
 import { Checkbox } from '../../@/components/ui/checkbox';
@@ -84,7 +91,7 @@ import {
     getComposerPermissionOption,
     type ComposerPermissionMode,
 } from '../lib/composerPermissions';
-import { buildAgentRuntimeArgs, parseRuntimeCliArgs } from '../lib/agentRuntimeArgs';
+import { parseRuntimeCliArgs } from '../lib/agentRuntimeArgs';
 import { appendInputArtifactsToPrompt } from '../lib/artifacts';
 import {
     scheduleMessagesRefreshWhenGraphIdle,
@@ -96,7 +103,6 @@ import {
     clearAgentRunVisibilityTrace,
     registerAgentRunVisibilityTrace,
 } from '../perf/agentRunVisibilityPerf';
-import { cancelOrchestrationTargetIfNeeded } from '../orchestration/cancel';
 import { agentRunManager } from '../agent-runs/agentRunManager';
 import { getEnabledTrackedGitRefs, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
 import {
@@ -329,6 +335,7 @@ import { agentClient } from '../lib/agentClient';
 import { resolveComposerDefaultAgentId } from '../lib/composerModelDefaults';
 import { AGENT_STATUS, isActiveAgentStatus, isTerminalAgentStatus } from '@shared/agentStatus';
 import { createOptimisticAssistantMessage, createOptimisticNodePair, categorizeError, formatErrorMessage, isOptimisticId } from '../lib/optimisticMessages';
+import { describeCheckoutFailure } from '../lib/checkoutFailure';
 import {
     buildComposerAgentTurnTopology,
     buildComposerAgentRuns,
@@ -959,11 +966,8 @@ export function ChatInput({
                 variant: 'success',
             });
         } catch (error) {
-            const message = error instanceof Error ? error.message : 'Auto checkout failed.';
             addToast({
-                title: message.includes('uncommitted changes') ? 'Auto Checkout Skipped' : 'Auto Checkout Failed',
-                description: message,
-                variant: message.includes('uncommitted changes') ? 'warning' : 'error',
+                ...describeCheckoutFailure(error, 'auto'),
                 duration: 9000,
             });
         }
@@ -1868,32 +1872,34 @@ export function ChatInput({
             localPath = saved.path;
             sizeBytes = saved.size_bytes ?? sizeBytes;
 
-            try {
-                const signedUpload = await api.post<{
-                    signedUrl: string;
-                    path: string;
-                    publicUrl: string | null;
-                }>('/attachments/signed-url', {
-                    filename: file.name,
-                    contentType: file.type || 'application/octet-stream',
-                });
-                await axios.put(signedUpload.data.signedUrl, file, {
-                    headers: {
-                        'Content-Type': file.type || 'application/octet-stream',
-                    },
-                });
-                remotePath = signedUpload.data.path;
-                publicUrl = signedUpload.data.publicUrl || null;
+            if (AGENTREE_DATA_PLANE_ENABLED) {
                 try {
-                    const signedDownload = await api.get<{ signedUrl: string }>('/attachments/signed-download-url', {
-                        params: { path: signedUpload.data.path },
+                    const signedUpload = await api.post<{
+                        signedUrl: string;
+                        path: string;
+                        publicUrl: string | null;
+                    }>('/attachments/signed-url', {
+                        filename: file.name,
+                        contentType: file.type || 'application/octet-stream',
                     });
-                    publicUrl = signedDownload.data.signedUrl || publicUrl;
-                } catch (downloadError) {
-                    console.warn('[ChatInput] Uploaded attachment but could not refresh signed download URL', downloadError);
+                    await axios.put(signedUpload.data.signedUrl, file, {
+                        headers: {
+                            'Content-Type': file.type || 'application/octet-stream',
+                        },
+                    });
+                    remotePath = signedUpload.data.path;
+                    publicUrl = signedUpload.data.publicUrl || null;
+                    try {
+                        const signedDownload = await api.get<{ signedUrl: string }>('/attachments/signed-download-url', {
+                            params: { path: signedUpload.data.path },
+                        });
+                        publicUrl = signedDownload.data.signedUrl || publicUrl;
+                    } catch (downloadError) {
+                        console.warn('[ChatInput] Uploaded attachment but could not refresh signed download URL', downloadError);
+                    }
+                } catch (cloudError) {
+                    console.warn('[ChatInput] Cloud attachment upload failed; keeping local cached attachment.', cloudError);
                 }
-            } catch (cloudError) {
-                console.warn('[ChatInput] Cloud attachment upload failed; keeping local cached attachment.', cloudError);
             }
 
             setAttachments((prev: Attachment[]) => prev.map((att: Attachment) => (
@@ -2796,14 +2802,11 @@ export function ChatInput({
         setEditDraftSource(null);
         setCurrentAbortController(controller);
         track('Agent Message Submitted', {
-            workspace_id: selectedWorkspaceId,
-            agent_id: primarySelectedAgent.id,
-            agent_provider: primarySelectedAgent?.type ?? null,
-            llm_model: selectedLlmModel,
-            agent_run_count: agentRunItemsForSend.length,
-            prompt_chars: savedPrompt.trim().length,
-            attachment_count: savedAttachments.length,
-            context_entry_count: savedContextIds.length,
+            ...(primarySelectedAgent?.type ? { agent_provider: primarySelectedAgent.type } : {}),
+            agent_run_count_bucket: bucketCount(agentRunItemsForSend.length),
+            prompt_chars_bucket: bucketCharacterCount(savedPrompt.trim().length),
+            attachment_count_bucket: bucketCount(savedAttachments.length),
+            context_entry_count_bucket: bucketCount(savedContextIds.length),
             has_parent: Boolean(sendParentMessageId),
             edit_and_run: Boolean(savedEditDraftSource),
         });
@@ -2931,6 +2934,8 @@ export function ChatInput({
                     ...persistedUserMessages,
                     ...assistantMessages,
                 ];
+                // Persist before any asynchronous launch preflight so an app crash or
+                // validation failure cannot discard the accepted user prompt.
                 await Promise.all([
                     ...persistedUserMessages.map((userMessage) => (
                         agentClient.upsertLocalNode(selectedWorkspaceId!, userMessage.id, userMessage)
@@ -3008,6 +3013,7 @@ export function ChatInput({
                     }
                     runAgentSetupInBackground({
                         nodeId: run.assistantMessageId,
+                        userMsg: run.userMessage,
                         assistantMsg: run.assistantMessage as Message,
                         prompt: savedPrompt.trim(),
                         attachments: structuredAttachments,
@@ -3215,6 +3221,7 @@ export function ChatInput({
                     // Run agent setup in parallel (don't block UI)
                     runAgentSetupInBackground({
                         nodeId: realAssistantId,
+                        userMsg: response.userMessage!,
                         assistantMsg: realAssistant,
                         prompt: savedPrompt.trim(),
                         attachments: structuredAttachments,
@@ -3481,6 +3488,7 @@ export function ChatInput({
      */
     interface AgentSetupParams {
         nodeId: string;
+        userMsg: Message;
         assistantMsg: Message;
         prompt: string;
         attachments?: AttachmentMetadata[];
@@ -3495,7 +3503,7 @@ export function ChatInput({
     }
 
     const runAgentSetupInBackground = async (params: AgentSetupParams): Promise<void> => {
-        const { nodeId, assistantMsg, prompt, attachments: inputAttachments, authToken, autoCheckout, contextPolicy, baseMessageId, threadId, contextParentMessageId, contextStartMessageId } = params;
+        const { nodeId, userMsg, assistantMsg, prompt, attachments: inputAttachments, authToken, autoCheckout, contextPolicy, baseMessageId, threadId, contextParentMessageId, contextStartMessageId } = params;
         const agentPrompt = appendInputArtifactsToPrompt(prompt, inputAttachments);
         const isCodexAgent = selectedAgent?.type === 'codex';
         const runId = crypto.randomUUID();
@@ -3607,77 +3615,14 @@ export function ChatInput({
                 });
                 return;
             }
-            const launchContext = buildAgentRunLaunchContext({
-                agentType: selectedAgent?.type,
-                userPrompt: agentPrompt,
+            const contextManifest = buildAgentRunContextManifest({
                 messages: messageLookupMessages,
-                messageMap: messageById,
                 contextParentMessageId: contextParentMessage?.id ?? null,
-                baseMessageId,
                 contextPolicy,
-                contextMode,
                 contextStartMessageId,
-                excludedBranchMessageIds: new Set([
-                    assistantMsg.parentId,
-                    assistantMsg.id,
-                ].filter((id): id is string => Boolean(id))),
-                nodeId,
-                targetNodeId: baseMessageId,
-                modelCapabilities: selectedAgent?.model_config?.capabilities ?? null,
-                threadTitleMode: !baseMessageId && threadId ? 'first_thread_message' : 'none',
             });
-            const providerThreadStrategy = launchContext.providerThreadStrategy;
-            const providerThreadStrategyRequested = launchContext.providerThreadStrategyRequested;
-            const effectivePrompt = launchContext.prompt;
-            const agentreeContextAvailableChars = launchContext.agentreeContextAvailableChars;
-            const agentreeContextInjectedChars = launchContext.agentreeContextInjectedChars;
-            const isBranchFromInterior = launchContext.isBranchFromInterior;
-            const runtimeArgs = buildAgentRuntimeArgs({
-                agentType: selectedAgent?.type,
-                cliArgs: cliArgsStr,
-                promptFlag: selectedAgent?.promptFlag,
-                prompt: effectivePrompt,
-                permissionMode,
-                providerInternalArgs: launchContext.providerInternalArgs,
-                createClaudeSessionId: () => crypto.randomUUID(),
-            });
-            const agentSessionId = runtimeArgs.claudeSessionId;
-            const spawnArgs = runtimeArgs.args;
 
             const traceId = attachLatencyTraceToNode(nodeId, nodeId, authToken);
-            trackAgentRunStarted({
-                workspace_id: assistantMsg.workspaceId,
-                node_id: nodeId,
-                agent_id: selectedAgentId,
-                agent_provider: selectedAgent?.type ?? null,
-                llm_model: resolvedModel,
-                provider_thread_strategy: providerThreadStrategyRequested,
-                branch_from_interior: isBranchFromInterior,
-                auto_checkout_requested: autoCheckout,
-                explicit_context_chars: agentreeContextAvailableChars,
-                injected_context_chars: agentreeContextInjectedChars,
-                provider_context_routing_mode: launchContext.providerContextRoutingMode,
-            });
-            recordLatencyMark(nodeId, 'spawn_requested', {
-                authToken,
-                nodeId,
-                detail: {
-                    explicit_context_chars: agentreeContextAvailableChars,
-                    injected_context_chars: agentreeContextInjectedChars,
-                    provider_thread_resume_enabled: providerThreadStrategy === 'resume',
-                    provider_thread_strategy: providerThreadStrategy,
-                    provider_thread_strategy_requested: providerThreadStrategyRequested,
-                    provider_cross_provider_fresh_thread: launchContext.providerContextRoutingMode === 'cross_provider_packet',
-                    provider_context_routing_mode: launchContext.providerContextRoutingMode,
-                    provider_context_routing_reason: launchContext.providerContextRoutingReason,
-                    parent_provider: launchContext.providerParentProvider,
-                    selected_provider: selectedProvider,
-                    parent_provider_thread_id: launchContext.providerParentThreadId,
-                    parent_provider_turn_id: launchContext.providerParentTurnId,
-                    parent_provider_lineage_id: launchContext.providerParentLineageId,
-                    branch_from_interior: isBranchFromInterior,
-                },
-            });
             const startExecutionData = {
                 ...((getAgentRunProjection(nodeId)?.execution_data || {}) as Record<string, any>),
                 current_run_id: runId,
@@ -3686,10 +3631,6 @@ export function ChatInput({
                 started_at: new Date().toISOString(),
                 meta: {
                     ...(((getAgentRunProjection(nodeId)?.execution_data || {}) as any)?.meta || {}),
-                    ...(agentSessionId ? {
-                        agent_session_id: agentSessionId,
-                        agent_session_provider: 'claude',
-                    } : {}),
                 },
             };
             startExecutionData.meta = {
@@ -3698,7 +3639,6 @@ export function ChatInput({
                 git_branch_name: plannedBranchName,
                 base_commit_sha: parentCommit,
                 auto_checkout_requested: autoCheckout,
-                ...launchContext.meta,
                 composer_permission_mode: permissionMode,
                 ...(selectedProvider
                     ? {
@@ -3725,26 +3665,39 @@ export function ChatInput({
                 worktreePath: null,
                 runId,
             }, { source: 'ChatInput' });
-            const startAgentRunIntent = {
+            const launchAgentRequest = {
+                requestId: `composer:${nodeId}`,
                 runId,
+                userNodeId: userMsg.id,
                 assistantNodeId: nodeId,
                 workspaceId: assistantMsg.workspaceId,
-                repoPath,
-                parentCommit,
+                threadId,
+                parentNodeId: userMsg.parentId ?? null,
+                contextParentNodeId: contextParentMessage?.id ?? null,
+                baseNodeId: baseMessageId,
+                baseCommit: parentCommit,
+                userPrompt: agentPrompt,
                 agentType: selectedAgent!.type,
-                args: spawnArgs,
+                model: resolvedModel,
+                reasoningEffort: resolvedReasoningEffort,
+                permissionMode,
+                loginProfileId: selectedLoginProfile?.id ?? null,
+                agentId: selectedAgentId,
+                agentName: selectedAgent?.name ?? null,
+                agentCliArgs: cliArgsStr,
+                agentPromptFlag: selectedAgent?.promptFlag ?? null,
                 authToken,
                 traceId,
-                loginProfileId: selectedLoginProfile?.id ?? null,
-                runContext: {
-                    runId,
-                    executionData: startExecutionData,
-                    gitBranchName: plannedBranchName,
-                    repoPath,
-                    parentCommit,
-                    authorName: selectedAgent?.name ?? null,
-                    promptFallback: agentPrompt,
-                },
+                contextPolicy,
+                contextMode: contextPolicy === 'fresh' ? 'none' as const : contextMode,
+                contextManifest: contextManifest as unknown as Record<string, unknown>,
+                modelCapabilities: (selectedAgent?.model_config?.capabilities ?? {}) as unknown as Record<string, unknown>,
+                threadTitleMode: !baseMessageId && threadId ? 'first_thread_message' as const : 'none' as const,
+                userNode: userMsg as unknown as Record<string, unknown>,
+                assistantNode: {
+                    ...assistantMsg,
+                    execution_data: startExecutionData,
+                } as unknown as Record<string, unknown>,
             };
             const spawnFlowId = getSendFlowIdForKey(nodeId);
             void withRuntimeActivity({
@@ -3758,7 +3711,31 @@ export function ChatInput({
                     agentType: selectedAgent!.type,
                     provider: selectedProvider,
                 },
-            }, () => agentClient.startAgentRun(startAgentRunIntent)).then((startRunResponse) => {
+            }, () => agentClient.launchAgentMessage(launchAgentRequest)).then((startRunResponse) => {
+                const nativeContext = startRunResponse.launchContext;
+                trackAgentRunStarted({
+                    ...(selectedAgent?.type ? { agent_provider: selectedAgent.type } : {}),
+                    provider_thread_strategy: nativeContext.providerThreadStrategyRequested,
+                    branch_from_interior: nativeContext.isBranchFromInterior,
+                    auto_checkout_requested: autoCheckout,
+                    explicit_context_chars_bucket: bucketCharacterCount(nativeContext.agentreeContextAvailableChars),
+                    injected_context_chars_bucket: bucketCharacterCount(nativeContext.agentreeContextInjectedChars),
+                    provider_context_routing_mode: nativeContext.providerContextRoutingMode,
+                });
+                mergeAgentRunExecutionData(nodeId, {
+                    meta: {
+                        provider_thread_strategy: nativeContext.providerThreadStrategy,
+                        provider_thread_strategy_requested: nativeContext.providerThreadStrategyRequested,
+                        provider_context_routing_mode: nativeContext.providerContextRoutingMode,
+                        provider_context_routing_reason: nativeContext.providerContextRoutingReason,
+                        provider_parent_provider: nativeContext.parentProvider ?? null,
+                        provider_parent_thread_id_available: nativeContext.parentProviderThreadId ?? null,
+                        provider_parent_turn_id_available: nativeContext.parentProviderTurnId ?? null,
+                        provider_parent_lineage_id_available: nativeContext.parentProviderLineageId ?? null,
+                        agentree_context_available_chars: nativeContext.agentreeContextAvailableChars,
+                        agentree_context_injected_chars: nativeContext.agentreeContextInjectedChars,
+                    },
+                });
                 recordLatencyMark(nodeId, 'worktree_create_finished', {
                     authToken,
                     nodeId,
@@ -3767,12 +3744,14 @@ export function ChatInput({
                         branch_name: startRunResponse.branchName,
                     },
                 });
-                worktreeInfoRef.current.set(nodeId, {
-                    worktreePath: startRunResponse.worktreePath,
-                    branchName: startRunResponse.branchName,
-                    parentCommit,
-                    repoPath,
-                });
+                if (startRunResponse.worktreePath && startRunResponse.branchName) {
+                    worktreeInfoRef.current.set(nodeId, {
+                        worktreePath: startRunResponse.worktreePath,
+                        branchName: startRunResponse.branchName,
+                        parentCommit,
+                        repoPath,
+                    });
+                }
                 recordSendFlowEvent('agent-setup.worktree-runtime-info-set', {
                     flowId: spawnFlowId,
                     workspaceId: assistantMsg.workspaceId,
@@ -3800,11 +3779,7 @@ export function ChatInput({
                 }, { source: 'ChatInput' });
                 recordLatencyMark(nodeId, 'spawn_returned', { authToken, nodeId });
                 track('Agent Spawn Succeeded', {
-                    workspace_id: assistantMsg.workspaceId,
-                    node_id: nodeId,
-                    agent_id: selectedAgentId,
-                    agent_provider: selectedAgent?.type ?? null,
-                    llm_model: resolvedModel,
+                    ...(selectedAgent?.type ? { agent_provider: selectedAgent.type } : {}),
                 });
                 sendFlowDebug('Agent spawned successfully', { nodeId });
             }).catch((error) => {
@@ -3817,12 +3792,9 @@ export function ChatInput({
                     errorMessage,
                 }, { source: 'ChatInput' });
                 trackAgentRunFailed({
-                    workspace_id: assistantMsg.workspaceId,
-                    node_id: nodeId,
-                    agent_id: selectedAgentId,
-                    agent_provider: selectedAgent?.type ?? null,
+                    ...(selectedAgent?.type ? { agent_provider: selectedAgent.type } : {}),
                     error_phase: 'spawn',
-                    error_name: error instanceof Error ? error.name : 'unknown',
+                    failure_category: analyticsFailureCategory(error),
                 });
                 markNodeFailed(nodeId, errorMessage);
             });
@@ -3835,11 +3807,7 @@ export function ChatInput({
                 setSetupProgress(nodeId, 'Running...');
             }
             track('Agent Spawn Dispatched', {
-                workspace_id: assistantMsg.workspaceId,
-                node_id: nodeId,
-                agent_id: selectedAgentId,
-                agent_provider: selectedAgent?.type ?? null,
-                llm_model: resolvedModel,
+                ...(selectedAgent?.type ? { agent_provider: selectedAgent.type } : {}),
             });
             sendFlowDebug('Agent spawn dispatched', { nodeId });
 
@@ -3884,12 +3852,9 @@ export function ChatInput({
                 endSendFlowFocus(setupFlowId);
             }
             trackAgentRunFailed({
-                workspace_id: assistantMsg.workspaceId,
-                node_id: nodeId,
-                agent_id: selectedAgentId,
-                agent_provider: selectedAgent?.type ?? null,
+                ...(selectedAgent?.type ? { agent_provider: selectedAgent.type } : {}),
                 error_phase: 'setup',
-                error_name: error instanceof Error ? error.name : 'unknown',
+                failure_category: analyticsFailureCategory(error),
             });
             markNodeFailed(nodeId, errorMessage);
 
@@ -4054,19 +4019,7 @@ export function ChatInput({
                 }
                 let stopFailed = false;
                 try {
-                    const orchestrationCancel = await cancelOrchestrationTargetIfNeeded({
-                        targetNodeId,
-                        messages,
-                        reason: 'cancelled',
-                    }, {
-                        recordOrchestrationEvent: (runId, assistantNodeId, eventType, payload) => (
-                            agentClient.recordOrchestrationEvent(runId, assistantNodeId, eventType, payload)
-                        ),
-                        stopAgent: (assistantNodeId) => agentClient.stopAgent(assistantNodeId),
-                    });
-                    if (!orchestrationCancel.handled) {
-                        await agentClient.stopAgent(targetNodeId);
-                    }
+                    await agentClient.stopAgent(targetNodeId);
                 } catch (err) {
                     if (isNoAgentSessionFoundError(err)) {
                         const marked = await markStaleLocalAgentNodeCancelled({

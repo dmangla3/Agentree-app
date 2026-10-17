@@ -76,13 +76,6 @@ import { getBranchPointerCommitSha, getMessageBaseCommitSha, getMessageOutputCom
 import { shouldRefreshHeldGraphMessagesForStructuralChange } from '../lib/graph/graphComputationHold';
 import { reconcileTerminalAgentRunsFromMessages } from '../lib/agentRunTerminalReconciliation';
 import { isNoAgentSessionFoundError, markStaleLocalAgentNodeCancelled } from '../lib/localAgentRunTerminal';
-import { cancelOrchestrationTargetIfNeeded } from '../orchestration/cancel';
-import { retryOrchestrationRun } from '../orchestration/controlPlane';
-import { useOrchestrationMcpBridge } from '../orchestration/useOrchestrationMcpBridge';
-import {
-    buildOrchestrationRunRetryInput,
-    resolveOrchestrationRunRetryTarget,
-} from '../orchestration/retry';
 import { addDeletedGraphCommitShas, readDeletedGraphCommitShas } from '../lib/graph/commitGraphTombstones';
 import { getLeafMessagesByRecency, getLeafNavigationLabel } from '../lib/graph/leafNodes';
 import { getThreadAwarenessSummary } from '../lib/graph/threadAwareness';
@@ -92,9 +85,9 @@ import {
 } from '../lib/graphViewportBounds';
 import { collapseRenderedFocusRoute } from '../domain/focusRoute';
 import { cn } from '../lib/utils';
-import { writeClipboardText } from '../lib/clipboard';
 import { useDiff } from '../contexts/DiffContext';
 import { useToastHelpers } from './Toast';
+import { useAuthStore } from '../stores/authStore';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { isActiveAgentStatus } from '@shared/agentStatus';
 import { agentRunManager } from '../agent-runs/agentRunManager';
@@ -126,11 +119,24 @@ import { NodeContextMenu, type NodeContextMenuState } from './NodeContextMenu';
 import InsightPanel from './InsightPanel';
 import { AddCommitDialog } from './AddCommitDialog';
 import { DeleteBranchDialog, type DeleteBranchDialogPhase } from './DeleteBranchDialog';
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from '../../@/components/ui/alert-dialog';
 import { classifyMessageNodeKind } from '../domain/nodes';
 
 import { ChevronLeft, ChevronRight, ChevronsRight, GitBranch, X } from 'lucide-react';
 import { agentClient } from '../lib/agentClient';
 import { getOptionalCloudAuthToken } from '../lib/authSession';
+import { workspaceApplication } from '../application/workspaces';
+import { flushWorkspaceCloudBootstrap, flushWorkspaceCloudSync, queueLocalSyncFlush } from '../lib/localSyncScheduler';
+import { writeClipboardText } from '../lib/clipboard';
 import { ensureLocalCommitGraphRepaired } from '../lib/localCommitGraphRepair';
 import { createProfilerOnRender, startFocusInteraction } from '../lib/interactionProfiler';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
@@ -1235,12 +1241,6 @@ function GraphViewInternal({
     }, [canUseLiveFocusedMessageId, runningCount, storeFocusedMessageId]);
 
 	    const messages = messagesOverride ?? storeMessages;
-	    useOrchestrationMcpBridge({
-	        selectedWorkspaceId,
-	        messages: messages as Message[],
-	        workspaces,
-	        queryClient,
-	    });
 	    const completedAssistantInsightSignal = useMemo(() => (
         (messages as Message[]).filter((message) => (
             message.role === 'assistant' &&
@@ -1495,7 +1495,7 @@ function GraphViewInternal({
         const messageById = new Map((graphMessages as Message[]).map((message) => [message.id, message]));
         const threadSessionById = new Map(threadSessions.map((thread) => [thread.id, thread]));
         const now = Date.now();
-        return threadRootIndex.threadRootIds.map((threadRootId) => {
+        const items = threadRootIndex.threadRootIds.map((threadRootId) => {
             const threadSession = threadSessionById.get(threadRootId) ?? null;
             const rootMessageId = threadRootIndex.rootMessageIdByThreadRootId.get(threadRootId) ?? threadRootId;
             const rootMessage = messageById.get(rootMessageId) ?? null;
@@ -1546,6 +1546,8 @@ function GraphViewInternal({
             return {
                 threadRootId,
                 fullLabel: label,
+                parentThreadId: threadSession?.parentThreadId ?? null,
+                depth: 0,
                 label: label.length > 56 ? `${label.slice(0, 56)}...` : label,
                 turnCount,
                 commitCount,
@@ -1562,6 +1564,30 @@ function GraphViewInternal({
                 draftPreviewText,
             };
         });
+        const itemById = new Map(items.map((item) => [item.threadRootId, item]));
+        const childrenByParentId = new Map<string, ThreadNavigationItem[]>();
+        const roots: ThreadNavigationItem[] = [];
+        for (const item of items) {
+            if (item.parentThreadId && itemById.has(item.parentThreadId)) {
+                childrenByParentId.set(item.parentThreadId, [
+                    ...(childrenByParentId.get(item.parentThreadId) ?? []),
+                    item,
+                ]);
+            } else {
+                roots.push(item);
+            }
+        }
+        const ordered: ThreadNavigationItem[] = [];
+        const visited = new Set<string>();
+        const append = (item: ThreadNavigationItem, depth: number) => {
+            if (visited.has(item.threadRootId)) return;
+            visited.add(item.threadRootId);
+            ordered.push({ ...item, depth });
+            (childrenByParentId.get(item.threadRootId) ?? []).forEach((child) => append(child, depth + 1));
+        };
+        roots.forEach((item) => append(item, 0));
+        items.forEach((item) => append(item, 0));
+        return ordered;
     }, [activeRunStatusNodeIds, activeThreadRootId, doneThreadRootIds, emptyThreadDraftPreviewByRootId, graphMessages, lastVisitedAtByThreadRootId, selectedWorkspace?.base_commit_sha, threadRootIndex, threadSessions]);
     const markThreadVisited = useCallback((threadRootId: string, visitedAt = Date.now()) => {
         setLastVisitedAtByThreadRootId((current) => {
@@ -1905,6 +1931,8 @@ function GraphViewInternal({
     const [layoutMode, setLayoutMode] = useState<LayoutMode>('tidy');
     const [laneStrategy, setLaneStrategy] = useState<LaneStrategy>('right');
     const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
+    const [pendingShareNodeId, setPendingShareNodeId] = useState<string | null>(null);
+    const [isEnablingShare, setIsEnablingShare] = useState(false);
     const [isIndexVisible, setIsIndexVisible] = useState(true);
     const [previewEdgeType, setPreviewEdgeType] = useState<GraphEdgeLegendId | null>(null);
     const [visibleEdgeTypes, setVisibleEdgeTypes] = useState<Set<GraphEdgeLegendId>>(
@@ -1922,8 +1950,6 @@ function GraphViewInternal({
     const [bulkDeleteExplicitCommitShas, setBulkDeleteExplicitCommitShas] = useState<string[]>([]);
     const [removeCommitsFromGraph, setRemoveCommitsFromGraph] = useState(false);
     const [deletedGraphCommitShas, setDeletedGraphCommitShas] = useState<Set<string>>(() => new Set());
-    const [collapsedOrchestrationControllerIds, setCollapsedOrchestrationControllerIds] = useState<Set<string>>(() => new Set());
-    const manuallyExpandedOrchestrationControllerIdsRef = useRef<Set<string>>(new Set());
     const [bulkDeletePhase, setBulkDeletePhase] = useState<DeleteBranchDialogPhase>('idle');
     const [nodeContextMenu, setNodeContextMenu] = useState<NodeContextMenuState | null>(null);
     const [addCommitTargetId, setAddCommitTargetId] = useState<string | null>(null);
@@ -1932,23 +1958,7 @@ function GraphViewInternal({
 
     useEffect(() => {
         setDeletedGraphCommitShas(readDeletedGraphCommitShas(selectedWorkspaceId));
-        setCollapsedOrchestrationControllerIds(new Set());
-        manuallyExpandedOrchestrationControllerIdsRef.current = new Set();
     }, [selectedWorkspaceId]);
-
-    const handleToggleOrchestrationCollapse = useCallback((controllerMessageId: string, collapsed: boolean) => {
-        setCollapsedOrchestrationControllerIds((current) => {
-            const next = new Set(current);
-            if (collapsed) {
-                next.add(controllerMessageId);
-                manuallyExpandedOrchestrationControllerIdsRef.current.delete(controllerMessageId);
-            } else {
-                next.delete(controllerMessageId);
-                manuallyExpandedOrchestrationControllerIdsRef.current.add(controllerMessageId);
-            }
-            return next;
-        });
-    }, []);
 
     useEffect(() => {
         const handleDockState = (event: Event) => {
@@ -2791,30 +2801,6 @@ function GraphViewInternal({
         syntheticThreadRoots,
         threadSessions,
     );
-    useEffect(() => {
-        const defaultCollapsedControllerIds = workspaceProjection.entities
-            .filter((entity) => (
-                entity.kind === 'assistant_message'
-                && entity.nodeKind === 'orchestrator'
-                && !entity.controlledByNodeId
-                && entity.messageId
-                && !manuallyExpandedOrchestrationControllerIdsRef.current.has(entity.messageId)
-            ))
-            .map((entity) => entity.messageId!);
-        if (defaultCollapsedControllerIds.length === 0) return;
-
-        setCollapsedOrchestrationControllerIds((current) => {
-            let changed = false;
-            const next = new Set(current);
-            defaultCollapsedControllerIds.forEach((controllerId) => {
-                if (next.has(controllerId)) return;
-                next.add(controllerId);
-                changed = true;
-            });
-            return changed ? next : current;
-        });
-    }, [workspaceProjection]);
-
     const executionTimelineModel = useMemo(() => {
         const items = buildExecutionTimelineItems(executionTimelineProjection);
         return packExecutionTimelineItems(items);
@@ -3168,25 +3154,88 @@ function GraphViewInternal({
         });
     }, []);
 
-    const handleShareNode = useCallback(async (messageId: string) => {
+    const createAndCopyNodeShare = useCallback(async (
+        nodeId: string,
+        options: { bootstrapOnly?: boolean } = {},
+    ) => {
         if (!selectedWorkspaceId) {
+            throw new Error('Select a workspace before sharing a node.');
+        }
+        await flushWorkspaceCloudBootstrap(selectedWorkspaceId);
+        if (!options.bootstrapOnly) {
+            await flushWorkspaceCloudSync(selectedWorkspaceId);
+        }
+        const result = await createNodePublicShare.mutateAsync({
+            workspaceId: selectedWorkspaceId,
+            nodeId,
+        });
+        await writeClipboardText(getPublicShareUrl(result.share.publicId));
+        toast.success('Public link copied', 'Anyone with the link can view this node and its descendants.');
+    }, [createNodePublicShare, selectedWorkspaceId, toast]);
+
+    const handleShareNode = useCallback(async (nodeId: string) => {
+        if (!selectedWorkspaceId || !selectedWorkspace) {
             toast.error('No workspace selected', 'Select a workspace before sharing a node.');
+            return;
+        }
+        if (createNodePublicShare.isPending || isEnablingShare) return;
+
+        const cloudSyncEnabled = Boolean(
+            selectedWorkspace.cloud_backup_enabled ?? selectedWorkspace.cloudBackupEnabled
+        );
+        if (!cloudSyncEnabled) {
+            setPendingShareNodeId(nodeId);
             return;
         }
 
         try {
-            const result = await createNodePublicShare.mutateAsync({
-                workspaceId: selectedWorkspaceId,
-                nodeId: messageId,
-            });
-            const url = getPublicShareUrl(result.share.publicId);
-            await writeClipboardText(url);
-            toast.success('Public link created', 'The node subgraph link was copied.');
+            await createAndCopyNodeShare(nodeId);
         } catch (error) {
             console.error('[GraphView] Failed to create public node share:', error);
-            toast.error('Unable to create link', 'The public node link could not be created.');
+            toast.error(
+                'Unable to create link',
+                error instanceof Error ? error.message : 'The node could not be synced and shared.',
+            );
         }
-    }, [createNodePublicShare, selectedWorkspaceId, toast]);
+    }, [createAndCopyNodeShare, createNodePublicShare.isPending, isEnablingShare, selectedWorkspace, selectedWorkspaceId, toast]);
+
+    const confirmWorkspaceSyncAndShare = useCallback(async () => {
+        if (!pendingShareNodeId || !selectedWorkspaceId) return;
+        const cloudAccountId = useAuthStore.getState().user?.id;
+        if (!cloudAccountId) {
+            toast.error('Sign in required', 'Sign in to enable workspace sync.');
+            return;
+        }
+
+        setIsEnablingShare(true);
+        let workspaceWasEnabled = false;
+        try {
+            const enabledWorkspace = await workspaceApplication.enableCloudBackup(
+                selectedWorkspaceId,
+                cloudAccountId,
+            );
+            workspaceWasEnabled = true;
+            queryClient.setQueriesData(
+                { queryKey: ['workspaces'] },
+                (current: any) => Array.isArray(current)
+                    ? current.map((workspace) => workspace.id === enabledWorkspace.id ? enabledWorkspace : workspace)
+                    : current,
+            );
+            const nodeId = pendingShareNodeId;
+            await createAndCopyNodeShare(nodeId, { bootstrapOnly: true });
+            queueLocalSyncFlush({ reason: 'workspace-bootstrap-shared' });
+            setPendingShareNodeId(null);
+        } catch (error) {
+            console.error('[GraphView] Failed to enable sync and share node:', error);
+            toast.error(
+                'Unable to share node',
+                error instanceof Error ? error.message : 'Workspace sync could not be enabled.',
+            );
+            if (workspaceWasEnabled) setPendingShareNodeId(null);
+        } finally {
+            setIsEnablingShare(false);
+        }
+    }, [createAndCopyNodeShare, pendingShareNodeId, queryClient, selectedWorkspaceId, toast]);
 
     const stopViewportInteraction = useCallback((viewportOverride?: { x: number; y: number; zoom: number }) => {
         if (!isViewportInteractingRef.current) return;
@@ -4146,6 +4195,7 @@ function GraphViewInternal({
     const { nodes: layoutNodes, edges: layoutEdges } = useGraphLayout({
         projection: workspaceProjection,
         messages: graphComputationMessages,
+        attachedThreadMessages: graphMessages as Message[],
         summaries: scopedSummaries,
         measuredNodeHeights,
         layoutMode,
@@ -4162,7 +4212,6 @@ function GraphViewInternal({
         constrainedCommitFiltering: Boolean(subgraphRootNodeId),
         pinnedCommitShas,
         hiddenThreadRootIds: hiddenThreadRootIdsForLayout,
-        collapsedOrchestrationControllerIds,
         layoutCacheScopeKey: graphLayoutCacheScopeKey,
         visibleNodeSections,
         insights: graphLayoutInsights,
@@ -4172,7 +4221,6 @@ function GraphViewInternal({
         resetNonce: graphResetNonce,
         onToggleSummary: toggleSummaryDisabled,
         onToggleCollapse: handleToggleCollapse,
-        onToggleOrchestrationCollapse: handleToggleOrchestrationCollapse,
         onFocus: handleFocus,
         onOpenThread: handleFocusThread,
         onSelect: handleSelect,
@@ -5018,19 +5066,7 @@ function GraphViewInternal({
 
         try {
             const message = messageMap.get(nodeId) ?? null;
-            const orchestrationCancel = await cancelOrchestrationTargetIfNeeded({
-                targetNodeId: nodeId,
-                messages: messages as Message[],
-                reason: 'cancelled',
-            }, {
-                recordOrchestrationEvent: (runId, assistantNodeId, eventType, payload) => (
-                    agentClient.recordOrchestrationEvent(runId, assistantNodeId, eventType, payload)
-                ),
-                stopAgent: (assistantNodeId) => agentClient.stopAgent(assistantNodeId),
-            });
-            if (!orchestrationCancel.handled) {
-                await agentClient.stopAgent(nodeId);
-            }
+            await agentClient.stopAgent(nodeId);
             agentRunManager.dispatch(nodeId, {
                 type: 'terminal',
                 status: 'cancelled',
@@ -5067,65 +5103,6 @@ function GraphViewInternal({
             toast.error('Unable to stop agent', 'The stop request did not complete.');
         }
     }, [messageMap, messages, queryClient, selectedWorkspaceId, toast]);
-
-    const handleRetryOrchestrationRun = useCallback(async (assistantNodeId: string) => {
-        if (!selectedWorkspaceId) return;
-
-        const retryTarget = resolveOrchestrationRunRetryTarget(messages as Message[], assistantNodeId);
-        if (!retryTarget.ok) {
-            toast.error('Cannot retry orchestration run', 'This node is not a failed orchestration run.');
-            return;
-        }
-
-        try {
-            const [authToken, journalEvents] = await Promise.all([
-                getOptionalCloudAuthToken(),
-                agentClient.replayAgentRunEvents(retryTarget.target.orchestratorRunId, 0),
-            ]);
-            const retryInput = buildOrchestrationRunRetryInput({
-                messages: messages as Message[],
-                target: retryTarget.target,
-                journalEvents,
-                authToken,
-                retryReason: 'manual_retry',
-            });
-            if (!retryInput.ok) {
-                toast.error('Cannot retry orchestration run', `Retry context is unavailable: ${retryInput.reason}.`);
-                return;
-            }
-
-            const retryResult = await retryOrchestrationRun(retryInput.input, {
-                newId: () => crypto.randomUUID(),
-                persistLocalNode: (workspaceId, nodeId, message) => agentClient.upsertLocalNode(workspaceId, nodeId, message),
-                startAgentRun: (payload) => agentClient.startAgentRun(payload as any),
-                recordOrchestrationEvent: (runId, assistantNodeIdForEvent, eventType, payload) => (
-                    agentClient.recordOrchestrationEvent(runId, assistantNodeIdForEvent, eventType, payload)
-                ),
-                seedAgentRun: (message) => agentRunManager.seed(message),
-                dispatchAgentRun: (nodeId, event) => agentRunManager.dispatch(nodeId, event as any),
-            });
-            const createdMessages = [retryResult.userNode, retryResult.assistantNode];
-            queryClient.setQueryData<Message[]>(['messages', selectedWorkspaceId], (current) => {
-                const existing = current ?? [];
-                const createdIds = new Set(createdMessages.map((message) => message.id));
-                return [...existing.filter((message) => !createdIds.has(message.id)), ...createdMessages]
-                    .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
-            });
-            queryClient.setQueryData(
-                localNodeKeys.workspace(selectedWorkspaceId),
-                (current) => upsertMessagesIntoLocalNodeCache(current as any, selectedWorkspaceId, createdMessages, {
-                    syncStatus: 'local_only',
-                    finalizedAt: Math.floor(Date.now() / 1000),
-                })
-            );
-            void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(selectedWorkspaceId) });
-            void scheduleMessagesRefreshWhenGraphIdle(queryClient, selectedWorkspaceId, { reason: 'retry-orchestration-run' });
-            toast.success('Retry started', 'A replacement orchestration run was created.');
-        } catch (error) {
-            console.error('[GraphView] Failed to retry orchestration run:', error);
-            toast.error('Unable to retry orchestration run', error instanceof Error ? error.message : 'The retry request did not complete.');
-        }
-    }, [messages, queryClient, selectedWorkspaceId, toast]);
 
     const getBulkDeleteTargets = useCallback((selectedIds: Set<string>) => {
         if (selectedIds.size === 0) return [] as string[];
@@ -6532,8 +6509,8 @@ function GraphViewInternal({
                         <MessageHighlightActiveProvider activeHighlightId={activeHighlightPreview?.id ?? null}>
                             <GraphHoverProjectionContext.Provider
                                 value={{
-                                    messages: messages as Message[],
-                                    summaries: summaries as Summary[],
+                                    messages: visibleGraphMessages as Message[],
+                                    summaries: scopedSummaries as Summary[],
                                     disabledSummaryIds: disabledSummaryIdsSet,
                                 }}
                             >
@@ -6746,7 +6723,7 @@ function GraphViewInternal({
                                     visibleNodeSections={visibleNodeSections}
                                     onToggleNodeSection={handleToggleNodeSection}
                                     nodeSectionCounts={graphNodeSectionCounts}
-	                                    messages={graphMessages as Message[]}
+	                                    messages={scopedGraphMessages as Message[]}
 	                                    agentLabelsById={agentLabelsById}
 	                                />
 	                            </>
@@ -6819,8 +6796,39 @@ function GraphViewInternal({
                 onViewSubgraph={handleViewSubgraph}
                 onConvertSubgraphToThread={handleConvertSubgraphToThread}
                 onShareNode={handleShareNode}
-                onRetryOrchestrationRun={handleRetryOrchestrationRun}
             />
+            <AlertDialog
+                open={pendingShareNodeId !== null}
+                onOpenChange={(open) => {
+                    if (!open && !isEnablingShare) setPendingShareNodeId(null);
+                }}
+            >
+                <AlertDialogContent className="sm:max-w-[460px]">
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Enable cloud sync to share?</AlertDialogTitle>
+                        <AlertDialogDescription className="space-y-2">
+                            <span className="block">
+                                Agentree will upload this workspace's conversation graph and keep future changes synced.
+                            </span>
+                            <span className="block">
+                                The shared link is unlisted, not private: anyone with the link can view the selected node and its descendants.
+                            </span>
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel disabled={isEnablingShare}>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            disabled={isEnablingShare}
+                            onClick={(event) => {
+                                event.preventDefault();
+                                void confirmWorkspaceSyncAndShare();
+                            }}
+                        >
+                            {isEnablingShare ? 'Syncing workspace…' : 'Enable sync & share'}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
             <AddCommitDialog
                 open={!!addCommitTargetId}
                 workspaceId={selectedWorkspaceId}

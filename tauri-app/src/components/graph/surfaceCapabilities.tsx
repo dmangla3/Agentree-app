@@ -1,4 +1,5 @@
 import { createContext, useContext, type ReactNode } from 'react';
+import type { MessageTimestampMode } from '../../lib/messageTimestamp';
 
 export type AgentreeSurfaceMode = 'app' | 'public-share';
 
@@ -35,20 +36,29 @@ export const publicShareCapabilities: AgentreeSurfaceCapabilities = {
 type AgentreeSurfaceContextValue = {
   surfaceMode: AgentreeSurfaceMode;
   capabilities: AgentreeSurfaceCapabilities;
+  messageTimestampMode?: MessageTimestampMode;
 };
 
 const AgentreeSurfaceContext = createContext<AgentreeSurfaceContextValue>({
   surfaceMode: 'app',
   capabilities: appSurfaceCapabilities,
+  messageTimestampMode: 'time-only',
 });
 
 export function AgentreeSurfaceProvider({
   surfaceMode,
   capabilities,
+  messageTimestampMode,
   children,
 }: AgentreeSurfaceContextValue & { children: ReactNode }) {
   return (
-    <AgentreeSurfaceContext.Provider value={{ surfaceMode, capabilities }}>
+    <AgentreeSurfaceContext.Provider
+      value={{
+        surfaceMode,
+        capabilities,
+        messageTimestampMode: messageTimestampMode ?? 'time-only',
+      }}
+    >
       {children}
     </AgentreeSurfaceContext.Provider>
   );

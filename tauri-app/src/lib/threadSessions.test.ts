@@ -34,7 +34,8 @@ describe('threadSessions', () => {
       updatedAt: '2026-05-28T00:01:00.000Z',
       baseCommitSha: ' abc123 ',
       firstMessageId: ' user-1 ',
-      source: 'user',
+      parentThreadId: ' parent-thread ',
+      source: 'delegation',
     })).toEqual({
       id: 'thread-1',
       workspaceId: 'workspace-1',
@@ -44,7 +45,8 @@ describe('threadSessions', () => {
       updatedAt: '2026-05-28T00:01:00.000Z',
       baseCommitSha: 'abc123',
       firstMessageId: 'user-1',
-      source: 'user',
+      parentThreadId: 'parent-thread',
+      source: 'delegation',
     });
   });
 

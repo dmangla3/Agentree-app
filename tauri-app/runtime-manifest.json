@@ -8,11 +8,11 @@
       "platforms": {
         "linux-x86_64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-node-22.21.1-linux-x86_64.tar.gz",
-          "sha256": "21bc6c8b6660dd7ad6d773cbdb0850969a0a177205d144dcd7a432c789b21f34"
+          "sha256": "013749946ebed4cab5c1518bb383a48ed14563cdc6cceed1a1bc408153847c42"
         },
         "darwin-aarch64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-node-22.21.1-darwin-aarch64.tar.gz",
-          "sha256": "220de86939bd6daec27754ad3be49972e0ad1db1f09dbd34b7ae8dc4e463b916"
+          "sha256": "9b22239b30d07872cd7462f0d4e527e93b6714324342b3c4b3b6c6ac954319a9"
         }
       }
     },
@@ -21,11 +21,11 @@
       "platforms": {
         "linux-x86_64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-claude-sdk-0.3.207-linux-x86_64.tar.gz",
-          "sha256": "8c0588ae5bf2e894a0bba23823c9bb3ea4600f037a74bfa7203715571536aae7"
+          "sha256": "d0f25e47968df176d4c98051d5529d900dbfc93ab40ca5cb1f962475201b0f8b"
         },
         "darwin-aarch64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-claude-sdk-0.3.207-darwin-aarch64.tar.gz",
-          "sha256": "d4346c6f6f025be9a4647996b9cc438c3d9523414b01ac0569f1f5f673c74167"
+          "sha256": "b58aab455d9d3b4b070ab139328e0a2c50ec921cd2671910f9f0367c9d65bbe2"
         }
       }
     },
@@ -34,11 +34,11 @@
       "platforms": {
         "linux-x86_64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-codex-0.144.1-linux-x86_64.tar.gz",
-          "sha256": "75df0c40bd71a714e730519d8586e78c5cb9e1a843ef932ffab5417dcf9df59d"
+          "sha256": "a92e81b23f122951de8624d9b3fffd6146b171e436b672c3ed293a4acdab1d40"
         },
         "darwin-aarch64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-codex-0.144.1-darwin-aarch64.tar.gz",
-          "sha256": "0b565dd72db10eb9992a2fd246bb11f49cd127c3dca06d7ff15f68298ca85c01"
+          "sha256": "770de8467a8f9af55f8a2122d554f9f5b5af2a0bce575e8e9adcdc8e9151eb71"
         }
       }
     }

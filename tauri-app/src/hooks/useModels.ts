@@ -1,5 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
-import { RuntimeCatalogModel } from '../stores/modelStore';
+import type { RuntimeCatalogModel } from '../stores/modelStore';
 import { runtimeModels } from '../lib/runtimeModels';
 
 const catalogModelFromRuntimeModel = (model: typeof runtimeModels[number]): RuntimeCatalogModel => ({
@@ -29,13 +28,6 @@ const catalogModelFromRuntimeModel = (model: typeof runtimeModels[number]): Runt
     supportsImageInput: model.capabilities.inputModalities.includes('image'),
 });
 
-export const useModels = () => {
-    return useQuery<RuntimeCatalogModel[]>({
-        queryKey: ['models'],
-        queryFn: async () => {
-            return runtimeModels.map(catalogModelFromRuntimeModel);
-        },
-        initialData: runtimeModels.map(catalogModelFromRuntimeModel),
-        staleTime: Infinity,
-    });
-};
+export const runtimeCatalogModels = runtimeModels.map(catalogModelFromRuntimeModel);
+
+export const useModels = () => ({ data: runtimeCatalogModels });

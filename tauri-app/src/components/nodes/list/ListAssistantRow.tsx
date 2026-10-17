@@ -20,6 +20,7 @@ import { agentClient } from '../../../lib/agentClient';
 import type { Message } from '../../../stores/workspaceStore';
 import type { GraphSnapshot } from '../../../hooks/useGraphSnapshot';
 import { getAssistantIdentityParts, getAssistantReasoningEffortFromExecutionData } from '../../../lib/assistantIdentity';
+import { getNodeFailureReason, isNodeFailureStatus } from '../../../lib/nodeFailureReason';
 
 const CACHE_REPAIR_LIST_ACTIVE_STATUS_REFRESH_COOLDOWN_MS = 15_000;
 const cacheRepairListRefreshAtByMessageId = new Map<string, number>();
@@ -123,6 +124,9 @@ export const ListAssistantRow = memo(({
   const runtimeStatus = isTerminalNodeStatus(resolvedStatus) ? resolvedStatus : (runStatus || resolvedStatus);
   const displayStatus = serverTerminalStatus ?? runtimeStatus;
   const workspaceId = entity.message?.workspaceId ?? selectedWorkspaceId ?? null;
+  const failureReason = isNodeFailureStatus(displayStatus)
+    ? getNodeFailureReason(entity.message?.execution_data, entity.preview)
+    : null;
 
   useEffect(() => {
     if (!messageId || !workspaceId) return;
@@ -201,7 +205,7 @@ export const ListAssistantRow = memo(({
 
       {/* Content */}
       <p className={cn("text-sm font-medium whitespace-normal break-words leading-snug min-w-0 line-clamp-2", ROLE_COLORS.assistant_message.text)}>
-        {entity.preview}
+        {failureReason ?? entity.preview}
       </p>
 
       {/* Compact metrics & icons at bottom */}

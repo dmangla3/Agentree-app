@@ -5,7 +5,6 @@ use axum::{
     Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use keyring::Entry;
 use once_cell::sync::Lazy;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,19 +57,20 @@ pub fn get_auth_callback_base_url() -> String {
 #[tauri::command]
 #[specta::specta]
 pub fn save_agentree_cloud_session(session_json: String) -> Result<(), String> {
-    Entry::new(CLOUD_AUTH_KEYCHAIN_SERVICE, CLOUD_AUTH_KEYCHAIN_ACCOUNT)
-        .map_err(|error| format!("failed to open cloud auth vault: {}", error))?
-        .set_password(&session_json)
+    let entry =
+        crate::secure_store::open_entry(CLOUD_AUTH_KEYCHAIN_SERVICE, CLOUD_AUTH_KEYCHAIN_ACCOUNT)
+            .map_err(|error| format!("failed to open cloud auth vault: {}", error))?;
+    crate::secure_store::set_password_verified(&entry, &session_json)
         .map_err(|error| format!("failed to save cloud auth session: {}", error))
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn read_agentree_cloud_session() -> Result<Option<String>, String> {
-    match Entry::new(CLOUD_AUTH_KEYCHAIN_SERVICE, CLOUD_AUTH_KEYCHAIN_ACCOUNT)
-        .map_err(|error| format!("failed to open cloud auth vault: {}", error))?
-        .get_password()
-    {
+    let entry =
+        crate::secure_store::open_entry(CLOUD_AUTH_KEYCHAIN_SERVICE, CLOUD_AUTH_KEYCHAIN_ACCOUNT)
+            .map_err(|error| format!("failed to open cloud auth vault: {}", error))?;
+    match entry.get_password() {
         Ok(value) => Ok(Some(value)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(format!("failed to read cloud auth session: {}", error)),
@@ -80,10 +80,10 @@ pub fn read_agentree_cloud_session() -> Result<Option<String>, String> {
 #[tauri::command]
 #[specta::specta]
 pub fn clear_agentree_cloud_session() -> Result<(), String> {
-    match Entry::new(CLOUD_AUTH_KEYCHAIN_SERVICE, CLOUD_AUTH_KEYCHAIN_ACCOUNT)
-        .map_err(|error| format!("failed to open cloud auth vault: {}", error))?
-        .delete_credential()
-    {
+    let entry =
+        crate::secure_store::open_entry(CLOUD_AUTH_KEYCHAIN_SERVICE, CLOUD_AUTH_KEYCHAIN_ACCOUNT)
+            .map_err(|error| format!("failed to open cloud auth vault: {}", error))?;
+    match entry.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(format!("failed to clear cloud auth session: {}", error)),
     }

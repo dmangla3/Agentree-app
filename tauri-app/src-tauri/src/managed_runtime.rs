@@ -147,11 +147,94 @@ pub fn installed_component_dir(
     component: &str,
 ) -> Result<Option<PathBuf>, String> {
     let dir = component_install_dir(app, component)?;
-    if dir.join(INSTALL_MARKER).is_file() {
+    if dir.join(INSTALL_MARKER).is_file() && validate_component_install(component, &dir).is_ok() {
         Ok(Some(dir))
     } else {
         Ok(None)
     }
+}
+
+fn claude_native_executable_relative_path(platform: &str) -> Result<PathBuf, String> {
+    let (package, executable) = match platform {
+        "linux-x86_64" => ("claude-agent-sdk-linux-x64", "claude"),
+        "linux-aarch64" => ("claude-agent-sdk-linux-arm64", "claude"),
+        "darwin-aarch64" => ("claude-agent-sdk-darwin-arm64", "claude"),
+        "darwin-x86_64" => ("claude-agent-sdk-darwin-x64", "claude"),
+        "windows-x86_64" => ("claude-agent-sdk-win32-x64", "claude.exe"),
+        other => return Err(format!("Unsupported Claude runtime platform: {}", other)),
+    };
+    Ok(PathBuf::from("node_modules")
+        .join("@anthropic-ai")
+        .join(package)
+        .join(executable))
+}
+
+fn validate_component_install_for_platform(
+    component: &str,
+    install_dir: &Path,
+    platform: &str,
+) -> Result<(), String> {
+    let required = match component {
+        COMPONENT_NODE => vec![(node_binary_path(install_dir), true)],
+        COMPONENT_CODEX => vec![(codex_binary_path(install_dir), true)],
+        COMPONENT_CLAUDE_SDK => vec![
+            (
+                install_dir
+                    .join("node_modules")
+                    .join("@anthropic-ai")
+                    .join("claude-agent-sdk")
+                    .join("sdk.mjs"),
+                false,
+            ),
+            (
+                install_dir.join(claude_native_executable_relative_path(platform)?),
+                true,
+            ),
+        ],
+        other => return Err(format!("Unknown managed runtime component: {}", other)),
+    };
+    for (path, must_be_executable) in required {
+        if !path.is_file() {
+            return Err(format!(
+                "Managed {} runtime is incomplete: required file {} is missing.",
+                component,
+                path.display()
+            ));
+        }
+        #[cfg(unix)]
+        if must_be_executable {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path)
+                .map_err(|error| format!("Could not inspect {}: {}", path.display(), error))?
+                .permissions()
+                .mode();
+            if mode & 0o111 == 0 {
+                return Err(format!(
+                    "Managed {} runtime is incomplete: required file {} is not executable.",
+                    component,
+                    path.display()
+                ));
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = must_be_executable;
+    }
+    Ok(())
+}
+
+pub fn validate_component_install(component: &str, install_dir: &Path) -> Result<(), String> {
+    validate_component_install_for_platform(component, install_dir, current_platform_key())
+}
+
+pub fn component_install_validation_error(
+    app: &AppHandle,
+    component: &str,
+) -> Result<Option<String>, String> {
+    let dir = component_install_dir(app, component)?;
+    if !dir.join(INSTALL_MARKER).is_file() {
+        return Ok(None);
+    }
+    Ok(validate_component_install(component, &dir).err())
 }
 
 fn platform_archive(component: &str) -> Result<&'static RuntimePlatformArchive, String> {
@@ -234,7 +317,13 @@ fn download_and_install(app: &AppHandle, component: &str) -> Result<PathBuf, Str
             },
         );
     };
-    install_archive_from_reader(response, &archive.sha256, &install_dir, &progress)?;
+    install_archive_from_reader_validated(
+        response,
+        &archive.sha256,
+        &install_dir,
+        &progress,
+        &|staged| validate_component_install(component, staged),
+    )?;
     Ok(install_dir)
 }
 
@@ -247,6 +336,22 @@ pub fn install_archive_from_reader(
     expected_sha256: &str,
     install_dir: &Path,
     progress: &dyn Fn(u64),
+) -> Result<(), String> {
+    install_archive_from_reader_validated(
+        &mut reader,
+        expected_sha256,
+        install_dir,
+        progress,
+        &|_| Ok(()),
+    )
+}
+
+fn install_archive_from_reader_validated(
+    mut reader: impl Read,
+    expected_sha256: &str,
+    install_dir: &Path,
+    progress: &dyn Fn(u64),
+    validate: &dyn Fn(&Path) -> Result<(), String>,
 ) -> Result<(), String> {
     let parent = install_dir
         .parent()
@@ -289,6 +394,8 @@ pub fn install_archive_from_reader(
     let decoder = flate2::read::GzDecoder::new(spool_file);
     let mut tar_archive = tar::Archive::new(decoder);
     unpack_archive_skipping_apple_metadata(&mut tar_archive, staging.path())?;
+
+    validate(staging.path())?;
 
     let staged = staging.keep();
     // The marker travels inside the staged tree so the swap below is the
@@ -643,6 +750,74 @@ mod tests {
                 .expect_err("checksum mismatch must fail");
 
         assert!(error.contains("Checksum mismatch"));
+        assert!(!install_dir.exists());
+    }
+
+    #[test]
+    fn claude_install_validation_requires_platform_native_executable() {
+        let root = tempfile::tempdir().unwrap();
+        let install_dir = root.path().join("claude-sdk").join("0.3.207");
+        let sdk_dir = install_dir
+            .join("node_modules")
+            .join("@anthropic-ai")
+            .join("claude-agent-sdk");
+        std::fs::create_dir_all(&sdk_dir).unwrap();
+        std::fs::write(sdk_dir.join("sdk.mjs"), b"export {};").unwrap();
+
+        let error = validate_component_install_for_platform(
+            COMPONENT_CLAUDE_SDK,
+            &install_dir,
+            "linux-x86_64",
+        )
+        .expect_err("the SDK wrapper alone must not count as a complete runtime");
+        assert!(error.contains("claude-agent-sdk-linux-x64"));
+
+        let native = install_dir
+            .join("node_modules")
+            .join("@anthropic-ai")
+            .join("claude-agent-sdk-linux-x64")
+            .join("claude");
+        std::fs::create_dir_all(native.parent().unwrap()).unwrap();
+        std::fs::write(&native, b"#!fake").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        validate_component_install_for_platform(
+            COMPONENT_CLAUDE_SDK,
+            &install_dir,
+            "linux-x86_64",
+        )
+        .expect("wrapper plus native executable should be complete");
+    }
+
+    #[test]
+    fn semantic_validation_rejects_incomplete_archive_before_install() {
+        let archive = build_archive(&[(
+            "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
+            b"export {};".as_slice(),
+        )]);
+        let checksum = sha256_hex(&archive);
+        let root = tempfile::tempdir().unwrap();
+        let install_dir = root.path().join("claude-sdk").join("0.3.207");
+
+        let error = install_archive_from_reader_validated(
+            archive.as_slice(),
+            &checksum,
+            &install_dir,
+            &|_| {},
+            &|staged| {
+                validate_component_install_for_platform(
+                    COMPONENT_CLAUDE_SDK,
+                    staged,
+                    "linux-x86_64",
+                )
+            },
+        )
+        .expect_err("an incomplete but checksummed archive must be rejected");
+
+        assert!(error.contains("claude-agent-sdk-linux-x64"));
         assert!(!install_dir.exists());
     }
 }

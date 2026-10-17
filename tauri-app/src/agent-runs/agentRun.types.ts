@@ -69,9 +69,9 @@ export type AgentRunEvent =
   | { type: 'setup_progress'; progress: string; status?: AgentRunStatus | null }
   | { type: 'status'; status: AgentRunStatus; progress?: string | null }
   | { type: 'native_event'; event: Record<string, any> }
-  // `content` updates the assistant card answer; `providerItemId` scopes the
-  // corresponding timeline message row in the work log.
-  | { type: 'content'; content: string; appendedText?: string | null; providerItemId?: string | null; streamSeq?: number | null; timestamp?: number | null }
+  // `content` updates the assistant card answer. `timelineContent` is an exact
+  // provider-item snapshot, while `appendedText` supports delta-only providers.
+  | { type: 'content'; content: string; appendedText?: string | null; timelineContent?: string; providerItemId?: string | null; streamSeq?: number | null; timestamp?: number | null }
   | { type: 'content_final'; content: string; providerItemId?: string | null; streamSeq?: number | null; timestamp?: number | null }
   | { type: 'timeline_event'; event: any }
   | { type: 'execution_data'; patch: Record<string, any> }

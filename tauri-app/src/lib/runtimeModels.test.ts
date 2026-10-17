@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { runtimeModels } from './runtimeModels';
+import {
+  getReasoningEffortSortOrder,
+  reasoningEffortsByProvider,
+  runtimeModels,
+} from './runtimeModels';
 
 describe('runtimeModels', () => {
   it('only exposes current Codex model families in the selector catalog', () => {
@@ -38,7 +42,7 @@ describe('runtimeModels', () => {
       'gpt-5.6-terra',
       'gpt-5.6-luna',
     ]);
-    expect(variants).toHaveLength(12);
+    expect(variants).toHaveLength(18);
     expect(variants.every((model) => model.cliArgs.includes(`--model ${model.modelId}`))).toBe(true);
   });
 
@@ -51,10 +55,12 @@ describe('runtimeModels', () => {
 
     expect([...claudeFamilies.keys()]).toEqual([
       'claude:claude-fable-5',
+      'claude:claude-opus-5',
       'claude:claude-opus-4-8',
-      'claude:claude-sonnet-4-6',
-      'claude:claude-haiku-4-5-20251001',
+      'claude:claude-sonnet-5',
     ]);
+    expect([...claudeFamilies.keys()]).not.toContain('claude:claude-sonnet-4-6');
+    expect([...claudeFamilies.keys()]).not.toContain('claude:claude-haiku-4-5-20251001');
   });
 
   it('uses the canonical Fable 5 model ID for Claude selector runs', () => {
@@ -70,6 +76,19 @@ describe('runtimeModels', () => {
     expect(fable?.cliArgs).toContain('--effort high');
   });
 
+  it('uses the canonical Claude Opus 5 ID and current Claude CLI opus alias', () => {
+    const opus = runtimeModels.find((model) => model.key === 'claude:claude-opus-5:high');
+
+    expect(opus).toMatchObject({
+      modelId: 'claude-opus-5',
+      label: 'Claude Opus 5 High',
+      familyLabel: 'Claude Opus 5',
+      reasoningEffort: 'high',
+    });
+    expect(opus?.cliArgs).toContain('--model opus');
+    expect(opus?.cliArgs).toContain('--effort high');
+  });
+
   it('uses the canonical Opus 4.8 model ID instead of the generic opus alias', () => {
     const opus = runtimeModels.find((model) => model.key === 'claude:claude-opus-4-8:high');
 
@@ -78,6 +97,63 @@ describe('runtimeModels', () => {
       label: 'Claude Opus 4.8 High',
     });
     expect(opus?.cliArgs).toContain('--model claude-opus-4-8');
+  });
+
+  it('uses the canonical Claude Sonnet 5 ID with the current sonnet CLI alias', () => {
+    const sonnet = runtimeModels.find((model) => model.key === 'claude:claude-sonnet-5:high');
+
+    expect(sonnet).toMatchObject({
+      modelId: 'claude-sonnet-5',
+      label: 'Claude Sonnet 5 High',
+      familyLabel: 'Claude Sonnet 5',
+      reasoningEffort: 'high',
+    });
+    expect(sonnet?.cliArgs).toContain('--model sonnet');
+    expect(sonnet?.cliArgs).toContain('--effort high');
+  });
+
+  it('exposes every provider-specific effort in order for every text model family', () => {
+    expect(reasoningEffortsByProvider.claude.map((effort) => effort.id)).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+    ]);
+    expect(reasoningEffortsByProvider.codex.map((effort) => effort.id)).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultra',
+    ]);
+
+    for (const provider of ['claude', 'codex'] as const) {
+      const expectedEfforts = reasoningEffortsByProvider[provider].map((effort) => effort.id);
+      const textModels = runtimeModels.filter((model) => (
+        model.provider === provider && model.capabilities.reasoningEffort
+      ));
+      const effortsByFamily = new Map<string, typeof textModels>();
+      for (const model of textModels) {
+        effortsByFamily.set(model.familyKey, [...(effortsByFamily.get(model.familyKey) ?? []), model]);
+      }
+
+      for (const familyModels of effortsByFamily.values()) {
+        expect(familyModels.map((model) => model.reasoningEffort)).toEqual(expectedEfforts);
+        expect(familyModels.map((model) => model.effortDescription)).toEqual(
+          reasoningEffortsByProvider[provider].map((effort) => effort.description)
+        );
+      }
+    }
+  });
+
+  it('sorts each provider effort using its complete catalog order', () => {
+    expect(getReasoningEffortSortOrder('claude', 'xhigh')).toBe(3);
+    expect(getReasoningEffortSortOrder('claude', 'max')).toBe(4);
+    expect(getReasoningEffortSortOrder('codex', 'max')).toBe(4);
+    expect(getReasoningEffortSortOrder('codex', 'ultra')).toBe(5);
+    expect(getReasoningEffortSortOrder('codex', 'unknown')).toBe(99);
   });
 
   it('exposes GPT Image 2 as one image-capable Codex model without reasoning variants', () => {

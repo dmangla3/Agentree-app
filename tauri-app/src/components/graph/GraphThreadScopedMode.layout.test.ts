@@ -17,7 +17,9 @@ describe('GraphView thread scoped mode wiring', () => {
     expect(source).toContain('applySubgraphThreadConversions({');
     expect(source).toContain('messages: graphProjectionMessages,');
     expect(source).toContain('commits: visibleSnapshotCommits,');
-    expect(source).toContain('const workspaceProjection = useWorkspaceProjection(\n        graphProjectionMessages,\n        scopedSummaries,');
+    expect(source).toMatch(
+      /const workspaceProjection = useWorkspaceProjection\(\s*graphProjectionMessages,\s*scopedSummaries,/,
+    );
     expect(source).toContain('messages: graphComputationMessages');
     expect(source).toContain('hiddenThreadRootIdsForLayout');
     expect(source).toContain('onOpenThread: handleFocusThread');
@@ -37,5 +39,19 @@ describe('GraphView thread scoped mode wiring', () => {
     expect(source).toContain('const shouldShowThreadBands = !threadGraphScope.isThreadScoped && !activeGraphRenderHold;');
     expect(source).toContain('if (!shouldShowThreadBands) return [];');
     expect(source).toContain('threadRootIdByMessageId={threadGraphScope.isThreadScoped ? new Map() : threadRootIndex.threadRootIdByMessageId}');
+  });
+
+  it('limits chronological hovercard navigation to the visible graph scope', () => {
+    const source = readGraphViewSource();
+
+    expect(source).toContain('messages: visibleGraphMessages as Message[]');
+    expect(source).toContain('summaries: scopedSummaries as Summary[]');
+  });
+
+  it('counts agents from the visible thread instead of the entire workspace', () => {
+    const source = readGraphViewSource();
+
+    expect(source).toContain('messages={scopedGraphMessages as Message[]}');
+    expect(source).not.toContain('messages={graphMessages as Message[]}');
   });
 });

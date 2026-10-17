@@ -21,6 +21,7 @@ vi.mock('../lib/agentClient', () => ({
   agentClient: {
     hasRuntime: vi.fn(() => true),
     upsertLocalNode: vi.fn(async () => undefined),
+    localFirstUpdateNodeTags: vi.fn(),
     listLocalNodes: vi.fn(async () => []),
     hydrateLocalNodesFromServer: vi.fn(async () => 0),
   },
@@ -48,9 +49,13 @@ const message = (overrides: Partial<Message> = {}): Message => ({
 });
 
 describe('useUpdateTags', () => {
-  it('updates local cache without waiting for server tag sync in local runtime', async () => {
+  it('updates local cache through the local domain command without calling the server', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    });
     vi.mocked(agentClient.hasRuntime).mockReturnValue(true);
-    vi.mocked(api.post).mockReturnValue(new Promise(() => undefined) as any);
+    vi.mocked(agentClient.localFirstUpdateNodeTags).mockResolvedValue(message({ tags: ['important'] }));
     const { Wrapper, queryClient } = createQueryWrapper();
     queryClient.setQueryData<Message[]>(['messages', 'workspace-1'], [message()]);
 
@@ -65,12 +70,14 @@ describe('useUpdateTags', () => {
       });
     });
 
-    expect(api.post).toHaveBeenCalledWith('/messages/message-1/tags', { tags: ['important'] });
-    expect(queryClient.getQueryData<Message[]>(['messages', 'workspace-1'])?.[0].tags).toEqual(['important']);
-    expect(agentClient.upsertLocalNode).toHaveBeenCalledWith(
+    expect(agentClient.localFirstUpdateNodeTags).toHaveBeenCalledWith(
       'workspace-1',
       'message-1',
-      expect.objectContaining({ tags: ['important'] })
+      ['important'],
+      'add',
     );
+    expect(api.post).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData<Message[]>(['messages', 'workspace-1'])?.[0].tags).toEqual(['important']);
+    expect(agentClient.upsertLocalNode).not.toHaveBeenCalled();
   });
 });

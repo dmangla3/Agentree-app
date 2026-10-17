@@ -127,6 +127,25 @@ export const parseLocalNode = (row: LocalNodeRecord): LocalNodeMessage | null =>
   try {
     const payload = JSON.parse(row.payload);
     if (!payload || typeof payload.id !== 'string') return null;
+    if (payload.role === 'assistant' && (typeof payload.agent_id !== 'string' || !payload.agent_id.trim())) {
+      const executionData = payload.execution_data;
+      const meta = executionData?.meta;
+      const persistedAgentId = executionData?.agent_id ?? meta?.agent_id ?? meta?.selected_agent_id;
+      if (typeof persistedAgentId === 'string' && persistedAgentId.trim()) {
+        payload.agent_id = persistedAgentId.trim();
+      } else {
+        const provider = meta?.provider;
+        const model = meta?.provider_model ?? payload.llmModel;
+        const effort = meta?.provider_reasoning_effort;
+        if (
+          typeof provider === 'string' && provider.trim()
+          && typeof model === 'string' && model.trim()
+          && typeof effort === 'string' && effort.trim()
+        ) {
+          payload.agent_id = `${provider.trim()}:${model.trim()}:${effort.trim()}`;
+        }
+      }
+    }
     const controlledByNodeId = row.controlledByNodeId ?? payload.controlledByNodeId ?? payload.controlled_by_node_id ?? null;
     if (controlledByNodeId && typeof controlledByNodeId === 'string') {
       payload.controlledByNodeId = controlledByNodeId;

@@ -1,4 +1,4 @@
-import { useState, useEffect, createContext, useContext, ReactNode } from 'react';
+import { useState, useEffect, createContext, useContext, useCallback, useMemo, ReactNode } from 'react';
 import { cn } from '../lib/utils';
 import { X, CheckCircle2, AlertCircle, Info, ExternalLink } from 'lucide-react';
 import { Button } from '../../@/components/ui/button';
@@ -69,22 +69,27 @@ export function useToastHelpers() {
 export function ToastProvider({ children }: { children: ReactNode }) {
     const [toasts, setToasts] = useState<Toast[]>([]);
 
-    const addToast = (toast: Omit<Toast, 'id'>) => {
+    const addToast = useCallback((toast: Omit<Toast, 'id'>) => {
         const id = Math.random().toString(36).slice(2, 9);
         setToasts((prev) => [...prev, { ...toast, id }]);
         return id;
-    };
+    }, []);
 
-    const removeToast = (id: string) => {
+    const removeToast = useCallback((id: string) => {
         setToasts((prev) => prev.filter((t) => t.id !== id));
-    };
+    }, []);
 
-    const clearAll = () => {
+    const clearAll = useCallback(() => {
         setToasts([]);
-    };
+    }, []);
+
+    const value = useMemo(
+        () => ({ toasts, addToast, removeToast, clearAll }),
+        [toasts, addToast, removeToast, clearAll]
+    );
 
     return (
-        <ToastContext.Provider value={{ toasts, addToast, removeToast, clearAll }}>
+        <ToastContext.Provider value={value}>
             {children}
             <ToastContainer toasts={toasts} onRemove={removeToast} />
         </ToastContext.Provider>

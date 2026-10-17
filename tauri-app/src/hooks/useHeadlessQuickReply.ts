@@ -79,6 +79,7 @@ export function useHeadlessQuickReply() {
     replyParentId: string;
     prompt: string;
     messages: Message[];
+    onMessagesCreated?: (messages: Message[]) => void;
   }) => {
     const prompt = input.prompt.trim();
     if (!prompt) return;
@@ -132,13 +133,14 @@ export function useHeadlessQuickReply() {
         base,
         workspaces: workspaces as Workspace[],
         selectedLoginProfileId: selectedLoginProfile?.id ?? null,
-        startAgentRun: (payload) => agentClient.startAgentRun(payload as any),
+        startAgentRun: (payload) => agentClient.launchAgentMessage(payload as any),
         getAccessToken: getOptionalCloudAuthToken,
         seedAgentRun: (message) => agentRunManager.seed(message),
         dispatchAgentRun: (nodeId, event) => agentRunManager.dispatch(nodeId, event as any),
         persistLocalNode: (workspaceId, nodeId, message) => agentClient.upsertLocalNode(workspaceId, nodeId, message),
         onMessagesCreated: (createdMessages) => {
           materializeHeadlessQuickReplyMessages(queryClient, input.workspaceId, createdMessages);
+          input.onMessagesCreated?.(createdMessages);
         },
         onAssistantMessageCreated: (message) => {
           assistantNodeId = message.id;

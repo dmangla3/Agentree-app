@@ -75,8 +75,8 @@ claude_out="$(run_scrubbed CLAUDE_CODE_OAUTH_TOKEN=sk-ant-smoke-invalid \
   "$node_bin" "$sdk_dir/claude-agent-sdk-adapter.mjs" --permission-mode bypassPermissions hi 2>&1)"
 set -e
 echo "$claude_out" | tail -2
-if echo "$claude_out" | grep -qE "ERR_MODULE_NOT_FOUND|Cannot find package"; then
-  echo "error: Claude adapter cannot resolve the SDK from the managed runtime" >&2
+if echo "$claude_out" | grep -qE "ERR_MODULE_NOT_FOUND|Cannot find package|Native CLI binary .* not found"; then
+  echo "error: Claude adapter cannot resolve the SDK and its native CLI from the managed runtime" >&2
   exit 1
 fi
 if ! echo "$claude_out" | grep -q '"type":"provider_stop"'; then

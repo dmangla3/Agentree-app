@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import type { ProjectedNodeEntity } from '../domain/workspaceProjection';
 import type { GraphNodeDetailLevel } from '../lib/graphNodeDetailLevel';
+import type { AttachedThreadLink } from '../lib/graphSubgraphThreads';
 
 export type ViewLayout = 'chat' | 'graph' | 'list' | 'hovercard';
 
@@ -34,11 +35,13 @@ export interface SharedNodeProps {
   layout: ViewLayout;
   graphNodeHeight?: number;
   heightKey?: string;
+  attachedThreads?: AttachedThreadLink[];
   onMeasureHeight?: (id: string, height: number) => void;
   hoverCardContent?: ReactNode;
   controlledHoverCardKey?: string | null;
   onControlledHoverCardDismiss?: () => void;
   onFocus: (metrics?: FocusTriggerMetrics) => void;
+  onOpenThread?: (threadRootId: string) => void;
   onSelect: (multi: boolean) => void;
   onContextMenu: (e: React.MouseEvent) => void;
 }

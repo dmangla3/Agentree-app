@@ -1,4 +1,3 @@
-use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::HashMap;
@@ -19,6 +18,7 @@ const KEYCHAIN_SERVICE: &str = "com.agentree.agentree.login-profiles";
 const LIVE_CHECK_TIMEOUT: Duration = Duration::from_secs(45);
 const CODEX_DEVICE_LOGIN_URL: &str = "https://auth.openai.com/codex/device";
 const CODEX_LOGIN_START_TIMEOUT: Duration = Duration::from_secs(20);
+const CODEX_GLOBAL_INSTRUCTION_FILES: [&str; 2] = ["AGENTS.override.md", "AGENTS.md"];
 const CLAUDE_LOGIN_START_TIMEOUT: Duration = Duration::from_secs(20);
 const CLAUDE_LOGIN_PENDING_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const CLAUDE_LOGIN_CODE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -159,16 +159,6 @@ fn file_secret_path(account: &str) -> Result<PathBuf, String> {
         .join(safe_account))
 }
 
-fn write_file_secret(account: &str, secret: &str) -> Result<(), String> {
-    let path = file_secret_path(account)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| "could not resolve login profile secret directory".to_string())?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("failed to create login profile secret directory: {}", error))?;
-    write_restricted_file(&path, secret)
-}
-
 fn read_file_secret(account: &str) -> Result<String, String> {
     let path = file_secret_path(account)?;
     fs::read_to_string(&path).map_err(|error| {
@@ -195,45 +185,43 @@ fn delete_file_secret(account: &str) -> Result<(), String> {
 
 impl CredentialVault for KeyringCredentialVault {
     fn set_secret(&self, account: &str, secret: &str) -> Result<(), String> {
-        let keyring_result = Entry::new(KEYCHAIN_SERVICE, account)
-            .map_err(|error| error.to_string())?
-            .set_password(secret)
-            .map_err(|error| error.to_string());
-        write_file_secret(account, secret)?;
-        keyring_result.or(Ok(()))
+        let entry = crate::secure_store::open_entry(KEYCHAIN_SERVICE, account)?;
+        crate::secure_store::set_password_verified(&entry, secret)?;
+        delete_file_secret(account)
     }
 
     fn get_secret(&self, account: &str) -> Result<String, String> {
-        let keyring_result = Entry::new(KEYCHAIN_SERVICE, account)
-            .map_err(|error| error.to_string())?
-            .get_password()
-            .map_err(|error| error.to_string());
-        match keyring_result {
-            Ok(secret) => Ok(secret),
-            Err(_) => read_file_secret(account),
+        let entry = crate::secure_store::open_entry(KEYCHAIN_SERVICE, account)?;
+        match entry.get_password() {
+            Ok(secret) => {
+                delete_file_secret(account)?;
+                Ok(secret)
+            }
+            Err(keyring::Error::NoEntry) => {
+                let secret = read_file_secret(account)?;
+                crate::secure_store::set_password_verified(&entry, &secret)?;
+                delete_file_secret(account)?;
+                Ok(secret)
+            }
+            Err(error) => Err(error.to_string()),
         }
     }
 
     fn delete_secret(&self, account: &str) -> Result<(), String> {
-        let entry = Entry::new(KEYCHAIN_SERVICE, account).map_err(|error| error.to_string())?;
+        let entry = crate::secure_store::open_entry(KEYCHAIN_SERVICE, account)?;
         let keyring_result = match entry.delete_credential() {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                let message = error.to_string();
-                let lower = message.to_lowercase();
-                if lower.contains("no entry")
-                    || lower.contains("no matching entry")
-                    || lower.contains("not found")
-                    || lower.contains("could not be found")
-                {
-                    Ok(())
-                } else {
-                    Err(message)
-                }
-            }
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(error.to_string()),
         };
-        delete_file_secret(account)?;
-        keyring_result
+        let file_result = delete_file_secret(account);
+        match (keyring_result, file_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(keyring_error), Err(file_error)) => Err(format!(
+                "{}; also failed to delete legacy credential file: {}",
+                keyring_error, file_error
+            )),
+        }
     }
 }
 
@@ -750,6 +738,19 @@ fn materialize_codex_home(
 }
 
 fn prepare_codex_profile_home(app_cache_dir: &Path, profile_id: &str) -> Result<PathBuf, String> {
+    let user_codex_home = user_codex_home();
+    prepare_codex_profile_home_with_instructions(
+        app_cache_dir,
+        profile_id,
+        user_codex_home.as_deref(),
+    )
+}
+
+fn prepare_codex_profile_home_with_instructions(
+    app_cache_dir: &Path,
+    profile_id: &str,
+    user_codex_home: Option<&Path>,
+) -> Result<PathBuf, String> {
     let codex_home = codex_profile_home(app_cache_dir, profile_id);
     fs::create_dir_all(&codex_home)
         .map_err(|error| format!("failed to create profile CODEX_HOME: {}", error))?;
@@ -757,7 +758,65 @@ fn prepare_codex_profile_home(app_cache_dir: &Path, profile_id: &str) -> Result<
         &codex_home.join("config.toml"),
         "cli_auth_credentials_store = \"file\"\n",
     )?;
+    if let Some(user_codex_home) = user_codex_home {
+        sync_global_codex_instructions(user_codex_home, &codex_home)?;
+    }
     Ok(codex_home)
+}
+
+fn user_codex_home() -> Option<PathBuf> {
+    std::env::var("CODEX_HOME")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+}
+
+fn sync_global_codex_instructions(
+    user_codex_home: &Path,
+    managed_codex_home: &Path,
+) -> Result<(), String> {
+    if user_codex_home == managed_codex_home
+        || matches!(
+            (
+                fs::canonicalize(user_codex_home),
+                fs::canonicalize(managed_codex_home)
+            ),
+            (Ok(user_home), Ok(managed_home)) if user_home == managed_home
+        )
+    {
+        return Ok(());
+    }
+
+    for filename in CODEX_GLOBAL_INSTRUCTION_FILES {
+        let source = user_codex_home.join(filename);
+        let destination = managed_codex_home.join(filename);
+        match fs::read_to_string(&source) {
+            Ok(contents) => write_restricted_file(&destination, &contents)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::remove_file(&destination) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(format!(
+                            "failed to remove stale {}: {}",
+                            destination.display(),
+                            error
+                        ));
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(format!(
+                    "failed to read global Codex instructions {}: {}",
+                    source.display(),
+                    error
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn codex_profile_home(app_cache_dir: &Path, profile_id: &str) -> PathBuf {
@@ -1265,7 +1324,7 @@ fn command_output_with_timeout(command: &mut Command, timeout: Duration) -> Resu
 fn live_check_model(profile: &LoginProfile) -> String {
     explicit_live_check_model(profile).unwrap_or_else(|| {
         if profile.provider == "claude" {
-            "claude-sonnet-4-6".to_string()
+            "claude-sonnet-5".to_string()
         } else {
             "gpt-5.5".to_string()
         }
@@ -2775,6 +2834,18 @@ mod tests {
     }
 
     #[test]
+    fn claude_live_check_uses_current_sonnet_model() {
+        let profile = test_profile(
+            "claude-profile",
+            "claude",
+            "claude_api_key",
+            serde_json::json!({}),
+        );
+
+        assert_eq!(live_check_model(&profile), "claude-sonnet-5");
+    }
+
+    #[test]
     fn codex_chatgpt_session_profile_can_be_created_without_secret() {
         let (_dir, db) = open_test_db();
         let vault = MemoryVault::new();
@@ -3223,6 +3294,103 @@ mod tests {
 
         assert!(materialized.env.contains_key("CODEX_HOME"));
         assert!(materialized.codex_home.unwrap().join("auth.json").exists());
+    }
+
+    #[test]
+    fn codex_profile_home_syncs_global_instruction_files() {
+        let app_cache_dir = tempfile::tempdir().expect("cache");
+        let user_codex_home = tempfile::tempdir().expect("user codex home");
+        fs::write(
+            user_codex_home.path().join("AGENTS.md"),
+            "Personal defaults\n",
+        )
+        .expect("global instructions");
+        fs::write(
+            user_codex_home.path().join("AGENTS.override.md"),
+            "Personal override\n",
+        )
+        .expect("global override");
+
+        let managed_codex_home = prepare_codex_profile_home_with_instructions(
+            app_cache_dir.path(),
+            "profile-codex",
+            Some(user_codex_home.path()),
+        )
+        .expect("managed codex home");
+
+        assert_eq!(
+            fs::read_to_string(managed_codex_home.join("AGENTS.md")).expect("synced instructions"),
+            "Personal defaults\n"
+        );
+        assert_eq!(
+            fs::read_to_string(managed_codex_home.join("AGENTS.override.md"))
+                .expect("synced override"),
+            "Personal override\n"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(managed_codex_home.join("AGENTS.md"))
+                .expect("instruction metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn global_instruction_sync_refreshes_and_removes_stale_files() {
+        let user_codex_home = tempfile::tempdir().expect("user codex home");
+        let managed_codex_home = tempfile::tempdir().expect("managed codex home");
+        fs::write(user_codex_home.path().join("AGENTS.md"), "First version\n")
+            .expect("global instructions");
+        fs::write(
+            managed_codex_home.path().join("AGENTS.override.md"),
+            "Stale override\n",
+        )
+        .expect("stale override");
+
+        sync_global_codex_instructions(user_codex_home.path(), managed_codex_home.path())
+            .expect("initial sync");
+        assert_eq!(
+            fs::read_to_string(managed_codex_home.path().join("AGENTS.md"))
+                .expect("synced instructions"),
+            "First version\n"
+        );
+        assert!(!managed_codex_home
+            .path()
+            .join("AGENTS.override.md")
+            .exists());
+
+        fs::write(user_codex_home.path().join("AGENTS.md"), "Second version\n")
+            .expect("updated instructions");
+        fs::write(
+            user_codex_home.path().join("AGENTS.override.md"),
+            "Current override\n",
+        )
+        .expect("current override");
+        sync_global_codex_instructions(user_codex_home.path(), managed_codex_home.path())
+            .expect("refresh sync");
+        assert_eq!(
+            fs::read_to_string(managed_codex_home.path().join("AGENTS.md"))
+                .expect("refreshed instructions"),
+            "Second version\n"
+        );
+        assert_eq!(
+            fs::read_to_string(managed_codex_home.path().join("AGENTS.override.md"))
+                .expect("refreshed override"),
+            "Current override\n"
+        );
+
+        fs::remove_file(user_codex_home.path().join("AGENTS.md"))
+            .expect("remove global instructions");
+        sync_global_codex_instructions(user_codex_home.path(), managed_codex_home.path())
+            .expect("removal sync");
+        assert!(!managed_codex_home.path().join("AGENTS.md").exists());
+        assert!(managed_codex_home
+            .path()
+            .join("AGENTS.override.md")
+            .exists());
     }
 
     #[test]

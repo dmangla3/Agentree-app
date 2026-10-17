@@ -32,11 +32,15 @@ export const installChatHotPathHelpers = (windowObject = globalThis.window) => {
     document.querySelector('textarea[placeholder^="Ask anything"]') ||
     null;
 
+  const isCancelLabel = (label) => (
+    label === 'Cancel running agent' || label === 'Cancel sending message' || label === 'Cancel'
+  );
+
   const isSendButton = (button, { includeCancel = false } = {}) => {
     if (!button || !visible(button)) return false;
     const label = button.getAttribute('aria-label') || elementText(button);
     if (label === 'Send' || label === 'Edit and run') return true;
-    return includeCancel && (label === 'Cancel sending message' || label === 'Cancel');
+    return includeCancel && isCancelLabel(label);
   };
 
   const findSendButton = ({ includeCancel = false } = {}) => {
@@ -132,6 +136,7 @@ export const installChatHotPathHelpers = (windowObject = globalThis.window) => {
     ensureChatHotPathReady,
     findComposer,
     findSendButton,
+    isCancelLabel,
     hasPromptToken: ({ bodyText = '', chatText = '', label = '' } = {}) => (
       Boolean(label) && (String(bodyText).includes(label) || String(chatText).includes(label))
     ),

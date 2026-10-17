@@ -16,6 +16,7 @@ interface SidebarProps {
     selectedWorkspaceRepoPath: string | null;
     worktreePolicyOpen?: boolean;
     onWorktreePolicyOpenChange?: (open: boolean) => void;
+    allowContinueWithDefaultPolicy?: boolean;
 }
 
 export function Sidebar({
@@ -26,6 +27,7 @@ export function Sidebar({
     selectedWorkspaceRepoPath,
     worktreePolicyOpen,
     onWorktreePolicyOpenChange,
+    allowContinueWithDefaultPolicy,
 }: SidebarProps) {
     const { user } = useAuthStore();
     const navItems = [
@@ -76,6 +78,7 @@ export function Sidebar({
                     repoPath={selectedWorkspaceRepoPath}
                     open={worktreePolicyOpen}
                     onOpenChange={onWorktreePolicyOpenChange}
+                    allowContinueWithDefaultPolicy={allowContinueWithDefaultPolicy}
                 />
 
                 <button

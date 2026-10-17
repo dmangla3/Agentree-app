@@ -42,89 +42,6 @@ const messages: Message[] = [
   makeMessage({ id: 'assistant-2', role: 'assistant', parentId: 'user-2', content: 'Second reply.' }, 3),
 ];
 
-const makeOrchestrationMessages = (): Message[] => [
-  makeMessage({
-    id: 'parent-user',
-    role: 'user',
-    parentId: null,
-    content: 'Initial request.',
-  }, 0),
-  makeMessage({
-    id: 'parent-assistant',
-    role: 'assistant',
-    parentId: 'parent-user',
-    content: 'Initial answer.',
-  }, 1),
-  makeMessage({
-    id: 'root-user',
-    role: 'user',
-    parentId: 'parent-assistant',
-    content: 'Coordinate this work.',
-    execution_data: { meta: { node_kind: 'orchestrator' } },
-  }, 2),
-  makeMessage({
-    id: 'assistant-orchestrator',
-    role: 'assistant',
-    parentId: 'root-user',
-    content: 'Orchestration controller.',
-    aiLabel: 'Security Review',
-    llmModel: 'gpt-5.5',
-    execution_data: { meta: { node_kind: 'orchestrator' } },
-  }, 3),
-  makeMessage({
-    id: 'child-user-1',
-    role: 'user',
-    parentId: 'root-user',
-    content: 'Plan one.',
-    controlled_by_node_id: 'assistant-orchestrator',
-  }, 4),
-  makeMessage({
-    id: 'child-assistant-1',
-    role: 'assistant',
-    parentId: 'child-user-1',
-    content: 'Plan result.',
-    status: 'running',
-    controlled_by_node_id: 'assistant-orchestrator',
-    execution_data: { meta: { orchestration_decision_id: 'planner-1' } },
-  }, 5),
-  makeMessage({
-    id: 'child-user-2',
-    role: 'user',
-    parentId: 'child-assistant-1',
-    content: 'Review plan.',
-    controlled_by_node_id: 'assistant-orchestrator',
-  }, 6),
-  makeMessage({
-    id: 'child-assistant-2',
-    role: 'assistant',
-    parentId: 'child-user-2',
-    content: 'Review result.',
-    status: 'completed',
-    controlled_by_node_id: 'assistant-orchestrator',
-    execution_data: {
-      meta: {
-        orchestration_decision_id: 'reviewer-1',
-      },
-    },
-  }, 7),
-  makeMessage({
-    id: 'child-user-3',
-    role: 'user',
-    parentId: 'child-assistant-2',
-    content: 'Fix issue.',
-    controlled_by_node_id: 'assistant-orchestrator',
-  }, 8),
-  makeMessage({
-    id: 'child-assistant-3',
-    role: 'assistant',
-    parentId: 'child-user-3',
-    content: 'Fix failed.',
-    status: 'failed_runtime',
-    controlled_by_node_id: 'assistant-orchestrator',
-    execution_data: { meta: { orchestration_decision_id: 'fixer-1' } },
-  }, 9),
-];
-
 const callbacks = {
   onToggleSummary: vi.fn(),
   onToggleCollapse: vi.fn(),
@@ -139,7 +56,6 @@ const renderLayout = (
   contextPathMessageIds: string[],
   inputMessages: Message[] = messages,
   layoutCacheScopeKey = 'default',
-  collapsedOrchestrationControllerIds = new Set<string>(),
 ) => {
   const projection = buildWorkspaceProjection({
     messages: inputMessages,
@@ -165,7 +81,6 @@ const renderLayout = (
     keepDescendants: true,
     constrainedCommitFiltering: false,
     pinnedCommitShas: new Set(),
-    collapsedOrchestrationControllerIds,
     visibleNodeSections: new Set(['conversation', 'commits']),
     insights: [],
     showInsightsInGraph: false,
@@ -329,207 +244,36 @@ describe('useGraphLayout visual reuse', () => {
     expect(result.current.nodes).toBe(firstNodes);
   });
 
-  it('renders one expanded orchestration hull that represents the hidden controller around controlled messages', () => {
-    const orchestrationMessages = makeOrchestrationMessages();
-
-    const { result } = renderHook(() => renderLayout(
-      'assistant-orchestrator',
-      ['parent-user', 'parent-assistant', 'root-user', 'assistant-orchestrator'],
-      orchestrationMessages,
-      'orchestration-hull',
-    ));
-
-    const hulls = result.current.nodes.filter((node) => node.type === 'orchestration_hull');
-    expect(hulls).toHaveLength(1);
-    expect(result.current.nodes.filter((node) => node.type === 'orchestration_node')).toHaveLength(0);
-    expect(result.current.nodes.find((node) => node.id === 'assistant-orchestrator')?.hidden).toBe(true);
-    expect((hulls[0].data as any).controllerMessageId).toBe('assistant-orchestrator');
-    expect((hulls[0].data as any).memberIds).toEqual(expect.arrayContaining([
-      'child-user-1',
-      'child-assistant-1',
-      'child-user-2',
-      'child-assistant-2',
-      'child-user-3',
-      'child-assistant-3',
-    ]));
-    expect((hulls[0].data as any).memberIds).not.toContain('assistant-orchestrator');
-    expect((hulls[0].data as any).memberIds).not.toContain('parent-assistant');
-    expect(result.current.edges.some((edge) => edge.source === 'assistant-orchestrator' || edge.target === 'assistant-orchestrator')).toBe(false);
-    expect(result.current.edges.some((edge) => (edge.data as any)?.relationship === 'orchestration-control')).toBe(false);
-  });
-
-  it('reroutes legacy expanded orchestration runs away from the hidden controller', () => {
-    const orchestrationMessages = makeOrchestrationMessages().map((message) => (
-      message.id === 'child-user-1'
-        ? { ...message, parentId: 'assistant-orchestrator' }
-        : message
-    ));
-
-    const { result } = renderHook(() => renderLayout(
-      'assistant-orchestrator',
-      ['parent-user', 'parent-assistant', 'root-user', 'assistant-orchestrator'],
-      orchestrationMessages,
-      'orchestration-hull-legacy-parent',
-    ));
-
-    expect(result.current.nodes.find((node) => node.id === 'assistant-orchestrator')?.hidden).toBe(true);
-    expect(result.current.edges).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        source: 'root-user',
-        target: 'child-user-1',
-        data: expect.objectContaining({
-          relationship: 'conversation',
-          routedThroughOrchestration: true,
-          orchestrationControllerMessageId: 'assistant-orchestrator',
-        }),
-      }),
-    ]));
-    expect(result.current.edges.some((edge) => edge.source === 'assistant-orchestrator' || edge.target === 'assistant-orchestrator')).toBe(false);
-  });
-
-  it('renders collapsed orchestration as a graph node with hidden member messages', () => {
-    const orchestrationMessages = makeOrchestrationMessages();
-
-    const { result } = renderHook(() => renderLayout(
-      'assistant-orchestrator',
-      ['parent-user', 'parent-assistant', 'root-user', 'assistant-orchestrator'],
-      orchestrationMessages,
-      'orchestration-hull-collapsed',
-      new Set(['assistant-orchestrator']),
-    ));
-
-    expect(result.current.nodes.filter((node) => node.type === 'orchestration_hull')).toHaveLength(0);
-    const orchestrationNodes = result.current.nodes.filter((node) => node.type === 'orchestration_node');
-    expect(orchestrationNodes).toHaveLength(1);
-    const orchestrationNode = orchestrationNodes[0];
-    expect(orchestrationNode).toBeTruthy();
-    expect(orchestrationNode?.id).toBe('orchestration:assistant-orchestrator');
-    expect(orchestrationNode?.hidden).not.toBe(true);
-    expect(orchestrationNode?.style?.width).toBe(200);
-    expect((orchestrationNode?.data as any).label).toBe('Security Review');
-    expect((orchestrationNode?.data as any).miniChildren).toEqual([
-      expect.objectContaining({ label: 'Plan result.', status: 'running' }),
-      expect.objectContaining({ label: 'Review result.', status: 'completed' }),
-      expect.objectContaining({ label: 'Fix failed.', status: 'failed_runtime' }),
-    ]);
-    expect((orchestrationNode?.data as any).miniAnchors).toEqual([
-      expect.objectContaining({ id: 'orchestration-root:assistant_message:assistant-orchestrator' }),
-    ]);
-    expect((orchestrationNode?.data as any).miniEdges).toEqual([
-      expect.objectContaining({ sourceId: 'orchestration-root:assistant_message:assistant-orchestrator', targetId: 'assistant_message:child-assistant-1' }),
-      expect.objectContaining({ sourceId: 'assistant_message:child-assistant-1', targetId: 'assistant_message:child-assistant-2' }),
-      expect.objectContaining({ sourceId: 'assistant_message:child-assistant-2', targetId: 'assistant_message:child-assistant-3' }),
-    ]);
-    expect((orchestrationNode?.data as any).activeOrchestrationRuns).toBe(1);
-    expect((orchestrationNode?.data as any).completedOrchestrationRuns).toBe(1);
-    expect((orchestrationNode?.data as any).failedOrchestrationRuns).toBe(1);
-    expect((orchestrationNode?.data as any).cancelledOrchestrationRuns).toBe(0);
-    expect((orchestrationNode?.data as any).totalOrchestrationRuns).toBe(3);
-
-    for (const messageId of [
-      'assistant-orchestrator',
-      'child-user-1',
-      'child-assistant-1',
-      'child-user-2',
-      'child-assistant-2',
-      'child-user-3',
-      'child-assistant-3',
-    ]) {
-      expect(result.current.nodes.find((node) => node.id === messageId)?.hidden).toBe(true);
-    }
-
-    expect(result.current.nodes.find((node) => node.id === 'root-user')?.hidden).not.toBe(true);
-    expect(result.current.nodes.find((node) => node.id === 'parent-assistant')?.hidden).not.toBe(true);
-    expect(result.current.nodes.find((node) => node.id === 'hull:turn:root-user')?.hidden).not.toBe(true);
-    expect(result.current.edges).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        source: 'root-user',
-        target: 'orchestration:assistant-orchestrator',
-        sourceHandle: 'bottom-source',
-      }),
-    ]));
-  });
-
-  it('refreshes collapsed orchestration mini data through the visual-only path', () => {
-    const orchestrationMessages = makeOrchestrationMessages();
-    const completedMessages = orchestrationMessages.map((message) => (
-      message.id === 'child-assistant-1'
-        ? {
-          ...message,
-          content: 'Plan completed.',
-          status: 'completed' as const,
-          updatedAt: isoAt(20),
-        }
-        : message
-    ));
-
-    const { result, rerender } = renderHook(
-      ({ inputMessages }) => renderLayout(
-        'assistant-orchestrator',
-        ['parent-user', 'parent-assistant', 'root-user', 'assistant-orchestrator'],
-        inputMessages,
-        'orchestration-visual-refresh',
-        new Set(['assistant-orchestrator']),
-      ),
-      { initialProps: { inputMessages: orchestrationMessages } },
-    );
-
-    const initialNode = result.current.nodes.find((node) => node.type === 'orchestration_node');
-    expect((initialNode?.data as any).activeOrchestrationRuns).toBe(1);
-    expect((initialNode?.data as any).completedOrchestrationRuns).toBe(1);
-    expect((initialNode?.data as any).miniChildren).toEqual(expect.arrayContaining([
-      expect.objectContaining({ label: 'Plan result.', status: 'running' }),
-    ]));
-
-    rerender({ inputMessages: completedMessages });
-
-    const refreshedNode = result.current.nodes.find((node) => node.type === 'orchestration_node');
-    expect((refreshedNode?.data as any).activeOrchestrationRuns).toBe(0);
-    expect((refreshedNode?.data as any).completedOrchestrationRuns).toBe(2);
-    expect((refreshedNode?.data as any).miniChildren).toEqual(expect.arrayContaining([
-      expect.objectContaining({ label: 'Plan completed.', status: 'completed' }),
-    ]));
-  });
-
-  it('shows cancelled generated assistant turns as collapsed orchestration dots', () => {
-    const inputMessages: Message[] = [
-      makeMessage({ id: 'parent-user', role: 'user', parentId: null, content: 'Initial request.' }, 0),
-      makeMessage({ id: 'parent-assistant', role: 'assistant', parentId: 'parent-user', content: 'Initial answer.' }, 1),
+  it('renders delegated agents as ordinary thread message nodes', () => {
+    const delegatedMessages: Message[] = [
+      makeMessage({ id: 'task', role: 'user', parentId: null, content: 'Coordinate this task.' }, 0),
+      makeMessage({ id: 'controller', role: 'assistant', parentId: 'task', content: 'Delegating.' }, 1),
       makeMessage({
-        id: 'orchestration-user',
+        id: 'worker-task',
         role: 'user',
-        parentId: 'parent-assistant',
-        content: '#reviewer',
-        execution_data: { meta: { node_kind: 'orchestrator' } },
+        parentId: 'controller',
+        content: 'Inspect the storage layer.',
+        controlled_by_node_id: 'controller',
       }, 2),
       makeMessage({
-        id: 'generated-assistant',
+        id: 'worker',
         role: 'assistant',
-        parentId: 'orchestration-user',
-        content: 'Security review was cancelled.',
-        status: 'cancelled',
-        execution_data: { meta: { node_kind: 'orchestrator' } },
+        parentId: 'worker-task',
+        content: 'Storage review complete.',
+        controlled_by_node_id: 'controller',
       }, 3),
     ];
 
     const { result } = renderHook(() => renderLayout(
-      'generated-assistant',
-      ['parent-user', 'parent-assistant', 'orchestration-user', 'generated-assistant'],
-      inputMessages,
-      'orchestration-cancelled-generated-dot',
-      new Set(['generated-assistant']),
+      'worker',
+      ['task', 'controller', 'worker-task', 'worker'],
+      delegatedMessages,
+      'delegated-thread',
     ));
 
-    const orchestrationNodes = result.current.nodes.filter((node) => node.type === 'orchestration_node');
-    expect(orchestrationNodes).toHaveLength(1);
-    expect(orchestrationNodes[0].id).toBe('orchestration:generated-assistant');
-    expect((orchestrationNodes[0].data as any).miniChildren).toEqual([
-      expect.objectContaining({ label: 'Security review was cancelled.', status: 'cancelled' }),
-    ]);
-    expect((orchestrationNodes[0].data as any).totalOrchestrationRuns).toBe(1);
-    expect((orchestrationNodes[0].data as any).cancelledOrchestrationRuns).toBe(1);
-    expect(result.current.nodes.find((node) => node.id === 'orchestration-user')?.hidden).not.toBe(true);
-    expect(result.current.nodes.find((node) => node.id === 'generated-assistant')?.hidden).toBe(true);
-    expect(result.current.nodes.find((node) => node.id === 'hull:turn:orchestration-user')?.hidden).not.toBe(true);
+    expect(result.current.nodes.find((node) => node.id === 'worker-task')?.type).toBe('user_message');
+    expect(result.current.nodes.find((node) => node.id === 'worker')?.type).toBe('assistant_message');
+    expect(result.current.nodes.every((node) => !node.type?.includes('orchestration'))).toBe(true);
   });
+
 });

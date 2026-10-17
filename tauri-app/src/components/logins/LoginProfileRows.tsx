@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2,
   CircleGauge,
@@ -9,6 +10,7 @@ import {
   Star,
   Trash2,
 } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '../../../@/components/ui/popover';
 import type { ActiveLoginProfileRun } from '../../lib/agentClient';
 import {
   getLoginProfileAuthTypeLabel,
@@ -53,6 +55,61 @@ const StatusIcon = ({ status }: { status: string }) => {
 };
 
 const formatStatus = (status: string) => status.replace(/_/g, ' ');
+
+const STATUS_MESSAGE_POPOVER_CLOSE_DELAY_MS = 140;
+
+function StatusMessagePopover({ message }: { message: string }) {
+  const [open, setOpen] = useState(false);
+  const closeTimerRef = useRef<number | null>(null);
+
+  const clearCloseTimer = () => {
+    if (closeTimerRef.current === null) return;
+    window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = null;
+  };
+
+  const show = () => {
+    clearCloseTimer();
+    setOpen(true);
+  };
+
+  const scheduleHide = () => {
+    clearCloseTimer();
+    closeTimerRef.current = window.setTimeout(() => {
+      setOpen(false);
+      closeTimerRef.current = null;
+    }, STATUS_MESSAGE_POPOVER_CLOSE_DELAY_MS);
+  };
+
+  useEffect(() => () => clearCloseTimer(), []);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <p
+          className="mt-1 line-clamp-2 min-w-0 cursor-help break-words text-[11px] leading-4 text-muted-foreground [overflow-wrap:anywhere]"
+          onFocus={show}
+          onBlur={scheduleHide}
+          onPointerEnter={show}
+          onPointerLeave={scheduleHide}
+          tabIndex={0}
+        >
+          {message}
+        </p>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="max-h-72 w-[min(28rem,calc(100vw-2rem))] overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-5 select-text [overflow-wrap:anywhere]"
+        onPointerEnter={show}
+        onPointerLeave={scheduleHide}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        side="bottom"
+      >
+        {message}
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 export function LoginProfileRows({
   activeRunsByProfile,
@@ -128,9 +185,7 @@ export function LoginProfileRows({
                   {formatStatus(profile.status)}
                 </span>
                 {profile.statusMessage ? (
-                  <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
-                    {profile.statusMessage}
-                  </p>
+                  <StatusMessagePopover message={profile.statusMessage} />
                 ) : null}
               </div>
 

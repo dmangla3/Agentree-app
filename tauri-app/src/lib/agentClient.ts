@@ -1,12 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { commands as tauriCommands } from '../generated/tauri-bindings';
-import type { ManagedRuntimeDoctorEntry } from '../generated/tauri-bindings';
-import {
-    reportLocalSyncFailure,
-    reportLocalSyncSuccess,
-    shouldSkipLocalSync,
-} from './localSyncDiagnostics';
+import type { ManagedRuntimeDoctorEntry, ThreadSessionPayload } from '../generated/tauri-bindings';
 
 const hasTauriRuntime = () =>
     typeof window !== 'undefined' &&
@@ -341,17 +336,7 @@ export interface LocalCommitGraphSnapshot {
     }>;
 }
 
-export interface ThreadSessionPayload {
-    id: string;
-    workspaceId: string;
-    title?: string | null;
-    status?: 'active' | 'done' | 'archived' | string | null;
-    createdAt?: string | null;
-    updatedAt?: string | null;
-    baseCommitSha?: string | null;
-    firstMessageId?: string | null;
-    source?: 'workspace_default' | 'user' | 'legacy' | string | null;
-}
+export type { ThreadSessionPayload };
 
 export interface StartAgentRunIntent {
     runId: string;
@@ -445,6 +430,65 @@ export interface StartAgentRunResponse {
     branchName: string;
     pid: number | null;
     initialStatus: string;
+}
+
+export interface AgentLaunchRequest {
+    requestId: string;
+    runId: string;
+    workspaceId: string;
+    threadId?: string | null;
+    parentNodeId?: string | null;
+    contextParentNodeId?: string | null;
+    baseNodeId?: string | null;
+    baseCommit: string;
+    userNodeId: string;
+    assistantNodeId: string;
+    userPrompt: string;
+    agentType: string;
+    model?: string | null;
+    reasoningEffort?: string | null;
+    permissionMode?: string;
+    loginProfileId?: string | null;
+    agentId?: string | null;
+    agentName?: string | null;
+    agentCliArgs?: string | null;
+    agentPromptFlag?: string | null;
+    authToken: string;
+    currentUserId?: string | null;
+    traceId?: string | null;
+    contextPolicy?: 'continue' | 'fresh';
+    contextMode?: 'active' | 'none';
+    contextManifest?: Record<string, unknown> | null;
+    modelCapabilities?: Record<string, unknown> | null;
+    threadTitleMode?: 'first_thread_message' | 'none' | null;
+    userNode: Record<string, unknown>;
+    assistantNode: Record<string, unknown>;
+}
+
+export interface AgentLaunchContext {
+    providerThreadStrategy: string;
+    providerThreadStrategyRequested: string;
+    providerContextRoutingMode: string;
+    providerContextRoutingReason: string;
+    parentProvider?: string | null;
+    parentProviderThreadId?: string | null;
+    parentProviderTurnId?: string | null;
+    parentProviderLineageId?: string | null;
+    isBranchFromInterior: boolean;
+    agentreeContextAvailableChars: number;
+    agentreeContextInjectedChars: number;
+}
+
+export interface AgentLaunchResponse {
+    runId: string;
+    userNodeId: string;
+    assistantNodeId: string;
+    worktreePath?: string | null;
+    branchName?: string | null;
+    pid?: number | null;
+    initialStatus: string;
+    existing: boolean;
+    launchContext: AgentLaunchContext;
 }
 
 export interface GitMergePreview {
@@ -736,20 +780,6 @@ export const agentClient = {
     replayAgentRunEvents: async (runId: string, afterSeq = 0): Promise<AgentRunJournalEvent[]> => {
         return await tauriCommands.replayAgentRunEvents(runId, afterSeq);
     },
-    recordOrchestrationEvent: async (
-        runId: string,
-        assistantNodeId: string,
-        eventType: string,
-        payload: unknown
-    ): Promise<number> => {
-        if (!hasTauriRuntime()) return 0;
-        return await tauriCommands.recordOrchestrationEvent(
-            runId,
-            assistantNodeId,
-            eventType,
-            JSON.stringify(payload ?? {})
-        );
-    },
     listLocalNodes: async (workspaceId: string): Promise<LocalNodeRecord[]> => {
         if (!hasTauriRuntime()) return [];
         return await tauriCommands.listLocalNodes(workspaceId) as LocalNodeRecord[];
@@ -795,21 +825,65 @@ export const agentClient = {
         if (!hasTauriRuntime()) return;
         await tauriCommands.upsertLocalNode(workspaceId, nodeId, JSON.stringify(message));
     },
-    createThreadSession: async (payload: ThreadSessionPayload): Promise<ThreadSessionPayload> => {
-        if (!hasTauriRuntime()) return payload;
-        return await (tauriCommands as any).createThreadSession(payload) as ThreadSessionPayload;
+    localFirstUpdateNodeTags: async (
+        workspaceId: string,
+        nodeId: string,
+        tags: string[],
+        action: 'add' | 'remove'
+    ): Promise<unknown> => {
+        const payload = await tauriCommands.localFirstUpdateNodeTags(
+            workspaceId,
+            await currentLocalUserId(),
+            nodeId,
+            tags,
+            action
+        );
+        return JSON.parse(payload);
     },
-    upsertThreadSession: async (payload: ThreadSessionPayload): Promise<ThreadSessionPayload> => {
-        if (!hasTauriRuntime()) return payload;
-        return await (tauriCommands as any).upsertThreadSession(payload) as ThreadSessionPayload;
+    localFirstUpdateNodeHighlight: async (
+        workspaceId: string,
+        nodeId: string,
+        action: 'add' | 'update' | 'delete',
+        highlight: unknown
+    ): Promise<unknown> => {
+        const payload = await tauriCommands.localFirstUpdateNodeHighlight(
+            workspaceId,
+            await currentLocalUserId(),
+            nodeId,
+            action,
+            JSON.stringify(highlight)
+        );
+        return JSON.parse(payload);
+    },
+    localFirstSetNodeCollapsed: async (
+        workspaceId: string,
+        nodeId: string,
+        collapsed: boolean
+    ): Promise<unknown> => {
+        const payload = await tauriCommands.localFirstSetNodeCollapsed(
+            workspaceId,
+            await currentLocalUserId(),
+            nodeId,
+            collapsed
+        );
+        return JSON.parse(payload);
+    },
+    localFirstCreateThreadSession: async (payload: ThreadSessionPayload): Promise<ThreadSessionPayload> => {
+        return await tauriCommands.localFirstCreateThreadSession(
+            await currentLocalUserId(),
+            payload
+        ) as ThreadSessionPayload;
     },
     listThreadSessions: async (workspaceId: string): Promise<ThreadSessionPayload[]> => {
         if (!hasTauriRuntime()) return [];
         return await (tauriCommands as any).listThreadSessions(workspaceId) as ThreadSessionPayload[];
     },
-    deleteThreadSession: async (workspaceId: string, threadId: string): Promise<void> => {
-        if (!hasTauriRuntime()) return;
-        await (tauriCommands as any).deleteThreadSession(workspaceId, threadId);
+    localFirstDeleteThreadSession: async (workspaceId: string, threadId: string): Promise<void> => {
+        await tauriCommands.localFirstDeleteThreadSession(
+            await currentLocalUserId(),
+            workspaceId,
+            threadId
+        );
     },
     importLocalCommits: async (workspaceId: string, commits: LocalCommitImport[], gitRef?: string | null, repoPath?: string | null): Promise<number> => {
         if (!hasTauriRuntime()) return 0;
@@ -901,11 +975,11 @@ export const agentClient = {
         });
     },
     enableWorkspaceCloudBackup: async (workspaceId: string, cloudAccountId: string): Promise<LocalWorkspaceRecord> => {
-        return await invoke<LocalWorkspaceRecord>('enable_workspace_cloud_backup', {
+        return await tauriCommands.enableWorkspaceCloudBackup(
             workspaceId,
-            currentUserId: await currentLocalUserId(),
+            await currentLocalUserId(),
             cloudAccountId,
-        });
+        );
     },
     listLocalDeletedNodeRoots: async (workspaceId: string): Promise<LocalDeletedNodeRootRecord[]> => {
         if (!hasTauriRuntime()) return [];
@@ -915,17 +989,22 @@ export const agentClient = {
         if (!hasTauriRuntime()) return [];
         return await tauriCommands.listLocalDeletedWorkspaceIds();
     },
-    processLocalSyncEvents: async (authToken: string, cloudAccountId: string, limit = 25): Promise<number> => {
+    processLocalSyncEvents: async (
+        authToken: string,
+        cloudAccountId: string,
+        limit = 25,
+        workspaceId: string | null = null,
+        bootstrapOnly = false,
+    ): Promise<number> => {
         if (!hasTauriRuntime()) return 0;
-        if (shouldSkipLocalSync()) return 0;
-        try {
-            const synced = await tauriCommands.processLocalSyncEvents(authToken, await currentLocalUserId(), cloudAccountId, limit);
-            reportLocalSyncSuccess();
-            return synced;
-        } catch (error) {
-            reportLocalSyncFailure(error);
-            throw error;
-        }
+        return await tauriCommands.processLocalSyncEvents(
+            authToken,
+            await currentLocalUserId(),
+            cloudAccountId,
+            workspaceId,
+            bootstrapOnly,
+            limit,
+        );
     },
     startAgentRun: async (intent: StartAgentRunIntent): Promise<StartAgentRunResponse> => {
         const currentUserId = intent.currentUserId ?? await currentLocalUserId();
@@ -939,6 +1018,15 @@ export const agentClient = {
             },
             loginProfileId: intent.loginProfileId ?? null,
         } as any);
+    },
+    launchAgentMessage: async (request: AgentLaunchRequest): Promise<AgentLaunchResponse> => {
+        const currentUserId = request.currentUserId ?? await currentLocalUserId();
+        return await tauriCommands.launchAgentMessage({
+            ...request,
+            currentUserId,
+            contextManifest: request.contextManifest ?? {},
+            modelCapabilities: request.modelCapabilities ?? {},
+        } as any) as AgentLaunchResponse;
     },
     listLoginProfiles: async (): Promise<LoginProfile[]> => {
         if (!hasTauriRuntime()) return [];

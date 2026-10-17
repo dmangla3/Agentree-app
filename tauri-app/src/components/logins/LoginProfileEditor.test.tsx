@@ -73,6 +73,41 @@ describe('LoginProfileEditor', () => {
     expect(getByPlaceholderText('sk-...')).toBeTruthy();
   });
 
+  it('labels Codex authentication options as ChatGPT subscription and API key', () => {
+    const { getByText, queryByText } = render(
+      <LoginProfileEditor
+        open
+        provider="codex"
+        profile={null}
+        isSaving={false}
+        error={null}
+        onOpenChange={vi.fn()}
+        onSave={vi.fn()}
+      />
+    );
+
+    expect(getByText('ChatGPT subscription')).toBeTruthy();
+    expect(getByText('API key')).toBeTruthy();
+    expect(queryByText('ChatGPT session')).toBeNull();
+  });
+
+  it('labels Claude authentication options as Claude subscription and API key', () => {
+    const { getByText } = render(
+      <LoginProfileEditor
+        open
+        provider="claude"
+        profile={null}
+        isSaving={false}
+        error={null}
+        onOpenChange={vi.fn()}
+        onSave={vi.fn()}
+      />
+    );
+
+    expect(getByText('Claude subscription')).toBeTruthy();
+    expect(getByText('API key')).toBeTruthy();
+  });
+
   it('hides advanced config for new common login types', () => {
     const { queryByLabelText } = render(
       <LoginProfileEditor

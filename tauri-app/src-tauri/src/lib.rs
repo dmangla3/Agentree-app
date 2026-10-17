@@ -82,11 +82,13 @@ fn greet(name: &str) -> String {
 use agents::AgentState;
 use db::TelemetryDb;
 use merge_review::MergeReviewState;
+#[cfg(test)]
 use specta_typescript::Typescript;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri_specta::{collect_commands, Builder as SpectaBuilder, ErrorHandlingMode};
 
+mod agent_launch;
 mod agents;
 mod artifacts;
 mod auth_callback;
@@ -108,6 +110,8 @@ mod metric_kit;
 mod provider_skills;
 mod runtime_readiness;
 mod runtime_scripts;
+mod secure_store;
+mod thread_control;
 pub mod types;
 mod worktree_config;
 
@@ -220,7 +224,6 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             db::get_session_snapshot,
             db::get_agent_run_ledger,
             db::replay_agent_run_events,
-            db::record_orchestration_event,
             db::list_local_nodes,
             db::list_local_insights,
             db::list_local_insight_candidates,
@@ -228,11 +231,13 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             db::local_first_dismiss_insight,
             db::record_local_insight_feedback,
             db::hydrate_local_nodes_from_server,
-            db::create_thread_session,
-            db::upsert_thread_session,
+            db::local_first_create_thread_session,
             db::list_thread_sessions,
-            db::delete_thread_session,
+            db::local_first_delete_thread_session,
             db::upsert_local_node,
+            db::local_first_update_node_tags,
+            db::local_first_update_node_highlight,
+            db::local_first_set_node_collapsed,
             db::import_local_commits,
             db::list_local_commit_graph,
             db::repair_local_commit_graph,
@@ -250,6 +255,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             db::list_local_deleted_workspace_ids,
             db::process_local_sync_events,
             agents::start_agent_run,
+            agent_launch::launch_agent_message,
             agents::stop_agent,
             agents::steer_agent_run,
             agents::get_agent_run_state,
@@ -313,7 +319,6 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             mcp::set_mcp_auth_token,
             mcp::set_mcp_workspace_id,
             mcp::get_mcp_server_url,
-            mcp::resolve_orchestration_mcp_request,
             composer_attachments::save_composer_attachment,
             auth_callback::ensure_auth_callback_server_started,
             auth_callback::get_auth_callback_base_url,
@@ -326,6 +331,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
         ])
 }
 
+#[cfg(test)]
 fn export_specta_bindings(builder: &SpectaBuilder<tauri::Wry>) {
     let bindings_path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/generated/tauri-bindings.ts");
@@ -333,16 +339,30 @@ fn export_specta_bindings(builder: &SpectaBuilder<tauri::Wry>) {
         std::fs::create_dir_all(parent).expect("failed to create Tauri Specta bindings directory");
     }
     builder
-        .export(Typescript::default(), bindings_path)
+        .export(Typescript::default(), &bindings_path)
         .expect("failed to export Tauri Specta bindings");
+
+    let generated = std::fs::read_to_string(&bindings_path)
+        .expect("failed to read generated Tauri Specta bindings");
+    let normalized = normalize_generated_typescript(&generated);
+    if normalized != generated {
+        std::fs::write(&bindings_path, normalized)
+            .expect("failed to normalize generated Tauri Specta bindings");
+    }
+}
+
+#[cfg(test)]
+fn normalize_generated_typescript(generated: &str) -> String {
+    let mut normalized = generated
+        .trim_end_matches(|character| character == '\r' || character == '\n')
+        .to_owned();
+    normalized.push('\n');
+    normalized
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let specta_builder = specta_builder();
-
-    #[cfg(debug_assertions)]
-    export_specta_bindings(&specta_builder);
 
     let mut builder = tauri::Builder::default();
     #[cfg(target_os = "macos")]
@@ -530,6 +550,7 @@ pub fn run() {
 
                 crate::app_log!("[PERF][Setup] Starting MCP server...");
                 mcp::start_mcp_server(app.handle().clone());
+                agent_launch::start_agent_launch_recovery(app.handle().clone());
                 crate::app_log!(
                     "[PERF][Setup] MCP server started, total setup time: {:?}",
                     start.elapsed()
@@ -548,7 +569,24 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "run `npm run bindings:tauri` explicitly"]
     fn export_tauri_specta_bindings() {
         export_specta_bindings(&specta_builder());
+    }
+
+    #[test]
+    fn generated_typescript_has_one_trailing_newline() {
+        assert_eq!(
+            normalize_generated_typescript("export type Example = {};\n\n"),
+            "export type Example = {};\n"
+        );
+        assert_eq!(
+            normalize_generated_typescript("export type Example = {};\r\n"),
+            "export type Example = {};\n"
+        );
+        assert_eq!(
+            normalize_generated_typescript("export type Example = {};"),
+            "export type Example = {};\n"
+        );
     }
 }

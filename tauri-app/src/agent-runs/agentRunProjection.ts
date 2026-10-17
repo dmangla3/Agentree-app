@@ -15,6 +15,12 @@ const progressText: Record<string, string> = {
   error: 'Failed',
 };
 
+const cleanNodeId = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+};
+
 /**
  * Convert an actor snapshot into the projected message shape consumed by
  * existing selectors/components.
@@ -44,7 +50,10 @@ export const projectAgentRunToProjectedMessage = (
     ...base,
     id: snapshot.nodeId,
     workspaceId: snapshot.workspaceId ?? base.workspaceId ?? '',
-    parentId: snapshot.parentId ?? base.parentId ?? null,
+    // Hydration adapters historically used an empty string when parent data
+    // was not present. Never let that transient placeholder detach a running
+    // assistant from the durable/seeded user node.
+    parentId: cleanNodeId(snapshot.parentId) ?? cleanNodeId(base.parentId) ?? null,
     role: snapshot.role ?? base.role ?? 'assistant',
     agent_id: snapshot.agentId ?? base.agent_id ?? null,
     content: snapshot.content,

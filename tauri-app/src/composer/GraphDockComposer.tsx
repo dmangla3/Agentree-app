@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
-import { Bot, Check, ChevronDown, CornerDownRight, FileText, GitBranchIcon, GitCommitHorizontal, History, Loader2, Minus, Pencil, Plus, Puzzle, RotateCcw, Search, Send, Shield, Square, Workflow, X } from 'lucide-react';
+import { Check, ChevronDown, CornerDownRight, FileText, GitBranchIcon, GitCommitHorizontal, History, Loader2, Minus, Pencil, Plus, Puzzle, RotateCcw, Search, Send, Shield, Square, Workflow, X } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useShallow } from 'zustand/react/shallow';
 import { buildComposerDraftKey, useWorkspaceStore, type Message, type Workspace } from '../stores/workspaceStore';
@@ -73,7 +73,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../../@/components/ui/dropdown-menu';
-import { Popover, PopoverContent, PopoverTrigger } from '../../@/components/ui/popover';
+import { Popover, PopoverAnchor, PopoverContent } from '../../@/components/ui/popover';
 import {
   sendHeadlessComposerMessage,
 } from './headlessComposerSend';
@@ -90,7 +90,6 @@ import { TemplateMentionTextarea } from '../components/composer/TemplateMentionT
 import {
   getActiveTemplateMention,
   getTemplateMentionText,
-  promptIncludesOrchestrationTemplate,
   type ActiveTemplateMention,
 } from '../lib/composerTemplateMentions';
 
@@ -98,6 +97,7 @@ const GRAPH_DOCK_PROMPT_DRAFT_DEBOUNCE_MS = 300;
 
 type ContextPolicy = 'continue' | 'fresh';
 type ComposerTargetMode = 'reply' | 'new-thread';
+type ModelPickerTarget = { kind: 'replace'; agentId: string } | { kind: 'add' };
 type EditUserMessageEventDetail = { message?: Message };
 interface ActiveFileMention {
   start: number;
@@ -322,11 +322,10 @@ export function GraphDockComposer() {
   const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
   const [contextPolicy, setContextPolicy] = useState<ContextPolicy>('continue');
   const [permissionMode, setPermissionMode] = useState<ComposerPermissionMode>(DEFAULT_COMPOSER_PERMISSION_MODE);
-  const [orchestrationMode, setOrchestrationMode] = useState(false);
   const [selectedBaseCommit, setSelectedBaseCommit] = useState<SelectedGraphBaseCommit | null>(null);
   const [baseCommitSearch, setBaseCommitSearch] = useState('');
   const [isBasePickerOpen, setIsBasePickerOpen] = useState(false);
-  const [isAgentPickerOpen, setIsAgentPickerOpen] = useState(false);
+  const [modelPickerTarget, setModelPickerTarget] = useState<ModelPickerTarget | null>(null);
   const [selectedMergeContextParentId, setSelectedMergeContextParentId] = useState<string | null>(null);
   const [selectedContextStartId, setSelectedContextStartId] = useState<string | null>(null);
   const [selectedAgentRunCounts, setSelectedAgentRunCounts] = useState<ComposerAgentRunCounts>({});
@@ -818,9 +817,6 @@ export function GraphDockComposer() {
       .slice(0, 8);
   }, [activeTemplateMention, orchestrationTemplates]);
   const isBaseChoicesLoading = localRefsQuery.isLoading || trackedRefsQuery.isLoading || gitRefSnapshotQuery.isLoading || lazyCommitsQuery.isLoading || baseCommitCandidatesQuery.isLoading || baseCommitAncestorsQuery.isLoading;
-  const modelSelectorLabel = selectedRunTotal > 1
-    ? `${selectedRunTotal} runs`
-    : agent?.name ?? 'Choose model';
   const footerStatusText = error ?? (isSteeringRunningAssistant ? 'Steer the running agent' : '');
   const dockControlButtonClass = cn(
     'group/control flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-[hsl(var(--app-border)/0.78)]',
@@ -1002,10 +998,7 @@ export function GraphDockComposer() {
     setPromptText(value);
     const nextHasContent = value.trim().length > 0;
     setPromptHasContent((current) => (current === nextHasContent ? current : nextHasContent));
-    if (promptIncludesOrchestrationTemplate(value, orchestrationTemplates)) {
-      setOrchestrationMode(true);
-    }
-  }, [orchestrationTemplates]);
+  }, []);
 
   const savePromptDraft = useCallback((value: string) => {
     setComposerDraft(selectedWorkspaceId, value, composerDraftTargetId);
@@ -1038,10 +1031,6 @@ export function GraphDockComposer() {
     window.setTimeout(() => textareaRef.current?.focus(), 0);
   }, [clearComposerDraft, clearPrompt, composerDraftTargetId, selectedWorkspaceId]);
 
-  const handleAgentSelect = useCallback((agentId: string) => {
-    setSelectedAgentId(agentId);
-  }, [setSelectedAgentId]);
-
   const handleAgentRunCountChange = useCallback((agentId: string, count: number) => {
     const updated = updateComposerAgentRunCount(normalizedSelectedAgentRunCounts, agentId, count);
     const normalized = normalizeComposerAgentRunCounts(agents, agentId, updated);
@@ -1052,6 +1041,35 @@ export function GraphDockComposer() {
     setSelectedAgentRunCounts(normalized);
     setSelectedAgentId(nextSelectedAgentId);
   }, [agents, normalizedSelectedAgentRunCounts, setSelectedAgentId]);
+
+  const handleModelPickerSelect = useCallback((agentId: string) => {
+    if (!modelPickerTarget) return;
+
+    if (modelPickerTarget.kind === 'add') {
+      if ((normalizedSelectedAgentRunCounts[agentId] ?? 0) === 0) {
+        const normalized = normalizeComposerAgentRunCounts(agents, agentId, {
+          ...normalizedSelectedAgentRunCounts,
+          [agentId]: 1,
+        });
+        setSelectedAgentRunCounts(normalized);
+        setSelectedAgentId(agentId);
+      }
+      setModelPickerTarget(null);
+      return;
+    }
+
+    const replacedAgentId = modelPickerTarget.agentId;
+    if (replacedAgentId !== agentId) {
+      const replacedCount = normalizedSelectedAgentRunCounts[replacedAgentId] ?? 1;
+      const updated = { ...normalizedSelectedAgentRunCounts };
+      delete updated[replacedAgentId];
+      updated[agentId] = (updated[agentId] ?? 0) + replacedCount;
+      const normalized = normalizeComposerAgentRunCounts(agents, agentId, updated);
+      setSelectedAgentRunCounts(normalized);
+      setSelectedAgentId(agentId);
+    }
+    setModelPickerTarget(null);
+  }, [agents, modelPickerTarget, normalizedSelectedAgentRunCounts, setSelectedAgentId]);
 
   const handleBaseSelect = useCallback((item: typeof filteredBasePickerItems[number]) => {
     if (item.isDefault) {
@@ -1122,9 +1140,6 @@ export function GraphDockComposer() {
     const nextCursor = activeTemplateMention.start + mentionText.length + 1;
 
     setPromptValue(nextPrompt);
-    if (template.kind === 'orchestration') {
-      setOrchestrationMode(true);
-    }
     setActiveTemplateMention(null);
     window.setTimeout(() => {
       textareaRef.current?.focus();
@@ -1292,9 +1307,7 @@ export function GraphDockComposer() {
     const promptForAgent = trimmedPrompt;
 
     setError(null);
-    const runsToLaunch = orchestrationMode
-      ? runsToSend.slice(0, 1).map((run) => ({ ...run, ordinal: 1, totalForAgent: 1 }))
-      : runsToSend;
+    const runsToLaunch = runsToSend;
 
     recordSendFlowEvent('graph-dock.submit', {
       workspaceId: selectedWorkspaceId,
@@ -1303,7 +1316,6 @@ export function GraphDockComposer() {
       runCount: runsToLaunch.length,
       agentId: agent?.id ?? null,
       baseCommitSha: effectiveBase.commitSha,
-      orchestrationMode,
     }, { source: 'GraphDockComposer' });
 
     setIsSending(true);
@@ -1345,7 +1357,7 @@ export function GraphDockComposer() {
             selectedFromNodeId: effectiveBase.selectedFromNodeId,
           },
           workspaces: workspaces as Workspace[],
-          startAgentRun: (payload) => agentClient.startAgentRun(payload as any),
+          startAgentRun: (payload) => agentClient.launchAgentMessage(payload as any),
           getAccessToken: getOptionalCloudAuthToken,
           seedAgentRun: (message) => agentRunManager.seed(message),
           dispatchAgentRun: (nodeId, event) => agentRunManager.dispatch(nodeId, event as any),
@@ -1376,7 +1388,6 @@ export function GraphDockComposer() {
           permissionMode,
           threadId,
           threadOriginId: threadId,
-          orchestrationMode,
           meta: {
             composer_surface: 'graph-dock',
             composer_permission_mode: permissionMode,
@@ -1423,7 +1434,6 @@ export function GraphDockComposer() {
     messages,
     pendingThreadId,
     permissionMode,
-    orchestrationMode,
     queryClient,
     resetComposerTargetAfterSuccessfulSend,
     selectedWorkspaceId,
@@ -1737,34 +1747,7 @@ export function GraphDockComposer() {
             templates={orchestrationTemplates}
           />
         </div>
-        <div data-testid="graph-dock-control-row" className="mt-1.5 grid min-w-0 grid-cols-2 gap-1.5 border-t border-[hsl(var(--app-border)/0.52)] px-0.5 pt-1.5 md:grid-cols-4">
-          <Popover open={isAgentPickerOpen} onOpenChange={setIsAgentPickerOpen}>
-            <PopoverTrigger
-              type="button"
-              aria-label="Select model"
-              title="Select one or more models to run."
-              disabled={isComposerConfigurationDisabled || !selectedWorkspaceId}
-              className={cn(
-                dockControlButtonClass,
-                'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
-                'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
-                'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]'
-              )}
-            >
-              <Bot className="h-3 w-3 shrink-0 text-muted-foreground" />
-              <span className="truncate">{modelSelectorLabel}</span>
-              <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-            </PopoverTrigger>
-            <PopoverContent disableAnimation className="h-[390px] w-[620px] p-0" side="top" align="start" sideOffset={8}>
-              <UnifiedAgentModelSelector
-                onSelectAgent={handleAgentSelect}
-                selectedAgentId={agent?.id ?? selectedAgentId}
-                agentRunCounts={normalizedSelectedAgentRunCounts}
-                onAgentRunCountChange={handleAgentRunCountChange}
-              />
-            </PopoverContent>
-          </Popover>
-
+        <div data-testid="graph-dock-control-row" className="mt-1.5 grid min-w-0 grid-cols-3 gap-1.5 border-t border-[hsl(var(--app-border)/0.52)] px-0.5 pt-1.5">
           <DropdownMenu open={isBasePickerOpen} onOpenChange={setIsBasePickerOpen}>
             <DropdownMenuTrigger asChild>
               <button
@@ -1989,83 +1972,89 @@ export function GraphDockComposer() {
               {footerStatusText}
             </div>
             {selectedAgentRunChips.length > 0 ? (
-              <div data-testid="graph-dock-selected-model-chips" className="hidden min-w-0 flex-1 items-center gap-1 sm:flex">
-                {selectedAgentRunChips.slice(0, 3).map(({ agent: chipAgent, count }) => {
-                  const canRemove = selectedRunTotal > count;
-                  const canDecrement = count > 1 || selectedRunTotal > 1;
-                  return (
-                    <div
-                      key={chipAgent.id}
-                      className="group/chip flex h-6 min-w-0 items-center gap-1 rounded-full border border-[hsl(var(--app-warning)/0.24)] bg-[hsl(var(--app-warning)/0.08)] py-0.5 pl-2 pr-0.5 text-[10.5px] font-semibold text-foreground shadow-none transition-colors duration-150 hover:border-[hsl(var(--app-warning)/0.34)]"
+              <Popover
+                open={modelPickerTarget != null}
+                onOpenChange={(open) => {
+                  if (!open) setModelPickerTarget(null);
+                }}
+              >
+                <PopoverAnchor asChild>
+                  <div data-testid="graph-dock-selected-model-chips" className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+                    {selectedAgentRunChips.map(({ agent: chipAgent, count }) => {
+                      const canRemove = selectedRunTotal > count;
+                      const canDecrement = count > 1 || selectedRunTotal > 1;
+                      return (
+                        <div
+                          key={chipAgent.id}
+                          className="group/chip flex h-6 min-w-0 items-center rounded-full border border-[hsl(var(--app-warning)/0.24)] bg-[hsl(var(--app-warning)/0.08)] pr-0.5 text-[10.5px] font-semibold text-foreground shadow-none transition-colors duration-150 hover:border-[hsl(var(--app-warning)/0.34)]"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setModelPickerTarget({ kind: 'replace', agentId: chipAgent.id })}
+                            disabled={isComposerConfigurationDisabled}
+                            className="flex h-full min-w-0 items-center gap-1 rounded-full pl-2 pr-1 outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] disabled:cursor-not-allowed disabled:opacity-50"
+                            aria-label={`Change ${chipAgent.name}`}
+                          >
+                            <span className="max-w-[104px] truncate">{chipAgent.name}</span>
+                            <span className="rounded-full bg-[hsl(var(--app-warning)/0.14)] px-1.5 text-[9.5px] tabular-nums text-[hsl(var(--app-warning))]">
+                              {count}x
+                            </span>
+                          </button>
+                          <div className="ml-0.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/chip:opacity-100 group-focus-within/chip:opacity-100">
+                            <button
+                              type="button"
+                              onClick={() => handleAgentRunCountChange(chipAgent.id, 0)}
+                              disabled={!canRemove || isComposerConfigurationDisabled}
+                              className="flex h-4 w-4 items-center justify-center rounded bg-background text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.75)] transition-[background-color,color,transform] hover:bg-red-50 hover:text-red-600 active:scale-[0.94] disabled:pointer-events-none disabled:opacity-35 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+                              aria-label={`Remove ${chipAgent.name}`}
+                            >
+                              <X className="h-2.5 w-2.5" strokeWidth={2.5} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleAgentRunCountChange(chipAgent.id, count - 1)}
+                              disabled={!canDecrement || isComposerConfigurationDisabled}
+                              className="flex h-4 w-4 items-center justify-center rounded bg-background text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.75)] transition-[background-color,color,transform] hover:bg-muted hover:text-foreground active:scale-[0.94] disabled:pointer-events-none disabled:opacity-35"
+                              aria-label={`Decrease ${chipAgent.name}`}
+                            >
+                              <Minus className="h-2.5 w-2.5" strokeWidth={2.5} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleAgentRunCountChange(chipAgent.id, count + 1)}
+                              disabled={isComposerConfigurationDisabled}
+                              className="flex h-4 w-4 items-center justify-center rounded bg-[hsl(var(--app-success))] text-white transition-[background-color,transform] hover:brightness-105 active:scale-[0.94]"
+                              aria-label={`Increase ${chipAgent.name}`}
+                            >
+                              <Plus className="h-2.5 w-2.5" strokeWidth={2.6} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      onClick={() => setModelPickerTarget({ kind: 'add' })}
+                      disabled={isComposerConfigurationDisabled || !selectedWorkspaceId}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[hsl(var(--app-border)/0.78)] bg-background/72 text-muted-foreground transition-[background-color,border-color,color,transform] hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-background hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label="Add model"
                     >
-                      <span className="max-w-[104px] truncate">{chipAgent.name}</span>
-                      <span className="rounded-full bg-[hsl(var(--app-warning)/0.14)] px-1.5 text-[9.5px] tabular-nums text-[hsl(var(--app-warning))]">
-                        {count}x
-                      </span>
-                      <div className="ml-0.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/chip:opacity-100 group-focus-within/chip:opacity-100">
-                        <button
-                          type="button"
-                          onClick={() => handleAgentRunCountChange(chipAgent.id, 0)}
-                          disabled={!canRemove || isComposerConfigurationDisabled}
-                          className="flex h-4 w-4 items-center justify-center rounded bg-background text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.75)] transition-[background-color,color,transform] hover:bg-red-50 hover:text-red-600 active:scale-[0.94] disabled:pointer-events-none disabled:opacity-35 dark:hover:bg-red-950/40 dark:hover:text-red-300"
-                          aria-label={`Remove ${chipAgent.name}`}
-                        >
-                          <X className="h-2.5 w-2.5" strokeWidth={2.5} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleAgentRunCountChange(chipAgent.id, count - 1)}
-                          disabled={!canDecrement || isComposerConfigurationDisabled}
-                          className="flex h-4 w-4 items-center justify-center rounded bg-background text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.75)] transition-[background-color,color,transform] hover:bg-muted hover:text-foreground active:scale-[0.94] disabled:pointer-events-none disabled:opacity-35"
-                          aria-label={`Decrease ${chipAgent.name}`}
-                        >
-                          <Minus className="h-2.5 w-2.5" strokeWidth={2.5} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleAgentRunCountChange(chipAgent.id, count + 1)}
-                          disabled={isComposerConfigurationDisabled}
-                          className="flex h-4 w-4 items-center justify-center rounded bg-[hsl(var(--app-success))] text-white transition-[background-color,transform] hover:brightness-105 active:scale-[0.94]"
-                          aria-label={`Increase ${chipAgent.name}`}
-                        >
-                          <Plus className="h-2.5 w-2.5" strokeWidth={2.6} />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-                {selectedAgentRunChips.length > 3 ? (
-                  <span className="rounded bg-muted/55 px-1.5 py-0.5 text-[10.5px] font-semibold text-muted-foreground">
-                    +{selectedAgentRunChips.length - 3}
-                  </span>
-                ) : null}
-              </div>
+                      <Plus className="h-3 w-3" strokeWidth={2.5} />
+                    </button>
+                  </div>
+                </PopoverAnchor>
+                <PopoverContent disableAnimation className="h-[390px] w-[620px] p-0" side="top" align="start" sideOffset={8}>
+                  <UnifiedAgentModelSelector
+                    onSelectAgent={handleModelPickerSelect}
+                    selectedAgentId={modelPickerTarget?.kind === 'replace' ? modelPickerTarget.agentId : null}
+                    agentRunCounts={normalizedSelectedAgentRunCounts}
+                    excludedAgentIds={modelPickerTarget?.kind === 'add' ? Object.keys(normalizedSelectedAgentRunCounts) : undefined}
+                  />
+                </PopoverContent>
+              </Popover>
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
-            {!isSteeringRunningAssistant ? (
-              <label
-                className={cn(
-                  'flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-[hsl(var(--app-border)/0.72)] bg-background/58 px-2 text-[11px] font-semibold text-muted-foreground transition-[background-color,border-color,color,opacity]',
-                  'hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-background/80 hover:text-foreground',
-                  isComposerConfigurationDisabled && 'cursor-not-allowed opacity-50 hover:border-[hsl(var(--app-border)/0.72)] hover:bg-background/58 hover:text-muted-foreground',
-                  orchestrationMode && 'border-[hsl(var(--app-accent)/0.42)] bg-[hsl(var(--app-accent-soft)/0.28)] text-foreground'
-                )}
-                title="Run is controlled through the orchestrator when enabled."
-              >
-                <input
-                  type="checkbox"
-                  checked={orchestrationMode}
-                  disabled={isComposerConfigurationDisabled}
-	                  onChange={(event) => {
-	                    setOrchestrationMode(event.target.checked);
-	                  }}
-                  className="h-3.5 w-3.5 accent-[hsl(var(--app-accent))]"
-                  aria-label="Enable orchestration"
-                />
-                <span className="hidden whitespace-nowrap sm:inline">Orchestration</span>
-              </label>
-            ) : null}
             {isSteeringRunningAssistant ? (
               <button
                 type="button"

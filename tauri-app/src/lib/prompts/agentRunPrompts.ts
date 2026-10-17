@@ -32,11 +32,6 @@ export interface BuildAgentRunPromptInput {
   dependencyGuard?: string;
   defaultPromptOverrides?: DefaultPromptOverride[];
   threadTitleMode?: 'first_thread_message' | 'none';
-  orchestrationLabelMode?: 'orchestrator' | 'none';
-  orchestrationControl?: {
-    orchestratorRunId: string;
-    orchestratorNodeId: string;
-  } | null;
 }
 
 export interface BuildAgentRunPromptResult {
@@ -65,25 +60,6 @@ const threadTitleInstruction = (
   return null;
 };
 
-const orchestrationLabelInstruction = (
-  mode: BuildAgentRunPromptInput['orchestrationLabelMode'],
-  overrides: DefaultPromptOverride[] | undefined,
-): string | null => {
-  if (mode !== 'orchestrator') return null;
-  return getEffectiveDefaultPromptText('orchestration_label', overrides);
-};
-
-const orchestrationControlInstruction = (
-  control: BuildAgentRunPromptInput['orchestrationControl'],
-  overrides: DefaultPromptOverride[] | undefined,
-): string | null => {
-  if (!control) return null;
-  return getEffectiveDefaultPromptText('orchestration_control', overrides, {
-    orchestratorRunId: control.orchestratorRunId,
-    orchestratorNodeId: control.orchestratorNodeId,
-  });
-};
-
 export function buildAgentRunPrompt(input: BuildAgentRunPromptInput): BuildAgentRunPromptResult {
   const defaultPromptOverrides = input.defaultPromptOverrides;
   const dependencyGuard = input.dependencyGuard
@@ -101,14 +77,7 @@ export function buildAgentRunPrompt(input: BuildAgentRunPromptInput): BuildAgent
   if (titleInstruction) {
     body = `${body}\n\n${titleInstruction}`;
   }
-  const orchestrationInstruction = orchestrationLabelInstruction(input.orchestrationLabelMode, defaultPromptOverrides);
-  if (orchestrationInstruction) {
-    body = `${body}\n\n${orchestrationInstruction}`;
-  }
-  const orchestrationControl = orchestrationControlInstruction(input.orchestrationControl, defaultPromptOverrides);
-  if (orchestrationControl) {
-    body = `${body}\n\n${orchestrationControl}`;
-  }
+  body = `${body}\n\n${getEffectiveDefaultPromptText('delegation_control', defaultPromptOverrides)}`;
 
   return {
     prompt: `${dependencyGuard}\n\n${getEffectiveDefaultPromptText('artifact_path', defaultPromptOverrides)}\n\n${body}`,

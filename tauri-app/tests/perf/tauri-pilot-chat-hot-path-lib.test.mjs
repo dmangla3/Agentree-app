@@ -47,10 +47,12 @@ describe('Tauri Pilot chat hot path helpers', () => {
       <body>
         <button>Chat</button>
         <textarea data-testid="chat-composer-textarea" placeholder="Ask anything... Type @ to reference files"></textarea>
-        <button data-testid="chat-send-button" aria-label="Cancel sending message">Cancel</button>
+        <button data-testid="chat-send-button" aria-label="Cancel running agent">Cancel</button>
       </body>
     `, { pretendToBeVisual: true, url: 'http://localhost/' });
     const helpers = installChatHotPathHelpers(dom.window);
+
+    expect(helpers.findSendButton({ includeCancel: true })?.getAttribute('aria-label')).toBe('Cancel running agent');
 
     await expect(helpers.ensureChatHotPathReady({ waitMs: 80, settleMs: 0 })).rejects.toThrow(/sendButtonFound/);
   });

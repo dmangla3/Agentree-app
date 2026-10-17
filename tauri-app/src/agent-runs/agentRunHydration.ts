@@ -202,6 +202,7 @@ const dispatchHydratedStreamEvent = (
       workspaceId: input.workspaceId ?? '',
       agentId,
       appendedText: deriveIncrementalText(previousOutput, state.output),
+      timelineContent: event.content,
       providerItemId: merged.providerItemId,
       timestamp: numericSeq(event.timestamp) ?? Date.now(),
       streamSeq: numericSeq(event.stream_seq),

@@ -1,12 +1,11 @@
 import { useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
-import { api } from '../lib/api';
+import { AGENTREE_DATA_PLANE_ENABLED, api } from '../lib/api';
 import {
     Message,
     Summary,
     AttachmentMetadata,
     CommitEntity,
-    MessageHighlightAnnotation,
     MessageHighlightColor,
     MessageHighlightRange,
     useWorkspaceStore,
@@ -18,6 +17,8 @@ import { agentClient } from '../lib/agentClient';
 import { localNodeKeys, parseLocalNode } from './useLocalNodes';
 import { applyLocalNodeMessages } from './useLiveMessages';
 import { useRunStatusStore } from '../stores/runStatusStore';
+import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
+import { agentRunManager } from '../agent-runs/agentRunManager';
 import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
 import {
     addOrUpdateMessageHighlight,
@@ -25,12 +26,14 @@ import {
     removeMessageHighlight,
     updateMessageHighlightColor,
 } from '../lib/messageHighlights';
+import { messageApplication } from '../application/messages';
 
 const patchMessageInCache = (
     queryClient: ReturnType<typeof useQueryClient>,
     workspaceId: string,
     messageId: string,
-    patch: (message: Message) => Message
+    patch: (message: Message) => Message,
+    options: { persistLocal?: boolean } = {},
 ) => {
     let patchedMessage: Message | null = null;
     queryClient.setQueryData<Message[]>(['messages', workspaceId], (current) => {
@@ -43,7 +46,7 @@ const patchMessageInCache = (
     });
 
     if (!patchedMessage) return;
-    if (agentClient.hasRuntime()) {
+    if (options.persistLocal !== false && agentClient.hasRuntime()) {
         void agentClient
             .upsertLocalNode(workspaceId, messageId, patchedMessage)
             .finally(() => {
@@ -59,60 +62,6 @@ const markMessagesStaleOnly = (
     reason: string
 ) => {
     void scheduleMessagesRefreshWhenGraphIdle(queryClient, workspaceId, { reason });
-};
-
-const syncMessageTagsToServer = async ({
-    messageId,
-    tags,
-    action,
-}: {
-    messageId: string;
-    tags: string[];
-    action: 'add' | 'remove';
-}): Promise<Message | null> => {
-    if (action === 'add') {
-        const response = await api.post<Message>(`/messages/${messageId}/tags`, { tags });
-        return response.data;
-    }
-
-    const responses = await Promise.all(tags.map((tag) =>
-        api.delete<Message>(`/messages/${messageId}/tags/${encodeURIComponent(tag)}`)
-    ));
-    return responses.length > 0 ? responses[responses.length - 1].data : null;
-};
-
-const syncMessageHighlightToServer = async ({
-    messageId,
-    action,
-    highlight,
-    highlightId,
-    color,
-}: {
-    messageId: string;
-    action: 'add' | 'update' | 'delete';
-    highlight?: MessageHighlightAnnotation;
-    highlightId?: string;
-    color?: MessageHighlightColor;
-}): Promise<Message | null> => {
-    if (action === 'add' && highlight) {
-        const response = await api.post<Message>(`/messages/${messageId}/highlights`, {
-            id: highlight.id,
-            color: highlight.color,
-            range: highlight.range,
-        });
-        return response.data;
-    }
-    if (action === 'update' && highlightId && color) {
-        const response = await api.patch<Message>(`/messages/${messageId}/highlights/${encodeURIComponent(highlightId)}`, {
-            color,
-        });
-        return response.data;
-    }
-    if (action === 'delete' && highlightId) {
-        const response = await api.delete<Message>(`/messages/${messageId}/highlights/${encodeURIComponent(highlightId)}`);
-        return response.data;
-    }
-    return null;
 };
 
 const fetchServerMessages = async (workspaceId: string): Promise<Message[]> => {
@@ -132,12 +81,15 @@ const mergeServerMessages = (current: Message[] | undefined, incoming: Message[]
     return Array.from(merged.values()).sort(byCreatedAt);
 };
 
-export const removeMessageBranchFromCache = (
-    current: Message[] | undefined,
+type MessageBranchNode = Pick<Message, 'id' | 'parentId'>;
+
+export const collectMessageBranchIds = (
+    current: Iterable<MessageBranchNode> | undefined,
     rootMessageId: string
-): Message[] => {
-    const messages = current ?? [];
-    if (!rootMessageId || messages.length === 0) return messages;
+): Set<string> => {
+    const messages = Array.from(current ?? []);
+    const idsToRemove = new Set<string>();
+    if (!rootMessageId) return idsToRemove;
 
     const childrenByParentId = new Map<string, string[]>();
     for (const message of messages) {
@@ -147,7 +99,6 @@ export const removeMessageBranchFromCache = (
         childrenByParentId.set(message.parentId, children);
     }
 
-    const idsToRemove = new Set<string>();
     const pending = [rootMessageId];
     while (pending.length > 0) {
         const id = pending.pop();
@@ -156,6 +107,31 @@ export const removeMessageBranchFromCache = (
         pending.push(...(childrenByParentId.get(id) ?? []));
     }
 
+    return idsToRemove;
+};
+
+export const cleanupMessageBranchRunState = (
+    current: Iterable<MessageBranchNode> | undefined,
+    rootMessageId: string
+): Set<string> => {
+    const projectedMessages = Object.values(useAgentRunProjectionStore.getState().projectionsById);
+    const idsToRemove = collectMessageBranchIds(
+        [...Array.from(current ?? []), ...projectedMessages],
+        rootMessageId
+    );
+    for (const messageId of idsToRemove) {
+        agentRunManager.cleanup(messageId);
+    }
+    return idsToRemove;
+};
+
+export const removeMessageBranchFromCache = (
+    current: Message[] | undefined,
+    rootMessageId: string
+): Message[] => {
+    const messages = current ?? [];
+    if (!rootMessageId || messages.length === 0) return messages;
+    const idsToRemove = collectMessageBranchIds(messages, rootMessageId);
     return messages.filter((message) => !idsToRemove.has(message.id));
 };
 
@@ -193,7 +169,7 @@ export const useMessages = (
                     queryClient.setQueryData(localNodeKeys.workspace(workspaceId), localMessages);
                 }
                 const localRenderMessages = applyLocalNodeMessages([], localMessages, workspaceId);
-                if (localRenderMessages.length === 0) {
+                if (localRenderMessages.length === 0 && AGENTREE_DATA_PLANE_ENABLED) {
                     try {
                         const serverMessages = await fetchServerMessages(workspaceId);
                         if (serverMessages.length > 0) {
@@ -245,6 +221,8 @@ export const useMessages = (
                 return localRenderMessages;
             }
 
+            if (!AGENTREE_DATA_PLANE_ENABLED) return [];
+
             try {
                 const serverMessages = await fetchServerMessages(workspaceId);
                 recordPerfEvent('query.messages.server-fetch', {
@@ -273,7 +251,9 @@ export const useMessages = (
                 throw error;
             }
         },
-        enabled: !!workspaceId && options.enabled !== false,
+        enabled: (agentClient.hasRuntime() || AGENTREE_DATA_PLANE_ENABLED)
+            && !!workspaceId
+            && options.enabled !== false,
         staleTime: agentClient.hasRuntime() ? Infinity : 5 * 60 * 1000,
         gcTime: 30 * 60 * 1000,
         refetchInterval: false,
@@ -356,7 +336,7 @@ export const useCommitDescendants = (
             observations: Array.isArray(response.data?.observations) ? response.data.observations : [],
         };
     },
-    enabled: !!workspaceId && !!baseSha && options.enabled !== false,
+    enabled: AGENTREE_DATA_PLANE_ENABLED && !!workspaceId && !!baseSha && options.enabled !== false,
     staleTime: 15_000,
     gcTime: 5 * 60 * 1000,
 });
@@ -379,7 +359,7 @@ export const useCommitAncestors = (
             observations: Array.isArray(response.data?.observations) ? response.data.observations : [],
         };
     },
-    enabled: !!workspaceId && !!baseSha && options.enabled !== false,
+    enabled: AGENTREE_DATA_PLANE_ENABLED && !!workspaceId && !!baseSha && options.enabled !== false,
     staleTime: 15_000,
     gcTime: 5 * 60 * 1000,
 });
@@ -509,6 +489,12 @@ export const useDeleteMessageBranch = () => {
             queueLocalSyncFlush({ reason: 'message-branch-deleted' });
         },
         onSuccess: (_, variables) => {
+            const cachedMessages = queryClient.getQueryData<Message[]>(['messages', variables.workspaceId]) ?? [];
+            const cachedSnapshot = queryClient.getQueryData<{ messages?: Message[] }>(['graph-snapshot', variables.workspaceId]);
+            cleanupMessageBranchRunState(
+                [...cachedMessages, ...(cachedSnapshot?.messages ?? [])],
+                variables.messageId
+            );
             queryClient.setQueryData<Message[]>(
                 ['messages', variables.workspaceId],
                 (current) => removeMessageBranchFromCache(current, variables.messageId)
@@ -560,20 +546,14 @@ export const useUpdateTags = () => {
             action: 'add' | 'remove';
         }) => {
             console.log(`${action === 'add' ? 'Adding' : 'Removing'} tags for message ${messageId} in workspace ${workspaceId}`);
-            if (agentClient.hasRuntime()) {
-                void syncMessageTagsToServer({ messageId, tags, action }).catch((error) => {
-                    recordPerfEvent('mutation.tags.background-sync-failed', {
-                        workspaceId,
-                        messageId,
-                        action,
-                        tagCount: tags.length,
-                        error: error instanceof Error ? error.message : String(error),
-                    }, { source: 'useUpdateTags' });
-                    console.warn('[useUpdateTags] Background tag sync failed', error);
-                });
-                return null;
-            }
-            return syncMessageTagsToServer({ messageId, tags, action });
+            const updatedMessage = await messageApplication.updateTags({
+                workspaceId,
+                messageId,
+                tags,
+                action,
+            });
+            queueLocalSyncFlush({ reason: 'message-tags-updated' });
+            return updatedMessage;
         },
         onSuccess: (updatedMessage, variables) => {
             patchMessageInCache(queryClient, variables.workspaceId, variables.messageId, (message) => {
@@ -587,7 +567,7 @@ export const useUpdateTags = () => {
                     tags: Array.isArray(updatedMessage?.tags) ? updatedMessage.tags : nextTags,
                     updatedAt: updatedMessage?.updatedAt ?? new Date().toISOString(),
                 };
-            });
+            }, { persistLocal: false });
             markMessagesStaleOnly(queryClient, variables.workspaceId, 'update-tags');
         },
     });
@@ -696,19 +676,13 @@ export const useAddHighlight = () => {
             range: MessageHighlightRange;
         }) => {
             const highlight = createMessageHighlight({ color, range });
-            if (agentClient.hasRuntime()) {
-                void syncMessageHighlightToServer({ messageId, action: 'add', highlight }).catch((error) => {
-                    recordPerfEvent('mutation.highlights.background-sync-failed', {
-                        workspaceId,
-                        messageId,
-                        action: 'add',
-                        error: error instanceof Error ? error.message : String(error),
-                    }, { source: 'useAddHighlight' });
-                    console.warn('[useAddHighlight] Background highlight sync failed', error);
-                });
-                return { message: null as Message | null, highlight };
-            }
-            const message = await syncMessageHighlightToServer({ messageId, action: 'add', highlight });
+            const message = await messageApplication.updateHighlight({
+                workspaceId,
+                messageId,
+                action: 'add',
+                highlight,
+            });
+            queueLocalSyncFlush({ reason: 'message-highlight-added' });
             return { message, highlight };
         },
         onSuccess: (data, variables) => {
@@ -719,7 +693,7 @@ export const useAddHighlight = () => {
                     ? data.message.annotations
                     : addOrUpdateMessageHighlight(message.annotations, data.highlight),
                 updatedAt: data.message?.updatedAt ?? new Date().toISOString(),
-            }));
+            }), { persistLocal: false });
             markMessagesStaleOnly(queryClient, variables.workspaceId, 'add-highlight');
         },
     });
@@ -739,20 +713,15 @@ export const useUpdateHighlight = () => {
             highlightId: string;
             color: MessageHighlightColor;
         }) => {
-            if (agentClient.hasRuntime()) {
-                void syncMessageHighlightToServer({ messageId, action: 'update', highlightId, color }).catch((error) => {
-                    recordPerfEvent('mutation.highlights.background-sync-failed', {
-                        workspaceId,
-                        messageId,
-                        highlightId,
-                        action: 'update',
-                        error: error instanceof Error ? error.message : String(error),
-                    }, { source: 'useUpdateHighlight' });
-                    console.warn('[useUpdateHighlight] Background highlight sync failed', error);
-                });
-                return null;
-            }
-            return syncMessageHighlightToServer({ messageId, action: 'update', highlightId, color });
+            const message = await messageApplication.updateHighlight({
+                workspaceId,
+                messageId,
+                action: 'update',
+                highlightId,
+                color,
+            });
+            queueLocalSyncFlush({ reason: 'message-highlight-updated' });
+            return message;
         },
         onSuccess: (updatedMessage, variables) => {
             patchMessageInCache(queryClient, variables.workspaceId, variables.messageId, (message) => ({
@@ -762,7 +731,7 @@ export const useUpdateHighlight = () => {
                     ? updatedMessage.annotations
                     : updateMessageHighlightColor(message.annotations, variables.highlightId, variables.color),
                 updatedAt: updatedMessage?.updatedAt ?? new Date().toISOString(),
-            }));
+            }), { persistLocal: false });
             markMessagesStaleOnly(queryClient, variables.workspaceId, 'update-highlight');
         },
     });
@@ -780,20 +749,14 @@ export const useDeleteHighlight = () => {
             messageId: string;
             highlightId: string;
         }) => {
-            if (agentClient.hasRuntime()) {
-                void syncMessageHighlightToServer({ messageId, action: 'delete', highlightId }).catch((error) => {
-                    recordPerfEvent('mutation.highlights.background-sync-failed', {
-                        workspaceId,
-                        messageId,
-                        highlightId,
-                        action: 'delete',
-                        error: error instanceof Error ? error.message : String(error),
-                    }, { source: 'useDeleteHighlight' });
-                    console.warn('[useDeleteHighlight] Background highlight sync failed', error);
-                });
-                return null;
-            }
-            return syncMessageHighlightToServer({ messageId, action: 'delete', highlightId });
+            const message = await messageApplication.updateHighlight({
+                workspaceId,
+                messageId,
+                action: 'delete',
+                highlightId,
+            });
+            queueLocalSyncFlush({ reason: 'message-highlight-deleted' });
+            return message;
         },
         onSuccess: (updatedMessage, variables) => {
             patchMessageInCache(queryClient, variables.workspaceId, variables.messageId, (message) => ({
@@ -803,7 +766,7 @@ export const useDeleteHighlight = () => {
                     ? updatedMessage.annotations
                     : removeMessageHighlight(message.annotations, variables.highlightId),
                 updatedAt: updatedMessage?.updatedAt ?? new Date().toISOString(),
-            }));
+            }), { persistLocal: false });
             markMessagesStaleOnly(queryClient, variables.workspaceId, 'delete-highlight');
         },
     });
@@ -868,6 +831,7 @@ export const useToggleCollapse = () => {
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async ({
+            workspaceId,
             messageId,
             collapsed,
         }: {
@@ -875,14 +839,17 @@ export const useToggleCollapse = () => {
             messageId: string;
             collapsed: boolean;
         }) => {
-            await api.patch(`/messages/${messageId}`, { collapsed });
+            const message = await messageApplication.setCollapsed({ workspaceId, messageId, collapsed });
+            queueLocalSyncFlush({ reason: 'message-collapse-updated' });
+            return message;
         },
-        onSuccess: (_, variables) => {
+        onSuccess: (updatedMessage, variables) => {
             patchMessageInCache(queryClient, variables.workspaceId, variables.messageId, (message) => ({
                 ...message,
-                collapsed: variables.collapsed,
-                updatedAt: new Date().toISOString(),
-            }));
+                ...(updatedMessage ?? {}),
+                collapsed: updatedMessage?.collapsed ?? variables.collapsed,
+                updatedAt: updatedMessage?.updatedAt ?? new Date().toISOString(),
+            }), { persistLocal: false });
             markMessagesStaleOnly(queryClient, variables.workspaceId, 'toggle-collapse');
         },
     });

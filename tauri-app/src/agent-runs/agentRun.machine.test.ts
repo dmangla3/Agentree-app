@@ -47,6 +47,14 @@ const message = (overrides: Record<string, any> = {}) => ({
 }) as any;
 
 describe('agentRun.machine', () => {
+  it('keeps the seeded parent when a later seed carries a blank placeholder', () => {
+    const snapshot = reduce([
+      { type: 'seed', message: message({ parentId: '' }) },
+    ]);
+
+    expect(snapshot.parentId).toBe('user-1');
+  });
+
   it('runs optimistic create to setup, streaming, finalizing, completed, cleanup', () => {
     const snapshot = reduce([
       { type: 'seed', message: message({ status: 'pending' }) },

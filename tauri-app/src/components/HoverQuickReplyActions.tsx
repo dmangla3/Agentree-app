@@ -9,10 +9,16 @@ import { useHeadlessQuickReply } from '../hooks/useHeadlessQuickReply';
 import { agentClient } from '../lib/agentClient';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
 import { isNoAgentSessionFoundError, markStaleLocalAgentNodeCancelled } from '../lib/localAgentRunTerminal';
-import { cancelOrchestrationTargetIfNeeded } from '../orchestration/cancel';
 import { getHoverReplyMode, stopQuickReplyControlEvent } from '../lib/quickReply';
 import { cn } from '../lib/utils';
 import { buildComposerDraftKey, useWorkspaceStore } from '../stores/workspaceStore';
+import type { Message } from '../stores/workspaceStore';
+
+export interface HoverQuickReplyCreatedEvent {
+  parentMessageId: string;
+  userMessageId: string;
+  assistantMessageId: string | null;
+}
 
 export function clearHoverQuickReplyDraftsForTest() {
   useWorkspaceStore.setState({ composerDraftByWorkspace: {} });
@@ -25,6 +31,7 @@ export function HoverQuickReplyActions({
   replyRunStatus,
   canReply,
   canSteer,
+  onQuickReplyCreated,
 }: {
   entity: ProjectedNodeEntity;
   projection: WorkspaceProjection;
@@ -32,6 +39,7 @@ export function HoverQuickReplyActions({
   replyRunStatus: string | null;
   canReply: boolean;
   canSteer: boolean;
+  onQuickReplyCreated?: (event: HoverQuickReplyCreatedEvent) => void;
 }) {
   const queryClient = useQueryClient();
   const [isCancelling, setIsCancelling] = useState(false);
@@ -74,9 +82,23 @@ export function HoverQuickReplyActions({
       replyParentId,
       prompt,
       messages: projection.messages,
+      onMessagesCreated: (createdMessages: Message[]) => {
+        const userMessage = createdMessages.find((message) => (
+          message.role === 'user' && message.parentId === replyParentId
+        ));
+        if (!userMessage) return;
+        const assistantMessage = createdMessages.find((message) => (
+          message.role === 'assistant' && message.parentId === userMessage.id
+        ));
+        onQuickReplyCreated?.({
+          parentMessageId: replyParentId,
+          userMessageId: userMessage.id,
+          assistantMessageId: assistantMessage?.id ?? null,
+        });
+      },
     });
     return true;
-  }, [isSending, projection.messages, replyMode, replyParentId, sendQuickReply, sendSteeringReply, workspaceId]);
+  }, [isSending, onQuickReplyCreated, projection.messages, replyMode, replyParentId, sendQuickReply, sendSteeringReply, workspaceId]);
   const handleCancelRunningAgent = useCallback(async () => {
     const assistantMessage = projection.messageMap.get(replyParentId) ?? entity.message ?? null;
     if (!workspaceId || isCancelling) return;
@@ -84,19 +106,7 @@ export function HoverQuickReplyActions({
     setCancelError(null);
     setIsCancelling(true);
     try {
-      const orchestrationCancel = await cancelOrchestrationTargetIfNeeded({
-        targetNodeId: replyParentId,
-        messages: Array.from(projection.messageMap.values()),
-        reason: 'cancelled',
-      }, {
-        recordOrchestrationEvent: (runId, assistantNodeId, eventType, payload) => (
-          agentClient.recordOrchestrationEvent(runId, assistantNodeId, eventType, payload)
-        ),
-        stopAgent: (assistantNodeId) => agentClient.stopAgent(assistantNodeId),
-      });
-      if (!orchestrationCancel.handled) {
-        await agentClient.stopAgent(replyParentId);
-      }
+      await agentClient.stopAgent(replyParentId);
       agentRunManager.dispatch(replyParentId, {
         type: 'cancel',
         reason: 'cancelled',

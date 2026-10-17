@@ -66,6 +66,31 @@ describe('parseLocalNode', () => {
     expect(parsed?.message.controlled_by_node_id).toBe('assistant-orchestrator');
     expect(parsed?.message.controlledByNodeId).toBe('assistant-orchestrator');
   });
+
+  it('recovers a canonical agent id from durable runtime metadata after reload', () => {
+    const parsed = parseLocalNode({
+      nodeId: 'assistant-child',
+      workspaceId: 'workspace-1',
+      payload: JSON.stringify({
+        id: 'assistant-child',
+        workspaceId: 'workspace-1',
+        role: 'assistant',
+        llmModel: 'gpt-5.6-luna',
+        execution_data: {
+          meta: {
+            provider: 'codex',
+            provider_model: 'gpt-5.6-luna',
+            provider_reasoning_effort: 'low',
+          },
+        },
+      }),
+      syncStatus: 'local_only',
+      finalizedAt: 1779199000,
+      retryAttempt: 0,
+    });
+
+    expect(parsed?.message.agent_id).toBe('codex:gpt-5.6-luna:low');
+  });
 });
 
 describe('isRetryableLocalOnlySync', () => {

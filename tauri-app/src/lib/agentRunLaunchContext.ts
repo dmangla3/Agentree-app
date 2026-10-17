@@ -29,11 +29,6 @@ export interface AgentRunLaunchContextInput {
   isBranchFromInterior?: boolean;
   contextManifest?: ComposerContextManifest | null;
   threadTitleMode?: 'first_thread_message' | 'none';
-  orchestrationLabelMode?: 'orchestrator' | 'none';
-  orchestrationControl?: {
-    orchestratorRunId: string;
-    orchestratorNodeId: string;
-  } | null;
 }
 
 export interface AgentRunLaunchContextResult {
@@ -55,6 +50,25 @@ export interface AgentRunLaunchContextResult {
   providerParentLineageId: string | null;
   isBranchFromInterior: boolean;
   meta: Record<string, unknown>;
+}
+
+export function buildAgentRunContextManifest(input: Pick<
+  AgentRunLaunchContextInput,
+  'contextManifest' | 'contextPolicy' | 'contextParentMessageId' | 'contextStartMessageId' | 'messages'
+>): ComposerContextManifest {
+  if (input.contextManifest) return input.contextManifest;
+  if (input.contextPolicy === 'fresh' || !input.contextParentMessageId) {
+    return EMPTY_COMPOSER_CONTEXT_MANIFEST;
+  }
+  const messages = input.messages ?? [];
+  const selection = buildComposerContextSelection(
+    input.contextParentMessageId,
+    messages,
+    null,
+    'continue',
+    input.contextStartMessageId ?? null,
+  );
+  return buildComposerContextManifest(selection.turns, new Set(selection.defaultSelectedIds));
 }
 
 const asRuntimeProvider = (agentType: string | null | undefined): RuntimeProvider | null => (
@@ -172,14 +186,12 @@ export function buildAgentRunLaunchContext(input: AgentRunLaunchContextInput): A
     && providerParentMessage?.id
     && (providerRouting.shouldBuildCrossProviderPacket || providerRouting.shouldInjectAgentreeContext)
   ) {
-    const selection = buildComposerContextSelection(
-      providerParentMessage.id,
+    contextManifest = buildAgentRunContextManifest({
       messages,
-      null,
-      'continue',
-      input.contextStartMessageId ?? null,
-    );
-    contextManifest = buildComposerContextManifest(selection.turns, new Set(selection.defaultSelectedIds));
+      contextPolicy,
+      contextParentMessageId: providerParentMessage.id,
+      contextStartMessageId: input.contextStartMessageId,
+    });
   }
 
   const promptMode = providerRouting.promptContextMode === 'cross_provider_packet' && providerContinuation && selectedProvider
@@ -193,8 +205,6 @@ export function buildAgentRunLaunchContext(input: AgentRunLaunchContextInput): A
     contextManifest,
     defaultPromptOverrides: getDefaultPromptOverridesSnapshot(),
     threadTitleMode: input.threadTitleMode ?? 'none',
-    orchestrationLabelMode: input.orchestrationLabelMode ?? 'none',
-    orchestrationControl: input.orchestrationControl ?? null,
   });
 
   const providerThreadStrategy = providerRouting.providerThreadStrategy;

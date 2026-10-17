@@ -23,8 +23,8 @@ const agent = (key: string) => {
 
 const agents = [
   agent('codex:gpt-5.5:high'),
-  agent('codex:gpt-5.4-mini:medium'),
-  agent('claude:claude-sonnet-4-6:high'),
+  agent('codex:gpt-5.6-terra:medium'),
+  agent('claude:claude-sonnet-5:high'),
 ];
 
 describe('resolveComposerDefaultAgentId', () => {
@@ -38,14 +38,14 @@ describe('resolveComposerDefaultAgentId', () => {
       agents,
       parentMessage: {
         llmProvider: 'claude',
-        llmModel: 'claude-sonnet-4-6',
+        llmModel: 'claude-sonnet-5',
         execution_data: {
           meta: {
             provider_reasoning_effort: 'high',
           },
         },
       },
-    })).toBe('claude:claude-sonnet-4-6:high');
+    })).toBe('claude:claude-sonnet-5:high');
   });
 
   it('falls back to matching parent provider and model even if effort metadata is missing', () => {
@@ -53,9 +53,9 @@ describe('resolveComposerDefaultAgentId', () => {
       agents,
       parentMessage: {
         llmProvider: 'codex',
-        llmModel: 'gpt-5.4-mini',
+        llmModel: 'gpt-5.6-terra',
         execution_data: null,
       },
-    })).toBe('codex:gpt-5.4-mini:medium');
+    })).toBe('codex:gpt-5.6-terra:medium');
   });
 });

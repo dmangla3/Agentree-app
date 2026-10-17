@@ -125,7 +125,6 @@ const makeProjection = (messages: Message[] = []): WorkspaceProjection => ({
   entitiesByMessageId: new Map(),
   entitiesBySummaryId: new Map(),
   childEntityIdsByParentEntityId: new Map(),
-  controlledEntityIdsByControllerMessageId: new Map(),
   commitEntityIdsByAssistantEntityId: new Map(),
   commitBySha: new Map(),
   commitLaneRows: [],
@@ -404,98 +403,6 @@ describe('NodeHoverCardContent', () => {
     expect(shell.className).toContain('border-[hsl(var(--app-border)/0.76)]');
     expect(shell.className).not.toContain('rgba(255,255,255');
     expect(shell.className).not.toContain('linear-gradient(180deg,rgba');
-  });
-
-  it('shows orchestration-run summary for orchestrator hover cards', () => {
-    const orchestratorMessage = makeMessage({
-      id: 'orchestrator-1',
-      role: 'assistant',
-      status: 'running' as any,
-    });
-    const runningChildMessage = makeMessage({
-      id: 'child-running',
-      role: 'assistant',
-      status: 'running' as any,
-      parentId: 'orchestrator-1',
-    });
-    const completedChildMessage = makeMessage({
-      id: 'child-completed',
-      role: 'assistant',
-      status: 'completed' as any,
-      parentId: 'orchestrator-1',
-    });
-    const failedChildMessage = makeMessage({
-      id: 'child-failed',
-      role: 'assistant',
-      status: 'failed' as any,
-      parentId: 'orchestrator-1',
-    });
-    const runningChild = makeEntity('assistant_message', {
-      entityId: 'assistant_message:child-running',
-      messageId: runningChildMessage.id,
-      focusMessageId: runningChildMessage.id,
-      message: runningChildMessage,
-      preview: 'Compare implementation options',
-      status: 'running' as any,
-    });
-    const completedChild = makeEntity('assistant_message', {
-      entityId: 'assistant_message:child-completed',
-      messageId: completedChildMessage.id,
-      focusMessageId: completedChildMessage.id,
-      message: completedChildMessage,
-      preview: 'Write migration notes',
-      status: 'completed' as any,
-    });
-    const failedChild = makeEntity('assistant_message', {
-      entityId: 'assistant_message:child-failed',
-      messageId: failedChildMessage.id,
-      focusMessageId: failedChildMessage.id,
-      message: failedChildMessage,
-      preview: 'Run verification',
-      status: 'failed' as any,
-    });
-    const orchestrator = makeEntity('assistant_message', {
-      entityId: 'assistant_message:orchestrator-1',
-      messageId: orchestratorMessage.id,
-      focusMessageId: orchestratorMessage.id,
-      message: orchestratorMessage,
-      nodeKind: 'orchestrator',
-      orchestrationSummary: {
-        controllerMessageId: orchestratorMessage.id,
-        controlledEntityIds: [runningChild.entityId, completedChild.entityId, failedChild.entityId],
-        orchestrationRunAssistantEntityIds: [runningChild.entityId, completedChild.entityId, failedChild.entityId],
-        totalOrchestrationRuns: 3,
-        activeOrchestrationRuns: 1,
-        terminalOrchestrationRuns: 2,
-        completedOrchestrationRuns: 1,
-        failedOrchestrationRuns: 1,
-        cancelledOrchestrationRuns: 0,
-      },
-    });
-    const projection = makeProjection([
-      orchestratorMessage,
-      runningChildMessage,
-      completedChildMessage,
-      failedChildMessage,
-    ]);
-    projection.entitiesById = new Map([
-      [orchestrator.entityId, orchestrator],
-      [runningChild.entityId, runningChild],
-      [completedChild.entityId, completedChild],
-      [failedChild.entityId, failedChild],
-    ]);
-
-    render(<NodeHoverCardContent entity={orchestrator} projection={projection} />);
-
-    expect(screen.getByTestId('orchestration-hover-summary')).toBeTruthy();
-    expect(screen.getByText('Orchestration')).toBeTruthy();
-    expect(screen.getByText('3 orchestration runs')).toBeTruthy();
-    expect(screen.getByText('Compare implementation options')).toBeTruthy();
-    expect(screen.getByText('Write migration notes')).toBeTruthy();
-    expect(screen.getByText('Run verification')).toBeTruthy();
-    expect(screen.getByText('Running')).toBeTruthy();
-    expect(screen.getByText('Completed')).toBeTruthy();
-    expect(screen.getAllByText('Failed').length).toBeGreaterThanOrEqual(1);
   });
 
   it('uses the app action color when ready to send', () => {
@@ -819,7 +726,7 @@ describe('NodeHoverCardContent', () => {
     ];
     render(<NodeHoverCardContent entity={makeEntity('user_message')} projection={makeProjection(messages)} />);
 
-    const input = screen.getByLabelText('Quick reply prompt') as HTMLTextAreaElement;
+    const input = await screen.findByLabelText('Quick reply prompt') as HTMLTextAreaElement;
     await user.type(input, 'Ship it');
     await user.click(screen.getByRole('button', { name: 'Quick Reply' }));
 
@@ -828,10 +735,41 @@ describe('NodeHoverCardContent', () => {
       replyParentId: 'message-1',
       prompt: 'Ship it',
       messages,
+      onMessagesCreated: expect.any(Function),
     });
     await waitFor(() => {
       expect(input.value).toBe('');
       expect(document.activeElement).toBe(input);
+    });
+  });
+
+  it('reports locally created quick-reply messages to the hovercard navigator', async () => {
+    const user = userEvent.setup();
+    const onQuickReplyCreated = vi.fn();
+    const parent = makeMessage({ id: 'message-1', role: 'assistant' });
+    quickReplyMocks.sendQuickReply.mockImplementation(async (input) => {
+      input.onMessagesCreated?.([
+        makeMessage({ id: 'new-user', role: 'user', parentId: 'message-1' }),
+        makeMessage({ id: 'new-assistant', role: 'assistant', parentId: 'new-user' }),
+      ]);
+      return {};
+    });
+
+    render(
+      <NodeHoverCardContent
+        entity={makeEntity('assistant_message', { message: parent })}
+        projection={makeProjection([parent])}
+        onQuickReplyCreated={onQuickReplyCreated}
+      />
+    );
+
+    await user.type(await screen.findByLabelText('Quick reply prompt'), 'Continue');
+    await user.click(screen.getByRole('button', { name: 'Quick Reply' }));
+
+    expect(onQuickReplyCreated).toHaveBeenCalledWith({
+      parentMessageId: 'message-1',
+      userMessageId: 'new-user',
+      assistantMessageId: 'new-assistant',
     });
   });
 

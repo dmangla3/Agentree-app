@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushQueuedLocalSyncForTest, queueLocalSyncFlush, resetLocalSyncSchedulerForTest } from './localSyncScheduler';
+import {
+  flushQueuedLocalSyncForTest,
+  flushWorkspaceCloudBootstrap,
+  flushWorkspaceCloudSync,
+  queueLocalSyncFlush,
+  resetLocalSyncSchedulerForTest,
+} from './localSyncScheduler';
 import { getAccessToken } from './authSession';
 import { agentClient } from './agentClient';
 import { useAuthStore } from '../stores/authStore';
@@ -38,17 +44,50 @@ describe('localSyncScheduler', () => {
     vi.useRealTimers();
   });
 
-  it('debounces UI-triggered sync flushes into one background server sync', async () => {
+  it('debounces background sync and lets native workspace flags select deliverable events', async () => {
     queueLocalSyncFlush({ reason: 'workspace-list-mounted' });
     queueLocalSyncFlush({ reason: 'local-node-retryable' });
 
     expect(getAccessToken).not.toHaveBeenCalled();
     expect(agentClient.processLocalSyncEvents).not.toHaveBeenCalled();
-
     await flushQueuedLocalSyncForTest();
 
-    expect(getAccessToken).toHaveBeenCalledTimes(1);
-    expect(agentClient.processLocalSyncEvents).toHaveBeenCalledTimes(1);
-    expect(agentClient.processLocalSyncEvents).toHaveBeenCalledWith('mock-token', 'cloud-user-1', 25);
+    expect(agentClient.processLocalSyncEvents).toHaveBeenCalledWith(
+      'mock-token',
+      'cloud-user-1',
+      25,
+    );
+  });
+
+  it('flushes one workspace to completion before sharing', async () => {
+    vi.mocked(agentClient.processLocalSyncEvents)
+      .mockResolvedValueOnce(100)
+      .mockResolvedValueOnce(2);
+
+    await expect(flushWorkspaceCloudSync('workspace-1')).resolves.toBe(102);
+
+    expect(agentClient.processLocalSyncEvents).toHaveBeenNthCalledWith(
+      1,
+      'mock-token',
+      'cloud-user-1',
+      100,
+      'workspace-1',
+      false,
+    );
+    expect(agentClient.processLocalSyncEvents).toHaveBeenCalledTimes(2);
+  });
+
+  it('uploads only the bootstrap snapshot for a first share', async () => {
+    vi.mocked(agentClient.processLocalSyncEvents).mockResolvedValueOnce(1);
+
+    await expect(flushWorkspaceCloudBootstrap('workspace-1')).resolves.toBe(1);
+
+    expect(agentClient.processLocalSyncEvents).toHaveBeenCalledWith(
+      'mock-token',
+      'cloud-user-1',
+      1,
+      'workspace-1',
+      true,
+    );
   });
 });

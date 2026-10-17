@@ -22,6 +22,7 @@ interface ConfigButtonProps {
   repoPath: string | null;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  allowContinueWithDefaultPolicy?: boolean;
 }
 
 type ConfigPanelId = 'worktree-policy' | 'keyboard-shortcuts' | 'default-prompts';
@@ -52,7 +53,12 @@ const configPanels = [
   icon: LucideIcon;
 }>;
 
-export function ConfigButton({ repoPath, open, onOpenChange }: ConfigButtonProps) {
+export function ConfigButton({
+  repoPath,
+  open,
+  onOpenChange,
+  allowContinueWithDefaultPolicy = false,
+}: ConfigButtonProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [activePanelId, setActivePanelId] = useState<ConfigPanelId>('worktree-policy');
   const isOpen = open ?? uncontrolledOpen;
@@ -128,7 +134,14 @@ export function ConfigButton({ repoPath, open, onOpenChange }: ConfigButtonProps
           <div className="flex min-h-0 min-w-0">
             {activePanelId === 'worktree-policy' ? (
               <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                <WorktreePolicyPanel repoPath={repoPath} />
+                <WorktreePolicyPanel
+                  repoPath={repoPath}
+                  onContinueWithDefaultPolicy={
+                    allowContinueWithDefaultPolicy && onOpenChange
+                      ? () => onOpenChange(false)
+                      : undefined
+                  }
+                />
               </div>
             ) : activePanelId === 'keyboard-shortcuts' ? (
               <ShortcutSettingsPanel />

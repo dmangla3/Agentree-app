@@ -7,12 +7,14 @@ import { WorkspaceShareDialog } from './WorkspaceShareDialog';
 interface AppHeaderProps {
     selectedWorkspaceId: string | null;
     selectedWorkspaceName: string | null;
+    selectedWorkspaceCloudSyncEnabled: boolean;
     onOpenSearch: () => void;
 }
 
 export function AppHeader({
     selectedWorkspaceId,
     selectedWorkspaceName,
+    selectedWorkspaceCloudSyncEnabled,
     onOpenSearch,
 }: AppHeaderProps) {
     return (
@@ -32,6 +34,7 @@ export function AppHeader({
                 <WorkspaceShareDialog
                     workspaceId={selectedWorkspaceId}
                     workspaceName={selectedWorkspaceName}
+                    cloudSyncEnabled={selectedWorkspaceCloudSyncEnabled}
                 />
                 <button
                     type="button"

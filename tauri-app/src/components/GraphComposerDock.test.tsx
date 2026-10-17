@@ -95,13 +95,15 @@ describe('GraphComposerDock', () => {
     expect(composerSource).not.toContain('<textarea');
   });
 
-  it('keeps the graph composer control surface for model, code base, context, and permissions', async () => {
+  it('keeps model selection in the footer and code base, context, and permissions in the control row', async () => {
     const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
     const composerSource = readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
 
     expect(composerSource).not.toContain('aria-label="Select flow"');
-    expect(composerSource).toContain('aria-label="Select model"');
+    expect(composerSource).not.toContain('aria-label="Select model"');
+    expect(composerSource).toContain('aria-label={`Change ${chipAgent.name}`}');
+    expect(composerSource).toContain('aria-label="Add model"');
     expect(composerSource).toContain('aria-label="Select code base commit"');
     expect(composerSource).toContain('aria-label="Select context"');
     expect(composerSource).toContain('aria-label="Select permissions"');
@@ -109,7 +111,7 @@ describe('GraphComposerDock', () => {
     expect(composerSource).toContain('UnifiedAgentModelSelector');
   });
 
-  it('keeps tracked-ref code-base chips and multi-model selection wired in graph composer', async () => {
+  it('keeps tracked-ref code-base chips and model run counts wired in graph composer', async () => {
     const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
     const composerSource = readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
@@ -121,7 +123,11 @@ describe('GraphComposerDock', () => {
     expect(composerSource).toContain('trackedRefs: liveTrackedRefs');
     expect(composerSource).toContain('headSha: currentHeadSha');
     expect(composerSource).toContain('agentRunCounts=');
-    expect(composerSource).toContain('onAgentRunCountChange=');
+    expect(composerSource).not.toContain('onAgentRunCountChange=');
+    expect(composerSource).toContain("modelPickerTarget?.kind === 'replace'");
+    expect(composerSource).toContain("modelPickerTarget?.kind === 'add' ? Object.keys(normalizedSelectedAgentRunCounts) : undefined");
+    expect(composerSource).toContain('selectedAgentRunChips.map');
+    expect(composerSource).not.toContain('selectedAgentRunChips.slice');
     expect(composerSource).toContain('buildComposerAgentRuns');
   });
 

@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import {
   AlertCircle,
+  ArrowRight,
   ChevronDown,
   CheckCircle2,
   FileJson,
@@ -53,6 +54,7 @@ interface WorktreePolicyButtonProps {
 
 interface WorktreePolicyPanelProps {
   repoPath: string | null;
+  onContinueWithDefaultPolicy?: () => void;
 }
 
 type LoadState =
@@ -334,7 +336,10 @@ function RuntimeCachePolicy() {
   );
 }
 
-export function WorktreePolicyPanel({ repoPath }: WorktreePolicyPanelProps) {
+export function WorktreePolicyPanel({
+  repoPath,
+  onContinueWithDefaultPolicy,
+}: WorktreePolicyPanelProps) {
   const [loadState, setLoadState] = useState<LoadState>(emptyState);
   const [draft, setDraft] = useState<AgentWorktreeConfig | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -380,6 +385,11 @@ export function WorktreePolicyPanel({ repoPath }: WorktreePolicyPanelProps) {
     policy &&
       draft &&
       JSON.stringify(policy.config) !== JSON.stringify(draft)
+  );
+  const canContinueWithDefaultPolicy = Boolean(
+    onContinueWithDefaultPolicy &&
+      policy?.source === 'default' &&
+      !hasChanges
   );
 
   const updateDraft = <Key extends keyof AgentWorktreeConfig>(
@@ -556,11 +566,20 @@ export function WorktreePolicyPanel({ repoPath }: WorktreePolicyPanelProps) {
           <Button
             type="button"
             size="sm"
-            onClick={savePolicy}
-            disabled={!repoPath || !draft || !hasChanges || isSaving}
+            onClick={canContinueWithDefaultPolicy ? onContinueWithDefaultPolicy : savePolicy}
+            disabled={
+              !canContinueWithDefaultPolicy &&
+              (!repoPath || !draft || !hasChanges || isSaving)
+            }
           >
-            {isSaving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
-            Save policy
+            {canContinueWithDefaultPolicy ? (
+              <ArrowRight size={15} />
+            ) : isSaving ? (
+              <Loader2 size={15} className="animate-spin" />
+            ) : (
+              <Save size={15} />
+            )}
+            {canContinueWithDefaultPolicy ? 'Continue with default policy' : 'Save policy'}
           </Button>
         </DialogFooter>
     </TooltipProvider>

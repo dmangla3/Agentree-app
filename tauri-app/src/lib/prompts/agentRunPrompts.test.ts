@@ -74,6 +74,10 @@ describe('agent run prompts', () => {
     expect(result.prompt).toContain('File references in responses');
     expect(result.prompt).toContain('clickable absolute local file links are acceptable');
     expect(result.prompt).toContain('call the Agentree MCP show_output tool with its path or URL');
+    expect(result.prompt).toContain('[Agentree Delegation]');
+    expect(result.prompt).toContain('call spawn_thread once to create one child thread');
+    expect(result.prompt).toContain('do not create a separate thread for every worker');
+    expect(result.prompt).toContain('Start all related workers in that thread with send_message');
     expect(result.prompt).toContain('Review this generated implementation.');
     expect(result.agentreeContextInjected).toBe(false);
   });
@@ -93,47 +97,6 @@ describe('agent run prompts', () => {
     expect(firstThreadPrompt.prompt).toContain('set thread_title to a concise 3-7 word title');
     expect(firstThreadPrompt.prompt).toContain('based only on the latest user request');
     expect(laterThreadPrompt.prompt).toContain('set thread_title to null');
-  });
-
-  it('asks orchestrator runs for an orchestration ai label', () => {
-    const result = buildAgentRunPrompt({
-      mode: 'agentree_context',
-      userPrompt: '#reviewer',
-      orchestrationLabelMode: 'orchestrator',
-      orchestrationControl: {
-        orchestratorRunId: 'run-orch',
-        orchestratorNodeId: 'assistant-orch',
-      },
-      threadTitleMode: 'none',
-    });
-
-    expect(result.prompt).toContain('[Agentree Orchestrator]');
-    expect(result.prompt).toContain('set ai_label to a concise 2-5 word task label');
-    expect(result.prompt).toContain('Prefer task or domain wording over model or spawned-run labels');
-    expect(result.prompt).toContain('orchestrator_run_id: run-orch');
-    expect(result.prompt).toContain('orchestrator_node_id: assistant-orch');
-    expect(result.prompt).toContain('first use list_prompt_templates and get_prompt_template');
-    expect(result.prompt).toContain('before writing any Mermaid flowchart');
-    expect(result.prompt).toContain('After resolving any referenced #template, write a concise Mermaid flowchart');
-    expect(result.prompt.indexOf('first use list_prompt_templates and get_prompt_template')).toBeLessThan(
-      result.prompt.indexOf('After resolving any referenced #template, write a concise Mermaid flowchart'),
-    );
-    expect(result.prompt).toContain('normal assistant response');
-    expect(result.prompt).toContain('Your role is coordination only');
-    expect(result.prompt).toContain('Do not inspect repository files, edit files, implement fixes, run tests, or perform the task work yourself');
-    expect(result.prompt).toContain('delegate actual work to orchestration runs');
-    expect(result.prompt).toContain('the controller and visual grouping container');
-    expect(result.prompt).toContain('its graph parent is the assistant message the user replied to');
-    expect(result.prompt).toContain('If this is a new thread with no assistant target yet');
-    expect(result.prompt).toContain('its graph parent is the thread node');
-    expect(result.prompt).toContain('Context/base resolve from that same default parent');
-    expect(result.prompt).toContain('when creating a follow-up run under an earlier orchestration run');
-    expect(result.prompt).toContain("inherit that run's graph placement, context, or base");
-    expect(result.prompt).toContain('Do not restate Agentree platform guardrails, dependency rules, or artifact path rules in spawned prompts');
-    expect(result.prompt).toContain('Wait for orchestration runs with wait_for_runs');
-    expect(result.prompt).toContain('checkpointElapsed=true as a neutral checkpoint');
-    expect(result.prompt).toContain('Do not steer based on checkpoint count');
-    expect(result.prompt).toContain('recent latestEventAt values');
   });
 
   it('wraps selected Agentree context for orchestration run prompts when provided', () => {
@@ -160,10 +123,6 @@ describe('agent run prompts', () => {
         contextText: 'Prior context',
       },
       threadTitleMode: 'none',
-      orchestrationControl: {
-        orchestratorRunId: 'run-123',
-        orchestratorNodeId: 'node-456',
-      },
       defaultPromptOverrides: [
         {
           id: 'dependency_guard',
@@ -181,10 +140,6 @@ describe('agent run prompts', () => {
           id: 'thread_title_none',
           text: 'No title override',
         },
-        {
-          id: 'orchestration_control',
-          text: 'Control {{orchestratorRunId}} from {{orchestratorNodeId}}',
-        },
       ],
     });
 
@@ -192,9 +147,7 @@ describe('agent run prompts', () => {
     expect(result.prompt).toContain('Custom artifact path rule');
     expect(result.prompt).toContain('Context: Prior context\nRequest: Ship the prompt editor.');
     expect(result.prompt).toContain('No title override');
-    expect(result.prompt).toContain('Control run-123 from node-456');
     expect(result.prompt).not.toContain('Agentree provides writable per-agent cache/build env vars');
     expect(result.prompt).not.toContain('{{contextText}}');
-    expect(result.prompt).not.toContain('{{orchestratorRunId}}');
   });
 });

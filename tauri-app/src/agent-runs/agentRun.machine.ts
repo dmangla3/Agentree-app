@@ -133,7 +133,7 @@ const initialSnapshot = (input: AgentRunInput): AgentRunSnapshot => {
   return {
     nodeId: input.nodeId,
     workspaceId: input.workspaceId ?? null,
-    parentId: input.parentId ?? null,
+    parentId: cleanString(input.parentId),
     role: input.role ?? null,
     agentId: input.agentId ?? null,
     message: input.message ?? null,
@@ -397,7 +397,7 @@ export const reduceAgentRunSnapshot = (
         ...snapshot,
         nodeId: event.message.id,
         workspaceId: event.message.workspaceId ?? snapshot.workspaceId,
-        parentId: event.message.parentId ?? snapshot.parentId,
+        parentId: cleanString(event.message.parentId) ?? snapshot.parentId,
         role: event.message.role ?? snapshot.role,
         agentId: event.message.agent_id ?? snapshot.agentId,
         message: { ...(snapshot.message ?? {}), ...event.message },
@@ -414,7 +414,7 @@ export const reduceAgentRunSnapshot = (
         ...snapshot,
         nodeId: event.realNode.id,
         workspaceId: event.realNode.workspaceId ?? snapshot.workspaceId,
-        parentId: event.realNode.parentId ?? snapshot.parentId,
+        parentId: cleanString(event.realNode.parentId) ?? snapshot.parentId,
         role: event.realNode.role ?? snapshot.role,
         agentId: event.realNode.agent_id ?? snapshot.agentId,
         message: { ...(snapshot.message ?? {}), ...event.realNode, _optimistic: false },
@@ -449,8 +449,15 @@ export const reduceAgentRunSnapshot = (
     case 'content':
       {
         if (!shouldAcceptContentEvent(snapshot, event)) return snapshot;
-        const timeline = isTerminalAgentStatus(snapshot.status)
-          ? replaceAssistantTimelineMessage(snapshot.timeline, event.content, event.timestamp, event.providerItemId)
+        const timeline = isTerminalAgentStatus(snapshot.status) || (
+          event.providerItemId && event.timelineContent !== undefined
+        )
+          ? replaceAssistantTimelineMessage(
+            snapshot.timeline,
+            event.timelineContent ?? event.content,
+            event.timestamp,
+            event.providerItemId,
+          )
           : appendAssistantTimelineMessage(snapshot.timeline, event.appendedText, event.timestamp, event.providerItemId);
         return {
         ...updateStatus(snapshot, 'streaming', snapshot.progress),

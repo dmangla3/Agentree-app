@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  getLoginProfileAuthTypeLabel,
   getLoginProfileProviderLabel,
   getLoginProfileStatusTone,
   hasActiveLoginProfileForProvider,
@@ -13,6 +14,13 @@ describe('loginProfiles helpers', () => {
   it('labels supported providers', () => {
     expect(getLoginProfileProviderLabel('codex')).toBe('Codex');
     expect(getLoginProfileProviderLabel('claude')).toBe('Claude');
+  });
+
+  it('labels subscription and API key authentication types', () => {
+    expect(getLoginProfileAuthTypeLabel('codex_chatgpt_session')).toBe('ChatGPT subscription');
+    expect(getLoginProfileAuthTypeLabel('codex_api_key')).toBe('OpenAI API key');
+    expect(getLoginProfileAuthTypeLabel('claude_oauth')).toBe('Claude subscription');
+    expect(getLoginProfileAuthTypeLabel('claude_api_key')).toBe('Anthropic API key');
   });
 
   it('maps non-ready statuses to actionable tones', () => {

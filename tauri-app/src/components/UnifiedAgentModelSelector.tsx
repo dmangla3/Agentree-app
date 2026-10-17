@@ -2,7 +2,12 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronRight, CircleGauge, KeyRound, Minus, Plus, Sparkles, X } from 'lucide-react';
 import { useAgents, type Agent } from '../hooks/useAgents';
-import { runtimeModels, type AgentModelConfig, type RuntimeProvider } from '../lib/runtimeModels';
+import {
+    getReasoningEffortSortOrder,
+    runtimeModels,
+    type AgentModelConfig,
+    type RuntimeProvider,
+} from '../lib/runtimeModels';
 import { dispatchOpenLoginProfiles } from '../lib/loginNavigationEvents';
 import { ScrollArea } from "../../@/components/ui/scroll-area";
 import { Checkbox } from "../../@/components/ui/checkbox";
@@ -29,6 +34,7 @@ interface UnifiedAgentModelSelectorProps {
     agentRunCounts?: Record<string, number>;
     onAgentRunCountChange?: (agentId: string, count: number) => void;
     externalRuntimeReadinessByProvider?: Record<string, RuntimeReadiness | null>;
+    excludedAgentIds?: readonly string[];
 }
 
 type AgentWithMeta = Agent & {
@@ -123,14 +129,6 @@ const providerAccentClasses = (provider: string) => {
         hoverSurface: 'hover:bg-emerald-50/70 dark:hover:bg-emerald-950/25',
         dot: 'bg-emerald-600',
     };
-};
-
-const effortSortOrder = (provider: string, effort: string | null | undefined) => {
-    const normalized = String(effort || '').trim().toLowerCase();
-    if (provider === 'claude') {
-        return { low: 0, medium: 1, high: 2, max: 3 }[normalized as 'low' | 'medium' | 'high' | 'max'] ?? 99;
-    }
-    return { low: 0, medium: 1, high: 2, xhigh: 3 }[normalized as 'low' | 'medium' | 'high' | 'xhigh'] ?? 99;
 };
 
 const familyOrderByKey = new Map<string, number>();
@@ -256,11 +254,18 @@ export function UnifiedAgentModelSelector({
     agentRunCounts,
     onAgentRunCountChange,
     externalRuntimeReadinessByProvider,
+    excludedAgentIds,
 }: UnifiedAgentModelSelectorProps) {
     const { data: agentsData } = useAgents();
-    const agents = useMemo(() => agentsData ?? [], [agentsData]);
+    const allAgents = useMemo(() => agentsData ?? [], [agentsData]);
+    const excludedAgentIdSet = useMemo(() => new Set(excludedAgentIds ?? []), [excludedAgentIds]);
+    const agents = useMemo(
+        () => allAgents.filter((agent) => !excludedAgentIdSet.has(agent.id)),
+        [allAgents, excludedAgentIdSet]
+    );
     const providerLimits = useProviderLimitsStore((state) => state.byProvider);
     const loginProfiles = useLoginProfilesStore((state) => state.profiles);
+    const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
     const [hoveredFamilyKey, setHoveredFamilyKey] = useState<string | null>(null);
     const hoveredFamilyKeyRef = useRef<string | null>(null);
     const activeFamilyKeyRef = useRef<string | null>(null);
@@ -463,8 +468,8 @@ export function UnifiedAgentModelSelector({
             .map(([provider, families]) => {
                 const providerFamilies = Array.from(families.values()).map((family) => {
                     const sortedModels = [...family.models].sort((left, right) => {
-                        const leftOrder = effortSortOrder(provider, left.model_config?.reasoningEffort);
-                        const rightOrder = effortSortOrder(provider, right.model_config?.reasoningEffort);
+                        const leftOrder = getReasoningEffortSortOrder(provider, left.model_config?.reasoningEffort);
+                        const rightOrder = getReasoningEffortSortOrder(provider, right.model_config?.reasoningEffort);
                         if (leftOrder !== rightOrder) return leftOrder - rightOrder;
                         return left.name.localeCompare(right.name);
                     });
@@ -490,7 +495,16 @@ export function UnifiedAgentModelSelector({
             });
     }, [agents, selectedAgentId, agentRunCounts]);
 
-    const familyList = useMemo(() => groupedAgents.flatMap((group) => group.families), [groupedAgents]);
+    const activeProviderGroup = useMemo(() => (
+        groupedAgents.find((group) => group.provider === selectedProvider)
+        ?? groupedAgents.find((group) => group.families.some((family) => (
+            family.models.some((model) => model.id === selectedAgentId)
+        )))
+        ?? groupedAgents.find((group) => group.families.some((family) => family.selectedAgentId != null))
+        ?? groupedAgents[0]
+        ?? null
+    ), [groupedAgents, selectedAgentId, selectedProvider]);
+    const familyList = useMemo(() => activeProviderGroup?.families ?? [], [activeProviderGroup]);
     const activeFamily = useMemo(() => {
         return familyList.find((family) => family.key === hoveredFamilyKey)
             ?? familyList.find((family) => family.selectedAgentId != null)
@@ -549,7 +563,7 @@ export function UnifiedAgentModelSelector({
     };
 
     return (
-        <div className="flex h-full w-full flex-col bg-[hsl(var(--app-bg-elevated))] text-popover-foreground">
+        <div className="flex h-full w-full min-w-0 flex-col overflow-hidden bg-[hsl(var(--app-bg-elevated))] text-popover-foreground">
             <div className="shrink-0 border-b border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong))] px-4 py-3 shadow-[0_1px_0_rgba(255,255,255,0.7)_inset] dark:shadow-[0_1px_0_rgba(255,255,255,0.05)_inset]">
                 <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
@@ -561,21 +575,71 @@ export function UnifiedAgentModelSelector({
                         Effort
                     </div>
                 </div>
+                {groupedAgents.length > 0 ? (
+                    <div role="tablist" aria-label="Model providers" className="mt-3 flex items-center gap-1 rounded-lg bg-background/58 p-1 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]">
+                        {groupedAgents.map(({ provider, families }) => {
+                            const meta = providerMeta(provider);
+                            const accent = providerAccentClasses(provider);
+                            const isActive = activeProviderGroup?.provider === provider;
+                            const providerSelectable = isProviderSelectable(provider);
+                            return (
+                                <button
+                                    key={provider}
+                                    type="button"
+                                    role="tab"
+                                    aria-selected={isActive}
+                                    data-model-provider-tab={provider}
+                                    onClick={() => setSelectedProvider(provider)}
+                                    className={cn(
+                                        "flex min-w-0 flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-[12px] font-semibold outline-none transition-[background-color,box-shadow,color,transform] duration-150 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]",
+                                        isActive
+                                            ? "bg-background text-foreground shadow-[0_8px_18px_-16px_rgba(15,23,42,0.72),inset_0_0_0_1px_hsl(var(--app-border)/0.76)]"
+                                            : "text-muted-foreground hover:bg-background/62 hover:text-foreground"
+                                    )}
+                                >
+                                    {provider === 'claude' ? (
+                                        <AnthropicMark className={cn("h-3.5 w-3.5 shrink-0", accent.iconText)} />
+                                    ) : (
+                                        <OpenAiMark className={cn("h-3.5 w-3.5 shrink-0", accent.iconText)} />
+                                    )}
+                                    <span className="truncate">{meta.title}</span>
+                                    <span className="rounded bg-muted/55 px-1.5 py-0.5 text-[9.5px] font-medium tabular-nums text-muted-foreground">
+                                        {families.length}
+                                    </span>
+                                    <span
+                                        className={cn("h-1.5 w-1.5 shrink-0 rounded-full", providerSelectable ? accent.dot : "bg-amber-500")}
+                                        aria-label={providerSelectable ? `${meta.title} ready` : `${meta.title} login required`}
+                                    />
+                                </button>
+                            );
+                        })}
+                    </div>
+                ) : null}
             </div>
 
             {groupedAgents.length === 0 ? (
                 <div className="flex flex-1 items-center justify-center p-2.5">
                     <div className="flex min-h-[220px] w-full flex-col items-center justify-center rounded-lg bg-background/65 px-5 text-center shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.7)]">
                         <Sparkles className="h-4 w-4 text-muted-foreground" />
-                        <div className="mt-2 text-[13px] font-semibold text-foreground">No runtimes available</div>
+                        <div className="mt-2 text-[13px] font-semibold text-foreground">
+                            {allAgents.length > 0 && excludedAgentIdSet.size > 0 ? 'All models selected' : 'No runtimes available'}
+                        </div>
                         <p className="mt-1 max-w-[26ch] text-[11px] leading-relaxed text-muted-foreground">
-                            Add an agent provider before selecting a composer model.
+                            {allAgents.length > 0 && excludedAgentIdSet.size > 0
+                                ? 'Every available model is already included in this run.'
+                                : 'Add an agent provider before selecting a composer model.'}
                         </p>
                     </div>
                 </div>
             ) : (
-                <div className="flex min-h-0 flex-1">
-                    <ScrollArea className="w-[312px] shrink-0 border-r border-[hsl(var(--app-border)/0.62)]">
+                <div
+                    data-model-selector-body="true"
+                    className="grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(156px,0.85fr)_minmax(0,1fr)]"
+                >
+                    <ScrollArea
+                        data-model-family-column="true"
+                        className="min-w-0 border-r border-[hsl(var(--app-border)/0.62)]"
+                    >
                         <div
                             ref={familyListRef}
                             data-model-family-list="true"
@@ -588,7 +652,8 @@ export function UnifiedAgentModelSelector({
                                 updateMenuAimDebugState(null);
                             }}
                         >
-                            {groupedAgents.map(({ provider, families }) => {
+                            {activeProviderGroup ? (() => {
+                                const { provider, families } = activeProviderGroup;
                                 const meta = providerMeta(provider);
                                 const accent = providerAccentClasses(provider);
                                 const providerSelectable = isProviderSelectable(provider);
@@ -608,64 +673,51 @@ export function UnifiedAgentModelSelector({
                                             "rounded-lg bg-background/72 p-2 shadow-[0_12px_34px_-30px_rgba(15,23,42,0.45),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]"
                                         )}
                                     >
-                                        <div className="mb-2 space-y-2 px-1">
-                                            <div className="flex min-w-0 items-center justify-between gap-2">
-                                                <div className="flex min-w-0 items-center gap-2.5">
-                                                    <div className={cn("flex h-8 w-8 items-center justify-center rounded-md", accent.iconSurface)}>
-                                                        {provider === 'claude' ? (
-                                                            <AnthropicMark className={cn("h-4 w-4", accent.iconText)} />
-                                                        ) : (
-                                                            <OpenAiMark className={cn("h-4 w-4", accent.iconText)} />
-                                                        )}
-                                                    </div>
-                                                    <div className="min-w-0">
-                                                        <div className="flex min-w-0 items-center gap-2">
-                                                            <span className="text-[13px] font-semibold text-foreground">{meta.title}</span>
-                                                            <span className="text-[10.5px] text-muted-foreground">{meta.badge}</span>
-                                                        </div>
-                                                        <div className="mt-0.5 text-[10.5px] text-muted-foreground">
-                                                            {families.length} {families.length === 1 ? 'family' : 'families'} available
-                                                        </div>
-                                                    </div>
+                                        {!providerSelectable || displayedLimitWindows.length > 0 ? (
+                                            <div className="mb-2 space-y-2 px-1">
+                                                <div className="flex min-w-0 items-center justify-between gap-2">
+                                                    <span className="text-[10.5px] font-medium text-muted-foreground">
+                                                        {families.length} {families.length === 1 ? 'family' : 'families'} available
+                                                    </span>
+                                                    {!providerSelectable && isRuntimeProvider(provider) ? (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openLoginProfilesForProvider(provider)}
+                                                            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-amber-50 px-2 text-[10.5px] font-semibold text-amber-800 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.18)] transition-[background-color,transform] duration-150 hover:bg-amber-100 active:scale-[0.96] dark:bg-amber-950/35 dark:text-amber-300 dark:hover:bg-amber-950/55"
+                                                        >
+                                                            <KeyRound className="h-3 w-3" />
+                                                            Login to {meta.title}
+                                                        </button>
+                                                    ) : null}
                                                 </div>
-                                                {!providerSelectable && isRuntimeProvider(provider) ? (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => openLoginProfilesForProvider(provider)}
-                                                        className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-amber-50 px-2 text-[10.5px] font-semibold text-amber-800 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.18)] transition-[background-color,transform] duration-150 hover:bg-amber-100 active:scale-[0.96] dark:bg-amber-950/35 dark:text-amber-300 dark:hover:bg-amber-950/55"
-                                                    >
-                                                        <KeyRound className="h-3 w-3" />
-                                                        Login to {meta.title}
-                                                    </button>
+                                                {displayedLimitWindows.length > 0 ? (
+                                                    <div className="flex justify-end">
+                                                        <div className="grid shrink-0 gap-1" aria-label={`${meta.title} usage availability`}>
+                                                            {displayedLimitWindows.map((window) => {
+                                                                const rowStyle = usageRowClasses(window.severity);
+                                                                return (
+                                                                    <div
+                                                                        key={window.id}
+                                                                        className={cn(
+                                                                            "flex h-5 min-w-[92px] items-center justify-between gap-2 rounded px-1.5 text-[10px] font-semibold tabular-nums",
+                                                                            rowStyle.row
+                                                                        )}
+                                                                    >
+                                                                        <span className="flex min-w-0 items-center gap-1.5">
+                                                                            <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", rowStyle.dot)} aria-hidden="true" />
+                                                                            <span className="truncate">{window.shortLabel}</span>
+                                                                        </span>
+                                                                        <span className="text-foreground/82 dark:text-current">
+                                                                            {window.percent != null ? `${window.percent}% left` : 'n/a'}
+                                                                        </span>
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </div>
                                                 ) : null}
                                             </div>
-                                            {displayedLimitWindows.length > 0 ? (
-                                                <div className="flex justify-end">
-                                                    <div className="grid shrink-0 gap-1" aria-label={`${meta.title} usage availability`}>
-                                                        {displayedLimitWindows.map((window) => {
-                                                            const rowStyle = usageRowClasses(window.severity);
-                                                            return (
-                                                                <div
-                                                                    key={window.id}
-                                                                    className={cn(
-                                                                        "flex h-5 min-w-[92px] items-center justify-between gap-2 rounded px-1.5 text-[10px] font-semibold tabular-nums",
-                                                                        rowStyle.row
-                                                                    )}
-                                                                >
-                                                                    <span className="flex min-w-0 items-center gap-1.5">
-                                                                        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", rowStyle.dot)} aria-hidden="true" />
-                                                                        <span className="truncate">{window.shortLabel}</span>
-                                                                    </span>
-                                                                    <span className="text-foreground/82 dark:text-current">
-                                                                        {window.percent != null ? `${window.percent}% left` : 'n/a'}
-                                                                    </span>
-                                                                </div>
-                                                            );
-                                                        })}
-                                                    </div>
-                                                </div>
-                                            ) : null}
-                                        </div>
+                                        ) : null}
                                         <div className={cn("space-y-1", !providerSelectable && "opacity-45 grayscale")}>
                                             {families.map((family) => {
                                                 const isSelected = family.selectedAgentId != null;
@@ -738,10 +790,14 @@ export function UnifiedAgentModelSelector({
                                         </div>
                                     </section>
                                 );
-                            })}
+                            })() : null}
                         </div>
                     </ScrollArea>
-                    <div ref={effortPanelRef} data-model-effort-column="true" className="min-w-0 flex-1 bg-[hsl(var(--app-bg-elevated))] p-2.5">
+                    <div
+                        ref={effortPanelRef}
+                        data-model-effort-column="true"
+                        className="min-w-0 overflow-x-hidden overflow-y-auto bg-[hsl(var(--app-bg-elevated))] p-2.5"
+                    >
                         {activeFamily ? (() => {
                             const provider = activeFamily.provider;
                             const accent = providerAccentClasses(provider);
@@ -779,7 +835,7 @@ export function UnifiedAgentModelSelector({
                             return (
                                 <div
                                     data-model-effort-panel={activeFamily.key}
-                                    className="h-full rounded-lg bg-background/74 p-2 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72)]"
+                                    className="min-h-full min-w-0 overflow-hidden rounded-lg bg-background/74 p-2 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72)]"
                                 >
                                     <div className="border-b border-[hsl(var(--app-border)/0.58)] px-2 pb-2">
                                         <div className="text-[11px] font-medium text-muted-foreground">
@@ -829,15 +885,16 @@ export function UnifiedAgentModelSelector({
                                                         }
                                                         onSelectAgent(agent.id);
                                                     }}
+                                                    data-model-effort={agent.model_config?.reasoningEffort ?? 'default'}
                                                     className={cn(
-                                                        "group/effort flex w-full items-start justify-between gap-3 rounded-md px-2.5 py-2.5 text-left outline-none transition-[background-color,box-shadow,transform] duration-150 ease-out",
+                                                        "group/effort flex w-full min-w-0 flex-wrap items-start justify-between gap-3 overflow-hidden rounded-md px-2.5 py-2.5 text-left outline-none transition-[background-color,box-shadow,transform] duration-150 ease-out",
                                                         "hover:bg-[hsl(var(--app-bg-elevated))] focus-visible:bg-[hsl(var(--app-bg-elevated))] focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1 focus-visible:ring-offset-background active:scale-[0.96]",
                                                         isSelected ? "bg-[hsl(var(--app-bg-elevated))] shadow-[0_10px_24px_-22px_rgba(15,23,42,0.7),inset_0_0_0_1px_hsl(var(--app-border)/0.8)]" : "bg-transparent",
                                                         !isModelSelectable && "cursor-not-allowed opacity-45 hover:bg-transparent active:scale-100"
                                                     )}
                                                     aria-disabled={!isModelSelectable}
                                                 >
-                                                    <div className="flex min-w-0 flex-1 gap-2.5 pr-1">
+                                                    <div className="flex min-w-0 flex-[1_1_7rem] gap-2.5 pr-1">
                                                         {supportsMultiRun ? (
                                                             <span
                                                                 className="mt-0.5 shrink-0"
@@ -867,7 +924,7 @@ export function UnifiedAgentModelSelector({
                                                         )}
                                                         <div className="min-w-0 flex-1">
                                                             <div className={cn(
-                                                                "text-[13px] leading-tight",
+                                                                "truncate text-[13px] leading-tight",
                                                                 isSelected ? "font-semibold text-foreground" : "font-medium text-foreground/82 group-hover/effort:text-foreground"
                                                             )}>
                                                                 {effortLabel}
@@ -879,7 +936,7 @@ export function UnifiedAgentModelSelector({
                                                     </div>
                                                     <div
                                                         className={cn(
-                                                            "flex min-h-7 shrink-0 items-center gap-1.5 rounded-md bg-muted/35 p-0.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.55)] transition-[opacity,transform,background-color,box-shadow] duration-150 ease-out",
+                                                            "ml-auto flex min-h-7 max-w-full shrink-0 items-center gap-1.5 rounded-md bg-muted/35 p-0.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.55)] transition-[opacity,transform,background-color,box-shadow] duration-150 ease-out",
                                                             supportsMultiRun && !isSelected && "opacity-0 group-hover/effort:opacity-100 group-focus-visible/effort:opacity-100",
                                                             isSelected && "bg-background shadow-[0_8px_20px_-16px_rgba(15,23,42,0.8),inset_0_0_0_1px_hsl(var(--app-border)/0.8)]"
                                                         )}

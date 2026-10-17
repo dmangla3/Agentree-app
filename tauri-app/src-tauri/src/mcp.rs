@@ -17,15 +17,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 static MCP_STARTED: AtomicBool = AtomicBool::new(false);
 static MCP_AUTH_TOKEN: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 static MCP_WORKSPACE_ID: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
-static MCP_ORCHESTRATION_PENDING: Lazy<
-    Mutex<HashMap<String, tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>>>,
-> = Lazy::new(|| Mutex::new(HashMap::new()));
 /// Port the MCP server actually bound to (0 until the server is up). When no
 /// explicit port override is configured the server binds to an OS-assigned free
 /// port, and this is how the rest of the app learns which one it got.
@@ -228,40 +224,17 @@ pub(crate) fn set_mcp_current_context(
     Ok(())
 }
 
-#[tauri::command]
-#[specta::specta]
-pub fn get_mcp_server_url() -> String {
-    mcp_server_url()
+pub(crate) fn current_mcp_auth_token() -> Result<Option<String>, String> {
+    MCP_AUTH_TOKEN
+        .lock()
+        .map(|token| token.clone())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn resolve_orchestration_mcp_request(
-    request_id: String,
-    response_json: Option<String>,
-    error: Option<String>,
-) -> Result<(), String> {
-    let sender = MCP_ORCHESTRATION_PENDING
-        .lock()
-        .map_err(|e| e.to_string())?
-        .remove(&request_id)
-        .ok_or_else(|| format!("Unknown orchestration MCP request {}", request_id))?;
-
-    let result = if let Some(error) = error.filter(|value| !value.trim().is_empty()) {
-        Err(error)
-    } else {
-        let parsed = response_json
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .map(|value| serde_json::from_str::<serde_json::Value>(value))
-            .transpose()
-            .map_err(|e| e.to_string())?
-            .unwrap_or_else(|| serde_json::json!({}));
-        Ok(parsed)
-    };
-    sender
-        .send(result)
-        .map_err(|_| "Orchestration MCP requester is no longer waiting.".to_string())
+pub fn get_mcp_server_url() -> String {
+    mcp_server_url()
 }
 
 async fn handle_rpc(
@@ -373,7 +346,7 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
             "tools": [
                 {
                     "name": "list_prompt_templates",
-                    "description": "List prompt templates available to the orchestrator. Use this to discover #template labels before spawning orchestration runs.",
+                    "description": "List prompt templates available to the current agent. Use this to discover #template labels before sending delegated work.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -387,7 +360,7 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                 },
                 {
                     "name": "get_prompt_template",
-                    "description": "Read one prompt template by id or #label. Use this before composing an orchestration run prompt from a #template mention.",
+                    "description": "Read one prompt template by id or #label before composing an agent message from a #template mention.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -400,100 +373,77 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                     }
                 },
                 {
-                    "name": "start_orchestration_run",
-                    "description": "Start one orchestration agent run. The spawned run is a normal graph run associated with the current orchestrator, not a graph child of the controller assistant.",
+                    "name": "spawn_thread",
+                    "description": "Create one empty child thread as a shared workspace for a delegated task. Agentree infers the parent thread from the current agent. Reuse the returned threadId for all related send_message calls instead of creating one thread per worker.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "orchestrator_run_id": { "type": "string" },
-                            "orchestrator_node_id": { "type": "string" },
-                            "decision_id": { "type": "string" },
-                            "prompt": { "type": "string" },
-                            "parent_node_id": {
-                                "type": "string",
-                                "description": "Optional visual/conversation parent for the orchestration run user node. Omit to attach first-level orchestration runs to the assistant message the user replied to, or to the thread node when this orchestration starts a new thread."
-                            },
-                            "context_parent_node_id": {
-                                "type": "string",
-                                "description": "Optional runtime context parent. Omit to inherit the orchestrator's original context parent."
-                            },
-                            "base_node_id": {
-                                "type": "string",
-                                "description": "Optional base node for runtime metadata. Omit to inherit the orchestrator's original base node."
-                            },
-                            "template_id": { "type": "string" },
-                            "agent_id": { "type": "string" },
-                            "agent_type": { "type": "string" },
-                            "agent_name": { "type": "string" },
-                            "model": { "type": "string" },
-                            "cli_args": { "type": "string" },
-                            "prompt_flag": { "type": "string" },
-                            "permission_mode": { "type": "string" },
-                            "login_profile_id": { "type": "string" }
+                            "title": { "type": "string", "description": "Optional title for the new child thread." }
                         },
-                        "required": ["orchestrator_run_id", "orchestrator_node_id", "decision_id", "prompt"]
+                        "required": []
                     }
                 },
                 {
-                    "name": "wait_for_runs",
-                    "description": "Wait for orchestration assistant runs without tight model polling. The wait returns when the condition is satisfied or before the provider MCP timeout with checkpointElapsed=true as a neutral checkpoint. A checkpoint is not a child-run timeout.",
+                    "name": "send_message",
+                    "description": "Create and start an agent message in an Agentree thread. Omit parent_node_id to place it at the thread root with fresh context; provide a completed assistant node to branch with that node's context and commit.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "orchestrator_run_id": { "type": "string" },
-                            "orchestrator_node_id": { "type": "string" },
-                            "wait_group_id": { "type": "string" },
-                            "assistant_node_ids": {
-                                "type": "array",
-                                "items": { "type": "string" }
-                            },
-                            "decision_ids": {
-                                "type": "array",
-                                "items": { "type": "string" }
-                            },
-                            "condition": {
-                                "type": "string",
-                                "description": "terminal, all, any, completed, failed, commit_available, any_terminal, or any_failed"
-                            },
-                            "timeout_ms": {
-                                "type": "number",
-                                "description": "Requested checkpoint wait duration in milliseconds. Agentree caps this below the provider MCP timeout."
-                            }
+                            "message": { "type": "string" },
+                            "thread_id": { "type": "string", "description": "Defaults to the current thread." },
+                            "parent_node_id": { "type": "string", "description": "Optional completed assistant node in the target thread." },
+                            "agent_type": { "type": "string", "enum": ["codex", "claude"] },
+                            "model": { "type": "string", "description": "Agentree runtime model id. Required when switching providers." }
                         },
-                        "required": ["orchestrator_run_id", "orchestrator_node_id", "assistant_node_ids"]
+                        "required": ["message"]
                     }
                 },
                 {
-                    "name": "control_run",
-                    "description": "Control a running assistant node. Use action=steer with content to guide it, or action=stop to cancel it. Stopping an active run requires force=true and reason. This uses the same app runtime controls as normal user steering.",
+                    "name": "steer_agent",
+                    "description": "Steer an actively running assistant without creating another graph node.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "assistant_node_id": { "type": "string" },
-                            "action": { "type": "string", "description": "steer or stop" },
-                            "content": { "type": "string" },
-                            "idempotency_key": { "type": "string" },
-                            "force": { "type": "boolean" },
-                            "reason": { "type": "string" }
+                            "message": { "type": "string" }
                         },
-                        "required": ["assistant_node_id", "action"]
+                        "required": ["assistant_node_id", "message"]
                     }
                 },
                 {
-                    "name": "complete_orchestration",
-                    "description": "Mark an orchestrator run completed after orchestration run work is done.",
+                    "name": "wait_for_agents",
+                    "description": "Wait efficiently for selected assistant runs. A checkpoint response means the wait window elapsed, not that a run timed out.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "orchestrator_run_id": { "type": "string" },
-                            "orchestrator_node_id": { "type": "string" },
-                            "terminal_orchestration_run_assistant_node_ids": {
-                                "type": "array",
-                                "description": "Terminal orchestration assistant node IDs.",
-                                "items": { "type": "string" }
-                            }
+                            "assistant_node_ids": { "type": "array", "items": { "type": "string" } },
+                            "condition": { "type": "string", "enum": ["all_done", "any_done", "any_failed"] },
+                            "timeout_ms": { "type": "number" }
                         },
-                        "required": ["orchestrator_run_id", "orchestrator_node_id"]
+                        "required": ["assistant_node_ids"]
+                    }
+                },
+                {
+                    "name": "show_thread",
+                    "description": "Show a compact hierarchical view of a thread using user-message previews and assistant labels, statuses, and node IDs.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "thread_id": { "type": "string", "description": "Defaults to the current thread." }
+                        },
+                        "required": []
+                    }
+                },
+                {
+                    "name": "stop_agent",
+                    "description": "Stop an assistant run. Agentree automatically stops all active agents it spawned, deepest descendants first, before stopping the requested agent.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "assistant_node_id": { "type": "string" },
+                            "reason": { "type": "string" }
+                        },
+                        "required": ["assistant_node_id", "reason"]
                     }
                 },
                 {
@@ -534,24 +484,6 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                             },
                             "source": { "type": "string" },
                             "source_commit_sha": { "type": "string" }
-                        },
-                        "required": []
-                    }
-                },
-                {
-                    "name": "graph_live_query",
-                    "description": "Search local/projection graph state currently loaded in the app. Use this for active or recently started orchestration runs because persisted graph_query can lag local-first nodes. Results are explicitly marked as live/projection/local.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "workspace_id": {
-                                "type": "string",
-                                "description": "OPTIONAL: Auto-detected from current context. Only pass if querying a different workspace."
-                            },
-                            "filters": { "type": "object", "description": "Filter criteria like {role: 'assistant', status: 'running'}" },
-                            "node_id": { "type": "string" },
-                            "limit": { "type": "number", "description": "Maximum nodes to return" },
-                            "offset": { "type": "number", "description": "Pagination offset" }
                         },
                         "required": []
                     }
@@ -744,29 +676,31 @@ async fn handle_tools_call(
             }
             handle_get_prompt_template(id, state, template_id.unwrap())
         }
-        Some("start_orchestration_run") => {
+        Some("spawn_thread")
+        | Some("send_message")
+        | Some("steer_agent")
+        | Some("wait_for_agents")
+        | Some("show_thread")
+        | Some("stop_agent") => {
+            let tool_name = name.unwrap_or_default();
+            let call_id = id
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| id.to_string());
             let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
-            handle_frontend_orchestration_tool(id, state, "start_orchestration_run", args).await
-        }
-        Some("wait_for_runs") => {
-            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
-            handle_frontend_orchestration_tool(id, state, "wait_for_runs", args).await
-        }
-        Some("control_run") => {
-            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
-            handle_frontend_orchestration_tool(id, state, "control_run", args).await
-        }
-        Some("complete_orchestration") => {
-            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
-            handle_complete_orchestration(id, state, args)
+            handle_thread_control_tool(
+                id,
+                state,
+                tool_name,
+                args,
+                mcp_request_node_id(&uri),
+                call_id,
+            )
+            .await
         }
         Some("show_output") | Some("register_artifact") => {
             let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
             handle_show_output(id, state, args, mcp_request_node_id(&uri))
-        }
-        Some("graph_live_query") => {
-            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
-            handle_frontend_orchestration_tool(id, state, "graph_live_query", args).await
         }
         Some("get_graph_overview") => {
             let workspace_id = get_workspace_id(arguments);
@@ -1307,20 +1241,6 @@ fn read_arg_string(args: &serde_json::Value, key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn read_arg_string_array(args: &serde_json::Value, key: &str) -> Vec<String> {
-    args.get(key)
-        .and_then(|value| value.as_array())
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| value.as_str())
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn missing_args_response(id: serde_json::Value, message: &str) -> JsonRpcResponse {
     JsonRpcResponse {
         jsonrpc: "2.0",
@@ -1786,124 +1706,23 @@ fn handle_show_output(
     )
 }
 
-fn handle_complete_orchestration(
-    id: serde_json::Value,
-    state: Arc<McpState>,
-    args: serde_json::Value,
-) -> JsonRpcResponse {
-    let Some(run_id) = read_arg_string(&args, "orchestrator_run_id") else {
-        return missing_args_response(id, "orchestrator_run_id is required");
-    };
-    let Some(orchestrator_node_id) = read_arg_string(&args, "orchestrator_node_id") else {
-        return missing_args_response(id, "orchestrator_node_id is required");
-    };
-    let terminal_orchestration_run_assistant_node_ids =
-        read_arg_string_array(&args, "terminal_orchestration_run_assistant_node_ids");
-    let payload = serde_json::json!({
-        "terminalOrchestrationRunAssistantNodeIds": terminal_orchestration_run_assistant_node_ids,
-        "terminalOrchestrationRunCount": terminal_orchestration_run_assistant_node_ids.len(),
-    });
-    let telemetry = state.app_handle.state::<crate::db::TelemetryDb>();
-    match telemetry.record_orchestration_event(
-        &run_id,
-        &orchestrator_node_id,
-        "orchestration:completed",
-        &payload.to_string(),
-    ) {
-        Ok(seq) => tool_text_response(
-            id,
-            serde_json::json!({
-                "completed": true,
-                "seq": seq,
-                "terminalOrchestrationRunAssistantNodeIds": terminal_orchestration_run_assistant_node_ids,
-            })
-            .to_string(),
-        ),
-        Err(err) => JsonRpcResponse {
-            jsonrpc: "2.0",
-            id,
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32001,
-                message: err,
-            }),
-        },
-    }
-}
-
-const ORCHESTRATION_MCP_DEFAULT_WAIT_TIMEOUT_MS: u64 = 5 * 60 * 1000;
-const ORCHESTRATION_MCP_MAX_WAIT_TIMEOUT_MS: u64 = 5 * 60 * 1000;
-const ORCHESTRATION_MCP_MIN_WAIT_TIMEOUT_MS: u64 = 1_000;
-const ORCHESTRATION_MCP_WAIT_BACKEND_GRACE_MS: u64 = 5_000;
-const ORCHESTRATION_MCP_NON_WAIT_TIMEOUT_MS: u64 = 110_000;
-
-async fn handle_frontend_orchestration_tool(
+async fn handle_thread_control_tool(
     id: serde_json::Value,
     state: Arc<McpState>,
     tool_name: &str,
     arguments: serde_json::Value,
+    caller_node_id: Option<String>,
+    call_id: String,
 ) -> JsonRpcResponse {
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    if let Err(err) = MCP_ORCHESTRATION_PENDING
-        .lock()
-        .map_err(|e| e.to_string())
-        .map(|mut pending| pending.insert(request_id.clone(), sender))
+    match crate::thread_control::ThreadControlService::new(state.app_handle.clone())
+        .call(tool_name, arguments, caller_node_id, call_id)
+        .await
     {
-        return JsonRpcResponse {
-            jsonrpc: "2.0",
-            id,
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32001,
-                message: err,
-            }),
-        };
-    }
-
-    let payload = serde_json::json!({
-        "requestId": request_id,
-        "toolName": tool_name,
-        "arguments": arguments.clone(),
-    });
-    if let Err(err) = state
-        .app_handle
-        .emit("agentree://orchestration-mcp-request", payload)
-    {
-        let _ = MCP_ORCHESTRATION_PENDING
-            .lock()
-            .map(|mut pending| pending.remove(&request_id));
-        return JsonRpcResponse {
-            jsonrpc: "2.0",
-            id,
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32002,
-                message: format!("Failed to dispatch orchestration request to app: {}", err),
-            }),
-        };
-    }
-
-    let timeout = if tool_name == "wait_for_runs" {
-        let timeout_ms = arguments
-            .get("timeout_ms")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(ORCHESTRATION_MCP_DEFAULT_WAIT_TIMEOUT_MS)
-            .clamp(
-                ORCHESTRATION_MCP_MIN_WAIT_TIMEOUT_MS,
-                ORCHESTRATION_MCP_MAX_WAIT_TIMEOUT_MS,
-            );
-        Duration::from_millis(timeout_ms + ORCHESTRATION_MCP_WAIT_BACKEND_GRACE_MS)
-    } else {
-        Duration::from_millis(ORCHESTRATION_MCP_NON_WAIT_TIMEOUT_MS)
-    };
-
-    match tokio::time::timeout(timeout, receiver).await {
-        Ok(Ok(Ok(value))) => tool_text_response(
+        Ok(value) => tool_text_response(
             id,
             serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
         ),
-        Ok(Ok(Err(err))) => JsonRpcResponse {
+        Err(err) => JsonRpcResponse {
             jsonrpc: "2.0",
             id,
             result: None,
@@ -1912,30 +1731,6 @@ async fn handle_frontend_orchestration_tool(
                 message: err,
             }),
         },
-        Ok(Err(_)) => JsonRpcResponse {
-            jsonrpc: "2.0",
-            id,
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32004,
-                message: "Orchestration request responder was dropped.".to_string(),
-            }),
-        },
-        Err(_) => {
-            let _ = MCP_ORCHESTRATION_PENDING
-                .lock()
-                .map(|mut pending| pending.remove(&request_id));
-            JsonRpcResponse {
-                jsonrpc: "2.0",
-                id,
-                result: None,
-                error: Some(JsonRpcError {
-                    code: -32005,
-                    message: "Timed out waiting for Agentree app to handle orchestration request."
-                        .to_string(),
-                }),
-            }
-        }
     }
 }
 
@@ -2055,7 +1850,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_exposes_current_graph_tools_without_project_id() {
+    fn tools_list_exposes_thread_control_without_legacy_orchestration_tools() {
         let response = handle_tools_list(serde_json::json!(1));
         let result = response.result.expect("tools/list should return result");
         let tools = result
@@ -2069,14 +1864,63 @@ mod tests {
 
         assert!(names.contains(&"list_prompt_templates"));
         assert!(names.contains(&"get_prompt_template"));
-        assert!(names.contains(&"start_orchestration_run"));
-        assert!(names.contains(&"wait_for_runs"));
-        assert!(names.contains(&"control_run"));
-        assert!(names.contains(&"complete_orchestration"));
+        assert!(names.contains(&"spawn_thread"));
+        assert!(names.contains(&"send_message"));
+        assert!(names.contains(&"steer_agent"));
+        assert!(names.contains(&"wait_for_agents"));
+        assert!(names.contains(&"show_thread"));
+        assert!(names.contains(&"stop_agent"));
+        assert!(!names.contains(&"start_orchestration_run"));
+        assert!(!names.contains(&"wait_for_runs"));
+        assert!(!names.contains(&"control_run"));
+        assert!(!names.contains(&"complete_orchestration"));
+        assert!(!names.contains(&"graph_live_query"));
         assert!(names.contains(&"show_output"));
         assert!(names.contains(&"list_thread_sessions"));
         assert!(names.contains(&"read_thread"));
         assert!(names.contains(&"query_commits"));
+
+        let spawn_thread = tools
+            .iter()
+            .find(|tool| tool.get("name").and_then(|name| name.as_str()) == Some("spawn_thread"))
+            .expect("spawn_thread tool");
+        let spawn_schema = spawn_thread
+            .get("inputSchema")
+            .expect("spawn_thread input schema");
+        assert_eq!(
+            spawn_schema
+                .get("required")
+                .and_then(|required| required.as_array())
+                .map(Vec::len),
+            Some(0)
+        );
+        let spawn_properties = spawn_schema
+            .get("properties")
+            .and_then(|properties| properties.as_object())
+            .expect("spawn_thread properties");
+        assert!(spawn_properties.contains_key("title"));
+        assert!(!spawn_properties.contains_key("message"));
+        assert!(!spawn_properties.contains_key("agent_type"));
+        assert!(!spawn_properties.contains_key("model"));
+
+        let send_message = tools
+            .iter()
+            .find(|tool| tool.get("name").and_then(|name| name.as_str()) == Some("send_message"))
+            .expect("send_message tool");
+        assert!(send_message["inputSchema"]["required"]
+            .as_array()
+            .is_some_and(|required| required.contains(&serde_json::json!("message"))));
+
+        let stop_agent = tools
+            .iter()
+            .find(|tool| tool.get("name").and_then(|name| name.as_str()) == Some("stop_agent"))
+            .expect("stop_agent tool");
+        let stop_properties = stop_agent["inputSchema"]["properties"]
+            .as_object()
+            .expect("stop_agent properties");
+        assert!(stop_properties.contains_key("assistant_node_id"));
+        assert!(stop_properties.contains_key("reason"));
+        assert!(!stop_properties.contains_key("include_controlled_descendants"));
 
         let serialized = serde_json::to_string(&result).expect("tools result should serialize");
         assert!(!serialized.contains("project_id"));

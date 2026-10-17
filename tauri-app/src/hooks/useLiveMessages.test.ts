@@ -105,6 +105,18 @@ describe('applyLocalNodeMessages', () => {
 });
 
 describe('useGraphMessages', () => {
+  it('does not detach a running projection when its transient parent id is blank', () => {
+    useAgentRunProjectionStore.getState().setProjectionForNode('assistant-1', projectedMessage({
+      parentId: '',
+      status: 'running',
+      _optimisticStatus: 'running',
+    }));
+
+    const { result } = renderHook(() => useGraphMessages('workspace-1', [baseMessage()]));
+
+    expect(result.current[0].parentId).toBe('user-1');
+  });
+
   it('keeps persisted updatedAt when hover hydration projects an already-completed node', () => {
     useAgentRunProjectionStore.getState().setProjectionForNode('assistant-1', projectedMessage());
 

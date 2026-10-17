@@ -46,6 +46,7 @@ vi.mock('../hooks/useWorkspaces', () => ({
     isFetching: false,
   }),
 }));
+vi.mock('../hooks/useHotSendMessageDeltas', () => ({ useHotSendMessageDeltas: vi.fn() }));
 
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mocks.navigate,
@@ -66,7 +67,13 @@ vi.mock('../../@/components/ui/resizable', () => ({
   ResizablePanel: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   ResizablePanelGroup: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
 }));
-vi.mock('../lib/analytics', () => ({ trackScreenViewed: vi.fn() }));
+vi.mock('../lib/analytics', () => ({
+  bucketCount: vi.fn(() => '1'),
+  trackScreenViewed: vi.fn(),
+}));
+vi.mock('../components/Toast', () => ({
+  useToast: () => ({ addToast: vi.fn() }),
+}));
 vi.mock('../lib/appLogger', () => ({ devLogLazy: vi.fn() }));
 vi.mock('../lib/perfRecorder', () => ({
   getElapsedSinceAppStartMs: vi.fn(() => 0),
@@ -95,13 +102,13 @@ describe('HomePage onboarding gate', () => {
     vi.clearAllMocks();
   });
 
-  it('uses the server-scoped workspace list without local user-id filtering', async () => {
-    mocks.workspaces = [workspace('workspace-from-server', 'server-user')];
+  it('uses the local workspace list independently of the signed-in account id', async () => {
+    mocks.workspaces = [workspace('local-workspace', 'local-owner')];
 
     render(<HomePage />);
 
     await waitFor(() => {
-      expect(mocks.markCompleted).toHaveBeenCalledWith('new-user', 'workspace-from-server');
+      expect(mocks.markCompleted).toHaveBeenCalledWith('new-user', 'local-workspace');
     });
   });
 });

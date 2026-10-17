@@ -1,4 +1,4 @@
-import { isActiveAgentStatus, isFailureAgentStatus, isTerminalAgentStatus, type AgentStatus } from '@shared/agentStatus';
+import { type AgentStatus } from '@shared/agentStatus';
 import type { CommitEntity, CommitObservationEntity, CommitParentEntity, Message, Summary } from '../stores/workspaceStore';
 import { getGraphParentId } from '../lib/graph/lineage';
 import { isRedundantCommitNode } from '../lib/graph/turnUtils';
@@ -8,7 +8,7 @@ import type { ThreadSession } from '../lib/threadSessions';
 import { getSubgraphThreadLinkTargetId } from '../lib/graphSubgraphThreads';
 import { resolveNodeState } from '../lib/runStateResolver';
 import { getNodeFailureReason } from '../lib/nodeFailureReason';
-import { getControlledByNodeId, getNodeKind } from '../orchestration/domain';
+import { getControlledByNodeId } from '../lib/delegation';
 import { buildFocusRoute, isImportedGitMessage, type FocusRoute } from './focusRoute';
 import {
   CanonicalNodeEntity,
@@ -27,9 +27,7 @@ import {
 export interface ProjectedNodeEntity extends CanonicalNodeEntity {
   message?: Message;
   summary?: Summary;
-  nodeKind?: string | null;
   controlledByNodeId?: string | null;
-  orchestrationSummary?: ProjectedOrchestrationSummary | null;
   preview: string;
   shortLabel: string;
   shortSha?: string | null;
@@ -45,18 +43,6 @@ export interface ProjectedNodeEntity extends CanonicalNodeEntity {
   threadLinkRootId?: string | null;
   rootMessageId?: string | null;
   isThreadRoot?: boolean;
-}
-
-export interface ProjectedOrchestrationSummary {
-  controllerMessageId: string;
-  controlledEntityIds: string[];
-  orchestrationRunAssistantEntityIds: string[];
-  totalOrchestrationRuns: number;
-  activeOrchestrationRuns: number;
-  terminalOrchestrationRuns: number;
-  completedOrchestrationRuns: number;
-  failedOrchestrationRuns: number;
-  cancelledOrchestrationRuns: number;
 }
 
 export interface ProjectedTurnGroup {
@@ -151,7 +137,6 @@ export interface WorkspaceProjection {
   entitiesByMessageId: Map<string, ProjectedNodeEntity>;
   entitiesBySummaryId: Map<string, ProjectedNodeEntity>;
   childEntityIdsByParentEntityId: Map<string, string[]>;
-  controlledEntityIdsByControllerMessageId: Map<string, string[]>;
   commitEntityIdsByAssistantEntityId: Map<string, string[]>;
   commitBySha: Map<string, ProjectedCommitEntity>;
   commitLaneRows: ProjectedCommitLaneRow[];
@@ -199,7 +184,6 @@ interface StableWorkspaceProjectionBase {
   entitiesByMessageId: Map<string, ProjectedNodeEntity>;
   entitiesBySummaryId: Map<string, ProjectedNodeEntity>;
   childEntityIdsByParentEntityId: Map<string, string[]>;
-  controlledEntityIdsByControllerMessageId: Map<string, string[]>;
   commitEntityIdsByAssistantEntityId: Map<string, string[]>;
   commitBySha: Map<string, ProjectedCommitEntity>;
   commitLaneRows: ProjectedCommitLaneRow[];
@@ -484,7 +468,6 @@ const getProjectedMessageEntity = (
   const graphParentId = getGraphParentId(message, messageMap);
   const graphParent = graphParentId ? messageMap.get(graphParentId) : null;
   const meta = ((message.execution_data as any)?.meta || {}) as Record<string, any>;
-  const nodeKind = getNodeKind(message);
   const controlledByNodeId = getControlledByNodeId(message);
   const metaCommits = Array.isArray(meta.commits) ? meta.commits : [];
   const lastMetaCommit = metaCommits[metaCommits.length - 1] || null;
@@ -510,7 +493,6 @@ const getProjectedMessageEntity = (
     turnGroupId: kind === 'thread_link' ? undefined : getTurnGroupIdForMessage(message, messageMap),
     sortTs: new Date(message.createdAt).getTime(),
     message,
-    nodeKind,
     controlledByNodeId,
     preview: getNodePreview(message),
     shortLabel,
@@ -585,28 +567,6 @@ const getDuplicateAgentCommitMessageIds = (
   });
 
   return duplicateIds;
-};
-
-const buildProjectedOrchestrationSummary = (
-  controllerMessageId: string,
-  controlledEntityIds: string[],
-  entitiesById: Map<string, ProjectedNodeEntity>,
-): ProjectedOrchestrationSummary => {
-  const runAssistantEntities = controlledEntityIds
-    .map((entityId) => entitiesById.get(entityId) ?? null)
-    .filter((entity): entity is ProjectedNodeEntity => entity?.kind === 'assistant_message');
-
-  return {
-    controllerMessageId,
-    controlledEntityIds,
-    orchestrationRunAssistantEntityIds: runAssistantEntities.map((entity) => entity.entityId),
-    totalOrchestrationRuns: runAssistantEntities.length,
-    activeOrchestrationRuns: runAssistantEntities.filter((entity) => isActiveAgentStatus(entity.status)).length,
-    terminalOrchestrationRuns: runAssistantEntities.filter((entity) => isTerminalAgentStatus(entity.status)).length,
-    completedOrchestrationRuns: runAssistantEntities.filter((entity) => entity.status === 'completed').length,
-    failedOrchestrationRuns: runAssistantEntities.filter((entity) => isFailureAgentStatus(entity.status)).length,
-    cancelledOrchestrationRuns: runAssistantEntities.filter((entity) => entity.status === 'cancelled').length,
-  };
 };
 
 const getCommitSortTs = (commit: CommitEntity): number => {
@@ -987,7 +947,6 @@ export function buildWorkspaceProjection({
     entitiesByMessageId,
     entitiesBySummaryId,
     childEntityIdsByParentEntityId,
-    controlledEntityIdsByControllerMessageId,
     commitEntityIdsByAssistantEntityId,
     commitBySha,
     commitLaneRows,
@@ -1171,7 +1130,6 @@ export function buildWorkspaceProjection({
     entitiesByMessageId,
     entitiesBySummaryId,
     childEntityIdsByParentEntityId,
-    controlledEntityIdsByControllerMessageId,
     commitEntityIdsByAssistantEntityId,
     commitBySha,
     commitLaneRows,
@@ -1315,7 +1273,6 @@ function getStableWorkspaceProjectionBase(
   const entitiesByMessageId = new Map(messageEntities.map((entity) => [entity.messageId!, entity]));
   const entitiesBySummaryId = new Map(summaryEntities.map((entity) => [entity.summary!.id, entity]));
   const childEntityIdsByParentEntityId = new Map<string, string[]>();
-  const controlledEntityIdsByControllerMessageId = new Map<string, string[]>();
   const commitEntityIdsByAssistantEntityId = new Map<string, string[]>();
   const commitProjection = buildCommitProjection(commits, commitParents, commitObservations, sortedMessages, messageMap, threadRootIndex);
 
@@ -1325,11 +1282,6 @@ function getStableWorkspaceProjectionBase(
       children.push(entity.entityId);
       childEntityIdsByParentEntityId.set(entity.parentEntityId, children);
     }
-    if (entity.controlledByNodeId) {
-      const controlled = controlledEntityIdsByControllerMessageId.get(entity.controlledByNodeId) ?? [];
-      controlled.push(entity.entityId);
-      controlledEntityIdsByControllerMessageId.set(entity.controlledByNodeId, controlled);
-    }
     if (entity.kind === 'commit_message' && entity.parentEntityId) {
       const parentEntity = entitiesById.get(entity.parentEntityId);
       if (parentEntity?.kind === 'assistant_message') {
@@ -1338,16 +1290,6 @@ function getStableWorkspaceProjectionBase(
         commitEntityIdsByAssistantEntityId.set(parentEntity.entityId, commits);
       }
     }
-  }
-
-  for (const controllerEntity of messageEntities) {
-    if (!controllerEntity.messageId || controllerEntity.nodeKind !== 'orchestrator') continue;
-    const controlledEntityIds = controlledEntityIdsByControllerMessageId.get(controllerEntity.messageId) ?? [];
-    controllerEntity.orchestrationSummary = buildProjectedOrchestrationSummary(
-      controllerEntity.messageId,
-      controlledEntityIds,
-      entitiesById,
-    );
   }
 
   const turnGroupMap = new Map<string, ProjectedTurnGroup>();
@@ -1399,7 +1341,6 @@ function getStableWorkspaceProjectionBase(
     entitiesByMessageId,
     entitiesBySummaryId,
     childEntityIdsByParentEntityId,
-    controlledEntityIdsByControllerMessageId,
     commitEntityIdsByAssistantEntityId,
     commitBySha: commitProjection.commitBySha,
     commitLaneRows: commitProjection.commitLaneRows,

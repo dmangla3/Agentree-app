@@ -1,5 +1,5 @@
 import { memo, useState, type SVGProps } from 'react';
-import { Bot, GitCommitHorizontal, Wrench, Zap } from 'lucide-react';
+import { Bot, GitBranch, GitCommitHorizontal, Wrench, Zap } from 'lucide-react';
 import { isActiveAgentStatus } from '@shared/agentStatus';
 import { GraphNodeWrapper } from './GraphNodeWrapper';
 import type { AttentionBadgeItem, SharedNodeProps } from '../../../types/nodes';
@@ -17,6 +17,13 @@ import { shouldHydrateAgentRunHover } from '../../../lib/agentRunHoverHydrationP
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../../@/components/ui/hover-card';
 import { getMessageArtifacts } from '../../../lib/artifacts';
 import { ArtifactGraphPreview } from '../../artifacts/ArtifactPreview';
+import type { AttachedThreadLink } from '../../../lib/graphSubgraphThreads';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../../../../@/components/ui/dropdown-menu';
 
 const isActiveAssistantStatus = (status: AgentStatus | null | undefined): boolean => (
   isActiveAgentStatus(status)
@@ -63,6 +70,168 @@ const StatusIcon = ({
       title={title}
     >
       <Icon size={12} className={cn(config.animate && "animate-spin")} />
+    </div>
+  );
+};
+
+const stopAttachedThreadEvent = (event: React.SyntheticEvent) => {
+  event.stopPropagation();
+};
+
+const AttachedThreadStatus = ({
+  status,
+}: {
+  status: AgentStatus | null | undefined;
+}) => {
+  if (!status) return null;
+  const config = getAgentVisualState(status);
+  const Icon = config.icon;
+  return (
+    <span className={cn('shrink-0', config.colorClass)} title={`Thread ${config.label}`}>
+      <Icon size={10} className={cn(config.animate && 'animate-spin')} />
+    </span>
+  );
+};
+
+const AttachedThreadButton = ({
+  thread,
+  compact = false,
+  onOpenThread,
+}: {
+  thread: AttachedThreadLink;
+  compact?: boolean;
+  onOpenThread: (threadRootId: string) => void;
+}) => {
+  const liveStatus = useRunStatusStore((state) => (
+    thread.statusNodeId ? state.byNodeId[thread.statusNodeId]?.status ?? null : null
+  ));
+  const status = liveStatus ?? thread.status;
+
+  return (
+    <button
+      type="button"
+      aria-label={`Open attached thread: ${thread.title}`}
+      title={thread.title}
+      className={cn(
+        'nodrag nopan relative flex h-10 min-w-0 items-center gap-1.5 overflow-hidden rounded-[5px] bg-white px-2 text-left',
+        'shadow-[0_0_0_1px_rgba(0,0,0,0.055),0_1px_2px_-1px_rgba(0,0,0,0.08)]',
+        'transition-[background-color,box-shadow,scale] duration-150 ease-out hover:bg-cyan-50 active:scale-[0.96]',
+        'focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500',
+        'dark:bg-zinc-950 dark:shadow-[0_0_0_1px_rgba(255,255,255,0.09)] dark:hover:bg-cyan-950/55',
+        compact && 'justify-center px-1',
+      )}
+      onPointerDown={stopAttachedThreadEvent}
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpenThread(thread.threadRootId);
+      }}
+    >
+      <GitBranch size={compact ? 10 : 11} className="shrink-0 text-cyan-700 dark:text-cyan-300" />
+      {!compact ? (
+        <span className="min-w-0 flex-1 truncate text-[9px] font-medium leading-none text-zinc-700 dark:text-zinc-200">
+          {thread.title}
+        </span>
+      ) : null}
+      <AttachedThreadStatus status={status} />
+    </button>
+  );
+};
+
+const AttachedThreadOverflowItem = ({
+  thread,
+  onOpenThread,
+}: {
+  thread: AttachedThreadLink;
+  onOpenThread: (threadRootId: string) => void;
+}) => {
+  const liveStatus = useRunStatusStore((state) => (
+    thread.statusNodeId ? state.byNodeId[thread.statusNodeId]?.status ?? null : null
+  ));
+  return (
+    <DropdownMenuItem
+      className="min-h-10 cursor-pointer gap-2 rounded-md px-2.5 text-xs"
+      onSelect={(event) => {
+        event.stopPropagation();
+        onOpenThread(thread.threadRootId);
+      }}
+    >
+      <GitBranch size={12} className="shrink-0 text-cyan-700 dark:text-cyan-300" />
+      <span className="min-w-0 flex-1 truncate">{thread.title}</span>
+      <AttachedThreadStatus status={liveStatus ?? thread.status} />
+    </DropdownMenuItem>
+  );
+};
+
+const AttachedThreadsTray = ({
+  threads,
+  onOpenThread,
+}: {
+  threads: AttachedThreadLink[];
+  onOpenThread: (threadRootId: string) => void;
+}) => {
+  const hasOverflow = threads.length >= 4;
+  const visibleThreads = hasOverflow ? threads.slice(0, 3) : threads;
+  const overflowThreads = hasOverflow ? threads.slice(3) : [];
+  const columnCount = hasOverflow ? 4 : Math.max(1, visibleThreads.length);
+
+  return (
+    <div
+      className="relative z-20 mt-2 h-14 shrink-0 border-t border-zinc-200/80 pt-1 dark:border-zinc-800/80"
+      onPointerDown={stopAttachedThreadEvent}
+      onClick={stopAttachedThreadEvent}
+    >
+      <div className="mb-1 flex h-3 items-center justify-between text-[8px] font-semibold uppercase tracking-[0.12em] text-zinc-400 dark:text-zinc-500">
+        <span>Attached threads</span>
+        <span className="tabular-nums">{threads.length}</span>
+      </div>
+      <div
+        className="grid h-10 gap-px rounded-md bg-zinc-200/80 p-px shadow-[0_1px_2px_-1px_rgba(0,0,0,0.08)] dark:bg-zinc-800/90 dark:shadow-none"
+        style={{ gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))` }}
+      >
+        {visibleThreads.map((thread) => (
+          <AttachedThreadButton
+            key={thread.linkMessageId}
+            thread={thread}
+            compact={hasOverflow}
+            onOpenThread={onOpenThread}
+          />
+        ))}
+        {hasOverflow ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label={`Show ${overflowThreads.length} more attached threads`}
+                className={cn(
+                  'nodrag nopan flex h-10 min-w-0 items-center justify-center rounded-[5px] bg-white text-[9px] font-semibold text-cyan-700',
+                  'shadow-[0_0_0_1px_rgba(0,0,0,0.055),0_1px_2px_-1px_rgba(0,0,0,0.08)] tabular-nums',
+                  'transition-[background-color,box-shadow,scale] duration-150 ease-out hover:bg-cyan-50 active:scale-[0.96]',
+                  'focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500',
+                  'dark:bg-zinc-950 dark:text-cyan-300 dark:shadow-[0_0_0_1px_rgba(255,255,255,0.09)] dark:hover:bg-cyan-950/55',
+                )}
+                onPointerDown={stopAttachedThreadEvent}
+                onClick={stopAttachedThreadEvent}
+              >
+                +{overflowThreads.length}
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              className="w-60 p-1"
+              onPointerDown={stopAttachedThreadEvent}
+              onClick={stopAttachedThreadEvent}
+            >
+              {overflowThreads.map((thread) => (
+                <AttachedThreadOverflowItem
+                  key={thread.linkMessageId}
+                  thread={thread}
+                  onOpenThread={onOpenThread}
+                />
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
+      </div>
     </div>
   );
 };
@@ -228,11 +397,13 @@ export const GraphAssistantNode = memo(({
   detailLevel = 'full',
   graphNodeHeight,
   heightKey,
+  attachedThreads = [],
   onMeasureHeight,
   hoverCardContent,
   controlledHoverCardKey,
   onControlledHoverCardDismiss,
   onFocus,
+  onOpenThread,
   onSelect,
   onContextMenu,
 }: SharedNodeProps) => {
@@ -253,7 +424,7 @@ export const GraphAssistantNode = memo(({
     llmProvider: entity.message?.llmProvider,
   });
   const failureReason = isNodeFailureStatus(displayStatus)
-    ? getNodeFailureReason(entity.message?.execution_data)
+    ? getNodeFailureReason(entity.message?.execution_data, entity.preview)
     : null;
   const isAssistantWorking = isActiveAssistantStatus(displayStatus as AgentStatus | null | undefined);
   const hasAttention = Boolean(attentionBadgeCount && attentionBadgeCount > 0);
@@ -354,7 +525,7 @@ export const GraphAssistantNode = memo(({
           'relative z-10 mb-2 flex-1 text-[12px] font-medium leading-snug text-zinc-900 dark:text-zinc-100',
           isFullDetail ? 'line-clamp-2' : 'line-clamp-1',
         )}>
-          {entity.preview}
+          {failureReason ?? entity.preview}
         </p>
       )}
 
@@ -389,6 +560,9 @@ export const GraphAssistantNode = memo(({
         )}
       </div>
       )}
+      {attachedThreads.length > 0 && onOpenThread ? (
+        <AttachedThreadsTray threads={attachedThreads} onOpenThread={onOpenThread} />
+      ) : null}
     </GraphNodeWrapper>
   );
 });

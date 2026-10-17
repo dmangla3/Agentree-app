@@ -27,7 +27,6 @@ vi.mock('../lib/agentClient', () => ({
     importLocalCommits: vi.fn(),
     listLocalCommitGraph: vi.fn(),
     listMissingCommits: vi.fn(),
-    processLocalSyncEvents: vi.fn(),
     resolveRefTip: vi.fn(),
   },
 }));
@@ -98,7 +97,6 @@ describe('useGitSync', () => {
       '/repo'
     );
     expect(mockedAgentClient.enqueueLocalCommitGraphSync).toHaveBeenCalled();
-    expect(mockedAgentClient.processLocalSyncEvents).not.toHaveBeenCalled();
     expect(queueLocalSyncFlush).toHaveBeenCalledWith({ reason: 'git-sync-commit-graph' });
     expect(api.get).not.toHaveBeenCalledWith('/workspaces/workspace-1/tracked-refs');
     expect(syncResult?.didSync).toBe(true);

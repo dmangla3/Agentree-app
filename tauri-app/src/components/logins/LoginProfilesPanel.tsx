@@ -378,16 +378,16 @@ export function LoginProfilesPanel({ initialProvider }: LoginProfilesPanelProps 
           </section>
 
           <aside className="space-y-3">
-            <section className="rounded-xl bg-background/82 p-4 shadow-[0_18px_52px_-44px_rgba(15,23,42,0.65),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
+            <section className="min-w-0 rounded-xl bg-background/82 p-4 shadow-[0_18px_52px_-44px_rgba(15,23,42,0.65),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
               <div className="flex items-center justify-between gap-3">
-                <div>
+                <div className="min-w-0">
                   <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Selected</div>
-                  <h2 className="mt-1 text-[15px] font-semibold text-foreground">
+                  <h2 className="mt-1 min-w-0 break-words text-[15px] font-semibold text-foreground [overflow-wrap:anywhere]">
                     {selectedProfile?.displayName ?? 'No account selected'}
                   </h2>
                 </div>
                 {selectedProfile ? (
-                  <span className={cn('inline-flex h-7 items-center rounded-md px-2 text-[11px] font-semibold capitalize', statusPillClasses[getLoginProfileStatusTone(selectedProfile.status)])}>
+                  <span className={cn('inline-flex h-7 shrink-0 items-center rounded-md px-2 text-[11px] font-semibold capitalize', statusPillClasses[getLoginProfileStatusTone(selectedProfile.status)])}>
                     {formatStatus(selectedProfile.status)}
                   </span>
                 ) : null}
@@ -396,26 +396,26 @@ export function LoginProfilesPanel({ initialProvider }: LoginProfilesPanelProps 
               {selectedProfile ? (
                 <div className="mt-4 space-y-3">
                   <div className="grid grid-cols-2 gap-2">
-                    <div className="rounded-lg bg-muted/38 p-3">
+                    <div className="min-w-0 rounded-lg bg-muted/38 p-3">
                       <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Auth</div>
-                      <div className="mt-1 text-[12px] font-semibold text-foreground">{getLoginProfileAuthTypeLabel(selectedProfile.authType)}</div>
+                      <div className="mt-1 min-w-0 break-words text-[12px] font-semibold text-foreground [overflow-wrap:anywhere]">{getLoginProfileAuthTypeLabel(selectedProfile.authType)}</div>
                     </div>
-                    <div className="rounded-lg bg-muted/38 p-3">
+                    <div className="min-w-0 rounded-lg bg-muted/38 p-3">
                       <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Limits</div>
-                      <div className="mt-1 text-[12px] font-semibold text-foreground tabular-nums">{activeProfileLimitSummary ?? 'No data'}</div>
+                      <div className="mt-1 min-w-0 break-words text-[12px] font-semibold text-foreground tabular-nums [overflow-wrap:anywhere]">{activeProfileLimitSummary ?? 'No data'}</div>
                     </div>
-                    <div className="rounded-lg bg-muted/38 p-3">
+                    <div className="min-w-0 rounded-lg bg-muted/38 p-3">
                       <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Runs</div>
                       <div className="mt-1 text-[12px] font-semibold text-foreground tabular-nums">{activeProfileRuns.length} active</div>
                     </div>
-                    <div className="rounded-lg bg-muted/38 p-3">
+                    <div className="min-w-0 rounded-lg bg-muted/38 p-3">
                       <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Checked</div>
-                      <div className="mt-1 text-[12px] font-semibold text-foreground">{formatCheckedAt(selectedProfile.lastCheckedAt)}</div>
+                      <div className="mt-1 min-w-0 break-words text-[12px] font-semibold text-foreground [overflow-wrap:anywhere]">{formatCheckedAt(selectedProfile.lastCheckedAt)}</div>
                     </div>
                   </div>
 
                   {selectedProfile.statusMessage ? (
-                    <p className="rounded-lg bg-muted/38 px-3 py-2 text-[12px] leading-5 text-muted-foreground">
+                    <p className="min-w-0 break-words rounded-lg bg-muted/38 px-3 py-2 text-[12px] leading-5 text-muted-foreground [overflow-wrap:anywhere]">
                       {selectedProfile.statusMessage}
                     </p>
                   ) : null}

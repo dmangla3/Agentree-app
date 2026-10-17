@@ -1,6 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api } from '../lib/api';
-import { agentClient } from '../lib/agentClient';
 import type { GraphSnapshot } from './useGraphSnapshot';
 import {
   normalizeThreadSession,
@@ -8,6 +6,8 @@ import {
   type ThreadSession,
 } from '../lib/threadSessions';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
+import { threadApplication } from '../application/threads';
+import { isTauriEnvironment } from './useTauriWorkspace';
 
 export const threadSessionKeys = {
   workspace: (workspaceId: string | null | undefined) => ['thread-sessions', workspaceId] as const,
@@ -66,10 +66,8 @@ export const useThreadSessions = (workspaceId: string | null | undefined) => use
   queryFn: async (): Promise<ThreadSession[]> => {
     if (!workspaceId) return [];
     const startedAt = performance.now();
-    const source = agentClient.hasRuntime() ? 'local-runtime' : 'api';
-    const rawSessions = agentClient.hasRuntime()
-      ? await agentClient.listThreadSessions(workspaceId)
-      : (await api.get(`/workspaces/${workspaceId}/threads`)).data;
+    const source = isTauriEnvironment() ? 'local-runtime' : 'api';
+    const rawSessions = await threadApplication.list(workspaceId);
     const sessions = (Array.isArray(rawSessions) ? rawSessions : [])
       .map((item) => normalizeThreadSession(item))
       .filter((item): item is ThreadSession => Boolean(item));
@@ -85,7 +83,7 @@ export const useThreadSessions = (workspaceId: string | null | undefined) => use
     return sessions;
   },
   enabled: Boolean(workspaceId),
-  staleTime: agentClient.hasRuntime() ? Infinity : 5 * 60 * 1000,
+  staleTime: isTauriEnvironment() ? Infinity : 5 * 60 * 1000,
   gcTime: 30 * 60 * 1000,
   refetchOnMount: false,
   refetchOnWindowFocus: false,
@@ -97,27 +95,31 @@ export const useCreateThreadSession = () => {
 
   return useMutation({
     mutationFn: async (input: {
+      id?: string;
       workspaceId: string;
       title?: string | null;
+      status?: ThreadSession['status'];
       source?: ThreadSession['source'];
       baseCommitSha?: string | null;
       firstMessageId?: string | null;
+      parentThreadId?: string | null;
+      createdAt?: string;
+      updatedAt?: string;
     }): Promise<ThreadSession> => {
-      const now = new Date().toISOString();
+      const now = input.createdAt ?? new Date().toISOString();
       const payload = {
-        id: crypto.randomUUID(),
+        id: input.id ?? crypto.randomUUID(),
         workspaceId: input.workspaceId,
         title: input.title ?? null,
-        status: 'active',
+        status: input.status ?? 'active',
         createdAt: now,
-        updatedAt: now,
+        updatedAt: input.updatedAt ?? now,
         baseCommitSha: input.baseCommitSha ?? null,
         firstMessageId: input.firstMessageId ?? null,
+        parentThreadId: input.parentThreadId ?? null,
         source: input.source ?? 'user',
-      };
-      const created = agentClient.hasRuntime()
-        ? await agentClient.createThreadSession(payload)
-        : (await api.post(`/workspaces/${input.workspaceId}/threads`, payload)).data;
+      } as const;
+      const created = await threadApplication.create(payload);
       const normalized = normalizeThreadSession(created);
       if (!normalized) throw new Error('Invalid thread session response.');
       return normalized;
@@ -158,11 +160,10 @@ export const useRenameThreadSession = () => {
         updatedAt: now,
         baseCommitSha: current?.baseCommitSha ?? null,
         firstMessageId: current?.firstMessageId ?? null,
+        parentThreadId: current?.parentThreadId ?? null,
         source: current?.source ?? 'user',
       };
-      const updated = agentClient.hasRuntime()
-        ? await agentClient.upsertThreadSession(payload)
-        : (await api.patch(`/workspaces/${input.workspaceId}/threads/${input.threadId}`, payload)).data;
+      const updated = await threadApplication.update(payload);
       const normalized = normalizeThreadSession(updated);
       if (!normalized) throw new Error('Invalid thread session response.');
       return normalized;
@@ -189,11 +190,7 @@ export const useDeleteThreadSession = () => {
       workspaceId: string;
       threadId: string;
     }): Promise<{ workspaceId: string; threadId: string }> => {
-      if (agentClient.hasRuntime()) {
-        await agentClient.deleteThreadSession(input.workspaceId, input.threadId);
-      } else {
-        await api.delete(`/workspaces/${input.workspaceId}/threads/${input.threadId}`);
-      }
+      await threadApplication.remove(input.workspaceId, input.threadId);
       return input;
     },
     onSuccess: ({ workspaceId, threadId }) => {

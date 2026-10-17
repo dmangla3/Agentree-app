@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 const HELPER_ARG: &str = "--agentree-codex-adapter";
 const AI_LABEL_PROMPT: &str = include_str!("../scripts/ai-label-prompt.txt");
+const CODEX_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
 struct AdapterArgs {
@@ -696,7 +697,7 @@ fn emit_readiness_check() -> i32 {
         &codex_bin,
         &["--version"],
         &codex_home,
-        Duration::from_secs(5),
+        CODEX_VERSION_PROBE_TIMEOUT,
     );
     base["codexBin"] = json!(codex_bin);
     base["codexBinExists"] = json!(path_exists(&codex_bin));
@@ -2239,7 +2240,7 @@ fn codex_environment_detail(codex_bin: &str, codex_home: &str) -> JsonValue {
         "codex_config_exists": path_exists(codex_home_path.join("config.toml")),
         "codex_state_db_exists": path_exists(codex_home_path.join("state_5.sqlite")),
         "codex_logs_db_exists": path_exists(codex_home_path.join("logs_2.sqlite")),
-        "codex_version": run_codex_probe(codex_bin, &["--version"], codex_home, Duration::from_secs(5)),
+        "codex_version": run_codex_probe(codex_bin, &["--version"], codex_home, CODEX_VERSION_PROBE_TIMEOUT),
         "env_HOME": std::env::var("HOME").ok(),
         "env_USER": std::env::var("USER").ok(),
         "env_SHELL": std::env::var("SHELL").ok(),

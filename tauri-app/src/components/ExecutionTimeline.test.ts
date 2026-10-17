@@ -128,25 +128,17 @@ describe('getToolSummary', () => {
     expect(formatToolPayload(payload)).not.toContain('"content"');
   });
 
-  it('summarizes Agentree orchestration MCP calls without raw JSON', () => {
-    const summary = getToolSummary('agentree.start_orchestration_run', {
-      template_id: '@synthesizer',
-      decision_id: 'synthesizer-commits',
-      prompt: 'Look at the shared commits.\n\nCompare them.',
-    });
-
-    expect(summary).toBe('Start @synthesizer: Look at the shared commits.');
-    expect(summary).not.toContain('{"template_id"');
-  });
-
-  it('summarizes Agentree wait and completion MCP calls', () => {
-    expect(getToolSummary('agentree.wait_for_runs', {
+  it('summarizes Agentree thread-control MCP calls', () => {
+    expect(getToolSummary('agentree.spawn_thread', {
+      title: 'Backend work',
+    })).toBe('Create child thread: Backend work');
+    expect(getToolSummary('agentree.send_message', {
+      message: 'Implement the storage layer.\nThen test it.',
+    })).toBe('Send agent: Implement the storage layer.');
+    expect(getToolSummary('agentree.wait_for_agents', {
       assistant_node_ids: ['a', 'b'],
-      condition: 'terminal',
-    })).toBe('Wait for 2 runs (terminal)');
-    expect(getToolSummary('agentree.complete_orchestration', {
-      terminal_orchestration_run_assistant_node_ids: ['a'],
-    })).toBe('Complete orchestration with 1 terminal run');
+      condition: 'all_done',
+    })).toBe('Wait for 2 agents (all_done)');
   });
 
   it('keeps MCP server and tool names available on timeline rows', () => {

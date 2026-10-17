@@ -5,6 +5,8 @@ import remarkGfm from 'remark-gfm';
 import { cn } from '../../../lib/utils';
 import { createMarkdownLinkClickHandler } from '../../../lib/linkActivation';
 import { ChatMermaidBlock } from './ChatMermaidBlock';
+import { ChatMath } from './ChatMath';
+import { hasChatMath, remarkChatMath } from './chatMathParser';
 import type { MessageHighlightAnnotation } from '../../../stores/workspaceStore';
 import { MESSAGE_HIGHLIGHT_COLORS } from '../../../lib/messageHighlights';
 import { useActiveMessageHighlightId } from '../../highlights/MessageHighlightActiveContext';
@@ -14,6 +16,7 @@ import {
 } from '../../highlights/messageHighlightDom';
 
 const chatMarkdownPlugins = [remarkGfm, remarkBreaks];
+const chatMarkdownMathPlugins = [remarkChatMath, remarkGfm, remarkBreaks];
 const HIGHLIGHT_REGISTRY_NAMES = {
   yellow: 'agentree-message-highlight-yellow',
   green: 'agentree-message-highlight-green',
@@ -192,6 +195,14 @@ export const createChatMarkdownComponents = (repoPath?: string | null) => {
   td: (props: any) => <td className="min-w-0 break-words [overflow-wrap:anywhere] border border-border px-2 py-1" {...props} />,
   img: (props: any) => <img className="h-auto max-w-full" {...props} />,
   hr: (props: any) => <hr className="my-3 max-w-full border-border/70" {...props} />,
+  span: (props: any) => {
+    const { node: _node, children, ...rest } = props;
+    const formula = rest['data-chat-math'];
+    if (typeof formula === 'string') {
+      return <ChatMath formula={formula} displayMode={rest['data-chat-math-display'] === 'true'} />;
+    }
+    return <span {...rest}>{children}</span>;
+  },
   };
 };
 
@@ -213,6 +224,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
   highlightEnabled?: boolean;
 }) {
   const components = useMemo(() => createChatMarkdownComponents(repoPath), [repoPath]);
+  const remarkPlugins = hasChatMath(children) ? chatMarkdownMathPlugins : chatMarkdownPlugins;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const rootId = useId();
   const contextActiveHighlightId = useActiveMessageHighlightId();
@@ -255,7 +267,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
       data-agentree-highlight-content-root={highlightEnabled ? 'true' : undefined}
       data-agentree-highlight-message-id={messageId || undefined}
     >
-      <ReactMarkdown remarkPlugins={chatMarkdownPlugins} components={components}>
+      <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
         {children}
       </ReactMarkdown>
     </div>

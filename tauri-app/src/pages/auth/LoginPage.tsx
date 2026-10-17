@@ -10,19 +10,28 @@ import { Alert, AlertDescription } from '../../../@/components/ui/alert';
 import logoSrc from '../../assets/logo.png';
 import { devLogLazy } from '../../lib/appLogger';
 import { openKindeAuthInSystemBrowser, shouldUseDesktopBrowserAuth } from '../../lib/kindeDesktopAuth';
+import { hasAppAccess } from '../../lib/appAccess';
 
 export function LoginPage() {
   const { authErrorReason, clearAuthErrorReason, desktopSession, setAuthErrorReason, user } = useAuthStore();
-  const { login, register } = useKindeAuth();
+  const { isAuthenticated, login, register } = useKindeAuth();
   const devBypass = import.meta.env.VITE_DEV_AUTH_BYPASS === 'true';
   const navigate = useNavigate();
+  const usesDesktopAuth = shouldUseDesktopBrowserAuth();
+  const canAccessApp = hasAppAccess({
+    devAuthBypass: devBypass,
+    usesDesktopAuth,
+    hasDesktopUser: Boolean(user),
+    hasDesktopSession: Boolean(desktopSession),
+    isKindeAuthenticated: isAuthenticated,
+  });
   devLogLazy(() => [
     `[ROUTE][LoginPage] render devBypass=${devBypass} user=${!!user} desktopSession=${!!desktopSession} authError=${!!authErrorReason}`
   ]);
 
   const startAuth = async (intent: 'login' | 'register') => {
     try {
-      if (shouldUseDesktopBrowserAuth()) {
+      if (usesDesktopAuth) {
         await openKindeAuthInSystemBrowser(intent);
         return;
       }
@@ -48,10 +57,10 @@ export function LoginPage() {
   }, [authErrorReason, clearAuthErrorReason]);
 
   useEffect(() => {
-    if (devBypass || (shouldUseDesktopBrowserAuth() && user && desktopSession)) {
+    if (canAccessApp) {
       navigate('/', { replace: true });
     }
-  }, [desktopSession, devBypass, navigate, user]);
+  }, [canAccessApp, navigate]);
 
 
   return (
@@ -105,9 +114,9 @@ export function LoginPage() {
 
           <div className="bg-card/70 px-6 py-8 dark:bg-zinc-950/90 sm:px-8 sm:py-10">
             <CardHeader className="px-0 pb-6">
-              <CardTitle className="text-2xl text-foreground dark:text-zinc-50">Connect Agentree Cloud</CardTitle>
+              <CardTitle className="text-2xl text-foreground dark:text-zinc-50">Sign in to Agentree</CardTitle>
               <p className="text-sm leading-6 text-muted-foreground dark:text-zinc-300">
-                Authentication opens in your browser, then returns you to the app. Your local work stays local until backup is enabled.
+                Sign-in opens in your browser, then returns you to the app. A saved session lets you keep working offline.
               </p>
             </CardHeader>
             <CardContent className="px-0">
@@ -126,7 +135,7 @@ export function LoginPage() {
                     "flex items-center justify-center gap-2 text-sm font-medium shadow-[0_12px_30px_-18px_rgba(37,99,235,0.55)]"
                   )}
                 >
-                  Connect Cloud
+                  Sign in
                   <ArrowRight className="h-4 w-4" />
                 </button>
 
@@ -137,7 +146,7 @@ export function LoginPage() {
                     "flex items-center justify-center gap-2 text-sm font-medium"
                   )}
                 >
-                  Create Cloud Account
+                  Create account
                 </button>
               </div>
 

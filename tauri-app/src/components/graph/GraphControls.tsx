@@ -1,4 +1,4 @@
-import { ReactNode, RefObject, SyntheticEvent, TouchEvent, WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ReactNode, RefObject, TouchEvent, WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '../../../@/components/ui/button';
 import {
     HoverCard,
@@ -49,8 +49,6 @@ import {
     Zap,
     User,
     Leaf,
-    ChevronLeft,
-    ChevronRight,
 	    Loader2,
 	    CheckCircle2,
 	    Brain,
@@ -67,6 +65,10 @@ import { useWorkspaceProjection } from '../../hooks/useWorkspaceProjection';
 import { useAgentRunHoverHydration } from '../../hooks/useAgentRunHoverHydration';
 import { shouldHydrateAgentRunHover } from '../../lib/agentRunHoverHydrationPolicy';
 import { useRunStatusStore } from '../../stores/runStatusStore';
+import {
+    getAdjacentHoverNavigationIndex,
+    HoverCardNavigationChrome,
+} from './HoverCardNavigationChrome';
 
 export interface ThreadHoverProjectionInput {
     messages: Message[];
@@ -151,6 +153,8 @@ export interface HighlightNavigationItem {
 
 export interface ThreadNavigationItem {
     threadRootId: string;
+    parentThreadId?: string | null;
+    depth?: number;
     label: string;
     fullLabel?: string;
     turnCount: number;
@@ -262,15 +266,6 @@ export const formatThreadMetadata = (thread: ThreadNavigationItem) => (
     `${thread.turnCount} ${thread.turnCount === 1 ? 'turn' : 'turns'} · ${thread.commitCount} ${thread.commitCount === 1 ? 'commit' : 'commits'} · ${thread.updatedLabel}`
 );
 
-const stopThreadHoverCardControlEvent = (event: SyntheticEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-};
-
-const stopThreadHoverCardPropagation = (event: SyntheticEvent) => {
-    event.stopPropagation();
-};
-
 export function ThreadUnreadBadge({
     count,
     className,
@@ -321,10 +316,11 @@ export function getThreadPreviewIndexForDisplayStep(
     previewNodeCount: number,
     step: -1 | 1,
 ): number {
-    if (previewNodeCount <= 0) return 0;
-    const clampedPreviewIndex = Math.min(Math.max(previewIndex, 0), previewNodeCount - 1);
-    const nextIndex = clampedPreviewIndex - step;
-    return Math.min(Math.max(nextIndex, 0), previewNodeCount - 1);
+    return getAdjacentHoverNavigationIndex(
+        previewIndex,
+        previewNodeCount,
+        step === -1 ? 1 : -1,
+    );
 }
 
 function ThreadNodeHoverCardContent({
@@ -353,46 +349,20 @@ function ThreadNodeHoverCardContent({
     if (!previewEntity) return null;
 
     const navigationChrome = canNavigate ? (
-        <div
-            className="mb-2 flex items-center justify-end border-b border-[hsl(var(--app-border)/0.46)] pb-2"
-            onPointerDown={stopThreadHoverCardPropagation}
-            onMouseDown={stopThreadHoverCardPropagation}
-            onClick={stopThreadHoverCardPropagation}
-        >
-            <div className="flex h-9 items-center rounded-full border border-[hsl(var(--app-border)/0.56)] bg-[hsl(var(--background)/0.78)] p-0.5 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04),0_8px_20px_-18px_hsl(var(--foreground)/0.5)] backdrop-blur-md">
-                <button
-                    type="button"
-                    aria-label="Show older thread node"
-                    disabled={!canShowNext}
-                    onPointerDown={stopThreadHoverCardPropagation}
-                    onMouseDown={stopThreadHoverCardPropagation}
-                    onClick={(event) => {
-                        stopThreadHoverCardControlEvent(event);
-                        onPreviewIndexChange((current) => getThreadPreviewIndexForDisplayStep(current, previewNodeIds.length, -1));
-                    }}
-                    className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-[background-color,color,opacity,transform] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.62)] hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
-                >
-                    <ChevronLeft size={14} strokeWidth={2.2} />
-                </button>
-                <div className="min-w-12 px-1 text-center font-mono text-[10px] font-semibold leading-none text-muted-foreground tabular-nums">
-                    {getThreadPreviewDisplayIndex(clampedPreviewIndex, previewNodeIds.length)} / {previewNodeIds.length}
-                </div>
-                <button
-                    type="button"
-                    aria-label="Show newer thread node"
-                    disabled={!canShowPrevious}
-                    onPointerDown={stopThreadHoverCardPropagation}
-                    onMouseDown={stopThreadHoverCardPropagation}
-                    onClick={(event) => {
-                        stopThreadHoverCardControlEvent(event);
-                        onPreviewIndexChange((current) => getThreadPreviewIndexForDisplayStep(current, previewNodeIds.length, 1));
-                    }}
-                    className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-[background-color,color,opacity,transform] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.62)] hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
-                >
-                    <ChevronRight size={14} strokeWidth={2.2} />
-                </button>
-            </div>
-        </div>
+        <HoverCardNavigationChrome
+            position={getThreadPreviewDisplayIndex(clampedPreviewIndex, previewNodeIds.length)}
+            itemCount={previewNodeIds.length}
+            canGoPrevious={canShowNext}
+            canGoNext={canShowPrevious}
+            previousLabel="Show older thread node"
+            nextLabel="Show newer thread node"
+            onPrevious={() => {
+                onPreviewIndexChange((current) => getThreadPreviewIndexForDisplayStep(current, previewNodeIds.length, -1));
+            }}
+            onNext={() => {
+                onPreviewIndexChange((current) => getThreadPreviewIndexForDisplayStep(current, previewNodeIds.length, 1));
+            }}
+        />
     ) : null;
 
     return (

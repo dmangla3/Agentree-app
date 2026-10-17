@@ -8,6 +8,11 @@ import {
 import { flushAgentWorkspaceRefreshesForTest } from './agentRunWorkspaceRefresh';
 import { localNodeKeys } from '../hooks/useLocalNodes';
 import { threadSessionKeys } from '../hooks/useThreadSessions';
+import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
+
+vi.mock('../lib/localSyncScheduler', () => ({
+  queueLocalSyncFlush: vi.fn(),
+}));
 
 vi.mock('../lib/graphInteractionGate', () => ({
   isGraphInteractionGateIdle: vi.fn(() => true),
@@ -121,6 +126,7 @@ describe('agentRun finalize effects', () => {
       output_commit_sha: 'commit-1',
       git_branch_name: 'agent/run-1',
     });
+    expect(queueLocalSyncFlush).toHaveBeenCalledWith({ reason: 'agent-run-finalized' });
     expect(queryClient.getQueryData<any>(['graph-snapshot', 'workspace-1'])?.messages?.[0]).toMatchObject({
       id: 'assistant-1',
       status: 'completed',

@@ -56,6 +56,7 @@ describe('useHeadlessQuickReply', () => {
     expect(source).toContain('persistLocalNode:');
     expect(source).toContain('onMessagesCreated:');
     expect(source).toContain('materializeHeadlessQuickReplyMessages');
+    expect(source).toContain('input.onMessagesCreated?.(createdMessages)');
     expect(source).toContain('selectedLoginProfileId: selectedLoginProfile?.id ?? null');
     expect(source).toContain('markLocalAgentNodeTerminal');
   });
