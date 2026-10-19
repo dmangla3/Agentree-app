@@ -1044,6 +1044,9 @@ export const agentClient = {
     checkLoginProfileReadiness: async (profileId: string): Promise<LoginProfile> => {
         return await (tauriCommands as any).checkLoginProfileReadiness(profileId) as LoginProfile;
     },
+    ensureLoginProfileReady: async (profileId: string): Promise<LoginProfile> => {
+        return await (tauriCommands as any).ensureLoginProfileReady(profileId) as LoginProfile;
+    },
     connectCodexLoginProfile: async (profileId: string): Promise<CodexLoginStart> => {
         return await (tauriCommands as any).connectCodexLoginProfile(profileId) as CodexLoginStart;
     },

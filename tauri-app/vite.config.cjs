@@ -3,10 +3,11 @@ const { configDefaults, defineConfig } = require("vitest/config");
 const { loadEnv } = require("vite");
 const react = require("@vitejs/plugin-react");
 
+const { viteCacheDir } = require("./scripts/vite-cache-dir.cjs");
+
 const reactPlugin = react.default ?? react;
 const host = process.env.TAURI_DEV_HOST;
-const agentSandbox = process.env.AGENT_SANDBOX;
-const agentreeViteCacheDir = agentSandbox ? path.join(agentSandbox, "vite-cache") : undefined;
+const agentreeViteCacheDir = viteCacheDir();
 const envDir = path.resolve(__dirname, ".env-files-disabled");
 
 const isEnabled = (value) => ["1", "true", "yes", "on"].includes(
@@ -25,7 +26,7 @@ module.exports = defineConfig(async ({ command, mode }) => {
 
   return {
     plugins: [reactPlugin()],
-    cacheDir: agentreeViteCacheDir || "/tmp/agentree-vite-cache",
+    cacheDir: agentreeViteCacheDir,
     envDir,
     resolve: {
       alias: [

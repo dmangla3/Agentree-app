@@ -1,11 +1,13 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { defineConfig } from 'vitest/config';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const { viteCacheDir } = createRequire(import.meta.url)('./scripts/vite-cache-dir.cjs');
 
 export default defineConfig({
-  cacheDir: '/tmp/agentree-vite-cache',
+  cacheDir: viteCacheDir(),
   resolve: {
     alias: [
       {

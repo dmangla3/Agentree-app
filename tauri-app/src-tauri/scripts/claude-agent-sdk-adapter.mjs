@@ -191,9 +191,71 @@ export function probeClaudeAuth() {
   return null;
 }
 
+function readinessStatusFromError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  const lower = message.toLowerCase();
+  const status = lower.includes('auth')
+    || lower.includes('unauthorized')
+    || lower.includes('401')
+    || lower.includes('login')
+    || lower.includes('oauth')
+    || lower.includes('api key')
+    ? 'auth_missing'
+    : 'unknown_error';
+  return {
+    status,
+    message: message.trim() || 'Claude account readiness could not be determined.',
+  };
+}
+
+function waitForAbort(signal) {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    signal.addEventListener('abort', resolve, { once: true });
+  });
+}
+
+// The SDK performs authentication while initializing. A never-yielding prompt
+// lets initialization complete without writing a user message or API request.
+export async function probeClaudeSdkReadiness(queryFactory = query) {
+  const abortController = new AbortController();
+  try {
+    const stream = queryFactory({
+      // eslint-disable-next-line require-yield
+      prompt: (async function* () {
+        await waitForAbort(abortController.signal);
+      })(),
+      options: {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          CLAUDE_AGENT_SDK_CLIENT_APP: 'agentree/0.1.0',
+        },
+        abortController,
+        maxTurns: 0,
+        persistSession: false,
+        settingSources: [],
+        allowedTools: [],
+      },
+    });
+    const initialization = await stream.initializationResult();
+    return {
+      status: 'ready',
+      authMode: initialization?.account?.tokenSource ?? initialization?.account?.apiProvider ?? null,
+      planType: initialization?.account?.subscriptionType ?? null,
+      message: 'Claude account is ready.',
+    };
+  } catch (error) {
+    return readinessStatusFromError(error);
+  } finally {
+    abortController.abort();
+  }
+}
+
 const AGENTREE_SANDBOX_PATH_ENV_KEYS = [
   'AGENT_SANDBOX',
   'AGENTREE_AGENT_SANDBOX',
+  'AGENTREE_SHARED_CACHE',
   'TMPDIR',
   'TMP',
   'TEMP',
@@ -201,6 +263,7 @@ const AGENTREE_SANDBOX_PATH_ENV_KEYS = [
   'XDG_STATE_HOME',
   'npm_config_cache',
   'YARN_CACHE_FOLDER',
+  'pnpm_config_store_dir',
   'PNPM_HOME',
   'TURBO_CACHE_DIR',
   'NX_CACHE_DIRECTORY',
@@ -289,6 +352,7 @@ export function agentreeMcpServersFromEnv(env = process.env) {
 
 function parseArgs(argv) {
   const parsed = {
+    readinessCheck: false,
     prompt: '',
     model: null,
     effort: null,
@@ -372,6 +436,9 @@ function parseArgs(argv) {
         break;
       case '--deny-tools':
         parsed.denyTools = true;
+        break;
+      case '--readiness-check':
+        parsed.readinessCheck = true;
         break;
       case '--print':
       case '--verbose':
@@ -789,6 +856,14 @@ function createControlReader(onControl) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.readinessCheck) {
+    const authError = probeClaudeAuth();
+    const readiness = authError
+      ? readinessStatusFromError(authError)
+      : await probeClaudeSdkReadiness();
+    emit(readiness);
+    return 0;
+  }
   const prompt = args.prompt ?? '';
   let cumulativeText = '';
   let activeSessionId = args.providerThreadId ?? args.sessionId ?? null;

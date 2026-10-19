@@ -176,6 +176,76 @@ describe('agentRun.machine', () => {
     expect(snapshot.executionData.timeline[0].toolOutput).toBe('a\nb\n');
   });
 
+  it('bounds streamed tool output while preserving its head, tail, and a notice', () => {
+    const snapshot = reduce([
+      {
+        type: 'timeline_event',
+        event: {
+          type: 'tool_use',
+          timestamp: 1,
+          toolName: 'commandExecution',
+          toolUseId: 'tool-1',
+        },
+      },
+      {
+        type: 'timeline_event',
+        event: {
+          type: 'tool_output_delta',
+          timestamp: 2,
+          toolUseId: 'tool-1',
+          delta: 'a'.repeat(200 * 1024),
+        },
+      },
+      {
+        type: 'timeline_event',
+        event: {
+          type: 'tool_output_delta',
+          timestamp: 3,
+          toolUseId: 'tool-1',
+          delta: 'b'.repeat(200 * 1024),
+        },
+      },
+      {
+        type: 'timeline_event',
+        event: {
+          type: 'tool_output_delta',
+          timestamp: 4,
+          toolUseId: 'tool-1',
+          delta: 'c'.repeat(32 * 1024),
+        },
+      },
+    ]);
+
+    const output = snapshot.timeline[0].toolOutput;
+    expect(new TextEncoder().encode(output).byteLength).toBeLessThanOrEqual(256 * 1024);
+    expect(output.startsWith('a'.repeat(128 * 1024 - 128))).toBe(true);
+    expect(output.endsWith('b'.repeat(128 * 1024 - 128))).toBe(true);
+    expect(output).not.toContain('c'.repeat(1024));
+    expect(output).toContain('Output truncated. Refine the command.');
+  });
+
+  it('sanitizes oversized tool output when a saved timeline is loaded', () => {
+    const oversized = `${'a'.repeat(200 * 1024)}${'b'.repeat(200 * 1024)}`;
+    const snapshot = reduce([{
+      type: 'seed',
+      message: message({
+        execution_data: {
+          timeline: [{
+            type: 'tool_result',
+            toolUseId: 'tool-1',
+            toolOutput: oversized,
+          }],
+        },
+      }),
+    }]);
+
+    const output = snapshot.timeline[0].toolOutput;
+    expect(new TextEncoder().encode(output).byteLength).toBeLessThanOrEqual(256 * 1024);
+    expect(output).toContain('Output truncated. Refine the command.');
+    expect(snapshot.executionData.timeline[0].toolOutput).toBe(output);
+    expect((snapshot.message as any).execution_data.timeline[0].toolOutput).toBe(output);
+  });
+
   it('coalesces adjacent thinking deltas into one timeline row', () => {
     const snapshot = reduce([
       {

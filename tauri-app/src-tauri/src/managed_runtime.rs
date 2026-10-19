@@ -5,20 +5,22 @@
 //! release time as a pinned, checksummed archive; this module downloads it on
 //! first use into the app data dir and resolves binaries from there.
 
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
+use walkdir::WalkDir;
 
 const RUNTIME_MANIFEST_JSON: &str = include_str!("../../runtime-manifest.json");
 const INSTALL_MARKER: &str = ".agentree-runtime-ok";
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+const CLAUDE_GENERATED_FILES: &[&str] = &["ai-label-prompt.txt", "claude-agent-sdk-adapter.mjs"];
 
 pub const COMPONENT_NODE: &str = "node";
 pub const COMPONENT_CLAUDE_SDK: &str = "claude-sdk";
@@ -26,6 +28,8 @@ pub const COMPONENT_CODEX: &str = "codex";
 
 static MANIFEST: OnceCell<RuntimeManifest> = OnceCell::new();
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
+static VALIDATED_INSTALLS: Lazy<Mutex<HashSet<(PathBuf, String)>>> =
+    Lazy::new(|| Mutex::new(HashSet::new()));
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +50,7 @@ pub struct RuntimeComponentSpec {
 pub struct RuntimePlatformArchive {
     pub url: String,
     pub sha256: String,
+    pub tree_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -97,14 +102,163 @@ pub fn component_install_dir(app: &AppHandle, component: &str) -> Result<PathBuf
     Ok(runtime_root(app)?.join(component).join(&spec.version))
 }
 
-/// Returns the install dir when the pinned version of `component` is present
-/// and its completion marker exists; never touches the network.
+fn fingerprint_exclusions(component: &str) -> &'static [&'static str] {
+    if component == COMPONENT_CLAUDE_SDK {
+        CLAUDE_GENERATED_FILES
+    } else {
+        &[]
+    }
+}
+
+fn update_fingerprint_field(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
+}
+
+fn install_tree_sha256(install_dir: &Path, exclusions: &[&str]) -> Result<String, String> {
+    let mut entries = WalkDir::new(install_dir)
+        .min_depth(1)
+        .follow_links(false)
+        .into_iter()
+        .map(|entry| entry.map_err(|error| format!("Could not inspect runtime tree: {}", error)))
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by(|left, right| left.path().cmp(right.path()));
+
+    let mut hasher = Sha256::new();
+    for entry in entries {
+        let relative = entry.path().strip_prefix(install_dir).map_err(|error| {
+            format!(
+                "Could not fingerprint runtime path {}: {}",
+                entry.path().display(),
+                error
+            )
+        })?;
+        let relative = relative
+            .to_str()
+            .ok_or_else(|| {
+                format!(
+                    "Managed runtime path is not valid UTF-8: {}",
+                    relative.display()
+                )
+            })?
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        if relative == INSTALL_MARKER || exclusions.contains(&relative.as_str()) {
+            continue;
+        }
+
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        update_fingerprint_field(&mut hasher, relative.as_bytes());
+        if entry.file_type().is_symlink() {
+            hasher.update(b"symlink");
+            let target = fs::read_link(entry.path()).map_err(|error| {
+                format!(
+                    "Could not read managed runtime symlink {}: {}",
+                    entry.path().display(),
+                    error
+                )
+            })?;
+            update_fingerprint_field(&mut hasher, target.to_string_lossy().as_bytes());
+        } else if entry.file_type().is_file() {
+            hasher.update(b"file");
+            let size = entry.metadata().map_err(|error| {
+                format!(
+                    "Could not inspect managed runtime file {}: {}",
+                    entry.path().display(),
+                    error
+                )
+            })?;
+            hasher.update(size.len().to_be_bytes());
+            let mut file = fs::File::open(entry.path()).map_err(|error| {
+                format!(
+                    "Could not open managed runtime file {}: {}",
+                    entry.path().display(),
+                    error
+                )
+            })?;
+            let mut buffer = [0u8; 65536];
+            loop {
+                let count = file.read(&mut buffer).map_err(|error| {
+                    format!(
+                        "Could not fingerprint managed runtime file {}: {}",
+                        entry.path().display(),
+                        error
+                    )
+                })?;
+                if count == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..count]);
+            }
+        } else {
+            return Err(format!(
+                "Managed runtime contains unsupported entry type: {}",
+                entry.path().display()
+            ));
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn validate_install_fingerprint(
+    install_dir: &Path,
+    expected_tree_sha256: &str,
+    exclusions: &[&str],
+) -> Result<(), String> {
+    let validated = (
+        install_dir.to_path_buf(),
+        expected_tree_sha256.trim().to_ascii_lowercase(),
+    );
+    if VALIDATED_INSTALLS
+        .lock()
+        .map_err(|_| "runtime validation cache lock poisoned".to_string())?
+        .contains(&validated)
+    {
+        return Ok(());
+    }
+
+    validate_install_fingerprint_uncached(install_dir, expected_tree_sha256, exclusions)?;
+    VALIDATED_INSTALLS
+        .lock()
+        .map_err(|_| "runtime validation cache lock poisoned".to_string())?
+        .insert(validated);
+    Ok(())
+}
+
+fn validate_install_fingerprint_uncached(
+    install_dir: &Path,
+    expected_tree_sha256: &str,
+    exclusions: &[&str],
+) -> Result<(), String> {
+    let actual_tree_sha256 = install_tree_sha256(install_dir, exclusions)?;
+    if !actual_tree_sha256.eq_ignore_ascii_case(expected_tree_sha256.trim()) {
+        return Err(format!(
+            "Managed runtime content fingerprint mismatch: expected {}, got {}.",
+            expected_tree_sha256, actual_tree_sha256
+        ));
+    }
+    Ok(())
+}
+
+/// Returns the install dir only when the pinned component's structure and
+/// extracted contents match the checksummed archive. After a full verification,
+/// the result is reused for later launches in the same app process.
 pub fn installed_component_dir(
     app: &AppHandle,
     component: &str,
 ) -> Result<Option<PathBuf>, String> {
     let dir = component_install_dir(app, component)?;
-    if dir.join(INSTALL_MARKER).is_file() && validate_component_install(component, &dir).is_ok() {
+    let archive = platform_archive(component)?;
+    if dir.join(INSTALL_MARKER).is_file()
+        && validate_component_install(component, &dir).is_ok()
+        && validate_install_fingerprint(
+            &dir,
+            &archive.tree_sha256,
+            fingerprint_exclusions(component),
+        )
+        .is_ok()
+    {
         Ok(Some(dir))
     } else {
         Ok(None)
@@ -194,7 +348,21 @@ pub fn component_install_validation_error(
     if !dir.join(INSTALL_MARKER).is_file() {
         return Ok(None);
     }
-    Ok(validate_component_install(component, &dir).err())
+    let archive = platform_archive(component)?;
+    let validation = validate_component_install(component, &dir).and_then(|_| {
+        validate_install_fingerprint_uncached(
+            &dir,
+            &archive.tree_sha256,
+            fingerprint_exclusions(component),
+        )
+    });
+    if validation.is_ok() {
+        VALIDATED_INSTALLS
+            .lock()
+            .map_err(|_| "runtime validation cache lock poisoned".to_string())?
+            .insert((dir, archive.tree_sha256.trim().to_ascii_lowercase()));
+    }
+    Ok(validation.err())
 }
 
 fn platform_archive(component: &str) -> Result<&'static RuntimePlatformArchive, String> {
@@ -209,6 +377,12 @@ fn platform_archive(component: &str) -> Result<&'static RuntimePlatformArchive, 
     if archive.sha256.trim().is_empty() {
         return Err(format!(
             "Managed {} runtime {} has not been published for {} yet (missing checksum in runtime manifest). Run the runtime archive build during release.",
+            component, spec.version, platform
+        ));
+    }
+    if archive.tree_sha256.trim().is_empty() {
+        return Err(format!(
+            "Managed {} runtime {} has not been published for {} yet (missing extracted-tree fingerprint in runtime manifest). Run the runtime archive build during release.",
             component, spec.version, platform
         ));
     }
@@ -280,9 +454,11 @@ fn download_and_install(app: &AppHandle, component: &str) -> Result<PathBuf, Str
     install_archive_from_reader_validated(
         response,
         &archive.sha256,
+        Some(&archive.tree_sha256),
         &install_dir,
         &progress,
         &|staged| validate_component_install(component, staged),
+        fingerprint_exclusions(component),
     )?;
     Ok(install_dir)
 }
@@ -291,7 +467,8 @@ fn download_and_install(app: &AppHandle, component: &str) -> Result<PathBuf, Str
 /// verify the checksum, unpack into a staging dir, then atomically rename to
 /// the final install dir and write the completion marker. A failure at any
 /// point leaves no half-installed component behind.
-pub fn install_archive_from_reader(
+#[cfg(test)]
+fn install_archive_from_reader(
     mut reader: impl Read,
     expected_sha256: &str,
     install_dir: &Path,
@@ -300,18 +477,22 @@ pub fn install_archive_from_reader(
     install_archive_from_reader_validated(
         &mut reader,
         expected_sha256,
+        None,
         install_dir,
         progress,
         &|_| Ok(()),
+        &[],
     )
 }
 
 fn install_archive_from_reader_validated(
     mut reader: impl Read,
     expected_sha256: &str,
+    expected_tree_sha256: Option<&str>,
     install_dir: &Path,
     progress: &dyn Fn(u64),
     validate: &dyn Fn(&Path) -> Result<(), String>,
+    fingerprint_exclusions: &[&str],
 ) -> Result<(), String> {
     let parent = install_dir
         .parent()
@@ -356,7 +537,15 @@ fn install_archive_from_reader_validated(
     unpack_archive_skipping_apple_metadata(&mut tar_archive, staging.path())?;
 
     validate(staging.path())?;
-
+    let tree_sha256 = install_tree_sha256(staging.path(), fingerprint_exclusions)?;
+    if let Some(expected_tree_sha256) = expected_tree_sha256 {
+        if !tree_sha256.eq_ignore_ascii_case(expected_tree_sha256.trim()) {
+            return Err(format!(
+                "Extracted runtime content fingerprint mismatch: expected {}, got {}.",
+                expected_tree_sha256, tree_sha256
+            ));
+        }
+    }
     let staged = staging.keep();
     // The marker travels inside the staged tree so the swap below is the
     // single step that makes the install valid — no window where the new
@@ -400,6 +589,9 @@ fn install_archive_from_reader_validated(
     }
     if had_existing {
         let _ = fs::remove_dir_all(&backup);
+    }
+    if let Ok(mut validated) = VALIDATED_INSTALLS.lock() {
+        validated.retain(|entry| entry.0 != install_dir);
     }
     Ok(())
 }
@@ -552,6 +744,10 @@ mod tests {
             assert!(!spec.version.trim().is_empty());
             assert!(spec.platforms.contains_key("linux-x86_64"));
             assert!(spec.platforms.contains_key("darwin-aarch64"));
+            for archive in spec.platforms.values() {
+                assert!(!archive.sha256.trim().is_empty());
+                assert!(!archive.tree_sha256.trim().is_empty());
+            }
         }
     }
 
@@ -567,6 +763,83 @@ mod tests {
 
         assert!(install_dir.join("bin").join("codex").is_file());
         assert!(install_dir.join(INSTALL_MARKER).is_file());
+        let trusted_tree_sha256 = install_tree_sha256(&install_dir, &[]).unwrap();
+        validate_install_fingerprint(&install_dir, &trusted_tree_sha256, &[])
+            .expect("fresh install fingerprint should match");
+    }
+
+    #[test]
+    fn install_fingerprint_rejects_modified_runtime_content() {
+        let archive = build_archive(&[("bin/codex", b"trusted".as_slice())]);
+        let checksum = sha256_hex(&archive);
+        let root = tempfile::tempdir().unwrap();
+        let install_dir = root.path().join("codex").join("0.139.0");
+        install_archive_from_reader(archive.as_slice(), &checksum, &install_dir, &|_| {})
+            .expect("install should succeed");
+        let trusted_tree_sha256 = install_tree_sha256(&install_dir, &[]).unwrap();
+
+        std::fs::write(install_dir.join("bin").join("codex"), b"tampered").unwrap();
+
+        let error = validate_install_fingerprint(&install_dir, &trusted_tree_sha256, &[])
+            .expect_err("modified content must invalidate the install");
+        assert!(error.contains("content fingerprint mismatch"));
+
+        std::fs::write(install_dir.join(INSTALL_MARKER), b"forged").unwrap();
+        let error = validate_install_fingerprint(&install_dir, &trusted_tree_sha256, &[])
+            .expect_err("changing the local marker must not replace the embedded fingerprint");
+        assert!(error.contains("content fingerprint mismatch"));
+    }
+
+    #[test]
+    fn install_fingerprint_rejects_unexpected_files_but_allows_claude_generated_files() {
+        let archive = build_archive(&[("sdk.mjs", b"trusted".as_slice())]);
+        let checksum = sha256_hex(&archive);
+        let root = tempfile::tempdir().unwrap();
+        let install_dir = root.path().join("claude-sdk").join("0.3.207");
+        install_archive_from_reader_validated(
+            archive.as_slice(),
+            &checksum,
+            None,
+            &install_dir,
+            &|_| {},
+            &|_| Ok(()),
+            CLAUDE_GENERATED_FILES,
+        )
+        .expect("install should succeed");
+        let trusted_tree_sha256 =
+            install_tree_sha256(&install_dir, CLAUDE_GENERATED_FILES).unwrap();
+
+        std::fs::write(
+            install_dir.join("claude-agent-sdk-adapter.mjs"),
+            b"generated",
+        )
+        .unwrap();
+        assert_eq!(
+            install_tree_sha256(&install_dir, CLAUDE_GENERATED_FILES).unwrap(),
+            trusted_tree_sha256,
+            "known app-generated files should not invalidate the archive"
+        );
+
+        std::fs::write(install_dir.join("unexpected.js"), b"tampered").unwrap();
+        let error = validate_install_fingerprint(
+            &install_dir,
+            &trusted_tree_sha256,
+            CLAUDE_GENERATED_FILES,
+        )
+        .expect_err("unexpected files must invalidate the install");
+        assert!(error.contains("content fingerprint mismatch"));
+    }
+
+    #[test]
+    fn completion_marker_cannot_override_the_embedded_fingerprint() {
+        let root = tempfile::tempdir().unwrap();
+        let install_dir = root.path().join("node").join("22.21.1");
+        std::fs::create_dir_all(&install_dir).unwrap();
+        std::fs::write(install_dir.join(INSTALL_MARKER), b"ok").unwrap();
+
+        let error = validate_install_fingerprint(&install_dir, "deadbeef", &[])
+            .expect_err("the local completion marker must not establish integrity");
+        assert!(error.contains("content fingerprint mismatch"));
     }
 
     #[test]
@@ -635,6 +908,28 @@ mod tests {
     }
 
     #[test]
+    fn install_archive_rejects_tree_fingerprint_mismatch_without_leaving_files() {
+        let archive = build_archive(&[("bin/node", b"node".as_slice())]);
+        let checksum = sha256_hex(&archive);
+        let root = tempfile::tempdir().unwrap();
+        let install_dir = root.path().join("node").join("22.21.1");
+
+        let error = install_archive_from_reader_validated(
+            archive.as_slice(),
+            &checksum,
+            Some("deadbeef"),
+            &install_dir,
+            &|_| {},
+            &|_| Ok(()),
+            &[],
+        )
+        .expect_err("embedded tree fingerprint mismatch must fail");
+
+        assert!(error.contains("Extracted runtime content fingerprint mismatch"));
+        assert!(!install_dir.exists());
+    }
+
+    #[test]
     fn claude_install_validation_requires_platform_native_executable() {
         let root = tempfile::tempdir().unwrap();
         let install_dir = root.path().join("claude-sdk").join("0.3.207");
@@ -682,6 +977,7 @@ mod tests {
         let error = install_archive_from_reader_validated(
             archive.as_slice(),
             &checksum,
+            None,
             &install_dir,
             &|_| {},
             &|staged| {
@@ -691,6 +987,7 @@ mod tests {
                     "linux-x86_64",
                 )
             },
+            &[],
         )
         .expect_err("an incomplete but checksummed archive must be rejected");
 

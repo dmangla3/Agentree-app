@@ -220,13 +220,17 @@ fn doctor_entry(app: &AppHandle, component: &str, label: &str) -> ManagedRuntime
         .and_then(|manifest| manifest.components.get(component))
         .map(|spec| spec.version.clone())
         .unwrap_or_default();
-    let installed = crate::managed_runtime::installed_component_dir(app, component)
-        .ok()
-        .flatten();
     let validation_error =
         crate::managed_runtime::component_install_validation_error(app, component)
             .ok()
             .flatten();
+    let installed = if validation_error.is_none() {
+        crate::managed_runtime::installed_component_dir(app, component)
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
     let downloadable = crate::managed_runtime::component_available_for_download(component);
 
     let (status, detail) = match (&installed, validation_error, downloadable) {
@@ -402,13 +406,15 @@ fn read_codex_provider_limits(app: &AppHandle, profile_id: Option<&str>) -> Resu
 
 #[tauri::command]
 #[specta::specta]
-pub fn refresh_provider_limits(
+pub async fn refresh_provider_limits(
     app: AppHandle,
     provider: String,
     profile_id: Option<String>,
 ) -> Result<String, String> {
-    match provider.trim().to_lowercase().as_str() {
+    tauri::async_runtime::spawn_blocking(move || match provider.trim().to_lowercase().as_str() {
         "codex" => read_codex_provider_limits(&app, profile_id.as_deref()),
         other => Err(format!("Unsupported provider for usage refresh: {}", other)),
-    }
+    })
+    .await
+    .map_err(|error| format!("Provider limits refresh task failed: {}", error))?
 }

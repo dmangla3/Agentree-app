@@ -8,6 +8,7 @@ import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { useOrchestrationTemplateStore } from '../stores/orchestrationTemplateStore';
 import type { OrchestrationPromptTemplate } from '../orchestration/templates';
 import { resolveLoginProfileSelection } from '../lib/loginProfiles';
+import { buildProviderLoginRequiredToast } from '../lib/loginNavigationEvents';
 import { isNoAgentSessionFoundError, markStaleLocalAgentNodeCancelled } from '../lib/localAgentRunTerminal';
 import { applyLocalNodeMessages } from '../hooks/useLiveMessages';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from '../hooks/useLocalNodes';
@@ -87,6 +88,7 @@ import {
   shouldSubmitGraphDockComposerKey,
 } from './graphDockComposerLogic';
 import { TemplateMentionTextarea } from '../components/composer/TemplateMentionTextarea';
+import { useToast } from '../components/Toast';
 import {
   getActiveTemplateMention,
   getTemplateMentionText,
@@ -315,6 +317,7 @@ function GraphDockPromptTextarea({
 
 export function GraphDockComposer() {
   const queryClient = useQueryClient();
+  const { addToast } = useToast();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const promptRef = useRef('');
   const assistantNodeIdRef = useRef<string | null>(null);
@@ -1308,6 +1311,30 @@ export function GraphDockComposer() {
 
     setError(null);
     const runsToLaunch = runsToSend;
+    const checkedProfiles = new Set<string>();
+    for (const run of runsToLaunch) {
+      const provider = run.agent.type === 'codex' || run.agent.type === 'claude'
+        ? run.agent.type
+        : null;
+      const selection = resolveLoginProfileSelection({
+        profiles: useLoginProfilesStore.getState().profiles,
+        provider,
+        agentName: run.agent.name ?? run.agent.type,
+      });
+      if (selection.requiresProfile && !selection.selectedProfile && provider) {
+        addToast(buildProviderLoginRequiredToast(provider));
+        return;
+      }
+      if (selection.selectedProfile && !checkedProfiles.has(selection.selectedProfile.id)) {
+        try {
+          await useLoginProfilesStore.getState().ensureReady(selection.selectedProfile.id);
+          checkedProfiles.add(selection.selectedProfile.id);
+        } catch {
+          if (provider) addToast(buildProviderLoginRequiredToast(provider));
+          return;
+        }
+      }
+    }
 
     recordSendFlowEvent('graph-dock.submit', {
       workspaceId: selectedWorkspaceId,
@@ -1332,14 +1359,17 @@ export function GraphDockComposer() {
         setPendingThreadId(thread.id);
       }
       for (const run of runsToLaunch) {
+        const provider = run.agent.type === 'codex' || run.agent.type === 'claude'
+          ? run.agent.type
+          : null;
         const loginProfileSelection = resolveLoginProfileSelection({
           profiles: useLoginProfilesStore.getState().profiles,
-          provider: run.agent.type,
+          provider,
           agentName: run.agent.name ?? run.agent.type,
         });
         const selectedLoginProfile = loginProfileSelection.selectedProfile;
-        if (!loginProfileSelection.isReady) {
-          setError(loginProfileSelection.failureMessage ?? `${run.agent.name ?? run.agent.type} needs a ready login profile before it can run.`);
+        if (!loginProfileSelection.isReady && provider) {
+          addToast(buildProviderLoginRequiredToast(provider));
           return;
         }
         const flowId = createSendFlowId();
@@ -1420,6 +1450,7 @@ export function GraphDockComposer() {
       setIsSending(false);
     }
   }, [
+    addToast,
     agent,
     clearComposerDraft,
     clearPrompt,

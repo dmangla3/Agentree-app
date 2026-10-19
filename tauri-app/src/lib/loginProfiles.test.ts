@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canCheckLoginProfileReadiness,
   getLoginProfileAuthTypeLabel,
   getLoginProfileProviderLabel,
   getLoginProfileStatusTone,
@@ -40,6 +41,12 @@ describe('loginProfiles helpers', () => {
     expect(isLoginProfileActive({ status: 'unchecked' })).toBe(false);
   });
 
+  it('does not allow readiness checks when authentication is missing', () => {
+    expect(canCheckLoginProfileReadiness({ status: 'auth_missing' })).toBe(false);
+    expect(canCheckLoginProfileReadiness({ status: 'unknown_error' })).toBe(true);
+    expect(canCheckLoginProfileReadiness({ status: 'ready' })).toBe(true);
+  });
+
   it('finds active provider availability from ready compatible profiles only', () => {
     const profiles = [
       { id: 'c1', provider: 'codex', displayName: 'Codex expired', authType: 'codex_api_key', status: 'expired', isDefault: true },
@@ -70,6 +77,6 @@ describe('loginProfiles helpers', () => {
 
     expect(selection.selectedProfile?.id).toBe('c1');
     expect(selection.isReady).toBe(false);
-    expect(selection.failureMessage).toBe('Codex needs a ready login profile before it can run.');
+    expect(selection.failureMessage).toBe('Log in to Codex in Managed Accounts.');
   });
 });

@@ -11,6 +11,11 @@ import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { useOrchestrationTemplateStore } from '../stores/orchestrationTemplateStore';
 import { agentClient } from '../lib/agentClient';
 import { TooltipProvider } from '../../@/components/ui/tooltip';
+import { ToastProvider } from '../components/Toast';
+import {
+  LOGIN_PROFILES_NAVIGATION_EVENT,
+  type LoginProfilesNavigationDetail,
+} from '../lib/loginNavigationEvents';
 
 const hookMocks = vi.hoisted(() => ({
   steerAgentRun: vi.fn(),
@@ -20,6 +25,7 @@ const hookMocks = vi.hoisted(() => ({
   createThreadSession: vi.fn(),
   listProviderSkills: vi.fn(),
   listFilesAtCommit: vi.fn(),
+  ensureLoginProfileReady: vi.fn(),
   scheduleRefresh: vi.fn(),
 }));
 
@@ -33,6 +39,7 @@ vi.mock('../lib/agentClient', () => ({
     upsertLocalNode: hookMocks.upsertLocalNode,
     listProviderSkills: hookMocks.listProviderSkills,
     listFilesAtCommit: hookMocks.listFilesAtCommit,
+    ensureLoginProfileReady: hookMocks.ensureLoginProfileReady,
     listLocalRefs: vi.fn(async () => []),
     listAllCommits: vi.fn(async () => []),
   },
@@ -146,9 +153,11 @@ const renderComposer = (messages: Message[]) => {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <GraphDockComposer />
-      </TooltipProvider>
+      <ToastProvider>
+        <TooltipProvider>
+          <GraphDockComposer />
+        </TooltipProvider>
+      </ToastProvider>
     </QueryClientProvider>
   );
 };
@@ -181,6 +190,14 @@ describe('GraphDockComposer steering behavior', () => {
     });
     hookMocks.scheduleRefresh.mockReset();
     hookMocks.scheduleRefresh.mockResolvedValue(undefined);
+    hookMocks.ensureLoginProfileReady.mockResolvedValue({
+      id: 'codex-profile-1',
+      provider: 'codex',
+      displayName: 'Codex Profile',
+      authType: 'codex_chatgpt_session',
+      status: 'ready',
+      isDefault: true,
+    });
     useRunStatusStore.getState().clearAllRunStatus();
     useOrchestrationTemplateStore.getState().clearUserTemplates();
     useWorkspaceStore.setState({
@@ -396,6 +413,36 @@ describe('GraphDockComposer steering behavior', () => {
     const userMessage = hookMocks.startAgentRun.mock.calls[0][0].userNode as Message;
     expect(userMessage.content).toBe('Send from keyboard');
     expect(userMessage.parentId).toBe('assistant-live');
+  });
+
+  it('shows an actionable Codex login toast instead of a composer error', async () => {
+    const user = userEvent.setup();
+    const openManagedAccounts = vi.fn();
+    window.addEventListener(LOGIN_PROFILES_NAVIGATION_EVENT, openManagedAccounts);
+    useLoginProfilesStore.setState({ profiles: [] });
+    renderComposer([
+      message({
+        id: 'assistant-live',
+        role: 'assistant',
+        content: 'Previous assistant reply',
+        status: 'completed' as any,
+        output_commit_sha: 'parent-output',
+      }),
+    ]);
+
+    await user.type(screen.getByLabelText('Graph composer prompt'), 'Try this');
+    await user.click(screen.getByRole('button', { name: 'Send graph composer message' }));
+
+    expect(await screen.findByText('Log in to Codex')).toBeTruthy();
+    expect(screen.getByText('Your Codex login is missing or expired.')).toBeTruthy();
+    expect(hookMocks.startAgentRun).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Open Managed Accounts' }));
+    expect(openManagedAccounts).toHaveBeenCalledOnce();
+    expect(
+      (openManagedAccounts.mock.calls[0][0] as CustomEvent<LoginProfilesNavigationDetail>).detail
+    ).toEqual({ provider: 'codex' });
+    window.removeEventListener(LOGIN_PROFILES_NAVIGATION_EVENT, openManagedAccounts);
   });
 
   it('keeps Shift+Enter as a newline in the graph dock composer', async () => {

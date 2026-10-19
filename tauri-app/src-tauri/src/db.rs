@@ -167,7 +167,9 @@ fn append_tool_output_delta_to_timeline(
         if let Some(object) = event.as_object_mut() {
             object.insert(
                 "toolOutput".to_string(),
-                JsonValue::String(format!("{}{}", existing, delta)),
+                JsonValue::String(crate::tool_output::append_bounded_tool_output(
+                    &existing, delta,
+                )),
             );
         }
         return;
@@ -181,7 +183,7 @@ fn normalize_journal_timeline_event(event: &JsonValue) -> Option<JsonValue> {
         .and_then(|value| value.as_i64())
         .unwrap_or_else(|| unix_timestamp() * 1000);
 
-    match event_type {
+    let mut normalized = match event_type {
         "thinking" => Some(serde_json::json!({
             "type": "thinking",
             "timestamp": timestamp,
@@ -254,7 +256,11 @@ fn normalize_journal_timeline_event(event: &JsonValue) -> Option<JsonValue> {
                 .unwrap_or(JsonValue::Null),
         })),
         _ => None,
+    };
+    if let Some(event) = normalized.as_mut() {
+        crate::tool_output::sanitize_tool_output_fields(event);
     }
+    normalized
 }
 
 fn merge_timeline_into_payload(payload: &mut JsonValue, timeline: Vec<JsonValue>) {
@@ -3266,7 +3272,7 @@ impl TelemetryDb {
                 "#,
             )
             .map_err(|e| e.to_string())?;
-        let rows = stmt
+        let mut rows = stmt
             .query_map(params![run_id, after_seq], |row| {
                 Ok(AgentRunJournalEvent {
                     run_id: row.get(0)?,
@@ -3282,6 +3288,9 @@ impl TelemetryDb {
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
+        for row in &mut rows {
+            row.payload = crate::tool_output::sanitize_serialized_tool_outputs(&row.payload);
+        }
         Ok(rows)
     }
 
@@ -3301,9 +3310,10 @@ impl TelemetryDb {
         let Some(existing) = existing else {
             return Ok(None);
         };
-        let Ok(existing_execution_data) = serde_json::from_str::<JsonValue>(&existing) else {
+        let Ok(mut existing_execution_data) = serde_json::from_str::<JsonValue>(&existing) else {
             return Ok(None);
         };
+        crate::tool_output::sanitize_tool_output_fields(&mut existing_execution_data);
         let Some(timeline) = existing_execution_data
             .get("timeline")
             .and_then(|value| value.as_array())
@@ -4519,6 +4529,9 @@ impl TelemetryDb {
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
+        for row in &mut rows {
+            row.payload = crate::tool_output::sanitize_serialized_tool_outputs(&row.payload);
+        }
         rows.sort_by_key(|row| row.finalized_at);
         Ok(rows)
     }
@@ -4886,7 +4899,11 @@ impl TelemetryDb {
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()
-        .map(|value| value.flatten())
+        .map(|value| {
+            value
+                .flatten()
+                .map(|payload| crate::tool_output::sanitize_serialized_tool_outputs(&payload))
+        })
         .map_err(|e| e.to_string())
     }
 
@@ -4907,6 +4924,14 @@ impl TelemetryDb {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
+        .map(|row| {
+            row.map(|(workspace_id, payload): (String, String)| {
+                (
+                    workspace_id,
+                    crate::tool_output::sanitize_serialized_tool_outputs(&payload),
+                )
+            })
+        })
         .map_err(|e| e.to_string())
     }
 

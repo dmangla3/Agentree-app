@@ -15,7 +15,8 @@ use uuid::Uuid;
 use crate::db::TelemetryDb;
 
 const KEYCHAIN_SERVICE: &str = "com.agentree.agentree.login-profiles";
-const LIVE_CHECK_TIMEOUT: Duration = Duration::from_secs(45);
+const READINESS_CHECK_TIMEOUT: Duration = Duration::from_secs(12);
+const READINESS_CACHE_TTL_SECS: i64 = 5 * 60;
 const CODEX_DEVICE_LOGIN_URL: &str = "https://auth.openai.com/codex/device";
 const CODEX_LOGIN_START_TIMEOUT: Duration = Duration::from_secs(20);
 const CODEX_GLOBAL_INSTRUCTION_FILES: [&str; 2] = ["AGENTS.override.md", "AGENTS.md"];
@@ -187,7 +188,7 @@ fn delete_file_secret(account: &str) -> Result<(), String> {
 impl CredentialVault for KeyringCredentialVault {
     fn set_secret(&self, account: &str, secret: &str) -> Result<(), String> {
         let entry = crate::secure_store::open_entry(KEYCHAIN_SERVICE, account)?;
-        crate::secure_store::set_password_verified(&entry, secret)?;
+        crate::secure_store::set_password(&entry, secret)?;
         delete_file_secret(account)
     }
 
@@ -200,7 +201,7 @@ impl CredentialVault for KeyringCredentialVault {
             }
             Err(keyring::Error::NoEntry) => {
                 let secret = read_file_secret(account)?;
-                crate::secure_store::set_password_verified(&entry, &secret)?;
+                crate::secure_store::set_password(&entry, &secret)?;
                 delete_file_secret(account)?;
                 Ok(secret)
             }
@@ -461,6 +462,22 @@ pub fn resolve_runtime_credentials(
     let profile = db.get_login_profile(profile_id)?;
     let secret = vault.get_secret(&secret_account_id(profile_id, "primary"))?;
     materialize_runtime_credentials(profile, &secret, app_cache_dir)
+}
+
+pub(crate) fn resolve_runtime_credentials_for_launch(
+    app: &tauri::AppHandle,
+    db: &TelemetryDb,
+    profile_id: &str,
+    app_cache_dir: PathBuf,
+) -> Result<MaterializedRuntimeCredentials, String> {
+    resolve_runtime_credentials(db, &KeyringCredentialVault, profile_id, app_cache_dir).map_err(
+        |error| {
+            if status_from_live_check_error(&error) == "auth_missing" {
+                let _ = mark_login_profile_auth_missing(app, db, profile_id, &error);
+            }
+            error
+        },
+    )
 }
 
 pub fn materialize_runtime_credentials(
@@ -1573,7 +1590,7 @@ fn command_output_with_timeout(command: &mut Command, timeout: Duration) -> Resu
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("failed to start live check: {}", error))?;
+        .map_err(|error| format!("failed to start account check: {}", error))?;
     let started_at = Instant::now();
 
     loop {
@@ -1581,45 +1598,24 @@ fn command_output_with_timeout(command: &mut Command, timeout: Duration) -> Resu
             Ok(Some(_status)) => {
                 return child
                     .wait_with_output()
-                    .map_err(|error| format!("failed to collect live check output: {}", error));
+                    .map_err(|error| format!("failed to collect account check output: {}", error));
             }
             Ok(None) => {
                 if started_at.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(
-                        "Live check timed out before receiving a provider response.".to_string()
+                        "Account check timed out before receiving a provider response.".to_string(),
                     );
                 }
                 thread::sleep(Duration::from_millis(50));
             }
             Err(error) => {
                 let _ = child.kill();
-                return Err(format!("failed while waiting for live check: {}", error));
+                return Err(format!("failed while waiting for account check: {}", error));
             }
         }
     }
-}
-
-fn live_check_model(profile: &LoginProfile) -> String {
-    explicit_live_check_model(profile).unwrap_or_else(|| {
-        if profile.provider == "claude" {
-            "claude-sonnet-5".to_string()
-        } else {
-            "gpt-5.5".to_string()
-        }
-    })
-}
-
-fn explicit_live_check_model(profile: &LoginProfile) -> Option<String> {
-    profile
-        .config
-        .get("live_check_model")
-        .or_else(|| profile.config.get("model"))
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
 }
 
 #[derive(Debug, Clone)]
@@ -1761,7 +1757,9 @@ fn extract_live_check_failure(stdout: &str, stderr: &str) -> LiveCheckFailure {
                 .find(|line| !line.is_empty() && !is_diagnostic_noise_line(line))
                 .map(LiveCheckFailure::uncoded)
         })
-        .unwrap_or_else(|| LiveCheckFailure::uncoded("Live check failed without provider output."));
+        .unwrap_or_else(|| {
+            LiveCheckFailure::uncoded("Account check failed without provider output.")
+        });
     LiveCheckFailure {
         code: failure.code,
         message: truncate_live_check_message(failure.message),
@@ -1770,9 +1768,10 @@ fn extract_live_check_failure(stdout: &str, stderr: &str) -> LiveCheckFailure {
 
 fn status_for_live_check_failure(failure: &LiveCheckFailure) -> &'static str {
     match failure.code.as_deref() {
-        Some("auth_missing") | Some("codex_auth_missing") | Some("claude_auth_missing") => {
-            return "auth_missing"
-        }
+        Some("auth_error")
+        | Some("auth_missing")
+        | Some("codex_auth_missing")
+        | Some("claude_auth_missing") => return "auth_missing",
         Some("usage_limited") | Some("rate_limited") => return "usage_limited",
         Some("claude_runtime_missing")
         | Some("codex_cli_missing")
@@ -1816,40 +1815,21 @@ fn status_from_live_check_error(message: &str) -> &'static str {
     }
 }
 
-fn parse_live_check_success(output: &str) -> Option<String> {
-    let mut completed = false;
-    let mut final_content = None;
-    let mut message_completed = None;
-    for line in output.lines() {
-        let Ok(value) = serde_json::from_str::<JsonValue>(line.trim()) else {
-            continue;
-        };
-        match value.get("type").and_then(|field| field.as_str()) {
-            Some("message_completed") => {
-                message_completed = value
-                    .get("content")
-                    .and_then(|field| field.as_str())
-                    .map(ToOwned::to_owned);
-            }
-            Some("provider_stop") => {
-                completed = value
-                    .get("provider_status")
-                    .and_then(|field| field.as_str())
-                    == Some("completed");
-                final_content = value
-                    .get("final_content")
-                    .and_then(|field| field.as_str())
-                    .map(ToOwned::to_owned);
-            }
-            _ => {}
-        }
+pub(crate) fn provider_login_required_message(provider: &str) -> String {
+    match provider {
+        "codex" => "Log in to Codex in Managed Accounts.".to_string(),
+        "claude" => "Log in to Claude in Managed Accounts.".to_string(),
+        _ => "Open Managed Accounts and log in to this coding agent.".to_string(),
     }
-    if !completed {
-        return None;
+}
+
+fn readiness_status_message(provider: &str, status: &str) -> String {
+    match status {
+        "auth_missing" => provider_login_required_message(provider),
+        "usage_limited" => "This account has reached its usage limit.".to_string(),
+        "invalid" => "This account configuration is no longer valid. Reconnect it.".to_string(),
+        _ => "Agentree could not verify this account. Try again.".to_string(),
     }
-    final_content
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| message_completed.filter(|value| !value.trim().is_empty()))
 }
 
 fn capture_live_check_output(
@@ -1874,101 +1854,122 @@ fn live_check_failure_with_log(
     failure
 }
 
-fn run_codex_live_check(
+#[derive(Debug, Clone)]
+struct ProviderReadiness {
+    message: String,
+    plan_type: Option<String>,
+}
+
+fn parse_provider_readiness(output: &str) -> Result<ProviderReadiness, LiveCheckFailure> {
+    let value = output
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<JsonValue>(line.trim()).ok())
+        .find(|value| value.get("status").and_then(JsonValue::as_str).is_some())
+        .ok_or_else(|| {
+            LiveCheckFailure::uncoded("Account check returned no readiness status.".to_string())
+        })?;
+    let status = value
+        .get("status")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("unknown_error");
+    let message = value
+        .get("message")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .unwrap_or("Account readiness could not be determined.")
+        .to_string();
+    if status != "ready" {
+        return Err(LiveCheckFailure {
+            code: Some(status.to_string()),
+            message,
+        });
+    }
+    Ok(ProviderReadiness {
+        message,
+        plan_type: value
+            .get("planType")
+            .and_then(JsonValue::as_str)
+            .map(ToOwned::to_owned),
+    })
+}
+
+fn run_codex_readiness_check(
     app: &tauri::AppHandle,
     profile: &LoginProfile,
     materialized: &MaterializedRuntimeCredentials,
-) -> Result<String, LiveCheckFailure> {
+) -> Result<ProviderReadiness, LiveCheckFailure> {
     let command_plan = crate::runtime_scripts::codex_adapter_command(app)?;
     let mut command = Command::new(&command_plan.program);
     command
         .args(command_plan.args_prefix)
-        .arg("--model")
-        .arg(live_check_model(profile))
-        .arg("--cwd")
-        .arg(std::env::temp_dir())
-        .arg("hi")
+        .arg("--readiness-check")
         .env("PATH", crate::cli_path::build_tool_path());
     for (key, value) in &materialized.env {
         command.env(key, value);
     }
-    let output = command_output_with_timeout(&mut command, LIVE_CHECK_TIMEOUT)?;
+    let output = command_output_with_timeout(&mut command, READINESS_CHECK_TIMEOUT)?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     if output.status.success() {
-        if let Some(response) = parse_live_check_success(&stdout) {
-            return Ok(response);
-        }
+        return parse_provider_readiness(&stdout);
     }
     if stdout.trim().is_empty() && stderr.trim().is_empty() {
         return Err(LiveCheckFailure::uncoded(format!(
-            "Live check process exited with {}.",
+            "Account check process exited with {}.",
             output.status
         )));
     }
     Err(live_check_failure_with_log(
         app,
-        &format!("codex live check (profile {})", profile.id),
+        &format!("codex account check (profile {})", profile.id),
         &stdout,
         &stderr,
     ))
 }
 
-fn run_claude_live_check(
+fn run_claude_readiness_check(
     app: &tauri::AppHandle,
     profile: &LoginProfile,
     materialized: Option<&MaterializedRuntimeCredentials>,
-) -> Result<String, LiveCheckFailure> {
+) -> Result<ProviderReadiness, LiveCheckFailure> {
     let invocation = crate::managed_runtime::claude_adapter_invocation(app)?;
     let mut command = Command::new(&invocation.node_program);
     command
         .arg(&invocation.adapter_script)
-        .arg("--permission-mode")
-        .arg("bypassPermissions")
-        .arg("hi")
+        .arg("--readiness-check")
         .current_dir(std::env::temp_dir())
         .env("PATH", crate::cli_path::build_tool_path());
-    if let Some(model) = if materialized
-        .map(|credentials| credentials.auth_type.as_str() == "claude_oauth")
-        .unwrap_or(false)
-    {
-        explicit_live_check_model(profile)
-    } else {
-        Some(live_check_model(profile))
-    } {
-        command.arg("--model").arg(model);
-    }
     if let Some(materialized) = materialized {
         scrub_claude_auth_env(&mut command);
         for (key, value) in &materialized.env {
             command.env(key, value);
         }
     }
-    let output = command_output_with_timeout(&mut command, LIVE_CHECK_TIMEOUT)?;
+    let output = command_output_with_timeout(&mut command, READINESS_CHECK_TIMEOUT)?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     if output.status.success() {
-        if let Some(response) = parse_live_check_success(&stdout) {
-            return Ok(response);
-        }
+        return parse_provider_readiness(&stdout);
     }
     if stdout.trim().is_empty() && stderr.trim().is_empty() {
         return Err(LiveCheckFailure::uncoded(format!(
-            "Live check process exited with {}.",
+            "Account check process exited with {}.",
             output.status
         )));
     }
     Err(live_check_failure_with_log(
         app,
-        &format!("claude live check (profile {})", profile.id),
+        &format!("claude account check (profile {})", profile.id),
         &stdout,
         &stderr,
     ))
 }
 
 /// Validates a freshly connected OAuth token through the same SDK adapter
-/// the live check uses — previously this went through the `claude` CLI from
-/// PATH, so connect could "succeed" via one toolchain and the live check
+/// the account check uses — previously this went through the `claude` CLI from
+/// PATH, so connect could "succeed" via one toolchain and the account check
 /// then fail via another.
 fn run_claude_oauth_connect_smoke_check(app: &tauri::AppHandle, token: &str) -> Result<(), String> {
     let invocation = crate::managed_runtime::claude_adapter_invocation(app)
@@ -1976,17 +1977,15 @@ fn run_claude_oauth_connect_smoke_check(app: &tauri::AppHandle, token: &str) -> 
     let mut command = Command::new(&invocation.node_program);
     command
         .arg(&invocation.adapter_script)
-        .arg("--permission-mode")
-        .arg("bypassPermissions")
-        .arg("hi")
+        .arg("--readiness-check")
         .current_dir(std::env::temp_dir())
         .env("PATH", crate::cli_path::build_tool_path());
     scrub_claude_auth_env(&mut command);
     command.env("CLAUDE_CODE_OAUTH_TOKEN", token.trim());
-    let output = command_output_with_timeout(&mut command, LIVE_CHECK_TIMEOUT)?;
+    let output = command_output_with_timeout(&mut command, READINESS_CHECK_TIMEOUT)?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    if output.status.success() && parse_live_check_success(&stdout).is_some() {
+    if output.status.success() && parse_provider_readiness(&stdout).is_ok() {
         return Ok(());
     }
     if stdout.trim().is_empty() && stderr.trim().is_empty() {
@@ -2019,15 +2018,15 @@ fn finish_claude_oauth_login_success(
     Ok(profile)
 }
 
-fn run_login_profile_live_check(
+fn run_login_profile_readiness_check(
     app: &tauri::AppHandle,
     db: &TelemetryDb,
     vault: &dyn CredentialVault,
     profile: &LoginProfile,
     cache_dir: PathBuf,
-) -> Result<String, LiveCheckFailure> {
+) -> Result<ProviderReadiness, LiveCheckFailure> {
     match (profile.provider.as_str(), profile.auth_type.as_str()) {
-        ("claude", "external_cli") => run_claude_live_check(app, profile, None),
+        ("claude", "external_cli") => run_claude_readiness_check(app, profile, None),
         ("codex", _) | ("claude", _) => {
             let materialized = resolve_runtime_credentials(db, vault, &profile.id, cache_dir)?;
             if materialized.provider != profile.provider {
@@ -2038,7 +2037,7 @@ fn run_login_profile_live_check(
             }
             match profile.provider.as_str() {
                 "codex" => {
-                    let result = run_codex_live_check(app, profile, &materialized);
+                    let result = run_codex_readiness_check(app, profile, &materialized);
                     if result.is_ok() {
                         if let Some(codex_home) = materialized.codex_home.as_deref() {
                             persist_codex_auth_state(db, vault, &profile.id, codex_home)?;
@@ -2046,7 +2045,7 @@ fn run_login_profile_live_check(
                     }
                     result
                 }
-                "claude" => run_claude_live_check(app, profile, Some(&materialized)),
+                "claude" => run_claude_readiness_check(app, profile, Some(&materialized)),
                 _ => Err(LiveCheckFailure::uncoded(format!(
                     "Unsupported login provider: {}",
                     profile.provider
@@ -2070,6 +2069,29 @@ fn emit_login_profiles_changed(app: &tauri::AppHandle, profile: &LoginProfile) {
     );
 }
 
+fn mark_login_profile_auth_missing(
+    app: &tauri::AppHandle,
+    db: &TelemetryDb,
+    profile_id: &str,
+    reason: &str,
+) -> Result<LoginProfile, String> {
+    let existing_profile = db.get_login_profile(profile_id)?;
+    crate::app_log!(
+        "[LOGIN_PROFILE] event=credentials_unavailable profile_id={} reason={}",
+        profile_id,
+        reason
+    );
+    let profile = db.mark_login_profile_status(
+        profile_id,
+        "auth_missing",
+        Some(&provider_login_required_message(&existing_profile.provider)),
+        None,
+        unix_timestamp(),
+    )?;
+    emit_login_profiles_changed(app, &profile);
+    Ok(profile)
+}
+
 pub fn check_login_profile_readiness_with_vault(
     app: &tauri::AppHandle,
     db: &TelemetryDb,
@@ -2081,24 +2103,105 @@ pub fn check_login_profile_readiness_with_vault(
         .path()
         .app_cache_dir()
         .map_err(|error| format!("Could not resolve app cache dir: {}", error))?;
-    let live_result = run_login_profile_live_check(app, db, vault, &profile, cache_dir);
-    let (status, message) = match live_result {
-        Ok(response) => (
-            "ready",
-            format!(
-                "Live check succeeded. Received response: {}",
-                response.trim()
-            ),
-        ),
-        Err(failure) => (
-            status_for_live_check_failure(&failure),
-            format!("Live check failed: {}", failure.message),
-        ),
+    let readiness_result = run_login_profile_readiness_check(app, db, vault, &profile, cache_dir);
+    let (status, message, plan_type) = match readiness_result {
+        Ok(readiness) => ("ready", readiness.message, readiness.plan_type),
+        Err(failure) => {
+            let status = status_for_live_check_failure(&failure);
+            crate::app_log!(
+                "[LOGIN_PROFILE] event=readiness_failed profile_id={} status={} reason={}",
+                profile_id,
+                status,
+                failure.message
+            );
+            let message = readiness_status_message(&profile.provider, status);
+            (status, message, None)
+        }
     };
-    db.mark_login_profile_status(profile_id, status, Some(&message), None, unix_timestamp())
+    db.mark_login_profile_status(
+        profile_id,
+        status,
+        Some(&message),
+        plan_type.as_deref(),
+        unix_timestamp(),
+    )
 }
 
-fn spawn_login_profile_live_check(app: tauri::AppHandle, profile_id: String) {
+pub(crate) fn ensure_login_profile_ready_with_vault(
+    app: &tauri::AppHandle,
+    db: &TelemetryDb,
+    vault: &dyn CredentialVault,
+    profile_id: &str,
+) -> Result<LoginProfile, String> {
+    let profile = db.get_login_profile(profile_id)?;
+    let checked_recently = profile
+        .last_checked_at
+        .is_some_and(|checked_at| unix_timestamp() - checked_at < READINESS_CACHE_TTL_SECS);
+
+    if profile.status == "ready" && checked_recently {
+        if profile.auth_type != "external_cli" {
+            if let Err(error) = vault.get_secret(&secret_account_id(profile_id, "primary")) {
+                let _ = mark_login_profile_auth_missing(app, db, profile_id, &error);
+                return Err(provider_login_required_message(&profile.provider));
+            }
+        }
+        return Ok(profile);
+    }
+
+    if profile.status == "auth_missing" && checked_recently {
+        return Err(provider_login_required_message(&profile.provider));
+    }
+
+    let checked =
+        check_login_profile_readiness_with_vault(app, db, vault, profile_id).map_err(|error| {
+            crate::app_log!(
+                "[LOGIN_PROFILE] event=readiness_check_error profile_id={} reason={}",
+                profile_id,
+                error
+            );
+            "Agentree could not verify this account. Try again.".to_string()
+        })?;
+    emit_login_profiles_changed(app, &checked);
+    if checked.status == "ready" {
+        Ok(checked)
+    } else {
+        Err(checked
+            .status_message
+            .unwrap_or_else(|| provider_login_required_message(&checked.provider)))
+    }
+}
+
+pub(crate) fn sync_login_profile_auth_failure_from_event(
+    app: &tauri::AppHandle,
+    profile_id: &str,
+    event: &JsonValue,
+) {
+    let direct_code = event.get("provider_error_code").and_then(JsonValue::as_str);
+    let meta = event.get("meta");
+    let meta_code = meta
+        .and_then(|value| value.get("provider_error_code"))
+        .and_then(JsonValue::as_str);
+    let code = direct_code.or(meta_code);
+    let direct_message = event
+        .get("content")
+        .or_else(|| event.get("data"))
+        .and_then(JsonValue::as_str);
+    let meta_message = meta
+        .and_then(|value| value.get("provider_error_message"))
+        .and_then(JsonValue::as_str);
+    let message = direct_message.or(meta_message).unwrap_or_default();
+    let failure = LiveCheckFailure {
+        code: code.map(ToOwned::to_owned),
+        message: message.to_string(),
+    };
+    if status_for_live_check_failure(&failure) != "auth_missing" {
+        return;
+    }
+    let db = app.state::<TelemetryDb>();
+    let _ = mark_login_profile_auth_missing(app, &db, profile_id, message);
+}
+
+fn spawn_login_profile_readiness_check(app: tauri::AppHandle, profile_id: String) {
     thread::spawn(move || {
         let db = app.state::<TelemetryDb>();
         let result = check_login_profile_readiness_with_vault(
@@ -2110,10 +2213,15 @@ fn spawn_login_profile_live_check(app: tauri::AppHandle, profile_id: String) {
         match result {
             Ok(profile) => emit_login_profiles_changed(&app, &profile),
             Err(error) => {
+                crate::app_log!(
+                    "[LOGIN_PROFILE] event=readiness_check_error profile_id={} reason={}",
+                    profile_id,
+                    error
+                );
                 if let Ok(profile) = db.mark_login_profile_status(
                     &profile_id,
                     "unknown_error",
-                    Some(&format!("Live check failed: {}", error)),
+                    Some("Agentree could not verify this account. Try again."),
                     None,
                     unix_timestamp(),
                 ) {
@@ -2124,7 +2232,7 @@ fn spawn_login_profile_live_check(app: tauri::AppHandle, profile_id: String) {
     });
 }
 
-fn enqueue_login_profile_live_check(
+fn enqueue_login_profile_readiness_check(
     app: tauri::AppHandle,
     db: &TelemetryDb,
     profile_id: &str,
@@ -2132,13 +2240,23 @@ fn enqueue_login_profile_live_check(
     let profile = db.mark_login_profile_status(
         profile_id,
         "checking",
-        Some("Running a live check with a tiny `hi` prompt. The result will appear here shortly."),
+        Some("Checking account credentials without starting an agent run."),
         None,
         unix_timestamp(),
     )?;
     emit_login_profiles_changed(&app, &profile);
-    spawn_login_profile_live_check(app, profile_id.to_string());
+    spawn_login_profile_readiness_check(app, profile_id.to_string());
     Ok(profile)
+}
+
+pub fn refresh_login_profiles_on_startup(
+    app: tauri::AppHandle,
+    db: &TelemetryDb,
+) -> Result<(), String> {
+    for profile in db.list_login_profiles()? {
+        let _ = enqueue_login_profile_readiness_check(app.clone(), db, &profile.id);
+    }
+    Ok(())
 }
 
 pub fn reconcile_login_profiles_on_startup(db: &TelemetryDb) -> Result<usize, String> {
@@ -2149,7 +2267,7 @@ pub fn reconcile_login_profiles_on_startup(db: &TelemetryDb) -> Result<usize, St
             db.mark_login_profile_status(
                 &profile.id,
                 "unchecked",
-                Some("Previous sign in or live check was interrupted. Re-check or reconnect this account."),
+                Some("Previous sign in or account check was interrupted. Re-check or reconnect this account."),
                 None,
                 unix_timestamp(),
             )?;
@@ -2206,14 +2324,47 @@ pub fn check_login_profile_readiness(
     db: State<TelemetryDb>,
     profile_id: String,
 ) -> Result<LoginProfile, String> {
-    enqueue_login_profile_live_check(app, &db, &profile_id)
+    enqueue_login_profile_readiness_check(app, &db, &profile_id)
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn connect_codex_login_profile(
+pub async fn ensure_login_profile_ready(
     app: tauri::AppHandle,
-    db: State<TelemetryDb>,
+    profile_id: String,
+) -> Result<LoginProfile, String> {
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = worker_app.state::<TelemetryDb>();
+        ensure_login_profile_ready_with_vault(
+            &worker_app,
+            &db,
+            &KeyringCredentialVault,
+            &profile_id,
+        )
+    })
+    .await
+    .map_err(|error| format!("Account check task failed: {}", error))?
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn connect_codex_login_profile(
+    app: tauri::AppHandle,
+    profile_id: String,
+) -> Result<CodexLoginStart, String> {
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = worker_app.state::<TelemetryDb>();
+        connect_codex_login_profile_blocking(&worker_app, &db, profile_id)
+    })
+    .await
+    .map_err(|error| format!("Codex login task failed: {}", error))?
+}
+
+fn connect_codex_login_profile_blocking(
+    app: &tauri::AppHandle,
+    db: &TelemetryDb,
     profile_id: String,
 ) -> Result<CodexLoginStart, String> {
     let profile = db.get_login_profile(&profile_id)?;
@@ -2228,7 +2379,7 @@ pub fn connect_codex_login_profile(
         .map_err(|error| format!("failed to resolve app cache dir: {}", error))?;
     let codex_home = prepare_codex_profile_home(&cache_dir, &profile.id)?;
     let codex_install = crate::managed_runtime::ensure_component(
-        &app,
+        app,
         crate::managed_runtime::COMPONENT_CODEX,
     )
     .map_err(|error| {
@@ -2256,13 +2407,13 @@ pub fn connect_codex_login_profile(
         .take()
         .ok_or_else(|| "failed to capture Codex login output".to_string())?;
     let _ = mark_login_profile_status(
-        &db,
+        db,
         &profile.id,
         "checking",
         Some("Waiting for Codex browser sign in.".to_string()),
     );
     emit_login_profiles_changed(
-        &app,
+        app,
         &LoginProfile {
             status: "checking".to_string(),
             ..profile.clone()
@@ -2678,7 +2829,7 @@ pub fn check_all_login_profile_readiness(
 ) -> Result<Vec<LoginProfile>, String> {
     let profiles = db.list_login_profiles()?;
     for profile in profiles {
-        let _ = enqueue_login_profile_live_check(app.clone(), &db, &profile.id);
+        let _ = enqueue_login_profile_readiness_check(app.clone(), &db, &profile.id);
     }
     db.list_login_profiles()
 }
@@ -3113,15 +3264,25 @@ mod tests {
     }
 
     #[test]
-    fn claude_live_check_uses_current_sonnet_model() {
-        let profile = test_profile(
-            "claude-profile",
-            "claude",
-            "claude_api_key",
-            serde_json::json!({}),
+    fn readiness_parser_accepts_ready_without_model_output() {
+        let output = concat!(
+            r#"{"type":"trace","name":"adapter_started"}"#,
+            "\n",
+            r#"{"status":"ready","message":"Codex is ready for Agentree.","planType":"pro"}"#,
         );
+        let readiness = parse_provider_readiness(output).expect("ready response");
 
-        assert_eq!(live_check_model(&profile), "claude-sonnet-5");
+        assert_eq!(readiness.message, "Codex is ready for Agentree.");
+        assert_eq!(readiness.plan_type.as_deref(), Some("pro"));
+    }
+
+    #[test]
+    fn readiness_parser_preserves_provider_auth_status() {
+        let output = r#"{"status":"auth_missing","message":"The saved login has expired."}"#;
+        let failure = parse_provider_readiness(output).expect_err("auth must fail");
+
+        assert_eq!(failure.code.as_deref(), Some("auth_missing"));
+        assert_eq!(failure.message, "The saved login has expired.");
     }
 
     #[test]
@@ -3495,20 +3656,15 @@ mod tests {
             "usage_limited"
         );
         assert_eq!(status_from_live_check_error("model not found"), "invalid");
-    }
-
-    #[test]
-    fn live_check_success_requires_completed_provider_response() {
-        let output = r#"
-{"type":"message_completed","content":"Hello!"}
-{"type":"provider_stop","provider_status":"completed","final_content":"Hello!"}
-"#;
-        assert_eq!(parse_live_check_success(output).as_deref(), Some("Hello!"));
-
-        let failed_output = r#"
-{"type":"provider_stop","provider_status":"failed","final_content":"Nope"}
-"#;
-        assert_eq!(parse_live_check_success(failed_output), None);
+        assert_eq!(
+            readiness_status_message("codex", "auth_missing"),
+            "Log in to Codex in Managed Accounts."
+        );
+        assert_eq!(
+            readiness_status_message("claude", "auth_missing"),
+            "Log in to Claude in Managed Accounts."
+        );
+        assert!(!readiness_status_message("codex", "unknown_error").contains("failed"));
     }
 
     #[test]

@@ -7,6 +7,20 @@ export type LoginProfilesNavigationDetail = {
   target?: 'runtime-health';
 };
 
+export function buildProviderLoginRequiredToast(provider: RuntimeProvider) {
+  const providerLabel = provider === 'codex' ? 'Codex' : 'Claude';
+  return {
+    title: `Log in to ${providerLabel}`,
+    description: `Your ${providerLabel} login is missing or expired.`,
+    variant: 'error' as const,
+    persistent: true,
+    action: {
+      label: 'Open Managed Accounts',
+      onClick: () => dispatchOpenLoginProfiles(provider),
+    },
+  };
+}
+
 export function dispatchOpenLoginProfiles(provider: RuntimeProvider) {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(new window.CustomEvent<LoginProfilesNavigationDetail>(LOGIN_PROFILES_NAVIGATION_EVENT, {

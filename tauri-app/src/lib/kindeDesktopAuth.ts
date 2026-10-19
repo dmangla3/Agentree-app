@@ -37,10 +37,13 @@ type DesktopAuthSessionLike = {
 const DEFAULT_AUTH_CALLBACK_URL = 'http://127.0.0.1:34117/kinde/callback';
 const DESKTOP_AUTH_PENDING_KEY = 'agentree.desktop-auth.pending';
 const DESKTOP_AUTH_MAX_AGE_MS = 10 * 60 * 1000;
+const DESKTOP_SESSION_RESTORE_TIMEOUT_MS = 15_000;
 const UPSTREAM_ACCOUNT_SELECTION_PROMPT = 'select_account' as PromptTypes;
 
 let kindeRedirectUriCache = import.meta.env.VITE_KINDE_REDIRECT_URI || DEFAULT_AUTH_CALLBACK_URL;
 let deepLinkListenerInitialized = false;
+let desktopSessionReadInFlight: Promise<string | null> | null = null;
+let desktopSessionRestoreInFlight: Promise<void> | null = null;
 
 const getKindeDomain = () => import.meta.env.VITE_KINDE_DOMAIN;
 const getKindeClientId = () => import.meta.env.VITE_KINDE_CLIENT_ID;
@@ -358,33 +361,89 @@ const configureDesktopAuthRuntime = () => {
   });
 };
 
-export const restoreDesktopCloudSession = async () => {
-  if (!shouldUseDesktopBrowserAuth()) return;
-  const sessionJson = await invoke<string | null>('read_agentree_cloud_session');
-  if (!sessionJson) return;
+const readDesktopCloudSession = () => {
+  if (desktopSessionReadInFlight) return desktopSessionReadInFlight;
+
+  const request = invoke<string | null>('read_agentree_cloud_session');
+  desktopSessionReadInFlight = request;
+  void request.then(
+    () => {
+      if (desktopSessionReadInFlight === request) desktopSessionReadInFlight = null;
+    },
+    () => {
+      if (desktopSessionReadInFlight === request) desktopSessionReadInFlight = null;
+    },
+  );
+  return request;
+};
+
+const waitForDesktopCloudSession = async (timeoutMs: number) => {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
-    const parsed = JSON.parse(sessionJson) as {
-      accessToken?: string;
-      expiresAt?: number | null;
-      idToken?: string;
-      refreshToken?: string;
-    };
-    if (!parsed.accessToken || !parsed.idToken || !parsed.refreshToken) {
-      await clearDesktopSession();
-      return;
-    }
-    useAuthStore.getState().setDesktopSession({
-      accessToken: parsed.accessToken,
-      idToken: parsed.idToken,
-      refreshToken: parsed.refreshToken,
-      expiresAt: typeof parsed.expiresAt === 'number' ? parsed.expiresAt : null,
-    });
-    useAuthStore.getState().setUser(readDesktopUserFromSession({ idToken: parsed.idToken }));
-    useAuthStore.getState().clearAuthErrorReason();
-  } catch (error) {
-    console.warn('[Auth] Failed to restore desktop cloud session:', error);
-    await clearDesktopSession();
+    return await Promise.race([
+      readDesktopCloudSession(),
+      new Promise<never>((_, reject) => {
+        timeoutId = globalThis.setTimeout(() => {
+          reject(new Error(`Saved session access timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) globalThis.clearTimeout(timeoutId);
   }
+};
+
+const performDesktopCloudSessionRestore = async (timeoutMs: number) => {
+  useAuthStore.getState().setDesktopSessionRestoring(true);
+  try {
+    const sessionJson = await waitForDesktopCloudSession(timeoutMs);
+    useAuthStore.getState().clearAuthErrorReason();
+    if (!sessionJson) return;
+    try {
+      const parsed = JSON.parse(sessionJson) as {
+        accessToken?: string;
+        expiresAt?: number | null;
+        idToken?: string;
+        refreshToken?: string;
+      };
+      if (!parsed.accessToken || !parsed.idToken || !parsed.refreshToken) {
+        await clearDesktopSession();
+        return;
+      }
+      useAuthStore.getState().setDesktopSession({
+        accessToken: parsed.accessToken,
+        idToken: parsed.idToken,
+        refreshToken: parsed.refreshToken,
+        expiresAt: typeof parsed.expiresAt === 'number' ? parsed.expiresAt : null,
+      });
+      useAuthStore.getState().setUser(readDesktopUserFromSession({ idToken: parsed.idToken }));
+      useAuthStore.getState().clearAuthErrorReason();
+    } catch (error) {
+      console.warn('[Auth] Failed to restore desktop cloud session:', error);
+      await clearDesktopSession();
+    }
+  } finally {
+    useAuthStore.getState().setDesktopSessionRestoring(false);
+  }
+};
+
+export const restoreDesktopCloudSession = (options: { timeoutMs?: number } = {}) => {
+  if (!shouldUseDesktopBrowserAuth()) return Promise.resolve();
+  if (desktopSessionRestoreInFlight) return desktopSessionRestoreInFlight;
+
+  const restore = performDesktopCloudSessionRestore(
+    options.timeoutMs ?? DESKTOP_SESSION_RESTORE_TIMEOUT_MS,
+  );
+  desktopSessionRestoreInFlight = restore;
+  void restore.then(
+    () => {
+      if (desktopSessionRestoreInFlight === restore) desktopSessionRestoreInFlight = null;
+    },
+    () => {
+      if (desktopSessionRestoreInFlight === restore) desktopSessionRestoreInFlight = null;
+    },
+  );
+  return restore;
 };
 
 export const isTauriRuntime = () => (

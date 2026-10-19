@@ -13,6 +13,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '../../../@/components/ui/popover';
 import type { ActiveLoginProfileRun } from '../../lib/agentClient';
 import {
+  canCheckLoginProfileReadiness,
   getLoginProfileAuthTypeLabel,
   getLoginProfileStatusTone,
   type LoginProfileSummary,
@@ -204,7 +205,7 @@ export function LoginProfileRows({
                 <button
                   type="button"
                   onClick={() => onCheck(profile)}
-                  disabled={isPending}
+                  disabled={isPending || !canCheckLoginProfileReadiness(profile)}
                   className="h-8 rounded-md bg-muted px-2.5 text-[11px] font-semibold text-foreground transition-[background-color,transform,opacity] hover:bg-muted/80 active:scale-[0.96] disabled:opacity-50"
                 >
                   {profile.status === 'checking' ? (

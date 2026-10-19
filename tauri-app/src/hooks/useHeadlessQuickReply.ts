@@ -9,6 +9,7 @@ import {
   providerRequiresLoginProfile,
   resolveLoginProfileSelection,
 } from '../lib/loginProfiles';
+import { buildProviderLoginRequiredToast } from '../lib/loginNavigationEvents';
 import { markLocalAgentNodeTerminal } from '../lib/localAgentRunTerminal';
 import { resolveQuickReplyAgent, resolveQuickReplyBase } from '../lib/quickReply';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
@@ -17,6 +18,7 @@ import { sendHeadlessComposerReply } from '../composer/headlessComposerSend';
 import { useAgents } from './useAgents';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from './useLocalNodes';
 import { useWorkspaces } from './useWorkspaces';
+import { useToast } from '../components/Toast';
 
 type QuickReplyStatus = 'idle' | 'sending' | 'error';
 
@@ -46,6 +48,7 @@ export const materializeHeadlessQuickReplyMessages = (
 
 export function useHeadlessQuickReply() {
   const queryClient = useQueryClient();
+  const { addToast } = useToast();
   const { data: agents = [] } = useAgents();
   const { data: workspaces = [] } = useWorkspaces();
   const loginProfiles = useLoginProfilesStore((state) => state.profiles);
@@ -112,10 +115,22 @@ export function useHeadlessQuickReply() {
       agentName: agent.name ?? agent.type,
     });
     const selectedLoginProfile = loginProfileSelection.selectedProfile;
-    if (providerRequiresLoginProfile(agent.type) && !loginProfileSelection.isReady) {
-      setStatus('error');
-      setError(loginProfileSelection.failureMessage ?? `${agent.name ?? agent.type} needs a ready login profile before it can run.`);
+    const provider = agent.type === 'codex' || agent.type === 'claude' ? agent.type : null;
+    if (providerRequiresLoginProfile(provider) && !selectedLoginProfile && provider) {
+      setStatus('idle');
+      setError(null);
+      addToast(buildProviderLoginRequiredToast(provider));
       return;
+    }
+    if (selectedLoginProfile) {
+      try {
+        await useLoginProfilesStore.getState().ensureReady(selectedLoginProfile.id);
+      } catch {
+        setStatus('idle');
+        setError(null);
+        if (provider) addToast(buildProviderLoginRequiredToast(provider));
+        return;
+      }
     }
 
     setStatus('sending');
@@ -173,7 +188,7 @@ export function useHeadlessQuickReply() {
       setError(message);
       throw caught;
     }
-  }, [agents, loginProfiles, queryClient, workspaces]);
+  }, [addToast, agents, loginProfiles, queryClient, workspaces]);
 
   return {
     sendQuickReply,

@@ -112,6 +112,7 @@ mod runtime_readiness;
 mod runtime_scripts;
 mod secure_store;
 mod thread_control;
+mod tool_output;
 pub mod types;
 mod worktree_config;
 
@@ -265,6 +266,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             login_profiles::set_default_login_profile,
             login_profiles::list_active_login_profile_runs,
             login_profiles::check_login_profile_readiness,
+            login_profiles::ensure_login_profile_ready,
             login_profiles::connect_codex_login_profile,
             login_profiles::connect_claude_oauth_login_profile,
             login_profiles::poll_claude_oauth_login_profile,
@@ -545,6 +547,10 @@ pub fn run() {
                             reconciled_stale_logins
                         );
                     }
+                    login_profiles::refresh_login_profiles_on_startup(
+                        app.handle().clone(),
+                        &telemetry,
+                    )?;
                 }
                 agents::start_agent_run_watchdog(app.handle().clone());
 

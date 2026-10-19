@@ -26,6 +26,7 @@ interface LoginProfilesState {
   deleteProfile: (profileId: string) => Promise<void>;
   setDefaultProfile: (provider: string, profileId: string | null) => Promise<void>;
   checkProfile: (profileId: string) => Promise<void>;
+  ensureReady: (profileId: string) => Promise<LoginProfileSummary>;
   checkAllProfiles: () => Promise<void>;
   discoverImportCandidates: () => Promise<LoginImportCandidate[]>;
   importCandidate: (request: ImportLoginCandidateRequest) => Promise<void>;
@@ -193,6 +194,21 @@ export const useLoginProfilesStore = create<LoginProfilesState>((set) => ({
       throw error;
     } finally {
       set({ isMutating: false });
+    }
+  },
+  ensureReady: async (profileId) => {
+    try {
+      const profile = await agentClient.ensureLoginProfileReady(profileId);
+      set((state) => ({
+        profiles: state.profiles.map((item) => (
+          item.id === profile.id ? profile as LoginProfileSummary : item
+        )),
+      }));
+      return profile as LoginProfileSummary;
+    } catch (error) {
+      set({ error: messageFromError(error) });
+      await useLoginProfilesStore.getState().refresh();
+      throw error;
     }
   },
   checkAllProfiles: async () => {

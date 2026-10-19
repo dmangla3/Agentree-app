@@ -81,25 +81,26 @@ const textToList = (value: string) =>
     .map((entry) => entry.trim())
     .filter(Boolean);
 
-const runtimeCacheEnvRows = [
-  ['TMPDIR', 'tmp'],
-  ['TMP', 'tmp'],
-  ['TEMP', 'tmp'],
-  ['XDG_CACHE_HOME', 'cache'],
-  ['XDG_STATE_HOME', 'state'],
-  ['npm_config_cache', 'npm-cache'],
-  ['YARN_CACHE_FOLDER', 'yarn-cache'],
-  ['PNPM_HOME', 'pnpm-home'],
-  ['TURBO_CACHE_DIR', 'turbo'],
-  ['NX_CACHE_DIRECTORY', 'nx'],
-  ['PLAYWRIGHT_BROWSERS_PATH', 'playwright'],
-  ['CYPRESS_CACHE_FOLDER', 'cypress'],
-  ['PIP_CACHE_DIR', 'pip'],
-  ['UV_CACHE_DIR', 'uv'],
-  ['PYTHONPYCACHEPREFIX', 'pycache'],
-  ['GOCACHE', 'go-cache'],
-  ['CARGO_HOME', 'cargo'],
-  ['CARGO_TARGET_DIR', 'cargo-target'],
+const runtimeStorageEnvRows = [
+  ['TMPDIR', 'tmp', 'Run'],
+  ['TMP', 'tmp', 'Run'],
+  ['TEMP', 'tmp', 'Run'],
+  ['XDG_CACHE_HOME', 'cache', 'Run'],
+  ['TURBO_CACHE_DIR', 'turbo', 'Run'],
+  ['NX_CACHE_DIRECTORY', 'nx', 'Run'],
+  ['PYTHONPYCACHEPREFIX', 'pycache', 'Run'],
+  ['CARGO_TARGET_DIR', 'cargo-target', 'Run'],
+  ['npm_config_cache', 'npm-cache', 'Shared'],
+  ['YARN_CACHE_FOLDER', 'yarn-cache', 'Shared'],
+  ['pnpm_config_store_dir', 'pnpm-store', 'Shared'],
+  ['PLAYWRIGHT_BROWSERS_PATH', 'playwright', 'Shared'],
+  ['CYPRESS_CACHE_FOLDER', 'cypress', 'Shared'],
+  ['PIP_CACHE_DIR', 'pip', 'Shared'],
+  ['UV_CACHE_DIR', 'uv', 'Shared'],
+  ['GOCACHE', 'go-cache', 'Shared'],
+  ['XDG_STATE_HOME', 'state', 'Restricted'],
+  ['PNPM_HOME', 'pnpm-home', 'Restricted'],
+  ['CARGO_HOME', 'cargo', 'Restricted'],
 ] as const;
 
 function StatusPill({ source }: { source: string }) {
@@ -234,7 +235,7 @@ function RuntimeCachePolicy() {
   }, []);
 
   const rootLabel =
-    sandboxRoot.value ?? 'OS temp directory / agentree / agents';
+    sandboxRoot.value ?? 'OS cache directory / agentree / agents';
   const rootTitle =
     sandboxRoot.value ?? 'Actual path is available in the desktop app runtime.';
 
@@ -248,7 +249,7 @@ function RuntimeCachePolicy() {
           <div className="min-w-0">
             <div className="text-xs font-semibold text-foreground">Advanced</div>
             <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
-              Runtime cache isolation
+              Runtime storage
             </div>
           </div>
           <ChevronDown
@@ -260,8 +261,9 @@ function RuntimeCachePolicy() {
       <CollapsibleContent>
         <div className="border-t border-border/70 px-3 py-3">
           <div className="text-xs leading-5 text-muted-foreground">
-            Agentree redirects common cache, temp, and build-output env vars outside the repo and
-            worktree into a per-agent sandbox, then clears that sandbox during run cleanup.
+            Every permission mode keeps temporary files and build output outside the worktree.
+            Run-specific files are cleared during cleanup; reusable downloads stay in Agentree's
+            shared cache.
           </div>
           <div className="mt-2 overflow-hidden rounded-md border border-border/60 bg-muted/25 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
             <div className="flex items-start gap-2.5 border-b border-border/50 bg-background/65 px-3 py-2.5">
@@ -286,7 +288,7 @@ function RuntimeCachePolicy() {
                   {rootLabel}
                 </div>
                 <div className="mt-1.5 text-[11px] leading-4 text-muted-foreground">
-                  macOS often uses <span className="font-mono">/var/folders/.../T</span> for temp paths.
+                  Full access changes permissions, not this storage layout.
                 </div>
               </div>
             </div>
@@ -301,31 +303,39 @@ function RuntimeCachePolicy() {
               </div>
               <div className="px-3 py-2.5">
                 <div className="text-[11px] font-medium leading-4 text-muted-foreground">
-                  Override
+                  Overrides
                 </div>
                 <div className="mt-1 truncate font-mono text-[11px] leading-4 text-foreground/80" title="AGENTREE_AGENT_SANDBOX_ROOT">
                   AGENTREE_AGENT_SANDBOX_ROOT
+                </div>
+                <div className="mt-1 truncate font-mono text-[11px] leading-4 text-foreground/80" title="AGENTREE_SHARED_CACHE_ROOT">
+                  AGENTREE_SHARED_CACHE_ROOT
                 </div>
               </div>
             </div>
           </div>
           <div className="mt-2 rounded-md border border-border/60 bg-muted/25">
-            <div className="grid grid-cols-[minmax(0,1fr)_minmax(120px,0.55fr)] gap-2 border-b border-border/60 px-3 py-2 text-[11px] font-semibold text-muted-foreground">
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(90px,0.45fr)_minmax(70px,0.35fr)] gap-2 border-b border-border/60 px-3 py-2 text-[11px] font-semibold text-muted-foreground">
               <span>Env var</span>
-              <span>Sandbox folder</span>
+              <span>Folder</span>
+              <span>Scope</span>
             </div>
             <div className="max-h-48 overflow-y-auto">
-              {runtimeCacheEnvRows.map(([envName, folder]) => (
+              {runtimeStorageEnvRows.map(([envName, folder, scope]) => (
                 <div
                   key={envName}
-                  className="grid grid-cols-[minmax(0,1fr)_minmax(120px,0.55fr)] gap-2 border-b border-border/35 px-3 py-1.5 text-xs last:border-b-0"
+                  className="grid grid-cols-[minmax(0,1fr)_minmax(90px,0.45fr)_minmax(70px,0.35fr)] gap-2 border-b border-border/35 px-3 py-1.5 text-xs last:border-b-0"
                 >
                   <span className="truncate font-mono text-foreground/85" title={envName}>
                     {envName}
                   </span>
-                  <span className="truncate font-mono text-muted-foreground" title={`$AGENTREE_AGENT_SANDBOX/${folder}`}>
+                  <span
+                    className="truncate font-mono text-muted-foreground"
+                    title={`${scope === 'Shared' ? '$AGENTREE_SHARED_CACHE' : '$AGENTREE_AGENT_SANDBOX'}/${folder}`}
+                  >
                     {folder}
                   </span>
+                  <span className="truncate text-muted-foreground">{scope}</span>
                 </div>
               ))}
             </div>

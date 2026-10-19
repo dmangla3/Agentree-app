@@ -13,6 +13,11 @@ import type {
   AgentRunSnapshot,
   AgentRunStatus,
 } from './agentRun.types';
+import {
+  appendBoundedToolOutput,
+  boundToolOutput,
+  sanitizeTimelineToolOutputs,
+} from './toolOutputLimit';
 
 type MachineContext = { snapshot: AgentRunSnapshot };
 
@@ -125,8 +130,22 @@ const runStatusFromNativeEvent = (nativeEvent: Record<string, any>): AgentRunSta
   return status as AgentRunStatus;
 };
 
+const sanitizeExecutionDataTimeline = (rawExecutionData: Record<string, any>) => {
+  if (!Array.isArray(rawExecutionData.timeline)) {
+    return { executionData: rawExecutionData, timeline: [] };
+  }
+  const timeline = sanitizeTimelineToolOutputs(rawExecutionData.timeline);
+  return {
+    executionData: timeline === rawExecutionData.timeline
+      ? rawExecutionData
+      : { ...rawExecutionData, timeline },
+    timeline,
+  };
+};
+
 const initialSnapshot = (input: AgentRunInput): AgentRunSnapshot => {
-  const executionData = input.executionData ?? {};
+  const rawExecutionData = input.executionData ?? {};
+  const { executionData, timeline } = sanitizeExecutionDataTimeline(rawExecutionData);
   const runId = input.runId
     ?? (typeof executionData.current_run_id === 'string' ? executionData.current_run_id : null);
   const status = input.status ?? null;
@@ -136,7 +155,12 @@ const initialSnapshot = (input: AgentRunInput): AgentRunSnapshot => {
     parentId: cleanString(input.parentId),
     role: input.role ?? null,
     agentId: input.agentId ?? null,
-    message: input.message ?? null,
+    message: input.message
+      ? {
+        ...input.message,
+        ...(input.message.execution_data ? { execution_data: executionData } : {}),
+      }
+      : null,
     runId,
     phase: phaseForStatus(status, 'idle'),
     status,
@@ -144,7 +168,7 @@ const initialSnapshot = (input: AgentRunInput): AgentRunSnapshot => {
     content: input.content ?? '',
     lastSeq: typeof executionData.last_agent_event_seq === 'number' ? executionData.last_agent_event_seq : null,
     lastStreamSeq: typeof executionData.last_stream_seq === 'number' ? executionData.last_stream_seq : null,
-    timeline: Array.isArray(executionData.timeline) ? executionData.timeline : [],
+    timeline,
     executionData,
     usage: typeof executionData.usage === 'object' && executionData.usage ? executionData.usage : null,
     terminalStatus: isTerminalAgentStatus(status) ? status : null,
@@ -240,7 +264,7 @@ const appendTimelineEvent = (timeline: any[], nextEvent: any) => {
     const existingOutput = typeof prior?.toolOutput === 'string' ? prior.toolOutput : '';
     nextTimeline[index] = {
       ...prior,
-      toolOutput: existingOutput ? `${existingOutput}${delta}` : delta,
+      toolOutput: appendBoundedToolOutput(existingOutput, delta),
     };
     return nextTimeline;
   }
@@ -263,7 +287,12 @@ const appendTimelineEvent = (timeline: any[], nextEvent: any) => {
       }
     }
   }
-  nextTimeline.push(nextEvent);
+  const outputKey = typeof nextEvent?.toolOutput === 'string'
+    ? 'toolOutput'
+    : (typeof nextEvent?.tool_output === 'string' ? 'tool_output' : null);
+  nextTimeline.push(outputKey
+    ? { ...nextEvent, [outputKey]: boundToolOutput(nextEvent[outputKey]) }
+    : nextEvent);
   return nextTimeline;
 };
 
@@ -392,7 +421,10 @@ export const reduceAgentRunSnapshot = (
 ): AgentRunSnapshot => {
   switch (event.type) {
     case 'seed': {
-      const executionData = (event.message.execution_data ?? {}) as Record<string, any>;
+      const incomingExecutionData = (event.message.execution_data ?? {}) as Record<string, any>;
+      const { executionData, timeline } = sanitizeExecutionDataTimeline(
+        mergeExecutionData(snapshot.executionData, incomingExecutionData),
+      );
       const seeded = {
         ...snapshot,
         nodeId: event.message.id,
@@ -400,16 +432,25 @@ export const reduceAgentRunSnapshot = (
         parentId: cleanString(event.message.parentId) ?? snapshot.parentId,
         role: event.message.role ?? snapshot.role,
         agentId: event.message.agent_id ?? snapshot.agentId,
-        message: { ...(snapshot.message ?? {}), ...event.message },
+        message: {
+          ...(snapshot.message ?? {}),
+          ...event.message,
+          ...(event.message.execution_data ? { execution_data: executionData } : {}),
+        },
         runId: event.runId ?? (typeof executionData.current_run_id === 'string' ? executionData.current_run_id : snapshot.runId),
         content: event.message.content ?? snapshot.content,
-        executionData: mergeExecutionData(snapshot.executionData, executionData),
-        timeline: Array.isArray(executionData.timeline) ? executionData.timeline : snapshot.timeline,
+        executionData,
+        timeline: Array.isArray(incomingExecutionData.timeline) ? timeline : snapshot.timeline,
         updatedAt: nowIso(),
       };
       return updateStatus(seeded, event.message.status as AgentRunStatus | null, snapshot.progress);
     }
-    case 'replace_node':
+    case 'replace_node': {
+      const rawExecutionData = mergeExecutionData(
+        (event.realNode.execution_data ?? {}) as Record<string, any>,
+        snapshot.executionData,
+      );
+      const { executionData, timeline } = sanitizeExecutionDataTimeline(rawExecutionData);
       return {
         ...snapshot,
         nodeId: event.realNode.id,
@@ -417,11 +458,18 @@ export const reduceAgentRunSnapshot = (
         parentId: cleanString(event.realNode.parentId) ?? snapshot.parentId,
         role: event.realNode.role ?? snapshot.role,
         agentId: event.realNode.agent_id ?? snapshot.agentId,
-        message: { ...(snapshot.message ?? {}), ...event.realNode, _optimistic: false },
+        message: {
+          ...(snapshot.message ?? {}),
+          ...event.realNode,
+          ...(event.realNode.execution_data ? { execution_data: executionData } : {}),
+          _optimistic: false,
+        },
         content: snapshot.content || event.realNode.content || '',
-        executionData: mergeExecutionData((event.realNode.execution_data ?? {}) as Record<string, any>, snapshot.executionData),
+        executionData,
+        timeline,
         updatedAt: nowIso(),
       };
+    }
     case 'setup_progress':
       return updateStatus(snapshot, event.status ?? snapshot.status ?? 'initializing', event.progress);
     case 'status':
@@ -496,13 +544,18 @@ export const reduceAgentRunSnapshot = (
       };
       }
     case 'execution_data': {
-      const executionData = mergeExecutionData(snapshot.executionData, event.patch);
+      const mergedExecutionData = mergeExecutionData(snapshot.executionData, event.patch);
+      const sanitized = sanitizeExecutionDataTimeline(mergedExecutionData);
+      const executionData = sanitized.executionData;
+      const timeline = Array.isArray(mergedExecutionData.timeline)
+        ? sanitized.timeline
+        : snapshot.timeline;
       return {
         ...snapshot,
         runId: typeof executionData.current_run_id === 'string' ? executionData.current_run_id : snapshot.runId,
         lastSeq: typeof executionData.last_agent_event_seq === 'number' ? executionData.last_agent_event_seq : snapshot.lastSeq,
         lastStreamSeq: typeof executionData.last_stream_seq === 'number' ? executionData.last_stream_seq : snapshot.lastStreamSeq,
-        timeline: Array.isArray(executionData.timeline) ? executionData.timeline : snapshot.timeline,
+        timeline,
         usage: typeof executionData.usage === 'object' && executionData.usage ? executionData.usage : snapshot.usage,
         executionData,
         updatedAt: nowIso(),

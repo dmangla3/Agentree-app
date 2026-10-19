@@ -4,17 +4,10 @@ pub fn open_entry(service: &str, account: &str) -> Result<Entry, String> {
     Entry::new(service, account).map_err(|error| error.to_string())
 }
 
-pub fn set_password_verified(entry: &Entry, password: &str) -> Result<(), String> {
+pub fn set_password(entry: &Entry, password: &str) -> Result<(), String> {
     entry
         .set_password(password)
-        .map_err(|error| error.to_string())?;
-
-    let stored_password = entry.get_password().map_err(|error| error.to_string())?;
-    if stored_password != password {
-        return Err("secure storage verification returned different credential data".to_string());
-    }
-
-    Ok(())
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

@@ -31,6 +31,7 @@ export function LoginPage() {
 
   const startAuth = async (intent: 'login' | 'register') => {
     try {
+      clearAuthErrorReason();
       if (usesDesktopAuth) {
         await openKindeAuthInSystemBrowser(intent);
         return;

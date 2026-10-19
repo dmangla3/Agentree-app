@@ -54,6 +54,10 @@ export const getLoginProfileStatusTone = (status: LoginProfileStatus) => {
 export const isLoginProfileActive = (profile: Pick<LoginProfileSummary, 'status'>) =>
   profile.status === 'ready';
 
+export const canCheckLoginProfileReadiness = (
+  profile: Pick<LoginProfileSummary, 'status'>
+) => profile.status !== 'auth_missing';
+
 export const isLoginProfileCompatibleWithProvider = (
   profile: Pick<LoginProfileSummary, 'provider'>,
   provider?: string | null
@@ -93,13 +97,13 @@ export const resolveLoginProfileSelection = (input: {
   const requiresProfile = providerRequiresLoginProfile(provider);
   const selectedProfile = selectLoginProfileForProvider(input.profiles, provider);
   const isReady = !requiresProfile || Boolean(selectedProfile && isLoginProfileActive(selectedProfile));
-  const label = input.agentName ?? provider ?? 'This agent';
+  const providerLabel = getLoginProfileProviderLabel(provider ?? '');
   return {
     provider,
     selectedProfile,
     requiresProfile,
     isReady,
-    failureMessage: isReady ? null : `${label} needs a ready login profile before it can run.`,
+    failureMessage: isReady ? null : `Log in to ${providerLabel} in Managed Accounts.`,
   };
 };
 

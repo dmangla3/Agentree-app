@@ -423,6 +423,7 @@ pub(crate) fn emit_agent_event(
     event: &serde_json::Value,
 ) {
     let mut event = event.clone();
+    crate::tool_output::sanitize_tool_output_fields(&mut event);
     if let Ok(Some(ledger)) = app_handle
         .state::<crate::db::TelemetryDb>()
         .get_agent_run_ledger_by_assistant(session_id)
@@ -497,6 +498,7 @@ pub(crate) fn apply_and_emit_agent_event(
     session_id: &str,
     event: &serde_json::Value,
 ) {
+    let mut should_emit = true;
     let run_state = {
         let app_state = app_handle.state::<AgentState>();
         let run_states = app_state.run_states.lock().unwrap();
@@ -504,9 +506,14 @@ pub(crate) fn apply_and_emit_agent_event(
     };
     if let Some(run_state) = run_state {
         let mut run_state = run_state.lock().unwrap();
-        update_run_state_from_event(&mut run_state, event);
+        should_emit = should_forward_tool_output_event(&run_state, event);
+        if should_emit {
+            update_run_state_from_event(&mut run_state, event);
+        }
     }
-    emit_agent_event(app_handle, session_id, event);
+    if should_emit {
+        emit_agent_event(app_handle, session_id, event);
+    }
 }
 
 fn emit_finalize_ack(app_handle: &AppHandle, session_id: &str, payload: &FinalizeAckPayload) {
@@ -1236,11 +1243,36 @@ fn append_tool_output_delta(run_state: &mut AgentRunState, tool_use_id: &str, de
         if let Some(object) = event.as_object_mut() {
             object.insert(
                 "toolOutput".to_string(),
-                JsonValue::String(merge_text_output(&existing, delta)),
+                JsonValue::String(crate::tool_output::append_bounded_tool_output(
+                    &existing, delta,
+                )),
             );
         }
         return;
     }
+}
+
+fn should_forward_tool_output_event(run_state: &AgentRunState, event: &JsonValue) -> bool {
+    if event.get("type").and_then(JsonValue::as_str) != Some("tool_output_delta") {
+        return true;
+    }
+    let Some(tool_use_id) = event
+        .get("toolUseId")
+        .or_else(|| event.get("tool_use_id"))
+        .or_else(|| event.get("id"))
+        .and_then(JsonValue::as_str)
+    else {
+        return true;
+    };
+    !run_state.timeline.iter().rev().any(|timeline_event| {
+        timeline_event.get("type").and_then(JsonValue::as_str) == Some("tool_use")
+            && timeline_tool_use_id(timeline_event) == Some(tool_use_id)
+            && timeline_event
+                .get("toolOutput")
+                .and_then(JsonValue::as_str)
+                .map(|output| output.contains(crate::tool_output::TOOL_OUTPUT_TRUNCATION_NOTICE))
+                .unwrap_or(false)
+    })
 }
 
 fn normalize_timeline_event(event: &JsonValue) -> Option<JsonValue> {
@@ -1255,7 +1287,7 @@ fn normalize_timeline_event(event: &JsonValue) -> Option<JsonValue> {
                 .unwrap_or(0)
         });
 
-    match event_type {
+    let mut normalized = match event_type {
         "thinking" => Some(serde_json::json!({
             "type": "thinking",
             "timestamp": timestamp,
@@ -1350,7 +1382,11 @@ fn normalize_timeline_event(event: &JsonValue) -> Option<JsonValue> {
                 .unwrap_or(JsonValue::Null),
         })),
         _ => None,
+    };
+    if let Some(event) = normalized.as_mut() {
+        crate::tool_output::sanitize_tool_output_fields(event);
     }
+    normalized
 }
 
 fn update_latency_trace(state: &mut AgentRunState, event: &JsonValue) {
@@ -3197,7 +3233,15 @@ fn spawn_agent_internal(
         .stderr(Stdio::piped());
 
     if agent_args_request_full_access(&args) {
+        // Full access changes permission enforcement, not the worktree's runtime
+        // layout. Keep build output and caches in Agentree-managed paths while
+        // preserving an unguarded PATH and the user's normal tool state.
         command.env("PATH", crate::command_guards::build_agent_path());
+        crate::command_guards::apply_agent_runtime_layout(
+            &mut command,
+            &session_id,
+            Path::new(&cwd),
+        )?;
     } else {
         crate::command_guards::apply_agent_command_env_with_config(
             &mut command,
@@ -3219,11 +3263,8 @@ fn spawn_agent_internal(
             .path()
             .app_cache_dir()
             .map_err(|error| format!("Could not resolve app cache dir: {}", error))?;
-        let materialized = crate::login_profiles::resolve_runtime_credentials(
-            &telemetry,
-            &crate::login_profiles::KeyringCredentialVault,
-            profile_id,
-            cache_dir,
+        let materialized = crate::login_profiles::resolve_runtime_credentials_for_launch(
+            &app, &telemetry, profile_id, cache_dir,
         )?;
         if materialized.provider != agent_type {
             return Err(format!(
@@ -3342,6 +3383,7 @@ fn spawn_agent_internal(
         let app_handle = app_handle.clone();
         let session_id = session_id.clone();
         let auth_token = auth_token.clone();
+        let login_profile_id = login_profile_id.clone();
         let trace_id = trace_id.clone();
         let stdout_done = Arc::clone(&stdout_done);
         let stream_seq = Arc::clone(&stream_seq);
@@ -3396,6 +3438,14 @@ fn spawn_agent_internal(
                             serde_json::json!("tauri_stdout"),
                         );
                     }
+                    if let Some(profile_id) = login_profile_id.as_deref() {
+                        crate::login_profiles::sync_login_profile_auth_failure_from_event(
+                            &app_handle,
+                            profile_id,
+                            &event,
+                        );
+                    }
+                    let mut should_emit = true;
                     {
                         let app_state = app_handle.state::<AgentState>();
                         let run_state = {
@@ -3404,8 +3454,14 @@ fn spawn_agent_internal(
                         };
                         if let Some(run_state) = run_state {
                             let mut run_state = run_state.lock().unwrap();
-                            update_run_state_from_event(&mut run_state, &event);
+                            should_emit = should_forward_tool_output_event(&run_state, &event);
+                            if should_emit {
+                                update_run_state_from_event(&mut run_state, &event);
+                            }
                         }
+                    }
+                    if !should_emit {
+                        continue;
                     }
                     emit_agent_event(&app_handle, &session_id, &event);
 
@@ -3697,16 +3753,13 @@ pub(crate) async fn start_agent_run_internal(
                 .to_string(),
         );
     }
-    record_prelaunch_stage("worktree_preview_started");
-    let preview = crate::git_workspace::preview_agent_worktree(
-        intent.repo_path.clone(),
-        intent.assistant_node_id.clone(),
-        intent.parent_commit.clone(),
-    )
-    .await?;
-    record_prelaunch_stage("worktree_preview_completed");
     if let Some(profile_id) = intent.login_profile_id.as_deref() {
-        let profile = telemetry.get_login_profile(profile_id)?;
+        let profile = crate::login_profiles::ensure_login_profile_ready_with_vault(
+            &app,
+            &telemetry,
+            &crate::login_profiles::KeyringCredentialVault,
+            profile_id,
+        )?;
         if profile.provider != intent.agent_type {
             return Err(format!(
                 "Login profile {} is for {}, not {}",
@@ -3718,6 +3771,14 @@ pub(crate) async fn start_agent_run_internal(
             &profile,
         );
     }
+    record_prelaunch_stage("worktree_preview_started");
+    let preview = crate::git_workspace::preview_agent_worktree(
+        intent.repo_path.clone(),
+        intent.assistant_node_id.clone(),
+        intent.parent_commit.clone(),
+    )
+    .await?;
+    record_prelaunch_stage("worktree_preview_completed");
     let initial_run = crate::db::AgentRunLedgerUpsert {
         run_id: intent.run_id.clone(),
         user_node_id: run_ledger_user_node_id_from_context(&intent.run_context),
@@ -4065,8 +4126,8 @@ pub(crate) fn steer_agent_run_internal(
     let Some(stdin) = stdin else {
         let failure = serde_json::json!({
             "type": "provider_steer_failed",
-            "assistant_node_id": assistant_node_id.clone(),
-            "idempotency_key": idempotency_key.clone(),
+            "assistant_node_id": assistant_node_id,
+            "idempotency_key": idempotency_key,
             "content": content.clone(),
             "error": "No active agent control channel found.",
         });
@@ -4079,8 +4140,8 @@ pub(crate) fn steer_agent_run_internal(
 
     let requested = serde_json::json!({
         "type": "user_steer_requested",
-        "assistant_node_id": assistant_node_id.clone(),
-        "idempotency_key": idempotency_key.clone(),
+        "assistant_node_id": assistant_node_id,
+        "idempotency_key": idempotency_key,
         "content": content.clone(),
     });
     if let Some(run_state) = state
@@ -4099,7 +4160,7 @@ pub(crate) fn steer_agent_run_internal(
         "type": "steer_agent_run",
         "control_type": "steer",
         "content": content.clone(),
-        "idempotency_key": idempotency_key.clone(),
+        "idempotency_key": idempotency_key,
         "timestamp": unix_timestamp_millis(),
     });
     let mut line = control.to_string();
@@ -4117,8 +4178,8 @@ pub(crate) fn steer_agent_run_internal(
         Ok(()) => {
             let ack = serde_json::json!({
                 "type": "provider_steer_ack",
-                "assistant_node_id": assistant_node_id.clone(),
-                "idempotency_key": idempotency_key.clone(),
+                "assistant_node_id": assistant_node_id,
+                "idempotency_key": idempotency_key,
             });
             emit_agent_event(app, assistant_node_id, &ack);
             Ok(())
@@ -4126,8 +4187,8 @@ pub(crate) fn steer_agent_run_internal(
         Err(err) => {
             let failure = serde_json::json!({
                 "type": "provider_steer_failed",
-                "assistant_node_id": assistant_node_id.clone(),
-                "idempotency_key": idempotency_key.clone(),
+                "assistant_node_id": assistant_node_id,
+                "idempotency_key": idempotency_key,
                 "content": content.clone(),
                 "error": err.clone(),
             });
@@ -4350,10 +4411,10 @@ mod tests {
         decide_agent_run_watchdog_timeout, descendant_first_stop_order,
         ensure_context_recovery_fields, is_terminal_runtime_status, latest_provider_thread_id,
         local_node_payload_for_setup_failure, local_node_payload_for_snapshot,
-        run_ledger_user_node_id_from_context, should_persist_failure_reason,
-        snapshot_from_replayed_journal, startup_resume_args, terminal_status_for_runtime_activity,
-        update_run_state_from_event, AgentRunContext, AgentRunSnapshot, AgentRunState,
-        STARTUP_RESUME_PROMPT,
+        run_ledger_user_node_id_from_context, should_forward_tool_output_event,
+        should_persist_failure_reason, snapshot_from_replayed_journal, startup_resume_args,
+        terminal_status_for_runtime_activity, update_run_state_from_event, AgentRunContext,
+        AgentRunSnapshot, AgentRunState, STARTUP_RESUME_PROMPT,
     };
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
@@ -5185,5 +5246,53 @@ mod tests {
 
         assert_eq!(state.timeline.len(), 1);
         assert_eq!(state.timeline[0]["toolOutput"], "a\nb\n");
+    }
+
+    #[test]
+    fn tool_output_deltas_are_bounded_with_head_tail_and_notice() {
+        let mut state = test_run_state();
+        update_run_state_from_event(
+            &mut state,
+            &json!({
+                "type": "tool_use",
+                "id": "tool-1",
+                "name": "commandExecution",
+                "input": {"command": "generate-too-much-output"},
+                "timestamp": 1
+            }),
+        );
+        update_run_state_from_event(
+            &mut state,
+            &json!({
+                "type": "tool_output_delta",
+                "toolUseId": "tool-1",
+                "delta": "a".repeat(200 * 1024),
+                "timestamp": 2
+            }),
+        );
+        update_run_state_from_event(
+            &mut state,
+            &json!({
+                "type": "tool_output_delta",
+                "toolUseId": "tool-1",
+                "delta": "b".repeat(200 * 1024),
+                "timestamp": 3
+            }),
+        );
+        let later_delta = json!({
+            "type": "tool_output_delta",
+            "toolUseId": "tool-1",
+            "delta": "c".repeat(32 * 1024),
+            "timestamp": 4
+        });
+        assert!(!should_forward_tool_output_event(&state, &later_delta));
+        update_run_state_from_event(&mut state, &later_delta);
+
+        let output = state.timeline[0]["toolOutput"].as_str().unwrap();
+        assert!(output.len() <= 256 * 1024);
+        assert!(output.starts_with(&"a".repeat(128 * 1024 - 128)));
+        assert!(output.ends_with(&"b".repeat(128 * 1024 - 128)));
+        assert!(!output.contains(&"c".repeat(1024)));
+        assert!(output.contains("Output truncated. Refine the command."));
     }
 }

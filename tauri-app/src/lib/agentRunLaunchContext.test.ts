@@ -278,7 +278,7 @@ describe('buildAgentRunLaunchContext', () => {
 
     expect(result.prompt).toContain('Custom dependency guard');
     expect(result.prompt).toContain('Do not set a thread title for this run.');
-    expect(result.prompt).not.toContain('Agentree provides writable per-agent cache/build env vars');
+    expect(result.prompt).not.toContain('Agentree provides writable runtime paths');
     expect(result.prompt).not.toContain('set thread_title to null');
   });
 });

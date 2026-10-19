@@ -91,12 +91,7 @@ window.addEventListener('unhandledrejection', (event) => {
   handleGlobalRuntimeFailure('unhandledrejection', event.reason);
 });
 
-const bootstrap = async () => {
-  const bootstrapStartedAt = performance.now();
-  recordPerfEvent('main.bootstrap.start', {
-    elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
-  }, { source: 'main.tsx' });
-
+const initializeDeepLinkHandlers = async () => {
   const deepLinkStartedAt = performance.now();
   await initAgentreeDeepLinkHandler().catch((error) => {
     console.error('[DeepLink] Failed to initialize Agentree deep-link handler:', error);
@@ -114,8 +109,15 @@ const bootstrap = async () => {
     source: 'main.tsx',
     durationMs: Number((performance.now() - deepLinkStartedAt).toFixed(2)),
   });
+};
 
-  await restoreDesktopCloudSession().catch((error) => {
+const bootstrap = () => {
+  const bootstrapStartedAt = performance.now();
+  recordPerfEvent('main.bootstrap.start', {
+    elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
+  }, { source: 'main.tsx' });
+
+  const desktopSessionRestore = restoreDesktopCloudSession().catch((error) => {
     console.error('[Auth] Failed to restore desktop cloud session:', error);
   });
 
@@ -153,6 +155,9 @@ const bootstrap = async () => {
     source: 'main.tsx',
     durationMs: Number((performance.now() - bootstrapStartedAt).toFixed(2)),
   });
+
+  void initializeDeepLinkHandlers();
+  void desktopSessionRestore;
 };
 
-void bootstrap();
+bootstrap();

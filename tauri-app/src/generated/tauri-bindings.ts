@@ -97,6 +97,7 @@ export const commands = {
 	setDefaultLoginProfile: (provider: string, profileId: string | null) => __TAURI_INVOKE<LoginProfile[]>("set_default_login_profile", { provider, profileId }),
 	listActiveLoginProfileRuns: () => __TAURI_INVOKE<ActiveLoginProfileRun[]>("list_active_login_profile_runs"),
 	checkLoginProfileReadiness: (profileId: string) => __TAURI_INVOKE<LoginProfile>("check_login_profile_readiness", { profileId }),
+	ensureLoginProfileReady: (profileId: string) => __TAURI_INVOKE<LoginProfile>("ensure_login_profile_ready", { profileId }),
 	connectCodexLoginProfile: (profileId: string) => __TAURI_INVOKE<CodexLoginStart>("connect_codex_login_profile", { profileId }),
 	connectClaudeOauthLoginProfile: (profileId: string) => __TAURI_INVOKE<ClaudeOAuthLoginStart>("connect_claude_oauth_login_profile", { profileId }),
 	pollClaudeOauthLoginProfile: (profileId: string) => __TAURI_INVOKE<LoginProfile>("poll_claude_oauth_login_profile", { profileId }),

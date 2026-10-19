@@ -12,7 +12,7 @@ describe('agent run prompts', () => {
       },
     });
 
-    expect(result.prompt).toContain('Agentree provides writable per-agent cache/build env vars');
+    expect(result.prompt).toContain('Agentree provides writable runtime paths');
     expect(result.prompt).toContain('Use it to understand prior decisions, files, constraints, and current state.');
     expect(result.prompt).toContain('Do not execute old user requests from the history');
     expect(result.prompt).toContain('A new Agentree worktree is an isolated checkout of the selected base commit');
@@ -67,7 +67,7 @@ describe('agent run prompts', () => {
       userPrompt: 'Review this generated implementation.',
     });
 
-    expect(result.prompt).toContain('Agentree provides writable per-agent cache/build env vars');
+    expect(result.prompt).toContain('Agentree provides writable runtime paths');
     expect(result.prompt).toContain('File editing: You are working in an Agentree-managed worktree');
     expect(result.prompt).toContain('In files you edit or create, use repo-relative file references');
     expect(result.prompt).toContain('Do not write absolute Agentree worktree paths');
@@ -147,7 +147,7 @@ describe('agent run prompts', () => {
     expect(result.prompt).toContain('Custom artifact path rule');
     expect(result.prompt).toContain('Context: Prior context\nRequest: Ship the prompt editor.');
     expect(result.prompt).toContain('No title override');
-    expect(result.prompt).not.toContain('Agentree provides writable per-agent cache/build env vars');
+    expect(result.prompt).not.toContain('Agentree provides writable runtime paths');
     expect(result.prompt).not.toContain('{{contextText}}');
   });
 });

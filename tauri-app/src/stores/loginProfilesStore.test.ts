@@ -8,6 +8,7 @@ vi.mock('../lib/agentClient', () => ({
     deleteLoginProfile: vi.fn(),
     setDefaultLoginProfile: vi.fn(),
     checkLoginProfileReadiness: vi.fn(),
+    ensureLoginProfileReady: vi.fn(),
     checkAllLoginProfileReadiness: vi.fn(),
     discoverLoginImportCandidates: vi.fn(),
     importDiscoveredLoginProfile: vi.fn(),
@@ -107,5 +108,28 @@ describe('loginProfilesStore', () => {
 
     stopSync();
     expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('updates the cached profile after a pre-send readiness check', async () => {
+    const { agentClient } = await import('../lib/agentClient');
+    const readyProfile = {
+      id: 'p1',
+      provider: 'codex',
+      displayName: 'Work',
+      status: 'ready',
+      authType: 'codex_chatgpt_session',
+      isDefault: true,
+      lastCheckedAt: 123,
+    } as any;
+    vi.mocked(agentClient.ensureLoginProfileReady).mockResolvedValue(readyProfile);
+
+    const { useLoginProfilesStore } = await import('./loginProfilesStore');
+    useLoginProfilesStore.setState({
+      profiles: [{ ...readyProfile, status: 'checking' }],
+    });
+    await useLoginProfilesStore.getState().ensureReady('p1');
+
+    expect(agentClient.ensureLoginProfileReady).toHaveBeenCalledWith('p1');
+    expect(useLoginProfilesStore.getState().profiles[0]?.status).toBe('ready');
   });
 });

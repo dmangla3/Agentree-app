@@ -510,7 +510,7 @@ impl ThreadControlService {
                     .iter()
                     .find(|profile| profile.provider == provider && profile.status == "ready")
             })
-            .ok_or_else(|| format!("{provider} needs a ready login profile before it can run."))?;
+            .ok_or_else(|| crate::login_profiles::provider_login_required_message(&provider))?;
         validate_model_for_profile(&provider, &model, &selected_profile.auth_type)?;
         let label = model_label(&provider, &model);
         Ok(RuntimeConfig {

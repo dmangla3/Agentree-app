@@ -22,6 +22,47 @@ test('Agentree-managed Claude credentials bypass local CLI auth probe', async ()
   }
 });
 
+test('Claude readiness initializes the SDK without starting a model turn', async () => {
+  const adapter = await import('./claude-agent-sdk-adapter.mjs');
+  let received = null;
+  const result = await adapter.probeClaudeSdkReadiness((request) => {
+    received = request;
+    return {
+      initializationResult: async () => ({
+        account: { tokenSource: 'oauth', subscriptionType: 'pro' },
+      }),
+    };
+  });
+
+  assert.equal(typeof received.prompt?.[Symbol.asyncIterator], 'function');
+  assert.equal(received.options.maxTurns, 0);
+  assert.equal(received.options.persistSession, false);
+  assert.deepEqual(received.options.allowedTools, []);
+  assert.equal(received.options.abortController.signal.aborted, true);
+  assert.deepEqual(await received.prompt[Symbol.asyncIterator]().next(), {
+    value: undefined,
+    done: true,
+  });
+  assert.deepEqual(result, {
+    status: 'ready',
+    authMode: 'oauth',
+    planType: 'pro',
+    message: 'Claude account is ready.',
+  });
+});
+
+test('Claude readiness classifies expired credentials as missing auth', async () => {
+  const adapter = await import('./claude-agent-sdk-adapter.mjs');
+  const result = await adapter.probeClaudeSdkReadiness(() => ({
+    initializationResult: async () => {
+      throw new Error('OAuth token expired; login required');
+    },
+  }));
+
+  assert.equal(result.status, 'auth_missing');
+  assert.match(result.message, /expired/);
+});
+
 test('direct execution detection follows symlinked argv paths', async () => {
   const adapter = await import('./claude-agent-sdk-adapter.mjs');
   const root = await mkdtemp(join(tmpdir(), 'agentree-adapter-main-'));
@@ -274,7 +315,9 @@ test('Claude default permission mode enables isolated sandbox', async () => {
 
   const options = adapter.claudeOptionsForPermissionMode('default', '/repo/worktree', {
     AGENT_SANDBOX: '/tmp/agent-sandbox',
+    AGENTREE_SHARED_CACHE: '/cache/agentree/shared',
     XDG_CACHE_HOME: '/tmp/agent-sandbox/cache',
+    pnpm_config_store_dir: '/cache/agentree/shared/pnpm-store',
     CARGO_TARGET_DIR: '/tmp/agent-sandbox/cargo-target',
   });
 
@@ -290,13 +333,17 @@ test('Claude default permission mode enables isolated sandbox', async () => {
   assert.deepEqual(options.sandbox.filesystem.allowRead, [
     '/repo/worktree',
     '/tmp/agent-sandbox',
+    '/cache/agentree/shared',
     '/tmp/agent-sandbox/cache',
+    '/cache/agentree/shared/pnpm-store',
     '/tmp/agent-sandbox/cargo-target',
   ]);
   assert.deepEqual(options.sandbox.filesystem.allowWrite, [
     '/repo/worktree',
     '/tmp/agent-sandbox',
+    '/cache/agentree/shared',
     '/tmp/agent-sandbox/cache',
+    '/cache/agentree/shared/pnpm-store',
     '/tmp/agent-sandbox/cargo-target',
   ]);
 });

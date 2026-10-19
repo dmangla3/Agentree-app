@@ -100,7 +100,12 @@ function AppContent() {
   devLogLazy(() => ['[PERF][App] AppContent render starting']);
   const { user: kindeUser, isAuthenticated, isLoading, getToken, logout } = useKindeAuth();
   devLogLazy(() => [`[PERF][App] useKindeAuth returned: isLoading=${isLoading}, isAuthenticated=${isAuthenticated} (${(performance.now() - renderStartTime).toFixed(1)}ms)`]);
-  const { user: desktopUser, desktopSession, setUser } = useAuthStore();
+  const {
+    user: desktopUser,
+    desktopSession,
+    isDesktopSessionRestoring,
+    setUser,
+  } = useAuthStore();
   const authScreenTrackedRef = React.useRef(false);
   const location = useLocation();
   devLogLazy(() => [`[ROUTE][AppContent] location=${location.pathname}`]);
@@ -109,7 +114,7 @@ function AppContent() {
   const appReadyLoggedRef = React.useRef(false);
   const devBypass = import.meta.env.VITE_DEV_AUTH_BYPASS === 'true';
   const useDesktopAuth = shouldUseDesktopBrowserAuth();
-  const authLoading = useDesktopAuth ? false : isLoading;
+  const authLoading = useDesktopAuth ? isDesktopSessionRestoring : isLoading;
 
   useEffect(() => {
     if (!useDesktopAuth && !authLoading && !isAuthenticated && !devBypass && !authScreenTrackedRef.current) {

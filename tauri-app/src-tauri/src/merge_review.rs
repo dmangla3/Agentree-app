@@ -669,9 +669,21 @@ fn run_sync_runner_with_events<T: for<'de> Deserialize<'de>>(
 
 #[tauri::command]
 #[specta::specta]
-pub fn start_merge_review(
+pub async fn start_merge_review(
     app: AppHandle,
-    state: State<MergeReviewState>,
+    request: StartMergeReviewRequest,
+) -> Result<StartMergeReviewResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<MergeReviewState>();
+        start_merge_review_blocking(&app, state.inner(), request)
+    })
+    .await
+    .map_err(|error| format!("Merge review task failed: {error}"))?
+}
+
+fn start_merge_review_blocking(
+    app: &AppHandle,
+    state: &MergeReviewState,
     request: StartMergeReviewRequest,
 ) -> Result<StartMergeReviewResponse, String> {
     if request.source_commits.is_empty() {
@@ -683,7 +695,7 @@ pub fn start_merge_review(
 
     let (run_id, workspace) = create_review_workspace(&request.repo_path, &request.target_commit)?;
     let worktree_string = workspace.worktree_path.clone();
-    initialize_merge_review_session(&app, &run_id, &workspace, "review");
+    initialize_merge_review_session(app, &run_id, &workspace, "review");
 
     let payload = build_payload(&request)?;
     let worktree_config = crate::worktree_config::load_agent_worktree_config(&request.repo_path)?;
@@ -706,18 +718,18 @@ pub fn start_merge_review(
         "payloadFile": payload_file.to_string_lossy().to_string(),
         "worktreePath": worktree_string,
     });
-    add_codex_adapter_command_to_config(&app, &mut config)?;
+    add_codex_adapter_command_to_config(app, &mut config)?;
 
-    let mut command = Command::new(crate::managed_runtime::node_program(&app)?);
+    let mut command = Command::new(crate::managed_runtime::node_program(app)?);
     command
-        .arg(merge_review_script_path(&app)?)
+        .arg(merge_review_script_path(app)?)
         .arg(config.to_string())
         .current_dir(&workspace.worktree_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     crate::command_guards::apply_agent_command_env_with_config(
         &mut command,
-        &app,
+        app,
         &run_id,
         Path::new(&workspace.worktree_path),
         &worktree_config,

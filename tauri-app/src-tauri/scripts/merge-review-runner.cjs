@@ -5,7 +5,7 @@ const path = require('path');
 const readline = require('readline');
 const { spawn } = require('child_process');
 
-const DEPENDENCY_GUARD_INSTRUCTION = 'Dependency rule: this worktree may contain symlinked dependency/build directories that must be treated as read-only. Agentree provides writable per-agent cache/build env vars, including TMPDIR, XDG_CACHE_HOME, npm/yarn/pnpm caches, pip/uv caches, PYTHONPYCACHEPREFIX, GOCACHE, CARGO_HOME, and CARGO_TARGET_DIR. Checks, tests, and builds are okay when their writes stay in those sandbox paths. Do not install, remove, upgrade, rebuild, or delete project dependencies, and do not write build output into symlinked dependency/build directories in the worktree. If a required command would ignore the sandbox env vars or mutate those directories, stop and tell the user what needs to be run outside this agent worktree.';
+const DEPENDENCY_GUARD_INSTRUCTION = 'Dependency rule: this worktree may contain symlinked dependency/build directories that must be treated as read-only. Agentree provides writable runtime paths, including per-run temp/build output and shared npm/yarn/pnpm, pip/uv, Go, Playwright, and Cypress caches. Checks, tests, and builds are okay when their writes stay in those Agentree-managed paths. Do not install, remove, upgrade, rebuild, or delete project dependencies, and do not write build output into symlinked dependency/build directories in the worktree. If a required command would ignore the runtime paths or mutate those directories, stop and tell the user what needs to be run outside this agent worktree.';
 
 function emit(event) {
   process.stdout.write(`${JSON.stringify(event)}\n`);

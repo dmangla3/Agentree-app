@@ -17,9 +17,11 @@ interface DesktopAuthSession {
 interface AuthState {
   user: User | null;
   desktopSession: DesktopAuthSession | null;
+  isDesktopSessionRestoring: boolean;
   authErrorReason: string | null;
   setUser: (user: User | null) => void;
   setDesktopSession: (session: DesktopAuthSession | null) => void;
+  setDesktopSessionRestoring: (isRestoring: boolean) => void;
   setAuthErrorReason: (reason: string | null) => void;
   clearAuthErrorReason: () => void;
   clearSession: () => void;
@@ -33,11 +35,16 @@ if (typeof window !== 'undefined' && window.localStorage) {
 export const useAuthStore = create<AuthState>()((set) => ({
   user: null,
   desktopSession: null,
+  isDesktopSessionRestoring: false,
   authErrorReason: null,
 
   setUser: (user: User | null) => set({ user }),
 
   setDesktopSession: (session: DesktopAuthSession | null) => set({ desktopSession: session }),
+
+  setDesktopSessionRestoring: (isRestoring: boolean) => set({
+    isDesktopSessionRestoring: isRestoring,
+  }),
 
   setAuthErrorReason: (reason: string | null) => set({ authErrorReason: reason }),
 

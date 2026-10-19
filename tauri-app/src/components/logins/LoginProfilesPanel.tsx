@@ -31,6 +31,7 @@ import {
 } from '../../stores/providerLimitsStore';
 import type { LoginImportCandidate } from '../../lib/agentClient';
 import {
+  canCheckLoginProfileReadiness,
   getLoginProfileAuthTypeLabel,
   getLoginProfileStatusTone,
   isLoginProfileActive,
@@ -436,10 +437,14 @@ export function LoginProfilesPanel({
                       size="sm"
                       variant="outline"
                       onClick={() => void runProfileAction(selectedProfile, () => checkProfile(selectedProfile.id))}
-                      disabled={pendingProfileId === selectedProfile.id || selectedProfile.status === 'checking'}
+                      disabled={
+                        pendingProfileId === selectedProfile.id
+                        || selectedProfile.status === 'checking'
+                        || !canCheckLoginProfileReadiness(selectedProfile)
+                      }
                     >
                       {selectedProfile.status === 'checking' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                      Live check
+                      Check account
                     </Button>
                     <Button size="sm" variant="outline" onClick={() => openEdit(selectedProfile)}>
                       <KeyRound className="h-4 w-4" />

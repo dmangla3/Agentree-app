@@ -769,7 +769,9 @@ fn emit_readiness_check(managed_codex_bin: &str) -> i32 {
             return 0;
         }
     };
-    let response = match client.request("account/read", json!({})) {
+    // account/read is the app-server's non-generative auth probe. Asking it to
+    // refresh verifies an expired session without creating a model turn.
+    let response = match client.request("account/read", json!({ "refreshToken": true })) {
         Ok(response) => response,
         Err(error) => {
             base["status"] = json!("unknown_error");

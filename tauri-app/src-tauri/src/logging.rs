@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::ffi::OsStr;
 use std::fs::{create_dir_all, read_dir, read_to_string, write, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,6 +13,9 @@ use tauri::{AppHandle, Manager};
 static LOG_DIR: OnceCell<PathBuf> = OnceCell::new();
 static WRITE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 static METRIC_KIT_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+const MAX_ACTIVE_LOG_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_LOG_LINE_BYTES: usize = 64 * 1024;
+const ROTATED_LOG_FILE_COUNT: usize = 2;
 
 #[derive(Serialize, specta::Type)]
 pub struct LogPaths {
@@ -138,19 +141,120 @@ fn backend_log_path_without_app() -> Option<PathBuf> {
     LOG_DIR.get().map(|dir| dir.join("backend.log"))
 }
 
-fn append_lines(path: &PathBuf, lines: &[String]) -> Result<(), String> {
+fn rotated_log_path(path: &Path, index: usize) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("agentree.log");
+    path.with_file_name(format!("{file_name}.{index}"))
+}
+
+fn truncate_log_line(line: &str, max_bytes: usize) -> String {
+    if line.len() <= max_bytes {
+        return line.to_string();
+    }
+    let notice = format!(" [truncated from {} bytes]", line.len());
+    let mut end = max_bytes.saturating_sub(notice.len());
+    while !line.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    format!("{}{}", &line[..end], notice)
+}
+
+fn bounded_log_lines(lines: &[String], max_file_bytes: u64) -> Vec<String> {
+    let mut kept = Vec::new();
+    let mut kept_bytes = 0u64;
+    let line_limit = MAX_LOG_LINE_BYTES.min(max_file_bytes.saturating_sub(1) as usize);
+    for line in lines.iter().rev() {
+        let line = truncate_log_line(line, line_limit);
+        let line_bytes = line.len() as u64 + 1;
+        if kept_bytes + line_bytes > max_file_bytes {
+            continue;
+        }
+        kept_bytes += line_bytes;
+        kept.push(line);
+    }
+    kept.reverse();
+    kept
+}
+
+fn remove_file_if_present(path: &Path) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn rotate_log_if_needed(
+    path: &Path,
+    incoming_bytes: u64,
+    max_file_bytes: u64,
+    rotated_file_count: usize,
+) -> Result<(), String> {
+    for index in 1..=rotated_file_count {
+        let rotated = rotated_log_path(path, index);
+        if std::fs::metadata(&rotated)
+            .map(|metadata| metadata.len() > max_file_bytes)
+            .unwrap_or(false)
+        {
+            remove_file_if_present(&rotated)?;
+        }
+    }
+
+    let current_bytes = match std::fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    if current_bytes > max_file_bytes {
+        return remove_file_if_present(path);
+    }
+    if current_bytes + incoming_bytes <= max_file_bytes {
+        return Ok(());
+    }
+    if rotated_file_count == 0 {
+        return remove_file_if_present(path);
+    }
+
+    remove_file_if_present(&rotated_log_path(path, rotated_file_count))?;
+    for index in (1..rotated_file_count).rev() {
+        let source = rotated_log_path(path, index);
+        let destination = rotated_log_path(path, index + 1);
+        match std::fs::rename(&source, &destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    std::fs::rename(path, rotated_log_path(path, 1)).map_err(|error| error.to_string())
+}
+
+fn append_lines_with_limits(
+    path: &Path,
+    lines: &[String],
+    max_file_bytes: u64,
+    rotated_file_count: usize,
+) -> Result<(), String> {
     let _guard = WRITE_LOCK
         .lock()
         .map_err(|_| "log write lock poisoned".to_string())?;
+    let lines = bounded_log_lines(lines, max_file_bytes);
+    let incoming_bytes = lines.iter().map(|line| line.len() as u64 + 1).sum::<u64>();
+    rotate_log_if_needed(path, incoming_bytes, max_file_bytes, rotated_file_count)?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .map_err(|err| err.to_string())?;
-    for line in lines {
+    for line in &lines {
         writeln!(file, "{line}").map_err(|err| err.to_string())?;
     }
     Ok(())
+}
+
+fn append_lines(path: &Path, lines: &[String]) -> Result<(), String> {
+    append_lines_with_limits(path, lines, MAX_ACTIVE_LOG_BYTES, ROTATED_LOG_FILE_COUNT)
 }
 
 fn live_check_log_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -367,6 +471,59 @@ mod tests {
         assert_eq!(summary.hang_diagnostics_count, 2);
         assert_eq!(summary.crash_diagnostics_count, 1);
         assert!(summary.payload_bytes > 0);
+    }
+
+    #[test]
+    fn rotates_active_logs_and_keeps_a_bounded_history() {
+        let directory = tempfile::tempdir().expect("log tempdir");
+        let path = directory.path().join("frontend.log");
+
+        append_lines_with_limits(&path, &["first-aaaaaaaa".to_string()], 24, 2)
+            .expect("append first");
+        append_lines_with_limits(&path, &["second-bbbbbbbb".to_string()], 24, 2)
+            .expect("append second");
+        append_lines_with_limits(&path, &["third-cccccccc".to_string()], 24, 2)
+            .expect("append third");
+        append_lines_with_limits(&path, &["fourth-ddddddd".to_string()], 24, 2)
+            .expect("append fourth");
+
+        assert_eq!(
+            read_to_string(&path).expect("active log"),
+            "fourth-ddddddd\n"
+        );
+        assert_eq!(
+            read_to_string(rotated_log_path(&path, 1)).expect("first rotated log"),
+            "third-cccccccc\n"
+        );
+        assert_eq!(
+            read_to_string(rotated_log_path(&path, 2)).expect("second rotated log"),
+            "second-bbbbbbbb\n"
+        );
+        assert!(!rotated_log_path(&path, 3).exists());
+    }
+
+    #[test]
+    fn discards_a_preexisting_oversized_log_before_appending() {
+        let directory = tempfile::tempdir().expect("log tempdir");
+        let path = directory.path().join("backend.log");
+        write(&path, "x".repeat(80)).expect("write oversized log");
+
+        append_lines_with_limits(&path, &["fresh".to_string()], 32, 2)
+            .expect("append after oversized log");
+
+        assert_eq!(read_to_string(&path).expect("active log"), "fresh\n");
+        assert!(!rotated_log_path(&path, 1).exists());
+    }
+
+    #[test]
+    fn truncates_log_lines_at_a_utf8_boundary() {
+        let line = format!("{}tail", "🙂".repeat(20_000));
+        let truncated = truncate_log_line(&line, MAX_LOG_LINE_BYTES);
+
+        assert!(truncated.is_char_boundary(truncated.len()));
+        assert!(truncated.contains("[truncated from "));
+        assert!(truncated.len() <= MAX_LOG_LINE_BYTES);
+        assert!(truncated.len() < line.len());
     }
 }
 

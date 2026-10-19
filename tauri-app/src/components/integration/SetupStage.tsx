@@ -14,6 +14,7 @@ import { api } from '../../lib/api';
 import { getOptionalCloudAuthToken } from '../../lib/authSession';
 import { cn } from '../../lib/utils';
 import { resolveLoginProfileSelection } from '../../lib/loginProfiles';
+import { buildProviderLoginRequiredToast } from '../../lib/loginNavigationEvents';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../../lib/graphInteractionGate';
 import { buildMergeAgentArgs, buildMergeAgentPrompt, buildMergeAgentUserContent } from '../../lib/mergeAgentNode';
 import { persistMergeCommitGraph } from '../../lib/mergeCommitGraph';
@@ -26,6 +27,7 @@ import { Badge } from '../../../@/components/ui/badge';
 import { ScrollArea } from '../../../@/components/ui/scroll-area';
 import { Popover, PopoverContent, PopoverTrigger } from '../../../@/components/ui/popover';
 import { UnifiedAgentModelSelector } from '../UnifiedAgentModelSelector';
+import { useToast } from '../Toast';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // COMMIT LIST ITEM COMPONENT
@@ -387,6 +389,7 @@ function GitConflictPreview({ canCheck, isLoading, preview, error }: GitConflict
 // ═══════════════════════════════════════════════════════════════════════════
 
 export function SetupStage() {
+  const { addToast } = useToast();
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [isApplyingCleanMerge, setIsApplyingCleanMerge] = useState(false);
   const { 
@@ -731,8 +734,17 @@ export function SetupStage() {
         agentName: selectedAgent.name,
       });
       const selectedLoginProfile = loginProfileSelection.selectedProfile;
-      if (!loginProfileSelection.isReady) {
-        throw new Error(loginProfileSelection.failureMessage ?? `${selectedAgent.name} needs a ready login profile before it can run.`);
+      if (loginProfileSelection.requiresProfile && !selectedLoginProfile && selectedProvider) {
+        addToast(buildProviderLoginRequiredToast(selectedProvider));
+        return;
+      }
+      if (selectedLoginProfile) {
+        try {
+          await useLoginProfilesStore.getState().ensureReady(selectedLoginProfile.id);
+        } catch {
+          if (selectedProvider) addToast(buildProviderLoginRequiredToast(selectedProvider));
+          return;
+        }
       }
       await Promise.all([
         agentClient.setMcpAuthToken(authToken),

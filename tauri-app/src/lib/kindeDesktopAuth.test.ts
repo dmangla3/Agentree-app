@@ -92,6 +92,7 @@ describe('kinde desktop session persistence', () => {
 
   afterEach(() => {
     useAuthStore.getState().clearSession();
+    useAuthStore.getState().setDesktopSessionRestoring(false);
     storageValues.clear();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
@@ -151,6 +152,91 @@ describe('kinde desktop session persistence', () => {
     expect(invoke).toHaveBeenCalledWith('read_agentree_cloud_session');
     expect(useAuthStore.getState().desktopSession).toEqual(session);
     expect(useAuthStore.getState().user?.id).toBe('restored-user');
+  });
+
+  test('keeps desktop auth in its restoring state while secure storage is pending', async () => {
+    setTauriWindowMarker();
+    let finishRead: ((value: string | null) => void) | undefined;
+    vi.mocked(invoke).mockImplementation(() => new Promise<string | null>((resolve) => {
+      finishRead = resolve;
+    }));
+
+    const restore = restoreDesktopCloudSession();
+
+    expect(useAuthStore.getState().isDesktopSessionRestoring).toBe(true);
+    expect(useAuthStore.getState().desktopSession).toBeNull();
+
+    finishRead?.(null);
+    await restore;
+
+    expect(useAuthStore.getState().isDesktopSessionRestoring).toBe(false);
+  });
+
+  test('stops waiting without exposing an internal restore failure to the sign-in page', async () => {
+    setTauriWindowMarker();
+    let finishRead: ((value: string | null) => void) | undefined;
+    vi.mocked(invoke).mockImplementation(() => new Promise<string | null>((resolve) => {
+      finishRead = resolve;
+    }));
+
+    const restore = restoreDesktopCloudSession({ timeoutMs: 5 });
+    const outcome = await Promise.race([
+      restore.then(() => 'resolved', () => 'rejected'),
+      new Promise<'still-pending'>((resolve) => setTimeout(() => resolve('still-pending'), 30)),
+    ]);
+
+    expect(outcome).toBe('rejected');
+    expect(useAuthStore.getState().isDesktopSessionRestoring).toBe(false);
+    expect(useAuthStore.getState().authErrorReason).toBeNull();
+
+    finishRead?.(JSON.stringify({
+      accessToken: 'late-access-token',
+      expiresAt: Date.now() + 60_000,
+      idToken: toTestIdToken('late-user'),
+      refreshToken: 'late-refresh-token',
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(useAuthStore.getState().desktopSession).toBeNull();
+    expect(useAuthStore.getState().user).toBeNull();
+  });
+
+  test('retries the same pending secure-storage read without opening another request', async () => {
+    setTauriWindowMarker();
+    let finishRead: ((value: string | null) => void) | undefined;
+    vi.mocked(invoke).mockImplementation(() => new Promise<string | null>((resolve) => {
+      finishRead = resolve;
+    }));
+
+    await restoreDesktopCloudSession({ timeoutMs: 5 }).catch(() => undefined);
+    const retry = restoreDesktopCloudSession({ timeoutMs: 100 });
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+
+    const session = {
+      accessToken: 'retried-access-token',
+      expiresAt: Date.now() + 60_000,
+      idToken: toTestIdToken('retried-user'),
+      refreshToken: 'retried-refresh-token',
+    };
+    finishRead?.(JSON.stringify(session));
+    await retry;
+
+    expect(useAuthStore.getState().desktopSession).toEqual(session);
+    expect(useAuthStore.getState().user?.id).toBe('retried-user');
+    expect(useAuthStore.getState().authErrorReason).toBeNull();
+  });
+
+  test('finishes restoring without deleting credentials when secure storage cannot be read', async () => {
+    setTauriWindowMarker();
+    vi.mocked(invoke).mockRejectedValue(new Error('secure storage unavailable'));
+
+    await expect(restoreDesktopCloudSession()).rejects.toThrow('secure storage unavailable');
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith('read_agentree_cloud_session');
+    expect(useAuthStore.getState().isDesktopSessionRestoring).toBe(false);
+    expect(useAuthStore.getState().authErrorReason).toBeNull();
   });
 
   test('deletes a rejected refresh session so it cannot return after restart', async () => {

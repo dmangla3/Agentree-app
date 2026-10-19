@@ -9,21 +9,36 @@ const readRepoFile = (relativePath) => (
   fs.readFileSync(path.join(repoRoot, relativePath), 'utf8')
 );
 
-test('vite config sends cache output to the agent sandbox when available', () => {
+test('vite cache helper uses the agent sandbox and otherwise stays off system temp', () => {
   const source = readRepoFile('tauri-app/vite.config.cjs');
+  const { osCacheDir, viteCacheDir } = require(path.join(
+    repoRoot,
+    'tauri-app/scripts/vite-cache-dir.cjs',
+  ));
 
-  assert.match(source, /process\.env\.AGENT_SANDBOX/);
+  assert.equal(
+    viteCacheDir({ AGENT_SANDBOX: '/cache/agentree/agents/run-1' }),
+    path.join('/cache/agentree/agents/run-1', 'vite-cache'),
+  );
+  assert.equal(
+    viteCacheDir({}),
+    path.join(osCacheDir({}), 'agentree', 'vite-cache'),
+  );
+  assert.match(source, /viteCacheDir\(\)/);
   assert.match(source, /cacheDir:/);
-  assert.match(source, /vite-cache/);
   assert.equal(fs.existsSync(path.join(repoRoot, 'tauri-app/vite.config.ts')), false);
 });
 
 test('dependency guard prompts allow sandboxed test and build commands', () => {
-  const agentRunPromptsSource = readRepoFile('tauri-app/src/lib/prompts/agentRunPrompts.ts');
+  const defaultPrompts = JSON.parse(
+    readRepoFile('tauri-app/src/lib/prompts/defaultPromptDefinitions.json'),
+  );
   const mergeReviewSource = readRepoFile('tauri-app/src-tauri/scripts/merge-review-runner.cjs');
-  const expectedPhrase = 'Checks, tests, and builds are okay when their writes stay in those sandbox paths';
+  const expectedPhrase =
+    'Checks, tests, and builds are okay when their writes stay in those Agentree-managed paths';
+  const dependencyGuard = defaultPrompts.find(({ id }) => id === 'dependency_guard');
 
-  assert.match(agentRunPromptsSource, new RegExp(expectedPhrase));
+  assert.match(dependencyGuard.defaultText, new RegExp(expectedPhrase));
   assert.match(mergeReviewSource, new RegExp(expectedPhrase));
 });
 
@@ -38,10 +53,11 @@ test('codex adapter maps composer permission modes into sandbox policies', () =>
   assert.match(source, /"sandboxPolicy": sandbox_policy/);
 });
 
-test('full access agent runs skip Agentree command guards', () => {
+test('full access keeps runtime layout while skipping Agentree command guards', () => {
   const source = readRepoFile('tauri-app/src-tauri/src/agents.rs');
 
   assert.match(source, /agent_args_request_full_access\(&args\)/);
   assert.match(source, /command\.env\("PATH", crate::command_guards::build_agent_path\(\)\)/);
+  assert.match(source, /apply_agent_runtime_layout/);
   assert.match(source, /window\[1\] == "full-access" \|\| window\[1\] == "bypassPermissions"/);
 });

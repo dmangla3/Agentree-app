@@ -56,17 +56,25 @@ pub fn get_auth_callback_base_url() -> String {
 
 #[tauri::command]
 #[specta::specta]
-pub fn save_agentree_cloud_session(session_json: String) -> Result<(), String> {
+pub async fn save_agentree_cloud_session(session_json: String) -> Result<(), String> {
+    run_cloud_auth_task(move || save_agentree_cloud_session_blocking(session_json)).await
+}
+
+fn save_agentree_cloud_session_blocking(session_json: String) -> Result<(), String> {
     let entry =
         crate::secure_store::open_entry(CLOUD_AUTH_KEYCHAIN_SERVICE, CLOUD_AUTH_KEYCHAIN_ACCOUNT)
             .map_err(|error| format!("failed to open cloud auth vault: {}", error))?;
-    crate::secure_store::set_password_verified(&entry, &session_json)
+    crate::secure_store::set_password(&entry, &session_json)
         .map_err(|error| format!("failed to save cloud auth session: {}", error))
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn read_agentree_cloud_session() -> Result<Option<String>, String> {
+pub async fn read_agentree_cloud_session() -> Result<Option<String>, String> {
+    run_cloud_auth_task(read_agentree_cloud_session_blocking).await
+}
+
+fn read_agentree_cloud_session_blocking() -> Result<Option<String>, String> {
     let entry =
         crate::secure_store::open_entry(CLOUD_AUTH_KEYCHAIN_SERVICE, CLOUD_AUTH_KEYCHAIN_ACCOUNT)
             .map_err(|error| format!("failed to open cloud auth vault: {}", error))?;
@@ -79,7 +87,11 @@ pub fn read_agentree_cloud_session() -> Result<Option<String>, String> {
 
 #[tauri::command]
 #[specta::specta]
-pub fn clear_agentree_cloud_session() -> Result<(), String> {
+pub async fn clear_agentree_cloud_session() -> Result<(), String> {
+    run_cloud_auth_task(clear_agentree_cloud_session_blocking).await
+}
+
+fn clear_agentree_cloud_session_blocking() -> Result<(), String> {
     let entry =
         crate::secure_store::open_entry(CLOUD_AUTH_KEYCHAIN_SERVICE, CLOUD_AUTH_KEYCHAIN_ACCOUNT)
             .map_err(|error| format!("failed to open cloud auth vault: {}", error))?;
@@ -87,6 +99,16 @@ pub fn clear_agentree_cloud_session() -> Result<(), String> {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(format!("failed to clear cloud auth session: {}", error)),
     }
+}
+
+async fn run_cloud_auth_task<T, F>(task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| format!("cloud auth vault task failed: {}", error))?
 }
 
 #[tauri::command]
@@ -299,5 +321,16 @@ mod tests {
 
             assert!(is_auth_callback_url(&url));
         });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cloud_auth_tasks_run_off_the_calling_thread() {
+        let calling_thread = std::thread::current().id();
+
+        let worker_thread = run_cloud_auth_task(|| Ok(std::thread::current().id()))
+            .await
+            .expect("cloud auth task should complete");
+
+        assert_ne!(worker_thread, calling_thread);
     }
 }

@@ -8,6 +8,7 @@ import { useProviderLimitsStore } from '../stores/providerLimitsStore';
 import { useOrchestrationTemplateStore } from '../stores/orchestrationTemplateStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { isLoginProfileActive, resolveLoginProfileSelection } from '../lib/loginProfiles';
+import { buildProviderLoginRequiredToast } from '../lib/loginNavigationEvents';
 import { isNoAgentSessionFoundError, markStaleLocalAgentNodeCancelled } from '../lib/localAgentRunTerminal';
 import { useQueryClient } from '@tanstack/react-query';
 import { UnifiedAgentModelSelector } from './UnifiedAgentModelSelector';
@@ -2393,6 +2394,30 @@ export function ChatInput({
             });
             return;
         }
+        if (hasLocalAgentRuntime) {
+            const providers = Array.from(new Set(
+                agentRunItemsForSend
+                    .map((run) => run.agent.type)
+                    .filter((type): type is 'codex' | 'claude' => type === 'codex' || type === 'claude')
+            ));
+            const profiles = useLoginProfilesStore.getState().profiles;
+            for (const provider of providers) {
+                const selection = resolveLoginProfileSelection({
+                    profiles,
+                    provider,
+                });
+                if (!selection.selectedProfile) {
+                    addToast(buildProviderLoginRequiredToast(provider));
+                    return;
+                }
+                try {
+                    await useLoginProfilesStore.getState().ensureReady(selection.selectedProfile.id);
+                } catch {
+                    addToast(buildProviderLoginRequiredToast(provider));
+                    return;
+                }
+            }
+        }
         if (sendAcceptanceInFlightRef.current && !queuedReplayInFlightRef.current) {
             const queuedSend: QueuedComposerSend = {
                 id: `queued-send-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -2459,29 +2484,6 @@ export function ChatInput({
             }, { source: 'ChatInput' });
             return;
         }
-
-        const agentTypesForReadiness = Array.from(new Set(
-            agentRunItemsForSend
-                .map((run) => run.agent.type)
-                .filter((type): type is 'codex' | 'claude' => type === 'codex' || type === 'claude')
-        ));
-        const loginProfilesAtSend = useLoginProfilesStore.getState().profiles;
-        const loginReadinessFailures = hasLocalAgentRuntime
-            ? agentTypesForReadiness.map((agentType) => {
-                const label = agentType === 'codex' ? 'Codex' : 'Claude';
-                const selection = resolveLoginProfileSelection({
-                    profiles: loginProfilesAtSend,
-                    provider: agentType,
-                    agentName: label,
-                });
-                if (selection.isReady) return null;
-                return {
-                    agentType,
-                    status: selection.selectedProfile?.status ?? 'auth_missing',
-                    message: selection.selectedProfile?.statusMessage || selection.failureMessage || `${label} needs a ready login profile before it can run.`,
-                };
-            }).filter((failure): failure is { agentType: 'codex' | 'claude'; status: string; message: string } => failure != null)
-            : [];
 
         // --- 2. PREPARE DATA ---
         const structuredAttachments: AttachmentMetadata[] = attachments
@@ -2841,26 +2843,6 @@ export function ChatInput({
                 parentId: run.userMessageId,
             }, { source: 'ChatInput' });
         }
-        const cleanupOptimisticPair = (delayMs: number, finalStatus: string) => {
-            window.setTimeout(() => {
-                optimisticUserMessageIds.forEach((userMessageId) => {
-                    removeOptimisticNode(userMessageId);
-                    releaseSendFlowKey(userMessageId);
-                });
-                optimisticAssistantMessageIds.forEach((assistantMessageId) => {
-                    removeOptimisticNode(assistantMessageId);
-                    releaseSendFlowKey(assistantMessageId);
-                });
-                releaseSendFlowKey(operationKey);
-                recordSendFlowEvent('cleanup.finished', {
-                    flowId,
-                    workspaceId: selectedWorkspaceId,
-                    nodeId: optimisticAssistantMessageIds[0] || optimisticPair.userMessageId,
-                    finalStatus,
-                }, { source: 'ChatInput' });
-            }, delayMs);
-        };
-
         // Track this operation
         agentSetupControllersRef.current.set(operationKey, controller);
         recordLatencyMark(operationKey, 'send_clicked', {
@@ -2891,37 +2873,6 @@ export function ChatInput({
                 phase: 'optimistic-user',
                 allowedCurrentFocusIds: [focusStateAtSendStart.focusedMessageId, sendParentMessageId],
             });
-
-            if (loginReadinessFailures.length > 0) {
-                const blockedReadiness = loginReadinessFailures[0];
-                console.warn('[SEND_FLOW] BLOCKED at login profile guard (not ready)');
-                const label = blockedReadiness.agentType === 'codex' ? 'Codex' : 'Claude';
-                addToast({
-                    title: blockedReadiness.status === 'keychain_unavailable' ? `${label} login unavailable to Agentree` : `${label} login setup required`,
-                    description: blockedReadiness.message,
-                    variant: 'error',
-                    persistent: true,
-                });
-                markNodeFailed(optimisticPair.userMessageId, blockedReadiness.message);
-                optimisticUserMessageIds
-                    .filter((userMessageId) => userMessageId !== optimisticPair.userMessageId)
-                    .forEach((userMessageId) => markNodeFailed(userMessageId, blockedReadiness.message));
-                optimisticAssistantMessageIds.forEach((assistantMessageId) => {
-                    markNodeFailed(assistantMessageId, blockedReadiness.message);
-                });
-                recordSendFlowEvent('lifecycle.failed', {
-                    flowId,
-                    workspaceId: selectedWorkspaceId,
-                    operationKey,
-                    errorType: 'LOGIN_PROFILE_NOT_READY',
-                    errorMessage: blockedReadiness.message,
-                }, { source: 'ChatInput' });
-                endSendFlowFocus(flowId);
-                commitFocusHandledByFlowRef.current.delete(flowId);
-                latencyTraceRef.current.delete(operationKey);
-                cleanupOptimisticPair(3000, 'login-profile-not-ready');
-                return;
-            }
 
             if (hasLocalAgentRuntime && optimisticAssistantMessageIds.length > 0) {
                 sendFlowDebug('Persisting local-first composer messages');
@@ -3607,12 +3558,8 @@ export function ChatInput({
                 agentName: selectedAgent?.name ?? selectedProvider,
             });
             const selectedLoginProfile = loginProfileSelection.selectedProfile;
-            if (!loginProfileSelection.isReady) {
-                addToast({
-                    title: 'Login profile inactive',
-                    description: loginProfileSelection.failureMessage ?? `${selectedAgent?.name ?? selectedProvider} needs a ready login profile before it can run.`,
-                    variant: 'error',
-                });
+            if (!loginProfileSelection.isReady && selectedProvider) {
+                addToast(buildProviderLoginRequiredToast(selectedProvider));
                 return;
             }
             const contextManifest = buildAgentRunContextManifest({
