@@ -6,6 +6,7 @@ import { ChatAssistantCard } from './ChatAssistantCard';
 import { ChatUserCard } from './ChatUserCard';
 import { AgentreeSurfaceProvider, publicShareCapabilities } from '../../graph/surfaceCapabilities';
 import type { ProjectedNodeEntity } from '../../../domain/workspaceProjection';
+import { LOGIN_PROFILES_NAVIGATION_EVENT } from '../../../lib/loginNavigationEvents';
 
 vi.mock('../../../hooks/useAgents', () => ({
   useAgents: () => ({ data: [] }),
@@ -176,9 +177,46 @@ describe('ChatAssistantCard identity', () => {
     expect(screen.getByText('Assistant content')).toBeTruthy();
     expect(screen.getByText('Run failed')).toBeTruthy();
     expect(screen.getByText(reason)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Open Runtime Health' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy assistant response' }));
     expect(writeText).toHaveBeenCalledWith(`Assistant content\n\nFailure: ${reason}`);
+  });
+
+  it('opens Runtime Health from a managed runtime failure', () => {
+    const navigationIntent = vi.fn();
+    window.addEventListener(LOGIN_PROFILES_NAVIGATION_EVENT, navigationIntent);
+
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          status: 'failed' as any,
+          message: {
+            status: 'failed' as any,
+            execution_data: {
+              failure_reason: "Agentree's managed Codex runtime could not be installed.",
+              meta: {
+                provider_error_code: 'codex_cli_missing',
+              },
+            },
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Runtime Health' }));
+
+    expect(navigationIntent).toHaveBeenCalledOnce();
+    expect((navigationIntent.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      target: 'runtime-health',
+    });
+    window.removeEventListener(LOGIN_PROFILES_NAVIGATION_EVENT, navigationIntent);
   });
 
   it('replaces a raw provider error payload with its human-readable failure reason', () => {

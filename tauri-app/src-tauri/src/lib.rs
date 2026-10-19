@@ -569,7 +569,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "run `npm run bindings:tauri` explicitly"]
+    #[ignore = "run `pnpm run bindings:tauri` explicitly"]
     fn export_tauri_specta_bindings() {
         export_specta_bindings(&specta_builder());
     }

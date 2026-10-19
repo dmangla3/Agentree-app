@@ -16,6 +16,7 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
 import { ToolFileChangesDiff } from './diff/ToolFileChangesDiff';
+import { TimelineErrorNotice } from './TimelineErrorNotice';
 
 const MAX_TIMELINE_TEXT_CONTENT_CHARS = 6000;
 const TIMELINE_TEXT_TRUNCATION_NOTICE = '\n\n... [truncated for display]';
@@ -304,10 +305,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                     )}
                 </div>
                 <div className="pb-2 flex-1 min-w-0 pt-0.5">
-                    <p className="text-[11px] font-semibold text-red-600 dark:text-red-400 mb-1 flex items-center gap-1.5">
-                        Error
-                    </p>
-                    <p className="text-muted-foreground/80 text-[11px] leading-relaxed line-clamp-2">{row.content}</p>
+                    <TimelineErrorNotice error={row.content} compact showIcon={false} />
                 </div>
             </div>
         );

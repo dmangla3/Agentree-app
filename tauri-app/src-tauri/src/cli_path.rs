@@ -21,28 +21,7 @@ const STATIC_HOME_BIN_ENTRIES: &[&str] = &[
 
 pub fn build_tool_path() -> String {
     let base = build_tool_path_from(std::env::var_os("PATH"), dirs::home_dir());
-    let merged = merge_login_shell_path(base);
-    prepend_managed_node_bin(merged)
-}
-
-/// The managed Node bin dir leads the tool path so adapters (and the SDK's
-/// own `node` lookup in child processes) resolve the pinned runtime before
-/// any system or version-manager install.
-fn prepend_managed_node_bin(base: String) -> String {
-    let Some(install_dir) = crate::managed_runtime::installed_component_dir_without_app(
-        crate::managed_runtime::COMPONENT_NODE,
-    ) else {
-        return base;
-    };
-    let bin_dir = match crate::managed_runtime::node_binary_path(&install_dir).parent() {
-        Some(dir) => dir.to_path_buf(),
-        None => return base,
-    };
-    let mut parts = vec![bin_dir];
-    parts.extend(std::env::split_paths(&base));
-    std::env::join_paths(parts)
-        .map(|joined| joined.to_string_lossy().into_owned())
-        .unwrap_or(base)
+    merge_login_shell_path(base)
 }
 
 /// GUI-launched apps (AppImage, .app) get a bare desktop PATH; the user's
@@ -128,22 +107,6 @@ pub fn find_on_tool_path(command: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// Every match on the tool path, in path order. Lets callers version-check
-/// candidates instead of trusting the first (possibly stale) hit.
-pub fn find_all_on_tool_path(command: &str) -> Vec<String> {
-    let mut matches = Vec::new();
-    for path in std::env::split_paths(&build_tool_path()) {
-        let candidate = path.join(command);
-        if candidate.exists() {
-            let resolved = candidate.to_string_lossy().into_owned();
-            if !matches.contains(&resolved) {
-                matches.push(resolved);
-            }
-        }
-    }
-    matches
 }
 
 fn shell_manager_bin_dirs(home: &Path) -> Vec<PathBuf> {

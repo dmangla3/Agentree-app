@@ -249,18 +249,13 @@ fn doctor_entry(app: &AppHandle, component: &str, label: &str) -> ManagedRuntime
         (None, _, false) => (
             "unpublished",
             format!(
-                "{} {} has no published archive for {} (development build). Provider features fall back to tools found on PATH.",
+                "{} {} has no published archive for {}. Provider features cannot start until a verified archive is published.",
                 label,
                 pinned_version,
                 crate::managed_runtime::current_platform_key()
             ),
         ),
     };
-
-    let mut detail = detail;
-    if component == crate::managed_runtime::COMPONENT_CODEX && installed.is_none() {
-        detail.push_str(&codex_path_fallback_summary());
-    }
 
     ManagedRuntimeDoctorEntry {
         component: component.to_string(),
@@ -270,64 +265,6 @@ fn doctor_entry(app: &AppHandle, component: &str, label: &str) -> ManagedRuntime
         install_dir: installed.map(|dir| dir.display().to_string()),
         downloadable,
         detail,
-    }
-}
-
-/// Describes what a PATH fallback would resolve to, so "missing" codex
-/// entries say precisely which binary would be used and whether it is new
-/// enough — the found/required/remediation triple.
-fn codex_path_fallback_summary() -> String {
-    let min_version = crate::managed_runtime::min_codex_cli_version();
-    let candidates = crate::cli_path::find_all_on_tool_path("codex");
-    if candidates.is_empty() {
-        return format!(
-            " No codex CLI found on PATH either; Codex runs need at least version {}.",
-            min_version
-        );
-    }
-    let mut best: Option<(String, String)> = None;
-    for candidate in candidates {
-        let mut probe = Command::new(&candidate);
-        probe.arg("--version").stdin(Stdio::null());
-        let Ok(output) =
-            command_output_with_timeout(&mut probe, Duration::from_secs(5), "codex version probe")
-        else {
-            continue;
-        };
-        if !output.status.success() {
-            continue;
-        }
-        let version = String::from_utf8_lossy(&output.stdout)
-            .split_whitespace()
-            .last()
-            .unwrap_or_default()
-            .to_string();
-        let is_better = best
-            .as_ref()
-            .map(|(_, best_version)| {
-                crate::managed_runtime::compare_dotted_versions(&version, best_version)
-                    == std::cmp::Ordering::Greater
-            })
-            .unwrap_or(true);
-        if is_better {
-            best = Some((candidate, version));
-        }
-    }
-    match best {
-        Some((path, version))
-            if crate::managed_runtime::compare_dotted_versions(&version, min_version)
-                != std::cmp::Ordering::Less =>
-        {
-            format!(" PATH fallback: codex {} at {} (meets minimum {}).", version, path, min_version)
-        }
-        Some((path, version)) => format!(
-            " PATH fallback codex {} at {} is too old (minimum {}); update it or install the managed runtime.",
-            version, path, min_version
-        ),
-        None => format!(
-            " No working codex CLI found on PATH; Codex runs need at least version {}.",
-            min_version
-        ),
     }
 }
 

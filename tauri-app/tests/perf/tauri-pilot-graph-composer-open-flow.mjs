@@ -25,7 +25,7 @@ const requirePilotCli = async () => {
   try {
     await execText('tauri-pilot', ['--help']);
   } catch {
-    throw new Error('tauri-pilot CLI is not available. Run `npm run pilot:install` first.');
+    throw new Error('tauri-pilot CLI is not available. Run `pnpm run pilot:install` first.');
   }
 };
 

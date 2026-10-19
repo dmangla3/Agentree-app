@@ -76,6 +76,7 @@ export function HomePage() {
   const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
   const [activeView, setActiveView] = useState<'chat' | 'orchestration' | 'tracking' | 'knowledge' | 'logins'>('chat');
   const [loginProviderIntent, setLoginProviderIntent] = useState<'codex' | 'claude' | null>(null);
+  const [runtimeHealthRequestId, setRuntimeHealthRequestId] = useState(0);
   const [threadNavigationModelsByWorkspace, setThreadNavigationModelsByWorkspace] = useState<Record<string, WorkspaceThreadNavigationModel>>({});
   const [workspaceNavigatorThreadsFocused, setWorkspaceNavigatorThreadsFocused] = useState(false);
   const [isChatCollapsed, setIsChatCollapsed] = useState(true);
@@ -167,9 +168,16 @@ export function HomePage() {
 
   useEffect(() => {
     const handleOpenLoginProfiles = (event: Event) => {
-      const provider = (event as CustomEvent<LoginProfilesNavigationDetail>).detail?.provider;
-      if (provider !== 'codex' && provider !== 'claude') return;
-      setLoginProviderIntent(provider);
+      const detail = (event as CustomEvent<LoginProfilesNavigationDetail>).detail;
+      const provider = detail?.provider;
+      const targetsRuntimeHealth = detail?.target === 'runtime-health';
+      if (provider !== 'codex' && provider !== 'claude' && !targetsRuntimeHealth) return;
+      if (provider === 'codex' || provider === 'claude') {
+        setLoginProviderIntent(provider);
+      }
+      if (targetsRuntimeHealth) {
+        setRuntimeHealthRequestId((requestId) => requestId + 1);
+      }
       setActiveView('logins');
     };
 
@@ -574,7 +582,10 @@ export function HomePage() {
             </div>
           ) : activeView === 'logins' ? (
             <Suspense fallback={<PanelLoading />}>
-              <LoginProfilesPanel initialProvider={loginProviderIntent} />
+              <LoginProfilesPanel
+                initialProvider={loginProviderIntent}
+                runtimeHealthRequestId={runtimeHealthRequestId}
+              />
             </Suspense>
           ) : (
             <div className="app-view-surface h-full w-full p-5">

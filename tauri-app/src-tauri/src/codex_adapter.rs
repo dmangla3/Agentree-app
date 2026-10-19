@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::collections::{HashSet, VecDeque};
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 const HELPER_ARG: &str = "--agentree-codex-adapter";
+const MANAGED_CODEX_BIN_ARG: &str = "--agentree-managed-codex-bin";
 const AI_LABEL_PROMPT: &str = include_str!("../scripts/ai-label-prompt.txt");
 const CODEX_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -130,7 +131,26 @@ pub fn maybe_run_from_process_args() -> Option<i32> {
         return None;
     }
     args.remove(1);
-    let code = match run(args.into_iter().skip(1).collect()) {
+    let managed_codex_bin = if args.get(1).map(String::as_str) == Some(MANAGED_CODEX_BIN_ARG) {
+        if args.len() > 2 {
+            let path = args.remove(2);
+            args.remove(1);
+            Ok(path)
+        } else {
+            Err(AdapterError::new(
+                "codex_cli_missing",
+                "Agentree did not provide its managed Codex runtime path.",
+            ))
+        }
+    } else {
+        Err(AdapterError::new(
+            "codex_cli_missing",
+            "Agentree did not provide its managed Codex runtime path.",
+        ))
+    };
+    let code = match managed_codex_bin
+        .and_then(|managed_codex_bin| run(args.into_iter().skip(1).collect(), &managed_codex_bin))
+    {
         Ok(code) => code,
         Err(error) => {
             emit(json!({
@@ -158,15 +178,19 @@ pub fn helper_arg() -> &'static str {
     HELPER_ARG
 }
 
-fn run(argv: Vec<String>) -> Result<i32, AdapterError> {
+pub fn managed_codex_bin_arg() -> &'static str {
+    MANAGED_CODEX_BIN_ARG
+}
+
+fn run(argv: Vec<String>, managed_codex_bin: &str) -> Result<i32, AdapterError> {
     let args = parse_args(argv)?;
     if args.readiness_check {
-        return Ok(emit_readiness_check());
+        return Ok(emit_readiness_check(managed_codex_bin));
     }
     if args.rate_limits_read {
-        return Ok(emit_rate_limits_read());
+        return Ok(emit_rate_limits_read(managed_codex_bin));
     }
-    run_turn(args)
+    run_turn(args, managed_codex_bin)
 }
 
 fn parse_args(argv: Vec<String>) -> Result<AdapterArgs, AdapterError> {
@@ -367,14 +391,14 @@ fn model_uses_structured_text_output(model: &str) -> bool {
     model != "gpt-image-2"
 }
 
-fn run_turn(args: AdapterArgs) -> Result<i32, AdapterError> {
+fn run_turn(args: AdapterArgs, managed_codex_bin: &str) -> Result<i32, AdapterError> {
     let mut state = TurnState::new(args.node_id.clone());
     emit_trace(
         "adapter_started",
         json!({ "node_id": args.node_id, "cwd": args.cwd }),
     );
 
-    let codex_bin = resolve_codex_bin()?;
+    let codex_bin = resolve_codex_bin(managed_codex_bin)?;
     let codex_home = resolve_codex_home();
     emit_trace(
         "codex_environment",
@@ -673,7 +697,7 @@ fn run_turn(args: AdapterArgs) -> Result<i32, AdapterError> {
     }
 }
 
-fn emit_readiness_check() -> i32 {
+fn emit_readiness_check(managed_codex_bin: &str) -> i32 {
     let codex_home = resolve_codex_home();
     let mut base = json!({
         "status": "unknown_error",
@@ -684,7 +708,7 @@ fn emit_readiness_check() -> i32 {
         "recommendedCommand": recommended_file_auth_command(&codex_home),
         "message": "Codex readiness could not be determined.",
     });
-    let codex_bin = match resolve_codex_bin() {
+    let codex_bin = match resolve_codex_bin(managed_codex_bin) {
         Ok(path) => path,
         Err(error) => {
             base["status"] = json!("cli_missing");
@@ -797,9 +821,9 @@ fn emit_readiness_check() -> i32 {
     0
 }
 
-fn emit_rate_limits_read() -> i32 {
+fn emit_rate_limits_read(managed_codex_bin: &str) -> i32 {
     let result = (|| -> Result<JsonValue, AdapterError> {
-        let codex_bin = resolve_codex_bin()?;
+        let codex_bin = resolve_codex_bin(managed_codex_bin)?;
         let codex_home = resolve_codex_home();
         let mut client = start_codex_app_server(
             &codex_bin,
@@ -852,7 +876,7 @@ fn start_codex_app_server(
         AdapterError::new(
             "codex_spawn_failed",
             format!(
-                "Could not start Codex CLI at `{}`. Install Codex or set CODEX_BIN to a working binary. spawn error: {}",
+                "Could not start Agentree's managed Codex CLI at `{}`. Open Runtime Health and repair Codex, then retry. spawn error: {}",
                 codex_bin, error
             ),
         )
@@ -1121,103 +1145,18 @@ fn ensure_codex_auth(
     Ok(())
 }
 
-fn resolve_codex_bin() -> Result<String, AdapterError> {
-    if let Ok(path) = std::env::var("CODEX_BIN") {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            if path_exists(trimmed) {
-                return Ok(trimmed.to_string());
-            }
-            return Err(AdapterError::new(
-                "codex_cli_missing",
-                format!("CODEX_BIN is set to `{trimmed}`, but that file does not exist."),
-            ));
-        }
-    }
-
-    if let Some(install_dir) = crate::managed_runtime::installed_component_dir_without_app(
-        crate::managed_runtime::COMPONENT_CODEX,
-    ) {
-        let managed_bin = crate::managed_runtime::codex_binary_path(&install_dir);
-        if managed_bin.is_file() {
-            return Ok(managed_bin.to_string_lossy().into_owned());
-        }
-    }
-
-    let min_version = crate::managed_runtime::min_codex_cli_version();
-    let mut best: Option<(String, String)> = None;
-    for candidate in crate::cli_path::find_all_on_tool_path("codex") {
-        let Some(version) = probe_codex_cli_version(&candidate) else {
-            continue;
-        };
-        let is_better = best
-            .as_ref()
-            .map(|(_, best_version)| {
-                crate::managed_runtime::compare_dotted_versions(&version, best_version)
-                    == std::cmp::Ordering::Greater
-            })
-            .unwrap_or(true);
-        if is_better {
-            best = Some((candidate, version));
-        }
-    }
-    match best {
-        Some((path, version))
-            if crate::managed_runtime::compare_dotted_versions(&version, min_version)
-                != std::cmp::Ordering::Less =>
-        {
-            Ok(path)
-        }
-        Some((path, version)) => Err(AdapterError::new(
-            "codex_cli_outdated",
-            format!(
-                "Codex CLI {version} at {path} is too old; Agentree needs {min_version} or newer. Update it (for example `npm install -g @openai/codex@latest`) or install the managed Codex runtime from the runtime health panel."
-            ),
-        )),
-        None => Err(AdapterError::new(
+fn resolve_codex_bin(managed_codex_bin: &str) -> Result<String, AdapterError> {
+    let managed_codex_bin = managed_codex_bin.trim();
+    if managed_codex_bin.is_empty() || !Path::new(managed_codex_bin).is_file() {
+        return Err(AdapterError::new(
             "codex_cli_missing",
-            "Could not find a working `codex` CLI in PATH or common Node manager locations. Install Codex CLI, install the managed Codex runtime from the runtime health panel, or set CODEX_BIN to its full path.",
-        )),
+            format!(
+                "Agentree's managed Codex runtime is missing or invalid at `{}`. Open Runtime Health and repair Codex, then retry.",
+                managed_codex_bin
+            ),
+        ));
     }
-}
-
-/// Probes `codex --version` with a hard deadline — a broken shim or
-/// network-blocking wrapper on PATH must not hang adapter startup.
-fn probe_codex_cli_version(path: &str) -> Option<String> {
-    let mut child = Command::new(path)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    return None;
-                }
-                break;
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                thread::sleep(Duration::from_millis(25));
-            }
-            Err(_) => {
-                let _ = child.kill();
-                return None;
-            }
-        }
-    }
-    let mut stdout = String::new();
-    child.stdout.take()?.read_to_string(&mut stdout).ok()?;
-    // Output looks like "codex-cli 0.139.0".
-    stdout.split_whitespace().last().map(ToOwned::to_owned)
+    Ok(managed_codex_bin.to_string())
 }
 
 fn resolve_codex_home() -> String {
@@ -2553,13 +2492,20 @@ mod tests {
     }
 
     #[test]
-    fn classifies_missing_codex_path_from_env() {
+    fn rejects_missing_managed_codex() {
         let temp = tempfile::tempdir().unwrap();
         let missing = temp.path().join("missing-codex");
-        std::env::set_var("CODEX_BIN", &missing);
-        let err = resolve_codex_bin().unwrap_err();
-        std::env::remove_var("CODEX_BIN");
+        let err = resolve_codex_bin(missing.to_str().unwrap()).unwrap_err();
         assert_eq!(err.code, "codex_cli_missing");
+    }
+
+    #[test]
+    fn uses_the_explicit_managed_codex_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let managed = temp.path().join("managed-codex");
+        fs::write(&managed, b"managed").unwrap();
+        let resolved = resolve_codex_bin(managed.to_str().unwrap()).unwrap();
+        assert_eq!(resolved, managed.to_string_lossy());
     }
 
     #[test]

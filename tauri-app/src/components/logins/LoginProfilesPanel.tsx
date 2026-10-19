@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   CheckCircle2,
@@ -46,6 +46,7 @@ type ProviderFilter = 'codex' | 'claude';
 
 interface LoginProfilesPanelProps {
   initialProvider?: ProviderFilter | null;
+  runtimeHealthRequestId?: number;
 }
 
 const providerFilters: Array<{ id: ProviderFilter; label: string }> = [
@@ -93,7 +94,10 @@ const formatCheckedAt = (timestamp?: number | null) => {
   }).format(new Date(timestamp * 1000));
 };
 
-export function LoginProfilesPanel({ initialProvider }: LoginProfilesPanelProps = {}) {
+export function LoginProfilesPanel({
+  initialProvider,
+  runtimeHealthRequestId = 0,
+}: LoginProfilesPanelProps = {}) {
   const {
     profiles,
     activeRunsByProfile,
@@ -127,6 +131,7 @@ export function LoginProfilesPanel({ initialProvider }: LoginProfilesPanelProps 
   const [importCandidates, setImportCandidates] = useState<LoginImportCandidate[]>([]);
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(new Set());
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const runtimeHealthRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => startSync(), [startSync]);
 
@@ -135,6 +140,12 @@ export function LoginProfilesPanel({ initialProvider }: LoginProfilesPanelProps 
       setProviderFilter(initialProvider);
     }
   }, [initialProvider]);
+
+  useEffect(() => {
+    if (runtimeHealthRequestId <= 0) return;
+    runtimeHealthRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    runtimeHealthRef.current?.focus({ preventScroll: true });
+  }, [runtimeHealthRequestId]);
 
   const filteredProfiles = useMemo(
     () => profiles.filter((profile) => profile.provider === providerFilter),
@@ -463,7 +474,14 @@ export function LoginProfilesPanel({ initialProvider }: LoginProfilesPanelProps 
               </div>
             </section>
 
-            <RuntimeHealthCard />
+            <div
+              ref={runtimeHealthRef}
+              tabIndex={-1}
+              className="scroll-m-4 outline-none"
+              data-runtime-health-target="true"
+            >
+              <RuntimeHealthCard />
+            </div>
           </aside>
         </div>
       </div>

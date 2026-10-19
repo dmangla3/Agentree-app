@@ -80,7 +80,7 @@ const requirePilotCli = async () => {
   try {
     await execText('tauri-pilot', ['--help']);
   } catch {
-    throw new Error('tauri-pilot CLI is not available. Run `npm run pilot:install` first.');
+    throw new Error('tauri-pilot CLI is not available. Run `pnpm run pilot:install` first.');
   }
 };
 
@@ -242,7 +242,7 @@ const stabilityFailures = (summary) => {
 
 const usage = () => {
   console.error([
-    'Usage: npm run pilot:graph-node-hover -- --node-id <id> [--duration-ms 8000] [--assert-stable]',
+    'Usage: pnpm run pilot:graph-node-hover -- --node-id <id> [--duration-ms 8000] [--assert-stable]',
     '       node ./tests/pilot/graph-node-hover-probe.mjs <id> [--no-real-hover] [--no-direct-hover]',
   ].join('\n'));
 };

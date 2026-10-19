@@ -19,6 +19,7 @@ const LIVE_CHECK_TIMEOUT: Duration = Duration::from_secs(45);
 const CODEX_DEVICE_LOGIN_URL: &str = "https://auth.openai.com/codex/device";
 const CODEX_LOGIN_START_TIMEOUT: Duration = Duration::from_secs(20);
 const CODEX_GLOBAL_INSTRUCTION_FILES: [&str; 2] = ["AGENTS.override.md", "AGENTS.md"];
+const CODEX_AUTH_CONFIG_LINE: &str = "cli_auth_credentials_store = \"file\"";
 const CLAUDE_LOGIN_START_TIMEOUT: Duration = Duration::from_secs(20);
 const CLAUDE_LOGIN_PENDING_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const CLAUDE_LOGIN_CODE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -161,12 +162,12 @@ fn file_secret_path(account: &str) -> Result<PathBuf, String> {
 
 fn read_file_secret(account: &str) -> Result<String, String> {
     let path = file_secret_path(account)?;
-    fs::read_to_string(&path).map_err(|error| {
-        format!(
-            "failed to read login profile secret fallback {}: {}",
-            path.display(),
-            error
-        )
+    fs::read_to_string(&path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => {
+            "Login profile credentials are missing. Reconnect this profile in Logins and try again."
+                .to_string()
+        }
+        _ => format!("Could not access login profile credentials: {}", error),
     })
 }
 
@@ -514,7 +515,42 @@ fn materialized(
     })
 }
 
-const CLAUDE_SETUP_TOKEN_PREFIX: &str = "sk-ant-oat";
+const CLAUDE_TOKEN_PREFIX: &str = "sk-ant-";
+const CLAUDE_SETUP_TOKEN_PREFIXES: [&str; 2] = ["sk-ant-oat", "sk-ant-at"];
+
+fn is_claude_token_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'
+}
+
+fn is_recognized_claude_setup_token(token: &str) -> bool {
+    let has_versioned_setup_prefix = CLAUDE_SETUP_TOKEN_PREFIXES.iter().any(|prefix| {
+        token.strip_prefix(prefix).is_some_and(|suffix| {
+            let bytes = suffix.as_bytes();
+            bytes.len() >= 3
+                && bytes[0].is_ascii_digit()
+                && bytes[1].is_ascii_digit()
+                && bytes[2] == b'-'
+        })
+    });
+    token.len() >= 40 && has_versioned_setup_prefix && token.chars().all(is_claude_token_char)
+}
+
+fn redact_claude_tokens(raw: &str) -> String {
+    let mut redacted = String::with_capacity(raw.len());
+    let mut remaining = raw;
+    while let Some(found) = remaining.find(CLAUDE_TOKEN_PREFIX) {
+        redacted.push_str(&remaining[..found]);
+        let candidate_start = &remaining[found..];
+        let candidate: String = candidate_start
+            .chars()
+            .take_while(|ch| is_claude_token_char(*ch))
+            .collect();
+        redacted.push_str("[REDACTED_CLAUDE_TOKEN]");
+        remaining = &candidate_start[candidate.len()..];
+    }
+    redacted.push_str(remaining);
+    redacted
+}
 
 fn scrub_claude_auth_env(command: &mut Command) {
     command.env("PATH", crate::cli_path::build_tool_path());
@@ -602,7 +638,7 @@ fn find_claude_login_failure_line(cleaned_output: &str) -> Option<String> {
             || lower.contains("mismatch")
             || lower.contains("failed");
         if is_failure {
-            Some(line.to_string())
+            Some(redact_claude_tokens(line))
         } else {
             None
         }
@@ -664,16 +700,19 @@ fn extract_claude_login_url(raw_output: &str) -> Option<String> {
 
 fn extract_claude_setup_token(raw_output: &str) -> Option<String> {
     let cleaned = strip_ansi(raw_output);
-    let start = cleaned.find(CLAUDE_SETUP_TOKEN_PREFIX)?;
-    let token: String = cleaned[start..]
-        .chars()
-        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
-        .collect();
-    if token.len() >= 40 {
-        Some(token)
-    } else {
-        None
+    let mut search_from = 0;
+    while let Some(found) = cleaned[search_from..].find(CLAUDE_TOKEN_PREFIX) {
+        let start = search_from + found;
+        let token: String = cleaned[start..]
+            .chars()
+            .take_while(|ch| is_claude_token_char(*ch))
+            .collect();
+        if is_recognized_claude_setup_token(&token) {
+            return Some(token);
+        }
+        search_from = start + CLAUDE_TOKEN_PREFIX.len();
     }
+    None
 }
 
 fn materialize_claude_oauth(
@@ -687,7 +726,7 @@ fn materialize_claude_oauth(
             "Claude login profile has no stored token. Reconnect this profile.".to_string(),
         );
     }
-    if !token.starts_with(CLAUDE_SETUP_TOKEN_PREFIX) {
+    if !is_recognized_claude_setup_token(token) {
         return Err(
             "This Claude profile was connected with an older login flow. Reconnect it to mint a long-lived token."
                 .to_string(),
@@ -710,6 +749,9 @@ pub fn persist_claude_oauth_token(
     let trimmed = token.trim();
     if trimmed.is_empty() {
         return Err("Claude setup token is empty.".to_string());
+    }
+    if !is_recognized_claude_setup_token(trimmed) {
+        return Err("The supplied credential is not a recognized Claude setup token.".to_string());
     }
     let account = secret_account_id(profile_id, "primary");
     vault.set_secret(&account, trimmed)?;
@@ -738,7 +780,8 @@ fn materialize_codex_home(
 }
 
 fn prepare_codex_profile_home(app_cache_dir: &Path, profile_id: &str) -> Result<PathBuf, String> {
-    let user_codex_home = user_codex_home();
+    let codex_home = codex_profile_home(app_cache_dir, profile_id);
+    let user_codex_home = user_codex_home(&codex_home);
     prepare_codex_profile_home_with_instructions(
         app_cache_dir,
         profile_id,
@@ -754,23 +797,28 @@ fn prepare_codex_profile_home_with_instructions(
     let codex_home = codex_profile_home(app_cache_dir, profile_id);
     fs::create_dir_all(&codex_home)
         .map_err(|error| format!("failed to create profile CODEX_HOME: {}", error))?;
-    write_restricted_file(
-        &codex_home.join("config.toml"),
-        "cli_auth_credentials_store = \"file\"\n",
-    )?;
+    sync_global_codex_config(user_codex_home, &codex_home)?;
     if let Some(user_codex_home) = user_codex_home {
         sync_global_codex_instructions(user_codex_home, &codex_home)?;
+        sync_global_codex_skills(user_codex_home, &codex_home)?;
     }
     Ok(codex_home)
 }
 
-fn user_codex_home() -> Option<PathBuf> {
-    std::env::var("CODEX_HOME")
+fn user_codex_home(managed_codex_home: &Path) -> Option<PathBuf> {
+    let env_codex_home = std::env::var("CODEX_HOME")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+        .map(PathBuf::from);
+    if let Some(env_codex_home) = env_codex_home {
+        if !same_path(&env_codex_home, managed_codex_home) {
+            return Some(env_codex_home);
+        }
+    }
+    dirs::home_dir()
+        .map(|home| home.join(".codex"))
+        .filter(|path| !same_path(path, managed_codex_home))
 }
 
 fn sync_global_codex_instructions(
@@ -817,6 +865,238 @@ fn sync_global_codex_instructions(
         }
     }
     Ok(())
+}
+
+fn sync_global_codex_config(
+    user_codex_home: Option<&Path>,
+    managed_codex_home: &Path,
+) -> Result<(), String> {
+    let config = match user_codex_home
+        .filter(|path| !same_path(path, managed_codex_home))
+        .map(|path| path.join("config.toml"))
+    {
+        Some(source) => match fs::read_to_string(&source) {
+            Ok(contents) => codex_config_with_file_auth(&contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                format!("{}\n", CODEX_AUTH_CONFIG_LINE)
+            }
+            Err(error) => {
+                return Err(format!(
+                    "failed to read global Codex config {}: {}",
+                    source.display(),
+                    error
+                ));
+            }
+        },
+        None => format!("{}\n", CODEX_AUTH_CONFIG_LINE),
+    };
+
+    write_restricted_file(&managed_codex_home.join("config.toml"), &config)
+}
+
+fn codex_config_with_file_auth(contents: &str) -> String {
+    let mut retained_lines = Vec::new();
+    let mut in_top_level = true;
+
+    for line in contents.lines() {
+        let trimmed_start = line.trim_start();
+        if trimmed_start.starts_with('[') {
+            in_top_level = false;
+        }
+        let is_auth_store_line = in_top_level
+            && trimmed_start
+                .strip_prefix("cli_auth_credentials_store")
+                .is_some_and(|rest| rest.trim_start().starts_with('='));
+        if !is_auth_store_line {
+            retained_lines.push(line);
+        }
+    }
+
+    let mut merged = format!("{}\n", CODEX_AUTH_CONFIG_LINE);
+    if !retained_lines.is_empty() {
+        merged.push('\n');
+        merged.push_str(&retained_lines.join("\n"));
+        merged.push('\n');
+    }
+    merged
+}
+
+fn sync_global_codex_skills(
+    user_codex_home: &Path,
+    managed_codex_home: &Path,
+) -> Result<(), String> {
+    if same_path(user_codex_home, managed_codex_home) {
+        return Ok(());
+    }
+
+    let source_skills = user_codex_home.join("skills");
+    if !source_skills.is_dir() {
+        return Ok(());
+    }
+
+    let managed_skills = managed_codex_home.join("skills");
+    fs::create_dir_all(&managed_skills).map_err(|error| {
+        format!(
+            "failed to create managed Codex skills folder {}: {}",
+            managed_skills.display(),
+            error
+        )
+    })?;
+
+    let source_entries: Vec<_> = fs::read_dir(&source_skills)
+        .map_err(|error| {
+            format!(
+                "failed to read global Codex skills folder {}: {}",
+                source_skills.display(),
+                error
+            )
+        })?
+        .map(|entry| {
+            entry
+                .map(|entry| (entry.file_name(), entry.path()))
+                .map_err(|error| {
+                    format!(
+                        "failed to read global Codex skills folder entry {}: {}",
+                        source_skills.display(),
+                        error
+                    )
+                })
+        })
+        .collect::<Result<_, _>>()?;
+
+    for entry in fs::read_dir(&managed_skills).map_err(|error| {
+        format!(
+            "failed to read managed Codex skills folder {}: {}",
+            managed_skills.display(),
+            error
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to read managed Codex skills folder entry {}: {}",
+                managed_skills.display(),
+                error
+            )
+        })?;
+        let name = entry.file_name();
+        if name.to_string_lossy() == ".system" {
+            continue;
+        }
+        if !source_entries
+            .iter()
+            .any(|(source_name, _)| source_name == &name)
+        {
+            remove_path_if_exists(&entry.path())?;
+        }
+    }
+
+    for (name, source) in source_entries {
+        if name.to_string_lossy() == ".system" {
+            continue;
+        }
+        let destination = managed_skills.join(&name);
+        replace_path(&source, &destination)?;
+    }
+
+    Ok(())
+}
+
+fn replace_path(source: &Path, destination: &Path) -> Result<(), String> {
+    remove_path_if_exists(destination)?;
+    copy_path(source, destination)
+}
+
+fn remove_path_if_exists(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            fs::remove_dir_all(path)
+        }
+        Ok(_) => fs::remove_file(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => Err(error),
+    }
+    .map_err(|error| format!("failed to remove stale {}: {}", path.display(), error))
+}
+
+fn copy_path(source: &Path, destination: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(source)
+        .map_err(|error| format!("failed to inspect {}: {}", source.display(), error))?;
+    if metadata.file_type().is_symlink() {
+        return copy_symlink(source, destination);
+    }
+    if metadata.is_dir() {
+        fs::create_dir_all(destination)
+            .map_err(|error| format!("failed to create {}: {}", destination.display(), error))?;
+        for entry in fs::read_dir(source)
+            .map_err(|error| format!("failed to read {}: {}", source.display(), error))?
+        {
+            let entry = entry.map_err(|error| {
+                format!(
+                    "failed to read folder entry under {}: {}",
+                    source.display(),
+                    error
+                )
+            })?;
+            copy_path(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {}", parent.display(), error))?;
+    }
+    fs::copy(source, destination).map_err(|error| {
+        format!(
+            "failed to copy {} to {}: {}",
+            source.display(),
+            destination.display(),
+            error
+        )
+    })?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn copy_symlink(source: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::unix::fs::symlink;
+
+    let target = fs::read_link(source)
+        .map_err(|error| format!("failed to read symlink {}: {}", source.display(), error))?;
+    symlink(&target, destination).map_err(|error| {
+        format!(
+            "failed to copy symlink {} to {}: {}",
+            source.display(),
+            destination.display(),
+            error
+        )
+    })
+}
+
+#[cfg(windows)]
+fn copy_symlink(source: &Path, destination: &Path) -> Result<(), String> {
+    let target = fs::read_link(source)
+        .map_err(|error| format!("failed to read symlink {}: {}", source.display(), error))?;
+    if target.is_dir() {
+        std::os::windows::fs::symlink_dir(&target, destination)
+    } else {
+        std::os::windows::fs::symlink_file(&target, destination)
+    }
+    .map_err(|error| {
+        format!(
+            "failed to copy symlink {} to {}: {}",
+            source.display(),
+            destination.display(),
+            error
+        )
+    })
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    left == right
+        || matches!(
+            (fs::canonicalize(left), fs::canonicalize(right)),
+            (Ok(left), Ok(right)) if left == right
+        )
 }
 
 fn codex_profile_home(app_cache_dir: &Path, profile_id: &str) -> PathBuf {
@@ -1599,10 +1879,6 @@ fn run_codex_live_check(
     profile: &LoginProfile,
     materialized: &MaterializedRuntimeCredentials,
 ) -> Result<String, LiveCheckFailure> {
-    crate::managed_runtime::ensure_component_best_effort(
-        app,
-        crate::managed_runtime::COMPONENT_CODEX,
-    );
     let command_plan = crate::runtime_scripts::codex_adapter_command(app)?;
     let mut command = Command::new(&command_plan.program);
     command
@@ -1951,7 +2227,17 @@ pub fn connect_codex_login_profile(
         .app_cache_dir()
         .map_err(|error| format!("failed to resolve app cache dir: {}", error))?;
     let codex_home = prepare_codex_profile_home(&cache_dir, &profile.id)?;
-    let codex = crate::cli_path::find_on_tool_path("codex").unwrap_or_else(|| "codex".to_string());
+    let codex_install = crate::managed_runtime::ensure_component(
+        &app,
+        crate::managed_runtime::COMPONENT_CODEX,
+    )
+    .map_err(|error| {
+        format!(
+            "Agentree's managed Codex runtime could not be installed or repaired: {} Open Runtime Health and retry.",
+            error
+        )
+    })?;
+    let codex = crate::managed_runtime::codex_binary_path(&codex_install);
     let mut command = Command::new(codex);
     command
         .arg("-c")
@@ -2036,9 +2322,18 @@ fn connect_claude_oauth_login_profile_blocking(
             .path()
             .app_cache_dir()
             .map_err(|error| format!("failed to resolve app cache dir: {}", error))?;
-        let claude =
-            crate::cli_path::find_on_tool_path("claude").unwrap_or_else(|| "claude".to_string());
-        let mut command = claude_setup_token_command(&claude, &cache_dir)?;
+        let claude_install = crate::managed_runtime::ensure_component(
+            app,
+            crate::managed_runtime::COMPONENT_CLAUDE_SDK,
+        )
+        .map_err(|error| {
+            format!(
+                "Agentree's managed Claude runtime could not be installed or repaired: {} Open Runtime Health and retry.",
+                error
+            )
+        })?;
+        let claude = crate::managed_runtime::claude_binary_path(&claude_install)?;
+        let mut command = claude_setup_token_command(&claude.to_string_lossy(), &cache_dir)?;
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -2264,18 +2559,14 @@ fn submit_claude_oauth_login_code_blocking(
             if let Some(token) = extract_claude_setup_token(&snapshot) {
                 break token;
             }
-            // Surface raw TUI output in the app log so failed sign-ins are
-            // diagnosable from the field.
+            // Record progress without writing TUI content: setup-token output
+            // contains the credential itself, and chunks can split inside it.
             if snapshot.len() > logged_output_len {
-                let fresh = strip_ansi(&snapshot[logged_output_len..]);
-                let fresh = fresh.trim();
-                if !fresh.is_empty() && !fresh.contains(CLAUDE_SETUP_TOKEN_PREFIX) {
-                    crate::app_log!(
-                        "[LOGIN_PROFILE] event=claude_setup_token_output profile_id={} output={}",
-                        profile_id,
-                        fresh.replace(['\r', '\n'], " | ")
-                    );
-                }
+                crate::app_log!(
+                    "[LOGIN_PROFILE] event=claude_setup_token_progress profile_id={} bytes_received={}",
+                    profile_id,
+                    snapshot.len() - logged_output_len
+                );
                 logged_output_len = snapshot.len();
             }
             let new_output = strip_ansi(&snapshot[submitted_at_output_len.min(snapshot.len())..]);
@@ -2304,6 +2595,7 @@ fn submit_claude_oauth_login_code_blocking(
                             .map(str::trim)
                             .find(|line| !line.is_empty())
                             .unwrap_or("");
+                        let last_line = redact_claude_tokens(last_line);
                         return Err(if last_line.is_empty() {
                             "Timed out waiting for Claude to accept the sign in code. Reconnect to try again.".to_string()
                         } else {
@@ -2416,8 +2708,6 @@ fn env_import_candidate(
 
 pub fn discover_login_import_candidates_from_sources(
     env: &HashMap<String, String>,
-    _codex_auth_paths: Vec<(String, PathBuf, String)>,
-    _claude_cli_available: bool,
 ) -> Vec<LoginImportCandidate> {
     let mut candidates = Vec::new();
     if let Some(candidate) = env_import_candidate(
@@ -2441,27 +2731,11 @@ pub fn discover_login_import_candidates_from_sources(
     candidates
 }
 
-fn default_codex_auth_sources() -> Vec<(String, PathBuf, String)> {
-    Vec::new()
-}
-
-fn claude_cli_auth_available() -> bool {
-    Command::new("claude")
-        .args(["auth", "status"])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
 #[tauri::command]
 #[specta::specta]
 pub fn discover_login_import_candidates() -> Result<Vec<LoginImportCandidate>, String> {
     let env = std::env::vars().collect::<HashMap<_, _>>();
-    Ok(discover_login_import_candidates_from_sources(
-        &env,
-        default_codex_auth_sources(),
-        claude_cli_auth_available(),
-    ))
+    Ok(discover_login_import_candidates_from_sources(&env))
 }
 
 fn display_name_or_default(requested: Option<String>, default_name: &str) -> String {
@@ -2576,11 +2850,10 @@ fn upsert_imported_managed_profile(
     Ok(profile)
 }
 
-pub fn import_discovered_login_profile_with_vault_and_sources(
+pub fn import_discovered_login_profile_with_vault(
     db: &TelemetryDb,
     vault: &dyn CredentialVault,
     env: &HashMap<String, String>,
-    _codex_auth_paths: &[(String, PathBuf, String)],
     request: ImportLoginCandidateRequest,
 ) -> Result<LoginProfile, String> {
     match request.candidate_id.as_str() {
@@ -2640,13 +2913,7 @@ pub fn import_discovered_login_profile(
     request: ImportLoginCandidateRequest,
 ) -> Result<LoginProfile, String> {
     let env = std::env::vars().collect::<HashMap<_, _>>();
-    import_discovered_login_profile_with_vault_and_sources(
-        &db,
-        &KeyringCredentialVault,
-        &env,
-        &default_codex_auth_sources(),
-        request,
-    )
+    import_discovered_login_profile_with_vault(&db, &KeyringCredentialVault, &env, request)
 }
 
 #[tauri::command]
@@ -2834,6 +3101,18 @@ mod tests {
     }
 
     #[test]
+    fn missing_file_backed_secret_returns_reconnect_guidance_without_a_path() {
+        let account = format!("missing-login-profile-secret-{}", Uuid::new_v4());
+        let error = read_file_secret(&account).expect_err("secret must not exist");
+
+        assert_eq!(
+            error,
+            "Login profile credentials are missing. Reconnect this profile in Logins and try again."
+        );
+        assert!(!error.contains(&account));
+    }
+
+    #[test]
     fn claude_live_check_uses_current_sonnet_model() {
         let profile = test_profile(
             "claude-profile",
@@ -2991,14 +3270,6 @@ mod tests {
 
     #[test]
     fn discovery_candidates_redact_env_sources_without_codex_auth_files() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let codex_home = temp.path().join("codex-home");
-        fs::create_dir_all(&codex_home).expect("codex home");
-        fs::write(
-            codex_home.join("auth.json"),
-            r#"{"tokens":{"access_token":"secret"}}"#,
-        )
-        .expect("auth json");
         let env = HashMap::from([
             (
                 "OPENAI_API_KEY".to_string(),
@@ -3010,15 +3281,7 @@ mod tests {
             ),
         ]);
 
-        let candidates = discover_login_import_candidates_from_sources(
-            &env,
-            vec![(
-                "file:codex:test".to_string(),
-                codex_home.join("auth.json"),
-                "test auth.json".to_string(),
-            )],
-            true,
-        );
+        let candidates = discover_login_import_candidates_from_sources(&env);
 
         assert!(candidates
             .iter()
@@ -3050,11 +3313,10 @@ mod tests {
             "sk-proj-1234567890abcdef".to_string(),
         )]);
 
-        let imported = import_discovered_login_profile_with_vault_and_sources(
+        let imported = import_discovered_login_profile_with_vault(
             &db,
             &vault,
             &env,
-            &[],
             ImportLoginCandidateRequest {
                 candidate_id: "env:OPENAI_API_KEY".to_string(),
                 display_name: Some("Imported OpenAI key".to_string()),
@@ -3116,11 +3378,10 @@ mod tests {
         let vault = MemoryVault::new();
         let env = HashMap::new();
 
-        let error = import_discovered_login_profile_with_vault_and_sources(
+        let error = import_discovered_login_profile_with_vault(
             &db,
             &vault,
             &env,
-            &[],
             ImportLoginCandidateRequest {
                 candidate_id: "cli:claude".to_string(),
                 display_name: Some("Claude CLI login".to_string()),
@@ -3138,19 +3399,11 @@ mod tests {
         let (_dir, db) = open_test_db();
         let vault = MemoryVault::new();
         let env = HashMap::new();
-        let temp = tempfile::tempdir().expect("tempdir");
-        let auth_path = temp.path().join("auth.json");
-        fs::write(&auth_path, r#"{"tokens":{"access_token":"secret"}}"#).expect("auth json");
 
-        let error = import_discovered_login_profile_with_vault_and_sources(
+        let error = import_discovered_login_profile_with_vault(
             &db,
             &vault,
             &env,
-            &[(
-                "file:codex:test".to_string(),
-                auth_path,
-                "test auth.json".to_string(),
-            )],
             ImportLoginCandidateRequest {
                 candidate_id: "file:codex:test".to_string(),
                 display_name: Some("Imported Codex auth file".to_string()),
@@ -3336,6 +3589,101 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn codex_profile_home_syncs_global_config_and_custom_skills() {
+        let app_cache_dir = tempfile::tempdir().expect("cache");
+        let user_codex_home = tempfile::tempdir().expect("user codex home");
+        fs::write(
+            user_codex_home.path().join("config.toml"),
+            r#"model = "gpt-5.5"
+cli_auth_credentials_store = "keychain"
+
+[mcp_servers.personal]
+command = "personal-mcp"
+"#,
+        )
+        .expect("global config");
+        let skill_dir = user_codex_home.path().join("skills").join("personal-skill");
+        fs::create_dir_all(&skill_dir).expect("skill dir");
+        fs::write(skill_dir.join("SKILL.md"), "# Personal Skill\n").expect("skill doc");
+
+        let managed_codex_home = prepare_codex_profile_home_with_instructions(
+            app_cache_dir.path(),
+            "profile-codex",
+            Some(user_codex_home.path()),
+        )
+        .expect("managed codex home");
+
+        let config =
+            fs::read_to_string(managed_codex_home.join("config.toml")).expect("synced config");
+        assert!(config.contains(CODEX_AUTH_CONFIG_LINE));
+        assert!(config.contains(r#"model = "gpt-5.5""#));
+        assert!(config.contains("[mcp_servers.personal]"));
+        assert!(config.contains(r#"command = "personal-mcp""#));
+        assert!(!config.contains(r#"cli_auth_credentials_store = "keychain""#));
+        assert!(managed_codex_home
+            .join("skills")
+            .join("personal-skill")
+            .join("SKILL.md")
+            .exists());
+    }
+
+    #[test]
+    fn codex_profile_home_keeps_managed_system_skills_when_syncing_custom_skills() {
+        let app_cache_dir = tempfile::tempdir().expect("cache");
+        let user_codex_home = tempfile::tempdir().expect("user codex home");
+        let managed_skills = app_cache_dir
+            .path()
+            .join("login-profiles")
+            .join("profile-codex")
+            .join("codex-home")
+            .join("skills")
+            .join(".system")
+            .join("system-skill");
+        fs::create_dir_all(&managed_skills).expect("managed system skill dir");
+        fs::write(managed_skills.join("SKILL.md"), "# System Skill\n").expect("system skill");
+        let stale_skill = app_cache_dir
+            .path()
+            .join("login-profiles")
+            .join("profile-codex")
+            .join("codex-home")
+            .join("skills")
+            .join("stale-custom-skill");
+        fs::create_dir_all(&stale_skill).expect("stale skill dir");
+        fs::write(stale_skill.join("SKILL.md"), "# Stale Skill\n").expect("stale skill");
+        let user_system_skill = user_codex_home
+            .path()
+            .join("skills")
+            .join(".system")
+            .join("different-system-skill");
+        fs::create_dir_all(&user_system_skill).expect("user system skill dir");
+        fs::write(user_system_skill.join("SKILL.md"), "# Other System Skill\n")
+            .expect("user system skill");
+
+        let managed_codex_home = prepare_codex_profile_home_with_instructions(
+            app_cache_dir.path(),
+            "profile-codex",
+            Some(user_codex_home.path()),
+        )
+        .expect("managed codex home");
+
+        assert!(managed_codex_home
+            .join("skills")
+            .join(".system")
+            .join("system-skill")
+            .join("SKILL.md")
+            .exists());
+        assert!(!managed_codex_home
+            .join("skills")
+            .join(".system")
+            .join("different-system-skill")
+            .exists());
+        assert!(!managed_codex_home
+            .join("skills")
+            .join("stale-custom-skill")
+            .exists());
     }
 
     #[test]
@@ -3595,7 +3943,7 @@ mod tests {
             "profile-claude-oauth",
             "claude",
             "claude_oauth",
-            "sk-ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789ABCD",
+            "sk-ant-at01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE",
             serde_json::json!({}),
         )
         .expect("credentials materialize");
@@ -3605,7 +3953,7 @@ mod tests {
                 .env
                 .get("CLAUDE_CODE_OAUTH_TOKEN")
                 .map(String::as_str),
-            Some("sk-ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789ABCD")
+            Some("sk-ant-at01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE")
         );
         assert!(materialized.codex_home.is_none());
     }
@@ -3646,17 +3994,85 @@ mod tests {
 
     #[test]
     fn extracts_setup_token_from_ansi_decorated_output() {
-        let raw = "\u{1b}[32mYour token:\u{1b}[0m sk-ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789ABCD\r\nStore it somewhere safe.";
+        let raw = "\u{1b}[32mYour token:\u{1b}[0m sk-ant-at01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE\r\nStore it somewhere safe.";
         let token = extract_claude_setup_token(raw).expect("token extracted");
         assert_eq!(
             token,
-            "sk-ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+            "sk-ant-at01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE"
         );
     }
 
     #[test]
-    fn ignores_short_token_like_fragments() {
-        assert!(extract_claude_setup_token("sk-ant-oat01-tooshort").is_none());
+    fn extracts_legacy_oauth_setup_tokens_during_migration() {
+        let token = "sk-ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789ABCD";
+        assert_eq!(extract_claude_setup_token(token).as_deref(), Some(token));
+    }
+
+    #[test]
+    fn ignores_short_and_non_oauth_claude_token_fragments() {
+        assert!(extract_claude_setup_token("sk-ant-at01-tooshort").is_none());
+        assert!(extract_claude_setup_token(
+            "sk-ant-api01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE"
+        )
+        .is_none());
+        assert!(extract_claude_setup_token(
+            "sk-ant-attack-abcdefghijklmnopqrstuvwxyz0123456789ABCDE"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn redacts_current_and_unknown_claude_tokens_from_diagnostics() {
+        let current = "sk-ant-at01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE";
+        let future = "sk-ant-future01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE";
+        let sanitized = redact_claude_tokens(&format!("created {} and then {}", current, future));
+
+        assert_eq!(
+            sanitized,
+            "created [REDACTED_CLAUDE_TOKEN] and then [REDACTED_CLAUDE_TOKEN]"
+        );
+        assert!(!sanitized.contains(current));
+        assert!(!sanitized.contains(future));
+    }
+
+    #[test]
+    fn claude_login_failure_lines_never_return_tokens() {
+        let token = "sk-ant-at01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE";
+        let failure =
+            find_claude_login_failure_line(&format!("OAuth error after creating {}", token))
+                .expect("failure line");
+
+        assert_eq!(
+            failure,
+            "OAuth error after creating [REDACTED_CLAUDE_TOKEN]"
+        );
+    }
+
+    #[test]
+    fn invalid_claude_setup_token_is_rejected_before_vault_write() {
+        let (_dir, db) = open_test_db();
+        let vault = MemoryVault::new();
+        let profile = test_profile(
+            "claude-invalid-token",
+            "claude",
+            "claude_oauth",
+            serde_json::json!({}),
+        );
+        db.upsert_login_profile_metadata(&profile, None)
+            .expect("store profile metadata");
+
+        let error = persist_claude_oauth_token(
+            &db,
+            &vault,
+            &profile.id,
+            "sk-ant-api01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE",
+        )
+        .expect_err("API keys must not be stored as OAuth setup tokens");
+
+        assert!(error.contains("not a recognized Claude setup token"));
+        assert!(vault
+            .get_secret(&secret_account_id(&profile.id, "primary"))
+            .is_err());
     }
 
     #[test]

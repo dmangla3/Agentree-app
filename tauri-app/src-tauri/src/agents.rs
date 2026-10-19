@@ -3102,10 +3102,6 @@ fn spawn_agent_internal(
     let mut args = args;
     let mut program_override: Option<String> = None;
     if agent_type.as_str() == "codex" {
-        crate::managed_runtime::ensure_component_best_effort(
-            &app,
-            crate::managed_runtime::COMPONENT_CODEX,
-        );
         let command = crate::runtime_scripts::codex_adapter_command(&app)?;
         for arg in command.args_prefix.into_iter().rev() {
             args.insert(0, arg);
@@ -3118,12 +3114,6 @@ fn spawn_agent_internal(
         program_override = Some(invocation.node_program);
     }
     if agent_type.as_str() == "bash" {
-        // The bash adapter is a plain Node script; install the managed Node
-        // so it runs on machines with no host Node at all.
-        crate::managed_runtime::ensure_component_best_effort(
-            &app,
-            crate::managed_runtime::COMPONENT_NODE,
-        );
         args.insert(
             0,
             crate::runtime_scripts::runtime_script_path(&app, "bash-adapter.cjs")?
@@ -3161,7 +3151,7 @@ fn spawn_agent_internal(
         "codex" => {
             program_override.ok_or_else(|| "Codex adapter command was not resolved.".to_string())?
         }
-        "bash" => crate::managed_runtime::node_program(&app),
+        "bash" => crate::managed_runtime::node_program(&app)?,
         "echo" => "echo".to_string(),
         _ => return Err(format!("Unknown agent type: {}", agent_type)),
     };
@@ -3805,8 +3795,8 @@ fn run_agent_lifecycle_background(
     intent: StartAgentRunIntent,
 ) -> Result<(), String> {
     let telemetry = app.state::<crate::db::TelemetryDb>();
-    let worktree =
-        match tauri::async_runtime::block_on(crate::git_workspace::create_agent_worktree(
+    let worktree = match tauri::async_runtime::block_on(
+        crate::git_workspace::create_agent_worktree(
             app.clone(),
             intent.repo_path.clone(),
             intent.assistant_node_id.clone(),
@@ -3814,19 +3804,26 @@ fn run_agent_lifecycle_background(
             Some(intent.run_id.clone()),
             intent.workspace_id.clone(),
             Some(intent.agent_type.clone()),
-        )) {
-            Ok(worktree) => worktree,
-            Err(err) => {
-                let _ = telemetry.update_agent_run_phase(
-                    &intent.assistant_node_id,
-                    "failed_setup",
-                    "failed_setup",
-                    Some(&err),
-                );
-                let _ = finalize_setup_failure(&app, &intent, "failed_setup");
-                return Err(err);
+        ),
+    ) {
+        Ok(worktree) => worktree,
+        Err(err) => {
+            let _ = telemetry.update_agent_run_phase(
+                &intent.assistant_node_id,
+                "failed_setup",
+                "failed_setup",
+                Some(&err),
+            );
+            if let Err(finalize_err) = finalize_setup_failure(&app, &intent, "failed_setup", &err) {
+                crate::app_log!(
+                        "[AGENT_WORKTREE] event=setup_failure_finalize_error node_id={} status=failed_setup err={}",
+                        intent.assistant_node_id,
+                        finalize_err
+                    );
             }
-        };
+            return Err(err);
+        }
+    };
 
     let mut run_context = intent.run_context.clone();
     run_context.run_id = intent.run_id.clone();
@@ -3881,7 +3878,13 @@ fn run_agent_lifecycle_background(
                 "failed_spawn",
                 Some(&err),
             );
-            let _ = finalize_setup_failure(&app, &intent, "failed_spawn");
+            if let Err(finalize_err) = finalize_setup_failure(&app, &intent, "failed_spawn", &err) {
+                crate::app_log!(
+                    "[AGENT_WORKTREE] event=setup_failure_finalize_error node_id={} status=failed_spawn err={}",
+                    intent.assistant_node_id,
+                    finalize_err
+                );
+            }
             cleanup_worktree_after_finalize(
                 &app,
                 &intent.assistant_node_id,
@@ -3897,10 +3900,134 @@ fn finalize_setup_failure(
     app: &AppHandle,
     intent: &StartAgentRunIntent,
     status: &str,
+    failure_reason: &str,
 ) -> Result<(), String> {
-    app.state::<crate::db::TelemetryDb>()
-        .mark_agent_run_finalized(&intent.assistant_node_id, status, false, None)?;
+    let telemetry = app.state::<crate::db::TelemetryDb>();
+    let ledger_result =
+        telemetry.mark_agent_run_finalized(&intent.assistant_node_id, status, false, None);
+    let local_node_result = (|| {
+        let existing_payload = telemetry
+            .get_local_node_payload(&intent.assistant_node_id)?
+            .and_then(|payload| serde_json::from_str::<JsonValue>(&payload).ok());
+        let workspace_id = intent
+            .workspace_id
+            .clone()
+            .or_else(|| workspace_id_from_execution_data(&intent.run_context.execution_data))
+            .ok_or_else(|| {
+                format!(
+                    "Cannot persist {} for {} without a workspace id.",
+                    status, intent.assistant_node_id
+                )
+            })?;
+        let payload = local_node_payload_for_setup_failure(
+            existing_payload,
+            &intent.assistant_node_id,
+            &workspace_id,
+            &intent.run_context.execution_data,
+            status,
+            failure_reason,
+        );
+        telemetry.upsert_local_node(
+            &intent.assistant_node_id,
+            &workspace_id,
+            &payload.to_string(),
+        )
+    })();
+
+    // Live terminal delivery must not depend on either persistence layer. The
+    // ledger and local node allow recovery; these events release the current UI.
+    emit_agent_event(
+        app,
+        &intent.assistant_node_id,
+        &serde_json::json!({
+            "type": "error",
+            "data": failure_reason,
+            "phase": status,
+        }),
+    );
+    emit_agent_event(
+        app,
+        &intent.assistant_node_id,
+        &serde_json::json!({
+            "type": "exit",
+            "status": status,
+            "reason": failure_reason,
+            "phase": "terminal",
+        }),
+    );
+    ledger_result?;
+    local_node_result?;
     Ok(())
+}
+
+fn local_node_payload_for_setup_failure(
+    existing_payload: Option<JsonValue>,
+    assistant_node_id: &str,
+    workspace_id: &str,
+    run_execution_data: &JsonValue,
+    status: &str,
+    failure_reason: &str,
+) -> JsonValue {
+    let mut payload = existing_payload.unwrap_or_else(|| {
+        serde_json::json!({
+            "id": assistant_node_id,
+            "workspaceId": workspace_id,
+            "role": "assistant",
+            "content": "",
+        })
+    });
+    if !payload.is_object() {
+        payload = JsonValue::Object(JsonMap::new());
+    }
+
+    let mut execution_data = payload
+        .get("execution_data")
+        .cloned()
+        .unwrap_or_else(|| JsonValue::Object(JsonMap::new()));
+    if !execution_data.is_object() {
+        execution_data = JsonValue::Object(JsonMap::new());
+    }
+    merge_json_value(&mut execution_data, run_execution_data);
+    let terminal_at = unix_millis_to_rfc3339(unix_timestamp_millis());
+    if let Some(object) = execution_data.as_object_mut() {
+        object.insert(
+            "ended_at".to_string(),
+            JsonValue::String(terminal_at.clone()),
+        );
+        object.insert(
+            "last_terminal_status".to_string(),
+            JsonValue::String(status.to_string()),
+        );
+        object.insert(
+            "setup_error".to_string(),
+            JsonValue::String(failure_reason.to_string()),
+        );
+        object.insert(
+            "failure_reason".to_string(),
+            JsonValue::String(failure_reason.to_string()),
+        );
+    }
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "id".to_string(),
+            JsonValue::String(assistant_node_id.to_string()),
+        );
+        object.insert(
+            "workspaceId".to_string(),
+            JsonValue::String(workspace_id.to_string()),
+        );
+        object.insert(
+            "role".to_string(),
+            JsonValue::String("assistant".to_string()),
+        );
+        object
+            .entry("content".to_string())
+            .or_insert_with(|| JsonValue::String(String::new()));
+        object.insert("status".to_string(), JsonValue::String(status.to_string()));
+        object.insert("updatedAt".to_string(), JsonValue::String(terminal_at));
+        object.insert("execution_data".to_string(), execution_data);
+    }
+    payload
 }
 
 fn chrono_like_now() -> String {
@@ -4222,10 +4349,11 @@ mod tests {
         commit_message_for_snapshot, commit_subject_from_execution_data,
         decide_agent_run_watchdog_timeout, descendant_first_stop_order,
         ensure_context_recovery_fields, is_terminal_runtime_status, latest_provider_thread_id,
-        local_node_payload_for_snapshot, run_ledger_user_node_id_from_context,
-        should_persist_failure_reason, snapshot_from_replayed_journal, startup_resume_args,
-        terminal_status_for_runtime_activity, update_run_state_from_event, AgentRunContext,
-        AgentRunSnapshot, AgentRunState, STARTUP_RESUME_PROMPT,
+        local_node_payload_for_setup_failure, local_node_payload_for_snapshot,
+        run_ledger_user_node_id_from_context, should_persist_failure_reason,
+        snapshot_from_replayed_journal, startup_resume_args, terminal_status_for_runtime_activity,
+        update_run_state_from_event, AgentRunContext, AgentRunSnapshot, AgentRunState,
+        STARTUP_RESUME_PROMPT,
     };
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
@@ -4402,6 +4530,58 @@ mod tests {
             local_node_payload_for_snapshot(&snapshot, "workspace-1")["execution_data"]
                 ["failure_reason"],
             "ImportError: cannot import name 'ParamSpec' from 'typing'"
+        );
+    }
+
+    #[test]
+    fn setup_failure_payload_preserves_node_identity_and_exposes_reason() {
+        let existing = json!({
+            "id": "assistant-1",
+            "workspaceId": "workspace-1",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": "",
+            "status": "pending",
+            "execution_data": {
+                "meta": {
+                    "provider": "claude",
+                    "login_profile_id": "profile-1"
+                }
+            }
+        });
+        let payload = local_node_payload_for_setup_failure(
+            Some(existing),
+            "assistant-1",
+            "workspace-1",
+            &json!({
+                "current_run_id": "run-1",
+                "meta": {
+                    "provider_model": "claude-fable-5"
+                }
+            }),
+            "failed_spawn",
+            "Login profile credentials are missing. Reconnect this profile in Logins and try again.",
+        );
+
+        assert_eq!(payload["status"], "failed_spawn");
+        assert_eq!(payload["threadId"], "thread-1");
+        assert_eq!(payload["parentId"], "user-1");
+        assert_eq!(
+            payload["execution_data"]["last_terminal_status"],
+            "failed_spawn"
+        );
+        assert_eq!(
+            payload["execution_data"]["failure_reason"],
+            "Login profile credentials are missing. Reconnect this profile in Logins and try again."
+        );
+        assert_eq!(
+            payload["execution_data"]["meta"]["login_profile_id"],
+            "profile-1"
+        );
+        assert_eq!(
+            payload["execution_data"]["meta"]["provider_model"],
+            "claude-fable-5"
         );
     }
 

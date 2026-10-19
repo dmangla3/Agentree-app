@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
-  claudeSdkNpmInstallArgs,
-  npmEnvironmentWithOptionalDependencies,
+  claudeSdkPnpmAddArgs,
+  pnpmEnvironmentForRuntimeInstall,
   validateClaudeSdkInstall,
   validateClaudeSdkVersionAlignment,
 } from './runtime-archive-layout.mjs';
@@ -31,21 +31,26 @@ function sdkFixture(version = '0.3.207') {
   return { root, nodeModules, nativeDir };
 }
 
-test('Claude runtime install explicitly includes optional dependencies', () => {
-  const args = claudeSdkNpmInstallArgs('0.3.207', 'linux', 'x64');
-  assert.ok(args.includes('--include=optional'));
-  assert.ok(args.includes('--omit=dev'));
+test('Claude runtime install explicitly adds only the target native dependency', () => {
+  const args = claudeSdkPnpmAddArgs('0.3.207', 'linux', 'x64');
+  assert.ok(args.includes('--prod'));
+  assert.ok(args.includes('--no-optional'));
+  assert.ok(args.includes('--os=linux'));
+  assert.ok(args.includes('--cpu=x64'));
   assert.ok(args.includes('@anthropic-ai/claude-agent-sdk@0.3.207'));
+  assert.ok(args.includes('@anthropic-ai/claude-agent-sdk-linux-x64@0.3.207'));
 });
 
-test('Claude runtime install ignores inherited npm optional omission', () => {
-  const env = npmEnvironmentWithOptionalDependencies({
+test('Claude runtime install ignores inherited package-manager optional omission', () => {
+  const env = pnpmEnvironmentForRuntimeInstall({
     NPM_CONFIG_OMIT: 'optional',
     npm_config_optional: 'false',
+    PNPM_CONFIG_OMIT: 'optional',
     NPM_CONFIG_CACHE: '/tmp/agentree-npm-cache',
   });
   assert.equal(env.NPM_CONFIG_OMIT, undefined);
   assert.equal(env.npm_config_optional, undefined);
+  assert.equal(env.PNPM_CONFIG_OMIT, undefined);
   assert.equal(env.NPM_CONFIG_CACHE, '/tmp/agentree-npm-cache');
 });
 

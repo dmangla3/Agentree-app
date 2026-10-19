@@ -31,6 +31,8 @@ import { formatMessageTimestamp } from '../../../lib/messageTimestamp';
 import { getMessageBaseCommitSha } from '../../../lib/graph/commitAccessors';
 import { CopyCommitShaButton } from '../../CopyCommitShaButton';
 import type { MessageHighlightAnnotation } from '../../../stores/workspaceStore';
+import { TimelineErrorNotice } from '../../TimelineErrorNotice';
+import { dispatchOpenRuntimeHealth } from '../../../lib/loginNavigationEvents';
 
 const AgentChip = ({
   agentId,
@@ -569,19 +571,11 @@ function TimelineRows({
         if (row.kind === 'error') {
           if (!row.content) return null;
           return (
-            <div
+            <TimelineErrorNotice
               key={getTimelineRowReactKey(row, index, `${keyPrefix}-error`)}
-              className={cn(
-                "min-w-0 max-w-full border border-red-200/70 bg-red-50/60 px-3 py-2 text-[11px] text-red-900/90 dark:border-red-900/70 dark:bg-red-950/20 dark:text-red-200/90",
-                compact ? "rounded-lg" : "rounded-xl"
-              )}
-            >
-              <div className="mb-1 flex items-center gap-1.5 font-semibold uppercase tracking-wide">
-                <AlertTriangle size={12} />
-                <span>Error</span>
-              </div>
-              <p className="whitespace-pre-wrap break-words">{row.content}</p>
-            </div>
+              error={row.content}
+              compact={compact}
+            />
           );
         }
 
@@ -744,6 +738,14 @@ export const ChatAssistantCard = memo(({
   const failureReason = isNodeFailureStatus(displayStatus)
     ? getNodeFailureReason(executionData, providerErrorMessage ?? message?.content)
     : null;
+  const hasManagedRuntimeFailure = Boolean(
+    failureReason && (
+      providerErrorCode === 'codex_cli_missing'
+      || providerErrorCode === 'codex_spawn_failed'
+      || providerErrorCode === 'claude_runtime_missing'
+      || /Agentree's managed (?:Codex|Claude|Node).*runtime|Open Runtime Health/i.test(failureReason)
+    )
+  );
   const messageContent = message?.content ?? '';
   const contentIsFailurePayload = Boolean(
     failureReason && cleanNodeFailureReason(messageContent) === failureReason
@@ -968,6 +970,18 @@ export const ChatAssistantCard = memo(({
             <div className="mt-0.5 break-words text-red-900/90 dark:text-red-100/90">
               {failureReason}
             </div>
+            {hasManagedRuntimeFailure && (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  dispatchOpenRuntimeHealth();
+                }}
+                className="mt-1 inline-flex min-h-10 items-center rounded-md px-2 text-xs font-medium text-red-800 underline-offset-2 transition-[background-color,color,transform] hover:bg-red-100 hover:underline active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50 dark:text-red-200 dark:hover:bg-red-900/40"
+              >
+                Open Runtime Health
+              </button>
+            )}
           </div>
         </div>
       )}

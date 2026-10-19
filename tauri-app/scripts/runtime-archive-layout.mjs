@@ -10,18 +10,28 @@ export function claudeNativePackageName(npmOs, npmCpu) {
   return `@anthropic-ai/claude-agent-sdk-${platform}`;
 }
 
-export function claudeSdkNpmInstallArgs(version, npmOs, npmCpu) {
+function pnpmAddBaseArgs(pnpmOs, pnpmCpu) {
   return [
-    'install',
-    '--omit=dev',
-    '--include=optional',
-    '--no-audit',
-    '--no-fund',
+    'add',
+    '--prod',
     '--ignore-scripts',
-    `--os=${npmOs}`,
-    `--cpu=${npmCpu}`,
+    `--os=${pnpmOs}`,
+    `--cpu=${pnpmCpu}`,
     '--force',
+    '--save-exact',
+  ];
+}
+
+export function packagePnpmAddArgs(spec, pnpmOs, pnpmCpu) {
+  return [...pnpmAddBaseArgs(pnpmOs, pnpmCpu), spec];
+}
+
+export function claudeSdkPnpmAddArgs(version, pnpmOs, pnpmCpu) {
+  return [
+    ...pnpmAddBaseArgs(pnpmOs, pnpmCpu),
+    '--no-optional',
     `@anthropic-ai/claude-agent-sdk@${version}`,
+    `${claudeNativePackageName(pnpmOs, pnpmCpu)}@${version}`,
   ];
 }
 
@@ -36,14 +46,21 @@ export function validateClaudeSdkVersionAlignment(packageJson, runtimeManifest) 
   }
 }
 
-// Release shells can carry npm omit/optional settings from a user-level
-// .npmrc or environment. Preserve cache/proxy settings, but make the runtime
+// Release shells can carry npm/pnpm omit and optional settings from user-level
+// configuration. Preserve cache/proxy settings, but make the runtime
 // archive's native dependency policy deterministic.
-export function npmEnvironmentWithOptionalDependencies(baseEnv = process.env) {
+export function pnpmEnvironmentForRuntimeInstall(baseEnv = process.env) {
   const env = { ...baseEnv };
   for (const key of Object.keys(env)) {
     if (
-      ['npm_config_omit', 'npm_config_include', 'npm_config_optional'].includes(key.toLowerCase())
+      [
+        'npm_config_omit',
+        'npm_config_include',
+        'npm_config_optional',
+        'pnpm_config_omit',
+        'pnpm_config_include',
+        'pnpm_config_optional',
+      ].includes(key.toLowerCase())
     ) {
       delete env[key];
     }

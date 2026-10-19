@@ -511,7 +511,7 @@ fn run_sync_runner_with_events<T: for<'de> Deserialize<'de>>(
     worktree_config: &crate::worktree_config::AgentWorktreeConfig,
 ) -> Result<T, String> {
     add_codex_adapter_command_to_config(app, &mut config)?;
-    let mut command = Command::new("node");
+    let mut command = Command::new(crate::managed_runtime::node_program(app)?);
     command
         .arg(merge_review_script_path(app)?)
         .arg(config.to_string())
@@ -708,7 +708,7 @@ pub fn start_merge_review(
     });
     add_codex_adapter_command_to_config(&app, &mut config)?;
 
-    let mut command = Command::new("node");
+    let mut command = Command::new(crate::managed_runtime::node_program(&app)?);
     command
         .arg(merge_review_script_path(&app)?)
         .arg(config.to_string())

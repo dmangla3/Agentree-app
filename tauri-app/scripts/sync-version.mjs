@@ -19,7 +19,6 @@ const updateJsonVersion = (relativePath) => {
 };
 
 updateJsonVersion('package.json');
-updateJsonVersion('package-lock.json');
 updateJsonVersion(path.join('src-tauri', 'tauri.conf.json'));
 updateJsonVersion(path.join('src-tauri', 'tauri.dev.conf.json'));
 

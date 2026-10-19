@@ -26,14 +26,12 @@ import {
     isLoginProfileActive,
     isLoginProfileCompatibleWithProvider,
 } from '../lib/loginProfiles';
-import type { RuntimeReadiness } from '../lib/agentClient';
 
 interface UnifiedAgentModelSelectorProps {
     onSelectAgent: (agentId: string) => void;
     selectedAgentId: string | null;
     agentRunCounts?: Record<string, number>;
     onAgentRunCountChange?: (agentId: string, count: number) => void;
-    externalRuntimeReadinessByProvider?: Record<string, RuntimeReadiness | null>;
     excludedAgentIds?: readonly string[];
 }
 
@@ -253,7 +251,6 @@ export function UnifiedAgentModelSelector({
     selectedAgentId,
     agentRunCounts,
     onAgentRunCountChange,
-    externalRuntimeReadinessByProvider,
     excludedAgentIds,
 }: UnifiedAgentModelSelectorProps) {
     const { data: agentsData } = useAgents();
@@ -296,14 +293,10 @@ export function UnifiedAgentModelSelector({
     };
 
     const isProviderSelectable = (provider: string) => {
-        const compatible = loginProfiles.filter((profile) => isLoginProfileCompatibleWithProvider(profile, provider));
         const selectedProfile = getSelectedLoginProfileForProvider(provider);
         if (selectedProfile) return isLoginProfileActive(selectedProfile);
         if (hasActiveLoginProfileForProvider(loginProfiles, provider)) return true;
-        const fallbackReadiness = externalRuntimeReadinessByProvider?.[provider] ?? null;
-        const diagnostics = fallbackReadiness?.diagnostics as Record<string, unknown> | undefined;
-        const externallyReady = fallbackReadiness?.status === 'ready' && !diagnostics?.managedByAgentree;
-        return compatible.length === 0 && externallyReady;
+        return false;
     };
 
     const getModelAvailability = (agent: AgentWithMeta): ModelAvailability => {

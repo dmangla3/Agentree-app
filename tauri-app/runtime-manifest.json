@@ -1,6 +1,5 @@
 {
   "schema": 1,
-  "minCodexCliVersion": "0.144.1",
   "releaseBase": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime",
   "components": {
     "node": {

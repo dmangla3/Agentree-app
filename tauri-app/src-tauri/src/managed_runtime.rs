@@ -8,7 +8,6 @@
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
@@ -32,7 +31,6 @@ static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeManifest {
     pub schema: u32,
-    pub min_codex_cli_version: String,
     pub components: HashMap<String, RuntimeComponentSpec>,
 }
 
@@ -72,53 +70,12 @@ pub fn manifest() -> Result<&'static RuntimeManifest, String> {
     })
 }
 
-pub fn min_codex_cli_version() -> &'static str {
-    manifest()
-        .map(|manifest| manifest.min_codex_cli_version.as_str())
-        .unwrap_or("0.135.0")
-}
-
 pub fn current_platform_key() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => "linux-x86_64",
-        ("linux", "aarch64") => "linux-aarch64",
         ("macos", "aarch64") => "darwin-aarch64",
-        ("macos", "x86_64") => "darwin-x86_64",
-        ("windows", "x86_64") => "windows-x86_64",
         _ => "unsupported",
     }
-}
-
-/// Numeric dotted-version comparison ("0.139.0" vs "0.57.0"). Non-numeric
-/// segments compare as 0 so suffixes like "-beta" never panic.
-pub fn compare_dotted_versions(left: &str, right: &str) -> Ordering {
-    let parse = |value: &str| -> Vec<u64> {
-        value
-            .trim()
-            .trim_start_matches(|character: char| !character.is_ascii_digit())
-            .split('.')
-            .map(|segment| {
-                segment
-                    .chars()
-                    .take_while(char::is_ascii_digit)
-                    .collect::<String>()
-                    .parse::<u64>()
-                    .unwrap_or(0)
-            })
-            .collect()
-    };
-    let left_segments = parse(left);
-    let right_segments = parse(right);
-    let length = left_segments.len().max(right_segments.len());
-    for index in 0..length {
-        let left_value = left_segments.get(index).copied().unwrap_or(0);
-        let right_value = right_segments.get(index).copied().unwrap_or(0);
-        match left_value.cmp(&right_value) {
-            Ordering::Equal => continue,
-            other => return other,
-        }
-    }
-    Ordering::Equal
 }
 
 fn runtime_root(app: &AppHandle) -> Result<PathBuf, String> {
@@ -157,16 +114,19 @@ pub fn installed_component_dir(
 fn claude_native_executable_relative_path(platform: &str) -> Result<PathBuf, String> {
     let (package, executable) = match platform {
         "linux-x86_64" => ("claude-agent-sdk-linux-x64", "claude"),
-        "linux-aarch64" => ("claude-agent-sdk-linux-arm64", "claude"),
         "darwin-aarch64" => ("claude-agent-sdk-darwin-arm64", "claude"),
-        "darwin-x86_64" => ("claude-agent-sdk-darwin-x64", "claude"),
-        "windows-x86_64" => ("claude-agent-sdk-win32-x64", "claude.exe"),
         other => return Err(format!("Unsupported Claude runtime platform: {}", other)),
     };
     Ok(PathBuf::from("node_modules")
         .join("@anthropic-ai")
         .join(package)
         .join(executable))
+}
+
+pub fn claude_binary_path(install_dir: &Path) -> Result<PathBuf, String> {
+    Ok(install_dir.join(claude_native_executable_relative_path(
+        current_platform_key(),
+    )?))
 }
 
 fn validate_component_install_for_platform(
@@ -444,48 +404,12 @@ fn install_archive_from_reader_validated(
     Ok(())
 }
 
-/// Installs a managed component if it is published but not yet present, so
-/// spawned helpers (which cannot download — they have no AppHandle) find it
-/// instead of a possibly stale or absent PATH tool. Failures are logged, not
-/// fatal: PATH resolution remains the fallback.
-pub fn ensure_component_best_effort(app: &AppHandle, component: &str) {
-    let already_installed = installed_component_dir(app, component)
-        .ok()
-        .flatten()
-        .is_some();
-    if already_installed || !component_available_for_download(component) {
-        return;
-    }
-    if let Err(error) = ensure_component(app, component) {
-        crate::app_log!("[MANAGED_RUNTIME] {} install failed: {}", component, error);
-    }
-}
-
-/// Mirrors Tauri's app_data_dir for contexts without an AppHandle — the
-/// re-invoked codex adapter helper process resolves the managed runtime
-/// through this. Must match the `identifier` in tauri.conf.json.
-const APP_BUNDLE_IDENTIFIER: &str = "com.agentree.agentree";
-
-pub fn installed_component_dir_without_app(component: &str) -> Option<PathBuf> {
-    let spec = component_spec(component).ok()?;
-    let dir = dirs::data_dir()?
-        .join(APP_BUNDLE_IDENTIFIER)
-        .join("runtime")
-        .join(component)
-        .join(&spec.version);
-    if dir.join(INSTALL_MARKER).is_file() {
-        Some(dir)
-    } else {
-        None
-    }
-}
-
-/// Best node for spawning adapters: managed install first, then PATH.
-pub fn node_program(app: &AppHandle) -> String {
-    if let Ok(Some(dir)) = installed_component_dir(app, COMPONENT_NODE) {
-        return node_binary_path(&dir).to_string_lossy().into_owned();
-    }
-    crate::cli_path::find_on_tool_path("node").unwrap_or_else(|| "node".to_string())
+/// Returns Agentree's verified Node runtime, installing or repairing it when
+/// needed. A host-installed Node is deliberately never considered.
+pub fn node_program(app: &AppHandle) -> Result<String, String> {
+    ensure_component(app, COMPONENT_NODE)
+        .map(|dir| node_binary_path(&dir).to_string_lossy().into_owned())
+        .map_err(|error| managed_runtime_required_error("Node", error))
 }
 
 pub struct ClaudeAdapterInvocation {
@@ -495,69 +419,47 @@ pub struct ClaudeAdapterInvocation {
 
 /// Resolves how to run the Claude agent SDK adapter.
 ///
-/// Preferred: the managed SDK install (downloading it on first use when
-/// published), with the adapter script staged inside the install dir so its
+/// The managed SDK install is downloaded on first use, with the adapter script
+/// staged inside the install dir so its
 /// bare `import '@anthropic-ai/claude-agent-sdk'` resolves against the
 /// managed `node_modules` — NODE_PATH does not apply to ES modules, so the
-/// script must live next to them. Fallback: the bundled/resource script with
-/// walk-up resolution, which works in dev (repo node_modules) and otherwise
-/// fails with a `claude_runtime_missing` error the doctor can explain.
+/// script must live next to them. Host Node and host SDK installations are
+/// deliberately never considered.
 pub fn claude_adapter_invocation(app: &AppHandle) -> Result<ClaudeAdapterInvocation, String> {
     let resource_script =
         crate::runtime_scripts::runtime_script_path(app, "claude-agent-sdk-adapter.mjs")?;
     let resource_ai_label_prompt =
         crate::runtime_scripts::runtime_script_path(app, "ai-label-prompt.txt")?;
 
-    let sdk_dir = match installed_component_dir(app, COMPONENT_CLAUDE_SDK)? {
-        Some(dir) => Some(dir),
-        None if component_available_for_download(COMPONENT_CLAUDE_SDK) => {
-            match ensure_component(app, COMPONENT_CLAUDE_SDK) {
-                Ok(dir) => Some(dir),
-                Err(error) => {
-                    crate::app_log!("[MANAGED_RUNTIME] claude-sdk install failed: {}", error);
-                    None
-                }
-            }
-        }
-        None => None,
-    };
-
-    if let Some(sdk_dir) = sdk_dir {
-        let staged_script = sdk_dir.join("claude-agent-sdk-adapter.mjs");
-        let staged_ai_label_prompt = sdk_dir.join("ai-label-prompt.txt");
-        fs::copy(&resource_script, &staged_script).map_err(|error| {
-            format!(
-                "Could not stage Claude adapter into {}: {}",
-                sdk_dir.display(),
-                error
-            )
-        })?;
-        fs::copy(&resource_ai_label_prompt, &staged_ai_label_prompt).map_err(|error| {
-            format!(
-                "Could not stage Claude adapter prompt into {}: {}",
-                sdk_dir.display(),
-                error
-            )
-        })?;
-        let node_program = match installed_component_dir(app, COMPONENT_NODE)? {
-            Some(dir) => node_binary_path(&dir),
-            None if component_available_for_download(COMPONENT_NODE) => {
-                node_binary_path(&ensure_component(app, COMPONENT_NODE)?)
-            }
-            None => PathBuf::from(
-                crate::cli_path::find_on_tool_path("node").unwrap_or_else(|| "node".to_string()),
-            ),
-        };
-        return Ok(ClaudeAdapterInvocation {
-            node_program: node_program.to_string_lossy().into_owned(),
-            adapter_script: staged_script,
-        });
-    }
-
+    let sdk_dir = ensure_component(app, COMPONENT_CLAUDE_SDK)
+        .map_err(|error| managed_runtime_required_error("Claude SDK", error))?;
+    let staged_script = sdk_dir.join("claude-agent-sdk-adapter.mjs");
+    let staged_ai_label_prompt = sdk_dir.join("ai-label-prompt.txt");
+    fs::copy(&resource_script, &staged_script).map_err(|error| {
+        format!(
+            "Could not stage Claude adapter into {}: {}",
+            sdk_dir.display(),
+            error
+        )
+    })?;
+    fs::copy(&resource_ai_label_prompt, &staged_ai_label_prompt).map_err(|error| {
+        format!(
+            "Could not stage Claude adapter prompt into {}: {}",
+            sdk_dir.display(),
+            error
+        )
+    })?;
     Ok(ClaudeAdapterInvocation {
-        node_program: node_program(app),
-        adapter_script: resource_script,
+        node_program: node_program(app)?,
+        adapter_script: staged_script,
     })
+}
+
+fn managed_runtime_required_error(label: &str, error: String) -> String {
+    format!(
+        "Agentree's managed {} runtime could not be installed or repaired: {} Open Runtime Health and retry.",
+        label, error
+    )
 }
 
 pub fn node_binary_path(install_dir: &Path) -> PathBuf {
@@ -574,11 +476,6 @@ pub fn codex_binary_path(install_dir: &Path) -> PathBuf {
     } else {
         install_dir.join("bin").join("codex")
     }
-}
-
-/// The claude-sdk archive unpacks to `node_modules/...` at its root.
-pub fn claude_sdk_node_modules(install_dir: &Path) -> PathBuf {
-    install_dir.join("node_modules")
 }
 
 /// True for macOS AppleDouble sidecar files (`._name`) and `.DS_Store`. Runtime
@@ -656,22 +553,6 @@ mod tests {
             assert!(spec.platforms.contains_key("linux-x86_64"));
             assert!(spec.platforms.contains_key("darwin-aarch64"));
         }
-        assert!(!manifest.min_codex_cli_version.is_empty());
-    }
-
-    #[test]
-    fn dotted_version_comparison_orders_numerically() {
-        assert_eq!(
-            compare_dotted_versions("0.139.0", "0.57.0"),
-            Ordering::Greater
-        );
-        assert_eq!(compare_dotted_versions("0.57.0", "0.135.0"), Ordering::Less);
-        assert_eq!(compare_dotted_versions("1.2.3", "1.2.3"), Ordering::Equal);
-        assert_eq!(compare_dotted_versions("1.10", "1.9.9"), Ordering::Greater);
-        assert_eq!(
-            compare_dotted_versions("codex-cli 0.139.0", "0.135.0"),
-            Ordering::Greater
-        );
     }
 
     #[test]
@@ -784,12 +665,8 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        validate_component_install_for_platform(
-            COMPONENT_CLAUDE_SDK,
-            &install_dir,
-            "linux-x86_64",
-        )
-        .expect("wrapper plus native executable should be complete");
+        validate_component_install_for_platform(COMPONENT_CLAUDE_SDK, &install_dir, "linux-x86_64")
+            .expect("wrapper plus native executable should be complete");
     }
 
     #[test]

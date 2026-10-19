@@ -27,7 +27,15 @@ pub struct RuntimeCommand {
 }
 
 pub fn codex_adapter_command(app: &AppHandle) -> Result<RuntimeCommand, String> {
-    let _ = app;
+    let install_dir =
+        crate::managed_runtime::ensure_component(app, crate::managed_runtime::COMPONENT_CODEX)
+            .map_err(|error| {
+                format!(
+                    "Agentree's managed Codex runtime could not be installed or repaired: {} Open Runtime Health and retry.",
+                    error
+                )
+            })?;
+    let codex_bin = crate::managed_runtime::codex_binary_path(&install_dir);
     let current_exe = std::env::current_exe().map_err(|error| {
         format!(
             "Could not resolve Agentree executable for Codex adapter: {}",
@@ -36,7 +44,11 @@ pub fn codex_adapter_command(app: &AppHandle) -> Result<RuntimeCommand, String> 
     })?;
     Ok(RuntimeCommand {
         program: current_exe.to_string_lossy().into_owned(),
-        args_prefix: vec![crate::codex_adapter::helper_arg().to_string()],
+        args_prefix: vec![
+            crate::codex_adapter::helper_arg().to_string(),
+            crate::codex_adapter::managed_codex_bin_arg().to_string(),
+            codex_bin.to_string_lossy().into_owned(),
+        ],
     })
 }
 

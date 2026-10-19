@@ -6,6 +6,7 @@ import {
     Summary,
     AttachmentMetadata,
     CommitEntity,
+    MessageHighlightAnnotation,
     MessageHighlightColor,
     MessageHighlightRange,
     useWorkspaceStore,
@@ -14,7 +15,7 @@ import axios from 'axios';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 import { scheduleMessagesRefreshWhenGraphIdle } from '../lib/graphInteractionGate';
 import { agentClient } from '../lib/agentClient';
-import { localNodeKeys, parseLocalNode } from './useLocalNodes';
+import { localNodeKeys, parseLocalNode, type LocalNodeMessage } from './useLocalNodes';
 import { applyLocalNodeMessages } from './useLiveMessages';
 import { useRunStatusStore } from '../stores/runStatusStore';
 import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
@@ -23,6 +24,7 @@ import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
 import {
     addOrUpdateMessageHighlight,
     createMessageHighlight,
+    getMessageHighlights,
     removeMessageHighlight,
     updateMessageHighlightColor,
 } from '../lib/messageHighlights';
@@ -35,25 +37,59 @@ const patchMessageInCache = (
     patch: (message: Message) => Message,
     options: { persistLocal?: boolean } = {},
 ) => {
-    let patchedMessage: Message | null = null;
+    const patchResult: { message?: Message } = {};
     queryClient.setQueryData<Message[]>(['messages', workspaceId], (current) => {
         if (!current) return current;
         return current.map((message) => {
             if (message.id !== messageId) return message;
-            patchedMessage = patch(message);
+            const patchedMessage = patch(message);
+            patchResult.message = patchedMessage;
             return patchedMessage;
         });
     });
 
-    if (!patchedMessage) return;
+    const messageForLocalCache = patchResult.message;
+    if (!messageForLocalCache) return;
+    if (agentClient.hasRuntime()) {
+        queryClient.setQueryData<LocalNodeMessage[]>(
+            localNodeKeys.workspace(workspaceId),
+            (current) => {
+                if (!current) return current;
+                let didPatch = false;
+                const next = current.map((row) => {
+                    if (row.nodeId !== messageId) return row;
+                    didPatch = true;
+                    return {
+                        ...row,
+                        message: {
+                            ...row.message,
+                            ...messageForLocalCache,
+                        },
+                    };
+                });
+                return didPatch ? next : current;
+            }
+        );
+    }
     if (options.persistLocal !== false && agentClient.hasRuntime()) {
         void agentClient
-            .upsertLocalNode(workspaceId, messageId, patchedMessage)
+            .upsertLocalNode(workspaceId, messageId, messageForLocalCache)
             .finally(() => {
                 queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(workspaceId) });
                 markMessagesStaleOnly(queryClient, workspaceId, 'local-message-patch');
             });
     }
+};
+
+const rollbackHighlightMutation = (
+    queryClient: ReturnType<typeof useQueryClient>,
+    workspaceId: string,
+    messageId: string,
+    rollback: (message: Message) => Message,
+) => {
+    patchMessageInCache(queryClient, workspaceId, messageId, rollback, { persistLocal: false });
+    void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(workspaceId) });
+    markMessagesStaleOnly(queryClient, workspaceId, 'highlight-mutation-rollback');
 };
 
 const markMessagesStaleOnly = (
@@ -664,18 +700,20 @@ export const useDeleteComment = () => {
 export const useAddHighlight = () => {
     const queryClient = useQueryClient();
     return useMutation({
-        mutationFn: async ({
-            workspaceId,
-            messageId,
-            color,
-            range,
-        }: {
+        mutationFn: async (variables: {
             workspaceId: string;
             messageId: string;
             color: MessageHighlightColor;
             range: MessageHighlightRange;
+            highlight?: MessageHighlightAnnotation;
         }) => {
-            const highlight = createMessageHighlight({ color, range });
+            const {
+                workspaceId,
+                messageId,
+                color,
+                range,
+            } = variables;
+            const highlight = variables.highlight ?? createMessageHighlight({ color, range });
             const message = await messageApplication.updateHighlight({
                 workspaceId,
                 messageId,
@@ -684,6 +722,36 @@ export const useAddHighlight = () => {
             });
             queueLocalSyncFlush({ reason: 'message-highlight-added' });
             return { message, highlight };
+        },
+        onMutate: async (variables) => {
+            await queryClient.cancelQueries({ queryKey: ['messages', variables.workspaceId] });
+            await queryClient.cancelQueries({ queryKey: localNodeKeys.workspace(variables.workspaceId) });
+            const highlight = variables.highlight ?? createMessageHighlight({
+                color: variables.color,
+                range: variables.range,
+            });
+            variables.highlight = highlight;
+            patchMessageInCache(queryClient, variables.workspaceId, variables.messageId, (message) => ({
+                ...message,
+                annotations: addOrUpdateMessageHighlight(message.annotations, highlight),
+                updatedAt: highlight.updatedAt,
+            }), { persistLocal: false });
+            return {
+                rollback: (message: Message) => ({
+                    ...message,
+                    annotations: removeMessageHighlight(message.annotations, highlight.id),
+                }),
+            };
+        },
+        onError: (_error, variables, context) => {
+            if (context?.rollback) {
+                rollbackHighlightMutation(
+                    queryClient,
+                    variables.workspaceId,
+                    variables.messageId,
+                    context.rollback,
+                );
+            }
         },
         onSuccess: (data, variables) => {
             patchMessageInCache(queryClient, variables.workspaceId, variables.messageId, (message) => ({
@@ -723,6 +791,49 @@ export const useUpdateHighlight = () => {
             queueLocalSyncFlush({ reason: 'message-highlight-updated' });
             return message;
         },
+        onMutate: async (variables) => {
+            await queryClient.cancelQueries({ queryKey: ['messages', variables.workspaceId] });
+            await queryClient.cancelQueries({ queryKey: localNodeKeys.workspace(variables.workspaceId) });
+            const currentMessage = queryClient
+                .getQueryData<Message[]>(['messages', variables.workspaceId])
+                ?.find((message) => message.id === variables.messageId);
+            const previousHighlight = getMessageHighlights(currentMessage)
+                .find((highlight) => highlight.id === variables.highlightId);
+            const optimisticUpdatedAt = new Date().toISOString();
+            patchMessageInCache(queryClient, variables.workspaceId, variables.messageId, (message) => ({
+                ...message,
+                annotations: updateMessageHighlightColor(
+                    message.annotations,
+                    variables.highlightId,
+                    variables.color,
+                    optimisticUpdatedAt,
+                ),
+                updatedAt: optimisticUpdatedAt,
+            }), { persistLocal: false });
+            return {
+                rollback: (message: Message) => {
+                    const currentHighlight = getMessageHighlights(message)
+                        .find((highlight) => highlight.id === variables.highlightId);
+                    if (!previousHighlight || currentHighlight?.updatedAt !== optimisticUpdatedAt) {
+                        return message;
+                    }
+                    return {
+                        ...message,
+                        annotations: addOrUpdateMessageHighlight(message.annotations, previousHighlight),
+                    };
+                },
+            };
+        },
+        onError: (_error, variables, context) => {
+            if (context?.rollback) {
+                rollbackHighlightMutation(
+                    queryClient,
+                    variables.workspaceId,
+                    variables.messageId,
+                    context.rollback,
+                );
+            }
+        },
         onSuccess: (updatedMessage, variables) => {
             patchMessageInCache(queryClient, variables.workspaceId, variables.messageId, (message) => ({
                 ...message,
@@ -757,6 +868,46 @@ export const useDeleteHighlight = () => {
             });
             queueLocalSyncFlush({ reason: 'message-highlight-deleted' });
             return message;
+        },
+        onMutate: async (variables) => {
+            await queryClient.cancelQueries({ queryKey: ['messages', variables.workspaceId] });
+            await queryClient.cancelQueries({ queryKey: localNodeKeys.workspace(variables.workspaceId) });
+            const currentMessage = queryClient
+                .getQueryData<Message[]>(['messages', variables.workspaceId])
+                ?.find((message) => message.id === variables.messageId);
+            const deletedHighlight = getMessageHighlights(currentMessage)
+                .find((highlight) => highlight.id === variables.highlightId);
+            patchMessageInCache(queryClient, variables.workspaceId, variables.messageId, (message) => ({
+                ...message,
+                annotations: removeMessageHighlight(message.annotations, variables.highlightId),
+                updatedAt: new Date().toISOString(),
+            }), { persistLocal: false });
+            return {
+                rollback: (message: Message) => {
+                    if (
+                        !deletedHighlight
+                        || getMessageHighlights(message).some(
+                            (highlight) => highlight.id === variables.highlightId
+                        )
+                    ) {
+                        return message;
+                    }
+                    return {
+                        ...message,
+                        annotations: addOrUpdateMessageHighlight(message.annotations, deletedHighlight),
+                    };
+                },
+            };
+        },
+        onError: (_error, variables, context) => {
+            if (context?.rollback) {
+                rollbackHighlightMutation(
+                    queryClient,
+                    variables.workspaceId,
+                    variables.messageId,
+                    context.rollback,
+                );
+            }
         },
         onSuccess: (updatedMessage, variables) => {
             patchMessageInCache(queryClient, variables.workspaceId, variables.messageId, (message) => ({

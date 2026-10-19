@@ -16,8 +16,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import {
-  claudeSdkNpmInstallArgs,
-  npmEnvironmentWithOptionalDependencies,
+  claudeSdkPnpmAddArgs,
+  packagePnpmAddArgs,
+  pnpmEnvironmentForRuntimeInstall,
   validateClaudeSdkInstall,
   validateClaudeSdkVersionAlignment,
 } from './runtime-archive-layout.mjs';
@@ -29,7 +30,6 @@ const outputDir = path.join(projectRoot, 'src-tauri', 'target', 'runtime-archive
 const PLATFORMS = {
   'linux-x86_64': {
     nodeDist: 'linux-x64',
-    claudePackageSuffix: 'linux-x64',
     codexVersionSuffix: 'linux-x64',
     codexTriple: 'x86_64-unknown-linux-musl',
     npmOs: 'linux',
@@ -37,7 +37,6 @@ const PLATFORMS = {
   },
   'darwin-aarch64': {
     nodeDist: 'darwin-arm64',
-    claudePackageSuffix: 'darwin-arm64',
     codexVersionSuffix: 'darwin-arm64',
     codexTriple: 'aarch64-apple-darwin',
     npmOs: 'darwin',
@@ -114,7 +113,7 @@ function buildNodeArchive(version, platformKey, destination) {
     downloadTo(`https://nodejs.org/dist/v${version}/node-v${version}-${dist}.tar.gz`, tarball);
     run('tar', ['-xzf', tarball, '-C', tempDir]);
     const extracted = path.join(tempDir, `node-v${version}-${dist}`);
-    // Only the node binary is needed; npm/corepack/docs would triple the size.
+    // Only the node binary is needed; package-manager tooling and docs would triple the size.
     const staging = path.join(tempDir, 'staging');
     fs.mkdirSync(path.join(staging, 'bin'), { recursive: true });
     fs.copyFileSync(path.join(extracted, 'bin', 'node'), path.join(staging, 'bin', 'node'));
@@ -124,28 +123,16 @@ function buildNodeArchive(version, platformKey, destination) {
 }
 
 function buildClaudeSdkArchive(version, platformKey, destination) {
-  const { claudePackageSuffix, npmOs, npmCpu } = PLATFORMS[platformKey];
+  const { npmOs, npmCpu } = PLATFORMS[platformKey];
   withTempDir('agentree-claude-sdk-', (tempDir) => {
     fs.writeFileSync(
       path.join(tempDir, 'package.json'),
       JSON.stringify({ name: 'agentree-claude-runtime', private: true }, null, 2)
     );
-    run('npm', claudeSdkNpmInstallArgs(version, npmOs, npmCpu), {
+    run('pnpm', claudeSdkPnpmAddArgs(version, npmOs, npmCpu), {
       cwd: tempDir,
-      env: npmEnvironmentWithOptionalDependencies(),
+      env: pnpmEnvironmentForRuntimeInstall(),
     });
-    const nativePackageName = `claude-agent-sdk-${claudePackageSuffix}`;
-    const nativeSpec = `@anthropic-ai/${nativePackageName}@${version}`;
-    const packed = run('npm', ['pack', nativeSpec, '--pack-destination', tempDir])
-      .trim()
-      .split('\n')
-      .pop();
-    const nativeDir = path.join(tempDir, 'node_modules', '@anthropic-ai', nativePackageName);
-    fs.mkdirSync(nativeDir, { recursive: true });
-    run('tar', ['-xzf', path.join(tempDir, packed), '-C', nativeDir, '--strip-components=1']);
-    if (!fs.existsSync(path.join(nativeDir, 'claude'))) {
-      throw new Error(`Claude native binary missing in ${nativeSpec}`);
-    }
     validateClaudeSdkInstall(path.join(tempDir, 'node_modules'), { version, npmOs, npmCpu });
     const staging = path.join(tempDir, 'staging');
     fs.mkdirSync(staging, { recursive: true });
@@ -176,13 +163,13 @@ function buildCodexArchive(version, platformKey, destination) {
   // e.g. @openai/codex@0.139.0-linux-x64.
   const spec = `@openai/codex@${version}-${codexVersionSuffix}`;
   withTempDir('agentree-codex-', (tempDir) => {
-    // npm pack downloads the platform tarball without os/cpu install checks.
-    const packed = run('npm', ['pack', spec, '--pack-destination', tempDir])
-      .trim()
-      .split('\n')
-      .pop();
-    run('tar', ['-xzf', path.join(tempDir, packed), '-C', tempDir]);
-    const vendorRoot = path.join(tempDir, 'package', 'vendor', codexTriple);
+    fs.writeFileSync(
+      path.join(tempDir, 'package.json'),
+      JSON.stringify({ name: 'agentree-codex-runtime', private: true }, null, 2)
+    );
+    const { npmOs, npmCpu } = PLATFORMS[platformKey];
+    run('pnpm', packagePnpmAddArgs(spec, npmOs, npmCpu), { cwd: tempDir });
+    const vendorRoot = path.join(tempDir, 'node_modules', '@openai', 'codex', 'vendor', codexTriple);
     if (!fs.existsSync(path.join(vendorRoot, 'bin', 'codex'))) {
       throw new Error(`codex binary missing in ${spec} at ${vendorRoot}`);
     }

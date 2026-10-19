@@ -75,7 +75,7 @@ const parseProcessInventory = (text) => {
       packaged.push({ pid, command });
     } else if (/(^| )target\/debug\/agentree$/.test(command)) {
       devRuntime.push({ pid, command });
-    } else if (/npm run dev|npm run tauri dev|node .*tauri-cli\.mjs dev|node .*tauri dev/.test(command)) {
+    } else if (/pnpm run dev|pnpm run tauri dev|node .*tauri-cli\.mjs dev|node .*tauri dev/.test(command)) {
       tauriDev.push({ pid, command });
     }
   }

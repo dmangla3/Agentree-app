@@ -32,7 +32,7 @@ const preflight = async () => {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .filter((line) => /target\/debug\/agentree|npm run dev|npm run tauri -- dev|npm run tauri dev|tauri dev/.test(line))
+    .filter((line) => /target\/debug\/agentree|pnpm run dev|pnpm run tauri -- dev|pnpm run tauri dev|tauri dev/.test(line))
     .filter((line) => !line.includes('tests/pilot/run-dev-and-smoke.mjs'));
   if (matching.length > 0) {
     throw new Error(`Close existing Agentree dev processes before running Pilot test:\n${matching.join('\n')}`);
@@ -81,7 +81,7 @@ const run = (cmd, args, options = {}) => new Promise((resolve, reject) => {
 const main = async () => {
   await preflight();
 
-  const dev = spawn('npm', ['run', 'dev'], {
+  const dev = spawn('pnpm', ['run', 'dev'], {
     cwd: process.cwd(),
     stdio: 'inherit',
     env: {

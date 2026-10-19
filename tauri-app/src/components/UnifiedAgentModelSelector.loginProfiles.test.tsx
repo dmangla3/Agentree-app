@@ -295,7 +295,7 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
     expect(getAllByText('Login to Claude').length).toBeGreaterThan(0);
   });
 
-  it('falls back to external runtime readiness when no managed profile exists', () => {
+  it('does not select a provider when no managed profile exists', () => {
     profileState.profiles = [];
     const onSelectAgent = vi.fn();
 
@@ -303,15 +303,11 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
       <UnifiedAgentModelSelector
         selectedAgentId={null}
         onSelectAgent={onSelectAgent}
-        externalRuntimeReadinessByProvider={{
-          codex: { provider: 'codex', status: 'ready', message: 'Codex ready', diagnostics: {} } as any,
-        }}
       />
     );
     fireEvent.click(getAllByText('GPT-5.5')[0]);
-    fireEvent.click(getAllByText('High')[0]);
 
-    expect(onSelectAgent).toHaveBeenCalledWith('codex:gpt-5.5:high');
+    expect(onSelectAgent).not.toHaveBeenCalled();
   });
 
   it('delays switching families while the pointer is moving diagonally toward the effort panel', () => {
