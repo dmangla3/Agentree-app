@@ -350,6 +350,13 @@ export function agentreeMcpServersFromEnv(env = process.env) {
   };
 }
 
+export function claudeCustomizationOptions() {
+  return {
+    settingSources: ['user', 'project', 'local'],
+    strictMcpConfig: false,
+  };
+}
+
 function parseArgs(argv) {
   const parsed = {
     readinessCheck: false,
@@ -1026,6 +1033,7 @@ async function main() {
     ...(args.model ? { model: args.model } : {}),
     ...(args.effort ? { effort: args.effort, thinking: { type: 'adaptive' } } : {}),
     ...permissionOptions,
+    ...claudeCustomizationOptions(),
     ...(mcpServers ? { mcpServers } : {}),
     ...(process.cwd() ? { additionalDirectories: [process.cwd()] } : {}),
     ...(shouldResume ? {

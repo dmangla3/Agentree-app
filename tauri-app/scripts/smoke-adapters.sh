@@ -60,8 +60,10 @@ done
 
 node_bin="$(echo "$data_root"/node/*/bin/node)"
 sdk_dir="$(echo "$data_root"/claude-sdk/*)"
+codex_bin="$(echo "$data_root"/codex/*/bin/codex)"
 adapter_resource="$resources_dir/scripts/claude-agent-sdk-adapter.mjs"
 [[ -x "$node_bin" ]] || { echo "error: managed node missing at $node_bin" >&2; exit 1; }
+[[ -x "$codex_bin" ]] || { echo "error: managed codex missing at $codex_bin" >&2; exit 1; }
 [[ -f "$adapter_resource" ]] || { echo "error: bundled adapter missing at $adapter_resource" >&2; exit 1; }
 
 run_scrubbed() {
@@ -91,7 +93,10 @@ if ! echo "$claude_out" | grep -qE "Invalid bearer token|authentication_error|AP
 fi
 
 echo "==> Codex helper smoke (scrubbed env, managed codex)"
-codex_out="$(run_scrubbed "$app_binary" --agentree-codex-adapter --readiness-check 2>&1)"
+codex_out="$(run_scrubbed "$app_binary" \
+  --agentree-codex-adapter \
+  --agentree-managed-codex-bin "$codex_bin" \
+  --readiness-check 2>&1)"
 echo "$codex_out" | head -1 | cut -c1-300
 if ! echo "$codex_out" | grep -q '"codexBin"'; then
   echo "error: codex readiness check produced no codexBin diagnostics" >&2

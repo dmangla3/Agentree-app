@@ -21,6 +21,7 @@ const ReactQueryDevtools = lazy(() =>
     default: module.ReactQueryDevtools,
   })),
 );
+const devAuthBypass = import.meta.env.VITE_DEV_AUTH_BYPASS === 'true';
 
 const scheduleAnalyticsInit = () => {
   const initialize = () => {
@@ -96,13 +97,15 @@ const initializeDeepLinkHandlers = async () => {
   await initAgentreeDeepLinkHandler().catch((error) => {
     console.error('[DeepLink] Failed to initialize Agentree deep-link handler:', error);
   });
-  await initKindeDeepLinkHandler().catch((error) => {
-    console.error('[Auth] Failed to initialize Kinde deep-link handler:', error);
-    recordPerfEvent('main.bootstrap.deep-link.error', {
-      elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
-      message: error instanceof Error ? error.message : String(error),
-    }, { source: 'main.tsx' });
-  });
+  if (!devAuthBypass) {
+    await initKindeDeepLinkHandler().catch((error) => {
+      console.error('[Auth] Failed to initialize Kinde deep-link handler:', error);
+      recordPerfEvent('main.bootstrap.deep-link.error', {
+        elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
+        message: error instanceof Error ? error.message : String(error),
+      }, { source: 'main.tsx' });
+    });
+  }
   recordPerfEvent('main.bootstrap.deep-link.ready', {
     elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
   }, {
@@ -117,9 +120,11 @@ const bootstrap = () => {
     elapsedSinceAppStartMs: getElapsedSinceAppStartMs(),
   }, { source: 'main.tsx' });
 
-  const desktopSessionRestore = restoreDesktopCloudSession().catch((error) => {
-    console.error('[Auth] Failed to restore desktop cloud session:', error);
-  });
+  const desktopSessionRestore = devAuthBypass
+    ? Promise.resolve()
+    : restoreDesktopCloudSession().catch((error) => {
+        console.error('[Auth] Failed to restore desktop cloud session:', error);
+      });
 
   const kindeRedirectUri = getKindeRedirectUri();
   const kindeLogoutUri = import.meta.env.VITE_KINDE_LOGOUT_URI || kindeRedirectUri;

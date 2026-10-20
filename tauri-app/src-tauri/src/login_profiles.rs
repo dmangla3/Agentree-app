@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::db::TelemetryDb;
 
+#[cfg(not(debug_assertions))]
 const KEYCHAIN_SERVICE: &str = "com.agentree.agentree.login-profiles";
 const READINESS_CHECK_TIMEOUT: Duration = Duration::from_secs(12);
 const READINESS_CACHE_TTL_SECS: i64 = 5 * 60;
@@ -132,6 +133,7 @@ struct PendingClaudeOAuthLogin {
 
 static PENDING_CLAUDE_OAUTH_LOGINS: OnceLock<Mutex<HashMap<String, PendingClaudeOAuthLogin>>> =
     OnceLock::new();
+static CODEX_PROFILE_SYNC_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub trait CredentialVault {
     fn set_secret(&self, account: &str, secret: &str) -> Result<(), String>;
@@ -141,11 +143,8 @@ pub trait CredentialVault {
 
 pub struct KeyringCredentialVault;
 
-fn file_secret_path(account: &str) -> Result<PathBuf, String> {
-    let data_dir = dirs::data_dir()
-        .or_else(dirs::data_local_dir)
-        .ok_or_else(|| "could not resolve app data directory".to_string())?;
-    let safe_account = account
+fn safe_secret_account(account: &str) -> String {
+    account
         .chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
@@ -154,13 +153,77 @@ fn file_secret_path(account: &str) -> Result<PathBuf, String> {
                 '_'
             }
         })
-        .collect::<String>();
+        .collect()
+}
+
+#[cfg(any(not(debug_assertions), test))]
+fn file_secret_path(account: &str) -> Result<PathBuf, String> {
+    let data_dir = dirs::data_dir()
+        .or_else(dirs::data_local_dir)
+        .ok_or_else(|| "could not resolve app data directory".to_string())?;
     Ok(data_dir
         .join("com.agentree.agentree")
         .join("login-profile-secrets")
-        .join(safe_account))
+        .join(safe_secret_account(account)))
 }
 
+#[cfg(debug_assertions)]
+fn debug_file_secret_path(account: &str) -> Result<PathBuf, String> {
+    let data_dir = dirs::data_dir()
+        .or_else(dirs::data_local_dir)
+        .ok_or_else(|| "could not resolve app data directory".to_string())?;
+    Ok(data_dir
+        .join("com.agentree.agentree.dev")
+        .join("login-profile-secrets")
+        .join(safe_secret_account(account)))
+}
+
+#[cfg(any(debug_assertions, test))]
+fn read_optional_file_secret(path: &Path) -> Result<Option<String>, String> {
+    match fs::read_to_string(path) {
+        Ok(secret) => Ok(Some(secret)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "Could not access login profile credentials: {}",
+            error
+        )),
+    }
+}
+
+#[cfg(any(debug_assertions, test))]
+fn write_private_secret_file(path: &Path, secret: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "could not resolve login profile secret directory".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("failed to create login profile secret directory: {}", error))?;
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("failed to protect login profile credentials: {}", error))?;
+    }
+    temporary
+        .write_all(secret.as_bytes())
+        .map_err(|error| format!("failed to write login profile credentials: {}", error))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| format!("failed to sync login profile credentials: {}", error))?;
+    temporary.persist(path).map_err(|error| {
+        format!(
+            "failed to persist login profile credentials: {}",
+            error.error
+        )
+    })?;
+    Ok(())
+}
+
+#[cfg(any(not(debug_assertions), test))]
 fn read_file_secret(account: &str) -> Result<String, String> {
     let path = file_secret_path(account)?;
     fs::read_to_string(&path).map_err(|error| match error.kind() {
@@ -172,6 +235,7 @@ fn read_file_secret(account: &str) -> Result<String, String> {
     })
 }
 
+#[cfg(not(debug_assertions))]
 fn delete_file_secret(account: &str) -> Result<(), String> {
     let path = file_secret_path(account)?;
     match fs::remove_file(&path) {
@@ -187,42 +251,74 @@ fn delete_file_secret(account: &str) -> Result<(), String> {
 
 impl CredentialVault for KeyringCredentialVault {
     fn set_secret(&self, account: &str, secret: &str) -> Result<(), String> {
-        let entry = crate::secure_store::open_entry(KEYCHAIN_SERVICE, account)?;
-        crate::secure_store::set_password(&entry, secret)?;
-        delete_file_secret(account)
+        #[cfg(debug_assertions)]
+        {
+            write_private_secret_file(&debug_file_secret_path(account)?, secret)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let entry = crate::secure_store::open_entry(KEYCHAIN_SERVICE, account)?;
+            crate::secure_store::set_password(&entry, secret)?;
+            delete_file_secret(account)
+        }
     }
 
     fn get_secret(&self, account: &str) -> Result<String, String> {
-        let entry = crate::secure_store::open_entry(KEYCHAIN_SERVICE, account)?;
-        match entry.get_password() {
-            Ok(secret) => {
-                delete_file_secret(account)?;
-                Ok(secret)
+        #[cfg(debug_assertions)]
+        {
+            read_optional_file_secret(&debug_file_secret_path(account)?)?.ok_or_else(|| {
+                "Login profile credentials are missing. Reconnect this profile in Logins and try again."
+                    .to_string()
+            })
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let entry = crate::secure_store::open_entry(KEYCHAIN_SERVICE, account)?;
+            match entry.get_password() {
+                Ok(secret) => {
+                    delete_file_secret(account)?;
+                    Ok(secret)
+                }
+                Err(keyring::Error::NoEntry) => {
+                    let secret = read_file_secret(account)?;
+                    crate::secure_store::set_password(&entry, &secret)?;
+                    delete_file_secret(account)?;
+                    Ok(secret)
+                }
+                Err(error) => Err(error.to_string()),
             }
-            Err(keyring::Error::NoEntry) => {
-                let secret = read_file_secret(account)?;
-                crate::secure_store::set_password(&entry, &secret)?;
-                delete_file_secret(account)?;
-                Ok(secret)
-            }
-            Err(error) => Err(error.to_string()),
         }
     }
 
     fn delete_secret(&self, account: &str) -> Result<(), String> {
-        let entry = crate::secure_store::open_entry(KEYCHAIN_SERVICE, account)?;
-        let keyring_result = match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) => Err(error.to_string()),
-        };
-        let file_result = delete_file_secret(account);
-        match (keyring_result, file_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(keyring_error), Err(file_error)) => Err(format!(
-                "{}; also failed to delete legacy credential file: {}",
-                keyring_error, file_error
-            )),
+        #[cfg(debug_assertions)]
+        {
+            let path = debug_file_secret_path(account)?;
+            match fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!(
+                    "failed to delete development login profile credentials: {}",
+                    error
+                )),
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let entry = crate::secure_store::open_entry(KEYCHAIN_SERVICE, account)?;
+            let keyring_result = match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(error) => Err(error.to_string()),
+            };
+            let file_result = delete_file_secret(account);
+            match (keyring_result, file_result) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Err(keyring_error), Err(file_error)) => Err(format!(
+                    "{}; also failed to delete legacy credential file: {}",
+                    keyring_error, file_error
+                )),
+            }
         }
     }
 }
@@ -250,6 +346,11 @@ fn unix_timestamp() -> i64 {
 
 fn is_supported_provider(provider: &str) -> bool {
     matches!(provider, "codex" | "claude")
+}
+
+fn is_supported_login_profile(profile: &LoginProfile) -> bool {
+    is_supported_provider(&profile.provider)
+        && validate_auth_type(&profile.provider, &profile.auth_type).is_ok()
 }
 
 fn validate_auth_type(provider: &str, auth_type: &str) -> Result<(), String> {
@@ -811,6 +912,10 @@ fn prepare_codex_profile_home_with_instructions(
     profile_id: &str,
     user_codex_home: Option<&Path>,
 ) -> Result<PathBuf, String> {
+    let _sync_guard = CODEX_PROFILE_SYNC_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|error| format!("failed to lock Codex profile sync: {}", error))?;
     let codex_home = codex_profile_home(app_cache_dir, profile_id);
     fs::create_dir_all(&codex_home)
         .map_err(|error| format!("failed to create profile CODEX_HOME: {}", error))?;
@@ -1574,13 +1679,32 @@ fn copy_optional_bool_as_one(
 }
 
 fn write_restricted_file(path: &Path, contents: &str) -> Result<(), String> {
-    fs::write(path, contents)
-        .map_err(|error| format!("failed to write {}: {}", path.display(), error))?;
     #[cfg(unix)]
     {
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::OpenOptionsExt;
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("failed to restrict {}: {}", path.display(), error))?;
+
+        if path.exists() {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                .map_err(|error| format!("failed to restrict {}: {}", path.display(), error))?;
+        }
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|error| format!("failed to open {}: {}", path.display(), error))?;
+        file.write_all(contents.as_bytes())
+            .map_err(|error| format!("failed to write {}: {}", path.display(), error))?;
+        file.sync_all()
+            .map_err(|error| format!("failed to sync {}: {}", path.display(), error))?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, contents)
+            .map_err(|error| format!("failed to write {}: {}", path.display(), error))?;
     }
     Ok(())
 }
@@ -2176,29 +2300,68 @@ pub(crate) fn sync_login_profile_auth_failure_from_event(
     profile_id: &str,
     event: &JsonValue,
 ) {
-    let direct_code = event.get("provider_error_code").and_then(JsonValue::as_str);
-    let meta = event.get("meta");
-    let meta_code = meta
-        .and_then(|value| value.get("provider_error_code"))
-        .and_then(JsonValue::as_str);
-    let code = direct_code.or(meta_code);
-    let direct_message = event
-        .get("content")
-        .or_else(|| event.get("data"))
-        .and_then(JsonValue::as_str);
-    let meta_message = meta
-        .and_then(|value| value.get("provider_error_message"))
-        .and_then(JsonValue::as_str);
-    let message = direct_message.or(meta_message).unwrap_or_default();
-    let failure = LiveCheckFailure {
-        code: code.map(ToOwned::to_owned),
-        message: message.to_string(),
-    };
-    if status_for_live_check_failure(&failure) != "auth_missing" {
+    let Some(message) = provider_auth_failure_message(event) else {
         return;
-    }
+    };
     let db = app.state::<TelemetryDb>();
     let _ = mark_login_profile_auth_missing(app, &db, profile_id, message);
+}
+
+fn provider_auth_failure_message(event: &JsonValue) -> Option<&str> {
+    let event_type = event.get("type").and_then(JsonValue::as_str)?;
+    let meta = event.get("meta");
+    let (code, message) = match event_type {
+        "error" => (
+            event
+                .get("provider_error_code")
+                .and_then(JsonValue::as_str)
+                .or_else(|| {
+                    meta.and_then(|value| value.get("provider_error_code"))
+                        .and_then(JsonValue::as_str)
+                }),
+            event
+                .get("provider_error_message")
+                .and_then(JsonValue::as_str)
+                .or_else(|| event.get("content").and_then(JsonValue::as_str))
+                .or_else(|| event.get("data").and_then(JsonValue::as_str))
+                .or_else(|| {
+                    meta.and_then(|value| value.get("provider_error_message"))
+                        .and_then(JsonValue::as_str)
+                }),
+        ),
+        "provider_meta" => (
+            meta.and_then(|value| value.get("provider_error_code"))
+                .and_then(JsonValue::as_str),
+            meta.and_then(|value| value.get("provider_error_message"))
+                .and_then(JsonValue::as_str),
+        ),
+        "provider_stop"
+            if event.get("provider_status").and_then(JsonValue::as_str) == Some("failed") =>
+        {
+            (
+                event
+                    .get("provider_error_code")
+                    .and_then(JsonValue::as_str)
+                    .or_else(|| {
+                        event
+                            .get("provider_stop_reason")
+                            .and_then(JsonValue::as_str)
+                    }),
+                event
+                    .get("provider_error_message")
+                    .and_then(JsonValue::as_str)
+                    .or_else(|| event.get("final_content").and_then(JsonValue::as_str)),
+            )
+        }
+        _ => return None,
+    };
+    if !matches!(
+        code,
+        Some("auth_error" | "auth_missing" | "codex_auth_missing" | "claude_auth_missing")
+    ) {
+        return None;
+    }
+    Some(message.unwrap_or_default())
 }
 
 fn spawn_login_profile_readiness_check(app: tauri::AppHandle, profile_id: String) {
@@ -2254,6 +2417,15 @@ pub fn refresh_login_profiles_on_startup(
     db: &TelemetryDb,
 ) -> Result<(), String> {
     for profile in db.list_login_profiles()? {
+        if !is_supported_login_profile(&profile) {
+            crate::app_log!(
+                "[LOGIN_PROFILE] event=startup_readiness_skipped profile_id={} provider={} auth_type={}",
+                profile.id,
+                profile.provider,
+                profile.auth_type
+            );
+            continue;
+        }
         let _ = enqueue_login_profile_readiness_check(app.clone(), db, &profile.id);
     }
     Ok(())
@@ -3263,6 +3435,72 @@ mod tests {
         assert!(!error.contains(&account));
     }
 
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_secret_file_is_private_and_readable_after_write() {
+        let directory = tempfile::tempdir().expect("secret tempdir");
+        let path = directory.path().join("profile-secret");
+        write_private_secret_file(&path, "saved-secret").expect("write secret");
+
+        let secret = read_optional_file_secret(&path)
+            .expect("read secret")
+            .expect("saved secret");
+
+        assert_eq!(secret, "saved-secret");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(path)
+                    .expect("secret metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn missing_debug_secret_does_not_fall_back_to_another_store() {
+        let directory = tempfile::tempdir().expect("secret tempdir");
+        let path = directory.path().join("profile-secret");
+
+        assert_eq!(
+            read_optional_file_secret(&path).expect("read missing secret"),
+            None
+        );
+    }
+
+    #[test]
+    fn startup_readiness_accepts_only_current_provider_profiles() {
+        assert!(is_supported_login_profile(&test_profile(
+            "codex",
+            "codex",
+            "codex_chatgpt_session",
+            serde_json::json!({}),
+        )));
+        assert!(is_supported_login_profile(&test_profile(
+            "claude",
+            "claude",
+            "claude_oauth",
+            serde_json::json!({}),
+        )));
+        assert!(!is_supported_login_profile(&test_profile(
+            "legacy-opencode",
+            "opencode",
+            "opencode_auth",
+            serde_json::json!({}),
+        )));
+        assert!(!is_supported_login_profile(&test_profile(
+            "legacy-claude-cli",
+            "claude",
+            "external_cli",
+            serde_json::json!({}),
+        )));
+    }
+
     #[test]
     fn readiness_parser_accepts_ready_without_model_output() {
         let output = concat!(
@@ -3283,6 +3521,80 @@ mod tests {
 
         assert_eq!(failure.code.as_deref(), Some("auth_missing"));
         assert_eq!(failure.message, "The saved login has expired.");
+    }
+
+    #[test]
+    fn provider_message_text_cannot_mark_login_profile_auth_missing() {
+        let event = serde_json::json!({
+            "type": "message_completed",
+            "content": "I will inspect the login and authentication implementation."
+        });
+
+        assert_eq!(provider_auth_failure_message(&event), None);
+    }
+
+    #[test]
+    fn unstructured_error_text_cannot_mark_login_profile_auth_missing() {
+        let event = serde_json::json!({
+            "type": "error",
+            "content": "Unauthorized: refresh token revoked."
+        });
+
+        assert_eq!(provider_auth_failure_message(&event), None);
+    }
+
+    #[test]
+    fn non_auth_provider_code_wins_over_auth_like_error_text() {
+        let event = serde_json::json!({
+            "type": "error",
+            "provider_error_code": "provider_error",
+            "content": "The response mentioned login documentation."
+        });
+
+        assert_eq!(provider_auth_failure_message(&event), None);
+    }
+
+    #[test]
+    fn structured_provider_auth_error_can_mark_login_profile_auth_missing() {
+        let event = serde_json::json!({
+            "type": "provider_meta",
+            "meta": {
+                "provider_error_code": "auth_error",
+                "provider_error_message": "The refresh token was revoked."
+            }
+        });
+
+        assert_eq!(
+            provider_auth_failure_message(&event),
+            Some("The refresh token was revoked.")
+        );
+    }
+
+    #[test]
+    fn structured_provider_stop_can_mark_claude_login_profile_auth_missing() {
+        let event = serde_json::json!({
+            "type": "provider_stop",
+            "provider_stop_reason": "auth_missing",
+            "provider_status": "failed",
+            "final_content": "Claude login is required."
+        });
+
+        assert_eq!(
+            provider_auth_failure_message(&event),
+            Some("Claude login is required.")
+        );
+    }
+
+    #[test]
+    fn completed_provider_stop_cannot_mark_login_profile_auth_missing() {
+        let event = serde_json::json!({
+            "type": "provider_stop",
+            "provider_stop_reason": "auth_missing",
+            "provider_status": "completed",
+            "final_content": "No failure occurred."
+        });
+
+        assert_eq!(provider_auth_failure_message(&event), None);
     }
 
     #[test]

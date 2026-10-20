@@ -421,3 +421,12 @@ test('Claude adapter derives Agentree MCP server config from environment', async
   });
   assert.equal(adapter.agentreeMcpServersFromEnv({}), null);
 });
+
+test('Claude adapter preserves normal filesystem customizations and MCP configs', async () => {
+  const adapter = await import('./claude-agent-sdk-adapter.mjs');
+
+  assert.deepEqual(adapter.claudeCustomizationOptions(), {
+    settingSources: ['user', 'project', 'local'],
+    strictMcpConfig: false,
+  });
+});
