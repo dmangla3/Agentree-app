@@ -21,6 +21,8 @@ interface AnalyticsEventProperties {
     codex_readiness_status: string;
     claude_authenticated: boolean;
     claude_readiness_status: string;
+    opencode_authenticated: boolean;
+    opencode_readiness_status: string;
   };
   'Onboarding Environment Check Failed': EmptyProperties;
   'Onboarding Folder Picker Opened': EmptyProperties;
@@ -82,6 +84,8 @@ const EVENT_PROPERTY_SCHEMA = {
     codex_readiness_status: 'string',
     claude_authenticated: 'boolean',
     claude_readiness_status: 'string',
+    opencode_authenticated: 'boolean',
+    opencode_readiness_status: 'string',
   },
   'Onboarding Environment Check Failed': {},
   'Onboarding Folder Picker Opened': {},

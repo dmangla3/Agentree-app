@@ -26,9 +26,82 @@ export interface LoginProfileSummary {
   lastCheckedAt?: number | null;
 }
 
+export type OpenCodeProviderAccess = 'full' | 'free_only' | 'unavailable' | 'invalid' | 'unconfirmed';
+
+export interface OpenCodeProviderCapability {
+  id: string;
+  name: string;
+  access: OpenCodeProviderAccess;
+  modelCount: number | null;
+  freeModelCount: number | null;
+}
+
+const openCodeProviderNames: Record<string, string> = {
+  deepseek: 'DeepSeek',
+  google: 'Google',
+  groq: 'Groq',
+  'kimi-for-coding': 'Kimi For Coding',
+  openai: 'OpenAI',
+  opencode: 'OpenCode Zen',
+  openrouter: 'OpenRouter',
+};
+
+export const getOpenCodeProviderLabel = (providerId: string) => (
+  openCodeProviderNames[providerId] || providerId.replace(/-/g, ' ')
+);
+
+export const getOpenCodeProviderCapabilities = (
+  profile: Pick<LoginProfileSummary, 'provider' | 'config'>,
+): OpenCodeProviderCapability[] => {
+  if (profile.provider !== 'opencode') return [];
+  const stored = profile.config?.opencode_provider_capabilities;
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return [];
+
+  return Object.entries(stored)
+    .map(([id, raw]) => {
+      const capability = raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? raw as Record<string, unknown>
+        : {};
+      const authStatus = capability.authStatus;
+      const pricedModelAccess = capability.pricedModelAccess;
+      let access: OpenCodeProviderAccess = 'unconfirmed';
+      const modelCount = typeof capability.modelCount === 'number' ? capability.modelCount : null;
+      const freeModelCount = typeof capability.freeModelCount === 'number' ? capability.freeModelCount : null;
+      if (authStatus === 'invalid') access = 'invalid';
+      else if (authStatus === 'valid' && pricedModelAccess === 'available') access = 'full';
+      else if (authStatus === 'valid' && pricedModelAccess === 'unavailable') {
+        access = freeModelCount !== null && freeModelCount > 0 ? 'free_only' : 'unavailable';
+      }
+      const providerName = typeof capability.providerName === 'string'
+        ? capability.providerName.trim()
+        : '';
+      return {
+        id,
+        name: providerName || getOpenCodeProviderLabel(id),
+        access,
+        modelCount,
+        freeModelCount,
+      };
+    })
+    .sort((left, right) => left.name.localeCompare(right.name));
+};
+
+export const getOpenCodeProviderSummary = (
+  profile: Pick<LoginProfileSummary, 'provider' | 'config'>,
+): string | null => {
+  const capabilities = getOpenCodeProviderCapabilities(profile);
+  if (!capabilities.length) return null;
+  const reconnectCount = capabilities.filter((capability) => capability.access === 'invalid').length;
+  if (reconnectCount > 0) return `${capabilities.length} checked · ${reconnectCount} invalid`;
+  const unconfirmedCount = capabilities.filter((capability) => capability.access === 'unconfirmed').length;
+  if (unconfirmedCount > 0) return `${capabilities.length} checked · ${unconfirmedCount} not confirmed`;
+  return `${capabilities.length} checked`;
+};
+
 export const getLoginProfileProviderLabel = (provider: LoginProvider) => {
   if (provider === 'codex') return 'Codex';
   if (provider === 'claude') return 'Claude';
+  if (provider === 'opencode') return 'OpenCode';
   return provider;
 };
 
@@ -40,6 +113,7 @@ export const getLoginProfileAuthTypeLabel = (authType: string) => {
   if (authType === 'claude_bedrock') return 'Bedrock';
   if (authType === 'claude_vertex') return 'Vertex AI';
   if (authType === 'claude_azure_foundry') return 'Azure Foundry';
+  if (authType === 'opencode_auth') return 'OpenCode providers';
   if (authType === 'external_cli') return 'External CLI';
   return authType.replace(/_/g, ' ');
 };
@@ -64,7 +138,7 @@ export const isLoginProfileCompatibleWithProvider = (
 ) => Boolean(provider && profile.provider === provider);
 
 export const providerRequiresLoginProfile = (provider?: string | null): boolean => (
-  provider === 'codex' || provider === 'claude'
+  provider === 'codex' || provider === 'claude' || provider === 'opencode'
 );
 
 export interface LoginProfileSelection {

@@ -1,4 +1,5 @@
 import { fireEvent, render, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 // @ts-expect-error jsdom ships without a project-local declaration in this workspace.
 import { JSDOM } from 'jsdom';
 import type React from 'react';
@@ -22,6 +23,8 @@ describe('LoginProfileEditor', () => {
     vi.stubGlobal('HTMLElement', dom.window.HTMLElement);
     vi.stubGlobal('Element', dom.window.Element);
     vi.stubGlobal('Node', dom.window.Node);
+    dom.window.HTMLElement.prototype.attachEvent = () => {};
+    dom.window.HTMLElement.prototype.detachEvent = () => {};
     vi.stubGlobal('ResizeObserver', class {
       observe() {}
       unobserve() {}
@@ -106,6 +109,109 @@ describe('LoginProfileEditor', () => {
 
     expect(getByText('Claude subscription')).toBeTruthy();
     expect(getByText('API key')).toBeTruthy();
+  });
+
+  it('loads the current isolated auth.json when editing an OpenCode profile', async () => {
+    const onLoadOpenCodeAuth = vi.fn().mockResolvedValue('{"openrouter":{"type":"api","key":"sk-test"}}');
+    const { getByLabelText, getByText } = render(
+      <LoginProfileEditor
+        open
+        provider="opencode"
+        profile={{
+          id: 'profile-opencode',
+          provider: 'opencode',
+          displayName: 'OpenCode Work',
+          authType: 'opencode_auth',
+          config: {},
+          status: 'ready',
+          isDefault: true,
+        }}
+        isSaving={false}
+        error={null}
+        onOpenChange={vi.fn()}
+        onSave={vi.fn()}
+        onLoadOpenCodeAuth={onLoadOpenCodeAuth}
+      />
+    );
+
+    await waitFor(() => expect((getByLabelText('OpenCode auth.json') as HTMLTextAreaElement).value).toContain('"openrouter"'));
+    expect(onLoadOpenCodeAuth).toHaveBeenCalledWith('profile-opencode');
+    expect(getByText(/Update provider keys or login data below/)).toBeTruthy();
+    expect((getByLabelText('key value for OpenRouter') as HTMLInputElement).type).toBe('password');
+  });
+
+  it('adds and removes fields in the structured OpenCode editor', async () => {
+    const onSave = vi.fn().mockResolvedValue({});
+    const user = userEvent.setup({ document });
+    const { getByLabelText, getByRole, getByText, queryByLabelText } = render(
+      <LoginProfileEditor
+        open
+        provider="opencode"
+        profile={{
+          id: 'profile-opencode',
+          provider: 'opencode',
+          displayName: 'OpenCode Work',
+          authType: 'opencode_auth',
+          config: {},
+          status: 'ready',
+          isDefault: true,
+        }}
+        isSaving={false}
+        error={null}
+        onOpenChange={vi.fn()}
+        onSave={onSave}
+        onLoadOpenCodeAuth={vi.fn().mockResolvedValue('{"openrouter":{"type":"api","key":"sk-test"}}')}
+      />
+    );
+
+    await waitFor(() => expect(getByLabelText('key value for OpenRouter')).toBeTruthy());
+    fireEvent.click(getByRole('button', { name: 'Remove key from OpenRouter' }));
+    expect(queryByLabelText('key value for OpenRouter')).toBeNull();
+    fireEvent.click(getByText('Add field'));
+    expect(getByLabelText('newField field name for OpenRouter')).toBeTruthy();
+    await user.type(getByLabelText('newField value for OpenRouter'), 'new-value');
+    await waitFor(() => expect((getByLabelText('newField value for OpenRouter') as HTMLInputElement).value).toBe('new-value'));
+    fireEvent.click(getByText('Save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const savedAuth = JSON.parse(onSave.mock.calls[0][0].secret);
+    expect(savedAuth.openrouter).toEqual({ type: 'api', newField: 'new-value' });
+  });
+
+  it('accepts a complete replacement auth.json and rebuilds provider cards', async () => {
+    const onSave = vi.fn().mockResolvedValue({});
+    const user = userEvent.setup({ document });
+    const { getByLabelText, getByText } = render(
+      <LoginProfileEditor
+        open
+        provider="opencode"
+        profile={{
+          id: 'profile-opencode',
+          provider: 'opencode',
+          displayName: 'OpenCode Work',
+          authType: 'opencode_auth',
+          config: {},
+          status: 'ready',
+          isDefault: true,
+        }}
+        isSaving={false}
+        error={null}
+        onOpenChange={vi.fn()}
+        onSave={onSave}
+        onLoadOpenCodeAuth={vi.fn().mockResolvedValue('{"openrouter":{"type":"api","key":"sk-test"}}')}
+      />
+    );
+
+    const rawEditor = await waitFor(() => {
+      const editor = getByLabelText('OpenCode auth.json') as HTMLTextAreaElement;
+      expect(editor.value).toContain('openrouter');
+      return editor;
+    });
+    await user.clear(rawEditor);
+    await user.type(rawEditor, '{{"custom-provider":{{"type":"api","key":"new-key"}}');
+    await waitFor(() => expect(getByText('custom provider')).toBeTruthy());
+    expect(getByLabelText('key value for custom provider')).toBeTruthy();
+    fireEvent.click(getByText('Save'));
+    await waitFor(() => expect(onSave.mock.calls[0][0].secret).toContain('custom-provider'));
   });
 
   it('hides advanced config for new common login types', () => {

@@ -38,11 +38,12 @@ import { finalizeCreatedWorkspace } from '../../lib/finalizeCreatedWorkspace';
 import { useToast } from '../Toast';
 import { ChangedFilesSummary } from '../ChangedFilesSummary';
 import { LoginProfileEditor } from '../logins/LoginProfileEditor';
+import { ModelVisibilitySettingsPanel } from '../ModelVisibilitySettingsPanel';
 import type { Workspace } from '../../stores/workspaceStore';
 import logoSrc from '../../assets/logo.png';
 import { bucketCount, track, trackOnboardingStepViewed } from '../../lib/analytics';
 
-type StepId = 'environment' | 'workspace';
+type StepId = 'environment' | 'models' | 'workspace';
 
 interface FirstRunExperienceProps {
   userName: string;
@@ -101,7 +102,7 @@ type EnvironmentCheck = {
   command: string;
   detail: string;
   status: CheckStatus;
-  provider?: 'codex' | 'claude';
+  provider?: 'codex' | 'claude' | 'opencode';
 };
 
 function StatusRow({
@@ -180,12 +181,12 @@ function toolDetail(label: string, tool: CliToolStatus | null, missingMessage: s
   return tool.error || missingMessage;
 }
 
-function activeProfileForProvider(profiles: LoginProfileSummary[], provider: 'codex' | 'claude') {
+function activeProfileForProvider(profiles: LoginProfileSummary[], provider: 'codex' | 'claude' | 'opencode') {
   const compatible = profiles.filter((profile) => isLoginProfileCompatibleWithProvider(profile, provider));
   return compatible.find((profile) => profile.isDefault) ?? compatible[0] ?? null;
 }
 
-function loginProfileDetail(profile: LoginProfileSummary | null, provider: 'codex' | 'claude'): string {
+function loginProfileDetail(profile: LoginProfileSummary | null, provider: 'codex' | 'claude' | 'opencode'): string {
   const label = getLoginProfileProviderLabel(provider);
   if (!profile) return `No active ${label} login profile has been added yet.`;
   const authLabel = getLoginProfileAuthTypeLabel(profile.authType);
@@ -222,7 +223,7 @@ export function FirstRunExperience({
   const [checkpointMessage, setCheckpointMessage] = useState('WIP: pre-agentree checkpoint');
   const [setupRequirement, setSetupRequirement] = useState<RepoPrepareActionRequiredError['requirement'] | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
-  const [editorProvider, setEditorProvider] = useState<'codex' | 'claude'>('codex');
+  const [editorProvider, setEditorProvider] = useState<'codex' | 'claude' | 'opencode'>('codex');
   const [editingProfile, setEditingProfile] = useState<LoginProfileSummary | null>(null);
   const [isLoginEditorOpen, setIsLoginEditorOpen] = useState(false);
   const createWorkspace = useCreateWorkspace();
@@ -250,9 +251,11 @@ export function FirstRunExperience({
 
   const codexProfile = activeProfileForProvider(loginProfiles, 'codex');
   const claudeProfile = activeProfileForProvider(loginProfiles, 'claude');
+  const opencodeProfile = activeProfileForProvider(loginProfiles, 'opencode');
   const hasReadyAgentRuntime =
     Boolean(codexProfile && isLoginProfileActive(codexProfile)) ||
-    Boolean(claudeProfile && isLoginProfileActive(claudeProfile));
+    Boolean(claudeProfile && isLoginProfileActive(claudeProfile)) ||
+    Boolean(opencodeProfile && isLoginProfileActive(opencodeProfile));
 
   const environmentReady = Boolean(
     environment?.git.installed &&
@@ -288,8 +291,15 @@ export function FirstRunExperience({
         status: loginProfileStatus(claudeProfile, isCheckingEnvironment, hasEnvironmentCheck),
         provider: 'claude',
       },
+      {
+        label: 'OpenCode providers',
+        command: opencodeProfile ? getLoginProfileAuthTypeLabel(opencodeProfile.authType) : 'Import or add an OpenCode environment',
+        detail: loginProfileDetail(opencodeProfile, 'opencode'),
+        status: loginProfileStatus(opencodeProfile, isCheckingEnvironment, hasEnvironmentCheck),
+        provider: 'opencode',
+      },
     ];
-  }, [claudeProfile, codexProfile, environment, isCheckingEnvironment]);
+  }, [claudeProfile, codexProfile, environment, isCheckingEnvironment, opencodeProfile]);
 
   const completedEnvironmentChecks = environmentChecks.filter((check) => check.status === 'ready').length;
 
@@ -338,6 +348,8 @@ export function FirstRunExperience({
         codex_readiness_status: codexProfile?.status ?? 'missing_profile',
         claude_authenticated: Boolean(claudeProfile && isLoginProfileActive(claudeProfile)),
         claude_readiness_status: claudeProfile?.status ?? 'missing_profile',
+        opencode_authenticated: Boolean(opencodeProfile && isLoginProfileActive(opencodeProfile)),
+        opencode_readiness_status: opencodeProfile?.status ?? 'missing_profile',
       });
     } catch (error) {
       track('Onboarding Environment Check Failed');
@@ -373,16 +385,16 @@ export function FirstRunExperience({
     }
   };
 
-  const openLoginSetup = (provider: 'codex' | 'claude') => {
+  const openLoginSetup = (provider: 'codex' | 'claude' | 'opencode') => {
     setEditorProvider(provider);
-    setEditingProfile(provider === 'codex' ? codexProfile : claudeProfile);
+    setEditingProfile(provider === 'codex' ? codexProfile : provider === 'claude' ? claudeProfile : opencodeProfile);
     setIsLoginEditorOpen(true);
   };
 
   const saveEditorProfile = async (request: Parameters<typeof saveLoginProfile>[0]) => {
     const saved = await saveLoginProfile(request);
     setEditingProfile(saved);
-    if (saved.authType !== 'codex_chatgpt_session' && saved.authType !== 'claude_oauth') {
+    if (saved.authType !== 'codex_chatgpt_session' && saved.authType !== 'claude_oauth' && saved.provider !== 'opencode') {
       await checkLoginProfile(saved.id).catch(() => undefined);
     }
     return saved;
@@ -573,11 +585,11 @@ export function FirstRunExperience({
                 <Card className={onboardingCardClassName}>
                   <CardHeader className="pb-4">
                     <Badge variant="outline" className={stepBadgeClassName}>
-                      Step 1 of 2
+                      Step 1 of 3
                     </Badge>
                     <CardTitle className="text-3xl text-balance">Checking requirements</CardTitle>
                     <CardDescription className="text-base leading-7 text-pretty dark:text-zinc-300">
-                      {userName ? `${userName}, ` : ''}Agentree checks Git locally, then verifies active login profiles for Codex and Claude before the first run. You can continue once Git is ready and at least one provider login is ready.
+                      {userName ? `${userName}, ` : ''}Agentree checks Git locally, then verifies active login profiles for Codex, Claude, and OpenCode before the first run. You can continue once Git is ready and at least one provider login is ready.
                     </CardDescription>
                   </CardHeader>
 
@@ -684,9 +696,9 @@ export function FirstRunExperience({
                         <Terminal className="h-4 w-4" />
                         <AlertTitle>Finish login setup</AlertTitle>
                         <AlertDescription className="text-amber-900 dark:text-amber-100/85">
-                          <p>Agentree requires Git plus one ready active login profile for Codex or Claude.</p>
+                          <p>Agentree requires Git plus one ready active login profile for Codex, Claude, or OpenCode.</p>
                           <p className="font-mono text-xs text-amber-900/90 dark:text-amber-100/80">git --version</p>
-                          <p className="break-all font-mono text-xs text-amber-900/90 dark:text-amber-100/80">OPENAI_API_KEY / ANTHROPIC_API_KEY, managed Codex session, or Claude subscription</p>
+                          <p className="break-all font-mono text-xs text-amber-900/90 dark:text-amber-100/80">Managed Codex, Claude, or OpenCode credentials</p>
                         </AlertDescription>
                       </Alert>
                     )}
@@ -711,12 +723,49 @@ export function FirstRunExperience({
                           size="lg"
                           className="rounded-xl"
                           disabled={!environmentReady}
-                          onClick={() => setCurrentStep('workspace')}
+                          onClick={() => setCurrentStep('models')}
                         >
-                          Continue to workspace
+                          Continue to models
                           <ArrowRight className="h-4 w-4" />
                         </Button>
                       </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            )}
+
+            {currentStep === 'models' && (
+              <motion.div
+                key="models"
+                initial={{ opacity: 0, y: 18, filter: 'blur(8px)' }}
+                animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+                exit={{ opacity: 0, y: -10, filter: 'blur(4px)' }}
+                transition={{ type: 'spring', duration: 0.3, bounce: 0 }}
+              >
+                <Card className={cn(onboardingCardClassName, 'flex h-[min(760px,calc(100vh-5rem))] flex-col overflow-hidden')}>
+                  <CardHeader className="shrink-0 pb-4">
+                    <Badge variant="outline" className={stepBadgeClassName}>
+                      Step 2 of 3
+                    </Badge>
+                    <CardTitle className="text-3xl text-balance">Choose your models</CardTitle>
+                    <CardDescription className="text-base leading-7 text-pretty dark:text-zinc-300">
+                      Choose which model families appear in Agentree. You can change this later in Configuration.
+                    </CardDescription>
+                  </CardHeader>
+
+                  <CardContent className="flex min-h-0 flex-1 flex-col gap-4 pb-6">
+                    <div className={cn('flex min-h-0 flex-1 overflow-hidden rounded-2xl', onboardingPanelClassName)}>
+                      <ModelVisibilitySettingsPanel showHeader={false} />
+                    </div>
+                    <div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <Button variant="outline" size="lg" className={outlineButtonClassName} onClick={() => setCurrentStep('environment')}>
+                        Back
+                      </Button>
+                      <Button size="lg" className="rounded-xl" onClick={() => setCurrentStep('workspace')}>
+                        Continue to workspace
+                        <ArrowRight className="h-4 w-4" />
+                      </Button>
                     </div>
                   </CardContent>
                 </Card>
@@ -734,7 +783,7 @@ export function FirstRunExperience({
                 <Card className={onboardingCardClassName}>
                   <CardHeader className="pb-4">
                     <Badge variant="outline" className={stepBadgeClassName}>
-                      Step 2 of 2
+                      Step 3 of 3
                     </Badge>
                     <CardTitle className="text-3xl text-balance">Select a repository</CardTitle>
                     <CardDescription className="text-base leading-7 text-pretty dark:text-zinc-300">
@@ -844,7 +893,7 @@ export function FirstRunExperience({
                     )}
 
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <Button variant="outline" size="lg" className={outlineButtonClassName} onClick={() => setCurrentStep('environment')}>
+                      <Button variant="outline" size="lg" className={outlineButtonClassName} onClick={() => setCurrentStep('models')}>
                         Back
                       </Button>
                       <Button

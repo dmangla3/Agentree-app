@@ -5,6 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { reasoningEffortsByProvider } from '../lib/runtimeModels';
 import { UnifiedAgentModelSelector } from './UnifiedAgentModelSelector';
 
+vi.mock('../hooks/useAgents', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../hooks/useAgents')>();
+  return {
+    ...original,
+    useAgents: () => ({ data: original.runtimeAgents }),
+  };
+});
+
 vi.mock('../stores/providerLimitsStore', () => ({
   useProviderLimitsStore: (selector: any) => selector({ byProvider: {} }),
   getProviderLimitSeverity: () => 'normal',

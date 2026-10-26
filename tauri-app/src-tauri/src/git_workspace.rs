@@ -86,6 +86,20 @@ pub struct WorktreeInfo {
     pub parent_commit: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TerminalWorktreeInfo {
+    pub repo_path: String,
+    pub commit_sha: String,
+    pub worktree_path: String,
+    pub reused: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TerminalWorktreeCleanup {
+    Removed,
+    RetainedDirty { changed_files: Vec<String> },
+}
+
 #[derive(Debug, Serialize, specta::Type)]
 pub struct TargetBranchCheckoutStatus {
     pub checked_out: bool,
@@ -370,6 +384,189 @@ fn worktree_root(repo_path: &str) -> Result<PathBuf, String> {
         .join("nodes");
     ensure_directory(&root)?;
     Ok(root)
+}
+
+fn terminal_worktree_root(repo_path: &str) -> Result<PathBuf, String> {
+    let root = managed_worktree_base()?
+        .join(stable_repo_key(repo_path)?)
+        .join("terminals");
+    ensure_directory(&root)?;
+    Ok(root)
+}
+
+fn canonical_repo_root(repo_path: &str) -> Result<String, String> {
+    let root = run_git(repo_path, &["rev-parse", "--show-toplevel"])?;
+    let root = root.trim();
+    if root.is_empty() {
+        return Err("Git returned an empty repository root.".to_string());
+    }
+    let canonical = fs::canonicalize(root).unwrap_or_else(|_| PathBuf::from(root));
+    Ok(canonical.to_string_lossy().to_string())
+}
+
+fn is_registered_worktree_path(repo_path: &str, target_path: &Path) -> Result<bool, String> {
+    let target = fs::canonicalize(target_path).unwrap_or_else(|_| target_path.to_path_buf());
+    let output = run_git(repo_path, &["worktree", "list", "--porcelain"])?;
+    Ok(output.lines().any(|line| {
+        let Some(path) = line.strip_prefix("worktree ") else {
+            return false;
+        };
+        fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)) == target
+    }))
+}
+
+fn terminal_worktree_changed_files(worktree_path: &str) -> Result<Vec<String>, String> {
+    let status = run_git(
+        worktree_path,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )?;
+    Ok(status
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .take(20)
+        .map(str::to_string)
+        .collect())
+}
+
+pub(crate) fn prepare_terminal_worktree(
+    repo_path: &str,
+    requested_commit: &str,
+) -> Result<TerminalWorktreeInfo, String> {
+    let (repo_path, requested_commit) =
+        resolve_terminal_worktree_identity(repo_path, requested_commit)?;
+    let config = crate::worktree_config::load_agent_worktree_config(&repo_path)?;
+
+    with_repo_git_lock(&repo_path, "terminal_worktree_prepare", || {
+        let commit_sha = normalize_commit(&repo_path, &requested_commit)?;
+        let worktree_path = terminal_worktree_root(&repo_path)?.join(&commit_sha);
+        let worktree_path_string = worktree_path.to_string_lossy().to_string();
+        let add_worktree = || {
+            run_git(
+                &repo_path,
+                &[
+                    "worktree",
+                    "add",
+                    "--detach",
+                    &worktree_path_string,
+                    &commit_sha,
+                ],
+            )
+        };
+        let reused = if worktree_path.exists() {
+            if !is_registered_worktree_path(&repo_path, &worktree_path)? {
+                return Err(format!(
+                    "Managed terminal path exists but is not a registered Git worktree: {}",
+                    worktree_path.display()
+                ));
+            }
+            let current_head = normalize_commit(&worktree_path_string, "HEAD")?;
+            if current_head == commit_sha {
+                true
+            } else {
+                let changed_files = terminal_worktree_changed_files(&worktree_path_string)?;
+                if !changed_files.is_empty() {
+                    return Err(format!(
+                        "Terminal worktree {} has moved from commit {} and has uncommitted changes; it was preserved.",
+                        worktree_path.display(),
+                        commit_sha
+                    ));
+                }
+                run_git(
+                    &repo_path,
+                    &["worktree", "remove", "--force", &worktree_path_string],
+                )?;
+                add_worktree()?;
+                false
+            }
+        } else {
+            // Remove stale administrative records before adding at the deterministic path.
+            let _ = run_git(&repo_path, &["worktree", "prune"]);
+            add_worktree()?;
+            false
+        };
+
+        link_dependencies(&repo_path, &worktree_path_string, &config)?;
+        copy_env_files(&repo_path, &worktree_path_string, &config)?;
+        crate::app_log!(
+            "[TERMINAL_WORKTREE] event=ready repo={} commit={} path={} reused={}",
+            repo_path,
+            commit_sha,
+            worktree_path_string,
+            reused
+        );
+
+        Ok(TerminalWorktreeInfo {
+            repo_path: repo_path.clone(),
+            commit_sha,
+            worktree_path: worktree_path_string,
+            reused,
+        })
+    })
+}
+
+pub(crate) fn resolve_terminal_worktree_identity(
+    repo_path: &str,
+    requested_commit: &str,
+) -> Result<(String, String), String> {
+    let repo_path = canonical_repo_root(repo_path)?;
+    let commit_sha = normalize_commit(&repo_path, requested_commit)?;
+    Ok((repo_path, commit_sha))
+}
+
+pub(crate) fn cleanup_terminal_worktree(
+    repo_path: &str,
+    commit_sha: &str,
+    worktree_path: &str,
+) -> Result<TerminalWorktreeCleanup, String> {
+    let repo_path = canonical_repo_root(repo_path)?;
+    with_repo_git_lock(&repo_path, "terminal_worktree_cleanup", || {
+        let commit_sha = normalize_commit(&repo_path, commit_sha)?;
+        let expected_path = terminal_worktree_root(&repo_path)?.join(&commit_sha);
+        if Path::new(worktree_path) != expected_path {
+            return Err(format!(
+                "Refusing to remove terminal worktree outside its managed path: {}",
+                worktree_path
+            ));
+        }
+
+        if !expected_path.exists() {
+            let _ = run_git(&repo_path, &["worktree", "prune"]);
+            return Ok(TerminalWorktreeCleanup::Removed);
+        }
+        if !is_registered_worktree_path(&repo_path, &expected_path)? {
+            return Err(format!(
+                "Refusing to remove unregistered terminal directory: {}",
+                expected_path.display()
+            ));
+        }
+
+        let changed_files = terminal_worktree_changed_files(worktree_path)?;
+        if !changed_files.is_empty() {
+            crate::app_log!(
+                "[TERMINAL_WORKTREE] event=cleanup.retained_dirty repo={} commit={} path={} changed_count={}",
+                repo_path,
+                commit_sha,
+                worktree_path,
+                changed_files.len()
+            );
+            return Ok(TerminalWorktreeCleanup::RetainedDirty { changed_files });
+        }
+
+        // `--force` is safe after the explicit status check and also removes only
+        // ignored worktree scaffolding such as linked dependency directories.
+        run_git(
+            &repo_path,
+            &["worktree", "remove", "--force", worktree_path],
+        )?;
+        let _ = run_git(&repo_path, &["worktree", "prune"]);
+        crate::app_log!(
+            "[TERMINAL_WORKTREE] event=cleanup.removed repo={} commit={} path={}",
+            repo_path,
+            commit_sha,
+            worktree_path
+        );
+        Ok(TerminalWorktreeCleanup::Removed)
+    })
 }
 
 fn resolve_agent_worktree_path(repo_path: &str, node_id: &str) -> Result<PathBuf, String> {
@@ -2078,7 +2275,7 @@ pub fn finalize_agent_merge_worktree(
     _author_name: Option<&str>,
     target_branch: Option<&str>,
     update_target_branch: bool,
-) -> Result<(GitCommitMetadata, bool), String> {
+) -> Result<(GitCommitMetadata, bool, Option<String>), String> {
     if source_commits.is_empty() {
         return Err("AI merge finalization requires at least one source commit.".to_string());
     }
@@ -2129,13 +2326,45 @@ pub fn finalize_agent_merge_worktree(
             .to_string();
 
         run_git(&worktree_path_string, &["reset", "--hard", &commit_sha])?;
-        let target_updated = advance_target_branch_to_commit(
+        let metadata = read_commit_metadata_sync(repo_path, &commit_sha)?;
+        let (target_updated, target_update_warning) = match advance_target_branch_to_commit(
             repo_path,
             target_branch,
             &target_commit,
             &commit_sha,
             update_target_branch,
-        )?;
+        ) {
+            Ok(true) => (true, None),
+            Ok(false) if update_target_branch => {
+                let branch_name = target_branch
+                    .and_then(normalize_target_branch_name)
+                    .unwrap_or_else(|| "the target branch".to_string());
+                (
+                    false,
+                    Some(format!(
+                        "Commit {} was created, but {} was not updated. The commit remains safely available in Agentree.",
+                        commit_sha, branch_name
+                    )),
+                )
+            }
+            Ok(false) => (false, None),
+            Err(err) => {
+                log_agent_worktree_lifecycle(
+                    "finalize_merge.target_update_failed",
+                    repo_path,
+                    node_id,
+                    &worktree_path,
+                    &format!("commit_sha={} err={}", commit_sha, err),
+                );
+                (
+                    false,
+                    Some(format!(
+                        "Commit {} was created, but the target branch was not updated: {}",
+                        commit_sha, err
+                    )),
+                )
+            }
+        };
         log_agent_worktree_lifecycle(
             "finalize_merge.committed",
             repo_path,
@@ -2146,8 +2375,7 @@ pub fn finalize_agent_merge_worktree(
                 commit_sha, target_updated
             ),
         );
-        let metadata = read_commit_metadata_sync(repo_path, &commit_sha)?;
-        Ok((metadata, target_updated))
+        Ok((metadata, target_updated, target_update_warning))
     })
 }
 
@@ -2240,10 +2468,11 @@ pub async fn cleanup_worktree_owned(
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_worktree_head_commit_if_advanced, copy_env_files, finalize_agent_merge_worktree,
-        finalize_agent_worktree, is_agent_worktree_path_for_node, is_env_file,
-        legacy_worktree_root, link_dependencies, read_commit_metadata_range_sync, resolve_git_dir,
-        worktree_root, AgentWorktreeConfig,
+        agent_worktree_head_commit_if_advanced, cleanup_terminal_worktree, copy_env_files,
+        finalize_agent_merge_worktree, finalize_agent_worktree, is_agent_worktree_path_for_node,
+        is_env_file, legacy_worktree_root, link_dependencies, prepare_terminal_worktree,
+        read_commit_metadata_range_sync, resolve_git_dir, worktree_root, AgentWorktreeConfig,
+        TerminalWorktreeCleanup,
     };
     use std::fs;
     use std::path::Path;
@@ -3078,7 +3307,7 @@ mod tests {
         fs::write(worktree_path.join("decision.txt"), "ai decision\n")
             .expect("write decision file");
 
-        let (merge_commit, target_updated) = finalize_agent_merge_worktree(
+        let (merge_commit, target_updated, target_update_warning) = finalize_agent_merge_worktree(
             &repo_path,
             node_id,
             &target_commit,
@@ -3091,6 +3320,7 @@ mod tests {
         .expect("finalize merge worktree");
 
         assert!(target_updated);
+        assert_eq!(target_update_warning, None);
         assert_eq!(
             merge_commit.parents,
             vec![target_commit.clone(), source_commit]
@@ -3145,7 +3375,7 @@ mod tests {
         fs::write(worktree_path.join("feature.txt"), "feature resolved\n")
             .expect("write resolved feature");
 
-        let (merge_commit, target_updated) = finalize_agent_merge_worktree(
+        let (merge_commit, target_updated, target_update_warning) = finalize_agent_merge_worktree(
             &repo_path,
             node_id,
             &target_commit,
@@ -3158,6 +3388,7 @@ mod tests {
         .expect("finalize merge worktree");
 
         assert!(!target_updated);
+        assert_eq!(target_update_warning, None);
         assert_eq!(
             merge_commit.parents,
             vec![target_commit.clone(), source_commit]
@@ -3208,7 +3439,7 @@ mod tests {
         fs::write(worktree_path.join("feature.txt"), "feature resolved\n")
             .expect("write resolved feature");
 
-        let (merge_commit, _) = finalize_agent_merge_worktree(
+        let (merge_commit, _, _) = finalize_agent_merge_worktree(
             &repo_path,
             node_id,
             &target_commit,
@@ -3264,7 +3495,7 @@ mod tests {
         fs::write(worktree_path.join("decision.txt"), "ai decision\n")
             .expect("write decision file");
 
-        let (merge_commit, target_updated) = finalize_agent_merge_worktree(
+        let (merge_commit, target_updated, target_update_warning) = finalize_agent_merge_worktree(
             &repo_path,
             node_id,
             &target_commit,
@@ -3279,11 +3510,66 @@ mod tests {
         // Opted in, but the checked-out target worktree is dirty: never overwrite
         // it. The merge commit is still created; main is left untouched.
         assert!(!target_updated);
+        assert!(target_update_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("main was not updated")));
         assert_ne!(merge_commit.sha, target_commit);
         assert_eq!(
             run_test_git(dir.path(), &["rev-parse", "main"]),
             target_commit
         );
+    }
+
+    #[test]
+    fn finalize_agent_merge_worktree_returns_commit_when_target_branch_moved() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        run_test_git(dir.path(), &["branch", "-M", "main"]);
+        let target_commit = run_test_git(dir.path(), &["rev-parse", "main"]);
+
+        run_test_git(dir.path(), &["checkout", "-b", "feature", "main"]);
+        fs::write(dir.path().join("feature.txt"), "feature\n").expect("write feature file");
+        run_test_git(dir.path(), &["add", "feature.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "feature commit"]);
+        let source_commit = run_test_git(dir.path(), &["rev-parse", "feature"]);
+        run_test_git(dir.path(), &["checkout", "main"]);
+
+        let node_id = "assistant-merge-moved-target";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &target_commit);
+        fs::write(worktree_path.join("feature.txt"), "feature resolved\n")
+            .expect("write resolved feature");
+
+        fs::write(dir.path().join("main.txt"), "new main work\n").expect("write main file");
+        run_test_git(dir.path(), &["add", "main.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "main moved"]);
+        let moved_main_commit = run_test_git(dir.path(), &["rev-parse", "main"]);
+
+        let (merge_commit, target_updated, target_update_warning) = finalize_agent_merge_worktree(
+            &repo_path,
+            node_id,
+            &target_commit,
+            &[source_commit.clone()],
+            "AI merge result",
+            None,
+            Some("main"),
+            true,
+        )
+        .expect("preserve generated commit when target moved");
+
+        assert!(!target_updated);
+        assert_eq!(
+            run_test_git(dir.path(), &["rev-parse", "main"]),
+            moved_main_commit
+        );
+        assert_eq!(
+            run_test_git(&worktree_path, &["rev-parse", "HEAD"]),
+            merge_commit.sha
+        );
+        assert_eq!(merge_commit.parents, vec![target_commit, source_commit]);
+        assert!(target_update_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("Target branch main moved")));
     }
 
     #[test]
@@ -3318,7 +3604,7 @@ mod tests {
         );
         fs::write(worktree_path.join("feature.txt"), "feature\n").expect("write resolved file");
 
-        let (merge_commit, target_updated) = finalize_agent_merge_worktree(
+        let (merge_commit, target_updated, target_update_warning) = finalize_agent_merge_worktree(
             &repo_path,
             node_id,
             &target_commit,
@@ -3332,6 +3618,7 @@ mod tests {
 
         // Default: the merge commit is created but main is left untouched.
         assert!(!target_updated);
+        assert_eq!(target_update_warning, None);
         assert_eq!(
             run_test_git(dir.path(), &["rev-parse", "main"]),
             target_commit
@@ -3341,6 +3628,95 @@ mod tests {
             merge_commit.parents,
             vec![target_commit.clone(), source_commit]
         );
+    }
+
+    #[test]
+    fn terminal_worktree_is_detached_reused_and_removed_when_clean() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let commit_sha = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+
+        let first =
+            prepare_terminal_worktree(&repo_path, &commit_sha).expect("create terminal worktree");
+        assert!(!first.reused);
+        assert!(first.worktree_path.contains("/terminals/"));
+        assert_eq!(
+            run_test_git(
+                Path::new(&first.worktree_path),
+                &["rev-parse", "--abbrev-ref", "HEAD"]
+            ),
+            "HEAD"
+        );
+
+        let second =
+            prepare_terminal_worktree(&repo_path, "HEAD").expect("reuse terminal worktree");
+        assert!(second.reused);
+        assert_eq!(second.worktree_path, first.worktree_path);
+        assert_eq!(second.commit_sha, commit_sha);
+
+        let cleanup = cleanup_terminal_worktree(&repo_path, &commit_sha, &first.worktree_path)
+            .expect("remove clean terminal worktree");
+        assert_eq!(cleanup, TerminalWorktreeCleanup::Removed);
+        assert!(!Path::new(&first.worktree_path).exists());
+    }
+
+    #[test]
+    fn terminal_worktree_cleanup_preserves_uncommitted_files() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let commit_sha = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let worktree =
+            prepare_terminal_worktree(&repo_path, &commit_sha).expect("create terminal worktree");
+        fs::write(
+            Path::new(&worktree.worktree_path).join("base.txt"),
+            "changed\n",
+        )
+        .expect("change tracked file");
+
+        let cleanup = cleanup_terminal_worktree(&repo_path, &commit_sha, &worktree.worktree_path)
+            .expect("inspect dirty terminal worktree");
+        assert!(matches!(
+            cleanup,
+            TerminalWorktreeCleanup::RetainedDirty { ref changed_files }
+                if changed_files.iter().any(|line| line.contains("base.txt"))
+        ));
+        assert!(Path::new(&worktree.worktree_path).exists());
+
+        run_test_git(
+            dir.path(),
+            &["worktree", "remove", "--force", &worktree.worktree_path],
+        );
+    }
+
+    #[test]
+    fn terminal_worktree_recreates_a_clean_path_that_moved_to_another_commit() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let requested_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        fs::write(dir.path().join("second.txt"), "second\n").expect("write second file");
+        run_test_git(dir.path(), &["add", "second.txt"]);
+        run_test_git(dir.path(), &["commit", "-m", "second commit"]);
+        let second_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+
+        let first = prepare_terminal_worktree(&repo_path, &requested_commit)
+            .expect("create terminal worktree");
+        run_test_git(
+            Path::new(&first.worktree_path),
+            &["checkout", "--detach", &second_commit],
+        );
+
+        let restored = prepare_terminal_worktree(&repo_path, &requested_commit)
+            .expect("restore requested commit");
+        assert!(!restored.reused);
+        assert_eq!(
+            run_test_git(Path::new(&restored.worktree_path), &["rev-parse", "HEAD"]),
+            requested_commit
+        );
+
+        let cleanup =
+            cleanup_terminal_worktree(&repo_path, &requested_commit, &restored.worktree_path)
+                .expect("remove restored worktree");
+        assert_eq!(cleanup, TerminalWorktreeCleanup::Removed);
     }
 }
 

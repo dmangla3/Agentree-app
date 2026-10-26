@@ -27,10 +27,20 @@ const archivesDir = path.resolve(
   ),
 );
 const platformArgument = argumentValue("--platform", "");
+const componentArgument = argumentValue("--component", "");
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 const platforms = platformArgument
   ? platformArgument.split(",").map((value) => value.trim())
   : ["linux-x86_64", "darwin-aarch64"];
+const components = componentArgument
+  ? new Set(componentArgument.split(",").map((value) => value.trim()))
+  : null;
+if (components) {
+  for (const component of components) {
+    if (!manifest.components[component])
+      fail(`Unknown runtime component: ${component}`);
+  }
+}
 
 const PLATFORM_CONTRACTS = {
   "darwin-aarch64": {
@@ -129,6 +139,12 @@ function validateArchive(component, spec, platform) {
   const requiredMembers = {
     node: ["./bin/node"],
     codex: ["./bin/codex"],
+    opencode: [
+      "./bin/opencode",
+      "./bin/rg",
+      "./node_modules/@opencode-ai/sdk/package.json",
+      "./node_modules/@opencode-ai/sdk/dist/index.js",
+    ],
     "claude-sdk": [
       "./node_modules/@anthropic-ai/claude-agent-sdk/package.json",
       `./node_modules/@anthropic-ai/${contract.claudePackage}/claude`,
@@ -139,20 +155,26 @@ function validateArchive(component, spec, platform) {
     if (!members.includes(member)) fail(`${archiveName} is missing ${member}`);
   }
 
-  const binaryMember =
-    component === "claude-sdk" ? requiredMembers[1] : requiredMembers[0];
+  const binaryMembers =
+    component === "claude-sdk"
+      ? [requiredMembers[1]]
+      : component === "opencode"
+        ? requiredMembers.slice(0, 2)
+        : [requiredMembers[0]];
   const tempDir = fs.mkdtempSync(
     path.join(os.tmpdir(), "agentree-runtime-validate-"),
   );
   try {
-    run("tar", ["-xzf", archivePath, "-C", tempDir, binaryMember]);
-    const binaryPath = path.join(tempDir, binaryMember.replace(/^\.\//, ""));
-    const stat = fs.statSync(binaryPath);
-    if (!stat.isFile())
-      fail(`${archiveName} ${binaryMember} is not a regular file`);
-    if ((stat.mode & 0o111) === 0)
-      fail(`${archiveName} ${binaryMember} is not executable`);
-    assertBinaryFormat(binaryPath, contract.binaryFormat);
+    for (const binaryMember of binaryMembers) {
+      run("tar", ["-xzf", archivePath, "-C", tempDir, binaryMember]);
+      const binaryPath = path.join(tempDir, binaryMember.replace(/^\.\//, ""));
+      const stat = fs.statSync(binaryPath);
+      if (!stat.isFile())
+        fail(`${archiveName} ${binaryMember} is not a regular file`);
+      if ((stat.mode & 0o111) === 0)
+        fail(`${archiveName} ${binaryMember} is not executable`);
+      assertBinaryFormat(binaryPath, contract.binaryFormat);
+    }
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -162,6 +184,7 @@ function validateArchive(component, spec, platform) {
 
 for (const platform of platforms) {
   for (const [component, spec] of Object.entries(manifest.components)) {
+    if (components && !components.has(component)) continue;
     validateArchive(component, spec, platform);
   }
 }

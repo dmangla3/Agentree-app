@@ -1,0 +1,19 @@
+.terminal-pane .xterm {
+  height: 100%;
+}
+
+.terminal-pane .xterm-viewport,
+.terminal-pane .xterm-screen {
+  background: transparent !important;
+}
+
+.terminal-pane .xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+}
+
+.terminal-pane .xterm-viewport::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: hsl(var(--muted-foreground) / 0.32);
+}

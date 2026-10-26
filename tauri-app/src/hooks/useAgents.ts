@@ -1,9 +1,13 @@
+import { useQuery } from '@tanstack/react-query';
 import {
     type AgentModelConfig,
     defaultRuntimeModelKey,
     getRuntimeModelByKey,
     runtimeModels,
+    runtimeModelsFromOpenCodeCatalog,
 } from '../lib/runtimeModels';
+import { agentClient } from '../lib/agentClient';
+import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 
 export interface Agent {
     id: string;
@@ -16,13 +20,14 @@ export interface Agent {
     color?: string;    // Color theme for the agent
 }
 
-export const runtimeAgents: Agent[] = runtimeModels.map((model) => ({
+const agentsFromRuntimeModels = (models: typeof runtimeModels): Agent[] => models.map((model) => ({
     id: model.key,
     name: model.label,
     type: model.provider,
     tools: [],
     model_config: {
         model: model.modelId,
+        modelProvider: model.provider === 'opencode' ? model.modelId.split('/')[0] : model.provider,
         familyKey: model.familyKey,
         familyLabel: model.familyLabel,
         familyDescription: model.familyDescription,
@@ -30,11 +35,16 @@ export const runtimeAgents: Agent[] = runtimeModels.map((model) => ({
         effortDescription: model.effortDescription,
         reasoningEffort: model.reasoningEffort ?? null,
         capabilities: model.capabilities,
+        releaseDate: model.releaseDate ?? null,
+        status: model.status ?? null,
+        isFree: model.isFree ?? null,
     },
     cliArgs: model.cliArgs,
     promptFlag: model.promptFlag,
     color: model.color,
 }));
+
+export const runtimeAgents: Agent[] = agentsFromRuntimeModels(runtimeModels);
 
 export function findDefaultCodexAgentId(agents: Agent[]): string | null {
     const preferred = getRuntimeModelByKey(defaultRuntimeModelKey);
@@ -51,5 +61,21 @@ export function findDefaultCodexAgentId(agents: Agent[]): string | null {
 }
 
 export function useAgents() {
-    return { data: runtimeAgents };
+    const opencodeProfile = useLoginProfilesStore((state) => {
+        const profiles = state.profiles.filter((profile) => profile.provider === 'opencode');
+        return profiles.find((profile) => profile.isDefault) ?? profiles[0] ?? null;
+    });
+    const opencodeProfileId = opencodeProfile?.id ?? null;
+
+    return useQuery({
+        queryKey: ['agents', 'opencode', opencodeProfileId, opencodeProfile?.lastCheckedAt ?? null],
+        queryFn: async (): Promise<Agent[]> => {
+            if (!opencodeProfileId) return runtimeAgents;
+            const catalog = await agentClient.listOpenCodeModels(opencodeProfileId);
+            return [...runtimeAgents, ...agentsFromRuntimeModels(runtimeModelsFromOpenCodeCatalog(catalog))];
+        },
+        initialData: runtimeAgents,
+        staleTime: 60_000,
+        refetchOnMount: 'always',
+    });
 }

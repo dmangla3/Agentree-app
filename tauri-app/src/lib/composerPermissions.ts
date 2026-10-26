@@ -54,7 +54,7 @@ const providerPermissionArgs = (
   if (agentType === 'claude') {
     return ['--permission-mode', claudePermissionModeForComposerMode(mode)];
   }
-  if (agentType === 'codex') {
+  if (agentType === 'codex' || agentType === 'opencode') {
     return ['--permission-mode', mode];
   }
   return [];

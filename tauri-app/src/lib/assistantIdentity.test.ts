@@ -107,4 +107,11 @@ describe('getAssistantProviderIconKind', () => {
       llmProvider: 'openai',
     })).toBe('generic');
   });
+
+  it('uses OpenCode identity even when the underlying model is Claude', () => {
+    expect(getAssistantProviderIconKind({
+      llmModel: 'anthropic/claude-sonnet-4-6',
+      llmProvider: 'opencode',
+    })).toBe('opencode');
+  });
 });

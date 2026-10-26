@@ -33,6 +33,7 @@ interface LoginProfileRowsProps {
   pendingProfileId: string | null;
   profiles: LoginProfileSummary[];
   selectedProfileId?: string | null;
+  detailColumnLabel?: string;
 }
 
 const statusClasses = {
@@ -124,13 +125,14 @@ export function LoginProfileRows({
   pendingProfileId,
   profiles,
   selectedProfileId,
+  detailColumnLabel = 'Limit',
 }: LoginProfileRowsProps) {
   return (
     <div className="overflow-hidden rounded-xl bg-background/86 shadow-[0_18px_52px_-44px_rgba(15,23,42,0.65),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
       <div className="grid grid-cols-[minmax(13rem,1.35fr)_minmax(8rem,0.7fr)_minmax(8rem,0.8fr)_auto] gap-3 border-b border-[hsl(var(--app-border)/0.62)] bg-muted/35 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground max-md:hidden">
         <span>Account</span>
         <span>Status</span>
-        <span>Limit</span>
+        <span>{detailColumnLabel}</span>
         <span className="text-right">Actions</span>
       </div>
       <div className="divide-y divide-[hsl(var(--app-border)/0.58)]">
@@ -185,14 +187,14 @@ export function LoginProfileRows({
                   <StatusIcon status={profile.status} />
                   {formatStatus(profile.status)}
                 </span>
-                {profile.statusMessage ? (
+                {profile.statusMessage && !(profile.provider === 'opencode' && profile.status === 'ready') ? (
                   <StatusMessagePopover message={profile.statusMessage} />
                 ) : null}
               </div>
 
               <div className="min-w-0">
                 {limitSummary ? (
-                  <span className={cn('inline-flex h-6 items-center gap-1.5 rounded-md px-2 text-[11px] font-semibold tabular-nums', limitClasses[limitSeverity])}>
+                  <span className={cn('inline-flex h-6 items-center gap-1.5 whitespace-nowrap rounded-md px-2 text-[11px] font-semibold tabular-nums', limitClasses[limitSeverity])}>
                     <CircleGauge className="h-3.5 w-3.5" />
                     {limitSummary}
                   </span>
@@ -213,7 +215,7 @@ export function LoginProfileRows({
                       <Loader2 className="h-3 w-3 animate-spin" />
                       Checking
                     </span>
-                  ) : 'Check'}
+                  ) : profile.provider === 'opencode' ? 'Check models' : 'Check'}
                 </button>
                 <button
                   type="button"

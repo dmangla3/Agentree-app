@@ -1,7 +1,7 @@
 import type { Message } from '../stores/workspaceStore';
 
 export type ThreadSessionStatus = 'active' | 'done' | 'archived';
-export type ThreadSessionSource = 'workspace_default' | 'user' | 'flow' | 'legacy' | 'delegation';
+export type ThreadSessionSource = 'workspace_default' | 'user' | 'flow' | 'legacy' | 'delegation' | 'converted_subgraph';
 
 export interface ThreadSession {
   id: string;
@@ -12,8 +12,9 @@ export interface ThreadSession {
   updatedAt: string;
   baseCommitSha: string | null;
   firstMessageId: string | null;
-  parentThreadId?: string | null;
   source: ThreadSessionSource;
+  parentThreadId?: string | null;
+  anchorNodeId?: string | null;
 }
 
 const readString = (input: Record<string, unknown>, ...keys: string[]): string => {
@@ -40,8 +41,11 @@ export const normalizeThreadSession = (input: Record<string, unknown> | null | u
     || input.source === 'flow'
     || input.source === 'legacy'
     || input.source === 'delegation'
+    || input.source === 'converted_subgraph'
     ? input.source
     : 'user';
+  const parentThreadId = trimOrNull(input.parentThreadId) ?? trimOrNull(input.parent_thread_id);
+  const anchorNodeId = trimOrNull(input.anchorNodeId) ?? trimOrNull(input.anchor_node_id);
   return {
     id,
     workspaceId,
@@ -51,8 +55,9 @@ export const normalizeThreadSession = (input: Record<string, unknown> | null | u
     updatedAt,
     baseCommitSha: trimOrNull(input.baseCommitSha) ?? trimOrNull(input.base_commit_sha),
     firstMessageId: trimOrNull(input.firstMessageId) ?? trimOrNull(input.first_message_id),
-    parentThreadId: trimOrNull(input.parentThreadId) ?? trimOrNull(input.parent_thread_id),
     source,
+    ...(parentThreadId ? { parentThreadId } : {}),
+    ...(anchorNodeId ? { anchorNodeId } : {}),
   };
 };
 
@@ -159,8 +164,9 @@ export const deriveBackfilledThreadSessions = (
         updatedAt,
         baseCommitSha: trimOrNull(message.base_commit_sha),
         firstMessageId: message.role === 'user' ? message.id : (generatedThreadTitle ? trimOrNull(message.parentId) : null),
-        parentThreadId: null,
         source: 'legacy',
+        parentThreadId: null,
+        anchorNodeId: null,
       });
       continue;
     }

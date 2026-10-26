@@ -58,4 +58,29 @@ describe('resolveComposerDefaultAgentId', () => {
       },
     })).toBe('codex:gpt-5.6-terra:medium');
   });
+
+  it('uses visible models for a new conversation while preserving a hidden parent model', () => {
+    const visibleAgents = agents.filter((item) => item.id !== 'codex:gpt-5.5:high');
+    expect(resolveComposerDefaultAgentId({
+      agents,
+      fallbackAgents: visibleAgents,
+      parentMessage: null,
+    })).toBe('codex:gpt-5.6-terra:medium');
+
+    expect(resolveComposerDefaultAgentId({
+      agents,
+      fallbackAgents: visibleAgents,
+      parentMessage: {
+        agent_id: 'codex:gpt-5.5:high',
+      },
+    })).toBe('codex:gpt-5.5:high');
+  });
+
+  it('returns no new-conversation default when every model is hidden', () => {
+    expect(resolveComposerDefaultAgentId({
+      agents,
+      fallbackAgents: [],
+      parentMessage: null,
+    })).toBeNull();
+  });
 });

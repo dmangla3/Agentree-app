@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { SquareTerminal } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -32,6 +33,7 @@ interface NodeContextMenuProps {
   onViewSubgraph?: (messageId: string) => void;
   onConvertSubgraphToThread?: (messageId: string) => void;
   onShareNode?: (messageId: string) => void;
+  onOpenTerminal?: (commitSha: string) => void;
 }
 
 export interface NodeContextMenuActions {
@@ -43,6 +45,7 @@ export interface NodeContextMenuActions {
   actionThreadRootId: string | null;
   convertSubgraphNodeId: string | null;
   mergeThreadRootId: string | null;
+  terminalCommitSha: string | null;
 }
 
 export function resolveNodeContextMenuActions(
@@ -58,6 +61,7 @@ export function resolveNodeContextMenuActions(
   let singleConvertSubgraphNodeId: string | null = null;
   let singleMergeThreadRootId: string | null = null;
   let hasMultipleMergeThreadRoots = false;
+  let terminalCommitSha: string | null = null;
 
   const addMessageId = (messageId: string | null | undefined) => {
     if (messageId) deletableIds.add(messageId);
@@ -154,6 +158,11 @@ export function resolveNodeContextMenuActions(
   for (const id of targetIds) {
     const entity = projection.entitiesByMessageId.get(id) ?? projection.entitiesById.get(id);
 
+    if (targetIds.length === 1) {
+      const commitToken = id.startsWith('commit:') ? id.slice('commit:'.length) : id;
+      terminalCommitSha = resolveCommitToken(commitToken)?.commitSha ?? null;
+    }
+
     if (id.startsWith('commit:')) {
       const sha = id.slice('commit:'.length);
       if (projection.commitBySha.has(sha)) deletableShas.add(sha);
@@ -163,6 +172,9 @@ export function resolveNodeContextMenuActions(
     }
 
     if (!entity) continue;
+    if (targetIds.length === 1 && entity.kind === 'thread_link') {
+      singleThreadRootId = entity.threadLinkRootId ?? entity.threadRootId ?? null;
+    }
     if (targetIds.length === 1 && entity.messageId) {
       singleActionId = entity.messageId;
       singleThreadRootId = entity.kind === 'thread_link'
@@ -195,6 +207,7 @@ export function resolveNodeContextMenuActions(
     actionThreadRootId: singleThreadRootId,
     convertSubgraphNodeId: singleConvertSubgraphNodeId,
     mergeThreadRootId: hasMultipleMergeThreadRoots ? null : singleMergeThreadRootId,
+    terminalCommitSha,
   };
 }
 
@@ -213,6 +226,7 @@ export function NodeContextMenu({
   onViewSubgraph,
   onConvertSubgraphToThread,
   onShareNode,
+  onOpenTerminal,
 }: NodeContextMenuProps) {
   const selectedWorkspaceId = useWorkspaceStore((state) => state.selectedWorkspaceId);
   const targetIds = contextMenu?.targetIds ?? [];
@@ -223,7 +237,7 @@ export function NodeContextMenu({
     if (contextMenu) setMarkThreadDoneAfterMerge(true);
   }, [contextMenu, targetKey]);
 
-  const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, mergeableCommitShas, actionNodeId, actionThreadRootId, convertSubgraphNodeId, mergeThreadRootId } = useMemo(
+  const { deletableMessageIds, deletableCommitShas, mergeableCommitIds, mergeableCommitShas, actionNodeId, actionThreadRootId, convertSubgraphNodeId, mergeThreadRootId, terminalCommitSha } = useMemo(
     () => resolveNodeContextMenuActions(projection, targetIds),
     [projection, targetKey],
   );
@@ -241,8 +255,9 @@ export function NodeContextMenu({
   const canConvertSubgraphToThread = !!convertSubgraphNodeId && !!onConvertSubgraphToThread;
   const canShareNode = !!actionNodeId && !!onShareNode;
   const canCopyLink = !!selectedWorkspaceId && !!actionNodeId;
+  const canOpenTerminal = !!terminalCommitSha && !!onOpenTerminal;
 
-  if (!canDelete && !canAddToMergePanel && !canAddCommit && !canFocusThread && !canMarkThreadDone && !canHideSubgraph && !canViewSubgraph && !canConvertSubgraphToThread && !canShareNode && !canCopyLink) {
+  if (!canDelete && !canAddToMergePanel && !canAddCommit && !canFocusThread && !canMarkThreadDone && !canHideSubgraph && !canViewSubgraph && !canConvertSubgraphToThread && !canShareNode && !canCopyLink && !canOpenTerminal) {
     return null;
   }
 
@@ -277,6 +292,18 @@ export function NodeContextMenu({
             }}
           >
             Copy link
+          </DropdownMenuItem>
+        ) : null}
+
+        {canOpenTerminal ? (
+          <DropdownMenuItem
+            onClick={() => {
+              onOpenTerminal?.(terminalCommitSha!);
+              onClose();
+            }}
+          >
+            <SquareTerminal className="mr-2 h-4 w-4" aria-hidden="true" />
+            Open terminal here
           </DropdownMenuItem>
         ) : null}
 

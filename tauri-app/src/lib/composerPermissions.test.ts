@@ -41,4 +41,11 @@ describe('composer permissions', () => {
     expect(applyComposerPermissionArgs([], 'claude', 'safe-write')).toEqual(['--permission-mode', 'acceptEdits']);
     expect(applyComposerPermissionArgs([], 'claude', 'full-access')).toEqual(['--permission-mode', 'bypassPermissions']);
   });
+
+  it('passes Agentree permission modes to the OpenCode adapter', () => {
+    expect(applyComposerPermissionArgs([], 'opencode', 'safe-write')).toEqual([
+      '--permission-mode',
+      'safe-write',
+    ]);
+  });
 });

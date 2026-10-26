@@ -6,6 +6,7 @@ const RUNTIME_SCRIPTS: &[&str] = &[
     "bash-adapter.cjs",
     "claude-agent-sdk-adapter.mjs",
     "merge-review-runner.cjs",
+    "opencode-agent-sdk-adapter.mjs",
     "package-manager-guard.sh",
 ];
 

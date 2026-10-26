@@ -121,6 +121,36 @@ describe('buildAgentRunLaunchContext', () => {
     expect(result.meta.provider_target_turn_id).toBe('turn-1');
   });
 
+  it('forks OpenCode from the exact interior message', () => {
+    const result = buildAgentRunLaunchContext({
+      agentType: 'opencode',
+      userPrompt: 'Branch',
+      messages: [
+        message({
+          id: 'assistant-parent',
+          execution_data: {
+            meta: {
+              provider: 'opencode',
+              provider_thread_id: 'session-1',
+              provider_turn_id: 'message-1',
+            },
+          },
+        }),
+        message({ id: 'existing-child', role: 'user', parentId: 'assistant-parent' }),
+      ],
+      contextParentMessageId: 'assistant-parent',
+      baseMessageId: 'assistant-parent',
+    });
+
+    expect(result.providerThreadStrategy).toBe('fork_at_turn');
+    expect(result.providerInternalArgs).toEqual(expect.arrayContaining([
+      '--source-provider-thread-id',
+      'session-1',
+      '--target-provider-turn-id',
+      'message-1',
+    ]));
+  });
+
   it('does not fall back when an interior Codex parent is missing its provider turn id', () => {
     const result = buildAgentRunLaunchContext({
       agentType: 'codex',
@@ -229,6 +259,53 @@ describe('buildAgentRunLaunchContext', () => {
 
     expect(result.providerInternalArgs).not.toContain('--input-artifacts-json');
     expect(result.meta.provider_image_input_artifact_count).toBe(0);
+  });
+
+  it('passes capability-supported image artifacts to OpenCode', () => {
+    const result = buildAgentRunLaunchContext({
+      agentType: 'opencode',
+      userPrompt: 'Inspect this image.',
+      contextManifest: {
+        ...EMPTY_COMPOSER_CONTEXT_MANIFEST,
+        artifactInputs: [{
+          id: 'artifact-1',
+          nodeId: 'assistant-1',
+          role: 'output',
+          kind: 'image',
+          mimeType: 'image/png',
+          storage: { backend: 'local', path: '/tmp/image.png' },
+        }],
+      },
+      modelCapabilities: { inputModalities: ['text', 'image'] },
+    });
+
+    expect(result.providerInternalArgs).toContain('--input-artifacts-json');
+  });
+
+  it('passes capability-supported file artifacts to OpenCode', () => {
+    const result = buildAgentRunLaunchContext({
+      agentType: 'opencode',
+      userPrompt: 'Inspect this document.',
+      contextManifest: {
+        ...EMPTY_COMPOSER_CONTEXT_MANIFEST,
+        artifactInputs: [{
+          id: 'artifact-pdf',
+          nodeId: 'assistant-1',
+          role: 'output',
+          kind: 'file',
+          mimeType: 'application/pdf',
+          filename: 'report.pdf',
+          storage: { backend: 'local', path: '/tmp/report.pdf' },
+        }],
+      },
+      modelCapabilities: { inputModalities: ['text', 'pdf'], attachments: true },
+    });
+
+    const index = result.providerInternalArgs.indexOf('--input-artifacts-json');
+    expect(JSON.parse(result.providerInternalArgs[index + 1])).toEqual([
+      expect.objectContaining({ id: 'artifact-pdf', mimeType: 'application/pdf' }),
+    ]);
+    expect(result.meta.provider_input_artifact_count).toBe(1);
   });
 
   it('strips inline data urls from provider artifact input args', () => {

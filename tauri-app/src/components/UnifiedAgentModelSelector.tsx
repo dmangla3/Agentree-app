@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
-import { Check, ChevronRight, CircleGauge, KeyRound, Minus, Plus, Sparkles, X } from 'lucide-react';
+import { Check, ChevronRight, CircleGauge, Code2, KeyRound, Minus, Plus, Search, Settings2, Sparkles, X } from 'lucide-react';
 import { useAgents, type Agent } from '../hooks/useAgents';
 import {
     getReasoningEffortSortOrder,
@@ -9,8 +9,10 @@ import {
     type RuntimeProvider,
 } from '../lib/runtimeModels';
 import { dispatchOpenLoginProfiles } from '../lib/loginNavigationEvents';
+import { dispatchOpenModelConfiguration } from '../lib/modelConfigurationEvents';
 import { ScrollArea } from "../../@/components/ui/scroll-area";
 import { Checkbox } from "../../@/components/ui/checkbox";
+import { Input } from "../../@/components/ui/input";
 import { cn } from '../lib/utils';
 import {
     getProviderLimitSeverity,
@@ -21,6 +23,7 @@ import {
     useProviderLimitsStore,
 } from '../stores/providerLimitsStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
+import { isModelFamilyVisible, useModelStore } from '../stores/modelStore';
 import {
     hasActiveLoginProfileForProvider,
     isLoginProfileActive,
@@ -48,6 +51,17 @@ type AgentFamily = {
     models: AgentWithMeta[];
     defaultAgentId: string | null;
     selectedAgentId: string | null;
+};
+
+export const modelFamilyMatchesSearch = (
+    family: Pick<AgentFamily, 'label' | 'description' | 'models'>,
+    normalizedSearch: string,
+) => {
+    if (!normalizedSearch) return true;
+    const modelProviders = family.models
+        .map((model) => `${model.model_config?.modelProvider ?? ''} ${model.model_config?.model ?? ''}`)
+        .join(' ');
+    return `${family.label} ${family.description} ${modelProviders}`.toLowerCase().includes(normalizedSearch);
 };
 
 type ModelAvailability = {
@@ -101,7 +115,7 @@ const isPointInTriangle = (
 const providerEffortNoun = (provider: string) => (provider === 'claude' ? 'Thinking' : 'Reasoning');
 
 const isRuntimeProvider = (provider: string): provider is RuntimeProvider => (
-    provider === 'codex' || provider === 'claude'
+    provider === 'codex' || provider === 'claude' || provider === 'opencode'
 );
 
 const providerAccentClasses = (provider: string) => {
@@ -115,6 +129,18 @@ const providerAccentClasses = (provider: string) => {
             selectedSurface: 'bg-[#fff8f0] shadow-[inset_0_0_0_1px_rgba(182,129,79,0.18)] dark:bg-[#2a211a]',
             hoverSurface: 'hover:bg-[#fff9f2] dark:hover:bg-[#251f1a]',
             dot: 'bg-[#b6814f]',
+        };
+    }
+    if (provider === 'opencode') {
+        return {
+            text: 'text-sky-900 dark:text-sky-100',
+            mutedText: 'text-sky-800/70 dark:text-sky-200/70',
+            iconText: 'text-sky-700 dark:text-sky-300',
+            iconSurface: 'bg-sky-50 text-sky-700 shadow-[inset_0_0_0_1px_rgba(3,105,161,0.16)] dark:bg-sky-950/55 dark:text-sky-300',
+            rail: 'bg-sky-600',
+            selectedSurface: 'bg-sky-50/85 shadow-[inset_0_0_0_1px_rgba(3,105,161,0.17)] dark:bg-sky-950/35',
+            hoverSurface: 'hover:bg-sky-50/70 dark:hover:bg-sky-950/25',
+            dot: 'bg-sky-600',
         };
     }
     return {
@@ -262,7 +288,9 @@ export function UnifiedAgentModelSelector({
     );
     const providerLimits = useProviderLimitsStore((state) => state.byProvider);
     const loginProfiles = useLoginProfilesStore((state) => state.profiles);
+    const visibleFamilyKeysByProvider = useModelStore((state) => state.visibleFamilyKeysByProvider);
     const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
+    const [searchTerm, setSearchTerm] = useState('');
     const [hoveredFamilyKey, setHoveredFamilyKey] = useState<string | null>(null);
     const hoveredFamilyKeyRef = useRef<string | null>(null);
     const activeFamilyKeyRef = useRef<string | null>(null);
@@ -456,6 +484,10 @@ export function UnifiedAgentModelSelector({
             providerGroups.set(provider, providerFamilies);
         }
 
+        if (!providerGroups.has('opencode')) {
+            providerGroups.set('opencode', new Map());
+        }
+
         return Array.from(providerGroups.entries())
             .sort(sortProviders)
             .map(([provider, families]) => {
@@ -488,15 +520,26 @@ export function UnifiedAgentModelSelector({
             });
     }, [agents, selectedAgentId, agentRunCounts]);
 
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+    const visibleGroupedAgents = useMemo(() => groupedAgents.map((group) => ({
+        ...group,
+        families: group.families.filter((family) => {
+            if (family.selectedAgentId != null) return true;
+            const visible = !isRuntimeProvider(group.provider)
+                || isModelFamilyVisible(visibleFamilyKeysByProvider, group.provider, family.key);
+            return visible && modelFamilyMatchesSearch(family, normalizedSearch);
+        }),
+    })), [groupedAgents, normalizedSearch, visibleFamilyKeysByProvider]);
+
     const activeProviderGroup = useMemo(() => (
-        groupedAgents.find((group) => group.provider === selectedProvider)
-        ?? groupedAgents.find((group) => group.families.some((family) => (
+        visibleGroupedAgents.find((group) => group.provider === selectedProvider)
+        ?? visibleGroupedAgents.find((group) => group.families.some((family) => (
             family.models.some((model) => model.id === selectedAgentId)
         )))
-        ?? groupedAgents.find((group) => group.families.some((family) => family.selectedAgentId != null))
-        ?? groupedAgents[0]
+        ?? visibleGroupedAgents.find((group) => group.families.some((family) => family.selectedAgentId != null))
+        ?? visibleGroupedAgents[0]
         ?? null
-    ), [groupedAgents, selectedAgentId, selectedProvider]);
+    ), [selectedAgentId, selectedProvider, visibleGroupedAgents]);
     const familyList = useMemo(() => activeProviderGroup?.families ?? [], [activeProviderGroup]);
     const activeFamily = useMemo(() => {
         return familyList.find((family) => family.key === hoveredFamilyKey)
@@ -544,6 +587,12 @@ export function UnifiedAgentModelSelector({
                 title: 'Codex',
             };
         }
+        if (provider === 'opencode') {
+            return {
+                badge: 'OpenCode',
+                title: 'OpenCode',
+            };
+        }
         return {
             badge: provider,
             title: provider.charAt(0).toUpperCase() + provider.slice(1),
@@ -570,7 +619,7 @@ export function UnifiedAgentModelSelector({
                 </div>
                 {groupedAgents.length > 0 ? (
                     <div role="tablist" aria-label="Model providers" className="mt-3 flex items-center gap-1 rounded-lg bg-background/58 p-1 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]">
-                        {groupedAgents.map(({ provider, families }) => {
+                        {visibleGroupedAgents.map(({ provider, families }) => {
                             const meta = providerMeta(provider);
                             const accent = providerAccentClasses(provider);
                             const isActive = activeProviderGroup?.provider === provider;
@@ -592,6 +641,8 @@ export function UnifiedAgentModelSelector({
                                 >
                                     {provider === 'claude' ? (
                                         <AnthropicMark className={cn("h-3.5 w-3.5 shrink-0", accent.iconText)} />
+                                    ) : provider === 'opencode' ? (
+                                        <Code2 className={cn("h-3.5 w-3.5 shrink-0", accent.iconText)} />
                                     ) : (
                                         <OpenAiMark className={cn("h-3.5 w-3.5 shrink-0", accent.iconText)} />
                                     )}
@@ -608,17 +659,33 @@ export function UnifiedAgentModelSelector({
                         })}
                     </div>
                 ) : null}
+                <div className="relative mt-3">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                        value={searchTerm}
+                        onChange={(event) => setSearchTerm(event.target.value)}
+                        placeholder="Search models or providers"
+                        aria-label="Search models"
+                        className="h-9 bg-background/82 pl-9 text-xs"
+                    />
+                </div>
             </div>
 
-            {groupedAgents.length === 0 ? (
+            {visibleGroupedAgents.every((group) => group.families.length === 0) ? (
                 <div className="flex flex-1 items-center justify-center p-2.5">
                     <div className="flex min-h-[220px] w-full flex-col items-center justify-center rounded-lg bg-background/65 px-5 text-center shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.7)]">
                         <Sparkles className="h-4 w-4 text-muted-foreground" />
                         <div className="mt-2 text-[13px] font-semibold text-foreground">
-                            {allAgents.length > 0 && excludedAgentIdSet.size > 0 ? 'All models selected' : 'No runtimes available'}
+                            {normalizedSearch
+                                ? 'No matching models'
+                                : allAgents.length > 0 && excludedAgentIdSet.size > 0
+                                    ? 'All models selected'
+                                    : 'No runtimes available'}
                         </div>
                         <p className="mt-1 max-w-[26ch] text-[11px] leading-relaxed text-muted-foreground">
-                            {allAgents.length > 0 && excludedAgentIdSet.size > 0
+                            {normalizedSearch
+                                ? 'Try another model or provider name.'
+                                : allAgents.length > 0 && excludedAgentIdSet.size > 0
                                 ? 'Every available model is already included in this run.'
                                 : 'Add an agent provider before selecting a composer model.'}
                         </p>
@@ -988,6 +1055,19 @@ export function UnifiedAgentModelSelector({
                     </div>
                 </div>
             )}
+            <div className="shrink-0 border-t border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong))] p-2">
+                <button
+                    type="button"
+                    onClick={() => {
+                        const provider = activeProviderGroup?.provider;
+                        dispatchOpenModelConfiguration(isRuntimeProvider(provider ?? '') ? provider as RuntimeProvider : 'codex');
+                    }}
+                    className="flex h-9 w-full items-center justify-center gap-2 rounded-md text-[11px] font-semibold text-muted-foreground transition-[background-color,color,transform] duration-150 hover:bg-muted hover:text-foreground active:scale-[0.96]"
+                >
+                    <Settings2 className="h-3.5 w-3.5" />
+                    Manage visible models
+                </button>
+            </div>
             {isMenuAimDebugEnabledRef.current && menuAimDebugState?.points && typeof document !== 'undefined' ? createPortal((
                 <svg
                     className="pointer-events-none fixed inset-0 z-[2147483647] h-screen w-screen"

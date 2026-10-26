@@ -6,11 +6,13 @@ import { useAuthStore } from '../stores/authStore';
 const DEFAULT_LOCAL_SYNC_LIMIT = 25;
 const SHARE_SYNC_BATCH_LIMIT = 100;
 const LOCAL_SYNC_DEBOUNCE_MS = 1_500;
+const MAX_TIMER_DELAY_MS = 2_147_000_000;
 
 type QueuedLocalSync = {
   reasons: Set<string>;
   limit: number;
   timer: ReturnType<typeof setTimeout> | null;
+  retryTimer: ReturnType<typeof setTimeout> | null;
   inFlight: Promise<void> | null;
 };
 
@@ -18,7 +20,30 @@ const queued: QueuedLocalSync = {
   reasons: new Set(),
   limit: DEFAULT_LOCAL_SYNC_LIMIT,
   timer: null,
+  retryTimer: null,
   inFlight: null,
+};
+
+let reportedUnavailableReason: string | null = null;
+
+const readCloudSyncCapability = async () => {
+  const capability = await agentClient.getCloudSyncCapability();
+  if (capability.available) {
+    reportedUnavailableReason = null;
+    return capability;
+  }
+  const reason = capability.unavailableReason
+    ?? 'Cloud sync is unavailable because this Agentree build has no valid server configured.';
+  if (reportedUnavailableReason !== reason) {
+    reportedUnavailableReason = reason;
+    recordPerfEvent('local-sync.flush.paused', { reason }, { source: 'localSyncScheduler' });
+  }
+  return { ...capability, unavailableReason: reason };
+};
+
+export const ensureCloudSyncAvailable = async (): Promise<void> => {
+  const capability = await readCloudSyncCapability();
+  if (!capability.available) throw new Error(capability.unavailableReason ?? 'Cloud sync is unavailable.');
 };
 
 const getCloudSyncContext = async () => {
@@ -38,6 +63,46 @@ const schedulePendingFlush = () => {
   }
 };
 
+const clearRetryTimer = () => {
+  if (queued.retryTimer) clearTimeout(queued.retryTimer);
+  queued.retryTimer = null;
+};
+
+const scheduleNextNativeRetry = async () => {
+  if (queued.retryTimer || queued.timer || queued.inFlight || queued.reasons.size > 0) return;
+  const { user, desktopSession } = useAuthStore.getState();
+  if (!user || !desktopSession) return;
+
+  try {
+    const capability = await readCloudSyncCapability();
+    if (!capability.available) return;
+    const nextRetryAt = await agentClient.getNextLocalSyncRetryAt(user.id);
+    if (nextRetryAt === null || queued.retryTimer || queued.timer || queued.inFlight || queued.reasons.size > 0) return;
+
+    const retryAtMs = nextRetryAt * 1000;
+    const delayMs = Math.min(
+      MAX_TIMER_DELAY_MS,
+      Math.max(LOCAL_SYNC_DEBOUNCE_MS, retryAtMs - Date.now()),
+    );
+    queued.retryTimer = setTimeout(() => {
+      queued.retryTimer = null;
+      if (retryAtMs > Date.now() + LOCAL_SYNC_DEBOUNCE_MS) {
+        void scheduleNextNativeRetry();
+        return;
+      }
+      queueLocalSyncFlush({ reason: 'native-retry-due' });
+    }, delayMs);
+    recordPerfEvent('local-sync.retry.scheduled', {
+      nextRetryAt,
+      delayMs,
+    }, { source: 'localSyncScheduler' });
+  } catch (error) {
+    recordPerfEvent('local-sync.retry.schedule-failed', {
+      error: error instanceof Error ? error.message : String(error),
+    }, { source: 'localSyncScheduler' });
+  }
+};
+
 const runQueuedLocalSync = async () => {
   if (queued.inFlight) return queued.inFlight;
   if (queued.timer) {
@@ -52,6 +117,8 @@ const runQueuedLocalSync = async () => {
 
   queued.inFlight = (async () => {
     try {
+      const capability = await readCloudSyncCapability();
+      if (!capability.available) return;
       const { token, cloudAccountId } = await getCloudSyncContext();
       const synced = await agentClient.processLocalSyncEvents(token, cloudAccountId, limit);
       recordPerfEvent('local-sync.flush.completed', {
@@ -68,6 +135,7 @@ const runQueuedLocalSync = async () => {
     } finally {
       queued.inFlight = null;
       schedulePendingFlush();
+      await scheduleNextNativeRetry();
     }
   })();
 
@@ -75,6 +143,7 @@ const runQueuedLocalSync = async () => {
 };
 
 export const queueLocalSyncFlush = (options: { reason: string; limit?: number }) => {
+  clearRetryTimer();
   queued.reasons.add(options.reason);
   queued.limit = Math.max(queued.limit, options.limit ?? DEFAULT_LOCAL_SYNC_LIMIT);
   if (queued.timer || queued.inFlight) return;
@@ -100,10 +169,12 @@ export const flushWorkspaceCloudSync = async (workspaceId: string): Promise<numb
     clearTimeout(queued.timer);
     queued.timer = null;
   }
+  clearRetryTimer();
 
   let totalSynced = 0;
   queued.inFlight = (async () => {
     try {
+      await ensureCloudSyncAvailable();
       const { token, cloudAccountId } = await getCloudSyncContext();
       for (;;) {
         const synced = await agentClient.processLocalSyncEvents(
@@ -123,6 +194,7 @@ export const flushWorkspaceCloudSync = async (workspaceId: string): Promise<numb
     } finally {
       queued.inFlight = null;
       schedulePendingFlush();
+      await scheduleNextNativeRetry();
     }
   })();
   await queued.inFlight;
@@ -136,10 +208,12 @@ export const flushWorkspaceCloudBootstrap = async (workspaceId: string): Promise
     clearTimeout(queued.timer);
     queued.timer = null;
   }
+  clearRetryTimer();
 
   let synced = 0;
   queued.inFlight = (async () => {
     try {
+      await ensureCloudSyncAvailable();
       const { token, cloudAccountId } = await getCloudSyncContext();
       synced = await agentClient.processLocalSyncEvents(
         token,
@@ -155,6 +229,7 @@ export const flushWorkspaceCloudBootstrap = async (workspaceId: string): Promise
     } finally {
       queued.inFlight = null;
       schedulePendingFlush();
+      await scheduleNextNativeRetry();
     }
   })();
   await queued.inFlight;
@@ -167,8 +242,10 @@ export const flushQueuedLocalSyncForTest = async () => {
 
 export const resetLocalSyncSchedulerForTest = () => {
   if (queued.timer) clearTimeout(queued.timer);
+  clearRetryTimer();
   queued.timer = null;
   queued.inFlight = null;
   queued.reasons.clear();
   queued.limit = DEFAULT_LOCAL_SYNC_LIMIT;
+  reportedUnavailableReason = null;
 };

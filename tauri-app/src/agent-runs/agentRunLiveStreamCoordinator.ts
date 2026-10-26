@@ -13,6 +13,11 @@ type StopSubscription = () => void;
 
 type CoordinatorDeps = {
   getSelectedWorkspaceId: () => string | null;
+  onLandingWarning?: (warning: {
+    nodeId: string;
+    message: string;
+    outputCommitSha: string | null;
+  }) => void;
 };
 
 const NATIVE_SUBSCRIPTION_RETRY_DELAY_MS = 1_000;
@@ -110,6 +115,18 @@ const receiveNativeEvent = (
   event: Record<string, any>,
   deps: CoordinatorDeps,
 ) => {
+  if (event.type === 'finalize_ack') {
+    const message = cleanString(event.landing_warning) ?? cleanString(event.landingWarning);
+    if (message) {
+      deps.onLandingWarning?.({
+        nodeId,
+        message,
+        outputCommitSha: cleanString(event.output_commit_sha)
+          ?? cleanString(event.outputCommitSha)
+          ?? cleanString(event.commit_sha),
+      });
+    }
+  }
   const input = buildInput(nodeId, event, deps);
   const state = getStreamState(nodeId);
   ingestAgentRunStreamEvent(nodeId, event, input, state);

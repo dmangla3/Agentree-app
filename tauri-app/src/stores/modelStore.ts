@@ -1,5 +1,7 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { createJSONStorage, persist } from 'zustand/middleware';
+import { createBestEffortStorage } from '../lib/bestEffortStorage';
+import type { RuntimeProvider } from '../lib/runtimeModels';
 
 // --- Interfaces ---
 
@@ -44,6 +46,7 @@ interface ModelState {
   filterImage: boolean;
   sortField: SortField;
   sortDirection: SortDirection;
+  visibleFamilyKeysByProvider: Partial<Record<RuntimeProvider, string[]>>;
 
   // Actions
   setSearchTerm: (term: string) => void;
@@ -51,7 +54,14 @@ interface ModelState {
   setFilterImage: (value: boolean) => void;
   setSort: (field: SortField, direction: SortDirection) => void;
   toggleFavorite: (modelId: string) => void;
+  setVisibleFamilyKeys: (provider: RuntimeProvider, familyKeys: string[] | null) => void;
 }
+
+export const isModelFamilyVisible = (
+  visibleFamilyKeysByProvider: ModelState['visibleFamilyKeysByProvider'],
+  provider: RuntimeProvider,
+  familyKey: string,
+) => visibleFamilyKeysByProvider[provider]?.includes(familyKey) ?? true;
 
 // --- Zustand Store Definition ---
 export const useModelStore = create<ModelState>()(
@@ -64,6 +74,7 @@ export const useModelStore = create<ModelState>()(
       filterImage: false,
       sortField: 'name',
       sortDirection: 'asc',
+      visibleFamilyKeysByProvider: {},
 
       // --- Actions ---
       setSearchTerm: (term: string) => set({ searchTerm: term }),
@@ -84,12 +95,23 @@ export const useModelStore = create<ModelState>()(
           return { favorites: newFavorites };
         });
       },
+      setVisibleFamilyKeys: (provider, familyKeys) => set((state) => {
+        const next = { ...state.visibleFamilyKeysByProvider };
+        if (familyKeys === null) {
+          delete next[provider];
+        } else {
+          next[provider] = Array.from(new Set(familyKeys));
+        }
+        return { visibleFamilyKeysByProvider: next };
+      }),
     }),
     {
       name: 'model-storage', // Local storage key
       partialize: (state) => ({
         favorites: Array.from(state.favorites), // Persist favorites as an array
+        visibleFamilyKeysByProvider: state.visibleFamilyKeysByProvider,
       }),
+      storage: createJSONStorage(() => createBestEffortStorage(() => localStorage)),
       // Rehydrate Set from array
       onRehydrateStorage: () => (state) => {
         if (state) {

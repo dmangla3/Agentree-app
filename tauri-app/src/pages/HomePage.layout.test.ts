@@ -60,10 +60,10 @@ describe('HomePage graph/chat split layout', () => {
     expect(source).not.toContain('WorkspaceSelectionDialog');
   });
 
-  it('keeps the workspace navigator thread focus preference across primary view switches', () => {
+  it('keeps thread-focus state in the shell so it survives navigator remounts', () => {
     const source = readHomePageSource();
 
-    expect(source).toContain('const [workspaceNavigatorThreadsFocused, setWorkspaceNavigatorThreadsFocused] = useState(false)');
+    expect(source).toContain('workspaceNavigatorThreadsFocused');
     expect(source).toContain('threadsFocused={workspaceNavigatorThreadsFocused}');
     expect(source).toContain('onThreadsFocusedChange={setWorkspaceNavigatorThreadsFocused}');
   });
@@ -74,6 +74,27 @@ describe('HomePage graph/chat split layout', () => {
     expect(source).toContain('aria-label="Agentree workspace shell"');
     expect(source).toContain('app-shell-content');
     expect(source).not.toContain("{activeView === 'chat' && (");
+  });
+
+  it('keeps terminal tab presence separate from dock visibility', () => {
+    const source = readHomePageSource();
+
+    expect(source).toContain('const [hasTerminalTabs, setHasTerminalTabs] = useState(false)');
+    expect(source).toContain('onTabsChange={handleTerminalTabsChange}');
+    expect(source).toContain('onRequestShow={showTerminalDock}');
+    expect(source).toContain('onCollapse={() => setIsTerminalDockVisible(false)}');
+    expect(source).toContain('onExpand={() => setIsTerminalDockVisible(true)}');
+  });
+
+  it('exposes terminal restore controls only while tabs are alive', () => {
+    const source = readHomePageSource();
+    const headerSource = readFileSync(join(process.cwd(), 'src/components/AppHeader.tsx'), 'utf8');
+
+    expect(source).toContain('hasTerminalTabs={hasTerminalTabs}');
+    expect(source).toContain('onToggleTerminalDock={toggleOrOpenTerminalDock}');
+    expect(source).toContain('useToggleTerminalDockHotkey(toggleOrOpenTerminalDock)');
+    expect(headerSource).toContain('{hasTerminalTabs ? (');
+    expect(headerSource).toContain("aria-label={isTerminalDockVisible ? 'Hide terminal dock' : 'Show terminal dock'}");
   });
 
   it('does not add extra product or view text next to the logo', () => {

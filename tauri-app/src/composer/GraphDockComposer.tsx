@@ -557,7 +557,7 @@ export function GraphDockComposer() {
     Array.from(new Set(
       selectedAgentRunItems
         .map((run) => run.agent.type)
-        .filter((provider) => provider === 'codex' || provider === 'claude')
+        .filter((provider) => provider === 'codex' || provider === 'claude' || provider === 'opencode')
     )).sort()
   ), [selectedAgentRunItems]);
   const providerSkillsQuery = useQuery({
@@ -1313,7 +1313,7 @@ export function GraphDockComposer() {
     const runsToLaunch = runsToSend;
     const checkedProfiles = new Set<string>();
     for (const run of runsToLaunch) {
-      const provider = run.agent.type === 'codex' || run.agent.type === 'claude'
+      const provider = run.agent.type === 'codex' || run.agent.type === 'claude' || run.agent.type === 'opencode'
         ? run.agent.type
         : null;
       const selection = resolveLoginProfileSelection({
@@ -1359,7 +1359,7 @@ export function GraphDockComposer() {
         setPendingThreadId(thread.id);
       }
       for (const run of runsToLaunch) {
-        const provider = run.agent.type === 'codex' || run.agent.type === 'claude'
+        const provider = run.agent.type === 'codex' || run.agent.type === 'claude' || run.agent.type === 'opencode'
           ? run.agent.type
           : null;
         const loginProfileSelection = resolveLoginProfileSelection({

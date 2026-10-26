@@ -13,6 +13,7 @@ import { FileDiffPanel } from '../../diff/FileDiffPanel';
 import type { BranchPointer } from '../../../stores/workspaceStore';
 import { CopyCommitShaButton } from '../../CopyCommitShaButton';
 import { CommitCheckoutButton } from '../../CommitCheckoutButton';
+import { OpenCommitTerminalButton } from '../../OpenCommitTerminalButton';
 import { getMessageOutputCommitSha } from '../../../lib/graph/commitAccessors';
 import { useAgentreeSurface } from '../../graph/surfaceCapabilities';
 
@@ -208,10 +209,17 @@ export const ChatCommitCard = memo(({
 
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             {capabilities.canMutate ? (
-              <CommitCheckoutButton
-                repoPath={repoPath}
-                commitSha={nodeCommit}
-              />
+              <>
+                <OpenCommitTerminalButton
+                  repoPath={repoPath}
+                  commitSha={nodeCommit}
+                  label={entity.preview}
+                />
+                <CommitCheckoutButton
+                  repoPath={repoPath}
+                  commitSha={nodeCommit}
+                />
+              </>
             ) : null}
             {capabilities.canMutate && parentCommit && nodeCommit ? (
               <button

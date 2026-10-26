@@ -46,6 +46,22 @@
           "treeSha256": "8392390ed059874b63c9ad98087d344cd56f8141d9cf48979dbe5c0fd551bf42"
         }
       }
+    },
+    "opencode": {
+      "version": "1.18.3",
+      "bundledRipgrepVersion": "15.1.0",
+      "platforms": {
+        "linux-x86_64": {
+          "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-opencode-1.18.3-linux-x86_64.tar.gz",
+          "sha256": "47c46cb274ec5b13e546851879c88d652059f13334fb47e50a527565607406ef",
+          "treeSha256": "a89b2fecee363220fc5436067e84b323acf94e1054d852201108b86699760081"
+        },
+        "darwin-aarch64": {
+          "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-opencode-1.18.3-darwin-aarch64.tar.gz",
+          "sha256": "edaaf2b83f21832a64e4a74678c7a965e1337a79ec259913940a224b74c5bd2d",
+          "treeSha256": "227f96c1efbc73e03c30d8ead71e23a33590f7b49313f55094bc931f459c4b31"
+        }
+      }
     }
   }
 }

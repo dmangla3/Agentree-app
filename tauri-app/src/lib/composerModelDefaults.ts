@@ -30,11 +30,11 @@ const getParentRuntimeModelPreference = (parentMessage: ComposerParentMessage): 
   if (!parentMessage) return null;
 
   const agentId = stringValue(parentMessage.agent_id);
-  if (agentId && runtimeModels.some((model) => model.key === agentId)) {
+  if (agentId && (runtimeModels.some((model) => model.key === agentId) || agentId.startsWith('opencode:'))) {
     const runtimeModel = runtimeModels.find((model) => model.key === agentId);
     return {
       key: agentId,
-      provider: runtimeModel?.provider ?? null,
+      provider: runtimeModel?.provider ?? (agentId.startsWith('opencode:') ? 'opencode' : null),
       model: runtimeModel?.modelId ?? null,
     };
   }
@@ -60,9 +60,11 @@ const getParentRuntimeModelPreference = (parentMessage: ComposerParentMessage): 
 
 export const resolveComposerDefaultAgentId = ({
   agents,
+  fallbackAgents = agents,
   parentMessage,
 }: {
   agents: ComposerAgent[];
+  fallbackAgents?: ComposerAgent[];
   parentMessage: ComposerParentMessage;
 }): string | null => {
   const parentPreference = getParentRuntimeModelPreference(parentMessage);
@@ -78,9 +80,9 @@ export const resolveComposerDefaultAgentId = ({
     if (matchingAgent) return matchingAgent.id;
   }
 
-  if (agents.some((agent) => agent.id === defaultRootRuntimeModelKey)) {
+  if (fallbackAgents.some((agent) => agent.id === defaultRootRuntimeModelKey)) {
     return defaultRootRuntimeModelKey;
   }
 
-  return agents.find((agent) => agent.type === 'codex')?.id ?? agents[0]?.id ?? null;
+  return fallbackAgents.find((agent) => agent.type === 'codex')?.id ?? fallbackAgents[0]?.id ?? null;
 };

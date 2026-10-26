@@ -34,6 +34,13 @@ export const SHORTCUTS = {
     description: 'Close the active search panel.',
     scope: 'search',
   },
+  'terminal.toggle': {
+    id: 'terminal.toggle',
+    defaultHotkey: 'Mod+J',
+    label: 'Toggle terminal dock',
+    description: 'Show or hide live terminals, or open one at the focused commit.',
+    scope: 'global',
+  },
   'app.font-size.increase': {
     id: 'app.font-size.increase',
     defaultHotkey: ['Mod+=', { key: '=', mod: true, shift: true }],

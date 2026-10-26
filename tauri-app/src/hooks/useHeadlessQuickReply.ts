@@ -115,7 +115,9 @@ export function useHeadlessQuickReply() {
       agentName: agent.name ?? agent.type,
     });
     const selectedLoginProfile = loginProfileSelection.selectedProfile;
-    const provider = agent.type === 'codex' || agent.type === 'claude' ? agent.type : null;
+    const provider = agent.type === 'codex' || agent.type === 'claude' || agent.type === 'opencode'
+      ? agent.type
+      : null;
     if (providerRequiresLoginProfile(provider) && !selectedLoginProfile && provider) {
       setStatus('idle');
       setError(null);

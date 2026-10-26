@@ -226,6 +226,7 @@ impl ThreadControlService {
             first_message_id: None,
             parent_thread_id: Some(parent_thread_id.clone()),
             source: "delegation".to_string(),
+            anchor_node_id: None,
         };
         let local_user_id = self.telemetry().get_local_identity()?.local_user_id;
         self.telemetry()
@@ -500,8 +501,8 @@ impl ThreadControlService {
             .ok_or_else(|| "Could not infer the caller's runtime provider.".to_string())?;
         let provider =
             read_string(args, "agent_type").unwrap_or_else(|| inherited_provider.clone());
-        if provider != "codex" && provider != "claude" {
-            return Err("agent_type must be codex or claude.".to_string());
+        if !matches!(provider.as_str(), "codex" | "claude" | "opencode") {
+            return Err("agent_type must be codex, claude, or opencode.".to_string());
         }
         let requested_model = read_string(args, "model");
         if provider != inherited_provider && requested_model.is_none() {
@@ -511,8 +512,9 @@ impl ThreadControlService {
             .or_else(|| value_string(caller, "llmModel"))
             .or_else(|| value_string(caller_meta, "provider_model"))
             .ok_or_else(|| "Could not infer a model. Pass model explicitly.".to_string())?;
-        let reasoning_effort = value_string(caller_meta, "provider_reasoning_effort")
-            .or_else(|| Some("high".to_string()));
+        let reasoning_effort = read_string(args, "reasoning_effort")
+            .or_else(|| value_string(caller_meta, "provider_reasoning_effort"))
+            .or_else(|| (provider != "opencode").then(|| "high".to_string()));
         let permission_mode = value_string(caller_meta, "composer_permission_mode")
             .unwrap_or_else(|| "full-access".to_string());
         let inherited_profile = value_string(caller_meta, "login_profile_id");
@@ -904,10 +906,10 @@ struct LaunchMessageInput<'a> {
 }
 
 fn model_label(provider: &str, model: &str) -> String {
-    let provider_label = if provider == "claude" {
-        "Claude"
-    } else {
-        "Codex"
+    let provider_label = match provider {
+        "claude" => "Claude",
+        "opencode" => "OpenCode",
+        _ => "Codex",
     };
     format!("{} {}", provider_label, model)
 }

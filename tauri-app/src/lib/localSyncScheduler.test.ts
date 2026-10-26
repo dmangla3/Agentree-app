@@ -3,6 +3,7 @@ import {
   flushQueuedLocalSyncForTest,
   flushWorkspaceCloudBootstrap,
   flushWorkspaceCloudSync,
+  ensureCloudSyncAvailable,
   queueLocalSyncFlush,
   resetLocalSyncSchedulerForTest,
 } from './localSyncScheduler';
@@ -17,6 +18,8 @@ vi.mock('./authSession', () => ({
 vi.mock('./agentClient', () => ({
   agentClient: {
     processLocalSyncEvents: vi.fn(async () => 1),
+    getCloudSyncCapability: vi.fn(async () => ({ available: true, unavailableReason: null })),
+    getNextLocalSyncRetryAt: vi.fn(async () => null),
   },
 }));
 
@@ -24,6 +27,12 @@ describe('localSyncScheduler', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    vi.mocked(agentClient.processLocalSyncEvents).mockResolvedValue(1);
+    vi.mocked(agentClient.getCloudSyncCapability).mockResolvedValue({
+      available: true,
+      unavailableReason: null,
+    });
+    vi.mocked(agentClient.getNextLocalSyncRetryAt).mockResolvedValue(null);
     useAuthStore.getState().setUser({
       id: 'cloud-user-1',
       email: 'cloud@example.com',
@@ -46,7 +55,7 @@ describe('localSyncScheduler', () => {
 
   it('debounces background sync and lets native workspace flags select deliverable events', async () => {
     queueLocalSyncFlush({ reason: 'workspace-list-mounted' });
-    queueLocalSyncFlush({ reason: 'local-node-retryable' });
+    queueLocalSyncFlush({ reason: 'workspace-renamed' });
 
     expect(getAccessToken).not.toHaveBeenCalled();
     expect(agentClient.processLocalSyncEvents).not.toHaveBeenCalled();
@@ -57,6 +66,38 @@ describe('localSyncScheduler', () => {
       'cloud-user-1',
       25,
     );
+  });
+
+  it('schedules the next retry from the native outbox summary', async () => {
+    vi.setSystemTime(new Date('2026-08-05T00:00:00.000Z'));
+    vi.mocked(agentClient.getNextLocalSyncRetryAt)
+      .mockResolvedValueOnce(Math.floor(Date.now() / 1000) + 10)
+      .mockResolvedValue(null);
+
+    queueLocalSyncFlush({ reason: 'workspaces-mounted' });
+    await flushQueuedLocalSyncForTest();
+
+    expect(agentClient.getNextLocalSyncRetryAt).toHaveBeenCalledWith('cloud-user-1');
+    expect(agentClient.processLocalSyncEvents).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(11_500);
+
+    expect(agentClient.processLocalSyncEvents).toHaveBeenCalledTimes(2);
+  });
+
+  it('pauses background delivery and rejects direct sync when no server is configured', async () => {
+    const unavailable = {
+      available: false,
+      unavailableReason: 'Configure an absolute AGENTREE_SERVER_URL and restart Agentree.',
+    };
+    vi.mocked(agentClient.getCloudSyncCapability).mockResolvedValue(unavailable);
+
+    queueLocalSyncFlush({ reason: 'workspaces-mounted' });
+    await flushQueuedLocalSyncForTest();
+
+    expect(agentClient.processLocalSyncEvents).not.toHaveBeenCalled();
+    expect(agentClient.getNextLocalSyncRetryAt).not.toHaveBeenCalled();
+    await expect(ensureCloudSyncAvailable()).rejects.toThrow(unavailable.unavailableReason);
   });
 
   it('flushes one workspace to completion before sharing', async () => {

@@ -2368,6 +2368,57 @@ export const mapMessagesToGraphElements = (
 
     });
 
+    if (showConversationNodes) {
+      projection.entities
+        .filter((entity) => entity.kind === 'thread_link')
+        .forEach((entity) => {
+          const anchorId = entity.threadAnchorMessageId;
+          if (!anchorId || hiddenNodes.has(anchorId)) return;
+          const sourceNodeId = externalClusterByAssistantId.get(anchorId) ?? anchorId;
+          if (!nodes.some((node) => node.id === sourceNodeId)) return;
+          nodes.push({
+            id: entity.entityId,
+            type: 'thread_link',
+            position: { x: 0, y: 0 },
+            data: {
+              entity,
+              projection,
+              isSelected: false,
+              heightKey: `thread-link:${entity.threadLinkRootId ?? entity.entityId}`,
+              onMeasureHeight: onMeasureNodeHeight,
+              onFocus,
+              onOpenThread,
+              onSelect,
+              onContextMenu,
+              nodeKind: 'thread_link',
+              repoPath: null,
+              branchPointers: [],
+              isFocused: false,
+              isInContextPath: false,
+              matchesTagFilter: true,
+              filterActive,
+              isDense: false,
+              collapsed: false,
+              isContextActive: true,
+            },
+            style: { width: TURN_CONVERSATION_NODE_WIDTH, height: 64, zIndex: 1 },
+          } as Node<any>);
+          edges.push({
+            id: `${sourceNodeId}->${entity.entityId}:thread-link`,
+            source: sourceNodeId,
+            target: entity.entityId,
+            sourceHandle: 'bottom-source',
+            targetHandle: 'top-target',
+            type: 'compactLineage',
+            animated: false,
+            data: { edgeLegendType: 'conversation', relationship: 'conversation', edgeRole: 'conversation' },
+            style: { stroke: INACTIVE_EDGE_STROKE, strokeWidth: DEFAULT_EDGE_STROKE_WIDTH },
+            className: 'dark:[stroke:#94a3b8]',
+            zIndex: 0,
+          });
+        });
+    }
+
     if (showConversationNodes && renderedThreadOriginIds.size > 0) {
       messages.forEach((message) => {
         if (message.role !== 'user') return;

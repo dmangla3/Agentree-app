@@ -707,6 +707,19 @@ pub struct ThreadSessionPayload {
     pub first_message_id: Option<String>,
     pub parent_thread_id: Option<String>,
     pub source: String,
+    pub anchor_node_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvertSubgraphToThreadResult {
+    pub thread: ThreadSessionPayload,
+    pub conversion_id: String,
+    pub root_node_id: String,
+    pub source_thread_id: Option<String>,
+    pub target_thread_id: String,
+    pub original_parent_id: String,
+    pub moved_node_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -1070,6 +1083,7 @@ impl TelemetryDb {
                 first_message_id TEXT,
                 parent_thread_id TEXT,
                 source TEXT NOT NULL DEFAULT 'user',
+                anchor_node_id TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 deleted_at TEXT,
@@ -1079,6 +1093,20 @@ impl TelemetryDb {
             );
             CREATE INDEX IF NOT EXISTS idx_thread_sessions_workspace
                 ON thread_sessions(workspace_id, deleted_at, status, updated_at);
+
+            CREATE TABLE IF NOT EXISTS subgraph_thread_conversions (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                root_node_id TEXT NOT NULL,
+                source_thread_id TEXT,
+                target_thread_id TEXT NOT NULL,
+                original_parent_id TEXT NOT NULL,
+                moved_node_ids_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(workspace_id, idempotency_key),
+                UNIQUE(workspace_id, root_node_id)
+            );
 
             CREATE TABLE IF NOT EXISTS local_workspaces (
                 id TEXT PRIMARY KEY,
@@ -1327,6 +1355,14 @@ impl TelemetryDb {
             [],
         );
         let _ = conn.execute("ALTER TABLE local_nodes ADD COLUMN payload_json TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE thread_sessions ADD COLUMN parent_thread_id TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE thread_sessions ADD COLUMN anchor_node_id TEXT",
+            [],
+        );
         let _ = conn.execute("ALTER TABLE local_sync_events ADD COLUMN user_id TEXT", []);
         let _ = conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_local_sync_events_due_user ON local_sync_events(user_id, status, next_attempt_at, created_at)",
@@ -3197,7 +3233,7 @@ impl TelemetryDb {
                     status != 'needs_user_action'
                     OR needs_user_action_reason LIKE 'App restarted before this run reached a terminal state%'
                   )
-                  AND agent_type IN ('codex', 'claude')
+                  AND agent_type IN ('codex', 'claude', 'opencode')
                   AND login_profile_id IS NOT NULL
                   AND repo_path IS NOT NULL
                   AND worktree_path IS NOT NULL
@@ -4587,6 +4623,34 @@ impl TelemetryDb {
         Ok(rows)
     }
 
+    pub(crate) fn list_local_agent_control_edges_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<(String, String)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT n.id, n.controlled_by_node_id
+                FROM local_nodes n
+                JOIN local_workspaces w ON w.id = n.workspace_id
+                WHERE (w.user_id = ?1 OR w.user_id IS NULL)
+                  AND w.deleted_at IS NULL
+                  AND n.deleted_at IS NULL
+                  AND n.role = 'assistant'
+                  AND n.controlled_by_node_id IS NOT NULL
+                ORDER BY n.id ASC
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let edges = stmt
+            .query_map(params![user_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(edges)
+    }
+
     fn normalize_thread_session_payload(
         payload: ThreadSessionPayload,
     ) -> Result<ThreadSessionPayload, String> {
@@ -4605,7 +4669,9 @@ impl TelemetryDb {
             _ => "active".to_string(),
         };
         let source = match payload.source.as_str() {
-            "workspace_default" | "flow" | "legacy" | "delegation" => payload.source,
+            "workspace_default" | "flow" | "legacy" | "delegation" | "converted_subgraph" => {
+                payload.source
+            }
             _ => "user".to_string(),
         };
         Ok(ThreadSessionPayload {
@@ -4626,6 +4692,7 @@ impl TelemetryDb {
             first_message_id: payload.first_message_id,
             parent_thread_id: payload.parent_thread_id,
             source,
+            anchor_node_id: payload.anchor_node_id,
         })
     }
 
@@ -4638,17 +4705,18 @@ impl TelemetryDb {
             r#"
             INSERT INTO thread_sessions (
                 id, workspace_id, title, status, base_commit_sha, first_message_id,
-                parent_thread_id, source, created_at, updated_at, deleted_at, local_updated_at
+                source, parent_thread_id, anchor_node_id, created_at, updated_at, deleted_at, local_updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, ?12)
             ON CONFLICT(id) DO UPDATE SET
                 workspace_id = excluded.workspace_id,
                 title = excluded.title,
                 status = excluded.status,
                 base_commit_sha = excluded.base_commit_sha,
                 first_message_id = COALESCE(excluded.first_message_id, thread_sessions.first_message_id),
-                parent_thread_id = excluded.parent_thread_id,
                 source = excluded.source,
+                parent_thread_id = excluded.parent_thread_id,
+                anchor_node_id = excluded.anchor_node_id,
                 updated_at = excluded.updated_at,
                 deleted_at = thread_sessions.deleted_at,
                 local_updated_at = excluded.local_updated_at
@@ -4660,8 +4728,9 @@ impl TelemetryDb {
                 normalized.status,
                 normalized.base_commit_sha,
                 normalized.first_message_id,
-                normalized.parent_thread_id,
                 normalized.source,
+                normalized.parent_thread_id,
+                normalized.anchor_node_id,
                 normalized.created_at,
                 normalized.updated_at,
                 now
@@ -4709,6 +4778,289 @@ impl TelemetryDb {
         Ok(normalized)
     }
 
+    pub fn convert_subgraph_to_thread(
+        &self,
+        workspace_id: &str,
+        root_node_id: &str,
+        idempotency_key: &str,
+        target_thread_id: &str,
+        current_user_id: Option<&str>,
+    ) -> Result<ConvertSubgraphToThreadResult, String> {
+        let workspace_id = workspace_id.trim();
+        let root_node_id = root_node_id.trim();
+        let idempotency_key = idempotency_key.trim();
+        let target_thread_id = target_thread_id.trim();
+        if workspace_id.is_empty()
+            || root_node_id.is_empty()
+            || idempotency_key.is_empty()
+            || target_thread_id.is_empty()
+        {
+            return Err(
+                "workspaceId, rootNodeId, idempotencyKey, and targetThreadId are required"
+                    .to_string(),
+            );
+        }
+
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let read_existing = |column: &str,
+                             value: &str|
+         -> Result<Option<ConvertSubgraphToThreadResult>, String> {
+            let sql = format!(
+                "SELECT c.id, c.root_node_id, c.source_thread_id, c.target_thread_id, c.original_parent_id, c.moved_node_ids_json, \
+                        t.workspace_id, t.title, t.status, t.created_at, t.updated_at, t.base_commit_sha, t.first_message_id, t.source, t.parent_thread_id, t.anchor_node_id \
+                 FROM subgraph_thread_conversions c JOIN thread_sessions t ON t.id = c.target_thread_id \
+                 WHERE c.workspace_id = ?1 AND c.{column} = ?2"
+            );
+            tx.query_row(&sql, params![workspace_id, value], |row| {
+                let moved_json: String = row.get(5)?;
+                Ok(ConvertSubgraphToThreadResult {
+                    conversion_id: row.get(0)?,
+                    root_node_id: row.get(1)?,
+                    source_thread_id: row.get(2)?,
+                    target_thread_id: row.get(3)?,
+                    original_parent_id: row.get(4)?,
+                    moved_node_ids: serde_json::from_str(&moved_json).unwrap_or_default(),
+                    thread: ThreadSessionPayload {
+                        id: row.get(3)?,
+                        workspace_id: row.get(6)?,
+                        title: row.get(7)?,
+                        status: row.get(8)?,
+                        created_at: row.get(9)?,
+                        updated_at: row.get(10)?,
+                        base_commit_sha: row.get(11)?,
+                        first_message_id: row.get(12)?,
+                        source: row.get(13)?,
+                        parent_thread_id: row.get(14)?,
+                        anchor_node_id: row.get(15)?,
+                    },
+                })
+            })
+            .optional()
+            .map_err(|e| e.to_string())
+        };
+        if let Some(existing) = read_existing("idempotency_key", idempotency_key)? {
+            return Ok(existing);
+        }
+        if let Some(existing) = read_existing("root_node_id", root_node_id)? {
+            return Ok(existing);
+        }
+
+        #[derive(Clone)]
+        struct ConversionNode {
+            id: String,
+            parent_id: Option<String>,
+            role: String,
+            status: Option<String>,
+            thread_id: Option<String>,
+            content: String,
+            base_commit_sha: Option<String>,
+            payload_json: Option<String>,
+        }
+        let nodes = {
+            let mut stmt = tx.prepare(
+                "SELECT id, parent_id, role, status, thread_id, content, base_commit_sha, payload_json \
+                 FROM local_nodes WHERE workspace_id = ?1 AND deleted_at IS NULL"
+            ).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![workspace_id], |row| {
+                    Ok(ConversionNode {
+                        id: row.get(0)?,
+                        parent_id: row.get(1)?,
+                        role: row.get(2)?,
+                        status: row.get(3)?,
+                        thread_id: row.get(4)?,
+                        content: row.get(5)?,
+                        base_commit_sha: row.get(6)?,
+                        payload_json: row.get(7)?,
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            rows
+        };
+        let by_id: std::collections::HashMap<String, ConversionNode> = nodes
+            .iter()
+            .cloned()
+            .map(|node| (node.id.clone(), node))
+            .collect();
+        let root = by_id
+            .get(root_node_id)
+            .ok_or_else(|| "Conversion root does not exist".to_string())?;
+        let original_parent_id = root
+            .parent_id
+            .clone()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| "Only a nested user node can be converted to a thread".to_string())?;
+        if root.role != "user" || !by_id.contains_key(&original_parent_id) {
+            return Err(
+                "Only a nested user node with a valid anchor can be converted to a thread"
+                    .to_string(),
+            );
+        }
+        let source_thread_id = root.thread_id.clone();
+        let mut children_by_parent: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for node in &nodes {
+            if let Some(parent_id) = node.parent_id.as_ref() {
+                children_by_parent
+                    .entry(parent_id.clone())
+                    .or_default()
+                    .push(node.id.clone());
+            }
+        }
+        let mut moved_node_ids = Vec::new();
+        let mut moved = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::from([root_node_id.to_string()]);
+        while let Some(node_id) = queue.pop_front() {
+            if moved.contains(&node_id) {
+                continue;
+            }
+            let Some(node) = by_id.get(&node_id) else {
+                continue;
+            };
+            if node.thread_id != source_thread_id {
+                continue;
+            }
+            moved.insert(node_id.clone());
+            moved_node_ids.push(node_id.clone());
+            for child_id in children_by_parent.get(&node_id).into_iter().flatten() {
+                queue.push_back(child_id.clone());
+            }
+        }
+        const ACTIVE_STATUSES: &[&str] = &[
+            "pending",
+            "queued",
+            "starting",
+            "running",
+            "streaming",
+            "working",
+            "cancelling",
+        ];
+        if let Some(active) = moved_node_ids
+            .iter()
+            .filter_map(|id| by_id.get(id))
+            .find(|node| {
+                node.status
+                    .as_deref()
+                    .map(|status| ACTIVE_STATUSES.contains(&status.to_ascii_lowercase().as_str()))
+                    .unwrap_or(false)
+            })
+        {
+            return Err(format!(
+                "Node {} is still active; wait for it to finish before converting",
+                active.id
+            ));
+        }
+
+        let now_iso = chrono_like_now();
+        let now = unix_timestamp();
+        tx.execute(
+            "INSERT INTO thread_sessions (id, workspace_id, title, status, base_commit_sha, first_message_id, source, parent_thread_id, anchor_node_id, created_at, updated_at, deleted_at, local_updated_at) \
+             VALUES (?1, ?2, ?3, 'active', ?4, ?5, 'converted_subgraph', ?6, ?7, ?8, ?8, NULL, ?9)",
+            params![target_thread_id, workspace_id, root.content.trim(), root.base_commit_sha, root_node_id, source_thread_id, original_parent_id, now_iso, now],
+        ).map_err(|e| e.to_string())?;
+
+        let mut relative_paths: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        relative_paths.insert(root_node_id.to_string(), Vec::new());
+        for node_id in &moved_node_ids {
+            if node_id == root_node_id {
+                continue;
+            }
+            let node = by_id.get(node_id).unwrap();
+            let mut path = node
+                .parent_id
+                .as_ref()
+                .and_then(|id| relative_paths.get(id))
+                .cloned()
+                .unwrap_or_default();
+            if let Some(parent_id) = node.parent_id.as_ref() {
+                path.push(parent_id.clone());
+            }
+            relative_paths.insert(node_id.clone(), path);
+        }
+        for node_id in &moved_node_ids {
+            let node = by_id.get(node_id).unwrap();
+            let mut payload: JsonValue = node
+                .payload_json
+                .as_deref()
+                .and_then(|value| serde_json::from_str(value).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+            if let Some(object) = payload.as_object_mut() {
+                object.insert(
+                    "threadId".to_string(),
+                    JsonValue::String(target_thread_id.to_string()),
+                );
+                object.insert(
+                    "thread_id".to_string(),
+                    JsonValue::String(target_thread_id.to_string()),
+                );
+                if node_id == root_node_id {
+                    object.insert("parentId".to_string(), JsonValue::Null);
+                    object.insert("parent_id".to_string(), JsonValue::Null);
+                }
+                let path = relative_paths.get(node_id).cloned().unwrap_or_default();
+                object.insert("path_ids".to_string(), serde_json::json!(path));
+                object.insert("depth".to_string(), serde_json::json!(path.len()));
+                object.insert("updatedAt".to_string(), JsonValue::String(now_iso.clone()));
+            }
+            tx.execute(
+                "UPDATE local_nodes SET thread_id = ?1, parent_id = CASE WHEN id = ?2 THEN NULL ELSE parent_id END, payload_json = ?3, updated_at = ?4, local_updated_at = ?5 WHERE id = ?6",
+                params![target_thread_id, root_node_id, payload.to_string(), now_iso, now, node_id],
+            ).map_err(|e| e.to_string())?;
+        }
+
+        let conversion_id = uuid::Uuid::new_v4().to_string();
+        let moved_json = serde_json::to_string(&moved_node_ids).map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO subgraph_thread_conversions (id, workspace_id, idempotency_key, root_node_id, source_thread_id, target_thread_id, original_parent_id, moved_node_ids_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![conversion_id, workspace_id, idempotency_key, root_node_id, source_thread_id, target_thread_id, original_parent_id, moved_json, now_iso],
+        ).map_err(|e| e.to_string())?;
+
+        let sync_payload = serde_json::json!({
+            "rootNodeId": root_node_id, "idempotencyKey": idempotency_key, "targetThreadId": target_thread_id
+        }).to_string();
+        Self::enqueue_local_sync_event_locked(
+            &tx,
+            now,
+            Some(workspace_id),
+            current_user_id,
+            "thread_conversion",
+            root_node_id,
+            "thread.convert_subgraph",
+            &sync_payload,
+            Some(idempotency_key),
+        )?;
+
+        let thread = ThreadSessionPayload {
+            id: target_thread_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            title: Some(root.content.trim().to_string()).filter(|value| !value.is_empty()),
+            status: "active".to_string(),
+            created_at: Some(now_iso.clone()),
+            updated_at: Some(now_iso),
+            base_commit_sha: root.base_commit_sha.clone(),
+            first_message_id: Some(root_node_id.to_string()),
+            source: "converted_subgraph".to_string(),
+            parent_thread_id: source_thread_id.clone(),
+            anchor_node_id: Some(original_parent_id.clone()),
+        };
+        let result = ConvertSubgraphToThreadResult {
+            thread,
+            conversion_id,
+            root_node_id: root_node_id.to_string(),
+            source_thread_id,
+            target_thread_id: target_thread_id.to_string(),
+            original_parent_id,
+            moved_node_ids,
+        };
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(result)
+    }
+
     pub fn list_thread_sessions_for_workspace(
         &self,
         workspace_id: &str,
@@ -4719,7 +5071,7 @@ impl TelemetryDb {
                 r#"
                 SELECT
                     id, workspace_id, title, status, created_at, updated_at,
-                    base_commit_sha, first_message_id, parent_thread_id, source
+                    base_commit_sha, first_message_id, source, parent_thread_id, anchor_node_id
                 FROM thread_sessions
                 WHERE workspace_id = ?1
                   AND deleted_at IS NULL
@@ -4745,8 +5097,9 @@ impl TelemetryDb {
                     updated_at: row.get(5)?,
                     base_commit_sha: row.get(6)?,
                     first_message_id: row.get(7)?,
-                    parent_thread_id: row.get(8)?,
-                    source: row.get(9)?,
+                    source: row.get(8)?,
+                    parent_thread_id: row.get(9)?,
+                    anchor_node_id: row.get(10)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -4764,7 +5117,7 @@ impl TelemetryDb {
             r#"
             SELECT
                 id, workspace_id, title, status, created_at, updated_at,
-                base_commit_sha, first_message_id, parent_thread_id, source
+                base_commit_sha, first_message_id, parent_thread_id, source, anchor_node_id
             FROM thread_sessions
             WHERE id = ?1
               AND deleted_at IS NULL
@@ -4783,6 +5136,7 @@ impl TelemetryDb {
                     first_message_id: row.get(7)?,
                     parent_thread_id: row.get(8)?,
                     source: row.get(9)?,
+                    anchor_node_id: row.get(10)?,
                 })
             },
         )
@@ -6740,6 +7094,44 @@ impl TelemetryDb {
         )
     }
 
+    pub fn next_local_sync_retry_at(
+        &self,
+        user_id: &str,
+        cloud_account_id: &str,
+    ) -> Result<Option<i64>, String> {
+        let now = unix_timestamp();
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        conn.query_row(
+            r#"
+            SELECT MIN(COALESCE(next_attempt_at, ?1))
+            FROM local_sync_events
+            WHERE status = 'pending'
+              AND user_id = ?2
+              AND cloud_account_id = ?3
+              AND EXISTS (
+                SELECT 1
+                FROM local_workspaces workspace
+                WHERE workspace.id = local_sync_events.workspace_id
+                  AND workspace.cloud_backup_enabled = 1
+                  AND workspace.cloud_account_id = ?3
+              )
+              AND (
+                event_type = 'workspace.bootstrap'
+                OR NOT EXISTS (
+                  SELECT 1
+                  FROM local_sync_events bootstrap
+                  WHERE bootstrap.workspace_id = local_sync_events.workspace_id
+                    AND bootstrap.event_type = 'workspace.bootstrap'
+                    AND bootstrap.status IN ('pending', 'in_flight')
+                )
+              )
+            "#,
+            params![now, user_id, cloud_account_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())
+    }
+
     fn list_due_local_sync_events_for_user_and_cloud_by_type(
         &self,
         user_id: &str,
@@ -8427,6 +8819,25 @@ pub fn local_first_create_thread_session(
 
 #[tauri::command]
 #[specta::specta]
+pub fn convert_subgraph_to_thread(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+    root_node_id: String,
+    idempotency_key: String,
+    target_thread_id: String,
+    current_user_id: String,
+) -> Result<ConvertSubgraphToThreadResult, String> {
+    telemetry.convert_subgraph_to_thread(
+        &workspace_id,
+        &root_node_id,
+        &idempotency_key,
+        &target_thread_id,
+        Some(current_user_id.as_str()),
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn list_thread_sessions(
     telemetry: State<TelemetryDb>,
     workspace_id: String,
@@ -8661,6 +9072,7 @@ pub fn enable_workspace_cloud_backup(
     current_user_id: String,
     cloud_account_id: String,
 ) -> Result<LocalWorkspaceRow, String> {
+    crate::config::validated_server_base_url()?;
     telemetry.enable_workspace_cloud_backup(&workspace_id, &current_user_id, &cloud_account_id)
 }
 
@@ -8706,9 +9118,42 @@ pub fn list_local_deleted_workspace_ids(
     telemetry.list_local_deleted_workspace_ids()
 }
 
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudSyncCapability {
+    pub available: bool,
+    pub unavailable_reason: Option<String>,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_cloud_sync_capability() -> CloudSyncCapability {
+    match crate::config::validated_server_base_url() {
+        Ok(_) => CloudSyncCapability {
+            available: true,
+            unavailable_reason: None,
+        },
+        Err(error) => CloudSyncCapability {
+            available: false,
+            unavailable_reason: Some(error),
+        },
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_next_local_sync_retry_at(
+    telemetry: State<TelemetryDb>,
+    current_user_id: String,
+    cloud_account_id: String,
+) -> Result<Option<i64>, String> {
+    telemetry.next_local_sync_retry_at(&current_user_id, &cloud_account_id)
+}
+
 fn sync_event(
     client: &reqwest::blocking::Client,
     auth_token: &str,
+    server_base_url: &str,
     event: &LocalSyncEventRow,
 ) -> Result<Option<JsonValue>, String> {
     if event.entity_type == "workspace" && event.event_type == "workspace.bootstrap" {
@@ -8717,8 +9162,7 @@ fn sync_event(
         let response = client
             .post(format!(
                 "{}/workspaces/{}/sync/bootstrap",
-                crate::config::server_base_url(),
-                event.entity_id
+                server_base_url, event.entity_id
             ))
             .header("Authorization", format!("Bearer {}", auth_token))
             .header("Idempotency-Key", &event.idempotency_key)
@@ -8749,16 +9193,13 @@ fn sync_event(
             client
                 .post(format!(
                     "{}/workspaces/{}/threads",
-                    crate::config::server_base_url(),
-                    workspace_id
+                    server_base_url, workspace_id
                 ))
                 .json(&payload)
         } else {
             client.delete(format!(
                 "{}/workspaces/{}/threads/{}",
-                crate::config::server_base_url(),
-                workspace_id,
-                event.entity_id
+                server_base_url, workspace_id, event.entity_id
             ))
         };
         let response = request
@@ -8778,11 +9219,7 @@ fn sync_event(
         let payload: JsonValue =
             serde_json::from_str(&event.payload_json).map_err(|err| err.to_string())?;
         let response = client
-            .patch(format!(
-                "{}/messages/{}",
-                crate::config::server_base_url(),
-                event.entity_id
-            ))
+            .patch(format!("{}/messages/{}", server_base_url, event.entity_id))
             .header("Authorization", format!("Bearer {}", auth_token))
             .header("Idempotency-Key", &event.idempotency_key)
             .json(&payload)
@@ -8801,7 +9238,7 @@ fn sync_event(
             .get("id")
             .and_then(JsonValue::as_str)
             .ok_or_else(|| format!("{} payload is missing id", event.event_type))?;
-        let mut url = reqwest::Url::parse(&crate::config::server_base_url())
+        let mut url = reqwest::Url::parse(server_base_url)
             .map_err(|err| format!("Invalid server URL: {err}"))?;
         let mut segments = url
             .path_segments_mut()
@@ -8850,8 +9287,7 @@ fn sync_event(
             let response = client
                 .post(format!(
                     "{}/messages/{}/tags",
-                    crate::config::server_base_url(),
-                    event.entity_id
+                    server_base_url, event.entity_id
                 ))
                 .header("Authorization", format!("Bearer {}", auth_token))
                 .header("Idempotency-Key", &event.idempotency_key)
@@ -8865,7 +9301,7 @@ fn sync_event(
         }
 
         for tag in tags.iter().filter_map(JsonValue::as_str) {
-            let mut url = reqwest::Url::parse(&crate::config::server_base_url())
+            let mut url = reqwest::Url::parse(server_base_url)
                 .map_err(|err| format!("Invalid server URL: {err}"))?;
             url.path_segments_mut()
                 .map_err(|_| "Server URL cannot be used for tag sync.".to_string())?
@@ -8886,6 +9322,29 @@ fn sync_event(
         return Ok(None);
     }
 
+    if event.entity_type == "thread_conversion" && event.event_type == "thread.convert_subgraph" {
+        let workspace_id = event
+            .workspace_id
+            .as_deref()
+            .ok_or_else(|| "thread conversion event is missing workspace_id".to_string())?;
+        let payload: JsonValue =
+            serde_json::from_str(&event.payload_json).map_err(|err| err.to_string())?;
+        let response = client
+            .post(format!(
+                "{}/workspaces/{}/threads/convert-subgraph",
+                server_base_url, workspace_id
+            ))
+            .header("Authorization", format!("Bearer {}", auth_token))
+            .header("Idempotency-Key", &event.idempotency_key)
+            .json(&payload)
+            .send()
+            .map_err(|err| format!("{} transport error: {}", event.event_type, err))?;
+        if response.status().is_success() {
+            return Ok(None);
+        }
+        return Err(local_sync_response_error(&event.event_type, response));
+    }
+
     if event.entity_type == "node" && event.event_type == "node.update_terminal" {
         let payload: JsonValue =
             serde_json::from_str(&event.payload_json).map_err(|err| err.to_string())?;
@@ -8896,7 +9355,7 @@ fn sync_event(
                 "stream/finalize"
             };
         let response = client
-            .post(format!("{}/{}", crate::config::server_base_url(), endpoint))
+            .post(format!("{}/{}", server_base_url, endpoint))
             .header("Authorization", format!("Bearer {}", auth_token))
             .header("Idempotency-Key", &event.idempotency_key)
             .json(&payload)
@@ -8924,8 +9383,7 @@ fn sync_event(
         let response = client
             .post(format!(
                 "{}/workspaces/{}/insights/sync",
-                crate::config::server_base_url(),
-                workspace_id
+                server_base_url, workspace_id
             ))
             .header("Authorization", format!("Bearer {}", auth_token))
             .header("Idempotency-Key", &event.idempotency_key)
@@ -8944,12 +9402,11 @@ fn sync_event(
         let payload: JsonValue =
             serde_json::from_str(&event.payload_json).map_err(|err| err.to_string())?;
         let request = if event.event_type == "workspace.create" {
-            client.post(format!("{}/workspaces", crate::config::server_base_url()))
+            client.post(format!("{}/workspaces", server_base_url))
         } else {
             client.patch(format!(
                 "{}/workspaces/{}",
-                crate::config::server_base_url(),
-                event.entity_id
+                server_base_url, event.entity_id
             ))
         };
         let response = request
@@ -8979,8 +9436,7 @@ fn sync_event(
             let response = client
                 .post(format!(
                     "{}/workspaces/{}/git-sync/ingest",
-                    crate::config::server_base_url(),
-                    workspace_id
+                    server_base_url, workspace_id
                 ))
                 .header("Authorization", format!("Bearer {}", auth_token))
                 .header("Idempotency-Key", &event.idempotency_key)
@@ -8992,17 +9448,11 @@ fn sync_event(
             }
             return Err(local_sync_response_error(&event.event_type, response));
         }
-        ("node", "node.delete") => format!(
-            "{}/messages/{}/branch",
-            crate::config::server_base_url(),
-            event.entity_id
-        ),
+        ("node", "node.delete") => {
+            format!("{}/messages/{}/branch", server_base_url, event.entity_id)
+        }
         ("workspace", "workspace.delete") => {
-            format!(
-                "{}/workspaces/{}",
-                crate::config::server_base_url(),
-                event.entity_id
-            )
+            format!("{}/workspaces/{}", server_base_url, event.entity_id)
         }
         _ => {
             return Err(format!(
@@ -9059,6 +9509,9 @@ pub async fn process_local_sync_events(
             "Cannot process local sync events without an active cloud account id.".to_string(),
         );
     }
+    // Validate before reading or marking any outbox rows. A build without a
+    // usable cloud endpoint must leave pending work untouched for a later run.
+    let server_base_url = crate::config::validated_server_base_url()?;
     let telemetry = app.state::<TelemetryDb>();
     let events = telemetry.list_due_local_sync_events_for_user_and_cloud_by_type(
         current_user_id.trim(),
@@ -9102,7 +9555,7 @@ pub async fn process_local_sync_events(
         let mut synced = 0usize;
         let mut first_retry_error: Option<String> = None;
         for event in flyable_events {
-            let result = sync_event(&client, &auth_token, &event);
+            let result = sync_event(&client, &auth_token, &server_base_url, &event);
             match result {
                 Ok(response_body) => {
                     if event.entity_type == "node" && event.event_type == "node.update_terminal" {
@@ -9759,6 +10212,7 @@ mod tests {
             first_message_id: None,
             parent_thread_id: None,
             source: "user".to_string(),
+            anchor_node_id: None,
         };
 
         db.upsert_thread_session(session).expect("upsert thread");
@@ -9787,6 +10241,7 @@ mod tests {
             first_message_id: None,
             parent_thread_id: None,
             source: "user".to_string(),
+            anchor_node_id: None,
         })
         .expect("upsert thread");
 
@@ -9835,6 +10290,7 @@ mod tests {
                     first_message_id: None,
                     parent_thread_id: None,
                     source: "user".to_string(),
+                    anchor_node_id: None,
                 },
             )
             .expect("create thread locally");
@@ -9871,6 +10327,154 @@ mod tests {
             ordered_thread_events,
             vec!["thread.create".to_string(), "thread.delete".to_string()]
         );
+    }
+
+    #[test]
+    fn subgraph_conversion_is_atomic_branched_and_idempotent() {
+        let (_dir, db) = open_test_db();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO local_workspaces (id, name, created_at, updated_at, local_updated_at, cloud_backup_enabled) VALUES ('workspace-1', 'Local only', '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z', 1, 0)",
+                [],
+            )
+            .unwrap();
+        let nodes = [
+            (
+                "anchor",
+                r#"{"id":"anchor","workspaceId":"workspace-1","role":"assistant","content":"anchor","status":"completed","threadId":"source","thread_id":"source","parentId":null,"createdAt":"2026-07-21T00:00:00.000Z","updatedAt":"2026-07-21T00:00:00.000Z"}"#,
+            ),
+            (
+                "root",
+                r#"{"id":"root","workspaceId":"workspace-1","role":"user","content":"convert me","status":"completed","threadId":"source","thread_id":"source","parentId":"anchor","createdAt":"2026-07-21T00:01:00.000Z","updatedAt":"2026-07-21T00:01:00.000Z"}"#,
+            ),
+            (
+                "left",
+                r#"{"id":"left","workspaceId":"workspace-1","role":"assistant","content":"left","status":"completed","threadId":"source","thread_id":"source","parentId":"root","createdAt":"2026-07-21T00:02:00.000Z","updatedAt":"2026-07-21T00:02:00.000Z"}"#,
+            ),
+            (
+                "right",
+                r#"{"id":"right","workspaceId":"workspace-1","role":"assistant","content":"right","status":"completed","threadId":"source","thread_id":"source","parentId":"root","createdAt":"2026-07-21T00:03:00.000Z","updatedAt":"2026-07-21T00:03:00.000Z"}"#,
+            ),
+            (
+                "nested",
+                r#"{"id":"nested","workspaceId":"workspace-1","role":"user","content":"nested thread","status":"completed","threadId":"child","thread_id":"child","parentId":"left","createdAt":"2026-07-21T00:04:00.000Z","updatedAt":"2026-07-21T00:04:00.000Z"}"#,
+            ),
+            (
+                "sibling",
+                r#"{"id":"sibling","workspaceId":"workspace-1","role":"user","content":"sibling","status":"completed","threadId":"source","thread_id":"source","parentId":"anchor","createdAt":"2026-07-21T00:05:00.000Z","updatedAt":"2026-07-21T00:05:00.000Z"}"#,
+            ),
+        ];
+        for (id, payload) in nodes {
+            db.upsert_local_node(id, "workspace-1", payload)
+                .expect("upsert conversion node");
+        }
+
+        let result = db
+            .convert_subgraph_to_thread(
+                "workspace-1",
+                "root",
+                "convert-1",
+                "target-thread",
+                Some("user-1"),
+            )
+            .expect("convert subgraph");
+        assert_eq!(result.moved_node_ids, vec!["root", "left", "right"]);
+        assert_eq!(result.thread.parent_thread_id.as_deref(), Some("source"));
+        assert_eq!(result.thread.anchor_node_id.as_deref(), Some("anchor"));
+
+        let conn = db.conn.lock().expect("db lock");
+        let root_row: (Option<String>, Option<String>, String) = conn
+            .query_row(
+                "SELECT parent_id, thread_id, payload_json FROM local_nodes WHERE id = 'root'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("root row");
+        assert_eq!(root_row.0, None);
+        assert_eq!(root_row.1.as_deref(), Some("target-thread"));
+        let root_payload: JsonValue = serde_json::from_str(&root_row.2).expect("root payload");
+        assert_eq!(
+            root_payload
+                .get("threadId")
+                .and_then(|value| value.as_str()),
+            Some("target-thread")
+        );
+        assert!(root_payload.get("parentId").is_some_and(JsonValue::is_null));
+        let boundary_thread: String = conn
+            .query_row(
+                "SELECT thread_id FROM local_nodes WHERE id = 'nested'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let sibling_thread: String = conn
+            .query_row(
+                "SELECT thread_id FROM local_nodes WHERE id = 'sibling'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let sync_event_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM local_sync_events WHERE event_type = 'thread.convert_subgraph'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(boundary_thread, "child");
+        assert_eq!(sibling_thread, "source");
+        assert_eq!(sync_event_count, 0);
+        drop(conn);
+
+        let repeated = db
+            .convert_subgraph_to_thread(
+                "workspace-1",
+                "root",
+                "different-key",
+                "different-target",
+                Some("user-1"),
+            )
+            .expect("repeat conversion");
+        assert_eq!(repeated.target_thread_id, "target-thread");
+        assert_eq!(repeated.conversion_id, result.conversion_id);
+    }
+
+    #[test]
+    fn subgraph_conversion_rejects_active_descendants_without_partial_writes() {
+        let (_dir, db) = open_test_db();
+        db.upsert_local_node("anchor", "workspace-1", r#"{"id":"anchor","workspaceId":"workspace-1","role":"assistant","content":"anchor","status":"completed","threadId":"source","parentId":null,"createdAt":"2026-07-21T00:00:00.000Z","updatedAt":"2026-07-21T00:00:00.000Z"}"#).unwrap();
+        db.upsert_local_node("root", "workspace-1", r#"{"id":"root","workspaceId":"workspace-1","role":"user","content":"root","status":"completed","threadId":"source","parentId":"anchor","createdAt":"2026-07-21T00:01:00.000Z","updatedAt":"2026-07-21T00:01:00.000Z"}"#).unwrap();
+        db.upsert_local_node("running", "workspace-1", r#"{"id":"running","workspaceId":"workspace-1","role":"assistant","content":"running","status":"streaming","threadId":"source","parentId":"root","createdAt":"2026-07-21T00:02:00.000Z","updatedAt":"2026-07-21T00:02:00.000Z"}"#).unwrap();
+
+        let error = db
+            .convert_subgraph_to_thread(
+                "workspace-1",
+                "root",
+                "convert-active",
+                "target-thread",
+                Some("user-1"),
+            )
+            .expect_err("active conversion must fail");
+        assert!(error.contains("still active"));
+        let conn = db.conn.lock().unwrap();
+        let root_parent: String = conn
+            .query_row(
+                "SELECT parent_id FROM local_nodes WHERE id = 'root'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let target_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM thread_sessions WHERE id = 'target-thread'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(root_parent, "anchor");
+        assert_eq!(target_count, 0);
     }
 
     #[test]
@@ -9980,6 +10584,7 @@ mod tests {
             first_message_id: None,
             parent_thread_id: None,
             source: "orchestration".to_string(),
+            anchor_node_id: None,
         })
         .expect("thread session");
 
@@ -10011,6 +10616,7 @@ mod tests {
             first_message_id: None,
             parent_thread_id: None,
             source: "user".to_string(),
+            anchor_node_id: None,
         })
         .expect("thread session");
 
@@ -10049,6 +10655,7 @@ mod tests {
             first_message_id: None,
             parent_thread_id: None,
             source: "user".to_string(),
+            anchor_node_id: None,
         })
         .expect("thread session");
 
@@ -11256,6 +11863,59 @@ mod tests {
             )
             .expect("controlled_by query");
         assert_eq!(controlled_count, 1);
+    }
+
+    #[test]
+    fn agent_control_edges_span_only_workspaces_accessible_to_the_user() {
+        let (_dir, db) = open_test_db();
+        {
+            let conn = db.conn.lock().expect("lock db");
+            for (workspace_id, user_id) in [
+                ("workspace-parent", "user-1"),
+                ("workspace-child", "user-1"),
+                ("workspace-foreign", "user-2"),
+            ] {
+                conn.execute(
+                    r#"
+                    INSERT INTO local_workspaces (
+                        id, user_id, name, connection_status, sync_status,
+                        created_at, updated_at, local_updated_at, cloud_backup_enabled
+                    ) VALUES (?1, ?2, ?1, 'connected', 'local_only',
+                              '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0)
+                    "#,
+                    params![workspace_id, user_id],
+                )
+                .expect("insert workspace");
+            }
+        }
+        for (node_id, workspace_id, controller_id) in [
+            ("child", "workspace-parent", "root"),
+            ("grandchild", "workspace-child", "child"),
+            ("foreign-child", "workspace-foreign", "root"),
+        ] {
+            db.upsert_local_node(
+                node_id,
+                workspace_id,
+                &serde_json::json!({
+                    "id": node_id,
+                    "workspaceId": workspace_id,
+                    "role": "assistant",
+                    "controlled_by_node_id": controller_id,
+                    "content": ""
+                })
+                .to_string(),
+            )
+            .expect("upsert controlled assistant");
+        }
+
+        assert_eq!(
+            db.list_local_agent_control_edges_for_user("user-1")
+                .expect("control edges"),
+            vec![
+                ("child".to_string(), "root".to_string()),
+                ("grandchild".to_string(), "child".to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -12575,6 +13235,63 @@ mod tests {
             .expect("query due events");
 
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn next_sync_retry_query_reads_only_the_deliverable_outbox_summary() {
+        let (_db_dir, db) = open_test_db();
+        let conn = db.conn.lock().expect("lock db");
+        conn.execute(
+            r#"
+            INSERT INTO local_workspaces (
+                id, user_id, name, connection_status, sync_status, created_at, updated_at,
+                local_updated_at, cloud_backup_enabled, cloud_account_id
+            ) VALUES ('workspace-cloud', 'user-1', 'Cloud', 'connected', 'sync_pending',
+                      '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'cloud-1')
+            "#,
+            [],
+        )
+        .expect("insert cloud workspace");
+        conn.execute(
+            r#"
+            INSERT INTO local_sync_events (
+                id, workspace_id, user_id, cloud_account_id, entity_type, entity_id,
+                event_type, payload_json, idempotency_key, status, attempt_count,
+                next_attempt_at, created_at, updated_at
+            ) VALUES
+                ('event-bootstrap', 'workspace-cloud', 'user-1', 'cloud-1', 'workspace',
+                 'workspace-cloud', 'workspace.bootstrap', '{}', 'bootstrap-key',
+                 'pending', 1, 2000000100, 1, 1),
+                ('event-child', 'workspace-cloud', 'user-1', 'cloud-1', 'node',
+                 'node-1', 'node.update_terminal', '{}', 'child-key',
+                 'pending', 1, 2000000000, 1, 1),
+                ('event-other-account', 'workspace-cloud', 'user-1', 'cloud-2', 'node',
+                 'node-2', 'node.update_terminal', '{}', 'other-key',
+                 'pending', 1, 1999999000, 1, 1)
+            "#,
+            [],
+        )
+        .expect("insert pending events");
+        drop(conn);
+
+        assert_eq!(
+            db.next_local_sync_retry_at("user-1", "cloud-1")
+                .expect("next bootstrap retry"),
+            Some(2_000_000_100)
+        );
+
+        db.mark_local_sync_event_synced("event-bootstrap")
+            .expect("ack bootstrap");
+        assert_eq!(
+            db.next_local_sync_retry_at("user-1", "cloud-1")
+                .expect("next child retry"),
+            Some(2_000_000_000)
+        );
+        assert_eq!(
+            db.next_local_sync_retry_at("user-1", "cloud-2")
+                .expect("mismatched workspace account"),
+            None
+        );
     }
 
     #[test]

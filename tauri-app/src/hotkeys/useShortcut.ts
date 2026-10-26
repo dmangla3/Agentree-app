@@ -3,6 +3,7 @@ import { matchesKeyboardEvent, normalizeRegisterableHotkey, parseHotkey, useHotk
 import {
   getEffectiveShortcutHotkeys,
   getShortcut,
+  getShortcutDisplayLabels,
   getShortcutOverridesSnapshot,
   subscribeShortcutOverrides,
   type ShortcutId,
@@ -36,6 +37,15 @@ export function useShortcut(
       },
     })),
   );
+}
+
+export function useShortcutDisplayLabels(id: ShortcutId): string {
+  const shortcutOverrides = useSyncExternalStore(
+    subscribeShortcutOverrides,
+    getShortcutOverridesSnapshot,
+    getShortcutOverridesSnapshot,
+  );
+  return getShortcutDisplayLabels(getEffectiveShortcutHotkeys(id, shortcutOverrides));
 }
 
 export function useCapturedShortcut(

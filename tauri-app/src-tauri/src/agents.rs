@@ -14,11 +14,13 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::watch;
 
 const AGENT_RUN_WATCHDOG_IDLE_TIMEOUT_MS: i64 = 10 * 60 * 1000;
 const AGENT_RUN_WATCHDOG_POLL_INTERVAL_MS: u64 = 30 * 1000;
+const AGENT_RUN_WATCHDOG_SUSPEND_TOLERANCE_MS: i64 = 5 * 1000;
 const AGENT_RUN_ACTIVITY_PERSIST_INTERVAL_MS: i64 = 60 * 1000;
 
 static AGENT_RUN_ACTIVITY_PERSISTED_AT: Lazy<Mutex<HashMap<String, i64>>> =
@@ -85,6 +87,7 @@ struct FinalizeAckPayload {
     output_commit_sha: Option<String>,
     base_commit_sha: Option<String>,
     commit_created: bool,
+    landing_warning: Option<String>,
 }
 
 enum FinalizeRunSnapshotOutcome {
@@ -142,7 +145,8 @@ pub(crate) struct AgentRunState {
     final_content_override: Option<String>,
     cancel_requested: bool,
     finalized: bool,
-    last_activity_at_ms: i64,
+    watchdog_awake_idle_ms: i64,
+    watchdog_last_accounted_at_ms: i64,
     last_activity_label: String,
     watchdog_timeout_requested: bool,
 }
@@ -167,7 +171,8 @@ impl AgentRunState {
             final_content_override: None,
             cancel_requested: false,
             finalized: false,
-            last_activity_at_ms: now_ms,
+            watchdog_awake_idle_ms: 0,
+            watchdog_last_accounted_at_ms: now_ms,
             last_activity_label: "run_state_created".to_string(),
             watchdog_timeout_requested: false,
         }
@@ -180,6 +185,7 @@ pub struct AgentState {
     pub stdins: Mutex<HashMap<String, Arc<Mutex<ChildStdin>>>>,
     pub session_tokens: Mutex<HashMap<String, String>>,
     pub run_states: Mutex<HashMap<String, Arc<Mutex<AgentRunState>>>>,
+    resource_sampler: Mutex<System>,
     activity_tx: watch::Sender<u64>,
     user_steer_epochs: Mutex<HashMap<String, u64>>,
 }
@@ -193,6 +199,7 @@ impl AgentState {
             stdins: Mutex::new(HashMap::new()),
             session_tokens: Mutex::new(HashMap::new()),
             run_states: Mutex::new(HashMap::new()),
+            resource_sampler: Mutex::new(System::new()),
             activity_tx,
             user_steer_epochs: Mutex::new(HashMap::new()),
         }
@@ -226,6 +233,124 @@ impl AgentState {
         self.notify_activity();
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentResourceUsage {
+    pub assistant_node_id: String,
+    pub root_pid: u32,
+    pub process_count: u32,
+    pub cpu_percent: f32,
+    pub memory_bytes: u64,
+    pub sampled_at: i64,
+}
+
+#[derive(Debug, Clone)]
+struct ProcessResourceSample {
+    pid: u32,
+    parent_pid: Option<u32>,
+    cpu_percent: f32,
+    memory_bytes: u64,
+}
+
+fn aggregate_agent_resource_samples(
+    roots: &HashMap<String, u32>,
+    samples: &[ProcessResourceSample],
+    sampled_at: i64,
+) -> Vec<AgentResourceUsage> {
+    let root_owners = roots
+        .iter()
+        .map(|(assistant_node_id, pid)| (*pid, assistant_node_id.as_str()))
+        .collect::<HashMap<_, _>>();
+    let sample_by_pid = samples
+        .iter()
+        .map(|sample| (sample.pid, sample))
+        .collect::<HashMap<_, _>>();
+    let mut usage = roots
+        .iter()
+        .map(|(assistant_node_id, root_pid)| {
+            (
+                assistant_node_id.clone(),
+                AgentResourceUsage {
+                    assistant_node_id: assistant_node_id.clone(),
+                    root_pid: *root_pid,
+                    process_count: 0,
+                    cpu_percent: 0.0,
+                    memory_bytes: 0,
+                    sampled_at,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    for sample in samples {
+        let mut current_pid = Some(sample.pid);
+        let mut visited = HashSet::new();
+        let owner = loop {
+            let Some(pid) = current_pid else { break None };
+            if !visited.insert(pid) {
+                break None;
+            }
+            if let Some(owner) = root_owners.get(&pid) {
+                break Some(*owner);
+            }
+            current_pid = sample_by_pid
+                .get(&pid)
+                .and_then(|current| current.parent_pid);
+        };
+        let Some(owner) = owner else { continue };
+        if let Some(total) = usage.get_mut(owner) {
+            total.process_count = total.process_count.saturating_add(1);
+            total.cpu_percent += sample.cpu_percent;
+            total.memory_bytes = total.memory_bytes.saturating_add(sample.memory_bytes);
+        }
+    }
+
+    let mut result = usage.into_values().collect::<Vec<_>>();
+    result.sort_by(|left, right| left.assistant_node_id.cmp(&right.assistant_node_id));
+    result
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn list_agent_resource_usage(
+    state: State<AgentState>,
+) -> Result<Vec<AgentResourceUsage>, String> {
+    let roots = state
+        .sessions
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
+    if roots.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut system = state
+        .resource_sampler
+        .lock()
+        .map_err(|error| error.to_string())?;
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_memory().with_cpu(),
+    );
+    let samples = system
+        .processes()
+        .values()
+        .map(|process| ProcessResourceSample {
+            pid: process.pid().as_u32(),
+            parent_pid: process.parent().map(|pid| pid.as_u32()),
+            cpu_percent: process.cpu_usage(),
+            memory_bytes: process.memory(),
+        })
+        .collect::<Vec<_>>();
+
+    Ok(aggregate_agent_resource_samples(
+        &roots,
+        &samples,
+        unix_timestamp_millis() / 1000,
+    ))
 }
 
 // AgentEvent struct removed - events are now constructed inline using serde_json::json!
@@ -585,6 +710,7 @@ fn emit_finalize_ack(app_handle: &AppHandle, session_id: &str, payload: &Finaliz
         "output_commit_sha": payload.output_commit_sha,
         "base_commit_sha": payload.base_commit_sha,
         "commit_created": payload.commit_created,
+        "landing_warning": payload.landing_warning,
     });
     emit_agent_event(app_handle, session_id, &event);
 }
@@ -931,9 +1057,13 @@ fn terminate_agent_child(
 }
 
 pub fn start_agent_run_watchdog(app_handle: AppHandle) {
+    let mut last_poll_at_ms = unix_timestamp_millis();
     thread::spawn(move || loop {
         thread::sleep(Duration::from_millis(AGENT_RUN_WATCHDOG_POLL_INTERVAL_MS));
         let now_ms = unix_timestamp_millis();
+        let poll_gap_ms = now_ms.saturating_sub(last_poll_at_ms);
+        last_poll_at_ms = now_ms;
+        let suspension_detected = is_agent_run_watchdog_suspension_gap(poll_gap_ms);
         {
             match recover_terminal_agent_runs_from_journal(&app_handle) {
                 Ok(count) if count > 0 => {
@@ -978,6 +1108,13 @@ pub fn start_agent_run_watchdog(app_handle: AppHandle) {
             };
             sessions
         };
+        if suspension_detected && !sessions.is_empty() {
+            crate::app_log!(
+                "[AGENT_WATCHDOG] event=suspension_gap poll_gap_ms={} active_runs={}",
+                poll_gap_ms,
+                sessions.len()
+            );
+        }
 
         for (session_id, pid) in sessions {
             let decision = {
@@ -1007,15 +1144,22 @@ pub fn start_agent_run_watchdog(app_handle: AppHandle) {
                         continue;
                     }
                 };
-                let decision = decide_agent_run_watchdog_timeout(
-                    run_state.last_activity_at_ms,
+                let (elapsed_ms, accounted_at_ms) = agent_run_watchdog_accounting_interval(
+                    run_state.watchdog_last_accounted_at_ms,
                     now_ms,
+                );
+                let decision = decide_agent_run_watchdog_timeout(
+                    run_state.watchdog_awake_idle_ms,
+                    elapsed_ms,
                     AGENT_RUN_WATCHDOG_IDLE_TIMEOUT_MS,
+                    suspension_detected,
                     run_state.terminal_status.as_deref(),
                     run_state.finalized,
                     run_state.watchdog_timeout_requested,
                     &run_state.last_activity_label,
                 );
+                run_state.watchdog_awake_idle_ms = decision.idle_ms;
+                run_state.watchdog_last_accounted_at_ms = accounted_at_ms;
                 if decision.timed_out {
                     run_state.watchdog_timeout_requested = true;
                     run_state.terminal_status = Some("failed_runtime".to_string());
@@ -1533,15 +1677,20 @@ fn should_persist_failure_reason(status: &str) -> bool {
 }
 
 fn decide_agent_run_watchdog_timeout(
-    last_activity_at_ms: i64,
-    now_ms: i64,
+    awake_idle_ms: i64,
+    elapsed_ms: i64,
     timeout_ms: i64,
+    suspension_detected: bool,
     terminal_status: Option<&str>,
     finalized: bool,
     timeout_requested: bool,
     last_activity_label: &str,
 ) -> AgentRunWatchdogDecision {
-    let idle_ms = now_ms.saturating_sub(last_activity_at_ms);
+    let idle_ms = if suspension_detected {
+        0
+    } else {
+        awake_idle_ms.saturating_add(elapsed_ms)
+    };
     if terminal_status.is_some() || finalized || timeout_requested || idle_ms < timeout_ms {
         return AgentRunWatchdogDecision {
             timed_out: false,
@@ -1553,11 +1702,30 @@ fn decide_agent_run_watchdog_timeout(
         timed_out: true,
         idle_ms,
         reason: Some(format!(
-            "Agent run produced no runtime events for {} seconds; last activity was {}.",
+            "Agent run produced no runtime events for {} seconds while the app was awake; last activity was {}.",
             idle_ms / 1000,
             last_activity_label
         )),
     }
+}
+
+fn is_agent_run_watchdog_suspension_gap(poll_gap_ms: i64) -> bool {
+    // A delayed poll means runtime observation was unavailable, either because the
+    // system was suspended or the watchdog itself was stalled. Do not charge that
+    // unobserved interval to an agent run.
+    poll_gap_ms
+        > AGENT_RUN_WATCHDOG_POLL_INTERVAL_MS as i64 + AGENT_RUN_WATCHDOG_SUSPEND_TOLERANCE_MS
+}
+
+fn agent_run_watchdog_accounting_interval(
+    last_accounted_at_ms: i64,
+    observed_at_ms: i64,
+) -> (i64, i64) {
+    let accounted_at_ms = observed_at_ms.max(last_accounted_at_ms);
+    (
+        accounted_at_ms.saturating_sub(last_accounted_at_ms),
+        accounted_at_ms,
+    )
 }
 
 fn update_run_state_from_event(run_state: &mut AgentRunState, event: &JsonValue) {
@@ -1568,7 +1736,8 @@ fn update_run_state_from_event(run_state: &mut AgentRunState, event: &JsonValue)
     let Some(event_type) = event.get("type").and_then(|value| value.as_str()) else {
         return;
     };
-    run_state.last_activity_at_ms = unix_timestamp_millis();
+    run_state.watchdog_awake_idle_ms = 0;
+    run_state.watchdog_last_accounted_at_ms = unix_timestamp_millis();
     run_state.last_activity_label = event_type.to_string();
     let timestamp = event
         .get("timestamp")
@@ -1729,6 +1898,37 @@ fn update_run_state_from_event(run_state: &mut AgentRunState, event: &JsonValue)
     if let Some(timeline_event) = normalize_timeline_event(event) {
         run_state.timeline.push(timeline_event);
     }
+}
+
+fn provider_capability_failure_status(event: &JsonValue) -> Option<u64> {
+    if event.get("type").and_then(JsonValue::as_str) != Some("provider_meta") {
+        return None;
+    }
+    let meta = event.get("meta")?;
+    let status = meta.get("provider_error_status").and_then(|value| {
+        value
+            .as_u64()
+            .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+    })?;
+    if matches!(status, 401 | 402) {
+        return Some(status);
+    }
+    let message = meta
+        .get("provider_error_message")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    (matches!(status, 400 | 429)
+        && [
+            "insufficient_quota",
+            "insufficient balance",
+            "insufficient credit",
+            "blocked_api_access",
+            "payment required",
+        ]
+        .iter()
+        .any(|needle| message.contains(needle)))
+    .then_some(402)
 }
 
 fn usage_token_fields(usage: Option<&JsonValue>) -> (Option<i64>, Option<i64>, Option<i64>) {
@@ -2902,6 +3102,7 @@ fn finalize_run_snapshot(
     _auth_token: &str,
 ) -> Result<FinalizeRunSnapshotOutcome, String> {
     let mut commit_created = false;
+    let mut landing_warning = None;
     crate::app_log!(
         "[AGENT_WORKTREE] event=finalize_snapshot.start node_id={} status={} repo={:?} parent_commit={:?} branch={:?}",
         snapshot.node_id,
@@ -2959,7 +3160,7 @@ fn finalize_run_snapshot(
                     "git_commit",
                     "Creating merge commit...",
                 );
-                let (commit_metadata, target_branch_updated) =
+                let (commit_metadata, target_branch_updated, target_update_warning) =
                     crate::git_workspace::finalize_agent_merge_worktree(
                         &repo_path,
                         &snapshot.node_id,
@@ -2970,6 +3171,7 @@ fn finalize_run_snapshot(
                         target_branch.as_deref(),
                         update_target_branch,
                     )?;
+                landing_warning = target_update_warning;
                 if let Some(execution_object) = snapshot.execution_data.as_object_mut() {
                     let meta = execution_object
                         .entry("meta".to_string())
@@ -2980,6 +3182,12 @@ fn finalize_run_snapshot(
                             "merge_target_branch_updated".to_string(),
                             JsonValue::Bool(target_branch_updated),
                         );
+                        if let Some(warning) = landing_warning.as_ref() {
+                            meta_object.insert(
+                                "merge_target_branch_update_warning".to_string(),
+                                JsonValue::String(warning.clone()),
+                            );
+                        }
                     }
                 }
                 record_output_commit_for_snapshot(
@@ -3108,6 +3316,7 @@ fn finalize_run_snapshot(
             output_commit_sha: snapshot.output_commit_sha.clone(),
             base_commit_sha: snapshot.parent_commit.clone(),
             commit_created,
+            landing_warning: landing_warning.clone(),
         };
         store_finalize_ack(&telemetry, &snapshot.node_id, &finalize_ack);
         let workspace_id = workspace_id_from_execution_data(&snapshot.execution_data);
@@ -3172,6 +3381,7 @@ fn finalize_run_snapshot(
         output_commit_sha: snapshot.output_commit_sha.clone(),
         base_commit_sha: snapshot.parent_commit.clone(),
         commit_created,
+        landing_warning,
     };
 
     store_finalize_ack(&telemetry, &snapshot.node_id, &finalize_ack);
@@ -3221,6 +3431,13 @@ fn spawn_agent_internal(
         args.insert(0, invocation.adapter_script.to_string_lossy().into_owned());
         program_override = Some(invocation.node_program);
     }
+    if agent_type.as_str() == "opencode" {
+        let invocation = crate::managed_runtime::opencode_adapter_invocation(&app)?;
+        args.insert(0, invocation.opencode_program);
+        args.insert(0, "--opencode-bin".to_string());
+        args.insert(0, invocation.adapter_script.to_string_lossy().into_owned());
+        program_override = Some(invocation.node_program);
+    }
     if agent_type.as_str() == "bash" {
         args.insert(
             0,
@@ -3259,6 +3476,8 @@ fn spawn_agent_internal(
         "codex" => {
             program_override.ok_or_else(|| "Codex adapter command was not resolved.".to_string())?
         }
+        "opencode" => program_override
+            .ok_or_else(|| "OpenCode adapter invocation was not resolved.".to_string())?,
         "bash" => crate::managed_runtime::node_program(&app)?,
         "echo" => "echo".to_string(),
         _ => return Err(format!("Unknown agent type: {}", agent_type)),
@@ -3329,6 +3548,7 @@ fn spawn_agent_internal(
     }
 
     let mut codex_auth_state_to_persist: Option<(String, std::path::PathBuf)> = None;
+    let mut opencode_auth_state_to_persist: Option<(String, std::path::PathBuf)> = None;
     if let Some(profile_id) = login_profile_id.as_deref() {
         let telemetry = app.state::<crate::db::TelemetryDb>();
         let cache_dir = app
@@ -3370,13 +3590,23 @@ fn spawn_agent_internal(
                 command.env_remove(key);
             }
         }
+        if agent_type.as_str() == "opencode" {
+            if materialized.auth_type != "opencode_auth" {
+                return Err("OpenCode runs require an OpenCode auth profile.".to_string());
+            }
+            if let Some(auth_path) = materialized.opencode_auth_path.clone() {
+                opencode_auth_state_to_persist = Some((profile_id.to_string(), auth_path));
+            }
+        }
         for (key, value) in &materialized.env {
             command.env(key, value);
         }
-    } else if agent_type.as_str() == "codex" {
+    } else if matches!(agent_type.as_str(), "codex" | "opencode") {
         return Err(
-            "Codex agent runs require an Agentree login profile; refusing to fall back to ~/.codex."
-                .to_string(),
+            format!(
+                "{} agent runs require an Agentree login profile; refusing to fall back to global CLI credentials.",
+                if agent_type == "codex" { "Codex" } else { "OpenCode" }
+            ),
         );
     }
 
@@ -3468,6 +3698,7 @@ fn spawn_agent_internal(
             );
             let reader = BufReader::new(stdout);
             let mut first_stdout_sent = false;
+            let mut opencode_model_provider: Option<String> = None;
 
             for line in reader.lines() {
                 if let Ok(line) = line {
@@ -3509,6 +3740,33 @@ fn spawn_agent_internal(
                             "stream_source".to_string(),
                             serde_json::json!("tauri_stdout"),
                         );
+                    }
+                    if let Some(provider) = event
+                        .get("meta")
+                        .and_then(|meta| meta.get("opencode_model_provider"))
+                        .and_then(JsonValue::as_str)
+                    {
+                        opencode_model_provider = Some(provider.to_string());
+                    }
+                    if let (Some(status_code), Some(profile_id), Some(model_provider)) = (
+                        provider_capability_failure_status(&event),
+                        login_profile_id.as_deref(),
+                        opencode_model_provider.as_deref(),
+                    ) {
+                        if let Err(error) =
+                            crate::login_profiles::mark_login_profile_provider_failure(
+                                &app_handle,
+                                profile_id,
+                                Some(model_provider),
+                                status_code,
+                            )
+                        {
+                            crate::app_log!(
+                                "[LOGIN_PROFILE] event=provider_access_update_failed profile_id={} err={}",
+                                profile_id,
+                                error
+                            );
+                        }
                     }
                     if let Some(profile_id) = login_profile_id.as_deref() {
                         crate::login_profiles::sync_login_profile_auth_failure_from_event(
@@ -3667,6 +3925,7 @@ fn spawn_agent_internal(
     let stdout_done_for_wait = Arc::clone(&stdout_done);
     let stderr_done_for_wait = Arc::clone(&stderr_done);
     let codex_auth_state_to_persist_for_wait = codex_auth_state_to_persist.clone();
+    let opencode_auth_state_to_persist_for_wait = opencode_auth_state_to_persist.clone();
     thread::spawn(move || {
         loop {
             let mut exited = None;
@@ -3731,6 +3990,24 @@ fn spawn_agent_internal(
                     ) {
                         crate::app_log!(
                             "[AGENT_WORKTREE] event=codex_auth_state_persist_failed node_id={} profile_id={} err={}",
+                            session_id_for_wait,
+                            profile_id,
+                            error
+                        );
+                    }
+                }
+                if let Some((profile_id, auth_path)) =
+                    opencode_auth_state_to_persist_for_wait.as_ref()
+                {
+                    let telemetry = app_handle.state::<crate::db::TelemetryDb>();
+                    if let Err(error) = crate::login_profiles::persist_opencode_auth_state(
+                        &telemetry,
+                        &crate::login_profiles::KeyringCredentialVault,
+                        profile_id,
+                        auth_path,
+                    ) {
+                        crate::app_log!(
+                            "[AGENT_WORKTREE] event=opencode_auth_state_persist_failed node_id={} profile_id={} err={}",
                             session_id_for_wait,
                             profile_id,
                             error
@@ -3821,10 +4098,14 @@ pub(crate) async fn start_agent_run_internal(
         )?;
         intent.repo_path = trusted_repo_path;
     }
-    if intent.agent_type == "codex" && intent.login_profile_id.is_none() {
+    if matches!(intent.agent_type.as_str(), "codex" | "opencode")
+        && intent.login_profile_id.is_none()
+    {
         return Err(
-            "Codex agent runs require an Agentree login profile; refusing to fall back to ~/.codex."
-                .to_string(),
+            format!(
+                "{} agent runs require an Agentree login profile; refusing to fall back to global CLI credentials.",
+                if intent.agent_type == "codex" { "Codex" } else { "OpenCode" }
+            ),
         );
     }
     if let Some(profile_id) = intent.login_profile_id.as_deref() {
@@ -4299,22 +4580,21 @@ pub(crate) fn stop_agent_with_descendants(
                 .map(str::to_string)
         })
         .ok_or_else(|| format!("Agent node {session_id} was not found."))?;
+    let identity = telemetry.get_local_identity()?;
+    let workspace_is_accessible = telemetry
+        .get_local_workspace_for_user(&workspace_id, &identity.local_user_id)?
+        .is_some_and(|workspace| workspace.deleted_at.is_none());
+    if !workspace_is_accessible {
+        return Err("Agent workspace is not available to the active local user.".to_string());
+    }
     // Freeze the controller before discovering descendants so it cannot accept
     // more thread-control calls while the descendant-first shutdown is running.
     mark_agent_cancel_requested(state, session_id)?;
-    let rows = telemetry.list_local_nodes_for_workspace(&workspace_id)?;
     let mut children: HashMap<String, Vec<String>> = HashMap::new();
-    for row in rows {
-        let Some(controller_id) = row.controlled_by_node_id else {
-            continue;
-        };
-        let Ok(payload) = serde_json::from_str::<JsonValue>(&row.payload) else {
-            continue;
-        };
-        if payload.get("role").and_then(JsonValue::as_str) != Some("assistant") {
-            continue;
-        }
-        children.entry(controller_id).or_default().push(row.node_id);
+    for (node_id, controller_id) in
+        telemetry.list_local_agent_control_edges_for_user(&identity.local_user_id)?
+    {
+        children.entry(controller_id).or_default().push(node_id);
     }
     for child_ids in children.values_mut() {
         child_ids.sort();
@@ -4478,17 +4758,20 @@ pub fn get_agent_run_state(
 #[cfg(test)]
 mod tests {
     use super::{
+        agent_run_watchdog_accounting_interval, aggregate_agent_resource_samples,
         ai_label_from_execution_data, arg_value, build_finalize_snapshot,
         cleanup_requires_server_final_persisted, cleanup_terminal_status_allows_cleanup,
         codex_chatgpt_session_supports_model, commit_body_from_execution_data,
         commit_message_for_snapshot, commit_subject_from_execution_data,
         decide_agent_run_watchdog_timeout, descendant_first_stop_order,
-        ensure_context_recovery_fields, is_terminal_runtime_status, latest_provider_thread_id,
+        ensure_context_recovery_fields, is_agent_run_watchdog_suspension_gap,
+        is_terminal_runtime_status, latest_provider_thread_id,
         local_node_payload_for_setup_failure, local_node_payload_for_snapshot,
-        run_ledger_user_node_id_from_context, should_forward_tool_output_event,
-        should_persist_failure_reason, snapshot_from_replayed_journal, startup_resume_args,
-        terminal_status_for_runtime_activity, update_run_state_from_event, AgentRunContext,
-        AgentRunSnapshot, AgentRunState, AgentState, STARTUP_RESUME_PROMPT,
+        provider_capability_failure_status, run_ledger_user_node_id_from_context,
+        should_forward_tool_output_event, should_persist_failure_reason,
+        snapshot_from_replayed_journal, startup_resume_args, terminal_status_for_runtime_activity,
+        update_run_state_from_event, AgentResourceUsage, AgentRunContext, AgentRunSnapshot,
+        AgentRunState, AgentState, ProcessResourceSample, STARTUP_RESUME_PROMPT,
     };
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
@@ -4761,9 +5044,10 @@ mod tests {
     #[test]
     fn watchdog_times_out_silent_non_terminal_runs() {
         let decision = decide_agent_run_watchdog_timeout(
-            1_000,
-            601_000,
+            570_000,
+            30_000,
             600_000,
+            false,
             None,
             false,
             false,
@@ -4780,12 +5064,87 @@ mod tests {
     }
 
     #[test]
+    fn watchdog_detects_delayed_poll_as_system_suspension() {
+        assert!(!is_agent_run_watchdog_suspension_gap(35_000));
+        assert!(is_agent_run_watchdog_suspension_gap(35_001));
+        assert!(is_agent_run_watchdog_suspension_gap(946_826));
+    }
+
+    #[test]
+    fn watchdog_accounting_timestamp_never_moves_behind_runtime_activity() {
+        assert_eq!(
+            agent_run_watchdog_accounting_interval(50_000, 40_000),
+            (0, 50_000)
+        );
+        assert_eq!(
+            agent_run_watchdog_accounting_interval(50_000, 80_000),
+            (30_000, 80_000)
+        );
+    }
+
+    #[test]
+    fn watchdog_resets_awake_idle_time_after_system_suspension() {
+        let decision = decide_agent_run_watchdog_timeout(
+            570_000,
+            946_826,
+            600_000,
+            is_agent_run_watchdog_suspension_gap(946_826),
+            None,
+            false,
+            false,
+            "provider_meta",
+        );
+
+        assert!(!decision.timed_out);
+        assert_eq!(decision.idle_ms, 0);
+    }
+
+    #[test]
+    fn watchdog_still_times_out_after_fresh_awake_idle_window() {
+        let after_wake = decide_agent_run_watchdog_timeout(
+            570_000,
+            946_826,
+            600_000,
+            is_agent_run_watchdog_suspension_gap(946_826),
+            None,
+            false,
+            false,
+            "provider_meta",
+        );
+        let decision = decide_agent_run_watchdog_timeout(
+            after_wake.idle_ms,
+            600_000,
+            600_000,
+            false,
+            None,
+            false,
+            false,
+            "provider_meta",
+        );
+
+        assert!(decision.timed_out);
+        assert_eq!(decision.idle_ms, 600_000);
+    }
+
+    #[test]
+    fn watchdog_runtime_event_resets_awake_idle_time() {
+        let mut state = test_run_state();
+        state.watchdog_awake_idle_ms = 590_000;
+
+        update_run_state_from_event(&mut state, &json!({ "type": "provider_meta" }));
+
+        assert_eq!(state.watchdog_awake_idle_ms, 0);
+        assert_eq!(state.last_activity_label, "provider_meta");
+    }
+
+    #[test]
     fn watchdog_ignores_terminal_finalized_or_recent_runs() {
         assert!(
             !decide_agent_run_watchdog_timeout(
                 1_000,
-                601_000,
                 600_000,
+                600_000,
+                false,
                 Some("completed"),
                 false,
                 false,
@@ -4795,19 +5154,19 @@ mod tests {
         );
         assert!(
             !decide_agent_run_watchdog_timeout(
-                1_000, 601_000, 600_000, None, true, false, "message"
+                1_000, 600_000, 600_000, false, None, true, false, "message"
             )
             .timed_out
         );
         assert!(
             !decide_agent_run_watchdog_timeout(
-                1_000, 601_000, 600_000, None, false, true, "message"
+                1_000, 600_000, 600_000, false, None, false, true, "message"
             )
             .timed_out
         );
         assert!(
             !decide_agent_run_watchdog_timeout(
-                1_000, 600_999, 600_000, None, false, false, "message"
+                569_999, 30_000, 600_000, false, None, false, false, "message",
             )
             .timed_out
         );
@@ -4817,6 +5176,34 @@ mod tests {
     fn runtime_activity_terminal_statuses_match_finalization_failures() {
         assert!(is_terminal_runtime_status("failed_finalization"));
         assert!(!is_terminal_runtime_status("finalizing"));
+    }
+
+    #[test]
+    fn provider_capability_failure_requires_conclusive_status() {
+        assert_eq!(
+            provider_capability_failure_status(&json!({
+                "type": "provider_meta",
+                "meta": { "provider_error_status": 401 }
+            })),
+            Some(401)
+        );
+        assert_eq!(
+            provider_capability_failure_status(&json!({
+                "type": "provider_meta",
+                "meta": { "provider_error_status": 429 }
+            })),
+            None
+        );
+        assert_eq!(
+            provider_capability_failure_status(&json!({
+                "type": "provider_meta",
+                "meta": {
+                    "provider_error_status": 429,
+                    "provider_error_message": "insufficient_quota"
+                }
+            })),
+            Some(402)
+        );
     }
 
     #[test]
@@ -5406,5 +5793,85 @@ mod tests {
         assert!(output.ends_with(&"b".repeat(128 * 1024 - 128)));
         assert!(!output.contains(&"c".repeat(1024)));
         assert!(output.contains("Output truncated. Refine the command."));
+    }
+
+    #[test]
+    fn resource_usage_follows_process_trees_without_tool_assumptions() {
+        let roots = HashMap::from([
+            ("assistant-a".to_string(), 100),
+            ("assistant-b".to_string(), 200),
+        ]);
+        let samples = vec![
+            ProcessResourceSample {
+                pid: 100,
+                parent_pid: Some(1),
+                cpu_percent: 10.0,
+                memory_bytes: 100,
+            },
+            ProcessResourceSample {
+                pid: 101,
+                parent_pid: Some(100),
+                cpu_percent: 20.0,
+                memory_bytes: 200,
+            },
+            ProcessResourceSample {
+                pid: 102,
+                parent_pid: Some(101),
+                cpu_percent: 30.0,
+                memory_bytes: 300,
+            },
+            // A nested agent root owns itself and its descendants instead of
+            // being double-counted under the outer process tree.
+            ProcessResourceSample {
+                pid: 200,
+                parent_pid: Some(100),
+                cpu_percent: 40.0,
+                memory_bytes: 400,
+            },
+            ProcessResourceSample {
+                pid: 201,
+                parent_pid: Some(200),
+                cpu_percent: 50.0,
+                memory_bytes: 500,
+            },
+            ProcessResourceSample {
+                pid: 300,
+                parent_pid: Some(301),
+                cpu_percent: 60.0,
+                memory_bytes: 600,
+            },
+            ProcessResourceSample {
+                pid: 301,
+                parent_pid: Some(300),
+                cpu_percent: 70.0,
+                memory_bytes: 700,
+            },
+        ];
+
+        let usage = aggregate_agent_resource_samples(&roots, &samples, 1234);
+
+        assert_eq!(usage.len(), 2);
+        assert_eq!(
+            usage[0],
+            AgentResourceUsage {
+                assistant_node_id: "assistant-a".to_string(),
+                root_pid: 100,
+                process_count: 3,
+                cpu_percent: 60.0,
+                memory_bytes: 600,
+                sampled_at: 1234,
+            }
+        );
+        assert_eq!(
+            usage[1],
+            AgentResourceUsage {
+                assistant_node_id: "assistant-b".to_string(),
+                root_pid: 200,
+                process_count: 2,
+                cpu_percent: 90.0,
+                memory_bytes: 900,
+                sampled_at: 1234,
+            }
+        );
     }
 }

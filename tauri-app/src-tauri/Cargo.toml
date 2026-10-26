@@ -46,8 +46,10 @@ once_cell = "1"
 tempfile = "3"
 base64 = "0.22"
 sha2 = "0.10"
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 flate2 = "1"
 tar = "0.4"
+portable-pty = "0.9"
 
 [patch.crates-io]
 tauri-plugin-pilot = { path = "patches/tauri-plugin-pilot-0.6.0" }

@@ -5,7 +5,6 @@ import { isRedundantCommitNode } from '../lib/graph/turnUtils';
 import { getMessageBaseCommitSha } from '../lib/graph/commitAccessors';
 import { buildThreadRootIndex, getThreadOriginNodeId, type ThreadRootIndex } from '../lib/graphThreadRoots';
 import type { ThreadSession } from '../lib/threadSessions';
-import { getSubgraphThreadLinkTargetId } from '../lib/graphSubgraphThreads';
 import { resolveNodeState } from '../lib/runStateResolver';
 import { getNodeFailureReason } from '../lib/nodeFailureReason';
 import { getControlledByNodeId } from '../lib/delegation';
@@ -41,6 +40,7 @@ export interface ProjectedNodeEntity extends CanonicalNodeEntity {
   parentShas?: string[];
   threadRootId?: string | null;
   threadLinkRootId?: string | null;
+  threadAnchorMessageId?: string | null;
   rootMessageId?: string | null;
   isThreadRoot?: boolean;
 }
@@ -322,6 +322,8 @@ const getStableBaseCacheKey = (
       thread.title ?? '',
       thread.status,
       thread.createdAt,
+      thread.parentThreadId ?? '',
+      thread.anchorNodeId ?? '',
       thread.updatedAt,
       thread.baseCommitSha ?? '',
       thread.firstMessageId ?? '',
@@ -482,7 +484,7 @@ const getProjectedMessageEntity = (
     ? assistantMessagesByGraphParentId.get(message.id)?.[0]?.id ?? null
     : message.id;
   const threadRootId = threadRootIdByMessageId.get(message.id) ?? null;
-  const threadLinkRootId = kind === 'thread_link' ? getSubgraphThreadLinkTargetId(message) : null;
+  const threadLinkRootId = null;
 
   return {
     entityId: getMessageEntityId(message, messageMap),
@@ -508,6 +510,33 @@ const getProjectedMessageEntity = (
     threadRootId,
     threadLinkRootId,
     isThreadRoot: Boolean(threadRootId && rootMessageIdByThreadRootId.get(threadRootId) === message.id),
+  };
+};
+
+const getPersistedThreadLinkEntity = (
+  thread: ThreadSession,
+  messageMap: Map<string, Message>,
+): ProjectedNodeEntity | null => {
+  if (thread.source !== 'converted_subgraph' || !thread.anchorNodeId || !thread.firstMessageId) return null;
+  const anchor = messageMap.get(thread.anchorNodeId);
+  const root = messageMap.get(thread.firstMessageId);
+  if (!anchor || !root) return null;
+  return {
+    entityId: `thread_link:${thread.id}`,
+    kind: 'thread_link',
+    messageId: null,
+    focusMessageId: root.id,
+    parentEntityId: getMessageEntityId(anchor, messageMap),
+    turnGroupId: undefined,
+    sortTs: new Date(root.createdAt).getTime(),
+    preview: thread.title?.trim() || root.aiLabel?.trim() || root.content?.trim() || 'Open thread',
+    shortLabel: 'Thread',
+    status: null,
+    threadRootId: thread.parentThreadId ?? null,
+    threadLinkRootId: thread.id,
+    threadAnchorMessageId: anchor.id,
+    rootMessageId: root.id,
+    isThreadRoot: false,
   };
 };
 
@@ -1238,6 +1267,9 @@ function getStableWorkspaceProjectionBase(
       threadRootIndex.rootMessageIdByThreadRootId,
       assistantMessagesByGraphParentId
     ));
+  const threadLinkEntities = normalizedThreadSessions
+    .map((thread) => getPersistedThreadLinkEntity(thread, messageMap))
+    .filter((entity): entity is ProjectedNodeEntity => Boolean(entity));
   const threadOriginEntities = threadRootIndex.threadRootIds
     .map((threadRootId) => {
       const rootMessageId = threadRootIndex.rootMessageIdByThreadRootId.get(threadRootId);
@@ -1268,7 +1300,7 @@ function getStableWorkspaceProjectionBase(
     shortLabel: 'Summary',
   }));
 
-  const entities = [...threadOriginEntities, ...messageEntities, ...summaryEntities].sort((left, right) => left.sortTs - right.sortTs);
+  const entities = [...threadOriginEntities, ...messageEntities, ...threadLinkEntities, ...summaryEntities].sort((left, right) => left.sortTs - right.sortTs);
   const entitiesById = new Map(entities.map((entity) => [entity.entityId, entity]));
   const entitiesByMessageId = new Map(messageEntities.map((entity) => [entity.messageId!, entity]));
   const entitiesBySummaryId = new Map(summaryEntities.map((entity) => [entity.summary!.id, entity]));
@@ -1290,6 +1322,12 @@ function getStableWorkspaceProjectionBase(
         commitEntityIdsByAssistantEntityId.set(parentEntity.entityId, commits);
       }
     }
+  }
+  for (const entity of threadLinkEntities) {
+    if (!entity.parentEntityId) continue;
+    const children = childEntityIdsByParentEntityId.get(entity.parentEntityId) ?? [];
+    children.push(entity.entityId);
+    childEntityIdsByParentEntityId.set(entity.parentEntityId, children);
   }
 
   const turnGroupMap = new Map<string, ProjectedTurnGroup>();

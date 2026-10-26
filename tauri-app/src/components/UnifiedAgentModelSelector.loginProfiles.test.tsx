@@ -3,7 +3,9 @@ import { fireEvent, render } from '@testing-library/react';
 import { JSDOM } from 'jsdom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LOGIN_PROFILES_NAVIGATION_EVENT } from '../lib/loginNavigationEvents';
-import { UnifiedAgentModelSelector } from './UnifiedAgentModelSelector';
+import { MODEL_CONFIGURATION_EVENT } from '../lib/modelConfigurationEvents';
+import { useModelStore } from '../stores/modelStore';
+import { modelFamilyMatchesSearch, UnifiedAgentModelSelector } from './UnifiedAgentModelSelector';
 
 vi.mock('../hooks/useAgents', () => ({
   useAgents: () => ({
@@ -122,6 +124,7 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
       { id: 'codex-ready', provider: 'codex', displayName: 'Codex Work', authType: 'codex_api_key', status: 'ready', isDefault: true },
       { id: 'claude-expired', provider: 'claude', displayName: 'Claude Old', authType: 'claude_api_key', status: 'expired', isDefault: true },
     ];
+    useModelStore.setState({ visibleFamilyKeysByProvider: {} });
   });
 
   afterEach(() => {
@@ -278,6 +281,59 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
     expect((loginIntent.mock.calls[0][0] as CustomEvent).detail).toEqual({ provider: 'claude' });
     expect(onSelectAgent).not.toHaveBeenCalled();
     window.removeEventListener(LOGIN_PROFILES_NAVIGATION_EVENT, loginIntent);
+  });
+
+  it('shows the OpenCode login path before its dynamic catalog is available', () => {
+    profileState.profiles = [];
+    const loginIntent = vi.fn();
+    window.addEventListener(LOGIN_PROFILES_NAVIGATION_EVENT, loginIntent);
+
+    const { getByRole, getByText } = render(
+      <UnifiedAgentModelSelector selectedAgentId={null} onSelectAgent={vi.fn()} />
+    );
+
+    fireEvent.click(getByRole('tab', { name: /OpenCode/ }));
+    expect(getByText('0 families available')).toBeTruthy();
+    fireEvent.click(getByText('Login to OpenCode'));
+    expect((loginIntent.mock.calls[0][0] as CustomEvent).detail).toEqual({ provider: 'opencode' });
+    window.removeEventListener(LOGIN_PROFILES_NAVIGATION_EVENT, loginIntent);
+  });
+
+  it('shows only configured model families while preserving the selected family', () => {
+    useModelStore.getState().setVisibleFamilyKeys('codex', ['codex:gpt-5.5']);
+    const { queryByText, queryAllByText, rerender } = render(
+      <UnifiedAgentModelSelector selectedAgentId={null} onSelectAgent={vi.fn()} />
+    );
+
+    expect(queryByText('GPT-6')).toBeNull();
+
+    useModelStore.getState().setVisibleFamilyKeys('codex', []);
+    rerender(<UnifiedAgentModelSelector selectedAgentId="codex:gpt-5.5:high" onSelectAgent={vi.fn()} />);
+    expect(queryAllByText('GPT-5.5').length).toBeGreaterThan(0);
+  });
+
+  it('searches visible model families and opens their configuration', () => {
+    const configurationIntent = vi.fn();
+    window.addEventListener(MODEL_CONFIGURATION_EVENT, configurationIntent);
+    const { getByLabelText, getByText } = render(
+      <UnifiedAgentModelSelector selectedAgentId={null} onSelectAgent={vi.fn()} />
+    );
+
+    expect(getByLabelText('Search models')).toBeTruthy();
+    expect(modelFamilyMatchesSearch({
+      label: 'GPT-6',
+      description: 'OpenAI model',
+      models: [],
+    }, 'gpt-6')).toBe(true);
+    expect(modelFamilyMatchesSearch({
+      label: 'GPT Image 2',
+      description: 'Image model',
+      models: [],
+    }, 'gpt-6')).toBe(false);
+
+    fireEvent.click(getByText('Manage visible models'));
+    expect((configurationIntent.mock.calls[0][0] as CustomEvent).detail).toEqual({ provider: 'codex' });
+    window.removeEventListener(MODEL_CONFIGURATION_EVENT, configurationIntent);
   });
 
   it('hides the effort picker for inactive providers', () => {

@@ -4,6 +4,8 @@ import {
   getLoginProfileAuthTypeLabel,
   getLoginProfileProviderLabel,
   getLoginProfileStatusTone,
+  getOpenCodeProviderCapabilities,
+  getOpenCodeProviderSummary,
   hasActiveLoginProfileForProvider,
   isLoginProfileActive,
   isLoginProfileCompatibleWithProvider,
@@ -78,5 +80,27 @@ describe('loginProfiles helpers', () => {
     expect(selection.selectedProfile?.id).toBe('c1');
     expect(selection.isReady).toBe(false);
     expect(selection.failureMessage).toBe('Log in to Codex in Managed Accounts.');
+  });
+
+  it('summarizes OpenCode provider access without exposing check internals', () => {
+    const profile = {
+      provider: 'opencode',
+      config: {
+        opencode_provider_capabilities: {
+          openrouter: { providerName: 'OpenRouter', authStatus: 'invalid', pricedModelAccess: 'unknown', modelCount: 2, freeModelCount: 1 },
+          deepseek: { providerName: 'DeepSeek', authStatus: 'valid', pricedModelAccess: 'available', modelCount: 2, freeModelCount: 0 },
+          'kimi-for-coding': { providerName: 'Kimi For Coding', authStatus: 'valid', pricedModelAccess: 'unavailable', modelCount: 1, freeModelCount: 0 },
+          openai: { providerName: 'OpenAI', authStatus: 'unknown', pricedModelAccess: 'unknown', modelCount: 2, freeModelCount: 0 },
+        },
+      },
+    };
+
+    expect(getOpenCodeProviderCapabilities(profile)).toEqual([
+      { id: 'deepseek', name: 'DeepSeek', access: 'full', modelCount: 2, freeModelCount: 0 },
+      { id: 'kimi-for-coding', name: 'Kimi For Coding', access: 'unavailable', modelCount: 1, freeModelCount: 0 },
+      { id: 'openai', name: 'OpenAI', access: 'unconfirmed', modelCount: 2, freeModelCount: 0 },
+      { id: 'openrouter', name: 'OpenRouter', access: 'invalid', modelCount: 2, freeModelCount: 1 },
+    ]);
+    expect(getOpenCodeProviderSummary(profile)).toBe('4 checked · 1 invalid');
   });
 });

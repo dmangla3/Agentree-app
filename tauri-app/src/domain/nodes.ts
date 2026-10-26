@@ -1,7 +1,6 @@
 import { Message, Summary } from '../stores/workspaceStore';
 import { getGraphParentId } from '../lib/graph/lineage';
 import { getCommitSha, getGitParentShas, isFirstClassCommitMessage, isRedundantCommitNode } from '../lib/graph/turnUtils';
-import { isSubgraphThreadLinkMessage } from '../lib/graphSubgraphThreads';
 
 export { getCommitSha };
 
@@ -34,7 +33,6 @@ export function classifyMessageNodeKind(
   message: Message,
   messageMap?: Map<string, Message>
 ): Exclude<CanonicalNodeKind, 'summary_block' | 'thread_origin'> {
-  if (isSubgraphThreadLinkMessage(message)) return 'thread_link';
   if (message.role === 'user') return 'user_message';
   return isFirstClassCommitMessage(message, { messageMap }) ? 'commit_message' : 'assistant_message';
 }

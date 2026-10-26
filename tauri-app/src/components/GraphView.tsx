@@ -33,7 +33,7 @@ import { localNodeKeys, upsertMessagesIntoLocalNodeCache, useLocalNodes } from '
 import { useGraphMessages } from '../hooks/useLiveMessages';
 import { useInsights } from '../hooks/useInsights';
 import { getPublicShareUrl, useCreateNodePublicShare } from '../hooks/useWorkspacePublicShare';
-import { useCreateThreadSession, useDeleteThreadSession, useThreadSessions } from '../hooks/useThreadSessions';
+import { useConvertSubgraphToThread, useCreateThreadSession, useDeleteThreadSession, useThreadSessions } from '../hooks/useThreadSessions';
 
 // Hooks - Graph (extracted)
 import { useTagFilter } from '../hooks/graph/useTagFilter';
@@ -48,6 +48,7 @@ import { createSubgraphFilterState, getSubgraphMessageIds, shouldClearSubgraphFo
 import { buildThreadRootIndex, getEmptyWorkspaceThreadRootId, getHiddenConversationMessageIds, getLatestThreadMessageId } from '../lib/graphThreadRoots';
 import { deriveBackfilledThreadSessions, mergeThreadSessionsWithBackfills, threadSessionSortKey } from '../lib/threadSessions';
 import { resolveLocalWorkspaceRepoPath } from '../lib/workspaceRepoPath';
+import { dispatchOpenCommitTerminal } from '../lib/commitTerminalEvents';
 import {
     filterCommitContextForThreadScope,
     filterSummariesForThreadScope,
@@ -62,11 +63,7 @@ import {
     readGraphThreadState,
     rememberGraphThreadState,
 } from '../lib/graphThreadStateStorage';
-import {
-    applySubgraphThreadConversions,
-    readConvertedSubgraphThreadRootIds,
-    rememberConvertedSubgraphThreadRootIds,
-} from '../lib/graphSubgraphThreads';
+import { clearLegacySubgraphThreadRoots, readLegacySubgraphThreadRoots } from '../lib/legacySubgraphThreadMigration';
 import { buildThreadBands, getThreadDividerRectsFromNodes, type ThreadBand } from '../lib/graphThreadDividers';
 import { buildComposerContextPathIds } from '../lib/composerContext';
 import { resolveComposerDefaultBaseCommit } from '../lib/composerBaseCommit';
@@ -135,7 +132,12 @@ import { ChevronLeft, ChevronRight, ChevronsRight, GitBranch, X } from 'lucide-r
 import { agentClient } from '../lib/agentClient';
 import { getOptionalCloudAuthToken } from '../lib/authSession';
 import { workspaceApplication } from '../application/workspaces';
-import { flushWorkspaceCloudBootstrap, flushWorkspaceCloudSync, queueLocalSyncFlush } from '../lib/localSyncScheduler';
+import {
+    ensureCloudSyncAvailable,
+    flushWorkspaceCloudBootstrap,
+    flushWorkspaceCloudSync,
+    queueLocalSyncFlush,
+} from '../lib/localSyncScheduler';
 import { writeClipboardText } from '../lib/clipboard';
 import { ensureLocalCommitGraphRepaired } from '../lib/localCommitGraphRepair';
 import { createProfilerOnRender, startFocusInteraction } from '../lib/interactionProfiler';
@@ -1097,12 +1099,11 @@ function GraphViewInternal({
         initialThreadState.lastVisitedAtByThreadRootId
     );
     const [hiddenSubgraphRootIds, setHiddenSubgraphRootIds] = useState<Set<string>>(() => new Set());
-    const [convertedSubgraphThreadRootIds, setConvertedSubgraphThreadRootIds] = useState<Set<string>>(
-        () => readConvertedSubgraphThreadRootIds(selectedWorkspaceId)
-    );
+    const legacySubgraphMigrationWorkspaceRef = useRef<string | null>(null);
     const previousUserMessageCountsByThreadRootIdRef = useRef<Map<string, number> | null>(null);
     const lastClosedThreadRootIdsRef = useRef<string[]>([]);
 
+    const toast = useToastHelpers();
     useEffect(() => {
         const state = readGraphThreadState(selectedWorkspaceId);
         setActiveThreadRootId(state.activeThreadRootId);
@@ -1111,7 +1112,7 @@ function GraphViewInternal({
         setThreadBarCollapsed(state.threadBarCollapsed);
         setLastVisitedAtByThreadRootId(state.lastVisitedAtByThreadRootId);
         setHiddenSubgraphRootIds(new Set());
-        setConvertedSubgraphThreadRootIds(readConvertedSubgraphThreadRootIds(selectedWorkspaceId));
+        legacySubgraphMigrationWorkspaceRef.current = null;
         setSubgraphRootNodeId(null);
         previousUserMessageCountsByThreadRootIdRef.current = null;
         lastClosedThreadRootIdsRef.current = [];
@@ -1128,6 +1129,7 @@ function GraphViewInternal({
     });
     const threadSessionsQuery = useThreadSessions(selectedWorkspaceId || null);
     const createThreadSession = useCreateThreadSession();
+    const convertSubgraphToThread = useConvertSubgraphToThread();
     const summariesQuery = useSummaries(selectedWorkspaceId || '', { enabled: shouldHydrateFullMessages && !agentClient.hasRuntime() });
     const { data: workspacesData } = useWorkspaces();
     const workspaces = useMemo(() => workspacesData ?? [], [workspacesData]);
@@ -1356,21 +1358,26 @@ function GraphViewInternal({
                 branchPointers: resolvedPointers,
             };
         });
-        return applySubgraphThreadConversions({
-            messages: branchPointerMessages,
-            convertedRootIds: convertedSubgraphThreadRootIds,
-        });
-    }, [branchPointersByNodeId, convertedSubgraphThreadRootIds, messages]);
+        return branchPointerMessages;
+    }, [branchPointersByNodeId, messages]);
     useEffect(() => {
-        if (!selectedWorkspaceId) return;
-        const availableMessageIds = new Set((messages as Message[]).map((message) => message.id));
-        setConvertedSubgraphThreadRootIds((current) => {
-            const next = new Set(Array.from(current).filter((messageId) => availableMessageIds.has(messageId)));
-            if (next.size === current.size) return current;
-            rememberConvertedSubgraphThreadRootIds(selectedWorkspaceId, next);
-            return next;
-        });
-    }, [messages, selectedWorkspaceId]);
+        if (!selectedWorkspaceId || legacySubgraphMigrationWorkspaceRef.current === selectedWorkspaceId || messagesQuery.isLoading || localNodesQuery.isLoading) return;
+        legacySubgraphMigrationWorkspaceRef.current = selectedWorkspaceId;
+        const rootIds = readLegacySubgraphThreadRoots(selectedWorkspaceId);
+        if (rootIds.length === 0) return;
+        void (async () => {
+            let failed = 0;
+            for (const rootNodeId of rootIds) {
+                try {
+                    await convertSubgraphToThread.mutateAsync({ workspaceId: selectedWorkspaceId, rootNodeId });
+                } catch {
+                    failed += 1;
+                }
+            }
+            clearLegacySubgraphThreadRoots(selectedWorkspaceId);
+            if (failed > 0) toast.error('Some legacy conversions could not be migrated', `${failed} invalid marker${failed === 1 ? '' : 's'} were cleared.`);
+        })();
+    }, [convertSubgraphToThread, localNodesQuery.isLoading, messagesQuery.isLoading, selectedWorkspaceId, toast]);
     const hiddenGraphFilterCount = hiddenSubgraphRootIds.size;
     const persistedThreadSessions = useMemo(() => {
         const byId = new Map((graphSnapshotQuery.data?.threadSessions ?? []).map((thread) => [thread.id, thread]));
@@ -1922,9 +1929,6 @@ function GraphViewInternal({
     const createNodePublicShare = useCreateNodePublicShare();
     const { mutate: toggleCollapse } = useToggleCollapse();
     const { openDiff } = useDiff();
-    const toast = useToastHelpers();
-
-
     // ─────────────────────────────────────────────────────────────────────────
     // LOCAL STATE
     // ─────────────────────────────────────────────────────────────────────────
@@ -2788,6 +2792,17 @@ function GraphViewInternal({
 	        syntheticThreadRoots,
 	        threadSessions,
 	    );
+    const handleOpenCommitTerminal = useCallback((commitSha: string) => {
+        if (!repoPath) {
+            toast.error('Terminal unavailable', 'This workspace does not have a local repository path.');
+            return;
+        }
+        dispatchOpenCommitTerminal({
+            repoPath,
+            commitSha,
+            label: workspaceProjection.commitBySha.get(commitSha)?.subject,
+        });
+    }, [repoPath, toast, workspaceProjection.commitBySha]);
     const executionTimelineProjection = useWorkspaceProjection(
         graphMessages as Message[],
         summaries as Summary[],
@@ -3210,6 +3225,7 @@ function GraphViewInternal({
         setIsEnablingShare(true);
         let workspaceWasEnabled = false;
         try {
+            await ensureCloudSyncAvailable();
             const enabledWorkspace = await workspaceApplication.enableCloudBackup(
                 selectedWorkspaceId,
                 cloudAccountId,
@@ -4162,33 +4178,31 @@ function GraphViewInternal({
         toast.success('Subgraph hidden', 'Use the hidden graph filter pill to restore it.');
     }, [nodeSelection.clearSelection, subgraphRootNodeId, toast]);
 
-    const handleConvertSubgraphToThread = useCallback((messageId: string) => {
+    const handleConvertSubgraphToThread = useCallback(async (messageId: string) => {
         const message = (messages as Message[]).find((candidate) => candidate.id === messageId) ?? null;
         if (!message || message.role !== 'user' || !message.parentId) {
             toast.error('Cannot convert subgraph', 'Only nested user nodes can become threads.');
             return;
         }
 
-        setConvertedSubgraphThreadRootIds((current) => {
-            if (current.has(messageId)) return current;
-            const next = new Set(current);
-            next.add(messageId);
-            rememberConvertedSubgraphThreadRootIds(selectedWorkspaceId, next);
-            return next;
-        });
-        setHiddenSubgraphRootIds((current) => {
-            if (!current.has(messageId)) return current;
-            const next = new Set(current);
-            next.delete(messageId);
-            return next;
-        });
-        if (subgraphRootNodeId === messageId) {
-            setSubgraphRootNodeId(null);
+        if (!selectedWorkspaceId) return;
+        try {
+            const result = await convertSubgraphToThread.mutateAsync({ workspaceId: selectedWorkspaceId, rootNodeId: messageId });
+            setHiddenSubgraphRootIds((current) => {
+                if (!current.has(messageId)) return current;
+                const next = new Set(current);
+                next.delete(messageId);
+                return next;
+            });
+            if (subgraphRootNodeId === messageId) setSubgraphRootNodeId(null);
+            setNodeContextMenu(null);
+            nodeSelection.clearSelection();
+            handleFocusThread(result.targetThreadId);
+            toast.success('Subgraph converted to thread');
+        } catch (error) {
+            toast.error('Cannot convert subgraph', error instanceof Error ? error.message : 'Conversion failed.');
         }
-        setNodeContextMenu(null);
-        nodeSelection.clearSelection();
-        toast.success('Subgraph converted to thread');
-    }, [messages, nodeSelection.clearSelection, selectedWorkspaceId, subgraphRootNodeId, toast]);
+    }, [convertSubgraphToThread, handleFocusThread, messages, nodeSelection.clearSelection, selectedWorkspaceId, subgraphRootNodeId, toast]);
 
     const graphLayoutCacheScopeKey = getThreadScopeKey(selectedWorkspaceId, threadGraphScope.activeThreadRootId);
     const graphLayoutInsights = showInsightsInGraph ? insights : EMPTY_GRAPH_INSIGHTS;
@@ -6771,6 +6785,7 @@ function GraphViewInternal({
                             }}
                             onAddCommitsToMergePanel={handleAddCommitsToMergePanel}
                             onMarkThreadDone={(threadRootId) => handleThreadDoneChange(threadRootId, true)}
+                            onOpenTerminal={handleOpenCommitTerminal}
                         />
                     </div>
                 )}
@@ -6796,6 +6811,7 @@ function GraphViewInternal({
                 onViewSubgraph={handleViewSubgraph}
                 onConvertSubgraphToThread={handleConvertSubgraphToThread}
                 onShareNode={handleShareNode}
+                onOpenTerminal={handleOpenCommitTerminal}
             />
             <AlertDialog
                 open={pendingShareNodeId !== null}

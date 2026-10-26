@@ -2,7 +2,7 @@
 # Smoke-tests the packaged provider adapters the way a clean user machine
 # would run them: scrubbed environment, fresh HOME, managed runtime archives
 # installed into the app data dir, no reliance on repo node_modules or PATH
-# tools. Catches packaging breakage (missing SDK, wrong layout, stale codex)
+# tools. Catches packaging breakage (missing SDKs, wrong layout, stale CLIs)
 # on the build machine instead of on user laptops.
 #
 # Usage:
@@ -42,7 +42,7 @@ for archive in "$archives_dir"/agentree-runtime-*-"$platform".tar.gz; do
   rest="${base#agentree-runtime-}"
   rest="${rest%-$platform}"
   component=""
-  for known in claude-sdk node codex; do
+  for known in claude-sdk opencode node codex; do
     if [[ "$rest" == "$known"-* ]]; then
       component="$known"
       version="${rest#${known}-}"
@@ -60,11 +60,16 @@ done
 
 node_bin="$(echo "$data_root"/node/*/bin/node)"
 sdk_dir="$(echo "$data_root"/claude-sdk/*)"
+opencode_dir="$(echo "$data_root"/opencode/*)"
 codex_bin="$(echo "$data_root"/codex/*/bin/codex)"
+opencode_bin="$opencode_dir/bin/opencode"
 adapter_resource="$resources_dir/scripts/claude-agent-sdk-adapter.mjs"
+opencode_adapter_resource="$resources_dir/scripts/opencode-agent-sdk-adapter.mjs"
 [[ -x "$node_bin" ]] || { echo "error: managed node missing at $node_bin" >&2; exit 1; }
 [[ -x "$codex_bin" ]] || { echo "error: managed codex missing at $codex_bin" >&2; exit 1; }
+[[ -x "$opencode_bin" ]] || { echo "error: managed OpenCode missing at $opencode_bin" >&2; exit 1; }
 [[ -f "$adapter_resource" ]] || { echo "error: bundled adapter missing at $adapter_resource" >&2; exit 1; }
+[[ -f "$opencode_adapter_resource" ]] || { echo "error: bundled OpenCode adapter missing at $opencode_adapter_resource" >&2; exit 1; }
 
 run_scrubbed() {
   env -i HOME="$fake_home" PATH="$(dirname "$node_bin")" "$@"
@@ -110,6 +115,27 @@ fi
 # bit or broken unpack would still leave codexBin pointing at the right path.
 if ! echo "$codex_out" | grep -q '"codexVersion":"codex-cli'; then
   echo "error: managed codex CLI did not report a working version" >&2
+  exit 1
+fi
+
+echo "==> OpenCode adapter smoke (scrubbed env, managed runtime only)"
+cp "$opencode_adapter_resource" "$opencode_dir/"
+mkdir -p "$fake_home/opencode-data/opencode"
+printf '{}\n' > "$fake_home/opencode-data/opencode/auth.json"
+opencode_out="$(run_scrubbed XDG_DATA_HOME="$fake_home/opencode-data" \
+  XDG_CONFIG_HOME="$fake_home/opencode-config" \
+  XDG_STATE_HOME="$fake_home/opencode-state" \
+  XDG_CACHE_HOME="$fake_home/opencode-cache" \
+  OPENCODE_DISABLE_AUTOUPDATE=true \
+  "$node_bin" "$opencode_dir/opencode-agent-sdk-adapter.mjs" \
+  --opencode-bin "$opencode_bin" --list-models 2>&1)"
+echo "$opencode_out" | tail -1 | cut -c1-300
+if echo "$opencode_out" | grep -qE "ERR_MODULE_NOT_FOUND|Cannot find package|ENOENT"; then
+  echo "error: OpenCode adapter cannot resolve the SDK or managed CLI" >&2
+  exit 1
+fi
+if ! echo "$opencode_out" | grep -q '"type":"model_catalog"'; then
+  echo "error: OpenCode adapter did not return a structured model catalog" >&2
   exit 1
 fi
 

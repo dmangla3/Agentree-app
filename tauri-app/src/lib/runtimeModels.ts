@@ -1,11 +1,17 @@
-export type RuntimeProvider = 'claude' | 'codex';
+import type { OpenCodeRuntimeModel } from './agentClient';
 
-export type RuntimeModelModality = 'text' | 'image';
+export type RuntimeProvider = 'claude' | 'codex' | 'opencode';
+
+export type RuntimeModelModality = 'text' | 'image' | 'audio' | 'pdf' | 'video';
+export type RuntimeModelStatus = 'active' | 'beta' | 'alpha' | 'deprecated';
 
 export interface RuntimeModelCapabilities {
   inputModalities: RuntimeModelModality[];
   outputModalities: RuntimeModelModality[];
   reasoningEffort: boolean;
+  reasoning?: boolean;
+  toolCall?: boolean;
+  attachments?: boolean;
 }
 
 export interface AgentModelConfig {
@@ -17,6 +23,10 @@ export interface AgentModelConfig {
   effortDescription?: string | null;
   reasoningEffort?: string | null;
   capabilities?: RuntimeModelCapabilities | null;
+  modelProvider?: string | null;
+  releaseDate?: string | null;
+  status?: RuntimeModelStatus | null;
+  isFree?: boolean | null;
 }
 
 export interface RuntimeModel {
@@ -37,7 +47,29 @@ export interface RuntimeModel {
   promptFlag: string | null;
   color: string;
   capabilities: RuntimeModelCapabilities;
+  releaseDate?: string | null;
+  status?: RuntimeModelStatus | null;
+  isFree?: boolean | null;
 }
+
+const openCodeStatusRank: Record<RuntimeModelStatus, number> = {
+  active: 0,
+  beta: 1,
+  alpha: 2,
+  deprecated: 3,
+};
+
+export const compareOpenCodeCatalogModels = (
+  left: { label: string; modelProvider: string; releaseDate?: string | null; status?: RuntimeModelStatus | null },
+  right: { label: string; modelProvider: string; releaseDate?: string | null; status?: RuntimeModelStatus | null },
+) => {
+  const statusOrder = (left.status ? openCodeStatusRank[left.status] : 0)
+    - (right.status ? openCodeStatusRank[right.status] : 0);
+  if (statusOrder !== 0) return statusOrder;
+  const releaseOrder = String(right.releaseDate || '').localeCompare(String(left.releaseDate || ''));
+  if (releaseOrder !== 0) return releaseOrder;
+  return left.label.localeCompare(right.label) || left.modelProvider.localeCompare(right.modelProvider);
+};
 
 const textReasoningCapabilities: RuntimeModelCapabilities = {
   inputModalities: ['text'],
@@ -244,6 +276,49 @@ const codexImageModels: RuntimeModel[] = codexImageModelBases.map((model) =>
 );
 
 export const runtimeModels: RuntimeModel[] = [...codexModels, ...codexImageModels, ...claudeModels];
+
+const openCodeEffortLabel = (variant: string | null) => {
+  if (!variant) return 'Default';
+  return variant.charAt(0).toUpperCase() + variant.slice(1).replace(/_/g, ' ');
+};
+
+export const runtimeModelsFromOpenCodeCatalog = (models: OpenCodeRuntimeModel[]): RuntimeModel[] => (
+  models.flatMap((model) => {
+    const variants = model.variants.length > 0 ? model.variants : [null];
+    const encodedModelId = encodeURIComponent(model.id);
+    return variants.map((variant) => ({
+      key: variant ? `opencode:${encodedModelId}:${encodeURIComponent(variant)}` : `opencode:${encodedModelId}`,
+      id: variant ? `${model.id}:${variant}` : model.id,
+      provider: 'opencode' as const,
+      modelId: model.id,
+      familyKey: `opencode:${encodedModelId}`,
+      familyLabel: model.name,
+      familyDescription: `${model.providerName} model available through OpenCode`,
+      effortLabel: openCodeEffortLabel(variant),
+      effortDescription: variant ? `${openCodeEffortLabel(variant)} OpenCode variant` : 'Provider default',
+      reasoningEffort: variant,
+      label: variant ? `${model.name} ${openCodeEffortLabel(variant)}` : model.name,
+      providerLabel: `OpenCode · ${model.providerName}`,
+      description: `${model.name} through ${model.providerName}`,
+      cliArgs: `--model ${model.id}${variant ? ` --variant ${variant}` : ''}`,
+      promptFlag: null,
+      color: 'blue',
+      capabilities: {
+        inputModalities: model.inputModalities.filter((value): value is RuntimeModelModality => ['text', 'image', 'audio', 'pdf', 'video'].includes(value)),
+        outputModalities: model.outputModalities.filter((value): value is RuntimeModelModality => ['text', 'image', 'audio', 'pdf', 'video'].includes(value)),
+        reasoningEffort: model.variants.length > 0,
+        reasoning: model.reasoning,
+        toolCall: model.toolCall,
+        attachments: model.attachment,
+      },
+      releaseDate: model.releaseDate,
+      status: model.status === 'active' || model.status === 'beta' || model.status === 'alpha' || model.status === 'deprecated'
+        ? model.status
+        : null,
+      isFree: model.isFree,
+    }));
+  })
+);
 
 export const defaultRuntimeModelKey = 'codex:gpt-5.5:high';
 

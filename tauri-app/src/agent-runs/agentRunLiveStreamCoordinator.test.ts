@@ -131,6 +131,35 @@ describe('agent run live stream coordinator', () => {
     expect(unlisten).toHaveBeenCalledTimes(1);
   });
 
+  it('surfaces a generated commit landing warning from finalization', async () => {
+    const onLandingWarning = vi.fn();
+    const stop = startAgentRunLiveStreamCoordinator({
+      getSelectedWorkspaceId: () => 'workspace-1',
+      onLandingWarning,
+    });
+    await Promise.resolve();
+
+    listener?.({
+      nodeId: 'assistant-landing-warning',
+      event: {
+        type: 'finalize_ack',
+        run_id: 'run-1',
+        status: 'completed',
+        commit_created: true,
+        output_commit_sha: '4a5b11e3ef6b78ec',
+        landing_warning: 'Target branch main moved while the merge was running.',
+      },
+    });
+
+    expect(onLandingWarning).toHaveBeenCalledWith({
+      nodeId: 'assistant-landing-warning',
+      message: 'Target branch main moved while the merge was running.',
+      outputCommitSha: '4a5b11e3ef6b78ec',
+    });
+
+    stop();
+  });
+
   it('retries a transient subscription failure and ingests the next event', async () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'error').mockImplementation(() => undefined);

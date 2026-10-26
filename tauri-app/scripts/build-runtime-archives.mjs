@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// Builds the managed runtime archives (Node, Claude Agent SDK, Codex CLI)
+// Builds the managed runtime archives (Node, provider SDKs, and provider CLIs)
 // for every platform pinned in runtime-manifest.json, and rewrites the
 // manifest with the resulting sha256 checksums. Run during release before
 // `tauri build` so the embedded manifest carries real checksums.
 //
 // Usage:
-//   node scripts/build-runtime-archives.mjs [--platform linux-x86_64,darwin-aarch64] [--dry-run]
+//   node scripts/build-runtime-archives.mjs [--platform linux-x86_64,darwin-aarch64]
+//     [--component opencode] [--dry-run]
 //
 // Archives land in src-tauri/target/runtime-archives/.
 
@@ -21,6 +22,8 @@ import {
   pnpmEnvironmentForRuntimeInstall,
   validateClaudeSdkInstall,
   validateClaudeSdkVersionAlignment,
+  validateOpenCodeSdkInstall,
+  validateOpenCodeSdkVersionAlignment,
 } from './runtime-archive-layout.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -34,6 +37,8 @@ const PLATFORMS = {
     codexTriple: 'x86_64-unknown-linux-musl',
     npmOs: 'linux',
     npmCpu: 'x64',
+    opencodeAsset: 'opencode-linux-x64.tar.gz',
+    ripgrepPlatform: 'x86_64-unknown-linux-musl',
   },
   'darwin-aarch64': {
     nodeDist: 'darwin-arm64',
@@ -41,6 +46,8 @@ const PLATFORMS = {
     codexTriple: 'aarch64-apple-darwin',
     npmOs: 'darwin',
     npmCpu: 'arm64',
+    opencodeAsset: 'opencode-darwin-arm64.zip',
+    ripgrepPlatform: 'aarch64-apple-darwin',
   },
 };
 
@@ -51,10 +58,16 @@ const requestedPlatforms =
   platformArgIndex >= 0
     ? args[platformArgIndex + 1].split(',').map((value) => value.trim())
     : Object.keys(PLATFORMS);
+const componentArgIndex = args.indexOf('--component');
+const requestedComponents =
+  componentArgIndex >= 0
+    ? new Set(args[componentArgIndex + 1].split(',').map((value) => value.trim()))
+    : null;
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
 validateClaudeSdkVersionAlignment(packageJson, manifest);
+validateOpenCodeSdkVersionAlignment(packageJson, manifest);
 const releaseBase = manifest.releaseBase.replace(/\/$/, '');
 
 function run(command, commandArgs, options = {}) {
@@ -159,6 +172,17 @@ function downloadTo(url, destination) {
   run('curl', ['-fsSL', '--retry', '3', '-o', destination, url]);
 }
 
+function stageNodeModules(nodeModulesDir, tempDir) {
+  const staging = path.join(tempDir, 'staging');
+  fs.mkdirSync(staging, { recursive: true });
+  fs.cpSync(nodeModulesDir, path.join(staging, 'node_modules'), { recursive: true });
+  // pnpm generates absolute command links into its temporary install directory.
+  // Runtime SDK imports do not use them, and retaining them makes the extracted
+  // tree depend on a path that is deleted as soon as packaging completes.
+  fs.rmSync(path.join(staging, 'node_modules', '.bin'), { recursive: true, force: true });
+  return staging;
+}
+
 function buildNodeArchive(version, platformKey, destination) {
   const dist = PLATFORMS[platformKey].nodeDist;
   withTempDir('agentree-node-', (tempDir) => {
@@ -187,11 +211,7 @@ function buildClaudeSdkArchive(version, platformKey, destination) {
       env: pnpmEnvironmentForRuntimeInstall(),
     });
     validateClaudeSdkInstall(path.join(tempDir, 'node_modules'), { version, npmOs, npmCpu });
-    const staging = path.join(tempDir, 'staging');
-    fs.mkdirSync(staging, { recursive: true });
-    fs.cpSync(path.join(tempDir, 'node_modules'), path.join(staging, 'node_modules'), {
-      recursive: true,
-    });
+    const staging = stageNodeModules(path.join(tempDir, 'node_modules'), tempDir);
     packDirectory(staging, destination);
   });
 }
@@ -207,6 +227,12 @@ function validateClaudeSdkArchive(version, platformKey, archivePath) {
 function validateBuiltArchive(component, version, platformKey, archivePath) {
   if (component === 'claude-sdk') {
     validateClaudeSdkArchive(version, platformKey, archivePath);
+  }
+  if (component === 'opencode') {
+    withTempDir('agentree-opencode-validate-', (tempDir) => {
+      run('tar', ['-xzf', archivePath, '-C', tempDir]);
+      validateOpenCodeSdkInstall(path.join(tempDir, 'node_modules'), version);
+    });
   }
 }
 
@@ -232,14 +258,64 @@ function buildCodexArchive(version, platformKey, destination) {
   });
 }
 
+function buildOpenCodeArchive(version, platformKey, destination, spec) {
+  const { npmOs, npmCpu, opencodeAsset: asset, ripgrepPlatform } = PLATFORMS[platformKey];
+  const ripgrepVersion = spec.bundledRipgrepVersion;
+  if (!ripgrepVersion) throw new Error('opencode.bundledRipgrepVersion is required');
+  withTempDir('agentree-opencode-', (tempDir) => {
+    const archive = path.join(tempDir, asset);
+    downloadTo(`https://github.com/anomalyco/opencode/releases/download/v${version}/${asset}`, archive);
+    if (asset.endsWith('.zip')) run('unzip', ['-q', archive, '-d', tempDir]);
+    else run('tar', ['-xzf', archive, '-C', tempDir]);
+    const binary = path.join(tempDir, 'opencode');
+    if (!fs.existsSync(binary)) throw new Error(`opencode binary missing from ${asset}`);
+
+    const ripgrepName = `ripgrep-${ripgrepVersion}-${ripgrepPlatform}`;
+    const ripgrepArchive = path.join(tempDir, `${ripgrepName}.tar.gz`);
+    downloadTo(
+      `https://github.com/BurntSushi/ripgrep/releases/download/${ripgrepVersion}/${ripgrepName}.tar.gz`,
+      ripgrepArchive
+    );
+    run('tar', ['-xzf', ripgrepArchive, '-C', tempDir]);
+    const ripgrepBinary = path.join(tempDir, ripgrepName, 'rg');
+    if (!fs.existsSync(ripgrepBinary)) throw new Error(`ripgrep binary missing from ${ripgrepName}.tar.gz`);
+
+    fs.writeFileSync(
+      path.join(tempDir, 'package.json'),
+      JSON.stringify({ name: 'agentree-opencode-runtime', private: true }, null, 2)
+    );
+    run('pnpm', packagePnpmAddArgs(`@opencode-ai/sdk@${version}`, npmOs, npmCpu), {
+      cwd: tempDir,
+      env: pnpmEnvironmentForRuntimeInstall(),
+    });
+    validateOpenCodeSdkInstall(path.join(tempDir, 'node_modules'), version);
+
+    const staging = stageNodeModules(path.join(tempDir, 'node_modules'), tempDir);
+    fs.mkdirSync(path.join(staging, 'bin'), { recursive: true });
+    fs.copyFileSync(binary, path.join(staging, 'bin', 'opencode'));
+    fs.copyFileSync(ripgrepBinary, path.join(staging, 'bin', 'rg'));
+    fs.chmodSync(path.join(staging, 'bin', 'opencode'), 0o755);
+    fs.chmodSync(path.join(staging, 'bin', 'rg'), 0o755);
+    packDirectory(staging, destination);
+  });
+}
+
 const builders = {
   node: buildNodeArchive,
   'claude-sdk': buildClaudeSdkArchive,
   codex: buildCodexArchive,
+  opencode: buildOpenCodeArchive,
 };
+
+if (requestedComponents) {
+  for (const component of requestedComponents) {
+    if (!builders[component]) throw new Error(`Unknown runtime component: ${component}`);
+  }
+}
 
 let manifestChanged = false;
 for (const [component, spec] of Object.entries(manifest.components)) {
+  if (requestedComponents && !requestedComponents.has(component)) continue;
   for (const platformKey of requestedPlatforms) {
     if (!PLATFORMS[platformKey]) {
       throw new Error(`Unknown platform key: ${platformKey}`);
@@ -268,7 +344,7 @@ for (const [component, spec] of Object.entries(manifest.components)) {
     }
     if (!fs.existsSync(destination)) {
       console.log(`Building ${fileName} ...`);
-      builders[component](spec.version, platformKey, destination);
+      builders[component](spec.version, platformKey, destination, spec);
     } else {
       console.log(`Reusing existing ${fileName}`);
     }

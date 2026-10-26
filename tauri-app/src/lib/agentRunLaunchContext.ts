@@ -25,6 +25,7 @@ export interface AgentRunLaunchContextInput {
   providerParentMeta?: Record<string, unknown> | null;
   modelCapabilities?: {
     inputModalities?: string[];
+    attachments?: boolean;
   } | null;
   isBranchFromInterior?: boolean;
   contextManifest?: ComposerContextManifest | null;
@@ -72,7 +73,7 @@ export function buildAgentRunContextManifest(input: Pick<
 }
 
 const asRuntimeProvider = (agentType: string | null | undefined): RuntimeProvider | null => (
-  agentType === 'claude' || agentType === 'codex' ? agentType : null
+  agentType === 'claude' || agentType === 'codex' || agentType === 'opencode' ? agentType : null
 );
 
 const hasConversationChild = (
@@ -225,11 +226,28 @@ export function buildAgentRunLaunchContext(input: AgentRunLaunchContextInput): A
     artifact.mimeType.startsWith('image/') || artifact.kind === 'image' || artifact.kind === 'screenshot'
   );
   const selectedModelSupportsImageInput = input.modelCapabilities?.inputModalities?.includes('image') === true;
-  const providerImageArtifactInputs = selectedProvider === 'codex' && selectedModelSupportsImageInput
-    ? selectedImageArtifactInputs.map(buildProviderArtifactInput)
+  const openCodeArtifactInputs = selectedProvider === 'opencode'
+    ? selectedArtifactInputs.filter((artifact) => {
+      const modality = artifact.mimeType.startsWith('image/')
+        ? 'image'
+        : artifact.mimeType.startsWith('audio/')
+          ? 'audio'
+          : artifact.mimeType.startsWith('video/')
+            ? 'video'
+            : artifact.mimeType === 'application/pdf'
+              ? 'pdf'
+              : artifact.mimeType.startsWith('text/')
+                ? 'text'
+                : null;
+      return input.modelCapabilities?.attachments === true
+        || (modality != null && input.modelCapabilities?.inputModalities?.includes(modality) === true);
+    })
     : [];
-  const artifactInputsJson = providerImageArtifactInputs.length > 0
-    ? JSON.stringify(providerImageArtifactInputs)
+  const providerArtifactInputs = selectedProvider === 'codex' && selectedModelSupportsImageInput
+    ? selectedImageArtifactInputs.map(buildProviderArtifactInput)
+    : openCodeArtifactInputs.map(buildProviderArtifactInput);
+  const artifactInputsJson = providerArtifactInputs.length > 0
+    ? JSON.stringify(providerArtifactInputs)
     : null;
 
   const providerInternalArgs = selectedProvider
@@ -244,7 +262,7 @@ export function buildAgentRunLaunchContext(input: AgentRunLaunchContextInput): A
         : []),
       ...(input.targetNodeId ? ['--target-node-id', input.targetNodeId] : []),
       ...(input.nodeId ? ['--node-id', input.nodeId] : []),
-      ...(selectedProvider === 'codex' && artifactInputsJson ? ['--input-artifacts-json', artifactInputsJson] : []),
+      ...((selectedProvider === 'codex' || selectedProvider === 'opencode') && artifactInputsJson ? ['--input-artifacts-json', artifactInputsJson] : []),
     ]
     : [];
 
@@ -291,7 +309,8 @@ export function buildAgentRunLaunchContext(input: AgentRunLaunchContextInput): A
       provider_lineage_id: sourceProviderLineageIdForSpawn,
       provider_target_turn_id: providerThreadStrategy === 'fork_at_turn' ? parentProviderTurnId : null,
       provider_thread_strategy: providerThreadStrategy,
-      provider_image_input_artifact_count: providerImageArtifactInputs.length,
+      provider_image_input_artifact_count: providerArtifactInputs.filter((artifact) => artifact.mimeType.startsWith('image/')).length,
+      provider_input_artifact_count: providerArtifactInputs.length,
       ...(selectedProvider ? { provider: selectedProvider } : {}),
     },
   };

@@ -74,6 +74,27 @@ describe('buildAgentRuntimeArgs', () => {
     ]);
     expect(result.claudeSessionId).toBe('existing-session');
   });
+
+  it('builds OpenCode args with a full model id, variant, and positional prompt', () => {
+    const result = buildAgentRuntimeArgs({
+      agentType: 'opencode',
+      cliArgs: '--model anthropic/claude-sonnet-4-6 --variant high',
+      permissionMode: 'fully-isolated',
+      promptFlag: '--prompt',
+      prompt: 'Review this',
+    });
+
+    expect(result.args).toEqual([
+      '--model',
+      'anthropic/claude-sonnet-4-6',
+      '--variant',
+      'high',
+      '--permission-mode',
+      'fully-isolated',
+      'Review this',
+    ]);
+    expect(parseRuntimeCliArgs(result.args.join(' ')).reasoningEffort).toBe('high');
+  });
 });
 
 describe('parseRuntimeCliArgs', () => {

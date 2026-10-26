@@ -55,7 +55,12 @@ function run(command, args, options = {}) {
 function componentAndVersion(fileName) {
   const suffix = `-${platformConfig.key}.tar.gz`;
   const rest = fileName.slice("agentree-runtime-".length, -suffix.length);
-  for (const component of ["claude-sdk", "node", "codex"]) {
+  for (const component of [
+    "claude-sdk",
+    "opencode",
+    "node",
+    "codex",
+  ]) {
     if (rest.startsWith(`${component}-`)) {
       return { component, version: rest.slice(component.length + 1) };
     }
@@ -75,23 +80,27 @@ try {
         fileName.startsWith("agentree-runtime-") &&
         fileName.endsWith(`-${platformConfig.key}.tar.gz`),
     );
-  if (archives.length !== 3) {
+  if (archives.length !== 4) {
     throw new Error(
-      `Expected 3 ${platformConfig.key} runtime archives, found ${archives.length}`,
+      `Expected 4 ${platformConfig.key} runtime archives, found ${archives.length}`,
     );
   }
 
   const installed = {};
+  const installedVersions = {};
   for (const fileName of archives) {
     const { component, version } = componentAndVersion(fileName);
     const destination = path.join(dataRoot, component, version);
     fs.mkdirSync(destination, { recursive: true });
     run("tar", ["-xzf", path.join(archivesDir, fileName), "-C", destination]);
     installed[component] = destination;
+    installedVersions[component] = version;
   }
 
   const nodeBin = path.join(installed.node, "bin", "node");
   const codexBin = path.join(installed.codex, "bin", "codex");
+  const opencodeBin = path.join(installed.opencode, "bin", "opencode");
+  const ripgrepBin = path.join(installed.opencode, "bin", "rg");
   const claudeBin = path.join(
     installed["claude-sdk"],
     "node_modules",
@@ -120,6 +129,18 @@ try {
   if (!sdkImport.includes("sdk-import-ok"))
     throw new Error("Claude SDK import did not complete");
 
+  const opencodeSdkImport = run(
+    nodeBin,
+    [
+      "--input-type=module",
+      "--eval",
+      "import('@opencode-ai/sdk').then(() => console.log('opencode-sdk-import-ok'))",
+    ],
+    { cwd: installed.opencode, env: baseEnv },
+  );
+  if (!opencodeSdkImport.includes("opencode-sdk-import-ok"))
+    throw new Error("OpenCode SDK import did not complete");
+
   const claudeVersion = run(claudeBin, ["--version"], { env: baseEnv });
   if (!claudeVersion.toLowerCase().includes("claude")) {
     throw new Error(`Unexpected Claude version output: ${claudeVersion}`);
@@ -132,6 +153,18 @@ try {
   });
   if (!codexVersion.includes("codex-cli")) {
     throw new Error(`Unexpected Codex version output: ${codexVersion}`);
+  }
+
+  const opencodeVersion = run(opencodeBin, ["--version"], {
+    env: { ...baseEnv, OPENCODE_DISABLE_AUTOUPDATE: "true" },
+  });
+  if (!opencodeVersion.includes(installedVersions.opencode)) {
+    throw new Error(`Unexpected OpenCode version output: ${opencodeVersion}`);
+  }
+
+  const ripgrepVersion = run(ripgrepBin, ["--version"], { env: baseEnv });
+  if (!ripgrepVersion.startsWith("ripgrep ")) {
+    throw new Error(`Unexpected ripgrep version output: ${ripgrepVersion}`);
   }
 
   const bashOutput = run(
@@ -153,7 +186,7 @@ try {
   }
 
   console.log(
-    `Runtime smoke passed (${platformConfig.key}): ${nodeVersion}, ${claudeVersion}, ${codexVersion}`,
+    `Runtime smoke passed (${platformConfig.key}): ${nodeVersion}, ${claudeVersion}, ${codexVersion}, OpenCode ${opencodeVersion}, ${ripgrepVersion.split("\n")[0]}`,
   );
 } finally {
   fs.rmSync(fakeHome, { recursive: true, force: true });

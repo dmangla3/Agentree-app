@@ -465,7 +465,7 @@ export const GraphAssistantNode = memo(({
           <div
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-700 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200"
             title={`${assistantIdentityLabel} icon`}
-            aria-label={`${assistantIconKind === 'generic' ? 'Assistant' : assistantIconKind === 'codex' ? 'Codex' : 'Claude'} icon`}
+            aria-label={`${assistantIconKind === 'generic' ? 'Assistant' : assistantIconKind === 'codex' ? 'Codex' : assistantIconKind === 'opencode' ? 'OpenCode' : 'Claude'} icon`}
           >
             <AssistantProviderIcon iconKind={assistantIconKind} />
           </div>

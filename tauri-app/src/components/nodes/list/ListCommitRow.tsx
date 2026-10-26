@@ -7,6 +7,7 @@ import { Badge } from '../../../../@/components/ui/badge';
 import type { BranchPointer } from '../../../stores/workspaceStore';
 import { CopyCommitShaButton } from '../../CopyCommitShaButton';
 import { CommitCheckoutButton } from '../../CommitCheckoutButton';
+import { OpenCommitTerminalButton } from '../../OpenCommitTerminalButton';
 import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import { getRepoPathFromWorkspace } from '../../../lib/gitNodeUtils';
 import { getMessageOutputCommitSha } from '../../../lib/graph/commitAccessors';
@@ -88,6 +89,13 @@ export const ListCommitRow = memo(({
             commitSha={commitSha}
             className="h-5 px-1.5 py-0 text-[9px]"
             iconClassName="h-2.5 w-2.5"
+          />
+          <OpenCommitTerminalButton
+            repoPath={repoPath}
+            commitSha={commitSha}
+            label={entity.preview}
+            compact
+            className="h-5 px-1.5 py-0"
           />
 
           {isExternal && (

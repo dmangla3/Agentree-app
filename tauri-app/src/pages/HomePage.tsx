@@ -26,10 +26,14 @@ import { LOGIN_PROFILES_NAVIGATION_EVENT, type LoginProfilesNavigationDetail } f
 import { useAppFontSizeHotkeys } from '../hotkeys/appFontSizeHotkeys';
 import { useOpenSearchHotkey } from '../hotkeys/searchHotkeys';
 import { useCreateThreadHotkey } from '../hotkeys/threadHotkeys';
+import { useToggleTerminalDockHotkey } from '../hotkeys/terminalHotkeys';
+import { useShortcutDisplayLabels } from '../hotkeys/useShortcut';
 import { agentClient } from '../lib/agentClient';
 import { buildAgentreePath, resolveAgentreeTargetAvailability } from '../lib/agentreeDeepLinks';
 import { useToast } from '../components/Toast';
 import { PanelRightClose, PanelRightOpen, X } from 'lucide-react';
+import { dispatchOpenCommitTerminal } from '../lib/commitTerminalEvents';
+import { resolveFocusedCommitSha } from '../lib/composerSendParent';
 
 const AdvancedSearchPanel = lazy(() => import('../components/AdvancedSearchPanel').then((module) => ({ default: module.AdvancedSearchPanel })));
 const ChatInterface = lazy(() => import('../components/ChatInterface').then((module) => ({ default: module.ChatInterface })));
@@ -39,6 +43,7 @@ const GraphView = lazy(() => import('../components/GraphView').then((module) => 
 const KnowledgeBase = lazy(() => import('../components/KnowledgeBase/KnowledgeBase').then((module) => ({ default: module.KnowledgeBase })));
 const LoginProfilesPanel = lazy(() => import('../components/logins/LoginProfilesPanel').then((module) => ({ default: module.LoginProfilesPanel })));
 const OrchestrationPanel = lazy(() => import('../components/orchestration/OrchestrationPanel').then((module) => ({ default: module.OrchestrationPanel })));
+const TerminalDock = lazy(() => import('../components/terminal/TerminalDock').then((module) => ({ default: module.TerminalDock })));
 const TrackingDashboard = lazy(() => import('../components/TrackingDashboard').then((module) => ({ default: module.TrackingDashboard })));
 
 function PanelLoading() {
@@ -58,6 +63,9 @@ export function HomePage() {
   const [localUserId, setLocalUserId] = useState<string | null>(null);
   const {
     selectedWorkspaceId,
+    focusedMessageId,
+    lastFocusSource,
+    lastFocusMetadata,
     selectWorkspace,
     clearSelectedWorkspace,
     isFloatingChatInputOpen,
@@ -72,14 +80,17 @@ export function HomePage() {
   const nodeId = searchParams.get('nodeId')?.trim() || searchParams.get('messageId')?.trim() || null;
   const threadId = nodeId ? null : searchParams.get('threadId')?.trim() || null;
   const { addToast } = useToast();
+  const terminalShortcutLabel = useShortcutDisplayLabels('terminal.toggle');
 
   const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(false);
   const [activeView, setActiveView] = useState<'chat' | 'orchestration' | 'tracking' | 'knowledge' | 'logins'>('chat');
-  const [loginProviderIntent, setLoginProviderIntent] = useState<'codex' | 'claude' | null>(null);
+  const [loginProviderIntent, setLoginProviderIntent] = useState<'codex' | 'claude' | 'opencode' | null>(null);
   const [runtimeHealthRequestId, setRuntimeHealthRequestId] = useState(0);
   const [threadNavigationModelsByWorkspace, setThreadNavigationModelsByWorkspace] = useState<Record<string, WorkspaceThreadNavigationModel>>({});
   const [workspaceNavigatorThreadsFocused, setWorkspaceNavigatorThreadsFocused] = useState(false);
   const [isChatCollapsed, setIsChatCollapsed] = useState(true);
+  const [hasTerminalTabs, setHasTerminalTabs] = useState(false);
+  const [isTerminalDockVisible, setIsTerminalDockVisible] = useState(false);
   const [worktreePolicyPromptRepoPath, setWorktreePolicyPromptRepoPath] = useState<string | null>(null);
   const [allowContinueWithDefaultPolicy, setAllowContinueWithDefaultPolicy] = useState(false);
   const shellReadyLoggedRef = useRef(false);
@@ -87,6 +98,8 @@ export function HomePage() {
   const reportedMissingWorkspaceRef = useRef<string | null>(null);
   const graphPanelRef = useRef<ImperativePanelHandle>(null);
   const chatPanelRef = useRef<ImperativePanelHandle>(null);
+  const workspaceStagePanelRef = useRef<ImperativePanelHandle>(null);
+  const terminalPanelRef = useRef<ImperativePanelHandle>(null);
   const rememberedGraphChatSplitRef = useRef(readRememberedGraphChatSplit() ?? DEFAULT_GRAPH_CHAT_SPLIT);
   const effectiveUserId = user?.id ?? localUserId;
   const effectiveUserName = user?.name || 'Local workspace';
@@ -171,8 +184,8 @@ export function HomePage() {
       const detail = (event as CustomEvent<LoginProfilesNavigationDetail>).detail;
       const provider = detail?.provider;
       const targetsRuntimeHealth = detail?.target === 'runtime-health';
-      if (provider !== 'codex' && provider !== 'claude' && !targetsRuntimeHealth) return;
-      if (provider === 'codex' || provider === 'claude') {
+      if (provider !== 'codex' && provider !== 'claude' && provider !== 'opencode' && !targetsRuntimeHealth) return;
+      if (provider === 'codex' || provider === 'claude' || provider === 'opencode') {
         setLoginProviderIntent(provider);
       }
       if (targetsRuntimeHealth) {
@@ -411,6 +424,75 @@ export function HomePage() {
     }, { source: 'HomePage' });
   }, [activeView, isChatCollapsed, restoreChatPanel, selectedWorkspaceId]);
 
+  const showTerminalDock = useCallback(() => {
+    setIsTerminalDockVisible(true);
+    window.requestAnimationFrame(() => {
+      if ((terminalPanelRef.current?.getSize() ?? 0) < 10) {
+        workspaceStagePanelRef.current?.resize(68);
+        terminalPanelRef.current?.resize(32);
+      }
+    });
+  }, []);
+
+  const hideTerminalDock = useCallback(() => {
+    setIsTerminalDockVisible(false);
+    window.requestAnimationFrame(() => {
+      terminalPanelRef.current?.collapse();
+      workspaceStagePanelRef.current?.resize(100);
+    });
+  }, []);
+
+  const handleTerminalTabsChange = useCallback((hasTabs: boolean) => {
+    setHasTerminalTabs(hasTabs);
+    if (!hasTabs) hideTerminalDock();
+  }, [hideTerminalDock]);
+
+  const toggleOrOpenTerminalDock = useCallback(() => {
+    if (hasTerminalTabs) {
+      if (isTerminalDockVisible) hideTerminalDock();
+      else showTerminalDock();
+      return;
+    }
+
+    if (!selectedWorkspaceRepoPath) {
+      addToast({
+        title: 'Terminal unavailable',
+        description: 'This workspace does not have a local repository path.',
+        variant: 'warning',
+      });
+      return;
+    }
+
+    const commitSha = resolveFocusedCommitSha({
+      focusedMessageId,
+      lastFocusSource,
+      lastFocusMetadata,
+    });
+    if (!commitSha) {
+      addToast({
+        title: 'Select a commit first',
+        description: `Focus a commit in the graph, then press ${terminalShortcutLabel} to open its terminal.`,
+        variant: 'info',
+      });
+      return;
+    }
+
+    dispatchOpenCommitTerminal({ repoPath: selectedWorkspaceRepoPath, commitSha });
+  }, [
+    addToast,
+    focusedMessageId,
+    hasTerminalTabs,
+    hideTerminalDock,
+    isTerminalDockVisible,
+    lastFocusMetadata,
+    lastFocusSource,
+    selectedWorkspaceRepoPath,
+    showTerminalDock,
+    terminalShortcutLabel,
+  ]);
+
+  useToggleTerminalDockHotkey(toggleOrOpenTerminalDock);
+
   if (!effectiveUserId) {
     return <PanelLoading />;
   }
@@ -450,7 +532,11 @@ export function HomePage() {
         selectedWorkspaceCloudSyncEnabled={Boolean(
           selectedWorkspace?.cloud_backup_enabled ?? selectedWorkspace?.cloudBackupEnabled
         )}
+        hasTerminalTabs={hasTerminalTabs}
+        isTerminalDockVisible={isTerminalDockVisible}
+        terminalShortcutLabel={terminalShortcutLabel}
         onOpenSearch={() => setIsSearchPanelOpen(true)}
+        onToggleTerminalDock={toggleOrOpenTerminalDock}
       />
 
       <div className="app-shell-content flex min-h-0 flex-1 overflow-hidden">
@@ -479,6 +565,15 @@ export function HomePage() {
         ) : null}
 
         <main className="app-shell-stage flex h-full min-w-0 flex-1 flex-col overflow-hidden" aria-label="Agentree workspace shell">
+          <ResizablePanelGroup direction="vertical" className="min-h-0 w-full flex-1 border-0">
+            <ResizablePanel
+              id="workspace-stage"
+              order={1}
+              ref={workspaceStagePanelRef}
+              defaultSize={100}
+              minSize={30}
+            >
+              <div className="h-full min-h-0 overflow-hidden">
           {activeView === 'chat' ? (
             canOpenSelectedWorkspace ? (
               <>
@@ -607,6 +702,34 @@ export function HomePage() {
               </div>
             </div>
           )}
+              </div>
+            </ResizablePanel>
+            <ResizableHandle
+              className={isTerminalDockVisible
+                ? 'h-1.5 cursor-row-resize bg-[hsl(var(--app-border)/0.72)] after:h-2 hover:bg-[hsl(var(--app-accent)/0.34)]'
+                : 'pointer-events-none h-0 bg-transparent after:h-0'}
+              aria-hidden={!isTerminalDockVisible}
+            />
+            <ResizablePanel
+              id="commit-terminal-dock"
+              order={2}
+              ref={terminalPanelRef}
+              defaultSize={0}
+              minSize={18}
+              maxSize={70}
+              collapsible
+              collapsedSize={0}
+              onCollapse={() => setIsTerminalDockVisible(false)}
+              onExpand={() => setIsTerminalDockVisible(true)}
+            >
+              <Suspense fallback={<PanelLoading />}>
+                <TerminalDock
+                  onRequestShow={showTerminalDock}
+                  onTabsChange={handleTerminalTabsChange}
+                />
+              </Suspense>
+            </ResizablePanel>
+          </ResizablePanelGroup>
         </main>
       </div>
 

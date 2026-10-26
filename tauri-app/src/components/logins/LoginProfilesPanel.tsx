@@ -9,6 +9,7 @@ import {
   Plus,
   RefreshCw,
   ShieldCheck,
+  SlidersHorizontal,
   Terminal,
 } from 'lucide-react';
 import { Badge } from '../../../@/components/ui/badge';
@@ -39,11 +40,12 @@ import {
 } from '../../lib/loginProfiles';
 import type { RuntimeProvider } from '../../lib/runtimeModels';
 import { cn } from '../../lib/utils';
+import { dispatchOpenModelConfiguration } from '../../lib/modelConfigurationEvents';
 import { LoginProfileEditor } from './LoginProfileEditor';
 import { LoginProfileRows } from './LoginProfileRows';
 import { RuntimeHealthCard } from './RuntimeHealthCard';
 
-type ProviderFilter = 'codex' | 'claude';
+type ProviderFilter = 'codex' | 'claude' | 'opencode';
 
 interface LoginProfilesPanelProps {
   initialProvider?: ProviderFilter | null;
@@ -53,6 +55,7 @@ interface LoginProfilesPanelProps {
 const providerFilters: Array<{ id: ProviderFilter; label: string }> = [
   { id: 'codex', label: 'Codex' },
   { id: 'claude', label: 'Claude' },
+  { id: 'opencode', label: 'OpenCode' },
 ];
 
 const panelCopy = {
@@ -73,6 +76,15 @@ const panelCopy = {
     emptyBody: 'Add a Claude account before selecting Claude models for runs.',
     setupTitle: 'Managed Claude account',
     setupBody: 'Switch between Claude accounts from Agentree after each account has been connected once.',
+  },
+  opencode: {
+    eyebrow: 'Managed environments',
+    title: 'OpenCode environments',
+    description: 'Each environment keeps its connected OpenCode providers and refreshed credentials isolated from other accounts.',
+    emptyTitle: 'No OpenCode environments',
+    emptyBody: 'Import your current OpenCode auth.json automatically, or paste its contents manually before selecting OpenCode models.',
+    setupTitle: 'Managed OpenCode environment',
+    setupBody: 'OpenCode usually stores credentials at ~/.local/share/opencode/auth.json (or $XDG_DATA_HOME/opencode/auth.json). Importing copies that file into an isolated Agentree profile.',
   },
 } satisfies Record<ProviderFilter, Record<string, string>>;
 
@@ -121,7 +133,7 @@ export function LoginProfilesPanel({
   const providerLimits = useProviderLimitsStore((state) => state.byProvider);
   const refreshLimitsIfStale = useProviderLimitsStore((state) => state.refreshIfStale);
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>(initialProvider ?? 'codex');
-  const [editorProvider, setEditorProvider] = useState<'codex' | 'claude'>('codex');
+  const [editorProvider, setEditorProvider] = useState<ProviderFilter>('codex');
   const [editingProfile, setEditingProfile] = useState<LoginProfileSummary | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [pendingProfileId, setPendingProfileId] = useState<string | null>(null);
@@ -193,6 +205,11 @@ export function LoginProfilesPanel({
 
   const limitSummaryByProfile = useMemo(() => {
     return filteredProfiles.reduce<Record<string, string | null>>((acc, profile) => {
+      if (profile.provider === 'opencode') {
+        const modelCount = profile.statusMessage?.match(/with (\d+) available models/i)?.[1];
+        acc[profile.id] = modelCount ? `${modelCount} available` : null;
+        return acc;
+      }
       if (profile.provider !== 'codex' && profile.provider !== 'claude') {
         acc[profile.id] = null;
         return acc;
@@ -219,14 +236,14 @@ export function LoginProfilesPanel({
   const activeProfileRuns = selectedProfile ? activeRunsByProfile[selectedProfile.id] ?? [] : [];
   const copy = panelCopy[providerFilter];
 
-  const openNewEditor = (provider: 'codex' | 'claude') => {
+  const openNewEditor = (provider: ProviderFilter) => {
     setEditorProvider(provider);
     setEditingProfile(null);
     setEditorOpen(true);
   };
 
   const openEdit = (profile: LoginProfileSummary) => {
-    setEditorProvider(profile.provider === 'claude' ? 'claude' : 'codex');
+    setEditorProvider(profile.provider === 'claude' ? 'claude' : profile.provider === 'opencode' ? 'opencode' : 'codex');
     setEditingProfile(profile);
     setEditorOpen(true);
   };
@@ -244,7 +261,7 @@ export function LoginProfilesPanel({
     const saved = await saveProfile(request);
     setEditingProfile(saved);
     setSelectedProfileId(saved.id);
-    setEditorProvider(saved.provider === 'claude' ? 'claude' : 'codex');
+    setEditorProvider(saved.provider === 'claude' ? 'claude' : saved.provider === 'opencode' ? 'opencode' : 'codex');
     return saved;
   };
 
@@ -252,7 +269,10 @@ export function LoginProfilesPanel({
     setIsDiscovering(true);
     setDiscoveryError(null);
     try {
-      const candidates = await discoverImportCandidates();
+      const discovered = await discoverImportCandidates();
+      const candidates = providerFilter === 'opencode'
+        ? discovered.filter((candidate) => candidate.provider === 'opencode')
+        : discovered;
       setImportCandidates(candidates);
       setSelectedCandidateIds(new Set(candidates.filter((candidate) => candidate.importable).map((candidate) => candidate.id)));
       setDiscoveryOpen(true);
@@ -309,11 +329,11 @@ export function LoginProfilesPanel({
             </Button>
             <Button variant="outline" size="sm" onClick={() => void runDiscovery()} disabled={isDiscovering || isMutating}>
               <Download className={cn('h-4 w-4', isDiscovering && 'animate-pulse')} />
-              Find existing
+              {providerFilter === 'opencode' ? 'Import current auth.json' : 'Find existing'}
             </Button>
             <Button size="sm" onClick={() => openNewEditor(providerFilter)}>
               <Plus className="h-4 w-4" />
-              Add {providerFilter === 'codex' ? 'Codex' : 'Claude'}
+              Add {providerFilter === 'codex' ? 'Codex' : providerFilter === 'claude' ? 'Claude' : 'OpenCode'}
             </Button>
           </div>
         </header>
@@ -368,6 +388,7 @@ export function LoginProfilesPanel({
                 limitSeverityByProfile={limitSeverityByProfile}
                 pendingProfileId={pendingProfileId}
                 selectedProfileId={selectedProfile?.id ?? null}
+                detailColumnLabel={providerFilter === 'opencode' ? 'Models' : 'Limit'}
                 onSelect={(profile) => setSelectedProfileId(profile.id)}
                 onEdit={openEdit}
                 onCheck={(profile) => void runProfileAction(profile, () => checkProfile(profile.id))}
@@ -381,10 +402,23 @@ export function LoginProfilesPanel({
                 </div>
                 <div className="mt-4 text-sm font-semibold text-foreground">{copy.emptyTitle}</div>
                 <p className="mt-1 max-w-sm text-sm leading-6 text-muted-foreground">{copy.emptyBody}</p>
-                <Button className="mt-5" size="sm" onClick={() => openNewEditor(providerFilter)}>
-                  <Plus className="h-4 w-4" />
-                  Add account
-                </Button>
+                {providerFilter === 'opencode' ? (
+                  <div className="mt-5 flex flex-wrap justify-center gap-2">
+                    <Button size="sm" onClick={() => void runDiscovery()} disabled={isDiscovering || isMutating}>
+                      <Download className={cn('h-4 w-4', isDiscovering && 'animate-pulse')} />
+                      Import current auth.json
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => openNewEditor(providerFilter)}>
+                      <Plus className="h-4 w-4" />
+                      Paste auth.json
+                    </Button>
+                  </div>
+                ) : (
+                  <Button className="mt-5" size="sm" onClick={() => openNewEditor(providerFilter)}>
+                    <Plus className="h-4 w-4" />
+                    Add account
+                  </Button>
+                )}
               </div>
             )}
           </section>
@@ -477,6 +511,16 @@ export function LoginProfilesPanel({
                   <span>Usage limits refresh per account.</span>
                 </div>
               </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-4 h-10 w-full"
+                onClick={() => dispatchOpenModelConfiguration(providerFilter)}
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+                Choose visible models
+              </Button>
             </section>
 
             <div
@@ -510,7 +554,9 @@ export function LoginProfilesPanel({
           <DialogHeader>
             <DialogTitle>Import existing logins</DialogTitle>
             <DialogDescription>
-              Review detected credentials before importing. Secret values stay hidden.
+              {providerFilter === 'opencode'
+                ? 'Select the detected OpenCode auth.json to copy it into an isolated Agentree profile. Secret values stay hidden.'
+                : 'Review detected credentials before importing. Secret values stay hidden.'}
             </DialogDescription>
           </DialogHeader>
 
@@ -556,7 +602,9 @@ export function LoginProfilesPanel({
             <div className="rounded-lg border border-border/70 bg-background px-4 py-8 text-center">
               <div className="text-sm font-semibold text-foreground">No existing logins found</div>
               <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                Checked supported environment variables.
+                {providerFilter === 'opencode'
+                  ? 'Checked ~/.local/share/opencode/auth.json and $XDG_DATA_HOME/opencode/auth.json.'
+                  : 'Checked supported environment variables.'}
               </p>
             </div>
           )}

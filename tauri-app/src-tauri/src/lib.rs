@@ -109,6 +109,7 @@ mod provider_skills;
 mod runtime_readiness;
 mod runtime_scripts;
 mod secure_store;
+mod terminal;
 mod thread_control;
 mod tool_output;
 pub mod types;
@@ -231,6 +232,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             db::record_local_insight_feedback,
             db::hydrate_local_nodes_from_server,
             db::local_first_create_thread_session,
+            db::convert_subgraph_to_thread,
             db::list_thread_sessions,
             db::local_first_delete_thread_session,
             db::upsert_local_node,
@@ -252,13 +254,17 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             db::local_first_delete_workspace,
             db::list_local_deleted_node_roots,
             db::list_local_deleted_workspace_ids,
+            db::get_cloud_sync_capability,
+            db::get_next_local_sync_retry_at,
             db::process_local_sync_events,
             agents::start_agent_run,
             agent_launch::launch_agent_message,
             agents::stop_agent,
             agents::steer_agent_run,
             agents::get_agent_run_state,
+            agents::list_agent_resource_usage,
             login_profiles::list_login_profiles,
+            login_profiles::read_opencode_login_profile_auth,
             login_profiles::upsert_login_profile,
             login_profiles::delete_login_profile,
             login_profiles::set_default_login_profile,
@@ -275,6 +281,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             login_profiles::import_existing_runtime_login,
             runtime_readiness::check_runtime_readiness,
             runtime_readiness::check_all_runtime_readiness,
+            runtime_readiness::list_opencode_models,
             runtime_readiness::refresh_provider_limits,
             runtime_readiness::check_managed_runtime_doctor,
             runtime_readiness::repair_managed_runtime_component,
@@ -315,6 +322,11 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             git_workspace::list_addable_commit_candidates,
             git_workspace::list_addable_commit_range,
             git_workspace::list_all_commits,
+            terminal::create_terminal_session,
+            terminal::write_terminal_session,
+            terminal::resize_terminal_session,
+            terminal::acknowledge_terminal_output,
+            terminal::close_terminal_session,
             editors::get_available_editors,
             mcp::set_mcp_auth_token,
             mcp::set_mcp_workspace_id,
@@ -424,6 +436,7 @@ pub fn run() {
     builder
         .manage(AgentState::new())
         .manage(MergeReviewState::default())
+        .manage(terminal::TerminalState::new())
         .setup({
             let specta_builder = specta_builder.clone();
             move |app| {

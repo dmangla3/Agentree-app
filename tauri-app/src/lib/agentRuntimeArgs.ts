@@ -42,7 +42,7 @@ export const parseRuntimeCliArgs = (cliArgs: string | null | undefined): {
     } else if (token === '--permission-mode' && next) {
       permissionMode = next;
       index += 1;
-    } else if ((token === '--reasoning-effort' || token === '--effort') && next) {
+    } else if ((token === '--reasoning-effort' || token === '--effort' || token === '--variant') && next) {
       reasoningEffort = next;
       index += 1;
     }
@@ -94,7 +94,7 @@ export function buildAgentRuntimeArgs(input: BuildAgentRuntimeArgsInput): BuildA
     input.permissionMode ?? DEFAULT_COMPOSER_PERMISSION_MODE,
   );
   const providerInternalArgs = input.providerInternalArgs ?? [];
-  const promptFlag = input.agentType === 'codex' ? null : input.promptFlag;
+  const promptFlag = input.agentType === 'codex' || input.agentType === 'opencode' ? null : input.promptFlag;
   const finalArgs = promptFlag
     ? [...argsWithPermissions, ...providerInternalArgs, promptFlag, input.prompt]
     : [...argsWithPermissions, ...providerInternalArgs, input.prompt];

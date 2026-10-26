@@ -109,6 +109,16 @@ fn provider_skill_roots(provider: &str, repo_path: Option<&Path>) -> Vec<(String
                     repo_path.join(".claude").join("skills"),
                 );
             }
+            "opencode" => {
+                for root in [
+                    repo_path.join(".opencode").join("skills"),
+                    repo_path.join(".opencode").join("skill"),
+                    repo_path.join(".agents").join("skills"),
+                    repo_path.join(".claude").join("skills"),
+                ] {
+                    push_root(&mut roots, &mut seen, "repo", root);
+                }
+            }
             _ => {}
         }
     }
@@ -136,6 +146,16 @@ fn provider_skill_roots(provider: &str, repo_path: Option<&Path>) -> Vec<(String
                     "global",
                     home_dir.join(".claude").join("skills"),
                 );
+            }
+            "opencode" => {
+                for root in [
+                    home_dir.join(".config").join("opencode").join("skills"),
+                    home_dir.join(".config").join("opencode").join("skill"),
+                    home_dir.join(".agents").join("skills"),
+                    home_dir.join(".claude").join("skills"),
+                ] {
+                    push_root(&mut roots, &mut seen, "global", root);
+                }
             }
             _ => {}
         }
@@ -212,6 +232,7 @@ fn normalize_provider(provider: &str) -> Option<&'static str> {
     match provider.trim().to_lowercase().as_str() {
         "codex" => Some("codex"),
         "claude" => Some("claude"),
+        "opencode" => Some("opencode"),
         _ => None,
     }
 }
@@ -287,5 +308,17 @@ mod tests {
 
         assert!(paths.contains(&temp.path().join(".codex").join("skills")));
         assert!(paths.contains(&temp.path().join(".agents").join("skills")));
+    }
+
+    #[test]
+    fn opencode_repo_roots_include_native_and_compatible_skill_folders() {
+        let temp = tempdir().expect("temp dir");
+        let roots = provider_skill_roots("opencode", Some(temp.path()));
+        let paths: Vec<_> = roots.into_iter().map(|(_, path)| path).collect();
+
+        assert!(paths.contains(&temp.path().join(".opencode").join("skills")));
+        assert!(paths.contains(&temp.path().join(".opencode").join("skill")));
+        assert!(paths.contains(&temp.path().join(".agents").join("skills")));
+        assert!(paths.contains(&temp.path().join(".claude").join("skills")));
     }
 }

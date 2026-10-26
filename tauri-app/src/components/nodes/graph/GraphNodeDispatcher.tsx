@@ -103,14 +103,12 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
       }
       return;
     }
+    if (data.entity?.kind === 'thread_link') {
+      const threadRootId = data.entity.threadLinkRootId ?? data.entity.threadRootId ?? null;
+      if (threadRootId) data.onOpenThread?.(threadRootId);
+      return;
+    }
     if (data.entity?.focusMessageId) {
-      if (data.entity.kind === 'thread_link') {
-        const threadRootId = data.entity.threadLinkRootId ?? data.entity.threadRootId ?? null;
-        if (threadRootId) {
-          data.onOpenThread?.(threadRootId);
-        }
-        return;
-      }
       if (capabilities.canReply && (data.entity.kind === 'user_message' || data.entity.kind === 'assistant_message')) {
         dispatchGraphComposerDockExpand();
       }
@@ -127,7 +125,9 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
 
   const handleSelect = useCallback((multi: boolean) => {
     if (!capabilities.canSelect) return;
-    const id = data.entity?.focusMessageId || data.entity?.messageId || data.entity?.summary?.id;
+    const id = data.entity?.kind === 'thread_link'
+      ? data.entity.entityId
+      : data.entity?.focusMessageId || data.entity?.messageId || data.entity?.summary?.id;
     if (id) {
       data.onSelect(id, multi);
     }
@@ -138,9 +138,11 @@ export const GraphNodeDispatcher = memo((props: NodeProps<GraphNode>) => {
     const commitSha = data.entity?.kind === 'commit_message'
       ? getMessageOutputCommitSha(data.entity.message)
       : null;
-    const id = commitSha
-      ? `commit:${commitSha}`
-      : data.entity?.messageId || data.entity?.focusMessageId || data.entity?.summary?.id;
+    const id = data.entity?.kind === 'thread_link'
+      ? data.entity.entityId
+      : commitSha
+        ? `commit:${commitSha}`
+        : data.entity?.messageId || data.entity?.focusMessageId || data.entity?.summary?.id;
     if (id) {
       data.onContextMenu(id, e);
     }

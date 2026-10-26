@@ -17,6 +17,7 @@ interface LoginProfilesState {
   isMutating: boolean;
   error: string | null;
   refresh: () => Promise<void>;
+  readOpenCodeAuth: (profileId: string) => Promise<string>;
   startSync: () => () => void;
   saveProfile: (request: UpsertLoginProfileRequest) => Promise<LoginProfileSummary>;
   connectCodexProfile: (profileId: string) => Promise<CodexLoginStart>;
@@ -66,6 +67,7 @@ export const useLoginProfilesStore = create<LoginProfilesState>((set) => ({
       set({ error: messageFromError(error), isLoading: false });
     }
   },
+  readOpenCodeAuth: async (profileId) => agentClient.readOpenCodeLoginProfileAuth(profileId),
   startSync: () => {
     syncRefCount += 1;
     void useLoginProfilesStore.getState().refresh();

@@ -68,6 +68,10 @@ vi.mock('../lib/agentClient', () => ({
   },
 }));
 
+vi.mock('./AgentResourceUsageBadge', () => ({
+  AgentResourceUsageBadge: () => null,
+}));
+
 vi.mock('../agent-runs/agentRunManager', () => ({
   agentRunManager: {
     watch: vi.fn(),

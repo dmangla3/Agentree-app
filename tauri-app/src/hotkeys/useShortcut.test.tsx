@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetAllShortcutOverrides, setShortcutOverride } from './shortcutRegistry';
-import { useCapturedShortcut } from './useShortcut';
+import { useCapturedShortcut, useShortcutDisplayLabels } from './useShortcut';
 import type { RegisterableHotkey } from '@tanstack/react-hotkeys';
 
 describe('useCapturedShortcut', () => {
@@ -72,5 +72,17 @@ describe('useCapturedShortcut', () => {
     }));
 
     expect(callback).toHaveBeenCalledOnce();
+  });
+
+  it('keeps displayed shortcut labels in sync with overrides', () => {
+    const { result } = renderHook(() => useShortcutDisplayLabels('terminal.toggle'));
+    const modifier = result.current.startsWith('Cmd') ? 'Cmd' : 'Ctrl';
+    expect(result.current).toBe(`${modifier}+J`);
+
+    act(() => {
+      setShortcutOverride('terminal.toggle', 'Mod+Shift+J' as RegisterableHotkey);
+    });
+
+    expect(result.current).toBe(`${modifier}+Shift+J`);
   });
 });

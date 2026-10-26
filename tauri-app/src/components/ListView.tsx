@@ -19,6 +19,7 @@ interface ListViewProps {
   onRequestDeleteMessages?: (messageIds: string[]) => void;
   onAddCommitsToMergePanel?: (messageIds: string[]) => void;
   onMarkThreadDone?: (threadRootId: string) => void;
+  onOpenTerminal?: (commitSha: string) => void;
 }
 
 const groupItemsByDay = (items: any[]) => {
@@ -100,6 +101,7 @@ export const ListView = memo(({
   onRequestDeleteMessages,
   onAddCommitsToMergePanel,
   onMarkThreadDone,
+  onOpenTerminal,
 }: ListViewProps) => {
   const [contextMenu, setContextMenu] = useState<NodeContextMenuState | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -338,6 +340,7 @@ export const ListView = memo(({
         onDeleteMessages={onRequestDeleteMessages}
         onAddCommitsToMergePanel={onAddCommitsToMergePanel}
         onMarkThreadDone={onMarkThreadDone}
+        onOpenTerminal={onOpenTerminal}
       />
     </div>
   );

@@ -1,11 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import {
+  compareOpenCodeCatalogModels,
   getReasoningEffortSortOrder,
   reasoningEffortsByProvider,
   runtimeModels,
+  runtimeModelsFromOpenCodeCatalog,
 } from './runtimeModels';
 
 describe('runtimeModels', () => {
+  it('orders OpenCode models by lifecycle and newest release before label', () => {
+    const models = [
+      { label: 'Alpha preview', modelProvider: 'provider', releaseDate: '2027-01-01', status: 'alpha' as const },
+      { label: 'Older stable', modelProvider: 'provider', releaseDate: '2025-01-01', status: 'active' as const },
+      { label: 'Newer stable', modelProvider: 'provider', releaseDate: '2026-01-01', status: 'active' as const },
+      { label: 'Deprecated', modelProvider: 'provider', releaseDate: '2028-01-01', status: 'deprecated' as const },
+    ];
+
+    expect(models.sort(compareOpenCodeCatalogModels).map((model) => model.label)).toEqual([
+      'Newer stable',
+      'Older stable',
+      'Alpha preview',
+      'Deprecated',
+    ]);
+  });
+
   it('only exposes current Codex model families in the selector catalog', () => {
     const codexFamilyKeys = [
       ...new Set(
@@ -172,5 +190,43 @@ describe('runtimeModels', () => {
     });
     expect(imageModels[0].cliArgs).toBe('--model gpt-image-2');
     expect(imageModels[0].cliArgs).not.toContain('--reasoning-effort');
+  });
+
+  it('builds profile-dependent OpenCode models with full provider ids and variants', () => {
+    const models = runtimeModelsFromOpenCodeCatalog([{
+      id: 'openrouter/qwen/qwen3:free',
+      providerId: 'openrouter',
+      providerName: 'OpenRouter',
+      modelId: 'qwen/qwen3:free',
+      name: 'Qwen 3 Free',
+      reasoning: true,
+      attachment: true,
+      toolCall: true,
+      inputModalities: ['text', 'image'],
+      outputModalities: ['text'],
+      variants: ['high'],
+      contextWindow: 200000,
+      maxOutputTokens: 64000,
+      releaseDate: '2025-04-29',
+      status: 'active',
+      isFree: true,
+    }]);
+
+    expect(models).toEqual([
+      expect.objectContaining({
+        key: 'opencode:openrouter%2Fqwen%2Fqwen3%3Afree:high',
+        provider: 'opencode',
+        modelId: 'openrouter/qwen/qwen3:free',
+        cliArgs: '--model openrouter/qwen/qwen3:free --variant high',
+        capabilities: expect.objectContaining({
+          inputModalities: ['text', 'image'],
+          reasoning: true,
+          toolCall: true,
+        }),
+        releaseDate: '2025-04-29',
+        status: 'active',
+        isFree: true,
+      }),
+    ]);
   });
 });

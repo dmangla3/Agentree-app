@@ -477,7 +477,7 @@ impl AgentLaunchService {
             provider_args.extend(["--target-node-id".to_string(), target_id.clone()]);
         }
         provider_args.extend(["--node-id".to_string(), request.assistant_node_id.clone()]);
-        if request.agent_type == "codex" {
+        if matches!(request.agent_type.as_str(), "codex" | "opencode") {
             if let Some(artifacts_json) = provider_image_artifacts_json(request) {
                 provider_args.extend(["--input-artifacts-json".to_string(), artifacts_json]);
             }
@@ -888,8 +888,8 @@ fn validate_request(request: &AgentLaunchRequest) -> Result<(), String> {
             return Err(format!("{name} is required."));
         }
     }
-    if !matches!(request.agent_type.as_str(), "codex" | "claude") {
-        return Err("agentType must be codex or claude.".to_string());
+    if !matches!(request.agent_type.as_str(), "codex" | "claude" | "opencode") {
+        return Err("agentType must be codex, claude, or opencode.".to_string());
     }
     if node_id(&request.user_node).as_deref() != Some(request.user_node_id.as_str())
         || node_id(&request.assistant_node).as_deref() != Some(request.assistant_node_id.as_str())
@@ -1229,13 +1229,17 @@ fn build_runtime_args(
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
-        if matches!(arg.as_str(), "--model" | "--reasoning-effort" | "--effort") {
+        if matches!(
+            arg.as_str(),
+            "--model" | "--reasoning-effort" | "--effort" | "--variant"
+        ) {
             index += 2;
             continue;
         }
         if arg.starts_with("--model=")
             || arg.starts_with("--reasoning-effort=")
             || arg.starts_with("--effort=")
+            || arg.starts_with("--variant=")
         {
             index += 1;
             continue;
@@ -1273,10 +1277,10 @@ fn build_runtime_args(
     }
     if let Some(effort) = request.reasoning_effort.as_ref() {
         args.extend([
-            if request.agent_type == "claude" {
-                "--effort"
-            } else {
-                "--reasoning-effort"
+            match request.agent_type.as_str() {
+                "claude" => "--effort",
+                "opencode" => "--variant",
+                _ => "--reasoning-effort",
             }
             .to_string(),
             effort.clone(),
@@ -1520,6 +1524,23 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["--permission-mode", "safe-write"]));
         assert_eq!(args.last().map(String::as_str), Some("prompt"));
+    }
+
+    #[test]
+    fn opencode_runtime_args_use_variants_and_replace_stale_effort_flags() {
+        let mut opencode_request = request("opencode");
+        opencode_request.model = Some("anthropic/claude-sonnet-4-5".to_string());
+        opencode_request.reasoning_effort = Some("high".to_string());
+        opencode_request.agent_cli_args =
+            Some("--model stale/model --reasoning-effort low --variant minimal".to_string());
+
+        let args = build_runtime_args(&opencode_request, Vec::new(), "prompt");
+        assert!(args
+            .windows(2)
+            .any(|pair| { pair == ["--model", "anthropic/claude-sonnet-4-5"] }));
+        assert!(args.windows(2).any(|pair| pair == ["--variant", "high"]));
+        assert!(!args.iter().any(|arg| arg == "--reasoning-effort"));
+        assert_eq!(args.iter().filter(|arg| *arg == "--variant").count(), 1);
     }
 
     #[test]

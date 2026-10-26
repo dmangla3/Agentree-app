@@ -151,6 +151,14 @@ const publicWorkLogsToTimeline = (workLogs: PublicWorkLogEntry[] | null | undefi
 const modelFromAgentId = (agentId: string | null | undefined): { provider: string | null; model: string | null } => {
   const raw = agentId?.trim();
   if (!raw) return { provider: null, model: null };
+  if (raw.startsWith('opencode:')) {
+    const [encodedModel] = raw.slice('opencode:'.length).split(':');
+    try {
+      return { provider: 'opencode', model: decodeURIComponent(encodedModel)?.trim() || null };
+    } catch {
+      return { provider: 'opencode', model: encodedModel?.trim() || null };
+    }
+  }
   const parts = raw.split(':').map((part) => part.trim()).filter(Boolean);
   if (parts.length < 2) return { provider: null, model: raw };
   const provider = parts[0] || null;

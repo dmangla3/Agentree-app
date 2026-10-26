@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   FileText,
   Keyboard,
+  SlidersHorizontal,
   type LucideIcon,
   Settings,
   ShieldCheck,
@@ -16,6 +17,13 @@ import {
 import { ShortcutSettingsPanel } from './ShortcutSettingsPanel';
 import { WorktreePolicyPanel } from './WorktreePolicyButton';
 import { DefaultPromptSettingsPanel } from './DefaultPromptSettingsPanel';
+import { ModelVisibilitySettingsPanel } from './ModelVisibilitySettingsPanel';
+import {
+  MODEL_CONFIGURATION_EVENT,
+  type ModelConfigurationDetail,
+} from '../lib/modelConfigurationEvents';
+import { LOGIN_PROFILES_NAVIGATION_EVENT } from '../lib/loginNavigationEvents';
+import type { RuntimeProvider } from '../lib/runtimeModels';
 import { cn } from '../lib/utils';
 
 interface ConfigButtonProps {
@@ -25,9 +33,15 @@ interface ConfigButtonProps {
   allowContinueWithDefaultPolicy?: boolean;
 }
 
-type ConfigPanelId = 'worktree-policy' | 'keyboard-shortcuts' | 'default-prompts';
+type ConfigPanelId = 'worktree-policy' | 'models' | 'keyboard-shortcuts' | 'default-prompts';
 
 const configPanels = [
+  {
+    id: 'models',
+    label: 'Models',
+    description: 'Choose models shown in selectors',
+    icon: SlidersHorizontal,
+  },
   {
     id: 'worktree-policy',
     label: 'Worktree policy',
@@ -61,6 +75,7 @@ export function ConfigButton({
 }: ConfigButtonProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [activePanelId, setActivePanelId] = useState<ConfigPanelId>('worktree-policy');
+  const [modelProvider, setModelProvider] = useState<RuntimeProvider>('codex');
   const isOpen = open ?? uncontrolledOpen;
   const setIsOpen = onOpenChange ?? setUncontrolledOpen;
 
@@ -69,6 +84,24 @@ export function ConfigButton({
       setActivePanelId('worktree-policy');
     }
   }, [open]);
+
+  useEffect(() => {
+    const handleOpenModels = (event: Event) => {
+      const provider = (event as CustomEvent<ModelConfigurationDetail>).detail?.provider;
+      if (provider !== 'codex' && provider !== 'claude' && provider !== 'opencode') return;
+      setModelProvider(provider);
+      setActivePanelId('models');
+      setIsOpen(true);
+    };
+    window.addEventListener(MODEL_CONFIGURATION_EVENT, handleOpenModels);
+    return () => window.removeEventListener(MODEL_CONFIGURATION_EVENT, handleOpenModels);
+  }, [setIsOpen]);
+
+  useEffect(() => {
+    const handleOpenLogins = () => setIsOpen(false);
+    window.addEventListener(LOGIN_PROFILES_NAVIGATION_EVENT, handleOpenLogins);
+    return () => window.removeEventListener(LOGIN_PROFILES_NAVIGATION_EVENT, handleOpenLogins);
+  }, [setIsOpen]);
 
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
@@ -85,7 +118,7 @@ export function ConfigButton({
       <DialogContent className="h-[min(720px,calc(100dvh-2rem))] max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-[1040px] gap-0 overflow-hidden rounded-xl border-border/80 p-0 shadow-[0_28px_90px_-46px_hsl(var(--foreground)/0.65)] sm:max-w-[1040px]">
         <DialogTitle className="sr-only">Configuration</DialogTitle>
         <DialogDescription className="sr-only">
-          Configure worktree policy, keyboard shortcuts, and default prompts.
+          Configure worktree policy, visible models, keyboard shortcuts, and default prompts.
         </DialogDescription>
 
         <div className="grid h-full min-h-0 grid-cols-1 bg-background md:grid-cols-[240px_minmax(0,1fr)]">
@@ -143,6 +176,8 @@ export function ConfigButton({
                   }
                 />
               </div>
+            ) : activePanelId === 'models' ? (
+              <ModelVisibilitySettingsPanel initialProvider={modelProvider} />
             ) : activePanelId === 'keyboard-shortcuts' ? (
               <ShortcutSettingsPanel />
             ) : (

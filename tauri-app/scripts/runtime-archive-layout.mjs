@@ -15,6 +15,7 @@ function pnpmAddBaseArgs(pnpmOs, pnpmCpu) {
     'add',
     '--prod',
     '--ignore-scripts',
+    '--config.node-linker=hoisted',
     `--os=${pnpmOs}`,
     `--cpu=${pnpmCpu}`,
     '--force',
@@ -43,6 +44,28 @@ export function validateClaudeSdkVersionAlignment(packageJson, runtimeManifest) 
       `Claude Agent SDK version drift: package.json pins ${dependencyVersion ?? 'nothing'}, ` +
         `but runtime-manifest.json pins ${runtimeVersion ?? 'nothing'}`
     );
+  }
+}
+
+export function validateOpenCodeSdkVersionAlignment(packageJson, runtimeManifest) {
+  const dependencyVersion = packageJson.dependencies?.['@opencode-ai/sdk'];
+  const runtimeVersion = runtimeManifest.components?.opencode?.version;
+  if (!dependencyVersion || dependencyVersion !== runtimeVersion) {
+    throw new Error(
+      `OpenCode SDK version drift: package.json pins ${dependencyVersion ?? 'nothing'}, ` +
+        `but runtime-manifest.json pins ${runtimeVersion ?? 'nothing'}`
+    );
+  }
+}
+
+export function validateOpenCodeSdkInstall(nodeModulesDir, version) {
+  const packagePath = path.join(nodeModulesDir, '@opencode-ai', 'sdk', 'package.json');
+  if (!fs.existsSync(packagePath)) {
+    throw new Error(`OpenCode SDK ${version} is incomplete in ${nodeModulesDir}`);
+  }
+  const installed = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+  if (installed.version !== version) {
+    throw new Error(`OpenCode SDK version mismatch: expected ${version}, found ${installed.version}`);
   }
 }
 

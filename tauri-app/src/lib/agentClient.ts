@@ -1,7 +1,14 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { commands as tauriCommands } from '../generated/tauri-bindings';
-import type { ManagedRuntimeDoctorEntry, ThreadSessionPayload } from '../generated/tauri-bindings';
+import type {
+    AgentResourceUsage as NativeAgentResourceUsage,
+    ConvertSubgraphToThreadResult,
+    ManagedRuntimeDoctorEntry,
+    OpenCodeRuntimeModel,
+    ThreadSessionPayload,
+} from '../generated/tauri-bindings';
+export type { OpenCodeRuntimeModel } from '../generated/tauri-bindings';
 
 const hasTauriRuntime = () =>
     typeof window !== 'undefined' &&
@@ -179,6 +186,20 @@ export interface AgentRunStateResponse {
     pid: number | null;
 }
 
+export interface CloudSyncCapability {
+    available: boolean;
+    unavailableReason: string | null;
+}
+
+export interface AgentResourceUsage {
+    assistantNodeId: string;
+    rootPid: number;
+    processCount: number;
+    cpuPercent: number;
+    memoryBytes: number;
+    sampledAt: number;
+}
+
 export interface AgentRunJournalEvent {
     runId: string;
     assistantNodeId: string;
@@ -336,7 +357,7 @@ export interface LocalCommitGraphSnapshot {
     }>;
 }
 
-export type { ThreadSessionPayload };
+export type { ConvertSubgraphToThreadResult, ThreadSessionPayload };
 
 export interface StartAgentRunIntent {
     runId: string;
@@ -777,6 +798,14 @@ export const agentClient = {
     getAgentRunState: async (assistantNodeId: string): Promise<AgentRunStateResponse> => {
         return await tauriCommands.getAgentRunState(assistantNodeId);
     },
+    listAgentResourceUsage: async (): Promise<AgentResourceUsage[]> => {
+        if (!hasTauriRuntime()) return [];
+        const rows: NativeAgentResourceUsage[] = await tauriCommands.listAgentResourceUsage();
+        return rows.map((row) => ({
+            ...row,
+            cpuPercent: row.cpuPercent ?? 0,
+        }));
+    },
     replayAgentRunEvents: async (runId: string, afterSeq = 0): Promise<AgentRunJournalEvent[]> => {
         return await tauriCommands.replayAgentRunEvents(runId, afterSeq);
     },
@@ -873,6 +902,21 @@ export const agentClient = {
             await currentLocalUserId(),
             payload
         ) as ThreadSessionPayload;
+    },
+    convertSubgraphToThread: async (input: {
+        workspaceId: string;
+        rootNodeId: string;
+        idempotencyKey: string;
+        targetThreadId: string;
+    }): Promise<ConvertSubgraphToThreadResult> => {
+        if (!hasTauriRuntime()) throw new Error('Local runtime is unavailable.');
+        return await (tauriCommands as any).convertSubgraphToThread(
+            input.workspaceId,
+            input.rootNodeId,
+            input.idempotencyKey,
+            input.targetThreadId,
+            await currentLocalUserId(),
+        ) as ConvertSubgraphToThreadResult;
     },
     listThreadSessions: async (workspaceId: string): Promise<ThreadSessionPayload[]> => {
         if (!hasTauriRuntime()) return [];
@@ -989,6 +1033,17 @@ export const agentClient = {
         if (!hasTauriRuntime()) return [];
         return await tauriCommands.listLocalDeletedWorkspaceIds();
     },
+    getCloudSyncCapability: async (): Promise<CloudSyncCapability> => {
+        if (!hasTauriRuntime()) return { available: true, unavailableReason: null };
+        return await tauriCommands.getCloudSyncCapability();
+    },
+    getNextLocalSyncRetryAt: async (cloudAccountId: string): Promise<number | null> => {
+        if (!hasTauriRuntime()) return null;
+        return await tauriCommands.getNextLocalSyncRetryAt(
+            await currentLocalUserId(),
+            cloudAccountId,
+        );
+    },
     processLocalSyncEvents: async (
         authToken: string,
         cloudAccountId: string,
@@ -1031,6 +1086,9 @@ export const agentClient = {
     listLoginProfiles: async (): Promise<LoginProfile[]> => {
         if (!hasTauriRuntime()) return [];
         return await (tauriCommands as any).listLoginProfiles() as LoginProfile[];
+    },
+    readOpenCodeLoginProfileAuth: async (profileId: string): Promise<string> => {
+        return await (tauriCommands as any).readOpencodeLoginProfileAuth(profileId) as string;
     },
     upsertLoginProfile: async (request: UpsertLoginProfileRequest): Promise<LoginProfile> => {
         return await (tauriCommands as any).upsertLoginProfile(request) as LoginProfile;
@@ -1115,6 +1173,10 @@ export const agentClient = {
     },
     checkAllRuntimeReadiness: async (): Promise<RuntimeReadiness[]> => {
         return await tauriCommands.checkAllRuntimeReadiness() as RuntimeReadiness[];
+    },
+    listOpenCodeModels: async (profileId: string): Promise<OpenCodeRuntimeModel[]> => {
+        if (!hasTauriRuntime()) return [];
+        return await tauriCommands.listOpencodeModels(profileId);
     },
     checkManagedRuntimeDoctor: async (): Promise<ManagedRuntimeDoctorEntry[]> => {
         if (!hasTauriRuntime()) return [];

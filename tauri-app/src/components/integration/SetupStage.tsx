@@ -725,7 +725,7 @@ export function SetupStage() {
       };
 
       const authToken = await getOptionalCloudAuthToken();
-      const selectedProvider = selectedAgent.type === 'codex' || selectedAgent.type === 'claude'
+      const selectedProvider = selectedAgent.type === 'codex' || selectedAgent.type === 'claude' || selectedAgent.type === 'opencode'
         ? selectedAgent.type
         : null;
       const loginProfileSelection = resolveLoginProfileSelection({

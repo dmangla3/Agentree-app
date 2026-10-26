@@ -190,6 +190,7 @@ const mapProviderLimits = (
   if (provider === 'codex') {
     return mapCodexLimits(limits);
   }
+  if (provider !== 'claude') return null;
 
   const bucket = mapClaudeBucket(limits.bucket);
   if (!bucket || !bucket.rateLimitType) return previous && previous.kind === 'claude' ? previous : null;

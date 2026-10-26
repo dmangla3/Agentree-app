@@ -14,7 +14,8 @@ describe('GraphView thread scoped mode wiring', () => {
     expect(source).toContain('const scopedGraphMessages = threadGraphScope.scopedMessages;');
     expect(source).toContain('const scopedSummaries = filterSummariesForThreadScope(summaries as Summary[], threadGraphScope);');
     expect(source).toContain('filterCommitContextForThreadScope({');
-    expect(source).toContain('applySubgraphThreadConversions({');
+    expect(source).toContain('const convertSubgraphToThread = useConvertSubgraphToThread();');
+    expect(source).not.toContain('applySubgraphThreadConversions({');
     expect(source).toContain('messages: graphProjectionMessages,');
     expect(source).toContain('commits: visibleSnapshotCommits,');
     expect(source).toMatch(

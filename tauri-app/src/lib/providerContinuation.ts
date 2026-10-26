@@ -1,4 +1,4 @@
-export type RuntimeProvider = 'claude' | 'codex';
+export type RuntimeProvider = 'claude' | 'codex' | 'opencode';
 export type ProviderThreadStrategy = 'fresh_thread' | 'resume' | 'fork_at_turn';
 export type ProviderThreadStrategyRequested = ProviderThreadStrategy | 'cross_provider_fresh_thread';
 export type PromptContextMode = 'provider_native_only' | 'agentree_context' | 'cross_provider_packet' | 'none';
@@ -24,7 +24,7 @@ export interface ProviderContextRoutingDecision {
     reason: string;
 }
 
-const PROVIDERS: RuntimeProvider[] = ['claude', 'codex'];
+const PROVIDERS: RuntimeProvider[] = ['claude', 'codex', 'opencode'];
 
 const normalizeProvider = (value: unknown): RuntimeProvider | null => {
     if (typeof value !== 'string') return null;

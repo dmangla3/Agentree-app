@@ -21,10 +21,12 @@ const RUNTIME_MANIFEST_JSON: &str = include_str!("../../runtime-manifest.json");
 const INSTALL_MARKER: &str = ".agentree-runtime-ok";
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 const CLAUDE_GENERATED_FILES: &[&str] = &["ai-label-prompt.txt", "claude-agent-sdk-adapter.mjs"];
+const OPENCODE_GENERATED_FILES: &[&str] = &["opencode-agent-sdk-adapter.mjs"];
 
 pub const COMPONENT_NODE: &str = "node";
 pub const COMPONENT_CLAUDE_SDK: &str = "claude-sdk";
 pub const COMPONENT_CODEX: &str = "codex";
+pub const COMPONENT_OPENCODE: &str = "opencode";
 
 static MANIFEST: OnceCell<RuntimeManifest> = OnceCell::new();
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
@@ -105,6 +107,8 @@ pub fn component_install_dir(app: &AppHandle, component: &str) -> Result<PathBuf
 fn fingerprint_exclusions(component: &str) -> &'static [&'static str] {
     if component == COMPONENT_CLAUDE_SDK {
         CLAUDE_GENERATED_FILES
+    } else if component == COMPONENT_OPENCODE {
+        OPENCODE_GENERATED_FILES
     } else {
         &[]
     }
@@ -291,6 +295,27 @@ fn validate_component_install_for_platform(
     let required = match component {
         COMPONENT_NODE => vec![(node_binary_path(install_dir), true)],
         COMPONENT_CODEX => vec![(codex_binary_path(install_dir), true)],
+        COMPONENT_OPENCODE => vec![
+            (opencode_binary_path(install_dir), true),
+            (ripgrep_binary_path(install_dir), true),
+            (
+                install_dir
+                    .join("node_modules")
+                    .join("@opencode-ai")
+                    .join("sdk")
+                    .join("package.json"),
+                false,
+            ),
+            (
+                install_dir
+                    .join("node_modules")
+                    .join("@opencode-ai")
+                    .join("sdk")
+                    .join("dist")
+                    .join("index.js"),
+                false,
+            ),
+        ],
         COMPONENT_CLAUDE_SDK => vec![
             (
                 install_dir
@@ -609,6 +634,12 @@ pub struct ClaudeAdapterInvocation {
     pub adapter_script: PathBuf,
 }
 
+pub struct OpenCodeAdapterInvocation {
+    pub node_program: String,
+    pub adapter_script: PathBuf,
+    pub opencode_program: String,
+}
+
 /// Resolves how to run the Claude agent SDK adapter.
 ///
 /// The managed SDK install is downloaded on first use, with the adapter script
@@ -647,6 +678,63 @@ pub fn claude_adapter_invocation(app: &AppHandle) -> Result<ClaudeAdapterInvocat
     })
 }
 
+/// Resolves OpenCode through Agentree's atomic pinned CLI/SDK runtime. Debug
+/// builds may use repository dependencies and a PATH CLI while those archives
+/// are being prepared; production builds never fall back to host state.
+pub fn opencode_adapter_invocation(app: &AppHandle) -> Result<OpenCodeAdapterInvocation, String> {
+    let resource_script =
+        crate::runtime_scripts::runtime_script_path(app, "opencode-agent-sdk-adapter.mjs")?;
+
+    let runtime_dir = match installed_component_dir(app, COMPONENT_OPENCODE)? {
+        Some(dir) => Some(dir),
+        None if component_available_for_download(COMPONENT_OPENCODE) => Some(
+            ensure_component(app, COMPONENT_OPENCODE)
+                .map_err(|error| managed_runtime_required_error("OpenCode runtime", error))?,
+        ),
+        None if cfg!(debug_assertions) => None,
+        None => {
+            return Err(managed_runtime_required_error(
+                "OpenCode runtime",
+                "the runtime archive is not published".to_string(),
+            ))
+        }
+    };
+    let adapter_script = if let Some(runtime_dir) = runtime_dir.as_ref() {
+        let staged_script = runtime_dir.join("opencode-agent-sdk-adapter.mjs");
+        fs::copy(&resource_script, &staged_script).map_err(|error| {
+            format!(
+                "Could not stage OpenCode adapter into {}: {}",
+                runtime_dir.display(),
+                error
+            )
+        })?;
+        staged_script
+    } else {
+        resource_script
+    };
+
+    let opencode_program = if let Some(runtime_dir) = runtime_dir {
+        opencode_binary_path(&runtime_dir)
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        if cfg!(debug_assertions) {
+            crate::cli_path::find_on_tool_path("opencode").unwrap_or_else(|| "opencode".to_string())
+        } else {
+            return Err(managed_runtime_required_error(
+                "OpenCode runtime",
+                "the runtime archive is not published".to_string(),
+            ));
+        }
+    };
+
+    Ok(OpenCodeAdapterInvocation {
+        node_program: node_program(app)?,
+        adapter_script,
+        opencode_program,
+    })
+}
+
 fn managed_runtime_required_error(label: &str, error: String) -> String {
     format!(
         "Agentree's managed {} runtime could not be installed or repaired: {} Open Runtime Health and retry.",
@@ -667,6 +755,22 @@ pub fn codex_binary_path(install_dir: &Path) -> PathBuf {
         install_dir.join("bin").join("codex.exe")
     } else {
         install_dir.join("bin").join("codex")
+    }
+}
+
+pub fn opencode_binary_path(install_dir: &Path) -> PathBuf {
+    if cfg!(windows) {
+        install_dir.join("bin").join("opencode.exe")
+    } else {
+        install_dir.join("bin").join("opencode")
+    }
+}
+
+fn ripgrep_binary_path(install_dir: &Path) -> PathBuf {
+    if cfg!(windows) {
+        install_dir.join("bin").join("rg.exe")
+    } else {
+        install_dir.join("bin").join("rg")
     }
 }
 
@@ -736,7 +840,12 @@ mod tests {
     #[test]
     fn embedded_manifest_parses_and_pins_all_components() {
         let manifest = manifest().expect("manifest should parse");
-        for component in [COMPONENT_NODE, COMPONENT_CLAUDE_SDK, COMPONENT_CODEX] {
+        for component in [
+            COMPONENT_NODE,
+            COMPONENT_CLAUDE_SDK,
+            COMPONENT_CODEX,
+            COMPONENT_OPENCODE,
+        ] {
             let spec = manifest
                 .components
                 .get(component)
@@ -745,8 +854,12 @@ mod tests {
             assert!(spec.platforms.contains_key("linux-x86_64"));
             assert!(spec.platforms.contains_key("darwin-aarch64"));
             for archive in spec.platforms.values() {
-                assert!(!archive.sha256.trim().is_empty());
-                assert!(!archive.tree_sha256.trim().is_empty());
+                assert!(!archive.url.trim().is_empty());
+                assert_eq!(
+                    archive.sha256.trim().is_empty(),
+                    archive.tree_sha256.trim().is_empty(),
+                    "runtime archives must publish archive and tree fingerprints together"
+                );
             }
         }
     }
@@ -962,6 +1075,56 @@ mod tests {
         }
         validate_component_install_for_platform(COMPONENT_CLAUDE_SDK, &install_dir, "linux-x86_64")
             .expect("wrapper plus native executable should be complete");
+    }
+
+    #[test]
+    fn opencode_install_validation_requires_cli_sdk_and_ripgrep() {
+        let root = tempfile::tempdir().unwrap();
+        let install_dir = root.path().join("opencode").join("1.18.3");
+        let sdk_dir = install_dir
+            .join("node_modules")
+            .join("@opencode-ai")
+            .join("sdk");
+        let bin_dir = install_dir.join("bin");
+        std::fs::create_dir_all(&sdk_dir).unwrap();
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(sdk_dir.join("package.json"), br#"{"version":"1.18.3"}"#).unwrap();
+
+        let opencode = bin_dir.join("opencode");
+        std::fs::write(&opencode, b"#!fake").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&opencode, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let error = validate_component_install_for_platform(
+            COMPONENT_OPENCODE,
+            &install_dir,
+            "linux-x86_64",
+        )
+        .expect_err("the OpenCode CLI and SDK without ripgrep must be incomplete");
+        assert!(error.contains("bin/rg"));
+
+        let ripgrep = bin_dir.join("rg");
+        std::fs::write(&ripgrep, b"#!fake").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&ripgrep, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let error = validate_component_install_for_platform(
+            COMPONENT_OPENCODE,
+            &install_dir,
+            "linux-x86_64",
+        )
+        .expect_err("the SDK package marker without its import entrypoint must be incomplete");
+        assert!(error.contains("dist/index.js"));
+
+        std::fs::create_dir_all(sdk_dir.join("dist")).unwrap();
+        std::fs::write(sdk_dir.join("dist").join("index.js"), b"export {};").unwrap();
+        validate_component_install_for_platform(COMPONENT_OPENCODE, &install_dir, "linux-x86_64")
+            .expect("the combined OpenCode runtime should be complete");
     }
 
     #[test]

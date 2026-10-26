@@ -56,4 +56,8 @@ describe('shortcut registry overrides', () => {
   it('registers Mod+T as the default create thread shortcut', () => {
     expect(getEffectiveShortcutHotkeys('thread.create')).toEqual(['Mod+T']);
   });
+
+  it('registers Mod+J as the default terminal dock shortcut', () => {
+    expect(getEffectiveShortcutHotkeys('terminal.toggle')).toEqual(['Mod+J']);
+  });
 });

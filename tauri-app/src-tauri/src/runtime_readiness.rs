@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
+use std::io::Read;
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,6 +27,27 @@ pub struct RuntimeReadiness {
     diagnostics: JsonValue,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenCodeRuntimeModel {
+    pub id: String,
+    pub provider_id: String,
+    pub provider_name: String,
+    pub model_id: String,
+    pub name: String,
+    pub reasoning: bool,
+    pub attachment: bool,
+    pub tool_call: bool,
+    pub input_modalities: Vec<String>,
+    pub output_modalities: Vec<String>,
+    pub variants: Vec<String>,
+    pub context_window: Option<u64>,
+    pub max_output_tokens: Option<u64>,
+    pub release_date: Option<String>,
+    pub status: Option<String>,
+    pub is_free: Option<bool>,
+}
+
 fn build_probe_path() -> String {
     crate::cli_path::build_tool_path()
 }
@@ -40,28 +62,33 @@ fn command_output_with_timeout(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("Failed to run {}: {}", label, error))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("Failed to capture {} stdout", label))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| format!("Failed to capture {} stderr", label))?;
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
     let started_at = Instant::now();
-
-    loop {
+    let (status, timed_out) = loop {
         match child.try_wait() {
-            Ok(Some(_status)) => {
-                return child
-                    .wait_with_output()
-                    .map_err(|error| format!("Failed to collect {} output: {}", label, error));
-            }
+            Ok(Some(status)) => break (status, false),
             Ok(None) => {
                 if started_at.elapsed() >= timeout {
                     let _ = child.kill();
-                    let output = child.wait_with_output().map_err(|error| {
-                        format!("Failed to collect timed out {} output: {}", label, error)
+                    let status = child.wait().map_err(|error| {
+                        format!("Failed to stop timed out {}: {}", label, error)
                     })?;
-                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                    return Err(format!(
-                        "{} timed out after {}ms. stderr={}",
-                        label,
-                        timeout.as_millis(),
-                        stderr
-                    ));
+                    break (status, true);
                 }
                 thread::sleep(Duration::from_millis(25));
             }
@@ -70,7 +97,28 @@ fn command_output_with_timeout(
                 return Err(format!("Failed while waiting for {}: {}", label, error));
             }
         }
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| format!("{} stdout reader panicked", label))?
+        .map_err(|error| format!("Failed to read {} stdout: {}", label, error))?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| format!("{} stderr reader panicked", label))?
+        .map_err(|error| format!("Failed to read {} stderr: {}", label, error))?;
+    if timed_out {
+        return Err(format!(
+            "{} timed out after {}ms. stderr={}",
+            label,
+            timeout.as_millis(),
+            String::from_utf8_lossy(&stderr).trim()
+        ));
     }
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 fn readiness_from_managed_profile(
@@ -121,10 +169,10 @@ fn default_managed_profile_for_provider(
 }
 
 fn missing_login_profile_readiness(provider: &str) -> RuntimeReadiness {
-    let label = if provider == "codex" {
-        "Codex"
-    } else {
-        "Claude"
+    let label = match provider {
+        "codex" => "Codex",
+        "opencode" => "OpenCode",
+        _ => "Claude",
     };
     let mut diagnostics = JsonMap::new();
     diagnostics.insert("loginProfilesRequired".to_string(), JsonValue::Bool(true));
@@ -163,6 +211,12 @@ pub fn check_runtime_readiness(
             }
             Ok(missing_login_profile_readiness("claude"))
         }
+        "opencode" => {
+            if let Some(profile) = default_managed_profile_for_provider(&db, "opencode") {
+                return Ok(readiness_from_managed_profile(&profile));
+            }
+            Ok(missing_login_profile_readiness("opencode"))
+        }
         other => Ok(RuntimeReadiness {
             provider: other.to_string(),
             status: "unknown_error".to_string(),
@@ -197,7 +251,93 @@ pub fn check_all_runtime_readiness(
     } else {
         missing_login_profile_readiness("claude")
     };
-    Ok(vec![codex, claude])
+    let opencode = if let Some(profile) = default_managed_profile_for_provider(&db, "opencode") {
+        readiness_from_managed_profile(&profile)
+    } else {
+        missing_login_profile_readiness("opencode")
+    };
+    Ok(vec![codex, claude, opencode])
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn list_opencode_models(
+    app: AppHandle,
+    db: State<TelemetryDb>,
+    profile_id: String,
+) -> Result<Vec<OpenCodeRuntimeModel>, String> {
+    let profile = db.get_login_profile(&profile_id)?;
+    if profile.provider != "opencode" {
+        return Err(format!(
+            "Login profile {} is for {}, not opencode",
+            profile_id, profile.provider
+        ));
+    }
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("Could not resolve app cache dir: {}", error))?;
+    let materialized = crate::login_profiles::resolve_runtime_credentials(
+        &db,
+        &crate::login_profiles::KeyringCredentialVault,
+        &profile_id,
+        cache_dir,
+    )?;
+    let invocation = crate::managed_runtime::opencode_adapter_invocation(&app)?;
+    let mut command = Command::new(&invocation.node_program);
+    command
+        .arg(&invocation.adapter_script)
+        .arg("--opencode-bin")
+        .arg(&invocation.opencode_program)
+        .arg("--list-models")
+        .current_dir(std::env::temp_dir())
+        .env("PATH", build_probe_path());
+    for (key, value) in &materialized.env {
+        command.env(key, value);
+    }
+    let output = command_output_with_timeout(
+        &mut command,
+        Duration::from_secs(30),
+        "OpenCode model discovery",
+    )?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let Ok(value) = serde_json::from_str::<JsonValue>(line) else {
+            continue;
+        };
+        if value.get("type").and_then(JsonValue::as_str) != Some("model_catalog") {
+            continue;
+        }
+        if let Some(auth_path) = materialized.opencode_auth_path.as_deref() {
+            crate::login_profiles::persist_opencode_auth_state(
+                &db,
+                &crate::login_profiles::KeyringCredentialVault,
+                &profile_id,
+                auth_path,
+            )?;
+        }
+        let mut models = serde_json::from_value::<Vec<OpenCodeRuntimeModel>>(
+            value
+                .get("models")
+                .cloned()
+                .unwrap_or(JsonValue::Array(vec![])),
+        )
+        .map_err(|error| format!("Could not decode OpenCode model catalog: {}", error))?;
+        models.retain(|model| {
+            crate::login_profiles::opencode_provider_model_is_visible(
+                &profile.config,
+                &model.provider_id,
+                model.is_free,
+            )
+        });
+        return Ok(models);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if stderr.is_empty() {
+        "OpenCode model discovery returned no catalog.".to_string()
+    } else {
+        format!("OpenCode model discovery failed: {}", stderr)
+    })
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, specta::Type)]
@@ -286,6 +426,11 @@ pub async fn check_managed_runtime_doctor(
                 "Claude runtime",
             ),
             doctor_entry(&app, crate::managed_runtime::COMPONENT_CODEX, "Codex CLI"),
+            doctor_entry(
+                &app,
+                crate::managed_runtime::COMPONENT_OPENCODE,
+                "OpenCode runtime",
+            ),
         ])
     })
     .await
@@ -313,6 +458,7 @@ fn repair_managed_runtime_component_blocking(
         "node" => "Node runtime",
         "claude-sdk" => "Claude runtime",
         "codex" => "Codex CLI",
+        "opencode" => "OpenCode runtime",
         other => return Err(format!("Unknown managed runtime component: {}", other)),
     };
     crate::managed_runtime::reinstall_component(&app, &component)?;

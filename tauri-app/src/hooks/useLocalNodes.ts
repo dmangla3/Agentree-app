@@ -1,8 +1,6 @@
-import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { agentClient, type LocalNodeRecord } from '../lib/agentClient';
 import type { Message } from '../stores/workspaceStore';
-import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 
 export interface LocalNodeMessage {
@@ -21,8 +19,6 @@ export const localNodeKeys = {
   workspace: (workspaceId: string | null | undefined) => ['local-nodes', workspaceId] as const,
 };
 
-const LOCAL_NODE_RETRY_POLL_MS = 60_000;
-
 const isPermanentLocalNodeSyncError = (error: string | null | undefined): boolean => (
   Boolean(error?.startsWith('node.update_terminal failed with status 404 Not Found'))
 );
@@ -38,38 +34,6 @@ export const isRetryableLocalOnlySync = (row: {
   if (typeof row.nextRetryAt === 'number' && Number.isFinite(row.nextRetryAt)) return true;
   return Boolean(row.retryAttempt || row.lastUploadError);
 };
-
-const getRetryableAt = (row: LocalNodeMessage, nowSeconds: number): number | null => {
-  if (!isRetryableLocalOnlySync(row)) return null;
-  if (typeof row.nextRetryAt === 'number' && Number.isFinite(row.nextRetryAt)) {
-    return row.nextRetryAt;
-  }
-  return nowSeconds;
-};
-
-export const getLocalNodeRetryPollIntervalMs = (
-  rows: LocalNodeMessage[] | null | undefined,
-  nowSeconds = Math.floor(Date.now() / 1000),
-): number | false => {
-  const retryTimes = (rows ?? [])
-    .map((row) => getRetryableAt(row, nowSeconds))
-    .filter((value): value is number => value !== null);
-  if (retryTimes.length === 0) return false;
-  const nextRetryAt = Math.min(...retryTimes);
-  if (nextRetryAt <= nowSeconds) return LOCAL_NODE_RETRY_POLL_MS;
-  return Math.max(
-    LOCAL_NODE_RETRY_POLL_MS,
-    (nextRetryAt - nowSeconds) * 1000,
-  );
-};
-
-export const hasDueRetryableLocalNode = (
-  rows: LocalNodeMessage[] | null | undefined,
-  nowSeconds = Math.floor(Date.now() / 1000),
-) => (rows ?? []).some((row) => {
-  const retryAt = getRetryableAt(row, nowSeconds);
-  return retryAt !== null && retryAt <= nowSeconds;
-});
 
 const readMessageCreatedAtMs = (row: LocalNodeMessage): number => {
   const value = row.message.createdAt ?? row.message.updatedAt;
@@ -194,20 +158,8 @@ export const useLocalNodes = (
     enabled: Boolean(workspaceId) && agentClient.hasRuntime() && options.enabled !== false,
     staleTime: 5000,
     gcTime: 30 * 60 * 1000,
-    refetchInterval: (query) => {
-      if (!agentClient.hasRuntime()) return false;
-      return getLocalNodeRetryPollIntervalMs(query.state.data);
-    },
     refetchOnWindowFocus: false,
     refetchOnReconnect: true,
   });
-  const localNodes = query.data;
-
-  useEffect(() => {
-    if (!workspaceId || !agentClient.hasRuntime()) return;
-    if (!hasDueRetryableLocalNode(localNodes)) return;
-    queueLocalSyncFlush({ reason: 'local-node-retryable' });
-  }, [localNodes, workspaceId]);
-
   return query;
 };

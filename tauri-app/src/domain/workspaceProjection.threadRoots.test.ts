@@ -23,6 +23,41 @@ const makeMessage = (
 });
 
 describe('workspace projection thread roots', () => {
+  it('projects converted thread links from persisted session provenance', () => {
+    const projection = buildWorkspaceProjection({
+      messages: [
+        makeMessage('source-user', 'user', null, '2026-07-21T00:00:00.000Z', { threadId: 'source-thread' }),
+        makeMessage('anchor', 'assistant', 'source-user', '2026-07-21T00:01:00.000Z', { threadId: 'source-thread' }),
+        makeMessage('converted-root', 'user', null, '2026-07-21T00:02:00.000Z', { threadId: 'converted-thread' }),
+      ],
+      summaries: [],
+      focusedMessageId: null,
+      threadSessions: [{
+        id: 'converted-thread',
+        workspaceId: 'workspace-1',
+        title: 'Converted work',
+        status: 'active',
+        createdAt: '2026-07-21T00:02:00.000Z',
+        updatedAt: '2026-07-21T00:02:00.000Z',
+        baseCommitSha: null,
+        firstMessageId: 'converted-root',
+        source: 'converted_subgraph',
+        parentThreadId: 'source-thread',
+        anchorNodeId: 'anchor',
+      }],
+    });
+
+    expect(projection.messages.map((message) => message.id)).not.toContain('thread-link:converted-thread');
+    expect(projection.entitiesById.get('thread_link:converted-thread')).toEqual(expect.objectContaining({
+      kind: 'thread_link',
+      messageId: null,
+      parentEntityId: 'assistant_message:anchor',
+      threadRootId: 'source-thread',
+      threadLinkRootId: 'converted-thread',
+      threadAnchorMessageId: 'anchor',
+    }));
+  });
+
   it('redirects user message focus to the first assistant in the same turn', () => {
     const projection = buildWorkspaceProjection({
       messages: [

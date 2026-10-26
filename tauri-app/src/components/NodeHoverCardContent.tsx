@@ -12,6 +12,7 @@ import {
 } from './graph/surfaceCapabilities';
 import { MessageHighlightSelectionPopover } from './highlights/MessageHighlightSelectionPopover';
 import { MessageHighlightHoverPopover } from './highlights/MessageHighlightHoverPopover';
+import { AgentResourceUsageBadge } from './AgentResourceUsageBadge';
 
 let appNodeHoverPreviewPreload: Promise<{ default: typeof import('./AppNodeHoverPreview').AppNodeHoverPreview }> | null = null;
 
@@ -151,6 +152,12 @@ export function NodeHoverCardContent({
       className="flex w-[min(920px,var(--radix-hover-card-content-available-width),calc(100vw-2rem))] max-w-[min(920px,var(--radix-hover-card-content-available-width),calc(100vw-2rem))] flex-col overflow-hidden rounded-[24px] border border-[hsl(var(--app-border)/0.76)] bg-[hsl(var(--app-panel)/0.96)] p-3 text-foreground shadow-[0_24px_64px_-40px_hsl(var(--foreground)/0.58),0_10px_24px_-20px_hsl(var(--foreground)/0.32),inset_0_1px_0_hsl(var(--background)/0.22)]"
     >
       {headerAccessory}
+      {replyParentId && isAssistantAgentHover ? (
+        <AgentResourceUsageBadge
+          assistantNodeId={replyParentId}
+          enabled={isActiveAgentRunStatus(resolvedRunStatus)}
+        />
+      ) : null}
       <div
         ref={previewScrollRef}
         data-agentree-highlight-scroll-container="true"

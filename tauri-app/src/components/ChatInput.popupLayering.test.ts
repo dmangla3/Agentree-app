@@ -65,10 +65,11 @@ describe('chat composer popup layering', () => {
     expect(chatInputSource).not.toContain('function GraphComposerSend');
   });
 
-  it('keeps start-new-thread creation on graph controls instead of the composer reply target menu', () => {
+  it('keeps start-new-thread creation in the workspace navigator instead of the composer reply target menu', () => {
     const chatInputSource = readSource('src/components/ChatInput.tsx');
     const graphViewSource = readSource('src/components/GraphView.tsx');
     const graphControlsSource = readSource('src/components/graph/GraphControls.tsx');
+    const workspaceNavigatorSource = readSource('src/components/navigation/WorkspaceNavigator.tsx');
 
     expect(chatInputSource).not.toContain("window.addEventListener('agentree:startNewThread'");
     expect(chatInputSource).not.toContain('Start new thread</div>');
@@ -76,7 +77,8 @@ describe('chat composer popup layering', () => {
     expect(graphViewSource).toContain("reason: 'create-thread'");
     expect(graphViewSource).not.toContain('setPendingThreadRoots');
     expect(graphViewSource).toContain('setActiveThreadRootId(threadRootId)');
-    expect(graphControlsSource).toContain('aria-label="Start new thread"');
+    expect(graphControlsSource).not.toContain('aria-label="Start new thread"');
+    expect(workspaceNavigatorSource).toContain('aria-label="Start new thread"');
   });
 
   it('keeps graph composer dock below composer popups and above graph minimap', () => {

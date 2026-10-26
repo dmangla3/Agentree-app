@@ -1,4 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { api, getErrorMessage } from '../lib/api';
+import { agentClient } from '../lib/agentClient';
 import type { GraphSnapshot } from './useGraphSnapshot';
 import {
   normalizeThreadSession,
@@ -8,6 +10,8 @@ import {
 import { getElapsedSinceAppStartMs, recordPerfEvent } from '../lib/perfRecorder';
 import { threadApplication } from '../application/threads';
 import { isTauriEnvironment } from './useTauriWorkspace';
+import { localNodeKeys } from './useLocalNodes';
+import { queueLocalSyncFlush } from '../lib/localSyncScheduler';
 
 export const threadSessionKeys = {
   workspace: (workspaceId: string | null | undefined) => ['thread-sessions', workspaceId] as const,
@@ -117,6 +121,7 @@ export const useCreateThreadSession = () => {
         baseCommitSha: input.baseCommitSha ?? null,
         firstMessageId: input.firstMessageId ?? null,
         parentThreadId: input.parentThreadId ?? null,
+        anchorNodeId: null,
         source: input.source ?? 'user',
       } as const;
       const created = await threadApplication.create(payload);
@@ -161,6 +166,7 @@ export const useRenameThreadSession = () => {
         baseCommitSha: current?.baseCommitSha ?? null,
         firstMessageId: current?.firstMessageId ?? null,
         parentThreadId: current?.parentThreadId ?? null,
+        anchorNodeId: current?.anchorNodeId ?? null,
         source: current?.source ?? 'user',
       };
       const updated = await threadApplication.update(payload);
@@ -203,6 +209,70 @@ export const useDeleteThreadSession = () => {
         (current) => removeThreadSessionFromGraphSnapshotCache(current, threadId),
       );
       void queryClient.invalidateQueries({ queryKey: ['graph-snapshot', workspaceId], refetchType: 'active' });
+    },
+  });
+};
+
+export interface ConvertSubgraphToThreadInput {
+  workspaceId: string;
+  rootNodeId: string;
+  idempotencyKey?: string;
+  targetThreadId?: string;
+}
+
+export interface ConvertSubgraphToThreadResult {
+  thread: ThreadSession;
+  conversionId: string;
+  rootNodeId: string;
+  sourceThreadId: string | null;
+  targetThreadId: string;
+  originalParentId: string;
+  movedNodeIds: string[];
+}
+
+export const useConvertSubgraphToThread = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: ConvertSubgraphToThreadInput): Promise<ConvertSubgraphToThreadResult> => {
+      const idempotencyKey = input.idempotencyKey ?? crypto.randomUUID();
+      const targetThreadId = input.targetThreadId ?? crypto.randomUUID();
+      try {
+        const raw = agentClient.hasRuntime()
+          ? await agentClient.convertSubgraphToThread({ ...input, idempotencyKey, targetThreadId })
+          : (await api.post(`/workspaces/${input.workspaceId}/threads/convert-subgraph`, {
+            rootNodeId: input.rootNodeId,
+            idempotencyKey,
+            targetThreadId,
+          })).data;
+        const thread = normalizeThreadSession(raw?.thread);
+        if (!thread) throw new Error('Invalid converted thread response.');
+        return {
+          thread,
+          conversionId: String(raw.conversionId),
+          rootNodeId: String(raw.rootNodeId),
+          sourceThreadId: typeof raw.sourceThreadId === 'string' ? raw.sourceThreadId : null,
+          targetThreadId: String(raw.targetThreadId),
+          originalParentId: String(raw.originalParentId),
+          movedNodeIds: Array.isArray(raw.movedNodeIds) ? raw.movedNodeIds.filter((id: unknown): id is string => typeof id === 'string') : [],
+        };
+      } catch (error) {
+        throw new Error(getErrorMessage(error));
+      }
+    },
+    onSuccess: (result) => {
+      const workspaceId = result.thread.workspaceId;
+      queryClient.setQueryData<ThreadSession[]>(
+        threadSessionKeys.workspace(workspaceId),
+        (current) => mergeThreadSessionIntoCache(current, result.thread),
+      );
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['messages', workspaceId] }),
+        queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(workspaceId) }),
+        queryClient.invalidateQueries({ queryKey: ['summaries', workspaceId] }),
+        queryClient.invalidateQueries({ queryKey: ['graph-snapshot', workspaceId] }),
+        queryClient.invalidateQueries({ queryKey: threadSessionKeys.workspace(workspaceId) }),
+      ]);
+      if (agentClient.hasRuntime()) queueLocalSyncFlush({ reason: 'subgraph-thread-conversion' });
     },
   });
 };

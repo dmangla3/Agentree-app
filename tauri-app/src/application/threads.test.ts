@@ -31,6 +31,7 @@ const thread = {
   baseCommitSha: null,
   firstMessageId: null,
   parentThreadId: null,
+  anchorNodeId: null,
   source: 'user',
 };
 

@@ -7,6 +7,7 @@ import { useAgentRunProjectionStore, type AgentRunProjectedMessage } from '../st
 import { useProviderLimitsStore } from '../stores/providerLimitsStore';
 import { useOrchestrationTemplateStore } from '../stores/orchestrationTemplateStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
+import { isModelFamilyVisible, useModelStore } from '../stores/modelStore';
 import { isLoginProfileActive, resolveLoginProfileSelection } from '../lib/loginProfiles';
 import { buildProviderLoginRequiredToast } from '../lib/loginNavigationEvents';
 import { isNoAgentSessionFoundError, markStaleLocalAgentNodeCancelled } from '../lib/localAgentRunTerminal';
@@ -328,7 +329,7 @@ import { useWorkspaceMessages } from '../hooks/useLiveMessages';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, useLocalNodes, type LocalNodeMessage } from '../hooks/useLocalNodes';
 
 import { useKnowledgeTree } from '../hooks/useKnowledge';
-import { useAgents, findDefaultCodexAgentId } from '../hooks/useAgents';
+import { useAgents } from '../hooks/useAgents';
 import { useWorkspaces } from '../hooks/useWorkspaces';
 import { useCommits } from '../hooks/useCommits';
 import { useTrackedRefs } from '../hooks/useTrackedRefs';
@@ -546,6 +547,13 @@ export function ChatInput({
     const messageLookupMessages = messages;
     const { data: agentsData } = useAgents();
     const agents = useMemo(() => agentsData ?? [], [agentsData]);
+    const visibleFamilyKeysByProvider = useModelStore((state) => state.visibleFamilyKeysByProvider);
+    const defaultAgents = useMemo(() => agents.filter((agent) => {
+        const provider = agent.type;
+        if (provider !== 'codex' && provider !== 'claude' && provider !== 'opencode') return true;
+        const familyKey = agent.model_config?.familyKey ?? agent.id;
+        return isModelFamilyVisible(visibleFamilyKeysByProvider, provider, familyKey);
+    }), [agents, visibleFamilyKeysByProvider]);
     const autoSelectedAgentIdRef = useRef<string | null>(null);
     const manuallySelectedAgentIdRef = useRef<string | null>(null);
     const [selectedAgentRunCounts, setSelectedAgentRunCounts] = useState<ComposerAgentRunCounts>({});
@@ -1767,8 +1775,9 @@ export function ChatInput({
 
         const defaultAgentId = resolveComposerDefaultAgentId({
             agents,
+            fallbackAgents: defaultAgents,
             parentMessage: composerDefaultParentMessage,
-        }) ?? findDefaultCodexAgentId(agents);
+        });
         if (defaultAgentId && defaultAgentId !== selectedAgentId) {
             manuallySelectedAgentIdRef.current = null;
             autoSelectedAgentIdRef.current = defaultAgentId;
@@ -1782,7 +1791,7 @@ export function ChatInput({
                 return areAgentRunCountsEqual(current, next) ? current : next;
             });
         }
-    }, [agents, composerDefaultParentMessage, selectedAgentId, setSelectedAgentId]);
+    }, [agents, composerDefaultParentMessage, defaultAgents, selectedAgentId, setSelectedAgentId]);
 
     useEffect(() => {
         const normalized = normalizeComposerAgentRunCounts(agents, selectedAgentId, selectedAgentRunCounts);
@@ -2389,7 +2398,7 @@ export function ChatInput({
             });
             addToast({
                 title: 'Model required',
-                description: 'Select a Claude or Codex model before sending.',
+                description: 'Select a Claude, Codex, or OpenCode model before sending.',
                 variant: 'error',
             });
             return;
@@ -2398,7 +2407,9 @@ export function ChatInput({
             const providers = Array.from(new Set(
                 agentRunItemsForSend
                     .map((run) => run.agent.type)
-                    .filter((type): type is 'codex' | 'claude' => type === 'codex' || type === 'claude')
+                    .filter((type): type is 'codex' | 'claude' | 'opencode' => (
+                        type === 'codex' || type === 'claude' || type === 'opencode'
+                    ))
             ));
             const profiles = useLoginProfilesStore.getState().profiles;
             for (const provider of providers) {
@@ -3549,7 +3560,9 @@ export function ChatInput({
             const resolvedRunMode = permissionMode;
             const resolvedModel = selectedAgent?.model_config?.model || parsedCliArgs.model || null;
             const resolvedReasoningEffort = selectedAgent?.model_config?.reasoningEffort || parsedCliArgs.reasoningEffort || null;
-            const selectedProvider = selectedAgent?.type === 'claude' || selectedAgent?.type === 'codex'
+            const selectedProvider = selectedAgent?.type === 'claude'
+                || selectedAgent?.type === 'codex'
+                || selectedAgent?.type === 'opencode'
                 ? selectedAgent.type
                 : null;
             const loginProfileSelection = resolveLoginProfileSelection({

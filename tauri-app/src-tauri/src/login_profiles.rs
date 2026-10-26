@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
@@ -17,6 +17,7 @@ use crate::db::TelemetryDb;
 #[cfg(not(debug_assertions))]
 const KEYCHAIN_SERVICE: &str = "com.agentree.agentree.login-profiles";
 const READINESS_CHECK_TIMEOUT: Duration = Duration::from_secs(12);
+const OPENCODE_READINESS_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const READINESS_CACHE_TTL_SECS: i64 = 5 * 60;
 const CODEX_DEVICE_LOGIN_URL: &str = "https://auth.openai.com/codex/device";
 const CODEX_LOGIN_START_TIMEOUT: Duration = Duration::from_secs(20);
@@ -25,6 +26,7 @@ const CODEX_AUTH_CONFIG_LINE: &str = "cli_auth_credentials_store = \"file\"";
 const CLAUDE_LOGIN_START_TIMEOUT: Duration = Duration::from_secs(20);
 const CLAUDE_LOGIN_PENDING_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const CLAUDE_LOGIN_CODE_TIMEOUT: Duration = Duration::from_secs(120);
+const OPENCODE_PROVIDER_CAPABILITIES_CONFIG_KEY: &str = "opencode_provider_capabilities";
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -122,6 +124,7 @@ pub struct MaterializedRuntimeCredentials {
     pub auth_type: String,
     pub env: HashMap<String, String>,
     pub codex_home: Option<PathBuf>,
+    pub opencode_auth_path: Option<PathBuf>,
 }
 
 struct PendingClaudeOAuthLogin {
@@ -345,7 +348,7 @@ fn unix_timestamp() -> i64 {
 }
 
 fn is_supported_provider(provider: &str) -> bool {
-    matches!(provider, "codex" | "claude")
+    matches!(provider, "codex" | "claude" | "opencode")
 }
 
 fn is_supported_login_profile(profile: &LoginProfile) -> bool {
@@ -364,6 +367,7 @@ fn validate_auth_type(provider: &str, auth_type: &str) -> Result<(), String> {
                 | "claude_vertex"
                 | "claude_azure_foundry"
         ),
+        "opencode" => auth_type == "opencode_auth",
         _ => false,
     };
     if valid {
@@ -479,12 +483,31 @@ pub fn upsert_login_profile_with_vault(
         return Err("a secret is required for managed login profiles".to_string());
     }
     if let Some(secret) = secret {
+        if provider == "opencode" {
+            let auth: JsonValue = serde_json::from_str(secret).map_err(|error| {
+                format!("OpenCode auth must be valid auth.json content: {}", error)
+            })?;
+            if !auth.is_object() {
+                return Err("OpenCode auth.json must contain a JSON object.".to_string());
+            }
+        }
         ensure_no_duplicate_managed_secret(db, vault, &profile_id, &provider, &auth_type, secret)?;
         let account = secret_account_id(&profile_id, "primary");
         vault.set_secret(&account, secret)?;
         secret_ref = Some(account);
-        redacted_hint = Some(redacted_secret_hint(secret));
+        redacted_hint = Some(if provider == "opencode" {
+            "Managed OpenCode credentials".to_string()
+        } else {
+            redacted_secret_hint(secret)
+        });
         secret_was_updated = true;
+    }
+
+    let mut config = sanitize_config(request.config.unwrap_or_else(|| serde_json::json!({})));
+    if secret_was_updated && provider == "opencode" {
+        if let Some(object) = config.as_object_mut() {
+            object.remove(OPENCODE_PROVIDER_CAPABILITIES_CONFIG_KEY);
+        }
     }
 
     let profile = LoginProfile {
@@ -497,7 +520,7 @@ pub fn upsert_login_profile_with_vault(
                 .as_ref()
                 .and_then(|profile| profile.redacted_hint.clone())
         }),
-        config: sanitize_config(request.config.unwrap_or_else(|| serde_json::json!({}))),
+        config,
         status: if secret_was_updated {
             "unchecked".to_string()
         } else {
@@ -626,6 +649,7 @@ pub fn materialize_runtime_credentials(
         "claude_bedrock" => materialize_claude_bedrock(profile, secret, env),
         "claude_vertex" => materialize_claude_vertex(profile, secret, env),
         "claude_azure_foundry" => materialize_claude_azure_foundry(profile, secret, env),
+        "opencode_auth" => materialize_opencode_auth(profile, secret, app_cache_dir, env),
         "external_cli" => Err("external CLI login profiles cannot be materialized".to_string()),
         other => Err(format!("unsupported login profile auth type: {}", other)),
     }
@@ -642,7 +666,281 @@ fn materialized(
         auth_type: profile.auth_type,
         env,
         codex_home,
+        opencode_auth_path: None,
     })
+}
+
+fn materialize_opencode_auth(
+    profile: LoginProfile,
+    secret: &str,
+    app_cache_dir: PathBuf,
+    mut env: HashMap<String, String>,
+) -> Result<MaterializedRuntimeCredentials, String> {
+    let auth: JsonValue = serde_json::from_str(secret)
+        .map_err(|error| format!("OpenCode auth must be valid auth.json content: {}", error))?;
+    if !auth.is_object() {
+        return Err("OpenCode auth.json must contain a JSON object.".to_string());
+    }
+
+    let root = app_cache_dir
+        .join("login-profiles")
+        .join(&profile.id)
+        .join("opencode");
+    let data_home = root.join("data");
+    let config_home = root.join("config");
+    let state_home = root.join("state");
+    let cache_home = root.join("cache");
+    let auth_path = data_home.join("opencode").join("auth.json");
+    for directory in [&data_home, &config_home, &state_home, &cache_home] {
+        fs::create_dir_all(directory).map_err(|error| {
+            format!(
+                "failed to create OpenCode profile directory {}: {}",
+                directory.display(),
+                error
+            )
+        })?;
+    }
+    sync_global_opencode_config(&config_home)?;
+    fs::create_dir_all(auth_path.parent().expect("auth path has parent"))
+        .map_err(|error| format!("failed to create OpenCode auth directory: {}", error))?;
+    if !auth_path.exists() {
+        write_restricted_file(&auth_path, secret)?;
+    }
+    env.insert(
+        "XDG_DATA_HOME".to_string(),
+        data_home.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "XDG_CONFIG_HOME".to_string(),
+        config_home.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "XDG_STATE_HOME".to_string(),
+        state_home.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "XDG_CACHE_HOME".to_string(),
+        cache_home.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "OPENCODE_DISABLE_AUTOUPDATE".to_string(),
+        "true".to_string(),
+    );
+    let mut result = materialized(profile, env, None)?;
+    result.opencode_auth_path = Some(auth_path);
+    Ok(result)
+}
+
+fn global_opencode_config_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+        .map(|root| root.join("opencode"))
+}
+
+fn sync_global_opencode_config(managed_config_home: &Path) -> Result<(), String> {
+    let source = global_opencode_config_dir();
+    sync_opencode_config_dir(source.as_deref(), managed_config_home)
+}
+
+fn sync_opencode_config_dir(
+    source: Option<&Path>,
+    managed_config_home: &Path,
+) -> Result<(), String> {
+    let destination = managed_config_home.join("opencode");
+    let Some(source) = source else {
+        return remove_path_if_exists(&destination);
+    };
+    if same_path(&source, &destination) {
+        return Ok(());
+    }
+    if source.is_dir() {
+        replace_path(&source, &destination)
+    } else {
+        remove_path_if_exists(&destination)
+    }
+}
+
+fn replace_cached_opencode_auth(
+    app_cache_dir: &Path,
+    profile_id: &str,
+    secret: &str,
+) -> Result<(), String> {
+    let auth: JsonValue = serde_json::from_str(secret)
+        .map_err(|error| format!("OpenCode auth must be valid auth.json content: {}", error))?;
+    if !auth.is_object() {
+        return Err("OpenCode auth.json must contain a JSON object.".to_string());
+    }
+    let auth_path = app_cache_dir
+        .join("login-profiles")
+        .join(profile_id)
+        .join("opencode")
+        .join("data")
+        .join("opencode")
+        .join("auth.json");
+    fs::create_dir_all(auth_path.parent().expect("auth path has parent"))
+        .map_err(|error| format!("failed to create OpenCode auth directory: {}", error))?;
+    write_restricted_file(&auth_path, secret)
+}
+
+fn refresh_opencode_auth_cache(
+    app: &tauri::AppHandle,
+    vault: &dyn CredentialVault,
+    profile: &LoginProfile,
+) -> Result<(), String> {
+    if profile.provider != "opencode" || profile.auth_type != "opencode_auth" {
+        return Ok(());
+    }
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("Could not resolve app cache dir: {}", error))?;
+    let secret = vault.get_secret(&secret_account_id(&profile.id, "primary"))?;
+    replace_cached_opencode_auth(&cache_dir, &profile.id, &secret)
+}
+
+pub fn persist_opencode_auth_state(
+    db: &TelemetryDb,
+    vault: &dyn CredentialVault,
+    profile_id: &str,
+    auth_path: &Path,
+) -> Result<(), String> {
+    let mut profile = db.get_login_profile(profile_id)?;
+    if profile.provider != "opencode" || profile.auth_type != "opencode_auth" {
+        return Ok(());
+    }
+    let auth_json = fs::read_to_string(auth_path).map_err(|error| {
+        format!(
+            "failed to read OpenCode auth state {}: {}",
+            auth_path.display(),
+            error
+        )
+    })?;
+    let parsed: JsonValue = serde_json::from_str(&auth_json)
+        .map_err(|error| format!("OpenCode auth state is invalid JSON: {}", error))?;
+    if !parsed.is_object() {
+        return Err("OpenCode auth state must contain a JSON object.".to_string());
+    }
+    let account = secret_account_id(profile_id, "primary");
+    vault.set_secret(&account, auth_json.trim())?;
+    profile.redacted_hint = Some("Managed OpenCode credentials".to_string());
+    profile.updated_at = unix_timestamp();
+    db.upsert_login_profile_metadata(&profile, Some(&account))?;
+    Ok(())
+}
+
+fn merge_opencode_provider_capabilities(config: &mut JsonValue, capabilities: &JsonValue) {
+    let Some(incoming) = capabilities.as_array() else {
+        return;
+    };
+    if !config.is_object() {
+        *config = serde_json::json!({});
+    }
+    let stored = config
+        .as_object_mut()
+        .expect("OpenCode profile config is an object")
+        .entry(OPENCODE_PROVIDER_CAPABILITIES_CONFIG_KEY)
+        .or_insert_with(|| serde_json::json!({}));
+    if !stored.is_object() {
+        *stored = serde_json::json!({});
+    }
+    let stored = stored
+        .as_object_mut()
+        .expect("OpenCode provider capabilities are an object");
+    for capability in incoming {
+        let Some(provider_id) = capability
+            .get("providerId")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|provider_id| !provider_id.is_empty())
+        else {
+            continue;
+        };
+        let entry = stored
+            .entry(provider_id.to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if !entry.is_object() {
+            *entry = serde_json::json!({});
+        }
+        let entry = entry
+            .as_object_mut()
+            .expect("OpenCode provider capability is an object");
+        if !entry.contains_key("authStatus") {
+            if let Some(legacy) = entry.get("credentials").cloned() {
+                entry.insert("authStatus".to_string(), legacy);
+            }
+        }
+        for (incoming_field, stored_field) in [
+            ("credentials", "authStatus"),
+            ("pricedModelAccess", "pricedModelAccess"),
+        ] {
+            let Some(value) = capability.get(incoming_field).and_then(JsonValue::as_str) else {
+                continue;
+            };
+            if value != "unknown" {
+                entry.insert(
+                    stored_field.to_string(),
+                    JsonValue::String(value.to_string()),
+                );
+            }
+        }
+        entry.remove("credentials");
+        for field in [
+            "providerName",
+            "checkedAt",
+            "method",
+            "probeModel",
+            "modelCount",
+            "freeModelCount",
+        ] {
+            if let Some(value) = capability.get(field) {
+                entry.insert(field.to_string(), value.clone());
+            }
+        }
+    }
+}
+
+fn persist_opencode_provider_capabilities(
+    db: &TelemetryDb,
+    profile_id: &str,
+    capabilities: &JsonValue,
+) -> Result<LoginProfile, String> {
+    let mut profile = db.get_login_profile(profile_id)?;
+    if profile.provider != "opencode" {
+        return Ok(profile);
+    }
+    merge_opencode_provider_capabilities(&mut profile.config, capabilities);
+    profile.updated_at = unix_timestamp();
+    db.upsert_login_profile_metadata(&profile, None)
+}
+
+pub fn opencode_provider_model_is_visible(
+    config: &JsonValue,
+    provider_id: &str,
+    is_free: Option<bool>,
+) -> bool {
+    let Some(capability) = config
+        .get(OPENCODE_PROVIDER_CAPABILITIES_CONFIG_KEY)
+        .and_then(|value| value.get(provider_id))
+    else {
+        return true;
+    };
+    let auth_status = capability
+        .get("authStatus")
+        .or_else(|| capability.get("credentials"))
+        .and_then(JsonValue::as_str);
+    if auth_status == Some("invalid") {
+        return false;
+    }
+    if capability
+        .get("pricedModelAccess")
+        .and_then(JsonValue::as_str)
+        == Some("unavailable")
+    {
+        return is_free == Some(true);
+    }
+    true
 }
 
 const CLAUDE_TOKEN_PREFIX: &str = "sk-ant-";
@@ -1727,22 +2025,33 @@ fn command_output_with_timeout(command: &mut Command, timeout: Duration) -> Resu
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("failed to start account check: {}", error))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to capture account check stdout".to_string())?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "failed to capture account check stderr".to_string())?;
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
     let started_at = Instant::now();
-
-    loop {
+    let (status, timed_out) = loop {
         match child.try_wait() {
-            Ok(Some(_status)) => {
-                return child
-                    .wait_with_output()
-                    .map_err(|error| format!("failed to collect account check output: {}", error));
-            }
+            Ok(Some(status)) => break (status, false),
             Ok(None) => {
                 if started_at.elapsed() >= timeout {
                     let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(
-                        "Account check timed out before receiving a provider response.".to_string(),
-                    );
+                    let status = child
+                        .wait()
+                        .map_err(|error| format!("failed to stop account check: {}", error))?;
+                    break (status, true);
                 }
                 thread::sleep(Duration::from_millis(50));
             }
@@ -1751,7 +2060,23 @@ fn command_output_with_timeout(command: &mut Command, timeout: Duration) -> Resu
                 return Err(format!("failed while waiting for account check: {}", error));
             }
         }
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| "account check stdout reader panicked".to_string())?
+        .map_err(|error| format!("failed to read account check stdout: {}", error))?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "account check stderr reader panicked".to_string())?
+        .map_err(|error| format!("failed to read account check stderr: {}", error))?;
+    if timed_out {
+        return Err("Account check timed out before receiving a provider response.".to_string());
     }
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1871,11 +2196,18 @@ fn stderr_failure(stderr: &str) -> Option<LiveCheckFailure> {
             .find(|line| !line.is_empty())?,
     };
     if line.contains("ERR_MODULE_NOT_FOUND") || line.contains("Cannot find package") {
+        let (code, runtime) = if stderr.contains("@opencode-ai/sdk")
+            || stderr.contains("opencode-agent-sdk-adapter")
+        {
+            ("opencode_runtime_missing", "OpenCode")
+        } else {
+            ("claude_runtime_missing", "Claude")
+        };
         return Some(LiveCheckFailure {
-            code: Some("claude_runtime_missing".to_string()),
+            code: Some(code.to_string()),
             message: format!(
-                "Claude runtime dependency is missing or broken: {}. Reinstall or repair the Claude runtime.",
-                line
+                "{} runtime dependency is missing or broken: {}. Reinstall or repair the {} runtime.",
+                runtime, line, runtime
             ),
         });
     }
@@ -1910,6 +2242,7 @@ fn status_for_live_check_failure(failure: &LiveCheckFailure) -> &'static str {
         | Some("claude_auth_missing") => return "auth_missing",
         Some("usage_limited") | Some("rate_limited") => return "usage_limited",
         Some("claude_runtime_missing")
+        | Some("opencode_runtime_missing")
         | Some("codex_cli_missing")
         | Some("codex_cli_outdated")
         | Some("node_runtime_missing")
@@ -1955,6 +2288,7 @@ pub(crate) fn provider_login_required_message(provider: &str) -> String {
     match provider {
         "codex" => "Log in to Codex in Managed Accounts.".to_string(),
         "claude" => "Log in to Claude in Managed Accounts.".to_string(),
+        "opencode" => "Log in to OpenCode in Managed Accounts.".to_string(),
         _ => "Open Managed Accounts and log in to this coding agent.".to_string(),
     }
 }
@@ -2103,6 +2437,105 @@ fn run_claude_readiness_check(
     ))
 }
 
+fn run_opencode_readiness_check(
+    app: &tauri::AppHandle,
+    db: &TelemetryDb,
+    profile: &LoginProfile,
+    materialized: &MaterializedRuntimeCredentials,
+) -> Result<ProviderReadiness, LiveCheckFailure> {
+    let invocation = crate::managed_runtime::opencode_adapter_invocation(app)?;
+    let mut command = Command::new(&invocation.node_program);
+    command
+        .arg(&invocation.adapter_script)
+        .arg("--opencode-bin")
+        .arg(&invocation.opencode_program)
+        .arg("--readiness-check")
+        .current_dir(std::env::temp_dir())
+        .env("PATH", crate::cli_path::build_tool_path());
+    for (key, value) in &materialized.env {
+        command.env(key, value);
+    }
+    let output = command_output_with_timeout(&mut command, OPENCODE_READINESS_CHECK_TIMEOUT)?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if output.status.success() {
+        for line in stdout.lines() {
+            let Ok(value) = serde_json::from_str::<JsonValue>(line) else {
+                continue;
+            };
+            if value.get("type").and_then(JsonValue::as_str) == Some("provider_capabilities") {
+                if let Some(capabilities) = value.get("capabilities") {
+                    persist_opencode_provider_capabilities(db, &profile.id, capabilities)?;
+                }
+                continue;
+            }
+            if value.get("type").and_then(JsonValue::as_str) != Some("readiness") {
+                continue;
+            }
+            let connected = value
+                .get("connected_providers")
+                .and_then(JsonValue::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            if connected == 0 {
+                return Err(LiveCheckFailure::uncoded(
+                    "OpenCode is running, but this profile has no connected model providers.",
+                ));
+            }
+            let model_count = value
+                .get("model_count")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0);
+            let usable_models = value
+                .get("usable_model_count")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(model_count);
+            let invalid_providers = value
+                .get("invalid_provider_count")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0) as usize;
+            if usable_models == 0 {
+                let all_credentials_invalid = invalid_providers == connected;
+                return Err(LiveCheckFailure {
+                    code: Some(
+                        if all_credentials_invalid {
+                            "auth_missing"
+                        } else {
+                            "usage_limited"
+                        }
+                        .to_string(),
+                    ),
+                    message: if all_credentials_invalid {
+                        "All connected OpenCode provider credentials were rejected. Reconnect this profile."
+                            .to_string()
+                    } else {
+                        "OpenCode provider credentials are valid, but no currently visible model has usable balance."
+                            .to_string()
+                    },
+                });
+            }
+            return Ok(ProviderReadiness {
+                message: format!(
+                    "OpenCode account connected with {usable_models} usable models across {connected} providers."
+                ),
+                plan_type: None,
+            });
+        }
+    }
+    if stdout.trim().is_empty() && stderr.trim().is_empty() {
+        return Err(LiveCheckFailure::uncoded(format!(
+            "OpenCode account check exited with {}.",
+            output.status
+        )));
+    }
+    Err(live_check_failure_with_log(
+        app,
+        &format!("opencode account check (profile {})", profile.id),
+        &stdout,
+        &stderr,
+    ))
+}
+
 /// Validates a freshly connected OAuth token through the same SDK adapter
 /// the account check uses — previously this went through the `claude` CLI from
 /// PATH, so connect could "succeed" via one toolchain and the account check
@@ -2163,7 +2596,7 @@ fn run_login_profile_readiness_check(
 ) -> Result<ProviderReadiness, LiveCheckFailure> {
     match (profile.provider.as_str(), profile.auth_type.as_str()) {
         ("claude", "external_cli") => run_claude_readiness_check(app, profile, None),
-        ("codex", _) | ("claude", _) => {
+        ("codex", _) | ("claude", _) | ("opencode", _) => {
             let materialized = resolve_runtime_credentials(db, vault, &profile.id, cache_dir)?;
             if materialized.provider != profile.provider {
                 return Err(LiveCheckFailure::uncoded(format!(
@@ -2182,6 +2615,15 @@ fn run_login_profile_readiness_check(
                     result
                 }
                 "claude" => run_claude_readiness_check(app, profile, Some(&materialized)),
+                "opencode" => {
+                    let result = run_opencode_readiness_check(app, db, profile, &materialized);
+                    if result.is_ok() {
+                        if let Some(auth_path) = materialized.opencode_auth_path.as_deref() {
+                            persist_opencode_auth_state(db, vault, &profile.id, auth_path)?;
+                        }
+                    }
+                    result
+                }
                 _ => Err(LiveCheckFailure::uncoded(format!(
                     "Unsupported login provider: {}",
                     profile.provider
@@ -2203,6 +2645,73 @@ fn emit_login_profiles_changed(app: &tauri::AppHandle, profile: &LoginProfile) {
             status: profile.status.clone(),
         },
     );
+}
+
+pub fn mark_login_profile_provider_failure(
+    app: &tauri::AppHandle,
+    profile_id: &str,
+    model_provider: Option<&str>,
+    status_code: u64,
+) -> Result<(), String> {
+    let provider_label = match model_provider {
+        Some("openrouter") => "OpenRouter",
+        Some("opencode") => "OpenCode Zen",
+        Some("kimi-for-coding") => "Kimi For Coding",
+        Some("deepseek") => "DeepSeek",
+        Some("openai") => "OpenAI",
+        Some("groq") => "Groq",
+        _ => "Model provider",
+    };
+    let db = app.state::<TelemetryDb>();
+    let mut profile = db.get_login_profile(profile_id)?;
+    let (credentials, priced_model_access, message) = if status_code == 401 {
+        (
+            "invalid",
+            "unknown",
+            format!(
+                "{} authentication failed. Reconnect this provider and run Check providers.",
+                provider_label
+            ),
+        )
+    } else {
+        (
+            "valid",
+            "unavailable",
+            format!(
+                "{} has insufficient balance. Only its zero-priced models remain visible.",
+                provider_label
+            ),
+        )
+    };
+    if let Some(provider_id) = model_provider {
+        merge_opencode_provider_capabilities(
+            &mut profile.config,
+            &serde_json::json!([{
+                "providerId": provider_id,
+                "credentials": credentials,
+                "pricedModelAccess": priced_model_access,
+                "checkedAt": unix_timestamp() * 1000,
+                "method": "runtime_error",
+            }]),
+        );
+        profile.status_message = Some(message);
+        profile.last_checked_at = Some(unix_timestamp());
+        profile.updated_at = unix_timestamp();
+        profile = db.upsert_login_profile_metadata(&profile, None)?;
+    } else {
+        profile = mark_login_profile_status(
+            &db,
+            profile_id,
+            if status_code == 401 {
+                "auth_missing"
+            } else {
+                "usage_limited"
+            },
+            Some(message),
+        )?;
+    }
+    emit_login_profiles_changed(app, &profile);
+    Ok(())
 }
 
 fn mark_login_profile_auth_missing(
@@ -2467,13 +2976,46 @@ pub fn list_login_profiles(db: State<TelemetryDb>) -> Result<Vec<LoginProfile>, 
     db.list_login_profiles()
 }
 
+fn read_opencode_login_profile_auth_with_vault(
+    db: &TelemetryDb,
+    vault: &dyn CredentialVault,
+    profile_id: &str,
+) -> Result<String, String> {
+    let profile = db.get_login_profile(profile_id)?;
+    if profile.provider != "opencode" || profile.auth_type != "opencode_auth" {
+        return Err("auth.json can only be read for OpenCode login profiles.".to_string());
+    }
+    vault.get_secret(&secret_account_id(profile_id, "primary"))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn read_opencode_login_profile_auth(
+    db: State<TelemetryDb>,
+    profile_id: String,
+) -> Result<String, String> {
+    read_opencode_login_profile_auth_with_vault(&db, &KeyringCredentialVault, &profile_id)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn upsert_login_profile(
+    app: tauri::AppHandle,
     db: State<TelemetryDb>,
     request: UpsertLoginProfileRequest,
 ) -> Result<LoginProfile, String> {
-    upsert_login_profile_with_vault(&db, &KeyringCredentialVault, request)
+    let refresh_cache = request.provider.eq_ignore_ascii_case("opencode")
+        && request.auth_type.eq_ignore_ascii_case("opencode_auth")
+        && request
+            .secret
+            .as_deref()
+            .is_some_and(|secret| !secret.trim().is_empty());
+    let profile = upsert_login_profile_with_vault(&db, &KeyringCredentialVault, request)?;
+    if refresh_cache {
+        refresh_opencode_auth_cache(&app, &KeyringCredentialVault, &profile)?;
+        return enqueue_login_profile_readiness_check(app, &db, &profile.id);
+    }
+    Ok(profile)
 }
 
 #[tauri::command]
@@ -3066,11 +3608,46 @@ pub fn discover_login_import_candidates_from_sources(
     candidates
 }
 
+fn opencode_import_candidate(auth_path: &Path) -> Option<LoginImportCandidate> {
+    auth_path.is_file().then(|| LoginImportCandidate {
+        id: "file:opencode:default".to_string(),
+        provider: "opencode".to_string(),
+        display_name: "Existing OpenCode setup".to_string(),
+        auth_type: "opencode_auth".to_string(),
+        source_kind: "file".to_string(),
+        source_label: auth_path.display().to_string(),
+        redacted_hint: Some("Connected OpenCode providers".to_string()),
+        importable: true,
+    })
+}
+
+fn default_opencode_auth_path() -> Option<PathBuf> {
+    if let Ok(data_home) = std::env::var("XDG_DATA_HOME") {
+        let trimmed = data_home.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed).join("opencode").join("auth.json"));
+        }
+    }
+    dirs::home_dir().map(|home| {
+        home.join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json")
+    })
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn discover_login_import_candidates() -> Result<Vec<LoginImportCandidate>, String> {
     let env = std::env::vars().collect::<HashMap<_, _>>();
-    Ok(discover_login_import_candidates_from_sources(&env))
+    let mut candidates = discover_login_import_candidates_from_sources(&env);
+    if let Some(candidate) = default_opencode_auth_path()
+        .as_deref()
+        .and_then(opencode_import_candidate)
+    {
+        candidates.push(candidate);
+    }
+    Ok(candidates)
 }
 
 fn display_name_or_default(requested: Option<String>, default_name: &str) -> String {
@@ -3191,6 +3768,23 @@ pub fn import_discovered_login_profile_with_vault(
     env: &HashMap<String, String>,
     request: ImportLoginCandidateRequest,
 ) -> Result<LoginProfile, String> {
+    let opencode_auth_path = default_opencode_auth_path();
+    import_discovered_login_profile_with_vault_and_sources(
+        db,
+        vault,
+        env,
+        opencode_auth_path.as_deref(),
+        request,
+    )
+}
+
+pub fn import_discovered_login_profile_with_vault_and_sources(
+    db: &TelemetryDb,
+    vault: &dyn CredentialVault,
+    env: &HashMap<String, String>,
+    opencode_auth_path: Option<&Path>,
+    request: ImportLoginCandidateRequest,
+) -> Result<LoginProfile, String> {
     match request.candidate_id.as_str() {
         "env:OPENAI_API_KEY" => {
             let secret = env
@@ -3228,6 +3822,23 @@ pub fn import_discovered_login_profile_with_vault(
                 request.make_default,
             )
         }
+        "file:opencode:default" => {
+            let auth_path = opencode_auth_path
+                .filter(|path| path.is_file())
+                .ok_or_else(|| "The detected OpenCode auth.json is no longer available.".to_string())?;
+            let secret = fs::read_to_string(auth_path)
+                .map_err(|error| format!("Could not read {}: {}", auth_path.display(), error))?;
+            upsert_imported_managed_profile(
+                db,
+                vault,
+                "opencode",
+                "opencode_auth",
+                "opencode_auth_json",
+                display_name_or_default(request.display_name, "Existing OpenCode setup"),
+                secret,
+                request.make_default,
+            )
+        }
         "env:ANTHROPIC_AUTH_TOKEN" => {
             Err("ANTHROPIC_AUTH_TOKEN import is not supported. Add a Claude subscription or Anthropic API key profile instead.".to_string())
         }
@@ -3244,11 +3855,18 @@ pub fn import_discovered_login_profile_with_vault(
 #[tauri::command]
 #[specta::specta]
 pub fn import_discovered_login_profile(
+    app: tauri::AppHandle,
     db: State<TelemetryDb>,
     request: ImportLoginCandidateRequest,
 ) -> Result<LoginProfile, String> {
     let env = std::env::vars().collect::<HashMap<_, _>>();
-    import_discovered_login_profile_with_vault(&db, &KeyringCredentialVault, &env, request)
+    let profile =
+        import_discovered_login_profile_with_vault(&db, &KeyringCredentialVault, &env, request)?;
+    if profile.provider == "opencode" {
+        refresh_opencode_auth_cache(&app, &KeyringCredentialVault, &profile)?;
+        return enqueue_login_profile_readiness_check(app, &db, &profile.id);
+    }
+    Ok(profile)
 }
 
 #[tauri::command]
@@ -3273,6 +3891,9 @@ pub fn import_existing_runtime_login_with_vault(
         }
         "claude" => {
             Err("Importing the current Claude CLI login is not supported. Add a managed Claude profile instead.".to_string())
+        }
+        "opencode" => {
+            Err("Import OpenCode through Find existing so Agentree can copy auth.json into an isolated managed profile.".to_string())
         }
         other => Err(format!("unsupported provider import: {}", other)),
     }
@@ -3517,8 +4138,8 @@ mod tests {
             "claude_oauth",
             serde_json::json!({}),
         )));
-        assert!(!is_supported_login_profile(&test_profile(
-            "legacy-opencode",
+        assert!(is_supported_login_profile(&test_profile(
+            "opencode",
             "opencode",
             "opencode_auth",
             serde_json::json!({}),
@@ -3529,6 +4150,69 @@ mod tests {
             "external_cli",
             serde_json::json!({}),
         )));
+    }
+
+    #[test]
+    fn opencode_provider_capabilities_filter_invalid_and_unfunded_models() {
+        let mut config = serde_json::json!({
+            "opencode_provider_capabilities": {
+                "openrouter": {
+                    "authStatus": "valid",
+                    "pricedModelAccess": "available"
+                }
+            }
+        });
+        merge_opencode_provider_capabilities(
+            &mut config,
+            &serde_json::json!([{
+                "providerId": "openrouter",
+                "credentials": "invalid",
+                "pricedModelAccess": "unknown",
+                "checkedAt": 123,
+                "modelCount": 4,
+                "freeModelCount": 1
+            }]),
+        );
+
+        assert!(!opencode_provider_model_is_visible(
+            &config,
+            "openrouter",
+            Some(true)
+        ));
+        config["opencode_provider_capabilities"]["openrouter"]["authStatus"] =
+            serde_json::json!("valid");
+        config["opencode_provider_capabilities"]["openrouter"]["pricedModelAccess"] =
+            serde_json::json!("unavailable");
+        assert!(opencode_provider_model_is_visible(
+            &config,
+            "openrouter",
+            Some(true)
+        ));
+        assert!(!opencode_provider_model_is_visible(
+            &config,
+            "openrouter",
+            Some(false)
+        ));
+    }
+
+    #[test]
+    fn opencode_managed_config_sync_preserves_global_mcp_and_skills() {
+        let source_root = tempfile::tempdir().expect("source config");
+        let managed_root = tempfile::tempdir().expect("managed config");
+        let source = source_root.path().join("opencode");
+        fs::create_dir_all(source.join("skills/review")).expect("skill directory");
+        fs::write(
+            source.join("opencode.json"),
+            r#"{"mcp":{"custom":{"type":"remote","url":"https://mcp.example"}}}"#,
+        )
+        .expect("global OpenCode config");
+        fs::write(source.join("skills/review/SKILL.md"), "# Review").expect("global skill");
+
+        sync_opencode_config_dir(Some(&source), managed_root.path()).expect("sync config");
+
+        let destination = managed_root.path().join("opencode");
+        assert!(destination.join("opencode.json").is_file());
+        assert!(destination.join("skills/review/SKILL.md").is_file());
     }
 
     #[test]
@@ -3913,6 +4597,88 @@ mod tests {
     }
 
     #[test]
+    fn discovers_and_imports_opencode_auth_without_exposing_its_contents() {
+        let (_dir, db) = open_test_db();
+        let vault = MemoryVault::new();
+        let source_dir = tempfile::tempdir().expect("OpenCode source");
+        let auth_path = source_dir.path().join("auth.json");
+        let auth_json = r#"{"openrouter":{"type":"api","key":"sensitive-key"}}"#;
+        fs::write(&auth_path, auth_json).expect("write OpenCode auth");
+
+        let candidate = opencode_import_candidate(&auth_path).expect("OpenCode candidate");
+        assert_eq!(candidate.id, "file:opencode:default");
+        assert_eq!(candidate.provider, "opencode");
+        assert_eq!(candidate.auth_type, "opencode_auth");
+        assert_eq!(
+            candidate.redacted_hint.as_deref(),
+            Some("Connected OpenCode providers")
+        );
+        assert!(!format!("{candidate:?}").contains("sensitive-key"));
+
+        let imported = import_discovered_login_profile_with_vault_and_sources(
+            &db,
+            &vault,
+            &HashMap::new(),
+            Some(&auth_path),
+            ImportLoginCandidateRequest {
+                candidate_id: candidate.id,
+                display_name: None,
+                make_default: Some(true),
+            },
+        )
+        .expect("import OpenCode auth");
+
+        assert_eq!(imported.provider, "opencode");
+        assert_eq!(imported.auth_type, "opencode_auth");
+        assert_eq!(imported.display_name, "Existing OpenCode setup");
+        assert_eq!(
+            imported.redacted_hint.as_deref(),
+            Some("Managed OpenCode credentials")
+        );
+        assert_eq!(
+            vault
+                .get_secret(&secret_account_id(&imported.id, "primary"))
+                .expect("stored OpenCode auth"),
+            auth_json
+        );
+    }
+
+    #[test]
+    fn opencode_import_rejects_a_missing_or_invalid_auth_file() {
+        let (_dir, db) = open_test_db();
+        let vault = MemoryVault::new();
+        let source_dir = tempfile::tempdir().expect("OpenCode source");
+        let missing_path = source_dir.path().join("missing-auth.json");
+        let request = || ImportLoginCandidateRequest {
+            candidate_id: "file:opencode:default".to_string(),
+            display_name: None,
+            make_default: Some(true),
+        };
+
+        let missing = import_discovered_login_profile_with_vault_and_sources(
+            &db,
+            &vault,
+            &HashMap::new(),
+            Some(&missing_path),
+            request(),
+        )
+        .expect_err("missing OpenCode auth must fail");
+        assert!(missing.contains("no longer available"));
+
+        let invalid_path = source_dir.path().join("invalid-auth.json");
+        fs::write(&invalid_path, "not-json").expect("write invalid auth");
+        let invalid = import_discovered_login_profile_with_vault_and_sources(
+            &db,
+            &vault,
+            &HashMap::new(),
+            Some(&invalid_path),
+            request(),
+        )
+        .expect_err("invalid OpenCode auth must fail");
+        assert!(invalid.contains("valid auth.json"));
+    }
+
+    #[test]
     fn rejects_duplicate_managed_secret_for_same_provider_auth_type() {
         let (_dir, db) = open_test_db();
         let vault = MemoryVault::new();
@@ -4046,6 +4812,20 @@ mod tests {
         assert!(failure.message.contains("Cannot find package"));
         assert!(!failure.message.contains("Node.js v18.19.1"));
         assert_eq!(failure.code.as_deref(), Some("claude_runtime_missing"));
+        assert_eq!(status_for_live_check_failure(&failure), "unknown_error");
+    }
+
+    #[test]
+    fn live_check_failure_identifies_missing_opencode_sdk() {
+        let stderr = concat!(
+            "node:internal/modules/package_json_reader:314\n",
+            "Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@opencode-ai/sdk' imported from /app/scripts/opencode-agent-sdk-adapter.mjs\n",
+            "Node.js v22.21.1\n",
+        );
+        let failure = extract_live_check_failure("", stderr);
+        assert!(failure.message.contains("OpenCode runtime dependency"));
+        assert!(!failure.message.contains("Claude runtime"));
+        assert_eq!(failure.code.as_deref(), Some("opencode_runtime_missing"));
         assert_eq!(status_for_live_check_failure(&failure), "unknown_error");
     }
 
@@ -4528,6 +5308,27 @@ command = "personal-mcp"
             Some("sk-ant-at01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE")
         );
         assert!(materialized.codex_home.is_none());
+    }
+
+    #[test]
+    fn claude_oauth_profile_accepts_current_setup_token_format() {
+        let token = "sk-ant-at01-abcdefghijklmnopqrstuvwxyz0123456789ABCD";
+        let materialized = materialize_runtime_credentials_for_test(
+            "profile-claude-oauth-current",
+            "claude",
+            "claude_oauth",
+            token,
+            serde_json::json!({}),
+        )
+        .expect("current credentials materialize");
+
+        assert_eq!(
+            materialized
+                .env
+                .get("CLAUDE_CODE_OAUTH_TOKEN")
+                .map(String::as_str),
+            Some(token)
+        );
     }
 
     #[test]

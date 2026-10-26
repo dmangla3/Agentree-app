@@ -393,8 +393,9 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                             "message": { "type": "string" },
                             "thread_id": { "type": "string", "description": "Defaults to the parent node's thread when parent_node_id is present, otherwise the current thread." },
                             "parent_node_id": { "type": "string", "description": "Optional accessible completed assistant node. Its thread is inferred automatically." },
-                            "agent_type": { "type": "string", "enum": ["codex", "claude"] },
-                            "model": { "type": "string", "description": "Agentree runtime model id. Required when switching providers." }
+                            "agent_type": { "type": "string", "enum": ["codex", "claude", "opencode"] },
+                            "model": { "type": "string", "description": "Agentree runtime model id. Required when switching providers." },
+                            "reasoning_effort": { "type": "string", "description": "Optional provider effort or OpenCode variant." }
                         },
                         "required": ["message"]
                     }
@@ -1898,6 +1899,14 @@ mod tests {
         assert!(send_message["inputSchema"]["required"]
             .as_array()
             .is_some_and(|required| required.contains(&serde_json::json!("message"))));
+        assert!(
+            send_message["inputSchema"]["properties"]["agent_type"]["enum"]
+                .as_array()
+                .is_some_and(|providers| providers.contains(&serde_json::json!("opencode")))
+        );
+        assert!(send_message["inputSchema"]["properties"]
+            .as_object()
+            .is_some_and(|properties| properties.contains_key("reasoning_effort")));
 
         let wait_for_agents = tools
             .iter()

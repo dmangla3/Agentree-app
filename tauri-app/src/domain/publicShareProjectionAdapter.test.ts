@@ -111,6 +111,17 @@ describe('publicPayloadToWorkspaceProjectionInput', () => {
     expect(executionData.tool_calls).toBeUndefined();
   });
 
+  it('preserves the underlying OpenCode model id without folding in its variant', () => {
+    const payload = makePayload();
+    payload.graph.messages[1].agent_id = 'opencode:openrouter%2Fqwen%2Fqwen3%3Afree:high';
+
+    const input = publicPayloadToWorkspaceProjectionInput(payload);
+    expect(input.messages[1]).toMatchObject({
+      llmProvider: 'opencode',
+      llmModel: 'openrouter/qwen/qwen3:free',
+    });
+  });
+
   it('preserves public artifact references on projected messages', () => {
     const payload = makePayload();
     payload.graph.messages[1].artifacts = [{

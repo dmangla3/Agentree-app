@@ -32,6 +32,7 @@ import { getDeleteBranchPreview, getTopLevelDeleteBranchIds } from '../domain/de
 import { getBranchPointerCommitSha, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
 import { MessageHighlightSelectionPopover } from './highlights/MessageHighlightSelectionPopover';
 import { MessageHighlightHoverPopover } from './highlights/MessageHighlightHoverPopover';
+import { dispatchOpenCommitTerminal } from '../lib/commitTerminalEvents';
 
 const getEntitySelectionId = (projection: any, entityId?: string): string | null => {
   if (!entityId) return null;
@@ -920,6 +921,17 @@ export function ChatInterface({ onMarkThreadDone }: ChatInterfaceProps = {}) {
         onAddCommitsToMergePanel={handleAddCommitsToMergePanel}
         onAddCommitToNode={setAddCommitTargetId}
         onMarkThreadDone={onMarkThreadDone}
+        onOpenTerminal={(commitSha) => {
+          if (!selectedRepoPath) {
+            toast.error('Terminal unavailable', 'This workspace does not have a local repository path.');
+            return;
+          }
+          dispatchOpenCommitTerminal({
+            repoPath: selectedRepoPath,
+            commitSha,
+            label: projection.commitBySha.get(commitSha)?.subject,
+          });
+        }}
       />
       <AddCommitDialog
         open={!!addCommitTargetId}

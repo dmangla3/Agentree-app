@@ -63,6 +63,26 @@ const makeProjection = (commit: ProjectedCommitEntity | null, entities: Projecte
 };
 
 describe('NodeContextMenu', () => {
+  it('opens a terminal at the selected canonical commit', () => {
+    const onOpenTerminal = vi.fn();
+    const onClose = vi.fn();
+    const commit = makeGeneratedCommit();
+
+    render(
+      <NodeContextMenu
+        contextMenu={{ x: 20, y: 30, targetIds: [`commit:${commit.sha}`] }}
+        projection={makeProjection(commit)}
+        onClose={onClose}
+        onOpenTerminal={onOpenTerminal}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open terminal here' }));
+
+    expect(onOpenTerminal).toHaveBeenCalledWith(commit.sha);
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it('adds a generated canonical commit sha to the merge panel', () => {
     const onAddCommitShasToMergePanel = vi.fn();
     const commit = makeGeneratedCommit();

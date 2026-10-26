@@ -8,7 +8,7 @@ export type LoginProfilesNavigationDetail = {
 };
 
 export function buildProviderLoginRequiredToast(provider: RuntimeProvider) {
-  const providerLabel = provider === 'codex' ? 'Codex' : 'Claude';
+  const providerLabel = provider === 'codex' ? 'Codex' : provider === 'claude' ? 'Claude' : 'OpenCode';
   return {
     title: `Log in to ${providerLabel}`,
     description: `Your ${providerLabel} login is missing or expired.`,

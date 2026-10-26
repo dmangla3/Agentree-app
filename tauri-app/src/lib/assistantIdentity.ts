@@ -129,7 +129,7 @@ export const getAssistantIdentityParts = (input: {
   return { label: fullLabel, reasoningEffort: null };
 };
 
-export type AssistantProviderIconKind = 'codex' | 'claude' | 'generic';
+export type AssistantProviderIconKind = 'codex' | 'claude' | 'opencode' | 'generic';
 
 const normalizeIdentityPart = (value: string | null | undefined): string => (
   value?.trim().toLowerCase() ?? ''
@@ -147,6 +147,10 @@ export const getAssistantProviderIconKind = ({
 
   if (provider === 'codex' || model.startsWith('codex/') || model.startsWith('codex:')) {
     return 'codex';
+  }
+
+  if (provider === 'opencode' || model.startsWith('opencode/') || model.startsWith('opencode:')) {
+    return 'opencode';
   }
 
   if (

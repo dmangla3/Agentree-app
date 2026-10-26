@@ -30,6 +30,7 @@
       "scripts/bash-adapter.cjs",
       "scripts/claude-agent-sdk-adapter.mjs",
       "scripts/merge-review-runner.cjs",
+      "scripts/opencode-agent-sdk-adapter.mjs",
       "scripts/package-manager-guard.sh"
     ],
     "icon": [
