@@ -27,6 +27,7 @@ interface LoginProfilesState {
   deleteProfile: (profileId: string) => Promise<void>;
   setDefaultProfile: (provider: string, profileId: string | null) => Promise<void>;
   checkProfile: (profileId: string) => Promise<void>;
+  /** Local-only launch eligibility; live provider verification is explicit account management. */
   ensureReady: (profileId: string) => Promise<LoginProfileSummary>;
   checkAllProfiles: () => Promise<void>;
   discoverImportCandidates: () => Promise<LoginImportCandidate[]>;

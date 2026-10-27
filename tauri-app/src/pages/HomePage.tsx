@@ -5,7 +5,7 @@ import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AgentRunLiveStreamCoordinator } from '../agent-runs/AgentRunLiveStreamCoordinatorMount';
-import { ChatInput } from '../components/ChatInput';
+import { GraphDockComposer } from '../composer/GraphDockComposer';
 import {
   ResizableHandle,
   ResizablePanel,
@@ -550,7 +550,7 @@ export function HomePage() {
           onWorktreePolicyOpenChange={worktreePolicyPromptRepoPath ? handleWorktreePolicyOpenChange : undefined}
           allowContinueWithDefaultPolicy={allowContinueWithDefaultPolicy}
         />
-        {activeView === 'chat' ? (
+        <div className={activeView === 'chat' ? 'contents' : 'hidden'} aria-hidden={activeView !== 'chat'}>
           <WorkspaceNavigator
             selectedWorkspaceId={selectedWorkspaceId}
             activeView={activeView}
@@ -562,7 +562,7 @@ export function HomePage() {
             threadsFocused={workspaceNavigatorThreadsFocused}
             onThreadsFocusedChange={setWorkspaceNavigatorThreadsFocused}
           />
-        ) : null}
+        </div>
 
         <main className="app-shell-stage flex h-full min-w-0 flex-1 flex-col overflow-hidden" aria-label="Agentree workspace shell">
           <ResizablePanelGroup direction="vertical" className="min-h-0 w-full flex-1 border-0">
@@ -573,10 +573,13 @@ export function HomePage() {
               defaultSize={100}
               minSize={30}
             >
-              <div className="h-full min-h-0 overflow-hidden">
-          {activeView === 'chat' ? (
-            canOpenSelectedWorkspace ? (
-              <>
+              <div className="relative h-full min-h-0 overflow-hidden">
+          {canOpenSelectedWorkspace ? (
+              <div
+                className={`absolute inset-0 h-full ${activeView === 'chat' ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+                aria-hidden={activeView !== 'chat'}
+                inert={activeView !== 'chat'}
+              >
                 <ResizablePanelGroup
                   direction="horizontal"
                   className="min-h-0 w-full flex-1 border-0"
@@ -639,8 +642,8 @@ export function HomePage() {
                     </div>
                   </ResizablePanel>
                 </ResizablePanelGroup>
-              </>
-            ) : (
+              </div>
+            ) : activeView === 'chat' ? (
               <div className="app-view-surface flex h-full items-center justify-center px-6">
                 <div className="app-panel max-w-md rounded-2xl p-6 text-center">
                   <div className="text-sm font-semibold text-foreground">No workspace selected</div>
@@ -649,8 +652,8 @@ export function HomePage() {
                   </p>
                 </div>
               </div>
-            )
-          ) : activeView === 'orchestration' ? (
+            ) : null}
+          {activeView === 'chat' ? null : activeView === 'orchestration' ? (
             <div className="app-view-surface h-full w-full overflow-auto p-5">
               <div className="app-view-frame mx-auto flex h-full w-full max-w-6xl flex-col">
                 <header className="app-view-header">
@@ -749,7 +752,8 @@ export function HomePage() {
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <ChatInput
+            <GraphDockComposer
+              surface="floating-reply"
               parentMessageIdOverride={floatingChatInputParentId}
               autoFocus
               onRequestClose={closeFloatingChatInput}

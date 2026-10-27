@@ -7,6 +7,7 @@ import { describeCheckoutFailure } from '../lib/checkoutFailure';
 import { gitRefSnapshotKeys } from '../hooks/useGitRefSnapshot';
 import { cn } from '../lib/utils';
 import { useToast } from './Toast';
+import { CommitActionButton, commitActionIconClassName } from './CommitActionButton';
 
 interface CommitCheckoutButtonProps {
   repoPath?: string | null;
@@ -56,24 +57,21 @@ export const CommitCheckoutButton = memo(({
   if (!canCheckout) return null;
 
   return (
-    <button
+    <CommitActionButton
       type="button"
       onClick={handleCheckout}
       disabled={isCheckingOut}
       title={`Checkout ${normalizedCommit}`}
       aria-label={`Checkout commit ${normalizedCommit}`}
-      className={cn(
-        'inline-flex items-center gap-1 rounded-md border border-sky-200/70 bg-white/70 px-2 py-1 text-[10px] font-medium text-sky-700 transition-colors hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-sky-800/70 dark:bg-slate-950/30 dark:text-sky-300 dark:hover:bg-sky-950/30',
-        className
-      )}
+      className={className}
     >
       {isCheckingOut ? (
-        <Loader2 size={12} className={cn('animate-spin', iconClassName)} />
+        <Loader2 className={cn(commitActionIconClassName(), 'animate-spin', iconClassName)} />
       ) : (
-        <GitBranch size={12} className={iconClassName} />
+        <GitBranch className={cn(commitActionIconClassName(), iconClassName)} />
       )}
       Checkout
-    </button>
+    </CommitActionButton>
   );
 });
 

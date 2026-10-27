@@ -7,7 +7,7 @@ import {
 } from './composerRepoMentions';
 
 const files = [
-  'src/components/ChatInput.tsx',
+  'src/composer/GraphDockComposer.tsx',
   'src/components/ChatInterface.tsx',
   'src/components/GraphView.tsx',
   'src/lib/composerContext.ts',
@@ -23,8 +23,8 @@ const files = [
 
 describe('composer repo mentions', () => {
   it('extracts only explicit repo mention tokens from prompt text', () => {
-    expect(extractRepoMentionPaths('read @src/components/ChatInput.tsx and @server/effect/services/MessageService.ts')).toEqual([
-      'src/components/ChatInput.tsx',
+    expect(extractRepoMentionPaths('read @src/composer/GraphDockComposer.tsx and @server/effect/services/MessageService.ts')).toEqual([
+      'src/composer/GraphDockComposer.tsx',
       'server/effect/services/MessageService.ts',
     ]);
   });
@@ -32,8 +32,8 @@ describe('composer repo mentions', () => {
   it('filters prompt mentions through a prebuilt file path set', () => {
     const pathSet = new Set(files.map((file) => file.path));
 
-    expect(getMentionedRepoPathSet('use @src/components/ChatInput.tsx and @missing/file.ts', pathSet)).toEqual(
-      new Set(['src/components/ChatInput.tsx'])
+    expect(getMentionedRepoPathSet('use @src/composer/GraphDockComposer.tsx and @missing/file.ts', pathSet)).toEqual(
+      new Set(['src/composer/GraphDockComposer.tsx'])
     );
   });
 
@@ -41,7 +41,7 @@ describe('composer repo mentions', () => {
     const index = buildRepoMentionSearchIndex(files);
 
     expect(getRepoMentionMatches(index, 'chat', 4).map((file) => file.path)).toEqual([
-      'src/components/ChatInput.tsx',
+      'src/composer/GraphDockComposer.tsx',
       'src/components/ChatInterface.tsx',
     ]);
   });

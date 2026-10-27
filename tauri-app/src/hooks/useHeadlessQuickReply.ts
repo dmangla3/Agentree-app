@@ -5,10 +5,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { agentRunManager } from '../agent-runs/agentRunManager';
 import { agentClient } from '../lib/agentClient';
 import { getOptionalCloudAuthToken } from '../lib/authSession';
-import {
-  providerRequiresLoginProfile,
-  resolveLoginProfileSelection,
-} from '../lib/loginProfiles';
 import { buildProviderLoginRequiredToast } from '../lib/loginNavigationEvents';
 import { markLocalAgentNodeTerminal } from '../lib/localAgentRunTerminal';
 import { resolveQuickReplyAgent, resolveQuickReplyBase } from '../lib/quickReply';
@@ -19,6 +15,12 @@ import { useAgents } from './useAgents';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, type LocalNodeMessage } from './useLocalNodes';
 import { useWorkspaces } from './useWorkspaces';
 import { useToast } from '../components/Toast';
+import {
+  AgentRunPreflightError,
+  createAgentRunSpec,
+  prepareAgentRuns,
+  type AgentRunSpec,
+} from '../composer/agentRunBatch';
 
 type QuickReplyStatus = 'idle' | 'sending' | 'error';
 
@@ -109,30 +111,30 @@ export function useHeadlessQuickReply() {
       setError('The parent does not have an ancestor output commit to run from.');
       return;
     }
-    const loginProfileSelection = resolveLoginProfileSelection({
-      profiles: loginProfiles,
-      provider: agent.type,
-      agentName: agent.name ?? agent.type,
-    });
-    const selectedLoginProfile = loginProfileSelection.selectedProfile;
-    const provider = agent.type === 'codex' || agent.type === 'claude' || agent.type === 'opencode'
-      ? agent.type
-      : null;
-    if (providerRequiresLoginProfile(provider) && !selectedLoginProfile && provider) {
+    let runSpec: AgentRunSpec<{ replyParentId: string }>;
+    try {
+      const [preparedRun] = prepareAgentRuns({
+        runs: [{
+          agentId: agent.id,
+          agentName: agent.name,
+          ordinal: 1,
+          totalForAgent: 1,
+          agent,
+        }],
+        profiles: loginProfiles,
+      });
+      runSpec = createAgentRunSpec(preparedRun, {
+        prompt,
+        base,
+        context: { replyParentId: input.replyParentId },
+      });
+    } catch (caught) {
+      if (!(caught instanceof AgentRunPreflightError)) throw caught;
       setStatus('idle');
       setError(null);
-      addToast(buildProviderLoginRequiredToast(provider));
+      const providers = new Set(caught.failures.map((failure) => failure.provider));
+      providers.forEach((provider) => addToast(buildProviderLoginRequiredToast(provider)));
       return;
-    }
-    if (selectedLoginProfile) {
-      try {
-        await useLoginProfilesStore.getState().ensureReady(selectedLoginProfile.id);
-      } catch {
-        setStatus('idle');
-        setError(null);
-        if (provider) addToast(buildProviderLoginRequiredToast(provider));
-        return;
-      }
     }
 
     setStatus('sending');
@@ -143,13 +145,13 @@ export function useHeadlessQuickReply() {
     try {
       const response = await sendHeadlessComposerReply({
         workspaceId: input.workspaceId,
-        prompt,
-        replyParentId: input.replyParentId,
+        prompt: runSpec.prompt,
+        replyParentId: runSpec.context.replyParentId,
         messages: input.messages,
-        agent,
-        base,
+        agent: runSpec.agent,
+        base: runSpec.base,
         workspaces: workspaces as Workspace[],
-        selectedLoginProfileId: selectedLoginProfile?.id ?? null,
+        selectedLoginProfileId: runSpec.loginProfileId,
         startAgentRun: (payload) => agentClient.launchAgentMessage(payload as any),
         getAccessToken: getOptionalCloudAuthToken,
         seedAgentRun: (message) => agentRunManager.seed(message),

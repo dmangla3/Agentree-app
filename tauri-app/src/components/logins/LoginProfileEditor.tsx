@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Check, CheckCircle2, Code2, Copy, KeyRound, Loader2, Plus, ShieldCheck, Terminal, Trash2 } from 'lucide-react';
+import { Check, CheckCircle2, Code2, Copy, Download, KeyRound, Loader2, Plus, ShieldCheck, Terminal, Trash2 } from 'lucide-react';
 import { Button } from '../../../@/components/ui/button';
 import {
   Dialog,
@@ -25,6 +25,8 @@ interface LoginProfileEditorProps {
   onOpenChange: (open: boolean) => void;
   onSave: (request: UpsertLoginProfileRequest) => Promise<LoginProfileSummary>;
   onLoadOpenCodeAuth?: (profileId: string) => Promise<string>;
+  onImportExistingOpenCode?: () => Promise<void>;
+  openCodeAuthPath?: string | null;
   onConnectCodex?: (profileId: string) => Promise<CodexLoginStart>;
   onConnectClaudeOauth?: (profileId: string) => Promise<ClaudeOAuthLoginStart>;
   onPollClaudeOauth?: (profileId: string) => Promise<LoginProfileSummary>;
@@ -126,6 +128,8 @@ export function LoginProfileEditor({
   onOpenChange,
   onSave,
   onLoadOpenCodeAuth,
+  onImportExistingOpenCode,
+  openCodeAuthPath,
   onConnectCodex,
   onConnectClaudeOauth,
   onPollClaudeOauth,
@@ -136,6 +140,7 @@ export function LoginProfileEditor({
   const [authType, setAuthType] = useState<string>(authTypes[0][0]);
   const [secret, setSecret] = useState('');
   const [isLoadingOpenCodeAuth, setIsLoadingOpenCodeAuth] = useState(false);
+  const [isImportingExistingOpenCode, setIsImportingExistingOpenCode] = useState(false);
   const [configJson, setConfigJson] = useState('{}');
   const [makeDefault, setMakeDefault] = useState(true);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -157,6 +162,7 @@ export function LoginProfileEditor({
     setAuthType(profile?.authType ?? authTypes[0][0]);
     setSecret('');
     setIsLoadingOpenCodeAuth(false);
+    setIsImportingExistingOpenCode(false);
     initialOpenCodeAuthRef.current = '';
     setConfigJson(JSON.stringify(profile?.config ?? {}, null, 2));
     setMakeDefault(profile?.isDefault ?? true);
@@ -280,6 +286,19 @@ export function LoginProfileEditor({
       return null;
     }
   }, [provider, secret]);
+
+  const importExistingOpenCode = async () => {
+    if (!onImportExistingOpenCode) return;
+    setIsImportingExistingOpenCode(true);
+    setLocalError(null);
+    try {
+      await onImportExistingOpenCode();
+    } catch (caughtError) {
+      setLocalError(caughtError instanceof Error ? caughtError.message : String(caughtError));
+    } finally {
+      setIsImportingExistingOpenCode(false);
+    }
+  };
 
   const updateOpenCodeAuth = (mutate: (parsed: Record<string, Record<string, unknown>>) => void) => {
     try {
@@ -516,13 +535,30 @@ export function LoginProfileEditor({
             {!isCodexManagedSession && !isClaudeOAuth ? (
               <div className="grid gap-2">
                 <Label htmlFor="login-secret" className="text-[12px] font-semibold">{secretLabel}</Label>
+                {provider === 'opencode' && onImportExistingOpenCode && openCodeAuthPath ? (
+                  <div className="flex min-w-0 items-center gap-2 rounded-lg bg-[hsl(var(--app-accent-soft)/0.42)] py-1.5 pl-2.5 pr-1.5 shadow-[inset_0_0_0_1px_hsl(var(--app-accent)/0.16)]">
+                    <p className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" title={`Auth file found at ${openCodeAuthPath}`}>
+                      <span className="font-medium text-foreground">Auth file found at </span>
+                      <code className="font-mono">{openCodeAuthPath}</code>
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="relative h-8 shrink-0 px-2.5 text-[11px] active:scale-[0.96] after:absolute after:inset-x-0 after:-inset-y-1 after:content-['']"
+                      onClick={() => void importExistingOpenCode()}
+                      disabled={isSaving || isImportingExistingOpenCode}
+                    >
+                      {isImportingExistingOpenCode ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                      Import
+                    </Button>
+                  </div>
+                ) : null}
                 {provider === 'opencode' ? (
                   <p className="text-[11px] leading-5 text-muted-foreground">
                     {profile ? (
                       <>Update provider keys or login data below. Saving replaces the isolated configuration and checks providers again.</>
                     ) : (
-                      <>Usually located at <code className="font-mono text-foreground">~/.local/share/opencode/auth.json</code>
-                        {' '}(or <code className="font-mono text-foreground">$XDG_DATA_HOME/opencode/auth.json</code>). Paste the entire file contents.</>
+                      <>Use the automatic import above. Manual JSON replacement is available below only for custom setups.</>
                     )}
                   </p>
                 ) : null}

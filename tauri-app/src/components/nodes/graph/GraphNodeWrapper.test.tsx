@@ -75,6 +75,28 @@ describe('GraphNodeWrapper', () => {
     vi.restoreAllMocks();
   });
 
+  it('uses blue for selection while theme focus takes precedence', () => {
+    const { rerender } = render(
+      <GraphNodeWrapper {...baseProps} isSelected>
+        <div>node body</div>
+      </GraphNodeWrapper>
+    );
+
+    const node = screen.getByText('node body').closest('[data-agentree-graph-node-id]') as HTMLElement;
+    expect(node.className).toContain('ring-blue-500');
+    expect(node.style.borderColor).toBe('rgb(59, 130, 246)');
+
+    rerender(
+      <GraphNodeWrapper {...baseProps} isSelected isFocused>
+        <div>node body</div>
+      </GraphNodeWrapper>
+    );
+
+    expect(node.className).not.toContain('ring-blue-500');
+    expect(node.className).toContain('ring-[hsl(var(--app-selection)/0.9)]');
+    expect(node.style.borderColor).toBe('hsl(var(--app-selection) / 0.92)');
+  });
+
   it('does not register a viewport listener for nodes without hover content', () => {
     const addEventListener = vi.spyOn(window, 'addEventListener');
 
@@ -273,13 +295,13 @@ describe('GraphNodeWrapper', () => {
     expect(node).toBeTruthy();
 
     fireEvent.pointerDown(node!, { button: 0 });
-    expect(node!.className).toContain('ring-indigo-500');
+    expect(node!.className).toContain('ring-[hsl(var(--app-selection)/0.9)]');
 
     act(() => {
       vi.advanceTimersByTime(421);
     });
 
-    expect(node!.className).not.toContain('ring-indigo-500');
+    expect(node!.className).not.toContain('ring-[hsl(var(--app-selection)/0.9)]');
   });
 
   it('can skip transient focus feedback for redirected proxy nodes', () => {
@@ -294,7 +316,7 @@ describe('GraphNodeWrapper', () => {
 
     fireEvent.pointerDown(node!, { button: 0 });
 
-    expect(node!.className).not.toContain('ring-indigo-500');
+    expect(node!.className).not.toContain('ring-[hsl(var(--app-selection)/0.9)]');
   });
 
   it('clears transient click focus feedback when the wrapper is reused for another node', () => {
@@ -310,7 +332,7 @@ describe('GraphNodeWrapper', () => {
     expect(node).toBeTruthy();
 
     fireEvent.pointerDown(node!, { button: 0 });
-    expect(node!.className).toContain('ring-indigo-500');
+    expect(node!.className).toContain('ring-[hsl(var(--app-selection)/0.9)]');
 
     rerender(
       <GraphNodeWrapper {...baseProps} nodeId="node-2">
@@ -318,6 +340,6 @@ describe('GraphNodeWrapper', () => {
       </GraphNodeWrapper>
     );
 
-    expect(node!.className).not.toContain('ring-indigo-500');
+    expect(node!.className).not.toContain('ring-[hsl(var(--app-selection)/0.9)]');
   });
 });

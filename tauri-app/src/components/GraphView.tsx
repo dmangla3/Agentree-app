@@ -3926,7 +3926,6 @@ function GraphViewInternal({
         }
         setActiveThreadRootId(threadRootId);
         markThreadVisited(threadRootId);
-        setViewMode('branch');
         nodeSelection.clearSelection();
         dispatchFocus({
             messageId: focusMessageId,

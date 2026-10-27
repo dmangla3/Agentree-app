@@ -84,7 +84,7 @@ use db::TelemetryDb;
 use merge_review::MergeReviewState;
 #[cfg(test)]
 use specta_typescript::Typescript;
-use tauri_specta::{collect_commands, Builder as SpectaBuilder, ErrorHandlingMode};
+use tauri_specta::{collect_commands, collect_events, Builder as SpectaBuilder, ErrorHandlingMode};
 
 mod agent_launch;
 mod agents;
@@ -105,7 +105,10 @@ mod managed_runtime;
 mod mcp;
 mod merge_review;
 mod metric_kit;
+mod process_runner;
 mod provider_skills;
+pub mod runtime_archive;
+mod runtime_model_catalog;
 mod runtime_readiness;
 mod runtime_scripts;
 mod secure_store;
@@ -117,79 +120,6 @@ mod worktree_config;
 
 pub fn maybe_run_codex_adapter_from_process_args() -> Option<i32> {
     codex_adapter::maybe_run_from_process_args()
-}
-
-#[cfg(all(debug_assertions, unix))]
-fn prepare_pilot_socket() -> bool {
-    use std::path::Path;
-
-    let socket_paths = [
-        Path::new("/tmp/tauri-pilot-com.agentree.agentree.sock"),
-        Path::new("/tmp/tauri-pilot-com.agentree.agentree.dev.sock"),
-    ];
-    for socket_path in socket_paths {
-        if !prepare_single_pilot_socket(socket_path) {
-            return false;
-        }
-    }
-    true
-}
-
-#[cfg(all(debug_assertions, unix))]
-fn prepare_single_pilot_socket(socket_path: &std::path::Path) -> bool {
-    use std::io::ErrorKind;
-    use std::os::unix::net::UnixStream;
-
-    if !socket_path.exists() {
-        return true;
-    }
-
-    match UnixStream::connect(socket_path) {
-        Ok(_) => {
-            eprintln!(
-                "[Setup] Tauri Pilot socket is already in use at {}; starting without Pilot plugin.",
-                socket_path.display()
-            );
-            false
-        }
-        Err(error)
-            if matches!(
-                error.kind(),
-                ErrorKind::ConnectionRefused | ErrorKind::NotFound
-            ) =>
-        {
-            match std::fs::remove_file(socket_path) {
-                Ok(_) => {
-                    eprintln!(
-                        "[Setup] Removed stale Tauri Pilot socket at {}.",
-                        socket_path.display()
-                    );
-                    true
-                }
-                Err(remove_error) => {
-                    eprintln!(
-                        "[Setup] Could not remove stale Tauri Pilot socket at {}: {}; starting without Pilot plugin.",
-                        socket_path.display(),
-                        remove_error
-                    );
-                    false
-                }
-            }
-        }
-        Err(error) => {
-            eprintln!(
-                "[Setup] Could not inspect Tauri Pilot socket at {}: {}; starting without Pilot plugin.",
-                socket_path.display(),
-                error
-            );
-            false
-        }
-    }
-}
-
-#[cfg(all(debug_assertions, not(unix)))]
-fn prepare_pilot_socket() -> bool {
-    true
 }
 
 #[macro_export]
@@ -205,6 +135,7 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
     SpectaBuilder::<tauri::Wry>::new()
         .dangerously_cast_bigints_to_number()
         .error_handling(ErrorHandlingMode::Throw)
+        .events(collect_events![login_profiles::LoginProfilesChangedEvent,])
         .commands(collect_commands![
             greet,
             logging::append_frontend_logs,
@@ -279,12 +210,11 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             login_profiles::discover_login_import_candidates,
             login_profiles::import_discovered_login_profile,
             login_profiles::import_existing_runtime_login,
-            runtime_readiness::check_runtime_readiness,
-            runtime_readiness::check_all_runtime_readiness,
-            runtime_readiness::list_opencode_models,
             runtime_readiness::refresh_provider_limits,
             runtime_readiness::check_managed_runtime_doctor,
             runtime_readiness::repair_managed_runtime_component,
+            runtime_model_catalog::get_runtime_model_catalogs,
+            runtime_model_catalog::refresh_runtime_model_catalogs,
             command_guards::get_agent_sandbox_root,
             worktree_config::get_agent_worktree_config,
             worktree_config::save_agent_worktree_config,
@@ -428,9 +358,10 @@ pub fn run() {
 
     #[cfg(debug_assertions)]
     {
-        if prepare_pilot_socket() {
-            builder = builder.plugin(tauri_plugin_pilot::init());
-        }
+        // The plugin derives its socket from the merged Tauri identifier and
+        // safely probes/removes stale sockets before binding. Worktree dev apps
+        // therefore keep independent Pilot endpoints without a global preflight.
+        builder = builder.plugin(tauri_plugin_pilot::init());
     }
 
     builder
@@ -467,6 +398,26 @@ pub fn run() {
                 metric_kit::start_metric_kit(app.handle().clone());
 
                 let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+                #[cfg(debug_assertions)]
+                if let Some(source_db_path) = std::env::var_os("AGENTREE_DEV_BOOTSTRAP_SOURCE_DB") {
+                    let source_db_path = std::path::PathBuf::from(source_db_path);
+                    match TelemetryDb::bootstrap_dev_worktree(&source_db_path, &app_data_dir)? {
+                        db::DevWorktreeBootstrapOutcome::Cloned => crate::app_log!(
+                            "[Setup] Initialized worktree data from the normal dev app"
+                        ),
+                        db::DevWorktreeBootstrapOutcome::SkippedExistingWorkspaces => {
+                            crate::app_log!(
+                                "[Setup] Kept existing worktree data because it already has workspaces"
+                            )
+                        }
+                        db::DevWorktreeBootstrapOutcome::SkippedMissingSource => crate::app_log!(
+                            "[Setup] Normal dev data was not found; starting with empty worktree data"
+                        ),
+                        db::DevWorktreeBootstrapOutcome::SkippedEmptySource => crate::app_log!(
+                            "[Setup] Normal dev data has no workspaces; starting with empty worktree data"
+                        ),
+                    }
+                }
                 let telemetry = TelemetryDb::open(&app_data_dir)?;
                 app.manage(telemetry);
                 {
@@ -552,12 +503,9 @@ pub fn run() {
                             reconciled_stale_logins
                         );
                     }
-                    login_profiles::refresh_login_profiles_on_startup(
-                        app.handle().clone(),
-                        &telemetry,
-                    )?;
                 }
                 agents::start_agent_run_watchdog(app.handle().clone());
+                runtime_model_catalog::start_background_refresh(app.handle().clone());
 
                 crate::app_log!("[PERF][Setup] Starting MCP server...");
                 mcp::start_mcp_server(app.handle().clone());

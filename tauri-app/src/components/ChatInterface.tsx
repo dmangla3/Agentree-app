@@ -1,5 +1,5 @@
 import { Profiler, useRef, useMemo, useState, useCallback, useEffect, useLayoutEffect } from 'react';
-import { ChatInput } from './ChatInput';
+import { GraphDockComposer } from '../composer/GraphDockComposer';
 import { useWorkspaceStore, Message, Summary } from '../stores/workspaceStore';
 import { ScrollArea } from '../../@/components/ui/scroll-area';
 import { isTerminalAgentStatus } from '@shared/agentStatus';
@@ -909,7 +909,7 @@ export function ChatInterface({ onMarkThreadDone }: ChatInterfaceProps = {}) {
       <MessageHighlightHoverPopover workspaceId={selectedWorkspaceId} surfaceRef={viewportRef} />
 
       <div className="relative z-[40] overflow-visible p-4 border-t bg-background">
-        <ChatInput />
+        <GraphDockComposer surface="chat-panel" />
       </div>
 
 

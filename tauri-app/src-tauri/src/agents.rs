@@ -1301,13 +1301,6 @@ fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
         .map(String::as_str)
 }
 
-pub(crate) fn codex_chatgpt_session_supports_model(model: Option<&str>) -> bool {
-    matches!(
-        model,
-        None | Some("gpt-5.6-sol") | Some("gpt-5.6-terra") | Some("gpt-5.6-luna") | Some("gpt-5.5")
-    )
-}
-
 fn append_message_timeline_segment_for_item(
     run_state: &mut AgentRunState,
     text: &str,
@@ -3566,11 +3559,16 @@ fn spawn_agent_internal(
         }
         if agent_type.as_str() == "codex" && materialized.auth_type == "codex_chatgpt_session" {
             let model = arg_value(&args, "--model");
-            if !codex_chatgpt_session_supports_model(model) {
-                return Err(format!(
-                    "{} is not available through a Codex ChatGPT subscription. Use a Codex OpenAI API key profile to run this model.",
-                    model.unwrap_or("This model")
-                ));
+            if let Some(model) = model {
+                if crate::runtime_model_catalog::cached_provider_supports_model(
+                    &telemetry, "codex", model,
+                )? == Some(false)
+                {
+                    return Err(format!(
+                        "{} is not available in the current Codex runtime catalog. Refresh runtime models or use a Codex OpenAI API key profile.",
+                        model
+                    ));
+                }
             }
             if let Some(codex_home) = materialized.codex_home.clone() {
                 codex_auth_state_to_persist = Some((profile_id.to_string(), codex_home));
@@ -3601,13 +3599,8 @@ fn spawn_agent_internal(
         for (key, value) in &materialized.env {
             command.env(key, value);
         }
-    } else if matches!(agent_type.as_str(), "codex" | "opencode") {
-        return Err(
-            format!(
-                "{} agent runs require an Agentree login profile; refusing to fall back to global CLI credentials.",
-                if agent_type == "codex" { "Codex" } else { "OpenCode" }
-            ),
-        );
+    } else {
+        crate::login_profiles::require_managed_login_profile(&agent_type, None)?;
     }
 
     if let Some(run_context) = run_context.as_ref() {
@@ -4098,16 +4091,10 @@ pub(crate) async fn start_agent_run_internal(
         )?;
         intent.repo_path = trusted_repo_path;
     }
-    if matches!(intent.agent_type.as_str(), "codex" | "opencode")
-        && intent.login_profile_id.is_none()
-    {
-        return Err(
-            format!(
-                "{} agent runs require an Agentree login profile; refusing to fall back to global CLI credentials.",
-                if intent.agent_type == "codex" { "Codex" } else { "OpenCode" }
-            ),
-        );
-    }
+    crate::login_profiles::require_managed_login_profile(
+        &intent.agent_type,
+        intent.login_profile_id.as_deref(),
+    )?;
     if let Some(profile_id) = intent.login_profile_id.as_deref() {
         let profile = crate::login_profiles::ensure_login_profile_ready_with_vault(
             &app,
@@ -4759,19 +4746,19 @@ pub fn get_agent_run_state(
 mod tests {
     use super::{
         agent_run_watchdog_accounting_interval, aggregate_agent_resource_samples,
-        ai_label_from_execution_data, arg_value, build_finalize_snapshot,
+        ai_label_from_execution_data, build_finalize_snapshot,
         cleanup_requires_server_final_persisted, cleanup_terminal_status_allows_cleanup,
-        codex_chatgpt_session_supports_model, commit_body_from_execution_data,
-        commit_message_for_snapshot, commit_subject_from_execution_data,
-        decide_agent_run_watchdog_timeout, descendant_first_stop_order,
-        ensure_context_recovery_fields, is_agent_run_watchdog_suspension_gap,
-        is_terminal_runtime_status, latest_provider_thread_id,
-        local_node_payload_for_setup_failure, local_node_payload_for_snapshot,
-        provider_capability_failure_status, run_ledger_user_node_id_from_context,
-        should_forward_tool_output_event, should_persist_failure_reason,
-        snapshot_from_replayed_journal, startup_resume_args, terminal_status_for_runtime_activity,
-        update_run_state_from_event, AgentResourceUsage, AgentRunContext, AgentRunSnapshot,
-        AgentRunState, AgentState, ProcessResourceSample, STARTUP_RESUME_PROMPT,
+        commit_body_from_execution_data, commit_message_for_snapshot,
+        commit_subject_from_execution_data, decide_agent_run_watchdog_timeout,
+        descendant_first_stop_order, ensure_context_recovery_fields,
+        is_agent_run_watchdog_suspension_gap, is_terminal_runtime_status,
+        latest_provider_thread_id, local_node_payload_for_setup_failure,
+        local_node_payload_for_snapshot, provider_capability_failure_status,
+        run_ledger_user_node_id_from_context, should_forward_tool_output_event,
+        should_persist_failure_reason, snapshot_from_replayed_journal, startup_resume_args,
+        terminal_status_for_runtime_activity, update_run_state_from_event, AgentResourceUsage,
+        AgentRunContext, AgentRunSnapshot, AgentRunState, AgentState, ProcessResourceSample,
+        STARTUP_RESUME_PROMPT,
     };
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
@@ -4908,19 +4895,6 @@ mod tests {
         assert!(!cleanup_requires_server_final_persisted(
             "failed_finalization"
         ));
-    }
-
-    #[test]
-    fn codex_chatgpt_session_accepts_only_subscription_models() {
-        let args = vec!["--model".to_string(), "gpt-image-2".to_string()];
-
-        assert_eq!(arg_value(&args, "--model"), Some("gpt-image-2"));
-        assert!(!codex_chatgpt_session_supports_model(arg_value(
-            &args, "--model"
-        )));
-        assert!(!codex_chatgpt_session_supports_model(Some("gpt-5-nano")));
-        assert!(codex_chatgpt_session_supports_model(Some("gpt-5.5")));
-        assert!(codex_chatgpt_session_supports_model(Some("gpt-5.6-luna")));
     }
 
     #[test]

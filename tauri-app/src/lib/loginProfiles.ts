@@ -9,6 +9,7 @@ export type LoginProfileStatus =
   | 'expired'
   | 'usage_limited'
   | 'keychain_unavailable'
+  | 'runtime_error'
   | 'unknown_error'
   | string;
 
@@ -121,7 +122,7 @@ export const getLoginProfileAuthTypeLabel = (authType: string) => {
 export const getLoginProfileStatusTone = (status: LoginProfileStatus) => {
   if (status === 'ready') return 'success' as const;
   if (status === 'usage_limited' || status === 'unchecked' || status === 'checking') return 'warning' as const;
-  if (status === 'expired' || status === 'invalid' || status === 'auth_missing') return 'danger' as const;
+  if (status === 'expired' || status === 'invalid' || status === 'auth_missing' || status === 'runtime_error') return 'danger' as const;
   return 'muted' as const;
 };
 

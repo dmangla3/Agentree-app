@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LOGIN_PROFILES_NAVIGATION_EVENT } from '../lib/loginNavigationEvents';
 import { MODEL_CONFIGURATION_EVENT } from '../lib/modelConfigurationEvents';
 import { useModelStore } from '../stores/modelStore';
-import { modelFamilyMatchesSearch, UnifiedAgentModelSelector } from './UnifiedAgentModelSelector';
+import { UnifiedAgentModelSelector } from './UnifiedAgentModelSelector';
 
 vi.mock('../hooks/useAgents', () => ({
   useAgents: () => ({
@@ -96,17 +96,6 @@ vi.mock('../stores/loginProfilesStore', () => ({
   useLoginProfilesStore: (selector: any) => selector(profileState),
 }));
 
-vi.mock('../lib/agentClient', () => ({
-  agentClient: {
-    checkRuntimeReadiness: vi.fn(async (provider: string) => ({
-      provider,
-      status: 'ready',
-      message: 'Ready',
-      diagnostics: { browserPreview: true },
-    })),
-  },
-}));
-
 describe('UnifiedAgentModelSelector login profile gating', () => {
   beforeEach(() => {
     dom = new JSDOM('<!doctype html><html><body></body></html>');
@@ -124,7 +113,13 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
       { id: 'codex-ready', provider: 'codex', displayName: 'Codex Work', authType: 'codex_api_key', status: 'ready', isDefault: true },
       { id: 'claude-expired', provider: 'claude', displayName: 'Claude Old', authType: 'claude_api_key', status: 'expired', isDefault: true },
     ];
-    useModelStore.setState({ visibleFamilyKeysByProvider: {} });
+    useModelStore.setState({
+      visibleFamilyKeysByProvider: {
+        codex: ['codex:gpt-5.5', 'codex:gpt-6', 'codex:gpt-image-2'],
+        claude: ['claude:opus-4.5'],
+        opencode: [],
+      },
+    });
   });
 
   afterEach(() => {
@@ -136,6 +131,22 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
     const onSelectAgent = vi.fn();
 
     const { getAllByText, getByText } = render(<UnifiedAgentModelSelector selectedAgentId={null} onSelectAgent={onSelectAgent} />);
+    fireEvent.click(getAllByText('GPT-5.5')[0]);
+    fireEvent.click(getByText('High'));
+
+    expect(onSelectAgent).toHaveBeenCalledWith('codex:gpt-5.5:high');
+  });
+
+  it('prefers a ready compatible profile over an inactive default profile', () => {
+    profileState.profiles = [
+      { id: 'codex-default', provider: 'codex', displayName: 'Old default', authType: 'codex_api_key', status: 'expired', isDefault: true },
+      { id: 'codex-ready', provider: 'codex', displayName: 'Ready account', authType: 'codex_api_key', status: 'ready', isDefault: false },
+    ];
+    const onSelectAgent = vi.fn();
+
+    const { getAllByText, getByText } = render(
+      <UnifiedAgentModelSelector selectedAgentId={null} onSelectAgent={onSelectAgent} />
+    );
     fireEvent.click(getAllByText('GPT-5.5')[0]);
     fireEvent.click(getByText('High'));
 
@@ -312,24 +323,17 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
     expect(queryAllByText('GPT-5.5').length).toBeGreaterThan(0);
   });
 
-  it('searches visible model families and opens their configuration', () => {
+  it('keeps the compact selector chrome and opens model configuration', () => {
     const configurationIntent = vi.fn();
     window.addEventListener(MODEL_CONFIGURATION_EVENT, configurationIntent);
-    const { getByLabelText, getByText } = render(
+    const { container, getByText, queryByLabelText, queryByText } = render(
       <UnifiedAgentModelSelector selectedAgentId={null} onSelectAgent={vi.fn()} />
     );
 
-    expect(getByLabelText('Search models')).toBeTruthy();
-    expect(modelFamilyMatchesSearch({
-      label: 'GPT-6',
-      description: 'OpenAI model',
-      models: [],
-    }, 'gpt-6')).toBe(true);
-    expect(modelFamilyMatchesSearch({
-      label: 'GPT Image 2',
-      description: 'Image model',
-      models: [],
-    }, 'gpt-6')).toBe(false);
+    expect(queryByLabelText('Search models')).toBeNull();
+    expect(queryByText('Models')).toBeNull();
+    expect(queryByText('Hover a model to pick its effort level.')).toBeNull();
+    expect(container.querySelector('[data-provider-icon="opencode"]')).not.toBeNull();
 
     fireEvent.click(getByText('Manage visible models'));
     expect((configurationIntent.mock.calls[0][0] as CustomEvent).detail).toEqual({ provider: 'codex' });

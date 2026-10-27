@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
-import { Check, ChevronDown, CornerDownRight, FileText, GitBranchIcon, GitCommitHorizontal, History, Loader2, Minus, Pencil, Plus, Puzzle, RotateCcw, Search, Send, Shield, Square, Workflow, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type RefObject } from 'react';
+import { Check, ChevronDown, CornerDownRight, FileText, GitBranchIcon, GitCommitHorizontal, History, Loader2, Minus, Paperclip, Pencil, Plus, Puzzle, RotateCcw, Search, Send, Shield, Square, Workflow, X } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useShallow } from 'zustand/react/shallow';
 import { buildComposerDraftKey, useWorkspaceStore, type Message, type Workspace } from '../stores/workspaceStore';
@@ -7,7 +7,6 @@ import { useRunStatusStore } from '../stores/runStatusStore';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { useOrchestrationTemplateStore } from '../stores/orchestrationTemplateStore';
 import type { OrchestrationPromptTemplate } from '../orchestration/templates';
-import { resolveLoginProfileSelection } from '../lib/loginProfiles';
 import { buildProviderLoginRequiredToast } from '../lib/loginNavigationEvents';
 import { isNoAgentSessionFoundError, markStaleLocalAgentNodeCancelled } from '../lib/localAgentRunTerminal';
 import { applyLocalNodeMessages } from '../hooks/useLiveMessages';
@@ -78,6 +77,13 @@ import { Popover, PopoverAnchor, PopoverContent } from '../../@/components/ui/po
 import {
   sendHeadlessComposerMessage,
 } from './headlessComposerSend';
+import {
+  AgentRunPreflightError,
+  createAgentRunSpec,
+  launchAgentRunBatch,
+  prepareAgentRuns,
+  type PreparedAgentRun,
+} from './agentRunBatch';
 import { resolveComposerTargetModeAfterSuccessfulSend } from '../lib/composerSendParent';
 import {
   resolveGraphDockComposerAgent,
@@ -88,12 +94,24 @@ import {
   shouldSubmitGraphDockComposerKey,
 } from './graphDockComposerLogic';
 import { TemplateMentionTextarea } from '../components/composer/TemplateMentionTextarea';
+import { AttachmentPreview } from '../components/AttachmentPreview';
 import { useToast } from '../components/Toast';
 import {
   getActiveTemplateMention,
   getTemplateMentionText,
   type ActiveTemplateMention,
 } from '../lib/composerTemplateMentions';
+import { getComposerAttachmentId, useComposerAttachments } from './useComposerAttachments';
+import {
+  ComposerSendAcceptanceQueue,
+  type ComposerSendAcceptanceQueueState,
+} from './composerSendAcceptanceQueue';
+import {
+  acceptComposerSendFocus,
+  beginComposerSendFocus,
+  cancelComposerSendFocus,
+  finishComposerSendFocus,
+} from './composerSendFocus';
 
 const GRAPH_DOCK_PROMPT_DRAFT_DEBOUNCE_MS = 300;
 
@@ -101,6 +119,15 @@ type ContextPolicy = 'continue' | 'fresh';
 type ComposerTargetMode = 'reply' | 'new-thread';
 type ModelPickerTarget = { kind: 'replace'; agentId: string } | { kind: 'add' };
 type EditUserMessageEventDetail = { message?: Message };
+export type GraphDockComposerSurface = 'graph' | 'chat-panel' | 'floating-reply';
+
+export interface GraphDockComposerProps {
+  surface?: GraphDockComposerSurface;
+  parentMessageIdOverride?: string | null;
+  autoFocus?: boolean;
+  onRequestClose?: () => void;
+  onSendComplete?: () => void;
+}
 interface ActiveFileMention {
   start: number;
   end: number;
@@ -244,7 +271,9 @@ function GraphDockPromptTextarea({
   onDraftChange,
   onSelectionChange,
   onPromptKeyDown,
+  onPaste,
   onSubmit,
+  ariaLabel,
 }: {
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   initialValue: string;
@@ -255,7 +284,9 @@ function GraphDockPromptTextarea({
   onDraftChange: (value: string) => void;
   onSelectionChange: (value: string, cursorPosition: number | null | undefined) => void;
   onPromptKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  onPaste: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
   onSubmit: () => void;
+  ariaLabel: string;
 }) {
   const [localPrompt, setLocalPrompt] = useState(initialValue);
   const draftSaveTimeoutRef = useRef<number | null>(null);
@@ -286,7 +317,7 @@ function GraphDockPromptTextarea({
       ref={textareaRef}
       templates={templates}
       data-testid="chat-composer-textarea"
-      aria-label="Graph composer prompt"
+      aria-label={ariaLabel}
       value={localPrompt}
       onChange={(event) => {
         handlePromptChange(event.target.value);
@@ -301,6 +332,7 @@ function GraphDockPromptTextarea({
           onSubmit();
         }
       }}
+      onPaste={onPaste}
       placeholder="Ask anything... Type @ for files, # for orchestration, or $ for skills"
       className="max-h-[216px] min-h-[58px] w-full resize-none overflow-y-auto rounded-lg bg-[hsl(var(--background)/0.44)] px-2.5 py-2 text-[13px] leading-5 text-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.54)] outline-none transition-[background-color,box-shadow] duration-150 placeholder:text-muted-foreground/68 focus:bg-[hsl(var(--background)/0.64)] focus:shadow-[inset_0_0_0_1px_hsl(var(--app-focus)/0.48),0_0_0_3px_hsl(var(--app-focus)/0.08)]"
       disabled={disabled}
@@ -315,12 +347,18 @@ function GraphDockPromptTextarea({
   );
 }
 
-export function GraphDockComposer() {
+export function GraphDockComposer({
+  surface = 'graph',
+  parentMessageIdOverride,
+  autoFocus = false,
+  onRequestClose,
+  onSendComplete,
+}: GraphDockComposerProps = {}) {
   const queryClient = useQueryClient();
   const { addToast } = useToast();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const promptRef = useRef('');
-  const assistantNodeIdRef = useRef<string | null>(null);
   const [composerTargetMode, setComposerTargetMode] = useState<ComposerTargetMode>('reply');
   const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
   const [contextPolicy, setContextPolicy] = useState<ContextPolicy>('continue');
@@ -346,7 +384,13 @@ export function GraphDockComposer() {
   const [activeTemplateMention, setActiveTemplateMention] = useState<ActiveTemplateMention | null>(null);
   const [activeTemplateMentionIndex, setActiveTemplateMentionIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [isSending, setIsSending] = useState(false);
+  const sendAcceptanceQueueRef = useRef<ComposerSendAcceptanceQueue<{ prompt: string }> | null>(null);
+  if (!sendAcceptanceQueueRef.current) {
+    sendAcceptanceQueueRef.current = new ComposerSendAcceptanceQueue<{ prompt: string }>();
+  }
+  const [sendAcceptanceState, setSendAcceptanceState] = useState<ComposerSendAcceptanceQueueState>(() => (
+    sendAcceptanceQueueRef.current!.getState()
+  ));
   const [isSteering, setIsSteering] = useState(false);
   const [isCancellingRun, setIsCancellingRun] = useState(false);
   const {
@@ -363,6 +407,8 @@ export function GraphDockComposer() {
     composerDraftByWorkspace,
     setComposerDraft,
     clearComposerDraft,
+    autoCheckoutOnAgentCommit,
+    setAutoCheckoutOnAgentCommit,
   } = useWorkspaceStore(useShallow((state) => ({
     selectedWorkspaceId: state.selectedWorkspaceId,
     focusedMessageId: state.focusedMessageId,
@@ -377,7 +423,20 @@ export function GraphDockComposer() {
     composerDraftByWorkspace: state.composerDraftByWorkspace,
     setComposerDraft: state.setComposerDraft,
     clearComposerDraft: state.clearComposerDraft,
+    autoCheckoutOnAgentCommit: state.autoCheckoutOnAgentCommit,
+    setAutoCheckoutOnAgentCommit: state.setAutoCheckoutOnAgentCommit,
   })));
+  const handleAttachmentError = useCallback((message: string) => {
+    addToast({
+      title: 'Attachment upload failed',
+      description: message,
+      variant: 'error',
+    });
+  }, [addToast]);
+  const composerAttachments = useComposerAttachments({
+    workspaceId: selectedWorkspaceId,
+    onError: handleAttachmentError,
+  });
   const { data: agents = [] } = useAgents();
   const { data: workspaces = [] } = useWorkspaces();
   const createThreadSession = useCreateThreadSession();
@@ -389,11 +448,18 @@ export function GraphDockComposer() {
     () => resolveLocalWorkspaceRepoPath(selectedWorkspace),
     [selectedWorkspace]
   );
-  const rawTarget = resolveGraphDockComposerTarget({
+  const ambientTarget = resolveGraphDockComposerTarget({
     focusedMessageId,
     lastFocusSource,
     lastFocusMetadata,
   });
+  const rawTarget = parentMessageIdOverride !== undefined
+    ? {
+      parentMessageId: parentMessageIdOverride,
+      selectedNodeId: parentMessageIdOverride,
+      focusedCommitSha: null,
+    }
+    : ambientTarget;
   const isRootComposerTarget = editDraftSource
     ? !editDraftSource.parentId
     : composerTargetMode === 'new-thread' || !rawTarget.parentMessageId;
@@ -653,11 +719,18 @@ export function GraphDockComposer() {
       ? formatContextParentLabel(messageById.get(selectedMergeContextOption.id), selectedMergeContextOption.label)
       : formatContextParentLabel(effectiveContextParentMessage, 'No prior conversation');
   const selectedPermissionOption = getComposerPermissionOption(permissionMode);
-  const isPrimaryActionBusy = isSending || isSteering || isCancellingRun;
-  const isComposerConfigurationDisabled = isPrimaryActionBusy || isSteeringRunningAssistant;
-  const canSend = Boolean(selectedWorkspaceId && !isPrimaryActionBusy && promptHasContent && (
+  const isSending = sendAcceptanceState.acceptingId !== null || sendAcceptanceState.queuedCount > 0;
+  const isBlockingPrimaryAction = isSteering || isCancellingRun;
+  const isComposerConfigurationDisabled = isSteering || isCancellingRun || isSteeringRunningAssistant;
+  const hasComposerInput = promptHasContent || composerAttachments.metadata.length > 0;
+  const canSend = Boolean(selectedWorkspaceId
+    && !isSteering
+    && !isCancellingRun
+    && !composerAttachments.hasPendingUploads
+    && !composerAttachments.hasUploadErrors
+    && hasComposerInput && (
     isSteeringRunningAssistant
-      ? target.parentMessageId
+      ? target.parentMessageId && promptHasContent
       : effectiveBase && selectedAgentRunItems.length > 0
   ));
   const targetLabel = previewText(parentMessage, isRootComposerTarget ? 'Thread root' : 'Selected node');
@@ -839,6 +912,14 @@ export function GraphDockComposer() {
     setPromptResetVersion((version) => version + 1);
   }, [composerDraft]);
 
+  useEffect(() => sendAcceptanceQueueRef.current!.subscribe(setSendAcceptanceState), []);
+
+  useEffect(() => {
+    if (!autoFocus) return;
+    const timeoutId = window.setTimeout(() => textareaRef.current?.focus(), 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [autoFocus]);
+
   useEffect(() => {
     const handleEditUserMessage = (event: CustomEvent<EditUserMessageEventDetail>) => {
       const sourceMessage = event.detail?.message;
@@ -860,6 +941,7 @@ export function GraphDockComposer() {
       setContextPolicy(sourceMessage.parentId ? 'continue' : 'fresh');
       setSelectedContextStartId(null);
       setSelectedMergeContextParentId(null);
+      composerAttachments.replaceAttachments(sourceMessage.attachments ?? []);
       dispatchGraphComposerDockExpand();
       window.setTimeout(() => textareaRef.current?.focus(), 0);
     };
@@ -869,7 +951,7 @@ export function GraphDockComposer() {
     return () => {
       window.removeEventListener('editUserMessage', handleEditUserMessage as EventListener);
     };
-  }, [messageById, selectedWorkspaceId, setComposerDraft]);
+  }, [composerAttachments.replaceAttachments, messageById, selectedWorkspaceId, setComposerDraft]);
 
   useEffect(() => {
     const normalized = normalizeComposerAgentRunCounts(
@@ -1027,12 +1109,25 @@ export function GraphDockComposer() {
     setActiveTemplateMention(null);
   }, []);
 
+  useEffect(() => {
+    const handlePopulateComposer = (event: CustomEvent<{ text?: string }>) => {
+      const text = event.detail?.text;
+      if (typeof text !== 'string' || !text) return;
+      setPromptValue(text);
+      setEditDraftSource(null);
+      window.setTimeout(() => textareaRef.current?.focus(), 0);
+    };
+    window.addEventListener('populateChatInput', handlePopulateComposer as EventListener);
+    return () => window.removeEventListener('populateChatInput', handlePopulateComposer as EventListener);
+  }, [setPromptValue]);
+
   const handleCancelEditDraft = useCallback(() => {
     setEditDraftSource(null);
     clearPrompt();
+    composerAttachments.clearAttachments();
     clearComposerDraft(selectedWorkspaceId, composerDraftTargetId);
     window.setTimeout(() => textareaRef.current?.focus(), 0);
-  }, [clearComposerDraft, clearPrompt, composerDraftTargetId, selectedWorkspaceId]);
+  }, [clearComposerDraft, clearPrompt, composerAttachments.clearAttachments, composerDraftTargetId, selectedWorkspaceId]);
 
   const handleAgentRunCountChange = useCallback((agentId: string, count: number) => {
     const updated = updateComposerAgentRunCount(normalizedSelectedAgentRunCounts, agentId, count);
@@ -1150,6 +1245,16 @@ export function GraphDockComposer() {
     }, 80);
   }, [activeTemplateMention, setPromptValue]);
 
+  const handlePromptPaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file != null);
+    if (files.length === 0) return;
+    event.preventDefault();
+    composerAttachments.addFiles(files);
+  }, [composerAttachments.addFiles]);
+
   const handlePromptKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (activeFileMention) {
       if (event.key === 'ArrowDown') {
@@ -1235,6 +1340,16 @@ export function GraphDockComposer() {
         setActiveTemplateMention(null);
       }
     }
+
+    if (
+      event.key === 'Escape'
+      && !promptRef.current.trim()
+      && composerAttachments.attachments.length === 0
+      && onRequestClose
+    ) {
+      event.preventDefault();
+      onRequestClose();
+    }
   }, [
     activeFileMention,
     activeFileMentionIndex,
@@ -1245,22 +1360,27 @@ export function GraphDockComposer() {
     activeSkillMentionIndex,
     activeTemplateMention,
     activeTemplateMentionIndex,
+    composerAttachments.attachments.length,
     handleFileMentionSelect,
     handleSkillMentionSelect,
     handleTemplateMentionSelect,
+    onRequestClose,
   ]);
 
   const handleSend = useCallback(async () => {
     const trimmedPrompt = promptRef.current.trim();
-    if (!selectedWorkspaceId || !trimmedPrompt || isPrimaryActionBusy) {
+    const hasAttachments = composerAttachments.metadata.length > 0;
+    if (!selectedWorkspaceId || (!trimmedPrompt && !hasAttachments) || isSteering || isCancellingRun) {
       recordSendFlowEvent('graph-dock.blocked', {
         workspaceId: selectedWorkspaceId,
         promptLength: trimmedPrompt.length,
         hasWorkspace: Boolean(selectedWorkspaceId),
-        isPrimaryActionBusy,
+        isSteering,
+        isCancellingRun,
       }, { source: 'GraphDockComposer' });
       return;
     }
+    if (isSteeringRunningAssistant && !trimmedPrompt) return;
     if (isSteeringRunningAssistant && target.parentMessageId) {
       setError(null);
       setIsSteering(true);
@@ -1268,6 +1388,7 @@ export function GraphDockComposer() {
         await agentClient.steerAgentRun(target.parentMessageId, trimmedPrompt, crypto.randomUUID());
         clearComposerDraft(selectedWorkspaceId, composerDraftTargetId);
         clearPrompt();
+        onSendComplete?.();
         window.setTimeout(() => textareaRef.current?.focus(), 0);
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : 'Failed to steer running agent.';
@@ -1310,157 +1431,238 @@ export function GraphDockComposer() {
     const promptForAgent = trimmedPrompt;
 
     setError(null);
-    const runsToLaunch = runsToSend;
-    const checkedProfiles = new Set<string>();
-    for (const run of runsToLaunch) {
-      const provider = run.agent.type === 'codex' || run.agent.type === 'claude' || run.agent.type === 'opencode'
-        ? run.agent.type
-        : null;
-      const selection = resolveLoginProfileSelection({
+    let runsToLaunch: PreparedAgentRun[];
+    try {
+      runsToLaunch = prepareAgentRuns({
+        runs: runsToSend,
         profiles: useLoginProfilesStore.getState().profiles,
-        provider,
-        agentName: run.agent.name ?? run.agent.type,
       });
-      if (selection.requiresProfile && !selection.selectedProfile && provider) {
-        addToast(buildProviderLoginRequiredToast(provider));
+    } catch (caught) {
+      if (caught instanceof AgentRunPreflightError) {
+        const providers = new Set(caught.failures.map((failure) => failure.provider));
+        providers.forEach((provider) => addToast(buildProviderLoginRequiredToast(provider)));
         return;
       }
-      if (selection.selectedProfile && !checkedProfiles.has(selection.selectedProfile.id)) {
-        try {
-          await useLoginProfilesStore.getState().ensureReady(selection.selectedProfile.id);
-          checkedProfiles.add(selection.selectedProfile.id);
-        } catch {
-          if (provider) addToast(buildProviderLoginRequiredToast(provider));
-          return;
-        }
-      }
+      throw caught;
     }
 
-    recordSendFlowEvent('graph-dock.submit', {
-      workspaceId: selectedWorkspaceId,
-      promptLength: promptForAgent.length,
-      parentMessageId: target.parentMessageId,
-      runCount: runsToLaunch.length,
-      agentId: agent?.id ?? null,
-      baseCommitSha: effectiveBase.commitSha,
-    }, { source: 'GraphDockComposer' });
-
-    setIsSending(true);
-    assistantNodeIdRef.current = null;
-    try {
-      let threadId = target.parentMessageId ? null : pendingThreadId;
-      if (!target.parentMessageId && selectedWorkspaceId && (!threadId || threadId.startsWith('workspace-empty-thread:'))) {
-        const thread = await createThreadSession.mutateAsync({
+    const attachmentsForSend = Object.freeze(
+      composerAttachments.metadata.map((attachment) => Object.freeze({ ...attachment })),
+    );
+    const queuedSend = sendAcceptanceQueueRef.current!.submit(
+      { prompt: promptForAgent },
+      async (sendSnapshot, accepted) => {
+        recordSendFlowEvent('graph-dock.submit', {
           workspaceId: selectedWorkspaceId,
-          source: 'user',
-          baseCommitSha: effectiveBase.commitSha,
-        });
-        threadId = thread.id;
-        setPendingThreadId(thread.id);
-      }
-      for (const run of runsToLaunch) {
-        const provider = run.agent.type === 'codex' || run.agent.type === 'claude' || run.agent.type === 'opencode'
-          ? run.agent.type
-          : null;
-        const loginProfileSelection = resolveLoginProfileSelection({
-          profiles: useLoginProfilesStore.getState().profiles,
-          provider,
-          agentName: run.agent.name ?? run.agent.type,
-        });
-        const selectedLoginProfile = loginProfileSelection.selectedProfile;
-        if (!loginProfileSelection.isReady && provider) {
-          addToast(buildProviderLoginRequiredToast(provider));
-          return;
-        }
-        const flowId = createSendFlowId();
-        await sendHeadlessComposerMessage({
-          workspaceId: selectedWorkspaceId,
+          promptLength: sendSnapshot.prompt.length,
           parentMessageId: target.parentMessageId,
-          contextParentId: effectiveContextParentId,
-          contextPolicy: effectiveContextPolicy,
-          contextStartId: effectiveContextStartId,
-          prompt: promptForAgent,
-          messages,
-          agent: run.agent,
-          base: {
-            commitSha: effectiveBase.commitSha,
-            selectedFromNodeId: effectiveBase.selectedFromNodeId,
-          },
-          workspaces: workspaces as Workspace[],
-          startAgentRun: (payload) => agentClient.launchAgentMessage(payload as any),
-          getAccessToken: getOptionalCloudAuthToken,
-          seedAgentRun: (message) => agentRunManager.seed(message),
-          dispatchAgentRun: (nodeId, event) => agentRunManager.dispatch(nodeId, event as any),
-          persistLocalNode: (workspaceId, nodeId, message) => agentClient.upsertLocalNode(workspaceId, nodeId, message),
-          onMessagesCreated: (createdMessages) => {
-            queryClient.setQueryData<Message[]>(['messages', selectedWorkspaceId], (current) => {
-              const existing = current ?? [];
-              const ids = new Set(createdMessages.map((message) => message.id));
-              return [...existing.filter((message) => !ids.has(message.id)), ...createdMessages]
-                .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+          runCount: runsToLaunch.length,
+          agentId: agent?.id ?? null,
+          baseCommitSha: effectiveBase.commitSha,
+        }, { source: 'GraphDockComposer' });
+
+        const acceptedRunKeys = new Set<string>();
+        let didNotifySendComplete = false;
+        const notifySendComplete = () => {
+          if (didNotifySendComplete) return;
+          didNotifySendComplete = true;
+          onSendComplete?.();
+        };
+        const acceptRun = (runKey: string) => {
+          acceptedRunKeys.add(runKey);
+          if (acceptedRunKeys.size < runsToLaunch.length) return;
+          // The entire batch is durable before the next queued batch begins.
+          // Native launches continue independently after this boundary.
+          accepted();
+          notifySendComplete();
+        };
+        try {
+          let threadId = target.parentMessageId ? null : pendingThreadId;
+          if (!target.parentMessageId && selectedWorkspaceId && (!threadId || threadId.startsWith('workspace-empty-thread:'))) {
+            const thread = await createThreadSession.mutateAsync({
+              workspaceId: selectedWorkspaceId,
+              source: 'user',
+              baseCommitSha: effectiveBase.commitSha,
             });
-            queryClient.setQueryData<LocalNodeMessage[]>(
-              localNodeKeys.workspace(selectedWorkspaceId),
-              (current) => upsertMessagesIntoLocalNodeCache(current, selectedWorkspaceId, createdMessages, {
-                syncStatus: 'local_only',
-                finalizedAt: Math.floor(Date.now() / 1000),
-              })
-            );
-            void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(selectedWorkspaceId) });
-          },
-          onAssistantMessageCreated: (message) => {
-            assistantNodeIdRef.current = message.id;
-          },
-          perfFlowId: flowId,
-          perfSource: 'GraphDockComposer',
-          setupProgress: 'Starting graph composer run...',
-          selectedLoginProfileId: selectedLoginProfile?.id ?? null,
-          permissionMode,
-          threadId,
-          threadOriginId: threadId,
-          meta: {
-            composer_surface: 'graph-dock',
-            composer_permission_mode: permissionMode,
-            base_source: effectiveBase.source,
-            agent_run_ordinal: run.ordinal,
-            agent_run_total_for_agent: run.totalForAgent,
-          },
-        });
-      }
-      clearComposerDraft(selectedWorkspaceId, composerDraftTargetId);
-      setEditDraftSource(null);
-      clearPrompt();
-      resetComposerTargetAfterSuccessfulSend();
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : 'Failed to send message.';
-      recordSendFlowEvent('graph-dock.error', {
-        workspaceId: selectedWorkspaceId,
-        parentMessageId: target.parentMessageId,
-        message,
-      }, { source: 'GraphDockComposer' });
-      if (assistantNodeIdRef.current) {
-        agentRunManager.dispatch(assistantNodeIdRef.current, {
-          type: 'terminal',
-          status: 'failed',
-          reason: message,
-        });
-      }
-      setError(message);
-    } finally {
-      setIsSending(false);
-    }
+            threadId = thread.id;
+            setPendingThreadId(thread.id);
+          }
+          const specs = runsToLaunch.map((run) => createAgentRunSpec(run, {
+            prompt: sendSnapshot.prompt,
+            base: {
+              commitSha: effectiveBase.commitSha,
+              selectedFromNodeId: effectiveBase.selectedFromNodeId,
+            },
+            context: {
+              parentMessageId: target.parentMessageId,
+              contextParentId: effectiveContextParentId,
+              contextPolicy: effectiveContextPolicy,
+              contextStartId: effectiveContextStartId,
+              threadId,
+              threadOriginId: threadId,
+              attachments: attachmentsForSend,
+            },
+          }));
+          const shouldAutoCheckoutThisBatch = autoCheckoutOnAgentCommit && specs.length === 1;
+          const focusOwnerRunKey = specs[0]?.runKey ?? null;
+          const flowIdByRunKey = new Map(specs.map((spec) => [spec.runKey, createSendFlowId()]));
+          const focusOwnerFlowId = focusOwnerRunKey ? flowIdByRunKey.get(focusOwnerRunKey) ?? null : null;
+          if (focusOwnerFlowId) {
+            beginComposerSendFocus({
+              flowId: focusOwnerFlowId,
+              workspaceId: selectedWorkspaceId,
+              parentMessageId: target.parentMessageId,
+            });
+          }
+          const assistantNodeIds = new Map<string, string>();
+          const batchResults = await launchAgentRunBatch(specs, async (spec) => {
+            const flowId = flowIdByRunKey.get(spec.runKey)!;
+            try {
+              return await sendHeadlessComposerMessage({
+                workspaceId: selectedWorkspaceId,
+                parentMessageId: spec.context.parentMessageId,
+                contextParentId: spec.context.contextParentId,
+                contextPolicy: spec.context.contextPolicy,
+                contextStartId: spec.context.contextStartId,
+                prompt: spec.prompt,
+                attachments: spec.context.attachments,
+                messages,
+                agent: spec.agent,
+                base: spec.base,
+                workspaces: workspaces as Workspace[],
+                startAgentRun: (payload) => agentClient.launchAgentMessage(payload as any),
+                getAccessToken: getOptionalCloudAuthToken,
+                seedAgentRun: (message) => agentRunManager.seed(message),
+                dispatchAgentRun: (nodeId, event) => agentRunManager.dispatch(nodeId, event as any),
+                persistLocalNode: (workspaceId, nodeId, message) => agentClient.upsertLocalNode(workspaceId, nodeId, message),
+                onMessagesCreated: (createdMessages) => {
+                  const createdUserMessage = createdMessages.find((message) => message.role === 'user') ?? null;
+                  const createdAssistantMessage = createdMessages.find((message) => message.role === 'assistant') ?? null;
+                  if (createdAssistantMessage) {
+                    assistantNodeIds.set(spec.runKey, createdAssistantMessage.id);
+                  }
+                  queryClient.setQueryData<Message[]>(['messages', selectedWorkspaceId], (current) => {
+                    const existing = current ?? [];
+                    const ids = new Set(createdMessages.map((message) => message.id));
+                    return [...existing.filter((message) => !ids.has(message.id)), ...createdMessages]
+                      .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+                  });
+                  queryClient.setQueryData<LocalNodeMessage[]>(
+                    localNodeKeys.workspace(selectedWorkspaceId),
+                    (current) => upsertMessagesIntoLocalNodeCache(current, selectedWorkspaceId, createdMessages, {
+                      syncStatus: 'local_only',
+                      finalizedAt: Math.floor(Date.now() / 1000),
+                    })
+                  );
+                  void queryClient.invalidateQueries({ queryKey: localNodeKeys.workspace(selectedWorkspaceId) });
+                  if (spec.runKey === focusOwnerRunKey && createdUserMessage && createdAssistantMessage) {
+                    acceptComposerSendFocus({
+                      flowId,
+                      workspaceId: selectedWorkspaceId,
+                      userMessageId: createdUserMessage.id,
+                      assistantMessageId: createdAssistantMessage.id,
+                      parentMessageId: spec.context.parentMessageId,
+                    });
+                  }
+                  acceptRun(spec.runKey);
+                },
+                onAssistantMessageCreated: (message) => {
+                  assistantNodeIds.set(spec.runKey, message.id);
+                },
+                perfFlowId: flowId,
+                perfSource: 'GraphDockComposer',
+                setupProgress: 'Starting graph composer run...',
+                selectedLoginProfileId: spec.loginProfileId,
+                permissionMode,
+                threadId: spec.context.threadId,
+                threadOriginId: spec.context.threadOriginId,
+                meta: {
+                  composer_surface: surface,
+                  composer_permission_mode: permissionMode,
+                  auto_checkout_requested: shouldAutoCheckoutThisBatch,
+                  base_source: effectiveBase.source,
+                  agent_run_ordinal: spec.ordinal,
+                  agent_run_total_for_agent: spec.totalForAgent,
+                },
+              });
+            } catch (caught) {
+              const assistantNodeId = assistantNodeIds.get(spec.runKey);
+              if (assistantNodeId) {
+                agentRunManager.dispatch(assistantNodeId, {
+                  type: 'terminal',
+                  status: 'failed',
+                  reason: caught instanceof Error ? caught.message : 'Failed to send message.',
+                });
+                finishComposerSendFocus({
+                  assistantMessageId: assistantNodeId,
+                  workspaceId: selectedWorkspaceId,
+                  terminalStatus: 'failed',
+                });
+              } else if (spec.runKey === focusOwnerRunKey) {
+                cancelComposerSendFocus(flowId);
+              }
+              throw caught;
+            }
+          });
+          const failedResults = batchResults.filter((entry) => entry.result.status === 'rejected');
+          const successfulResultCount = batchResults.length - failedResults.length;
+          if (failedResults.length > 0) {
+            const firstFailure = failedResults[0].result;
+            const message = firstFailure.status === 'rejected' && firstFailure.reason instanceof Error
+              ? firstFailure.reason.message
+              : `${failedResults.length} selected run${failedResults.length === 1 ? '' : 's'} failed to start.`;
+            recordSendFlowEvent('graph-dock.error', {
+              workspaceId: selectedWorkspaceId,
+              parentMessageId: target.parentMessageId,
+              message,
+              failedRunCount: failedResults.length,
+              successfulRunCount: successfulResultCount,
+            }, { source: 'GraphDockComposer' });
+            setError(message);
+          }
+        } catch (caught) {
+          const message = caught instanceof Error ? caught.message : 'Failed to send message.';
+          recordSendFlowEvent('graph-dock.error', {
+            workspaceId: selectedWorkspaceId,
+            parentMessageId: target.parentMessageId,
+            message,
+          }, { source: 'GraphDockComposer' });
+          setError(message);
+        } finally {
+          accepted();
+          if (acceptedRunKeys.size > 0) notifySendComplete();
+        }
+      },
+    );
+    recordSendFlowEvent(queuedSend.queued ? 'queue.enqueued' : 'queue.acceptance-started', {
+      workspaceId: selectedWorkspaceId,
+      queuedSendId: queuedSend.id,
+      queueDepth: sendAcceptanceQueueRef.current!.getState().queuedCount,
+      parentId: target.parentMessageId,
+      promptLength: promptForAgent.length,
+    }, { source: 'GraphDockComposer' });
+    clearComposerDraft(selectedWorkspaceId, composerDraftTargetId);
+    setEditDraftSource(null);
+    clearPrompt();
+    composerAttachments.clearAttachments();
+    resetComposerTargetAfterSuccessfulSend();
+    await queuedSend.completion;
   }, [
     addToast,
     agent,
+    autoCheckoutOnAgentCommit,
     clearComposerDraft,
     clearPrompt,
+    composerAttachments.clearAttachments,
+    composerAttachments.metadata,
     composerDraftTargetId,
     createThreadSession,
     effectiveBase,
     effectiveContextParentId,
     effectiveContextPolicy,
     effectiveContextStartId,
-    isPrimaryActionBusy,
+    isCancellingRun,
+    isSteering,
     isSteeringRunningAssistant,
     messages,
     pendingThreadId,
@@ -1470,6 +1672,8 @@ export function GraphDockComposer() {
     selectedWorkspaceId,
     selectedAgentRunItems,
     target.parentMessageId,
+    onSendComplete,
+    surface,
     workspaces,
   ]);
 
@@ -1528,12 +1732,24 @@ export function GraphDockComposer() {
   const targetModeLabel = isRootComposerTarget ? 'New thread' : 'Reply to';
   const sendButtonLabel = isSteeringRunningAssistant ? 'Steer' : editDraftSource ? 'Edit and run' : 'Send';
   const sendButtonBusyLabel = isCancellingRun ? 'Cancelling' : isSteeringRunningAssistant ? 'Steering' : 'Sending';
+  const sendButtonDisplayLabel = isBlockingPrimaryAction
+    ? sendButtonBusyLabel
+    : isSending
+      ? sendAcceptanceState.queuedCount > 0
+        ? `Queue ${sendAcceptanceState.queuedCount + 1}`
+        : 'Queue'
+      : sendButtonLabel;
 
   return (
     <div
       data-testid="graph-dock-composer"
+      data-composer-surface={surface}
+      aria-label={surface === 'graph' ? 'Graph composer' : surface === 'chat-panel' ? 'Chat composer' : 'Reply composer'}
       className={cn(
-        'pointer-events-auto mx-auto w-[min(50rem,calc(100vw-1rem))] max-w-4xl overflow-visible rounded-xl sm:w-[min(50rem,calc(100vw-7rem))]',
+        'pointer-events-auto overflow-visible rounded-xl',
+        surface === 'graph'
+          ? 'mx-auto w-[min(50rem,calc(100vw-1rem))] max-w-4xl sm:w-[min(50rem,calc(100vw-7rem))]'
+          : 'w-full max-w-none',
         'border border-[hsl(var(--app-border)/0.86)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-panel)/0.95))]',
         'shadow-[0_22px_70px_-40px_hsl(34_28%_18%/0.72),0_1px_0_hsl(44_80%_99%/0.72)_inset,0_-1px_0_hsl(var(--app-border)/0.26)_inset] backdrop-blur-xl'
       )}
@@ -1769,15 +1985,30 @@ export function GraphDockComposer() {
             textareaRef={textareaRef}
             initialValue={promptSeed}
             resetVersion={promptResetVersion}
-            disabled={isPrimaryActionBusy}
+            disabled={isBlockingPrimaryAction}
             onPromptChange={updatePrompt}
             onDraftChange={savePromptDraft}
             onSelectionChange={syncActiveMentions}
             onPromptKeyDown={handlePromptKeyDown}
+            onPaste={handlePromptPaste}
             onSubmit={() => void handleSend()}
             templates={orchestrationTemplates}
+            ariaLabel={surface === 'graph' ? 'Graph composer prompt' : surface === 'chat-panel' ? 'Chat composer prompt' : 'Reply composer prompt'}
           />
         </div>
+        {composerAttachments.attachments.length > 0 ? (
+          <div data-testid="composer-attachment-previews" className="mt-1.5 flex max-w-full gap-2 overflow-x-auto px-0.5 py-1">
+            {composerAttachments.attachments.map((attachment) => (
+              <AttachmentPreview
+                key={getComposerAttachmentId(attachment)}
+                attachment={attachment}
+                onRemove={composerAttachments.removeAttachment}
+                size="small"
+                className="shrink-0"
+              />
+            ))}
+          </div>
+        ) : null}
         <div data-testid="graph-dock-control-row" className="mt-1.5 grid min-w-0 grid-cols-3 gap-1.5 border-t border-[hsl(var(--app-border)/0.52)] px-0.5 pt-1.5">
           <DropdownMenu open={isBasePickerOpen} onOpenChange={setIsBasePickerOpen}>
             <DropdownMenuTrigger asChild>
@@ -2017,17 +2248,17 @@ export function GraphDockComposer() {
                       return (
                         <div
                           key={chipAgent.id}
-                          className="group/chip flex h-6 min-w-0 items-center rounded-full border border-[hsl(var(--app-warning)/0.24)] bg-[hsl(var(--app-warning)/0.08)] pr-0.5 text-[10.5px] font-semibold text-foreground shadow-none transition-colors duration-150 hover:border-[hsl(var(--app-warning)/0.34)]"
+                          className="group/chip flex h-7 min-w-0 items-center rounded-md border border-[hsl(var(--app-border)/0.78)] bg-[hsl(var(--app-panel-strong)/0.72)] pr-0.5 text-[10.5px] font-semibold text-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)] transition-[background-color,border-color,box-shadow] duration-150 hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-panel)/0.9)]"
                         >
                           <button
                             type="button"
                             onClick={() => setModelPickerTarget({ kind: 'replace', agentId: chipAgent.id })}
                             disabled={isComposerConfigurationDisabled}
-                            className="flex h-full min-w-0 items-center gap-1 rounded-full pl-2 pr-1 outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] disabled:cursor-not-allowed disabled:opacity-50"
+                            className="flex h-full min-w-0 items-center gap-1 rounded-md pl-2 pr-1 outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] disabled:cursor-not-allowed disabled:opacity-50"
                             aria-label={`Change ${chipAgent.name}`}
                           >
                             <span className="max-w-[104px] truncate">{chipAgent.name}</span>
-                            <span className="rounded-full bg-[hsl(var(--app-warning)/0.14)] px-1.5 text-[9.5px] tabular-nums text-[hsl(var(--app-warning))]">
+                            <span className="rounded bg-muted/70 px-1.5 text-[9.5px] tabular-nums text-muted-foreground">
                               {count}x
                             </span>
                           </button>
@@ -2054,7 +2285,7 @@ export function GraphDockComposer() {
                               type="button"
                               onClick={() => handleAgentRunCountChange(chipAgent.id, count + 1)}
                               disabled={isComposerConfigurationDisabled}
-                              className="flex h-4 w-4 items-center justify-center rounded bg-[hsl(var(--app-success))] text-white transition-[background-color,transform] hover:brightness-105 active:scale-[0.94]"
+                              className="flex h-4 w-4 items-center justify-center rounded bg-background text-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.75)] transition-[background-color,color,transform] hover:bg-muted active:scale-[0.96]"
                               aria-label={`Increase ${chipAgent.name}`}
                             >
                               <Plus className="h-2.5 w-2.5" strokeWidth={2.6} />
@@ -2067,7 +2298,7 @@ export function GraphDockComposer() {
                       type="button"
                       onClick={() => setModelPickerTarget({ kind: 'add' })}
                       disabled={isComposerConfigurationDisabled || !selectedWorkspaceId}
-                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[hsl(var(--app-border)/0.78)] bg-background/72 text-muted-foreground transition-[background-color,border-color,color,transform] hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-background hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] disabled:cursor-not-allowed disabled:opacity-50"
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[hsl(var(--app-border)/0.78)] bg-[hsl(var(--app-panel-strong)/0.72)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)] transition-[background-color,border-color,color,transform] hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-panel)/0.9)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] disabled:cursor-not-allowed disabled:opacity-50"
                       aria-label="Add model"
                     >
                       <Plus className="h-3 w-3" strokeWidth={2.5} />
@@ -2086,6 +2317,50 @@ export function GraphDockComposer() {
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              type="button"
+              aria-label="Auto checkout generated commit"
+              aria-pressed={autoCheckoutOnAgentCommit && selectedRunTotal === 1}
+              title={selectedRunTotal > 1
+                ? 'Auto checkout is available only when launching one agent run.'
+                : 'Automatically check out a generated commit when the run finishes'}
+              disabled={isComposerConfigurationDisabled || !selectedWorkspaceId || selectedRunTotal > 1}
+              onClick={() => setAutoCheckoutOnAgentCommit(!autoCheckoutOnAgentCommit)}
+              className={cn(
+                'flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg border px-2 text-[10.5px] font-semibold transition-[background-color,border-color,color,transform]',
+                'active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50',
+                autoCheckoutOnAgentCommit && selectedRunTotal === 1
+                  ? 'border-[hsl(var(--app-accent)/0.45)] bg-[hsl(var(--app-accent-soft)/0.72)] text-foreground'
+                  : 'border-[hsl(var(--app-border)/0.78)] bg-[hsl(var(--app-panel-strong)/0.72)] text-muted-foreground hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-panel)/0.9)] hover:text-foreground'
+              )}
+            >
+              <GitCommitHorizontal className="h-3.5 w-3.5" />
+              <span className="hidden lg:inline">Checkout</span>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="sr-only"
+              tabIndex={-1}
+              onChange={(event) => {
+                if (event.currentTarget.files) {
+                  composerAttachments.addFiles(Array.from(event.currentTarget.files));
+                }
+                event.currentTarget.value = '';
+              }}
+              data-testid="composer-file-input"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isBlockingPrimaryAction || !selectedWorkspaceId}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.78)] bg-[hsl(var(--app-panel-strong)/0.72)] text-muted-foreground transition-[background-color,border-color,color,transform] hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-panel)/0.9)] hover:text-foreground active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label="Attach files"
+              title="Attach files"
+            >
+              {composerAttachments.hasPendingUploads ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Paperclip className="h-3.5 w-3.5" />}
+            </button>
             {isSteeringRunningAssistant ? (
               <button
                 type="button"
@@ -2120,8 +2395,8 @@ export function GraphDockComposer() {
               )}
               aria-label={isSteeringRunningAssistant ? "Steer running agent" : "Send graph composer message"}
             >
-              {isPrimaryActionBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
-              <span>{isPrimaryActionBusy ? sendButtonBusyLabel : sendButtonLabel}</span>
+              {isBlockingPrimaryAction ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+              <span>{sendButtonDisplayLabel}</span>
             </button>
           </div>
         </div>

@@ -1,4 +1,4 @@
-import { BarChart3, MessageSquare, LogOut, KeyRound, Workflow } from 'lucide-react';
+import { ChartBar, Graph, House, Key, SignOut } from '@phosphor-icons/react';
 import { cn } from '../lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from "../../@/components/ui/avatar";
 import { useAuthStore } from '../stores/authStore';
@@ -6,6 +6,7 @@ import { logoutCurrentSession } from '../lib/authSession';
 import { logoutDesktopBrowserAuth, shouldUseDesktopBrowserAuth } from '../lib/kindeDesktopAuth';
 import { ConfigButton } from './ConfigButton';
 import { DiagnosticsButton } from './DiagnosticsButton';
+import { RailIcon } from './RailIcon';
 
 
 interface SidebarProps {
@@ -31,10 +32,10 @@ export function Sidebar({
 }: SidebarProps) {
     const { user } = useAuthStore();
     const navItems = [
-        { id: 'chat' as const, label: 'Workspace', icon: MessageSquare },
-        { id: 'orchestration' as const, label: 'Orchestration', icon: Workflow },
-        { id: 'tracking' as const, label: 'Tracking', icon: BarChart3 },
-        { id: 'logins' as const, label: 'Logins', icon: KeyRound },
+        { id: 'chat' as const, label: 'Home', icon: House },
+        { id: 'orchestration' as const, label: 'Orchestration', icon: Graph },
+        { id: 'tracking' as const, label: 'Tracking', icon: ChartBar },
+        { id: 'logins' as const, label: 'Logins', icon: Key },
     ];
 
     return (
@@ -55,14 +56,14 @@ export function Sidebar({
                             aria-label={item.label}
                             aria-current={isActive ? 'page' : undefined}
                         >
-                            <Icon size={18} strokeWidth={2.1} />
+                            <RailIcon icon={Icon} />
                         </button>
                     );
                 })}
             </nav>
 
             <div className="mt-auto flex w-full flex-col items-center gap-3 px-2 pb-2">
-                <Avatar className="h-8 w-8 cursor-pointer rounded-lg ring-1 ring-border/70 transition-[box-shadow,transform] hover:-translate-y-0.5 hover:ring-[hsl(var(--app-focus)/0.45)]" title={user?.name || 'User'}>
+                <Avatar className="h-8 w-8 cursor-pointer rounded-lg ring-1 ring-border/70 transition-[box-shadow] hover:ring-[hsl(var(--app-focus)/0.45)]" title={user?.name || 'User'}>
                     <AvatarImage src={user?.pictureUrl || undefined} />
                     <AvatarFallback className="rounded-lg bg-[hsl(var(--app-accent-soft))] text-xs font-semibold text-[hsl(var(--app-accent))]">
                         {user?.name?.[0]?.toUpperCase() || 'U'}
@@ -94,7 +95,7 @@ export function Sidebar({
                     title="Logout"
                     aria-label="Logout"
                 >
-                    <LogOut size={18} strokeWidth={2.1} />
+                    <RailIcon icon={SignOut} />
                 </button>
             </div>
         </aside>

@@ -56,32 +56,32 @@ export function HoverCardNavigationChrome({
   return (
     <div
       data-agentree-hover-navigation-chrome="true"
-      className="mb-2 flex min-h-11 flex-wrap items-center justify-between gap-2 border-b border-[hsl(var(--app-border)/0.46)] pb-2"
+      className="flex h-8 w-fit max-w-full items-center gap-1 rounded-full border border-[hsl(var(--app-border)/0.64)] bg-[hsl(var(--app-panel)/0.96)] p-0.5 shadow-[0_10px_24px_-18px_hsl(var(--foreground)/0.54),inset_0_1px_0_hsl(var(--background)/0.18)] backdrop-blur-md"
       onPointerDown={stopNavigationPropagation}
       onMouseDown={stopNavigationPropagation}
       onClick={stopNavigationPropagation}
     >
       {accessory || announcement ? (
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+        <div className="flex min-w-0 items-center gap-1">
           {accessory}
           {announcement ? (
             <span className="sr-only" aria-live="polite">{announcement}</span>
           ) : null}
         </div>
-      ) : <span />}
+      ) : null}
       {showControls ? (
-        <div className="ml-auto flex h-11 shrink-0 items-center rounded-full border border-[hsl(var(--app-border)/0.56)] bg-[hsl(var(--background)/0.78)] p-0.5 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04),0_8px_20px_-18px_hsl(var(--foreground)/0.5)] backdrop-blur-md">
+        <div className="flex h-7 shrink-0 items-center">
           <button
             type="button"
             aria-label={previousLabel}
             title={previousLabel}
             disabled={!canGoPrevious}
             onClick={(event) => handleNavigationClick(event, onPrevious)}
-            className="flex h-10 w-10 items-center justify-center rounded-full text-muted-foreground transition-[background-color,color,opacity,transform] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.62)] hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
+            className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-[background-color,color,opacity,transform] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.62)] hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
           >
             <ChevronLeft size={15} strokeWidth={2.2} aria-hidden="true" />
           </button>
-          <div className="min-w-14 px-1 text-center font-mono text-[10px] font-semibold leading-none text-muted-foreground tabular-nums">
+          <div className="min-w-10 px-0.5 text-center font-mono text-[9px] font-semibold leading-none text-muted-foreground tabular-nums">
             {position} / {itemCount}
           </div>
           <button
@@ -92,7 +92,7 @@ export function HoverCardNavigationChrome({
             disabled={!canGoNext}
             onClick={(event) => handleNavigationClick(event, onNext)}
             className={cn(
-              "flex h-10 w-10 items-center justify-center rounded-full text-muted-foreground transition-[background-color,color,box-shadow,opacity,transform] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.62)] hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35",
+              "flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-[background-color,color,box-shadow,opacity,transform] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.62)] hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35",
               nextAttention && "bg-[hsl(var(--app-accent-soft)/0.72)] text-[hsl(var(--app-accent))] shadow-[0_0_0_3px_hsl(var(--app-accent)/0.12)] motion-safe:animate-pulse",
             )}
           >

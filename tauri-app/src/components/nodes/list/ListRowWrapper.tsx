@@ -55,7 +55,7 @@ export const ListRowWrapper = memo(({
       style={{
         ...style,
         borderColor: isFocused
-          ? '#6366f1'
+          ? 'hsl(var(--app-selection) / 0.92)'
           : isSelected
             ? '#3b82f6'
             : style?.borderColor,
@@ -64,22 +64,22 @@ export const ListRowWrapper = memo(({
         "group relative flex w-full min-w-0 cursor-pointer items-start gap-2.5 border px-3 py-2.5 transition-[background-color,border-color,box-shadow,transform] duration-200",
         CARD_TOKENS.radius,
         isFocused
-          ? "z-10 bg-[hsl(var(--app-accent-soft)/0.34)] shadow-md ring-2 ring-indigo-500"
+          ? "z-10 bg-[hsl(var(--app-accent-soft)/0.34)] shadow-md ring-2 ring-[hsl(var(--app-selection)/0.9)]"
           : "border-[hsl(var(--app-border)/0.58)] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.035)]",
-        isSelected && "bg-[hsl(var(--app-accent-soft)/0.24)] ring-2 ring-blue-500",
+        isSelected && !isFocused && "bg-[hsl(var(--app-accent-soft)/0.24)] ring-2 ring-blue-500",
         !isFocused && "hover:-translate-y-[1px] hover:border-[hsl(var(--app-border)/0.82)] hover:bg-[hsl(var(--app-panel-strong)/0.78)] hover:shadow-[0_12px_28px_-26px_hsl(var(--foreground)/0.48),inset_0_1px_0_hsl(var(--foreground)/0.04)] dark:hover:bg-white/[0.055]",
         className
       )}
     >
       {showSelectionControl && (
-        <div className="flex flex-col items-center justify-start relative z-10 w-[14px] shrink-0 mt-[3px]">
+        <div className="relative flex w-[14px] shrink-0 flex-col items-center justify-start mt-[3px]">
           <div onClick={(e) => { e.stopPropagation(); onSelect(e.metaKey || e.ctrlKey || e.shiftKey); }}>
             <Checkbox checked={isSelected} className="h-3.5 w-3.5" />
           </div>
         </div>
       )}
 
-      <div className="flex-1 flex flex-col gap-1.5 min-w-0 relative z-10">
+      <div className="relative flex min-w-0 flex-1 flex-col gap-1.5">
         {children}
       </div>
     </div>

@@ -130,6 +130,72 @@ describe('sendHeadlessComposerReply', () => {
     }));
   });
 
+  it('persists current attachments and includes immutable input artifacts in the runtime launch', async () => {
+    const startAgentRun = vi.fn().mockResolvedValue(undefined);
+    const persistLocalNode = vi.fn().mockResolvedValue(undefined);
+    const attachment = {
+      path: 'attachments/screenshot.png',
+      publicUrl: null,
+      filename: 'screenshot.png',
+      contentType: 'image/png',
+      localPath: '/tmp/screenshot.png',
+      sizeBytes: 42,
+      width: 10,
+      height: 20,
+    };
+
+    const response = await sendHeadlessComposerMessage({
+      workspaceId: 'workspace-1',
+      parentMessageId: null,
+      contextParentId: null,
+      contextPolicy: 'fresh',
+      prompt: 'Inspect this',
+      attachments: [attachment],
+      messages: [],
+      agent: {
+        id: 'codex-agent',
+        type: 'codex',
+        name: 'Codex',
+        cliArgs: '',
+        promptFlag: null,
+        model_config: {
+          model: 'gpt-5.5',
+          capabilities: {
+            inputModalities: ['text', 'image'],
+            outputModalities: ['text'],
+            reasoningEffort: true,
+          },
+        },
+      },
+      base: { commitSha: 'base-sha', selectedFromNodeId: null },
+      workspaces: [{ id: 'workspace-1', local_repo_path: '/repo' } as Workspace],
+      startAgentRun,
+      getAccessToken: vi.fn().mockResolvedValue('token-1'),
+      seedAgentRun: vi.fn(),
+      dispatchAgentRun: vi.fn(),
+      persistLocalNode,
+      createRunId: () => 'run-with-attachment',
+      nowIso: () => '2026-05-27T01:02:03.000Z',
+    });
+
+    expect(response.userMessage?.attachments).toEqual([attachment]);
+    expect(persistLocalNode).toHaveBeenCalledWith(
+      'workspace-1',
+      response.userMessage?.id,
+      expect.objectContaining({ attachments: [attachment] }),
+    );
+    const request = startAgentRun.mock.calls[0][0];
+    expect(request.userPrompt).toContain('[Current User Uploaded Files]');
+    expect(request.userPrompt).toContain('/tmp/screenshot.png');
+    expect(request.contextManifest.artifactInputs).toEqual([
+      expect.objectContaining({
+        nodeId: response.userMessage?.id,
+        mimeType: 'image/png',
+        storage: expect.objectContaining({ path: '/tmp/screenshot.png' }),
+      }),
+    ]);
+  });
+
   it('resumes same-provider Claude provider threads for quick replies', async () => {
     const startAgentRun = vi.fn().mockResolvedValue(undefined);
 

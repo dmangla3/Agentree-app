@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { runtimeTreeSha256 } from "./runtime-tree-fingerprint.mjs";
 
 const projectRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -124,6 +125,13 @@ function validateArchive(component, spec, platform) {
   if (actualChecksum !== platformSpec.sha256) {
     fail(
       `${archiveName} checksum ${actualChecksum} does not match manifest ${platformSpec.sha256}`,
+    );
+  }
+
+  const actualTreeSha256 = runtimeTreeSha256(projectRoot, component, archivePath);
+  if (actualTreeSha256 !== platformSpec.treeSha256) {
+    fail(
+      `${archiveName} extracted fingerprint ${actualTreeSha256} does not match manifest ${platformSpec.treeSha256}`,
     );
   }
 

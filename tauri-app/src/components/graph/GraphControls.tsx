@@ -31,31 +31,39 @@ import {
     DropdownMenuSubTrigger,
 } from '../../../@/components/ui/dropdown-menu';
 import { ScrollArea } from '../../../@/components/ui/scroll-area';
+import {
+    Brain as BrainHeaderIcon,
+    Clock as ClockHeaderIcon,
+    GitMerge as MergeHeaderIcon,
+    Highlighter as HighlighterHeaderIcon,
+    Leaf as LeafHeaderIcon,
+    List as ListHeaderIcon,
+    SlidersHorizontal as FilterHeaderIcon,
+    SquaresFour as DisplayHeaderIcon,
+    TreeStructure as TreeHeaderIcon,
+} from '@phosphor-icons/react';
 
 import {
     X,
     Filter,
     GitBranch,
     GitCommitHorizontal,
-    CalendarDays,
     Search,
     Settings2,
     Clock3,
     Bot,
     Tags,
     Check,
-    LayoutGrid,
-    SlidersHorizontal,
     Zap,
     User,
     Leaf,
 	    Loader2,
 	    CheckCircle2,
-	    Brain,
 	    Highlighter,
 	    Trash2,
 	} from 'lucide-react';
 	import { cn } from '../../lib/utils';
+	import { FillIcon } from '../RailIcon';
 	import type { Insight, Message, MessageHighlightColor, Summary } from '../../stores/workspaceStore';
 import type { MergeTabRunIndicator } from '../../stores/integrationStore';
 import { LayoutMode, LaneStrategy } from '../../hooks/graph/useGraphLayout';
@@ -99,30 +107,6 @@ export function ParallelThreadsIcon({ size = 15, strokeWidth = 2 }: { size?: num
             <circle cx="7" cy="20" r="1" fill="currentColor" stroke="none" />
             <circle cx="12" cy="20" r="1" fill="currentColor" stroke="none" />
             <circle cx="17" cy="20" r="1" fill="currentColor" stroke="none" />
-        </svg>
-    );
-}
-
-function SimpleMergeIcon({ size = 15, strokeWidth = 2 }: { size?: number; strokeWidth?: number }) {
-    return (
-        <svg
-            width={size}
-            height={size}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={strokeWidth}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-            focusable="false"
-        >
-            <path d="M7 4v16" />
-            <path d="M17 8c-4.2 0-6.3 4-8.4 4" />
-            <circle cx="7" cy="4" r="1.75" fill="currentColor" stroke="none" />
-            <circle cx="17" cy="8" r="1.75" fill="currentColor" stroke="none" />
-            <circle cx="7" cy="12" r="2.15" fill="currentColor" stroke="none" />
-            <circle cx="7" cy="20" r="1.75" fill="currentColor" stroke="none" />
         </svg>
     );
 }
@@ -683,16 +667,16 @@ export function GraphControls({
             tone: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-300',
         },
     ];
-    const toolbarButtonClass = "border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel-strong)/0.74)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)] transition-[background-color,border-color,color,box-shadow,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.75)] hover:bg-[hsl(var(--app-accent-soft)/0.52)] hover:text-foreground active:scale-[0.98]";
+    const toolbarButtonClass = "border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel-strong)/0.74)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)] transition-[background-color,border-color,color,box-shadow] duration-150 hover:border-[hsl(var(--app-border-strong)/0.75)] hover:bg-[hsl(var(--app-accent-soft)/0.52)] hover:text-foreground";
     const activeToolbarButtonClass = "border-[hsl(var(--app-accent)/0.35)] bg-[hsl(var(--app-accent-soft)/0.72)] text-[hsl(var(--app-accent))] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.05)]";
     const toolbarDividerClass = "h-5 w-px bg-[hsl(var(--app-border)/0.68)]";
     const pillClass = "inline-flex items-center gap-1.5 rounded-md border border-[hsl(var(--app-accent)/0.18)] bg-[hsl(var(--app-accent-soft)/0.48)] px-2 py-0.5 text-[11px] font-medium text-[hsl(var(--app-accent))]";
     const sectionClass = "rounded-xl border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel-strong)/0.62)] p-3 space-y-2.5 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]";
     const toggleButtonClass = "h-7 px-2.5 text-[11px] font-medium transition-all duration-150";
 
-    const iconButtonBase = "group relative flex items-center justify-center rounded-lg transition-all duration-150 ease-out";
+    const iconButtonBase = "app-fill-icon-trigger group relative flex items-center justify-center rounded-lg transition-[background-color,border-color,color,box-shadow] duration-150 ease-out";
     const iconButtonGhost = cn("h-8 w-8 px-0", toolbarButtonClass);
-    const iconContainer = "flex items-center justify-center transition-transform duration-150 group-active:scale-95";
+    const iconContainer = "flex items-center justify-center";
     const iconGlow = "absolute inset-0 rounded-lg bg-[hsl(var(--app-accent-soft)/0.28)] opacity-0 transition-opacity duration-150 group-hover:opacity-100";
     const mergeButtonActive = mergeDropdownOpen || mergeSourceCount > 0 || mergeRunIndicator !== 'idle';
     const mergeAriaLabel = mergeSourceCount > 0
@@ -749,7 +733,7 @@ export function GraphControls({
                             )}
                         >
                             <span className={iconContainer}>
-                                <SlidersHorizontal size={13} strokeWidth={2} />
+                                <FillIcon icon={FilterHeaderIcon} size={13} />
                             </span>
                             <span className="hidden md:inline font-medium">{filterButtonText}</span>
                             <span className={cn(
@@ -1133,29 +1117,31 @@ export function GraphControls({
                         <button
                             type="button"
                             onClick={() => onViewModeChange('branch')}
+                            data-active={viewMode === 'branch' ? 'true' : undefined}
                             className={cn(
-                                "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-[background-color,color,box-shadow] duration-150",
+                                "app-fill-icon-trigger flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-[background-color,color,box-shadow] duration-150",
                                 viewMode === 'branch'
                                     ? "bg-[hsl(var(--app-panel))] text-[hsl(var(--app-accent))] shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72),0_1px_2px_hsl(var(--foreground)/0.05)]"
                                     : "text-muted-foreground hover:bg-[hsl(var(--app-panel)/0.58)] hover:text-foreground"
                             )}
-                            title="Branch View"
+                            title="Tree View"
                         >
-                            <GitBranch className="h-3.5 w-3.5" />
-                            <span className="hidden sm:inline">Branch</span>
+                            <FillIcon icon={TreeHeaderIcon} size={14} className="rotate-90" />
+                            <span className="hidden sm:inline">Tree</span>
                         </button>
                         <button
                             type="button"
                             onClick={() => onViewModeChange('list')}
+                            data-active={viewMode === 'list' ? 'true' : undefined}
                             className={cn(
-                                "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-[background-color,color,box-shadow] duration-150",
+                                "app-fill-icon-trigger flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-[background-color,color,box-shadow] duration-150",
                                 viewMode === 'list'
                                     ? "bg-[hsl(var(--app-panel))] text-[hsl(var(--app-accent))] shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72),0_1px_2px_hsl(var(--foreground)/0.05)]"
                                     : "text-muted-foreground hover:bg-[hsl(var(--app-panel)/0.58)] hover:text-foreground"
                             )}
                             title="List View"
                         >
-                            <CalendarDays className="h-3.5 w-3.5" />
+                            <FillIcon icon={ListHeaderIcon} size={14} />
                             <span className="hidden sm:inline">List</span>
                         </button>
                     </div>
@@ -1174,7 +1160,7 @@ export function GraphControls({
                                     )}
                                     title="Execution timeline"
                                 >
-                                    <Clock3 className="h-3.5 w-3.5" />
+                                    <FillIcon icon={ClockHeaderIcon} size={14} />
                                 </button>
                             </PopoverTrigger>
                             <PopoverContent
@@ -1208,7 +1194,7 @@ export function GraphControls({
                                     >
                                         <span className={iconGlow} />
                                         <span className={iconContainer}>
-                                            <Brain size={15} strokeWidth={2} />
+                                            <FillIcon icon={BrainHeaderIcon} size={15} />
                                         </span>
                                         <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--background)/0.92)] px-1 text-[9px] font-semibold leading-none tabular-nums text-foreground shadow-sm">
                                             {insightsCount > 99 ? '99+' : insightsCount}
@@ -1259,7 +1245,7 @@ export function GraphControls({
                                     >
                                         <span className={iconGlow} />
                                         <span className={iconContainer}>
-                                            <SimpleMergeIcon size={16} strokeWidth={2} />
+                                            <FillIcon icon={MergeHeaderIcon} size={16} />
                                         </span>
                                         {mergeSourceCount > 0 ? (
                                             <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--background)/0.94)] px-1 text-[9px] font-semibold leading-none tabular-nums text-foreground shadow-sm">
@@ -1318,7 +1304,7 @@ export function GraphControls({
 	                                    >
 	                                        <span className={iconGlow} />
 	                                        <span className={iconContainer}>
-	                                            <Highlighter size={15} strokeWidth={2} />
+	                                            <FillIcon icon={HighlighterHeaderIcon} size={15} />
 	                                        </span>
 	                                        {highlightItems.length > 0 ? (
 	                                            <span className="absolute -right-1 -top-1 inline-flex h-[16px] min-w-[16px] items-center justify-center rounded-full border border-background bg-yellow-400 px-1 font-mono text-[8px] font-bold leading-none text-yellow-950 shadow-sm">
@@ -1413,7 +1399,7 @@ export function GraphControls({
                                     >
                                         <span className={iconGlow} />
                                         <span className={iconContainer}>
-                                            <Leaf size={15} strokeWidth={2} />
+                                            <FillIcon icon={LeafHeaderIcon} size={15} />
                                         </span>
                                     </button>
                                 </DropdownMenuTrigger>
@@ -1512,7 +1498,7 @@ export function GraphControls({
                             >
                                 <span className={iconGlow} />
                                 <span className={iconContainer}>
-                                    <LayoutGrid size={15} strokeWidth={2} />
+                                    <FillIcon icon={DisplayHeaderIcon} size={15} />
                                 </span>
                             </button>
                         </DropdownMenuTrigger>

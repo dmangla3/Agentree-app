@@ -25,6 +25,7 @@ import {
   validateOpenCodeSdkInstall,
   validateOpenCodeSdkVersionAlignment,
 } from './runtime-archive-layout.mjs';
+import { runtimeTreeSha256 } from './runtime-tree-fingerprint.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = path.join(projectRoot, 'runtime-manifest.json');
@@ -88,59 +89,6 @@ function sha256OfFile(filePath) {
   const hash = crypto.createHash('sha256');
   hash.update(fs.readFileSync(filePath));
   return hash.digest('hex');
-}
-
-function updateFingerprintField(hash, value) {
-  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
-  const length = Buffer.alloc(8);
-  length.writeBigUInt64BE(BigInt(bytes.length));
-  hash.update(length);
-  hash.update(bytes);
-}
-
-function extractedTreeSha256(rootDir) {
-  const entries = [];
-  const visit = (directory, relativeDirectory = '') => {
-    for (const name of fs.readdirSync(directory).sort()) {
-      const relativePath = relativeDirectory ? `${relativeDirectory}/${name}` : name;
-      const absolutePath = path.join(directory, name);
-      entries.push({ absolutePath, relativePath });
-      if (fs.lstatSync(absolutePath).isDirectory()) {
-        visit(absolutePath, relativePath);
-      }
-    }
-  };
-  visit(rootDir);
-  entries.sort((left, right) =>
-    left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0
-  );
-
-  const hash = crypto.createHash('sha256');
-  for (const { absolutePath, relativePath } of entries) {
-    const stat = fs.lstatSync(absolutePath);
-    if (stat.isDirectory()) continue;
-    updateFingerprintField(hash, relativePath);
-    if (stat.isSymbolicLink()) {
-      hash.update('symlink');
-      updateFingerprintField(hash, fs.readlinkSync(absolutePath));
-    } else if (stat.isFile()) {
-      hash.update('file');
-      const size = Buffer.alloc(8);
-      size.writeBigUInt64BE(BigInt(stat.size));
-      hash.update(size);
-      hash.update(fs.readFileSync(absolutePath));
-    } else {
-      throw new Error(`Unsupported runtime archive entry: ${absolutePath}`);
-    }
-  }
-  return hash.digest('hex');
-}
-
-function treeSha256OfArchive(archivePath) {
-  return withTempDir('agentree-runtime-fingerprint-', (tempDir) => {
-    run('tar', ['-xzf', archivePath, '-C', tempDir]);
-    return extractedTreeSha256(tempDir);
-  });
 }
 
 function archiveName(component, version, platformKey) {
@@ -350,7 +298,7 @@ for (const [component, spec] of Object.entries(manifest.components)) {
     }
     validateBuiltArchive(component, spec.version, platformKey, destination);
     const checksum = sha256OfFile(destination);
-    const treeSha256 = treeSha256OfArchive(destination);
+    const treeSha256 = runtimeTreeSha256(projectRoot, component, destination);
     if (
       spec.platforms[platformKey].sha256 !== checksum
       || spec.platforms[platformKey].treeSha256 !== treeSha256

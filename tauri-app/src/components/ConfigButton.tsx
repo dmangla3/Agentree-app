@@ -7,6 +7,7 @@ import {
   Settings,
   ShieldCheck,
 } from 'lucide-react';
+import { Gear } from '@phosphor-icons/react';
 import {
   Dialog,
   DialogContent,
@@ -25,6 +26,7 @@ import {
 import { LOGIN_PROFILES_NAVIGATION_EVENT } from '../lib/loginNavigationEvents';
 import type { RuntimeProvider } from '../lib/runtimeModels';
 import { cn } from '../lib/utils';
+import { RailIcon } from './RailIcon';
 
 interface ConfigButtonProps {
   repoPath: string | null;
@@ -112,7 +114,7 @@ export function ConfigButton({
           title="Configuration"
           aria-label="Configuration"
         >
-          <Settings size={18} strokeWidth={2.1} />
+          <RailIcon icon={Gear} />
         </button>
       </DialogTrigger>
       <DialogContent className="h-[min(720px,calc(100dvh-2rem))] max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-[1040px] gap-0 overflow-hidden rounded-xl border-border/80 p-0 shadow-[0_28px_90px_-46px_hsl(var(--foreground)/0.65)] sm:max-w-[1040px]">

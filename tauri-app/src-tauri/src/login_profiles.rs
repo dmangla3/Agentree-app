@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager, State};
@@ -17,8 +17,7 @@ use crate::db::TelemetryDb;
 #[cfg(not(debug_assertions))]
 const KEYCHAIN_SERVICE: &str = "com.agentree.agentree.login-profiles";
 const READINESS_CHECK_TIMEOUT: Duration = Duration::from_secs(12);
-const OPENCODE_READINESS_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
-const READINESS_CACHE_TTL_SECS: i64 = 5 * 60;
+const OPENCODE_READINESS_CHECK_TIMEOUT: Duration = Duration::from_secs(120);
 const CODEX_DEVICE_LOGIN_URL: &str = "https://auth.openai.com/codex/device";
 const CODEX_LOGIN_START_TIMEOUT: Duration = Duration::from_secs(20);
 const CODEX_GLOBAL_INSTRUCTION_FILES: [&str; 2] = ["AGENTS.override.md", "AGENTS.md"];
@@ -27,6 +26,8 @@ const CLAUDE_LOGIN_START_TIMEOUT: Duration = Duration::from_secs(20);
 const CLAUDE_LOGIN_PENDING_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const CLAUDE_LOGIN_CODE_TIMEOUT: Duration = Duration::from_secs(120);
 const OPENCODE_PROVIDER_CAPABILITIES_CONFIG_KEY: &str = "opencode_provider_capabilities";
+const OPENCODE_MODEL_CATALOG_CONFIG_KEY: &str = "opencode_model_catalog";
+const OPENCODE_MODEL_CATALOG_CHECKED_AT_CONFIG_KEY: &str = "opencode_model_catalog_checked_at";
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -94,8 +95,9 @@ pub struct ActiveLoginProfileRun {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize, specta::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
 #[serde(rename_all = "camelCase")]
+#[tauri_specta(event_name = "login-profiles:changed")]
 pub struct LoginProfilesChangedEvent {
     pub profile_id: String,
     pub status: String,
@@ -137,6 +139,134 @@ struct PendingClaudeOAuthLogin {
 static PENDING_CLAUDE_OAUTH_LOGINS: OnceLock<Mutex<HashMap<String, PendingClaudeOAuthLogin>>> =
     OnceLock::new();
 static CODEX_PROFILE_SYNC_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+struct ReadinessFlight {
+    result: Mutex<Option<Result<LoginProfile, String>>>,
+    completed: Condvar,
+}
+
+#[derive(Default)]
+struct ReadinessCoordinatorState {
+    generations: HashMap<String, u64>,
+    flights: HashMap<String, Arc<ReadinessFlight>>,
+}
+
+enum ReadinessFlightRole {
+    Owner {
+        flight: Arc<ReadinessFlight>,
+        generation: u64,
+    },
+    Waiter,
+}
+
+static READINESS_COORDINATOR: OnceLock<Mutex<ReadinessCoordinatorState>> = OnceLock::new();
+
+fn readiness_coordinator() -> &'static Mutex<ReadinessCoordinatorState> {
+    READINESS_COORDINATOR.get_or_init(|| Mutex::new(ReadinessCoordinatorState::default()))
+}
+
+fn begin_readiness_flight(profile_id: &str) -> Result<ReadinessFlightRole, String> {
+    let mut coordinator = readiness_coordinator()
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if coordinator.flights.contains_key(profile_id) {
+        return Ok(ReadinessFlightRole::Waiter);
+    }
+    let generation = coordinator
+        .generations
+        .entry(profile_id.to_string())
+        .and_modify(|generation| *generation += 1)
+        .or_insert(1)
+        .to_owned();
+    let flight = Arc::new(ReadinessFlight {
+        result: Mutex::new(None),
+        completed: Condvar::new(),
+    });
+    coordinator
+        .flights
+        .insert(profile_id.to_string(), Arc::clone(&flight));
+    Ok(ReadinessFlightRole::Owner { flight, generation })
+}
+
+#[cfg(test)]
+fn wait_for_readiness_flight(flight: &ReadinessFlight) -> Result<LoginProfile, String> {
+    let mut result = flight.result.lock().map_err(|error| error.to_string())?;
+    while result.is_none() {
+        result = flight
+            .completed
+            .wait(result)
+            .map_err(|error| error.to_string())?;
+    }
+    result
+        .as_ref()
+        .expect("readiness flight result is present")
+        .clone()
+}
+
+#[cfg(test)]
+fn active_readiness_flight(profile_id: &str) -> Result<Arc<ReadinessFlight>, String> {
+    readiness_coordinator()
+        .lock()
+        .map_err(|error| error.to_string())?
+        .flights
+        .get(profile_id)
+        .cloned()
+        .ok_or_else(|| format!("No readiness flight exists for {}", profile_id))
+}
+
+fn complete_readiness_flight(
+    profile_id: &str,
+    flight: &Arc<ReadinessFlight>,
+    result: Result<LoginProfile, String>,
+) {
+    if let Ok(mut coordinator) = readiness_coordinator().lock() {
+        if coordinator
+            .flights
+            .get(profile_id)
+            .is_some_and(|current| Arc::ptr_eq(current, flight))
+        {
+            coordinator.flights.remove(profile_id);
+        }
+    }
+    if let Ok(mut shared_result) = flight.result.lock() {
+        *shared_result = Some(result);
+        flight.completed.notify_all();
+    }
+}
+
+fn invalidate_readiness_generation(profile_id: &str) {
+    if let Ok(mut coordinator) = readiness_coordinator().lock() {
+        let generation = coordinator
+            .generations
+            .entry(profile_id.to_string())
+            .or_insert(0);
+        *generation += 1;
+    }
+}
+
+fn with_current_readiness_generation<T>(
+    profile_id: &str,
+    generation: u64,
+    action: impl FnOnce() -> T,
+) -> Result<Option<T>, String> {
+    let coordinator = readiness_coordinator()
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if coordinator.generations.get(profile_id).copied() != Some(generation) {
+        return Ok(None);
+    }
+    Ok(Some(action()))
+}
+
+fn current_readiness_generation(profile_id: &str) -> Result<u64, String> {
+    readiness_coordinator()
+        .lock()
+        .map_err(|error| error.to_string())?
+        .generations
+        .get(profile_id)
+        .copied()
+        .ok_or_else(|| format!("No readiness generation exists for profile {profile_id}"))
+}
 
 pub trait CredentialVault {
     fn set_secret(&self, account: &str, secret: &str) -> Result<(), String>;
@@ -351,9 +481,55 @@ fn is_supported_provider(provider: &str) -> bool {
     matches!(provider, "codex" | "claude" | "opencode")
 }
 
-fn is_supported_login_profile(profile: &LoginProfile) -> bool {
-    is_supported_provider(&profile.provider)
-        && validate_auth_type(&profile.provider, &profile.auth_type).is_ok()
+pub(crate) fn provider_requires_managed_profile(provider: &str) -> bool {
+    is_supported_provider(provider)
+}
+
+pub(crate) fn require_managed_login_profile(
+    provider: &str,
+    profile_id: Option<&str>,
+) -> Result<(), String> {
+    if !provider_requires_managed_profile(provider) || profile_id.is_some() {
+        return Ok(());
+    }
+    let label = match provider {
+        "codex" => "Codex",
+        "claude" => "Claude",
+        "opencode" => "OpenCode",
+        _ => provider,
+    };
+    Err(format!(
+        "{label} agent runs require an Agentree login profile; refusing to fall back to global CLI credentials."
+    ))
+}
+
+pub(crate) fn select_login_profile_for_provider<'a>(
+    profiles: &'a [LoginProfile],
+    provider: &str,
+    explicit_profile_id: Option<&str>,
+) -> Option<&'a LoginProfile> {
+    explicit_profile_id
+        .and_then(|profile_id| {
+            profiles
+                .iter()
+                .find(|profile| profile.id == profile_id && profile.provider == provider)
+        })
+        .or_else(|| {
+            profiles.iter().find(|profile| {
+                profile.provider == provider && profile.status == "ready" && profile.is_default
+            })
+        })
+        .or_else(|| {
+            profiles
+                .iter()
+                .find(|profile| profile.provider == provider && profile.status == "ready")
+        })
+        .or_else(|| {
+            profiles
+                .iter()
+                .find(|profile| profile.provider == provider && profile.is_default)
+        })
+        .or_else(|| profiles.iter().find(|profile| profile.provider == provider))
 }
 
 fn validate_auth_type(provider: &str, auth_type: &str) -> Result<(), String> {
@@ -915,32 +1091,51 @@ fn persist_opencode_provider_capabilities(
     db.upsert_login_profile_metadata(&profile, None)
 }
 
-pub fn opencode_provider_model_is_visible(
-    config: &JsonValue,
-    provider_id: &str,
-    is_free: Option<bool>,
-) -> bool {
-    let Some(capability) = config
-        .get(OPENCODE_PROVIDER_CAPABILITIES_CONFIG_KEY)
-        .and_then(|value| value.get(provider_id))
-    else {
-        return true;
-    };
-    let auth_status = capability
-        .get("authStatus")
-        .or_else(|| capability.get("credentials"))
-        .and_then(JsonValue::as_str);
-    if auth_status == Some("invalid") {
-        return false;
+fn merge_opencode_model_catalog(config: &mut JsonValue, catalog: &JsonValue, checked_at: i64) {
+    if !catalog.is_array() {
+        return;
     }
-    if capability
-        .get("pricedModelAccess")
-        .and_then(JsonValue::as_str)
-        == Some("unavailable")
-    {
-        return is_free == Some(true);
+    if !config.is_object() {
+        *config = serde_json::json!({});
     }
-    true
+    let config = config
+        .as_object_mut()
+        .expect("OpenCode profile config is an object");
+    config.insert(
+        OPENCODE_MODEL_CATALOG_CONFIG_KEY.to_string(),
+        catalog.clone(),
+    );
+    config.insert(
+        OPENCODE_MODEL_CATALOG_CHECKED_AT_CONFIG_KEY.to_string(),
+        JsonValue::from(checked_at),
+    );
+}
+
+pub(crate) fn persist_opencode_model_catalog(
+    db: &TelemetryDb,
+    profile_id: &str,
+    catalog: &JsonValue,
+) -> Result<LoginProfile, String> {
+    if !catalog.is_array() {
+        return Err("OpenCode model catalog must contain an array.".to_string());
+    }
+    let mut profile = db.get_login_profile(profile_id)?;
+    if profile.provider != "opencode" {
+        return Err(format!(
+            "Login profile {} is for {}, not opencode",
+            profile_id, profile.provider
+        ));
+    }
+    let now = unix_timestamp();
+    merge_opencode_model_catalog(&mut profile.config, catalog, now);
+    profile.updated_at = now;
+    let updated = db.upsert_login_profile_metadata(&profile, None)?;
+    if catalog.is_array() {
+        let _ = crate::runtime_model_catalog::cache_opencode_accessible_catalog(
+            db, profile_id, catalog,
+        );
+    }
+    Ok(updated)
 }
 
 const CLAUDE_TOKEN_PREFIX: &str = "sk-ant-";
@@ -2020,63 +2215,14 @@ fn write_restricted_file(path: &Path, contents: &str) -> Result<(), String> {
 }
 
 fn command_output_with_timeout(command: &mut Command, timeout: Duration) -> Result<Output, String> {
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("failed to start account check: {}", error))?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "failed to capture account check stdout".to_string())?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "failed to capture account check stderr".to_string())?;
-    let stdout_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let stderr_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let started_at = Instant::now();
-    let (status, timed_out) = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break (status, false),
-            Ok(None) => {
-                if started_at.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let status = child
-                        .wait()
-                        .map_err(|error| format!("failed to stop account check: {}", error))?;
-                    break (status, true);
-                }
-                thread::sleep(Duration::from_millis(50));
+    crate::process_runner::command_output_with_timeout(command, timeout, "Account check").map_err(
+        |error| match error {
+            crate::process_runner::CommandOutputError::TimedOut { .. } => {
+                "Account check timed out before receiving a provider response.".to_string()
             }
-            Err(error) => {
-                let _ = child.kill();
-                return Err(format!("failed while waiting for account check: {}", error));
-            }
-        }
-    };
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| "account check stdout reader panicked".to_string())?
-        .map_err(|error| format!("failed to read account check stdout: {}", error))?;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| "account check stderr reader panicked".to_string())?
-        .map_err(|error| format!("failed to read account check stderr: {}", error))?;
-    if timed_out {
-        return Err("Account check timed out before receiving a provider response.".to_string());
-    }
-    Ok(Output {
-        status,
-        stdout,
-        stderr,
-    })
+            other => other.to_string(),
+        },
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -2245,9 +2391,19 @@ fn status_for_live_check_failure(failure: &LiveCheckFailure) -> &'static str {
         | Some("opencode_runtime_missing")
         | Some("codex_cli_missing")
         | Some("codex_cli_outdated")
-        | Some("node_runtime_missing")
-        | Some("codex_transport_closed") => return "unknown_error",
+        | Some("node_runtime_missing") => return "runtime_error",
+        Some("codex_transport_closed") => return "unknown_error",
         _ => {}
+    }
+    let lower = failure.message.to_ascii_lowercase();
+    if lower.contains("managed runtime")
+        || lower.contains("managed opencode runtime")
+        || lower.contains("managed codex runtime")
+        || lower.contains("managed claude runtime")
+        || lower.contains("runtime archive")
+        || lower.contains("content fingerprint mismatch")
+    {
+        return "runtime_error";
     }
     status_from_live_check_error(&failure.message)
 }
@@ -2300,6 +2456,17 @@ fn readiness_status_message(provider: &str, status: &str) -> String {
         "invalid" => "This account configuration is no longer valid. Reconnect it.".to_string(),
         _ => "Agentree could not verify this account. Try again.".to_string(),
     }
+}
+
+fn readiness_failure_status_message(
+    provider: &str,
+    status: &str,
+    failure: &LiveCheckFailure,
+) -> String {
+    if status == "runtime_error" {
+        return truncate_live_check_message(failure.message.clone());
+    }
+    readiness_status_message(provider, status)
 }
 
 fn capture_live_check_output(
@@ -2463,6 +2630,12 @@ fn run_opencode_readiness_check(
             let Ok(value) = serde_json::from_str::<JsonValue>(line) else {
                 continue;
             };
+            if value.get("type").and_then(JsonValue::as_str) == Some("model_catalog") {
+                if let Some(catalog) = value.get("models") {
+                    persist_opencode_model_catalog(db, &profile.id, catalog)?;
+                }
+                continue;
+            }
             if value.get("type").and_then(JsonValue::as_str) == Some("provider_capabilities") {
                 if let Some(capabilities) = value.get("capabilities") {
                     persist_opencode_provider_capabilities(db, &profile.id, capabilities)?;
@@ -2637,7 +2810,7 @@ fn run_login_profile_readiness_check(
     }
 }
 
-fn emit_login_profiles_changed(app: &tauri::AppHandle, profile: &LoginProfile) {
+pub(crate) fn emit_login_profiles_changed(app: &tauri::AppHandle, profile: &LoginProfile) {
     let _ = app.emit(
         "login-profiles:changed",
         LoginProfilesChangedEvent {
@@ -2737,39 +2910,146 @@ fn mark_login_profile_auth_missing(
     Ok(profile)
 }
 
-pub fn check_login_profile_readiness_with_vault(
+enum ReadinessCheckAttempt {
+    Completed(Result<LoginProfile, String>),
+    Superseded(u64),
+}
+
+fn attempt_login_profile_readiness_check(
     app: &tauri::AppHandle,
     db: &TelemetryDb,
     vault: &dyn CredentialVault,
     profile_id: &str,
-) -> Result<LoginProfile, String> {
-    let profile = db.get_login_profile(profile_id)?;
-    let cache_dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|error| format!("Could not resolve app cache dir: {}", error))?;
-    let readiness_result = run_login_profile_readiness_check(app, db, vault, &profile, cache_dir);
-    let (status, message, plan_type) = match readiness_result {
-        Ok(readiness) => ("ready", readiness.message, readiness.plan_type),
-        Err(failure) => {
-            let status = status_for_live_check_failure(&failure);
+    generation: u64,
+) -> Result<ReadinessCheckAttempt, String> {
+    let outcome = (|| {
+        let profile = db.get_login_profile(profile_id)?;
+        let cache_dir = app
+            .path()
+            .app_cache_dir()
+            .map_err(|error| format!("Could not resolve app cache dir: {}", error))?;
+        let readiness_result =
+            run_login_profile_readiness_check(app, db, vault, &profile, cache_dir);
+        let (status, message, plan_type) = match readiness_result {
+            Ok(readiness) => ("ready", readiness.message, readiness.plan_type),
+            Err(failure) => {
+                let status = status_for_live_check_failure(&failure);
+                crate::app_log!(
+                    "[LOGIN_PROFILE] event=readiness_failed profile_id={} status={} reason={}",
+                    profile_id,
+                    status,
+                    failure.message
+                );
+                let message = readiness_failure_status_message(&profile.provider, status, &failure);
+                (status, message, None)
+            }
+        };
+        Ok::<_, String>((status, message, plan_type))
+    })();
+    let completed = with_current_readiness_generation(profile_id, generation, || match outcome {
+        Ok((status, message, plan_type)) => db.mark_login_profile_status(
+            profile_id,
+            status,
+            Some(&message),
+            plan_type.as_deref(),
+            unix_timestamp(),
+        ),
+        Err(error) => {
             crate::app_log!(
-                "[LOGIN_PROFILE] event=readiness_failed profile_id={} status={} reason={}",
+                "[LOGIN_PROFILE] event=readiness_check_error profile_id={} reason={}",
                 profile_id,
-                status,
-                failure.message
+                error
             );
-            let message = readiness_status_message(&profile.provider, status);
-            (status, message, None)
+            db.mark_login_profile_status(
+                profile_id,
+                "unknown_error",
+                Some("Agentree could not verify this account. Try again."),
+                None,
+                unix_timestamp(),
+            )
         }
-    };
-    db.mark_login_profile_status(
-        profile_id,
-        status,
-        Some(&message),
-        plan_type.as_deref(),
-        unix_timestamp(),
-    )
+    })?;
+    match completed {
+        Some(result) => Ok(ReadinessCheckAttempt::Completed(result)),
+        None => Ok(ReadinessCheckAttempt::Superseded(
+            current_readiness_generation(profile_id)?,
+        )),
+    }
+}
+
+fn run_readiness_flight(
+    app: &tauri::AppHandle,
+    db: &TelemetryDb,
+    vault: &dyn CredentialVault,
+    profile_id: &str,
+    mut generation: u64,
+) -> Result<LoginProfile, String> {
+    loop {
+        match attempt_login_profile_readiness_check(app, db, vault, profile_id, generation)? {
+            ReadinessCheckAttempt::Completed(result) => return result,
+            ReadinessCheckAttempt::Superseded(current_generation) => {
+                crate::app_log!(
+                    "[LOGIN_PROFILE] event=readiness_superseded profile_id={} old_generation={} new_generation={}",
+                    profile_id,
+                    generation,
+                    current_generation
+                );
+                generation = current_generation;
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+enum LaunchProfileValidationError {
+    ProfileUnavailable(String),
+    NotReady { provider: String },
+    CredentialsMissing { provider: String, reason: String },
+}
+
+impl LaunchProfileValidationError {
+    fn user_message(&self) -> String {
+        match self {
+            Self::ProfileUnavailable(error) => error.clone(),
+            Self::NotReady { provider } | Self::CredentialsMissing { provider, .. } => {
+                provider_login_required_message(provider)
+            }
+        }
+    }
+}
+
+/// Checks only persisted metadata and locally stored credential material.
+///
+/// This function deliberately has no `AppHandle`, runtime invocation, or readiness-check
+/// dependency so an agent launch cannot reach provider discovery or a network probe.
+fn validate_login_profile_for_launch(
+    db: &TelemetryDb,
+    vault: &dyn CredentialVault,
+    profile_id: &str,
+) -> Result<LoginProfile, LaunchProfileValidationError> {
+    let profile = db
+        .get_login_profile(profile_id)
+        .map_err(LaunchProfileValidationError::ProfileUnavailable)?;
+    if profile.status != "ready"
+        || !is_supported_provider(&profile.provider)
+        || validate_auth_type(&profile.provider, &profile.auth_type).is_err()
+    {
+        return Err(LaunchProfileValidationError::NotReady {
+            provider: profile.provider,
+        });
+    }
+
+    match vault.get_secret(&secret_account_id(profile_id, "primary")) {
+        Ok(secret) if !secret.trim().is_empty() => Ok(profile),
+        Ok(_) => Err(LaunchProfileValidationError::CredentialsMissing {
+            provider: profile.provider,
+            reason: "stored credential is empty".to_string(),
+        }),
+        Err(reason) => Err(LaunchProfileValidationError::CredentialsMissing {
+            provider: profile.provider,
+            reason,
+        }),
+    }
 }
 
 pub(crate) fn ensure_login_profile_ready_with_vault(
@@ -2778,41 +3058,15 @@ pub(crate) fn ensure_login_profile_ready_with_vault(
     vault: &dyn CredentialVault,
     profile_id: &str,
 ) -> Result<LoginProfile, String> {
-    let profile = db.get_login_profile(profile_id)?;
-    let checked_recently = profile
-        .last_checked_at
-        .is_some_and(|checked_at| unix_timestamp() - checked_at < READINESS_CACHE_TTL_SECS);
-
-    if profile.status == "ready" && checked_recently {
-        if profile.auth_type != "external_cli" {
-            if let Err(error) = vault.get_secret(&secret_account_id(profile_id, "primary")) {
-                let _ = mark_login_profile_auth_missing(app, db, profile_id, &error);
-                return Err(provider_login_required_message(&profile.provider));
+    match validate_login_profile_for_launch(db, vault, profile_id) {
+        Ok(profile) => Ok(profile),
+        Err(error @ LaunchProfileValidationError::CredentialsMissing { .. }) => {
+            if let LaunchProfileValidationError::CredentialsMissing { reason, .. } = &error {
+                let _ = mark_login_profile_auth_missing(app, db, profile_id, reason);
             }
+            Err(error.user_message())
         }
-        return Ok(profile);
-    }
-
-    if profile.status == "auth_missing" && checked_recently {
-        return Err(provider_login_required_message(&profile.provider));
-    }
-
-    let checked =
-        check_login_profile_readiness_with_vault(app, db, vault, profile_id).map_err(|error| {
-            crate::app_log!(
-                "[LOGIN_PROFILE] event=readiness_check_error profile_id={} reason={}",
-                profile_id,
-                error
-            );
-            "Agentree could not verify this account. Try again.".to_string()
-        })?;
-    emit_login_profiles_changed(app, &checked);
-    if checked.status == "ready" {
-        Ok(checked)
-    } else {
-        Err(checked
-            .status_message
-            .unwrap_or_else(|| provider_login_required_message(&checked.provider)))
+        Err(error) => Err(error.user_message()),
     }
 }
 
@@ -2885,34 +3139,26 @@ fn provider_auth_failure_message(event: &JsonValue) -> Option<&str> {
     Some(message.unwrap_or_default())
 }
 
-fn spawn_login_profile_readiness_check(app: tauri::AppHandle, profile_id: String) {
+fn spawn_login_profile_readiness_check(
+    app: tauri::AppHandle,
+    profile_id: String,
+    flight: Arc<ReadinessFlight>,
+    generation: u64,
+) {
     thread::spawn(move || {
         let db = app.state::<TelemetryDb>();
-        let result = check_login_profile_readiness_with_vault(
-            &app,
-            &db,
-            &KeyringCredentialVault,
-            &profile_id,
-        );
-        match result {
-            Ok(profile) => emit_login_profiles_changed(&app, &profile),
-            Err(error) => {
-                crate::app_log!(
-                    "[LOGIN_PROFILE] event=readiness_check_error profile_id={} reason={}",
-                    profile_id,
-                    error
-                );
-                if let Ok(profile) = db.mark_login_profile_status(
-                    &profile_id,
-                    "unknown_error",
-                    Some("Agentree could not verify this account. Try again."),
-                    None,
-                    unix_timestamp(),
-                ) {
-                    emit_login_profiles_changed(&app, &profile);
-                }
-            }
+        let result =
+            run_readiness_flight(&app, &db, &KeyringCredentialVault, &profile_id, generation);
+        if let Ok(profile) = &result {
+            emit_login_profiles_changed(&app, profile);
+        } else if let Err(error) = &result {
+            crate::app_log!(
+                "[LOGIN_PROFILE] event=readiness_check_error profile_id={} reason={}",
+                profile_id,
+                error
+            );
         }
+        complete_readiness_flight(&profile_id, &flight, result);
     });
 }
 
@@ -2921,35 +3167,35 @@ fn enqueue_login_profile_readiness_check(
     db: &TelemetryDb,
     profile_id: &str,
 ) -> Result<LoginProfile, String> {
-    let profile = db.mark_login_profile_status(
-        profile_id,
-        "checking",
-        Some("Checking account credentials without starting an agent run."),
-        None,
-        unix_timestamp(),
-    )?;
-    emit_login_profiles_changed(&app, &profile);
-    spawn_login_profile_readiness_check(app, profile_id.to_string());
-    Ok(profile)
-}
-
-pub fn refresh_login_profiles_on_startup(
-    app: tauri::AppHandle,
-    db: &TelemetryDb,
-) -> Result<(), String> {
-    for profile in db.list_login_profiles()? {
-        if !is_supported_login_profile(&profile) {
-            crate::app_log!(
-                "[LOGIN_PROFILE] event=startup_readiness_skipped profile_id={} provider={} auth_type={}",
-                profile.id,
-                profile.provider,
-                profile.auth_type
-            );
-            continue;
+    match begin_readiness_flight(profile_id)? {
+        ReadinessFlightRole::Owner { flight, generation } => {
+            let profile_result = with_current_readiness_generation(profile_id, generation, || {
+                db.mark_login_profile_status(
+                    profile_id,
+                    "checking",
+                    Some("Checking account credentials without starting an agent run."),
+                    None,
+                    unix_timestamp(),
+                )
+            });
+            let profile = match profile_result {
+                Ok(Some(Ok(profile))) => profile,
+                Ok(Some(Err(error))) | Err(error) => {
+                    complete_readiness_flight(profile_id, &flight, Err(error.clone()));
+                    return Err(error);
+                }
+                Ok(None) => {
+                    let error = "Account check was superseded before it started.".to_string();
+                    complete_readiness_flight(profile_id, &flight, Err(error.clone()));
+                    return Err(error);
+                }
+            };
+            emit_login_profiles_changed(&app, &profile);
+            spawn_login_profile_readiness_check(app, profile_id.to_string(), flight, generation);
+            Ok(profile)
         }
-        let _ = enqueue_login_profile_readiness_check(app.clone(), db, &profile.id);
+        ReadinessFlightRole::Waiter => db.get_login_profile(profile_id),
     }
-    Ok(())
 }
 
 pub fn reconcile_login_profiles_on_startup(db: &TelemetryDb) -> Result<usize, String> {
@@ -3004,6 +3250,9 @@ pub fn upsert_login_profile(
     db: State<TelemetryDb>,
     request: UpsertLoginProfileRequest,
 ) -> Result<LoginProfile, String> {
+    if let Some(profile_id) = request.id.as_deref() {
+        invalidate_readiness_generation(profile_id);
+    }
     let refresh_cache = request.provider.eq_ignore_ascii_case("opencode")
         && request.auth_type.eq_ignore_ascii_case("opencode_auth")
         && request
@@ -3021,6 +3270,7 @@ pub fn upsert_login_profile(
 #[tauri::command]
 #[specta::specta]
 pub fn delete_login_profile(db: State<TelemetryDb>, profile_id: String) -> Result<(), String> {
+    invalidate_readiness_generation(&profile_id);
     delete_login_profile_with_vault(&db, &KeyringCredentialVault, &profile_id)
 }
 
@@ -3975,6 +4225,40 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    #[cfg(unix)]
+    #[test]
+    fn timed_out_account_check_terminates_descendant_processes() {
+        let directory = tempfile::tempdir().expect("account-check tempdir");
+        let child_pid_path = directory.path().join("child.pid");
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("sleep 30 & echo $! > \"$1\"; wait")
+            .arg("agentree-account-check-test")
+            .arg(&child_pid_path);
+
+        let error = command_output_with_timeout(&mut command, Duration::from_millis(150))
+            .expect_err("account check should time out");
+        assert_eq!(
+            error,
+            "Account check timed out before receiving a provider response."
+        );
+
+        let child_pid = fs::read_to_string(&child_pid_path)
+            .expect("child pid should be recorded")
+            .trim()
+            .parse::<i32>()
+            .expect("child pid should be numeric");
+        let descendant_stopped = (0..40).any(|_| {
+            let exists = unsafe { libc::kill(child_pid, 0) } == 0;
+            if exists {
+                thread::sleep(Duration::from_millis(25));
+            }
+            !exists
+        });
+        assert!(descendant_stopped, "timed-out descendant process survived");
+    }
+
     struct MemoryVault {
         secrets: Mutex<HashMap<String, String>>,
         delete_failures_remaining: Mutex<usize>,
@@ -4125,74 +4409,240 @@ mod tests {
     }
 
     #[test]
-    fn startup_readiness_accepts_only_current_provider_profiles() {
-        assert!(is_supported_login_profile(&test_profile(
-            "codex",
-            "codex",
-            "codex_chatgpt_session",
-            serde_json::json!({}),
-        )));
-        assert!(is_supported_login_profile(&test_profile(
-            "claude",
-            "claude",
-            "claude_oauth",
-            serde_json::json!({}),
-        )));
-        assert!(is_supported_login_profile(&test_profile(
-            "opencode",
-            "opencode",
-            "opencode_auth",
-            serde_json::json!({}),
-        )));
-        assert!(!is_supported_login_profile(&test_profile(
-            "legacy-claude-cli",
-            "claude",
-            "external_cli",
-            serde_json::json!({}),
-        )));
+    fn launch_validation_uses_stale_persisted_readiness_without_a_live_check() {
+        let (_dir, db) = open_test_db();
+        let vault = MemoryVault::new();
+        for (profile_id, provider, auth_type) in [
+            ("codex", "codex", "codex_chatgpt_session"),
+            ("claude", "claude", "claude_oauth"),
+            ("opencode", "opencode", "opencode_auth"),
+        ] {
+            let mut profile = test_profile(profile_id, provider, auth_type, serde_json::json!({}));
+            profile.status = "ready".to_string();
+            profile.last_checked_at = Some(1);
+            db.upsert_login_profile_metadata(&profile, None)
+                .expect("store ready profile");
+            vault
+                .set_secret(
+                    &secret_account_id(profile_id, "primary"),
+                    "local-credential",
+                )
+                .expect("store local credential");
+
+            let validated = validate_login_profile_for_launch(&db, &vault, profile_id)
+                .expect("stale persisted readiness remains launchable");
+
+            assert_eq!(validated.id, profile_id);
+            assert_eq!(validated.last_checked_at, Some(1));
+        }
     }
 
     #[test]
-    fn opencode_provider_capabilities_filter_invalid_and_unfunded_models() {
-        let mut config = serde_json::json!({
-            "opencode_provider_capabilities": {
-                "openrouter": {
-                    "authStatus": "valid",
-                    "pricedModelAccess": "available"
-                }
-            }
-        });
-        merge_opencode_provider_capabilities(
-            &mut config,
-            &serde_json::json!([{
-                "providerId": "openrouter",
-                "credentials": "invalid",
-                "pricedModelAccess": "unknown",
-                "checkedAt": 123,
-                "modelCount": 4,
-                "freeModelCount": 1
-            }]),
+    fn launch_validation_rejects_non_ready_profiles_without_rechecking_them() {
+        let (_dir, db) = open_test_db();
+        let vault = MemoryVault::new();
+        let profile = test_profile(
+            "opencode-unchecked",
+            "opencode",
+            "opencode_auth",
+            serde_json::json!({}),
+        );
+        db.upsert_login_profile_metadata(&profile, None)
+            .expect("store unchecked profile");
+        vault
+            .set_secret(
+                &secret_account_id(&profile.id, "primary"),
+                "local-credential",
+            )
+            .expect("store local credential");
+
+        let error = validate_login_profile_for_launch(&db, &vault, &profile.id)
+            .expect_err("unchecked profile must fail immediately");
+
+        assert!(matches!(
+            &error,
+            LaunchProfileValidationError::NotReady { provider }
+                if provider == "opencode"
+        ));
+        assert_eq!(
+            error.user_message(),
+            "Log in to OpenCode in Managed Accounts."
+        );
+    }
+
+    #[test]
+    fn launch_validation_requires_local_credentials_but_no_provider_runtime() {
+        let (_dir, db) = open_test_db();
+        let vault = MemoryVault::new();
+        let mut profile = test_profile(
+            "opencode-missing-secret",
+            "opencode",
+            "opencode_auth",
+            serde_json::json!({}),
+        );
+        profile.status = "ready".to_string();
+        db.upsert_login_profile_metadata(&profile, None)
+            .expect("store ready profile");
+
+        let error = validate_login_profile_for_launch(&db, &vault, &profile.id)
+            .expect_err("missing local credential must fail immediately");
+
+        assert!(matches!(
+            &error,
+            LaunchProfileValidationError::CredentialsMissing { provider, .. }
+                if provider == "opencode"
+        ));
+        assert_eq!(
+            error.user_message(),
+            "Log in to OpenCode in Managed Accounts."
+        );
+    }
+
+    #[test]
+    fn all_coding_providers_require_managed_profiles() {
+        for provider in ["codex", "claude", "opencode"] {
+            assert!(provider_requires_managed_profile(provider));
+            assert!(require_managed_login_profile(provider, None).is_err());
+            assert!(require_managed_login_profile(provider, Some("profile-1")).is_ok());
+        }
+        assert!(!provider_requires_managed_profile("bash"));
+        assert!(require_managed_login_profile("bash", None).is_ok());
+    }
+
+    #[test]
+    fn concurrent_readiness_requests_share_one_flight() {
+        let profile_id = format!("singleflight-{}", Uuid::new_v4());
+        let (owner_flight, generation) =
+            match begin_readiness_flight(&profile_id).expect("begin owner readiness flight") {
+                ReadinessFlightRole::Owner { flight, generation } => (flight, generation),
+                ReadinessFlightRole::Waiter => panic!("first caller should own the flight"),
+            };
+        match begin_readiness_flight(&profile_id).expect("join readiness flight") {
+            ReadinessFlightRole::Waiter => {}
+            ReadinessFlightRole::Owner { .. } => panic!("second caller should share the flight"),
+        }
+        let waiter_flight = active_readiness_flight(&profile_id).expect("read shared flight");
+
+        assert!(Arc::ptr_eq(&owner_flight, &waiter_flight));
+        assert_eq!(
+            current_readiness_generation(&profile_id).expect("read generation"),
+            generation
+        );
+        let profile = test_profile(&profile_id, "codex", "codex_api_key", serde_json::json!({}));
+        complete_readiness_flight(&profile_id, &owner_flight, Ok(profile.clone()));
+        assert_eq!(
+            wait_for_readiness_flight(&waiter_flight)
+                .expect("waiter result")
+                .id,
+            profile.id
+        );
+    }
+
+    #[test]
+    fn superseded_readiness_generation_cannot_commit() {
+        let profile_id = format!("generation-{}", Uuid::new_v4());
+        let (flight, generation) =
+            match begin_readiness_flight(&profile_id).expect("begin readiness flight") {
+                ReadinessFlightRole::Owner { flight, generation } => (flight, generation),
+                ReadinessFlightRole::Waiter => panic!("first caller should own the flight"),
+            };
+        invalidate_readiness_generation(&profile_id);
+        let committed = std::sync::atomic::AtomicBool::new(false);
+
+        let result = with_current_readiness_generation(&profile_id, generation, || {
+            committed.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .expect("generation check");
+
+        assert!(result.is_none());
+        assert!(!committed.load(std::sync::atomic::Ordering::SeqCst));
+        complete_readiness_flight(
+            &profile_id,
+            &flight,
+            Err("superseded test flight".to_string()),
+        );
+    }
+
+    #[test]
+    fn profile_selection_uses_shared_priority_order() {
+        let first = test_profile("first", "codex", "codex_api_key", serde_json::json!({}));
+        let mut default = test_profile("default", "codex", "codex_api_key", serde_json::json!({}));
+        default.is_default = true;
+        let mut ready = test_profile("ready", "codex", "codex_api_key", serde_json::json!({}));
+        ready.status = "ready".to_string();
+        let mut ready_default = test_profile(
+            "ready-default",
+            "codex",
+            "codex_api_key",
+            serde_json::json!({}),
+        );
+        ready_default.status = "ready".to_string();
+        ready_default.is_default = true;
+        let profiles = vec![
+            first.clone(),
+            default.clone(),
+            ready.clone(),
+            ready_default.clone(),
+        ];
+
+        assert_eq!(
+            select_login_profile_for_provider(&profiles, "codex", None).map(|profile| &profile.id),
+            Some(&ready_default.id)
+        );
+        assert_eq!(
+            select_login_profile_for_provider(&profiles, "codex", Some("first"))
+                .map(|profile| &profile.id),
+            Some(&first.id)
         );
 
-        assert!(!opencode_provider_model_is_visible(
-            &config,
-            "openrouter",
-            Some(true)
-        ));
-        config["opencode_provider_capabilities"]["openrouter"]["authStatus"] =
-            serde_json::json!("valid");
-        config["opencode_provider_capabilities"]["openrouter"]["pricedModelAccess"] =
-            serde_json::json!("unavailable");
-        assert!(opencode_provider_model_is_visible(
-            &config,
-            "openrouter",
-            Some(true)
-        ));
-        assert!(!opencode_provider_model_is_visible(
-            &config,
-            "openrouter",
-            Some(false)
-        ));
+        ready_default.is_default = false;
+        let profiles = vec![first.clone(), default.clone(), ready.clone(), ready_default];
+        assert_eq!(
+            select_login_profile_for_provider(&profiles, "codex", None).map(|profile| &profile.id),
+            Some(&ready.id)
+        );
+
+        ready.status = "unchecked".to_string();
+        let profiles = vec![first.clone(), default.clone(), ready];
+        assert_eq!(
+            select_login_profile_for_provider(&profiles, "codex", None).map(|profile| &profile.id),
+            Some(&default.id)
+        );
+
+        default.is_default = false;
+        let profiles = vec![first.clone(), default];
+        assert_eq!(
+            select_login_profile_for_provider(&profiles, "codex", None).map(|profile| &profile.id),
+            Some(&first.id)
+        );
+    }
+
+    #[test]
+    fn opencode_model_catalog_is_persisted_without_replacing_other_profile_config() {
+        let mut config = serde_json::json!({
+            "opencode_provider_capabilities": {
+                "openai": { "authStatus": "valid" }
+            },
+            "custom": true
+        });
+        let catalog = serde_json::json!([{
+            "id": "openai/gpt-5.6-sol",
+            "providerId": "openai",
+            "name": "GPT-5.6 Sol"
+        }]);
+
+        merge_opencode_model_catalog(&mut config, &catalog, 123);
+
+        assert_eq!(config[OPENCODE_MODEL_CATALOG_CONFIG_KEY], catalog);
+        assert_eq!(
+            config[OPENCODE_MODEL_CATALOG_CHECKED_AT_CONFIG_KEY],
+            serde_json::json!(123)
+        );
+        assert_eq!(config["custom"], serde_json::json!(true));
+        assert_eq!(
+            config["opencode_provider_capabilities"]["openai"]["authStatus"],
+            serde_json::json!("valid")
+        );
     }
 
     #[test]
@@ -4812,7 +5262,7 @@ mod tests {
         assert!(failure.message.contains("Cannot find package"));
         assert!(!failure.message.contains("Node.js v18.19.1"));
         assert_eq!(failure.code.as_deref(), Some("claude_runtime_missing"));
-        assert_eq!(status_for_live_check_failure(&failure), "unknown_error");
+        assert_eq!(status_for_live_check_failure(&failure), "runtime_error");
     }
 
     #[test]
@@ -4826,7 +5276,21 @@ mod tests {
         assert!(failure.message.contains("OpenCode runtime dependency"));
         assert!(!failure.message.contains("Claude runtime"));
         assert_eq!(failure.code.as_deref(), Some("opencode_runtime_missing"));
-        assert_eq!(status_for_live_check_failure(&failure), "unknown_error");
+        assert_eq!(status_for_live_check_failure(&failure), "runtime_error");
+    }
+
+    #[test]
+    fn managed_runtime_failures_keep_the_actionable_repair_message() {
+        let failure = LiveCheckFailure::uncoded(
+            "Agentree's managed OpenCode runtime could not be installed or repaired: Extracted runtime content fingerprint mismatch. Open Runtime Health and retry.",
+        );
+        let status = status_for_live_check_failure(&failure);
+
+        assert_eq!(status, "runtime_error");
+        assert_eq!(
+            readiness_failure_status_message("opencode", status, &failure),
+            failure.message,
+        );
     }
 
     #[test]

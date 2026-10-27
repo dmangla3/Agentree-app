@@ -106,6 +106,14 @@ describe('GraphControls', () => {
     expect(source).not.toContain('bg-gradient-');
   });
 
+  it('uses a computer-science tree icon for tree view', () => {
+    const source = readFileSync(join(process.cwd(), 'src/components/graph/GraphControls.tsx'), 'utf8');
+
+    expect(source).toContain('TreeStructure as TreeHeaderIcon');
+    expect(source).not.toContain('TreeEvergreen as TreeHeaderIcon');
+    expect(source).toContain('icon={TreeHeaderIcon} size={14} className="rotate-90"');
+  });
+
   it('does not render the debug reset graph or auto-refresh controls', () => {
     render(
       <TooltipProvider>

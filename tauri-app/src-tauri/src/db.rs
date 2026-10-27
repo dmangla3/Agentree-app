@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -287,6 +287,14 @@ fn merge_timeline_into_payload(payload: &mut JsonValue, timeline: Vec<JsonValue>
 pub struct TelemetryDb {
     conn: Mutex<Connection>,
     db_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DevWorktreeBootstrapOutcome {
+    Cloned,
+    SkippedExistingWorkspaces,
+    SkippedMissingSource,
+    SkippedEmptySource,
 }
 
 #[derive(Debug)]
@@ -874,6 +882,207 @@ pub struct TelemetrySessionSnapshot {
 }
 
 impl TelemetryDb {
+    pub fn bootstrap_dev_worktree(
+        source_db_path: &Path,
+        target_app_data_dir: &Path,
+    ) -> Result<DevWorktreeBootstrapOutcome, String> {
+        if !source_db_path.exists() {
+            return Ok(DevWorktreeBootstrapOutcome::SkippedMissingSource);
+        }
+
+        std::fs::create_dir_all(target_app_data_dir)
+            .map_err(|error| format!("Could not create worktree app-data directory: {error}"))?;
+        let target_db_path = target_app_data_dir.join("telemetry.db");
+        if source_db_path == target_db_path {
+            return Err("Refusing to bootstrap a worktree database from itself.".to_string());
+        }
+
+        let open_read_only = |path: &Path| {
+            Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|error| format!("Could not open {}: {error}", path.display()))
+        };
+        let workspace_count = |connection: &Connection| -> Result<i64, String> {
+            let has_table = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'local_workspaces')",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| error.to_string())?
+                != 0;
+            if !has_table {
+                return Ok(0);
+            }
+            connection
+                .query_row("SELECT COUNT(*) FROM local_workspaces", [], |row| {
+                    row.get(0)
+                })
+                .map_err(|error| error.to_string())
+        };
+
+        if target_db_path.exists() {
+            let target = open_read_only(&target_db_path)?;
+            if workspace_count(&target)? > 0 {
+                return Ok(DevWorktreeBootstrapOutcome::SkippedExistingWorkspaces);
+            }
+        }
+
+        let source = open_read_only(source_db_path)?;
+        if workspace_count(&source)? == 0 {
+            return Ok(DevWorktreeBootstrapOutcome::SkippedEmptySource);
+        }
+        source
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(|error| format!("Could not configure source database backup: {error}"))?;
+
+        let unique_suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_nanos();
+        let temporary_db_path = target_app_data_dir.join(format!(
+            ".telemetry.bootstrap-{}-{unique_suffix}.db",
+            std::process::id()
+        ));
+        let rollback_db_path = target_app_data_dir.join(format!(
+            ".telemetry.pre-bootstrap-{}-{unique_suffix}.db",
+            std::process::id()
+        ));
+
+        let bootstrap_result = (|| -> Result<(), String> {
+            {
+                let mut temporary = Connection::open(&temporary_db_path).map_err(|error| {
+                    format!("Could not create worktree database snapshot: {error}")
+                })?;
+                let backup =
+                    rusqlite::backup::Backup::new(&source, &mut temporary).map_err(|error| {
+                        format!("Could not start worktree database snapshot: {error}")
+                    })?;
+                backup
+                    .run_to_completion(256, Duration::from_millis(10), None)
+                    .map_err(|error| {
+                        format!("Could not finish worktree database snapshot: {error}")
+                    })?;
+                drop(backup);
+
+                let transaction = temporary
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| {
+                        format!("Could not sanitize worktree database snapshot: {error}")
+                    })?;
+                let now = unix_timestamp();
+                let cloned_run_reason =
+                    "Copied into a worktree dev app; the original process was not resumed.";
+                transaction
+                    .execute("DELETE FROM local_app_kv WHERE key = 'device_id'", [])
+                    .map_err(|error| error.to_string())?;
+                transaction
+                    .execute(
+                        r#"
+                        INSERT INTO local_app_kv (key, value, created_at, updated_at)
+                        VALUES ('dev_worktree_bootstrap_source', ?1, ?2, ?2)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                        "#,
+                        params![source_db_path.to_string_lossy(), now],
+                    )
+                    .map_err(|error| error.to_string())?;
+                transaction
+                    .execute(
+                        r#"
+                        UPDATE agent_run_ledger
+                        SET status = 'needs_user_action',
+                            phase = 'needs_user_action',
+                            pid = NULL,
+                            failure_reason = ?1,
+                            needs_user_action_reason = ?1,
+                            updated_at = ?2
+                        WHERE cleanup_completed = 0
+                          AND terminal_status IS NULL
+                          AND status NOT IN (
+                            'completed', 'failed', 'cancelled', 'error', 'failed_setup',
+                            'failed_spawn', 'failed_finalization', 'failed_runtime'
+                          )
+                        "#,
+                        params![cloned_run_reason, now],
+                    )
+                    .map_err(|error| error.to_string())?;
+                transaction
+                    .execute(
+                        r#"
+                        UPDATE agent_launch_requests
+                        SET status = 'failed', failure_reason = ?1,
+                            lease_owner = NULL, lease_expires_at = NULL, updated_at = ?2
+                        WHERE status IN ('preparing', 'starting')
+                        "#,
+                        params![cloned_run_reason, now],
+                    )
+                    .map_err(|error| error.to_string())?;
+                transaction
+                    .execute(
+                        r#"
+                        UPDATE session_status
+                        SET status = 'failed', completed_at = COALESCE(completed_at, ?1)
+                        WHERE status NOT IN (
+                            'completed', 'failed', 'cancelled', 'error', 'failed_setup',
+                            'failed_spawn', 'failed_finalization', 'failed_runtime'
+                        )
+                        "#,
+                        params![now],
+                    )
+                    .map_err(|error| error.to_string())?;
+                transaction
+                    .execute(
+                        "DELETE FROM local_sync_events WHERE status IN ('pending', 'in_flight')",
+                        [],
+                    )
+                    .map_err(|error| error.to_string())?;
+                transaction.commit().map_err(|error| {
+                    format!("Could not commit worktree snapshot sanitization: {error}")
+                })?;
+            }
+
+            for suffix in ["-wal", "-shm"] {
+                let sidecar = PathBuf::from(format!("{}{}", target_db_path.display(), suffix));
+                match std::fs::remove_file(&sidecar) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(format!(
+                            "Could not remove stale {}: {error}",
+                            sidecar.display()
+                        ))
+                    }
+                }
+            }
+
+            let had_target = target_db_path.exists();
+            if had_target {
+                std::fs::rename(&target_db_path, &rollback_db_path).map_err(|error| {
+                    format!("Could not preserve the existing empty worktree database: {error}")
+                })?;
+            }
+            if let Err(error) = std::fs::rename(&temporary_db_path, &target_db_path) {
+                if had_target {
+                    let _ = std::fs::rename(&rollback_db_path, &target_db_path);
+                }
+                return Err(format!(
+                    "Could not install the worktree database snapshot: {error}"
+                ));
+            }
+            if had_target {
+                // The installed snapshot is already valid; a leftover rollback file is
+                // harmless and should not prevent the app from starting.
+                let _ = std::fs::remove_file(&rollback_db_path);
+            }
+            Ok(())
+        })();
+
+        if bootstrap_result.is_err() {
+            let _ = std::fs::remove_file(&temporary_db_path);
+        }
+        bootstrap_result?;
+        Ok(DevWorktreeBootstrapOutcome::Cloned)
+    }
+
     pub fn open(app_data_dir: &Path) -> Result<Self, String> {
         std::fs::create_dir_all(app_data_dir).map_err(|e| e.to_string())?;
         let db_path = app_data_dir.join("telemetry.db");
@@ -9680,6 +9889,181 @@ mod tests {
             phase: "accepted".to_string(),
             login_profile_id: None,
         }
+    }
+
+    #[test]
+    fn dev_worktree_bootstrap_clones_user_state_and_neutralizes_runtime_state() {
+        let (source_dir, source_db) = open_test_db();
+        {
+            let conn = source_db.conn.lock().expect("source db lock");
+            conn.execute_batch(
+                r#"
+                INSERT INTO local_workspaces (
+                    id, name, created_at, updated_at, local_updated_at, cloud_backup_enabled
+                ) VALUES (
+                    'workspace-source', 'Source workspace',
+                    '2026-08-05T00:00:00.000Z', '2026-08-05T00:00:00.000Z', 1, 0
+                );
+                INSERT INTO login_profiles (
+                    id, provider, display_name, auth_type, config_json, status,
+                    is_default, created_at, updated_at
+                ) VALUES (
+                    'profile-source', 'codex', 'Source profile', 'subscription', '{}',
+                    'ready', 1, 1, 1
+                );
+                INSERT INTO local_app_kv (key, value, created_at, updated_at)
+                VALUES ('device_id', 'source-device', 1, 1);
+                INSERT INTO agent_run_ledger (
+                    run_id, assistant_node_id, pid, agent_type, status, phase,
+                    started_at, updated_at, login_profile_id
+                ) VALUES (
+                    'run-active', 'assistant-active', 4242, 'codex', 'running',
+                    'running', 1, 1, 'profile-source'
+                );
+                INSERT INTO agent_launch_requests (
+                    request_id, workspace_id, user_node_id, assistant_node_id, run_id,
+                    status, request_json, lease_owner, lease_expires_at, created_at, updated_at
+                ) VALUES (
+                    'launch-active', 'workspace-source', 'user-active', 'assistant-active',
+                    'run-active', 'starting', '{}', 'source-process', 999999, 1, 1
+                );
+                INSERT INTO session_status (session_id, status, created_at)
+                VALUES ('session-active', 'running', 1);
+                INSERT INTO local_sync_events (
+                    id, entity_type, entity_id, event_type, payload_json, idempotency_key,
+                    status, created_at, updated_at
+                ) VALUES (
+                    'sync-pending', 'workspace', 'workspace-source', 'workspace.update', '{}',
+                    'sync-pending-key', 'pending', 1, 1
+                );
+                "#,
+            )
+            .expect("seed source database");
+        }
+
+        let target_dir = tempfile::tempdir().expect("target tempdir");
+        let outcome = TelemetryDb::bootstrap_dev_worktree(
+            &source_dir.path().join("telemetry.db"),
+            target_dir.path(),
+        )
+        .expect("bootstrap worktree data");
+        assert_eq!(outcome, DevWorktreeBootstrapOutcome::Cloned);
+
+        let cloned =
+            Connection::open(target_dir.path().join("telemetry.db")).expect("open cloned database");
+        assert_eq!(
+            cloned
+                .query_row("SELECT COUNT(*) FROM local_workspaces", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("workspace count"),
+            1
+        );
+        assert_eq!(
+            cloned
+                .query_row("SELECT COUNT(*) FROM login_profiles", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("login profile count"),
+            1
+        );
+        assert_eq!(
+            cloned
+                .query_row(
+                    "SELECT COUNT(*) FROM local_app_kv WHERE key = 'device_id'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("device id count"),
+            0
+        );
+        let (run_status, run_phase, run_pid, reason): (String, String, Option<i64>, String) = cloned
+            .query_row(
+                "SELECT status, phase, pid, needs_user_action_reason FROM agent_run_ledger WHERE run_id = 'run-active'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("cloned run state");
+        assert_eq!(run_status, "needs_user_action");
+        assert_eq!(run_phase, "needs_user_action");
+        assert_eq!(run_pid, None);
+        assert!(reason.starts_with("Copied into a worktree dev app"));
+        assert_eq!(
+            cloned
+                .query_row(
+                    "SELECT status FROM agent_launch_requests WHERE request_id = 'launch-active'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("launch status"),
+            "failed"
+        );
+        assert_eq!(
+            cloned
+                .query_row(
+                    "SELECT status FROM session_status WHERE session_id = 'session-active'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("session status"),
+            "failed"
+        );
+        assert_eq!(
+            cloned
+                .query_row("SELECT COUNT(*) FROM local_sync_events", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("sync event count"),
+            0
+        );
+    }
+
+    #[test]
+    fn dev_worktree_bootstrap_never_overwrites_existing_workspace_data() {
+        let (source_dir, source_db) = open_test_db();
+        let (target_dir, target_db) = open_test_db();
+        for (db, id) in [
+            (&source_db, "workspace-source"),
+            (&target_db, "workspace-target"),
+        ] {
+            db.conn
+                .lock()
+                .expect("db lock")
+                .execute(
+                    "INSERT INTO local_workspaces (id, name, created_at, updated_at, local_updated_at, cloud_backup_enabled) VALUES (?1, ?1, '2026-08-05T00:00:00.000Z', '2026-08-05T00:00:00.000Z', 1, 0)",
+                    params![id],
+                )
+                .expect("insert workspace");
+        }
+
+        let outcome = TelemetryDb::bootstrap_dev_worktree(
+            &source_dir.path().join("telemetry.db"),
+            target_dir.path(),
+        )
+        .expect("skip existing worktree data");
+        assert_eq!(
+            outcome,
+            DevWorktreeBootstrapOutcome::SkippedExistingWorkspaces
+        );
+        assert_eq!(
+            target_db
+                .conn
+                .lock()
+                .expect("target lock")
+                .query_row("SELECT id FROM local_workspaces", [], |row| row
+                    .get::<_, String>(0),)
+                .expect("target workspace"),
+            "workspace-target"
+        );
+    }
+
+    #[test]
+    fn dev_worktree_bootstrap_skips_a_missing_source() {
+        let target_dir = tempfile::tempdir().expect("target tempdir");
+        let outcome = TelemetryDb::bootstrap_dev_worktree(
+            &target_dir.path().join("missing.db"),
+            target_dir.path(),
+        )
+        .expect("skip missing source");
+        assert_eq!(outcome, DevWorktreeBootstrapOutcome::SkippedMissingSource);
+        assert!(!target_dir.path().join("telemetry.db").exists());
     }
 
     #[test]

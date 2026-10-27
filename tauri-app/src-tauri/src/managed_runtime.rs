@@ -8,20 +8,21 @@
 use once_cell::sync::{Lazy, OnceCell};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
-use walkdir::WalkDir;
+
+use crate::runtime_archive::{
+    fingerprint_exclusions, install_tree_sha256, unpack_archive_skipping_apple_metadata,
+};
 
 const RUNTIME_MANIFEST_JSON: &str = include_str!("../../runtime-manifest.json");
 const INSTALL_MARKER: &str = ".agentree-runtime-ok";
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
-const CLAUDE_GENERATED_FILES: &[&str] = &["ai-label-prompt.txt", "claude-agent-sdk-adapter.mjs"];
-const OPENCODE_GENERATED_FILES: &[&str] = &["opencode-agent-sdk-adapter.mjs"];
 
 pub const COMPONENT_NODE: &str = "node";
 pub const COMPONENT_CLAUDE_SDK: &str = "claude-sdk";
@@ -30,8 +31,9 @@ pub const COMPONENT_OPENCODE: &str = "opencode";
 
 static MANIFEST: OnceCell<RuntimeManifest> = OnceCell::new();
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
-static VALIDATED_INSTALLS: Lazy<Mutex<HashSet<(PathBuf, String)>>> =
-    Lazy::new(|| Mutex::new(HashSet::new()));
+type InstallValidation = Arc<OnceCell<Result<(), String>>>;
+static VALIDATED_INSTALLS: Lazy<Mutex<HashMap<(PathBuf, String), InstallValidation>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,107 +106,6 @@ pub fn component_install_dir(app: &AppHandle, component: &str) -> Result<PathBuf
     Ok(runtime_root(app)?.join(component).join(&spec.version))
 }
 
-fn fingerprint_exclusions(component: &str) -> &'static [&'static str] {
-    if component == COMPONENT_CLAUDE_SDK {
-        CLAUDE_GENERATED_FILES
-    } else if component == COMPONENT_OPENCODE {
-        OPENCODE_GENERATED_FILES
-    } else {
-        &[]
-    }
-}
-
-fn update_fingerprint_field(hasher: &mut Sha256, value: &[u8]) {
-    hasher.update((value.len() as u64).to_be_bytes());
-    hasher.update(value);
-}
-
-fn install_tree_sha256(install_dir: &Path, exclusions: &[&str]) -> Result<String, String> {
-    let mut entries = WalkDir::new(install_dir)
-        .min_depth(1)
-        .follow_links(false)
-        .into_iter()
-        .map(|entry| entry.map_err(|error| format!("Could not inspect runtime tree: {}", error)))
-        .collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by(|left, right| left.path().cmp(right.path()));
-
-    let mut hasher = Sha256::new();
-    for entry in entries {
-        let relative = entry.path().strip_prefix(install_dir).map_err(|error| {
-            format!(
-                "Could not fingerprint runtime path {}: {}",
-                entry.path().display(),
-                error
-            )
-        })?;
-        let relative = relative
-            .to_str()
-            .ok_or_else(|| {
-                format!(
-                    "Managed runtime path is not valid UTF-8: {}",
-                    relative.display()
-                )
-            })?
-            .replace(std::path::MAIN_SEPARATOR, "/");
-        if relative == INSTALL_MARKER || exclusions.contains(&relative.as_str()) {
-            continue;
-        }
-
-        if entry.file_type().is_dir() {
-            continue;
-        }
-        update_fingerprint_field(&mut hasher, relative.as_bytes());
-        if entry.file_type().is_symlink() {
-            hasher.update(b"symlink");
-            let target = fs::read_link(entry.path()).map_err(|error| {
-                format!(
-                    "Could not read managed runtime symlink {}: {}",
-                    entry.path().display(),
-                    error
-                )
-            })?;
-            update_fingerprint_field(&mut hasher, target.to_string_lossy().as_bytes());
-        } else if entry.file_type().is_file() {
-            hasher.update(b"file");
-            let size = entry.metadata().map_err(|error| {
-                format!(
-                    "Could not inspect managed runtime file {}: {}",
-                    entry.path().display(),
-                    error
-                )
-            })?;
-            hasher.update(size.len().to_be_bytes());
-            let mut file = fs::File::open(entry.path()).map_err(|error| {
-                format!(
-                    "Could not open managed runtime file {}: {}",
-                    entry.path().display(),
-                    error
-                )
-            })?;
-            let mut buffer = [0u8; 65536];
-            loop {
-                let count = file.read(&mut buffer).map_err(|error| {
-                    format!(
-                        "Could not fingerprint managed runtime file {}: {}",
-                        entry.path().display(),
-                        error
-                    )
-                })?;
-                if count == 0 {
-                    break;
-                }
-                hasher.update(&buffer[..count]);
-            }
-        } else {
-            return Err(format!(
-                "Managed runtime contains unsupported entry type: {}",
-                entry.path().display()
-            ));
-        }
-    }
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
 fn validate_install_fingerprint(
     install_dir: &Path,
     expected_tree_sha256: &str,
@@ -214,19 +115,55 @@ fn validate_install_fingerprint(
         install_dir.to_path_buf(),
         expected_tree_sha256.trim().to_ascii_lowercase(),
     );
-    if VALIDATED_INSTALLS
-        .lock()
-        .map_err(|_| "runtime validation cache lock poisoned".to_string())?
-        .contains(&validated)
-    {
-        return Ok(());
-    }
+    let validation = {
+        let mut validations = VALIDATED_INSTALLS
+            .lock()
+            .map_err(|_| "runtime validation cache lock poisoned".to_string())?;
+        validations
+            .entry(validated.clone())
+            .or_insert_with(|| Arc::new(OnceCell::new()))
+            .clone()
+    };
+    let result = validation
+        .get_or_init(|| {
+            validate_install_fingerprint_uncached(install_dir, expected_tree_sha256, exclusions)
+        })
+        .clone();
 
-    validate_install_fingerprint_uncached(install_dir, expected_tree_sha256, exclusions)?;
+    // A repaired or newly completed install must be allowed to try again.
+    // Concurrent callers still share this failed attempt through `validation`.
+    if result.is_err() {
+        let mut validations = VALIDATED_INSTALLS
+            .lock()
+            .map_err(|_| "runtime validation cache lock poisoned".to_string())?;
+        if validations
+            .get(&validated)
+            .is_some_and(|cached| Arc::ptr_eq(cached, &validation))
+        {
+            validations.remove(&validated);
+        }
+    }
+    result
+}
+
+fn remember_validated_install(
+    install_dir: &Path,
+    expected_tree_sha256: &str,
+) -> Result<(), String> {
+    let validation = Arc::new(OnceCell::new());
+    validation
+        .set(Ok(()))
+        .map_err(|_| "runtime validation result already initialized".to_string())?;
     VALIDATED_INSTALLS
         .lock()
         .map_err(|_| "runtime validation cache lock poisoned".to_string())?
-        .insert(validated);
+        .insert(
+            (
+                install_dir.to_path_buf(),
+                expected_tree_sha256.trim().to_ascii_lowercase(),
+            ),
+            validation,
+        );
     Ok(())
 }
 
@@ -263,6 +200,21 @@ pub fn installed_component_dir(
         )
         .is_ok()
     {
+        Ok(Some(dir))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Returns an installed component after cheap structural checks only. This is
+/// for passive status UI; execution paths must use `installed_component_dir`,
+/// which verifies the full extracted-tree fingerprint before returning.
+pub fn structurally_valid_component_dir(
+    app: &AppHandle,
+    component: &str,
+) -> Result<Option<PathBuf>, String> {
+    let dir = component_install_dir(app, component)?;
+    if dir.join(INSTALL_MARKER).is_file() && validate_component_install(component, &dir).is_ok() {
         Ok(Some(dir))
     } else {
         Ok(None)
@@ -368,6 +320,7 @@ pub fn validate_component_install(component: &str, install_dir: &Path) -> Result
 pub fn component_install_validation_error(
     app: &AppHandle,
     component: &str,
+    force_fingerprint: bool,
 ) -> Result<Option<String>, String> {
     let dir = component_install_dir(app, component)?;
     if !dir.join(INSTALL_MARKER).is_file() {
@@ -375,17 +328,17 @@ pub fn component_install_validation_error(
     }
     let archive = platform_archive(component)?;
     let validation = validate_component_install(component, &dir).and_then(|_| {
+        if !force_fingerprint {
+            return Ok(());
+        }
         validate_install_fingerprint_uncached(
             &dir,
             &archive.tree_sha256,
             fingerprint_exclusions(component),
         )
     });
-    if validation.is_ok() {
-        VALIDATED_INSTALLS
-            .lock()
-            .map_err(|_| "runtime validation cache lock poisoned".to_string())?
-            .insert((dir, archive.tree_sha256.trim().to_ascii_lowercase()));
+    if validation.is_ok() && force_fingerprint {
+        remember_validated_install(&dir, &archive.tree_sha256)?;
     }
     Ok(validation.err())
 }
@@ -616,7 +569,7 @@ fn install_archive_from_reader_validated(
         let _ = fs::remove_dir_all(&backup);
     }
     if let Ok(mut validated) = VALIDATED_INSTALLS.lock() {
-        validated.retain(|entry| entry.0 != install_dir);
+        validated.retain(|entry, _| entry.0 != install_dir);
     }
     Ok(())
 }
@@ -689,12 +642,12 @@ pub fn opencode_adapter_invocation(app: &AppHandle) -> Result<OpenCodeAdapterInv
         Some(dir) => Some(dir),
         None if component_available_for_download(COMPONENT_OPENCODE) => Some(
             ensure_component(app, COMPONENT_OPENCODE)
-                .map_err(|error| managed_runtime_required_error("OpenCode runtime", error))?,
+                .map_err(|error| managed_runtime_required_error("OpenCode", error))?,
         ),
         None if cfg!(debug_assertions) => None,
         None => {
             return Err(managed_runtime_required_error(
-                "OpenCode runtime",
+                "OpenCode",
                 "the runtime archive is not published".to_string(),
             ))
         }
@@ -722,7 +675,7 @@ pub fn opencode_adapter_invocation(app: &AppHandle) -> Result<OpenCodeAdapterInv
             crate::cli_path::find_on_tool_path("opencode").unwrap_or_else(|| "opencode".to_string())
         } else {
             return Err(managed_runtime_required_error(
-                "OpenCode runtime",
+                "OpenCode",
                 "the runtime archive is not published".to_string(),
             ));
         }
@@ -772,43 +725,6 @@ fn ripgrep_binary_path(install_dir: &Path) -> PathBuf {
     } else {
         install_dir.join("bin").join("rg")
     }
-}
-
-/// True for macOS AppleDouble sidecar files (`._name`) and `.DS_Store`. Runtime
-/// tarballs packed on macOS smuggle these in; on Linux they are dead weight and
-/// a footgun for any code that globs a `bin/` dir (a stray `._node` must never be
-/// mistaken for the real `node` binary).
-fn is_apple_metadata_path(path: &Path) -> bool {
-    path.components().any(|component| {
-        let name = component.as_os_str().to_string_lossy();
-        name.starts_with("._") || name == ".DS_Store"
-    })
-}
-
-/// Unpack a tar archive into `dest`, skipping macOS AppleDouble / `.DS_Store`
-/// entries. Behaves like `Archive::unpack` for everything else.
-fn unpack_archive_skipping_apple_metadata<R: Read>(
-    archive: &mut tar::Archive<R>,
-    dest: &Path,
-) -> Result<(), String> {
-    let entries = archive
-        .entries()
-        .map_err(|error| format!("Could not read runtime archive entries: {}", error))?;
-    for entry in entries {
-        let mut entry =
-            entry.map_err(|error| format!("Could not read runtime archive entry: {}", error))?;
-        let path = entry
-            .path()
-            .map_err(|error| format!("Invalid path in runtime archive: {}", error))?
-            .into_owned();
-        if is_apple_metadata_path(&path) {
-            continue;
-        }
-        entry
-            .unpack_in(dest)
-            .map_err(|error| format!("Could not unpack runtime archive: {}", error))?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -916,11 +832,12 @@ mod tests {
             &install_dir,
             &|_| {},
             &|_| Ok(()),
-            CLAUDE_GENERATED_FILES,
+            fingerprint_exclusions(COMPONENT_CLAUDE_SDK),
         )
         .expect("install should succeed");
         let trusted_tree_sha256 =
-            install_tree_sha256(&install_dir, CLAUDE_GENERATED_FILES).unwrap();
+            install_tree_sha256(&install_dir, fingerprint_exclusions(COMPONENT_CLAUDE_SDK))
+                .unwrap();
 
         std::fs::write(
             install_dir.join("claude-agent-sdk-adapter.mjs"),
@@ -928,7 +845,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            install_tree_sha256(&install_dir, CLAUDE_GENERATED_FILES).unwrap(),
+            install_tree_sha256(&install_dir, fingerprint_exclusions(COMPONENT_CLAUDE_SDK),)
+                .unwrap(),
             trusted_tree_sha256,
             "known app-generated files should not invalidate the archive"
         );
@@ -937,7 +855,7 @@ mod tests {
         let error = validate_install_fingerprint(
             &install_dir,
             &trusted_tree_sha256,
-            CLAUDE_GENERATED_FILES,
+            fingerprint_exclusions(COMPONENT_CLAUDE_SDK),
         )
         .expect_err("unexpected files must invalidate the install");
         assert!(error.contains("content fingerprint mismatch"));

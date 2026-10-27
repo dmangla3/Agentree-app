@@ -102,8 +102,15 @@ vi.mock('../stores/loginProfilesStore', () => ({
   useLoginProfilesStore: (selector: (state: unknown) => unknown) => selector({ profiles: [{ provider: 'opencode' }] }),
 }));
 vi.mock('../stores/modelStore', () => ({
+  getEffectiveVisibleFamilyKeys: (desired: string[] | undefined, current: string[]) => (
+    (desired ?? []).filter((key) => current.includes(key))
+  ),
   useModelStore: (selector: (state: unknown) => unknown) => selector({
-    visibleFamilyKeysByProvider: { codex: undefined, claude: undefined, opencode: undefined },
+    visibleFamilyKeysByProvider: {
+      codex: [],
+      claude: [],
+      opencode: ['opencode:new-vision', 'opencode:reasoner', 'opencode:future-pdf', 'opencode:image-output'],
+    },
     setVisibleFamilyKeys: vi.fn(),
   }),
 }));

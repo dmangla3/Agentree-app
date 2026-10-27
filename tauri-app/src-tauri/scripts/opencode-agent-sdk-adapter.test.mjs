@@ -18,6 +18,7 @@ import {
   managedOpenCodeProviderIds,
   normalizeStructuredOutput,
   normalizeModelCatalog,
+  normalizeSupportedModelCatalog,
   opencodeErrorDetails,
   opencodeErrorMessage,
   opencodeConfigFromEnv,
@@ -26,6 +27,7 @@ import {
   opencodePermissionConfig,
   parseOpenCodeModel,
   structuredOutputRecovery,
+  toOpenCodeCatalogRecords,
   usageFromAssistantMessage,
 } from './opencode-agent-sdk-adapter.mjs';
 
@@ -241,6 +243,7 @@ test('OpenCode catalog exposes connected provider metadata and preserves variant
     providerName: 'OpenRouter',
     modelId: 'sonnet:free',
     name: 'Sonnet',
+    description: '',
     reasoning: true,
     attachment: true,
     toolCall: true,
@@ -253,6 +256,33 @@ test('OpenCode catalog exposes connected provider metadata and preserves variant
     status: 'active',
     isFree: true,
   }]);
+});
+
+test('OpenCode supported catalog includes providers that are not connected without probing them', () => {
+  const catalog = {
+    connected: ['opencode'],
+    all: [
+      { id: 'opencode', name: 'OpenCode Zen', models: { free: { id: 'free', name: 'Free' } } },
+      { id: 'openrouter', name: 'OpenRouter', models: { paid: { id: 'paid', name: 'Paid' } } },
+    ],
+  };
+
+  assert.deepEqual(
+    normalizeModelCatalog(catalog).map((model) => model.id),
+    ['opencode/free'],
+  );
+  const supported = normalizeSupportedModelCatalog(catalog);
+  assert.deepEqual(supported.map((model) => model.id).sort(), [
+    'opencode/free',
+    'openrouter/paid',
+  ]);
+
+  const records = toOpenCodeCatalogRecords(supported, '1.2.3', 99);
+  assert.equal(records[0].provider, 'opencode');
+  assert.equal(records[0].canonicalModelId, records[0].id);
+  assert.equal(records[0].cliModelId, records[0].id);
+  assert.equal(records[0].sourceVersion, '1.2.3');
+  assert.equal(records[0].checkedAt, 99);
 });
 
 test('OpenCode catalog orders lifecycle groups by newest release and does not guess missing prices are free', () => {

@@ -17,6 +17,8 @@ const CLEANUP_DELAY_MS = 3000;
 
 const cleanupTimers = new Map<string, number>();
 const finalizeEffectKeys = new Map<string, string>();
+const finalizeNotificationKeys = new Map<string, string>();
+const finalizeListeners = new Set<(snapshot: AgentRunSnapshot) => void>();
 const queryClientRefs = new Map<QueryClient, number>();
 let activeQueryClient: QueryClient | null = null;
 
@@ -42,6 +44,15 @@ export const registerAgentRunEffectsQueryClient = (queryClient: QueryClient) => 
     if (activeQueryClient === queryClient) {
       activeQueryClient = lastRegisteredQueryClient();
     }
+  };
+};
+
+export const registerAgentRunFinalizeListener = (
+  listener: (snapshot: AgentRunSnapshot) => void,
+) => {
+  finalizeListeners.add(listener);
+  return () => {
+    finalizeListeners.delete(listener);
   };
 };
 
@@ -156,12 +167,19 @@ export const applyAgentRunFinalizeSnapshotEffects = (
   snapshot: AgentRunSnapshot,
   options: { force?: boolean } = {},
 ) => {
-  const queryClient = activeQueryClient;
   const cachePatch = readTerminalPatch(snapshot);
-  if (!queryClient || !snapshot.workspaceId || !cachePatch) return;
-
+  if (!cachePatch) return;
   const key = finalizeEffectKey(snapshot);
-  if (!key || (!options.force && finalizeEffectKeys.get(snapshot.nodeId) === key)) return;
+  if (!key) return;
+  const canNotifyFinalizedListeners = cachePatch.status !== 'completed' || snapshot.finalizeAck !== null;
+  if (canNotifyFinalizedListeners && finalizeNotificationKeys.get(snapshot.nodeId) !== key) {
+    finalizeNotificationKeys.set(snapshot.nodeId, key);
+    for (const listener of finalizeListeners) listener(snapshot);
+  }
+
+  const queryClient = activeQueryClient;
+  if (!queryClient || !snapshot.workspaceId) return;
+  if (!options.force && finalizeEffectKeys.get(snapshot.nodeId) === key) return;
   finalizeEffectKeys.set(snapshot.nodeId, key);
 
   queryClient.setQueryData<Message[]>(
@@ -201,10 +219,13 @@ export const applyAgentRunFinalizeSnapshotEffects = (
 
 export const clearAgentRunEffectsForNode = (nodeId: string) => {
   finalizeEffectKeys.delete(nodeId);
+  finalizeNotificationKeys.delete(nodeId);
 };
 
 export const resetAgentRunEffectsForTest = () => {
   finalizeEffectKeys.clear();
+  finalizeNotificationKeys.clear();
+  finalizeListeners.clear();
   queryClientRefs.clear();
   activeQueryClient = null;
 };

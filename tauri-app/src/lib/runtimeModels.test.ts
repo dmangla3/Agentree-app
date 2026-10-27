@@ -2,12 +2,86 @@ import { describe, expect, it } from 'vitest';
 import {
   compareOpenCodeCatalogModels,
   getReasoningEffortSortOrder,
+  getRuntimeModelByKey,
+  getRuntimeModelByProviderAndId,
+  getRuntimeModelFamilyKey,
+  getRuntimeModelKey,
+  parseRuntimeModelKey,
   reasoningEffortsByProvider,
   runtimeModels,
+  runtimeModelsFromNativeCatalog,
   runtimeModelsFromOpenCodeCatalog,
 } from './runtimeModels';
 
+const openCodeModel = {
+  id: 'openrouter/vendor:model/name',
+  providerId: 'openrouter',
+  providerName: 'OpenRouter',
+  modelId: 'vendor:model/name',
+  name: 'Dynamic Model',
+  reasoning: true,
+  attachment: false,
+  toolCall: true,
+  inputModalities: ['text'],
+  outputModalities: ['text'],
+  variants: ['extra:high'],
+  contextWindow: null,
+  maxOutputTokens: null,
+  releaseDate: null,
+  status: 'active',
+  isFree: false,
+};
+
+describe('runtime model identity', () => {
+  it('round-trips provider model ids and variants without delimiter collisions', () => {
+    const key = getRuntimeModelKey('opencode', openCodeModel.id, 'extra:high');
+
+    expect(key).toBe('opencode:openrouter%2Fvendor%3Amodel%2Fname:extra%3Ahigh');
+    expect(parseRuntimeModelKey(key)).toEqual({
+      provider: 'opencode',
+      modelId: openCodeModel.id,
+      reasoningEffort: 'extra:high',
+    });
+    expect(getRuntimeModelFamilyKey('opencode', openCodeModel.id))
+      .toBe('opencode:openrouter%2Fvendor%3Amodel%2Fname');
+  });
+
+  it('looks up dynamic models in the current catalog rather than the bootstrap only', () => {
+    const catalog = runtimeModelsFromOpenCodeCatalog([openCodeModel]);
+    const key = getRuntimeModelKey('opencode', openCodeModel.id, 'extra:high');
+
+    expect(getRuntimeModelByKey(key, catalog)?.label).toBe('Dynamic Model Extra:high');
+    expect(getRuntimeModelByKey(key)).toBeNull();
+  });
+});
+
 describe('runtimeModels', () => {
+  it('keeps canonical identity while launching through a runtime CLI alias', () => {
+    const models = runtimeModelsFromNativeCatalog([{
+      provider: 'claude',
+      canonicalModelId: 'claude-sonnet-5',
+      cliModelId: 'sonnet',
+      name: 'Claude Sonnet 5',
+      description: 'Balanced coding model',
+      supportedReasoningEfforts: ['high'],
+      defaultReasoningEffort: 'high',
+      inputModalities: ['text'],
+      outputModalities: ['text'],
+      checkedAt: 123,
+    }]);
+
+    expect(models).toHaveLength(1);
+    expect(models[0]).toMatchObject({
+      key: 'claude:claude-sonnet-5:high',
+      familyKey: 'claude:claude-sonnet-5',
+      canonicalModelId: 'claude-sonnet-5',
+      modelId: 'sonnet',
+    });
+    expect(models[0].cliArgs).toContain('--model sonnet');
+    expect(getRuntimeModelByProviderAndId('claude', 'claude-sonnet-5', models)).toBe(models[0]);
+    expect(getRuntimeModelByProviderAndId('claude', 'sonnet', models)).toBe(models[0]);
+  });
+
   it('orders OpenCode models by lifecycle and newest release before label', () => {
     const models = [
       { label: 'Alpha preview', modelProvider: 'provider', releaseDate: '2027-01-01', status: 'alpha' as const },

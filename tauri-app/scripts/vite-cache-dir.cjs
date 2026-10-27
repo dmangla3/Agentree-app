@@ -19,8 +19,11 @@ function osCacheDir(env = process.env) {
   return env.XDG_CACHE_HOME || path.join(home, ".cache");
 }
 
-// Agents get a per-run sandbox via AGENT_SANDBOX; everyone else shares one cache.
+// Worktree dev apps get stable isolated caches. Agents get a per-run sandbox;
+// everyone else shares one cache.
 function viteCacheDir(env = process.env) {
+  const worktreeCache = env.AGENTREE_VITE_CACHE_DIR;
+  if (worktreeCache) return worktreeCache;
   const agentSandbox = env.AGENT_SANDBOX;
   if (agentSandbox) return path.join(agentSandbox, "vite-cache");
   return path.join(osCacheDir(env), "agentree", "vite-cache");

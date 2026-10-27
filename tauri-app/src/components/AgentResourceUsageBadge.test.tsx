@@ -46,4 +46,20 @@ describe('AgentResourceUsageBadge', () => {
     expect(screen.getByText('7 processes')).toBeTruthy();
     expect(screen.getByTitle(/does not throttle/i)).toBeTruthy();
   });
+
+  it('hides a cached sample after the agent finishes', () => {
+    resourceMocks.usage = {
+      assistantNodeId: 'assistant-1',
+      rootPid: 123,
+      processCount: 7,
+      cpuPercent: 81.4,
+      memoryBytes: 1536 * 1024 * 1024,
+      sampledAt: 1,
+    };
+
+    render(<AgentResourceUsageBadge assistantNodeId="assistant-1" enabled={false} />);
+
+    expect(screen.queryByText('CPU 81%')).toBeNull();
+    expect(screen.queryByText('7 processes')).toBeNull();
+  });
 });

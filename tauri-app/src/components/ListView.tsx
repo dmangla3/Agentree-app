@@ -22,8 +22,8 @@ interface ListViewProps {
   onOpenTerminal?: (commitSha: string) => void;
 }
 
-const groupItemsByDay = (items: any[]) => {
-  const grouped: Record<string, any[]> = {};
+const groupItemsByDay = (items: ProjectedListItem[]) => {
+  const grouped: Record<string, ProjectedListItem[]> = {};
   items.forEach(item => {
     const date = new Date(item.sortTs);
     const dateKey = format(date, 'yyyy-MM-dd');
@@ -31,6 +31,24 @@ const groupItemsByDay = (items: any[]) => {
     grouped[dateKey].push(item);
   });
   return grouped;
+};
+
+const getListItemCreationSortTs = (
+  projection: WorkspaceProjection,
+  item: ProjectedListItem,
+): number => {
+  const entity = projection.entitiesById.get(item.entityId);
+  if (!entity) return item.sortTs;
+
+  if (entity.turnGroupId) {
+    const turnCreatedAt = projection.turnGroupById.get(entity.turnGroupId)?.sortTs;
+    if (turnCreatedAt !== undefined) return turnCreatedAt;
+  }
+
+  const messageCreatedAt = entity.message?.createdAt
+    ? new Date(entity.message.createdAt).getTime()
+    : Number.NaN;
+  return Number.isFinite(messageCreatedAt) ? messageCreatedAt : item.sortTs;
 };
 
 const getListItemSelectionId = (projection: WorkspaceProjection, item: ProjectedListItem): string | null => {
@@ -162,9 +180,7 @@ export const ListView = memo(({
   }, [selectedNodeIds]);
 
   const listItems = useMemo(() => {
-    if (!filterActive) return projection.listItems;
-
-    return projection.listItems.filter((item) => {
+    const visibleItems = filterActive ? projection.listItems.filter((item) => {
       const entity = projection.entitiesById.get(item.entityId);
       if (!entity) return false;
       if (entity.messageId && matchingMessageIds.has(entity.messageId)) return true;
@@ -173,12 +189,20 @@ export const ListView = memo(({
           matchingMessageIds.has(entity.summary.endMessageId);
       }
       return false;
-    });
+    }) : projection.listItems;
+
+    return visibleItems
+      .map((item) => {
+        const sortTs = getListItemCreationSortTs(projection, item);
+        return sortTs === item.sortTs ? item : { ...item, sortTs };
+      })
+      .sort((left, right) => left.sortTs - right.sortTs);
   }, [
     filterActive,
     matchingMessageIds,
     projection.entitiesById,
     projection.listItems,
+    projection.turnGroupById,
   ]);
 
   const groupedByDay = groupItemsByDay(listItems);
@@ -305,8 +329,13 @@ export const ListView = memo(({
                 {groupListItemsByTurn(projection, groupedByDay[dateKey]).map((group, groupIndex, groups) => (
                   <div
                     key={group.key}
-                    className={group.turnGroupId ? "relative mb-4 flex min-w-0 flex-col gap-1.5" : "relative mb-4 flex min-w-0 flex-col"}
-                    style={{ marginBottom: groupIndex === groups.length - 1 ? 0 : undefined }}
+                    className={[
+                      "relative flex min-w-0 flex-col",
+                      group.turnGroupId ? "gap-1" : "",
+                      groupIndex < groups.length - 1
+                        ? "mb-2.5 border-b border-[hsl(var(--app-border)/0.46)] pb-2.5 dark:border-white/[0.07]"
+                        : "",
+                    ].filter(Boolean).join(' ')}
                   >
                     <span className="absolute -left-[21px] top-3 h-2.5 w-2.5 rounded-full border border-[hsl(var(--app-bg))] bg-[hsl(var(--app-border))] shadow-[0_0_0_3px_hsl(var(--app-bg)/0.88)] dark:border-[hsl(var(--app-bg))] dark:bg-white/20 dark:shadow-[0_0_0_3px_hsl(var(--app-bg)/0.92)]" />
                     {group.items.map((item) => {

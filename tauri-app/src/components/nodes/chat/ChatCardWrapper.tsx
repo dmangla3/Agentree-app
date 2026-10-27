@@ -46,7 +46,7 @@ export const ChatCardWrapper = memo(({
       style={{
         ...style,
         borderColor: isFocused
-          ? '#6366f1'
+          ? 'hsl(var(--app-selection) / 0.92)'
           : isSelected
             ? '#3b82f6'
             : style?.borderColor,
@@ -64,7 +64,7 @@ export const ChatCardWrapper = memo(({
 
         // Focused state
         isFocused && [
-          "ring-2 ring-indigo-500",
+          "ring-2 ring-[hsl(var(--app-selection)/0.9)]",
           "shadow-md"
         ],
 

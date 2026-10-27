@@ -235,11 +235,11 @@ export function RuntimeHealthCard() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (forceFingerprint = false) => {
     setIsRefreshing(true);
     setError(null);
     try {
-      const refreshedEntries = await agentClient.checkManagedRuntimeDoctor();
+      const refreshedEntries = await agentClient.checkManagedRuntimeDoctor(forceFingerprint);
       setEntries(refreshedEntries);
       reconcileRuntimeRepairEntries();
     } catch (refreshError) {
@@ -250,7 +250,7 @@ export function RuntimeHealthCard() {
   }, []);
 
   useEffect(() => {
-    void refresh();
+    void refresh(false);
   }, [refresh]);
 
   useEffect(() => {
@@ -286,8 +286,9 @@ export function RuntimeHealthCard() {
           variant="ghost"
           size="sm"
           className="h-7 px-2"
+          aria-label="Refresh runtime health"
           disabled={isRefreshing || Boolean(repairSnapshot.busyComponent)}
-          onClick={() => void refresh()}
+          onClick={() => void refresh(true)}
         >
           <RefreshCw className={cn('h-3.5 w-3.5', isRefreshing && 'animate-spin')} />
         </Button>

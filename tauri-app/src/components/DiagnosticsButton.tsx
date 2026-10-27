@@ -2,7 +2,8 @@ import { useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getName, getTauriVersion, getVersion } from '@tauri-apps/api/app';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
-import { Check, CircleHelp, ClipboardList, Loader2 } from 'lucide-react';
+import { Check, ClipboardList, Loader2 } from 'lucide-react';
+import { Question } from '@phosphor-icons/react';
 import { Button } from '../../@/components/ui/button';
 import {
   DropdownMenu,
@@ -13,6 +14,7 @@ import {
 } from '../../@/components/ui/dropdown-menu';
 import { useToastHelpers } from './Toast';
 import { cn } from '../lib/utils';
+import { RailIcon } from './RailIcon';
 
 type LogPaths = {
   log_dir: string;
@@ -152,7 +154,7 @@ export function DiagnosticsButton({
           title="Help"
           aria-label="Help"
         >
-          <CircleHelp size={18} strokeWidth={2.1} />
+          <RailIcon icon={Question} />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="right" align="end" className="w-52">

@@ -68,6 +68,15 @@ describe('HomePage graph/chat split layout', () => {
     expect(source).toContain('onThreadsFocusedChange={setWorkspaceNavigatorThreadsFocused}');
   });
 
+  it('keeps the workspace navigator and graph mounted across primary-view navigation', () => {
+    const source = readHomePageSource();
+
+    expect(source).toContain("<div className={activeView === 'chat' ? 'contents' : 'hidden'} aria-hidden={activeView !== 'chat'}>");
+    expect(source).toContain("className={`absolute inset-0 h-full ${activeView === 'chat' ? 'opacity-100' : 'pointer-events-none opacity-0'}`}");
+    expect(source).toContain("inert={activeView !== 'chat'}");
+    expect(source).toContain("{activeView === 'chat' ? null : activeView === 'orchestration' ? (");
+  });
+
   it('keeps the app header as persistent workspace chrome across primary views', () => {
     const source = readHomePageSource();
 

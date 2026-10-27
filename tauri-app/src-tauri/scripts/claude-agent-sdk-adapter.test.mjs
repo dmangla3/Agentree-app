@@ -63,6 +63,47 @@ test('Claude readiness classifies expired credentials as missing auth', async ()
   assert.match(result.message, /expired/);
 });
 
+test('Claude model catalog comes from SDK initialization without starting a turn', async () => {
+  const adapter = await import('./claude-agent-sdk-adapter.mjs');
+  let received = null;
+  const models = await adapter.listClaudeModelCatalog((request) => {
+    received = request;
+    return {
+      initializationResult: async () => ({
+        models: [{
+          value: 'sonnet',
+          resolvedModel: 'claude-sonnet-5',
+          displayName: 'Sonnet 5',
+          description: 'Fast and capable.',
+          supportsEffort: true,
+          supportedEffortLevels: ['low', 'medium', 'high'],
+        }],
+      }),
+    };
+  }, 1234);
+
+  assert.equal(received.options.maxTurns, 0);
+  assert.equal(received.options.persistSession, false);
+  assert.equal(received.options.abortController.signal.aborted, true);
+  assert.deepEqual(models, [{
+    provider: 'claude',
+    canonicalModelId: 'claude-sonnet-5',
+    cliModelId: 'sonnet',
+    name: 'Sonnet 5',
+    description: 'Fast and capable.',
+    supportedReasoningEfforts: ['low', 'medium', 'high'],
+    defaultReasoningEffort: null,
+    inputModalities: ['text'],
+    outputModalities: ['text'],
+    hidden: false,
+    isDefault: null,
+    status: 'active',
+    isFree: null,
+    sourceVersion: null,
+    checkedAt: 1234,
+  }]);
+});
+
 test('direct execution detection follows symlinked argv paths', async () => {
   const adapter = await import('./claude-agent-sdk-adapter.mjs');
   const root = await mkdtemp(join(tmpdir(), 'agentree-adapter-main-'));

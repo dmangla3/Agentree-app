@@ -3,18 +3,16 @@ import { useQueryClient } from '@tanstack/react-query';
 import { open as openFolderDialog } from '@tauri-apps/plugin-dialog';
 import {
   Check,
-  ChevronLeft,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Copy,
   Eye,
   FolderGit,
   FolderOpen,
-  Focus,
   GitBranch,
   HardDrive,
   Loader2,
-  MoreHorizontal,
   Pencil,
   Plus,
   Trash2,
@@ -31,11 +29,15 @@ import {
   DialogTitle,
 } from '../../../@/components/ui/dialog';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../@/components/ui/tooltip';
+import { ScrollArea } from '../../../@/components/ui/scroll-area';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '../../../@/components/ui/dropdown-menu';
 import { useWorkspaceStore, type Workspace } from '../../stores/workspaceStore';
@@ -133,6 +135,37 @@ function workspaceCreatedMs(workspace: Workspace): number {
   return parseWorkspaceTimestamp(workspace.createdAt) || parseWorkspaceTimestamp(workspace.updatedAt);
 }
 
+export function formatWorkspaceLastActive(
+  workspace: Pick<Workspace, 'createdAt' | 'updatedAt'>,
+  lastUsedAt?: number,
+  options: {
+    now?: Date;
+    locale?: string;
+    timeZone?: string;
+  } = {},
+): string | null {
+  const lastActiveMs = Number.isFinite(lastUsedAt) && Number(lastUsedAt) > 0
+    ? Number(lastUsedAt)
+    : parseWorkspaceTimestamp(workspace.updatedAt) || parseWorkspaceTimestamp(workspace.createdAt);
+  if (!lastActiveMs) return null;
+
+  const lastActive = new Date(lastActiveMs);
+  const now = options.now ?? new Date();
+  const yearFormatter = new Intl.DateTimeFormat('en-US', {
+    year: 'numeric',
+    timeZone: options.timeZone,
+  });
+  const includeYear = yearFormatter.format(lastActive) !== yearFormatter.format(now);
+  return new Intl.DateTimeFormat(options.locale, {
+    month: 'short',
+    day: 'numeric',
+    ...(includeYear ? { year: 'numeric' as const } : {}),
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: options.timeZone,
+  }).format(lastActive);
+}
+
 function compareWorkspaceCreation(left: Workspace, right: Workspace): number {
   const createdDelta = workspaceCreatedMs(left) - workspaceCreatedMs(right);
   if (createdDelta !== 0) return createdDelta;
@@ -193,22 +226,6 @@ function groupWorkspacesByRepo(workspaces: Workspace[]): RepoGroup[] {
 function getWorkspaceDisplayName(workspace: Workspace): string {
   if (workspace.name && workspace.name !== 'New Workspace') return workspace.name;
   return `Workspace ${workspace.id.substring(0, 6)}`;
-}
-
-function formatWorkspaceTime(timestampMs: number): string | null {
-  if (timestampMs <= 0) return null;
-
-  const elapsedMinutes = Math.max(0, Math.floor((Date.now() - timestampMs) / 60_000));
-  if (elapsedMinutes < 1) return 'now';
-  if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
-
-  const elapsedHours = Math.floor(elapsedMinutes / 60);
-  if (elapsedHours < 24) return `${elapsedHours}h ago`;
-
-  const elapsedDays = Math.floor(elapsedHours / 24);
-  if (elapsedDays < 7) return `${elapsedDays}d ago`;
-
-  return new Date(timestampMs).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function getWorkspacesForRepo(workspaces: Workspace[], repoPath: string): Workspace[] {
@@ -308,7 +325,6 @@ function ThreadRow({
   const unreadCompletedLeafCount = getThreadUnreadBadgeCount(thread);
   const metadata = formatThreadMetadata(thread);
   const activityLabel = thread.runningCount > 1 ? `${thread.runningCount} running` : 'Running';
-  const baseCommitLabel = thread.baseCommitSha ? thread.baseCommitSha.slice(0, 8) : 'unknown base';
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [contextMenuPosition, setContextMenuPosition] = useState({ x: 0, y: 0 });
 
@@ -390,8 +406,6 @@ function ThreadRow({
           ) : null}
         </span>
         <span className="mt-1 block truncate text-[9px] leading-none text-muted-foreground/70">
-          <span className="font-mono text-muted-foreground/90">{baseCommitLabel}</span>
-          <span className="px-1 text-muted-foreground/45">·</span>
           {metadata}
         </span>
       </button>
@@ -466,15 +480,11 @@ function WorkspaceThreadSection({
   onOpenThread,
   onCreateThread,
   onThreadRename,
-  threadsFocused = false,
-  onThreadsFocusedChange,
 }: {
   model: WorkspaceThreadNavigationModel | null;
   onOpenThread: (threadRootId: string) => void;
   onCreateThread: () => void;
   onThreadRename: (thread: ThreadNavigationItem) => void;
-  threadsFocused?: boolean;
-  onThreadsFocusedChange?: (focused: boolean) => void;
 }) {
   const activeThreadItems = useMemo(
     () => orderThreadFamiliesNewestFirst(
@@ -512,29 +522,6 @@ function WorkspaceThreadSection({
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {onThreadsFocusedChange ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  aria-label={threadsFocused ? 'Show workspaces' : 'Focus threads'}
-                  aria-pressed={threadsFocused}
-                  onClick={() => onThreadsFocusedChange(!threadsFocused)}
-                  className={cn(
-                    'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.5)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                    threadsFocused
-                      ? 'border-[hsl(var(--app-accent)/0.46)] bg-[hsl(var(--app-accent-soft)/0.58)] text-[hsl(var(--app-accent))]'
-                      : 'border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-panel)/0.5)] text-muted-foreground',
-                  )}
-                >
-                  <Focus size={13} strokeWidth={2.25} />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" align="end">
-                {threadsFocused ? 'Show workspaces' : 'Focus threads'}
-              </TooltipContent>
-            </Tooltip>
-          ) : null}
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -595,164 +582,6 @@ function WorkspaceThreadSection({
         </div>
       ) : null}
     </div>
-  );
-}
-
-function WorkspaceRow({
-  workspace,
-  selected,
-  threadCount,
-  lastActiveAt,
-  onSelectWorkspace,
-  onRequestRename,
-  onRequestDelete,
-  onPrefetchWorkspace,
-}: {
-  workspace: Workspace;
-  selected: boolean;
-  threadCount?: number;
-  lastActiveAt?: number;
-  onSelectWorkspace: (workspaceId: string) => void;
-  onRequestRename: (workspace: Workspace) => void;
-  onRequestDelete: (workspace: Workspace) => void;
-  onPrefetchWorkspace: (workspaceId: string) => void;
-}) {
-  const status = workspace.connection_status ?? workspace.connectionStatus ?? workspace.sync_status ?? workspace.syncStatus ?? null;
-  const statusLabel = status && status !== 'connected' && status !== 'synced' ? String(status).replace(/_/g, ' ') : null;
-  const workspaceUpdatedAt = parseWorkspaceTimestamp(workspace.updatedAt);
-  const activityTimestamp = lastActiveAt || workspaceUpdatedAt;
-  const activityLabel = formatWorkspaceTime(activityTimestamp);
-  const metadata = [
-    statusLabel,
-    threadCount !== undefined ? `${threadCount} ${threadCount === 1 ? 'thread' : 'threads'}` : null,
-    activityLabel,
-  ].filter((value): value is string => Boolean(value)).join(' · ');
-  const activityTitle = activityLabel && activityTimestamp > 0
-    ? `${lastActiveAt ? 'Last active' : 'Workspace updated'} ${new Date(activityTimestamp).toLocaleString()}`
-    : undefined;
-
-  return (
-    <div
-      className={cn(
-        'group/workspace flex min-w-0 items-center gap-1 rounded-md border px-1.5 py-1 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.025)] transition-[background-color,border-color,box-shadow,color,transform] duration-150 ease-out',
-        selected
-          ? 'border-[hsl(var(--app-border-strong)/0.42)] bg-[hsl(var(--app-panel-strong))] text-foreground shadow-[0_16px_34px_-22px_rgb(24_24_27/0.6),inset_0_1px_0_rgb(255_255_255/0.7)] dark:bg-zinc-800 dark:text-zinc-50 dark:shadow-[0_14px_30px_-22px_rgb(0_0_0/0.9),inset_0_1px_0_rgb(255_255_255/0.08)]'
-          : 'border-[hsl(var(--app-border)/0.22)] bg-[hsl(var(--app-panel)/0.16)] text-foreground/78 hover:-translate-y-px hover:border-[hsl(var(--app-border-strong)/0.42)] hover:bg-[hsl(var(--app-panel-strong)/0.5)] hover:text-foreground hover:shadow-[0_8px_22px_-20px_hsl(var(--foreground)/0.3)]',
-      )}
-      onMouseEnter={() => onPrefetchWorkspace(workspace.id)}
-    >
-      <button
-        type="button"
-        aria-label={`Select workspace ${getWorkspaceDisplayName(workspace)}`}
-        data-workspace-select-button={workspace.id}
-        data-workspace-id={workspace.id}
-        data-workspace-selected={selected ? 'true' : 'false'}
-        className="flex min-w-0 flex-1 items-center gap-1.5 rounded text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-        onFocus={() => onPrefetchWorkspace(workspace.id)}
-        onClick={() => onSelectWorkspace(workspace.id)}
-      >
-        <span className={cn('shrink-0 rounded-full', selected ? 'h-2 w-2 bg-[hsl(var(--app-accent))]' : 'h-1.5 w-1.5 bg-muted-foreground/38')} />
-        <span className={cn('min-w-0 flex-1 truncate text-[11.5px] leading-5', selected ? 'font-semibold text-foreground dark:text-zinc-50' : 'font-medium text-foreground/78')}>
-          {getWorkspaceDisplayName(workspace)}
-        </span>
-        {metadata ? (
-          <span
-            className={cn('max-w-[48%] shrink-0 truncate font-mono text-[9px] leading-5 tabular-nums', selected ? 'font-medium text-[hsl(var(--app-text-soft))] dark:text-zinc-300' : 'text-muted-foreground/80')}
-            title={activityTitle}
-          >
-            {metadata}
-          </span>
-        ) : null}
-      </button>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            aria-label={`Workspace actions for ${getWorkspaceDisplayName(workspace)}`}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-[background-color,color,opacity,transform] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.45)] hover:text-foreground active:scale-[0.96] group-hover/workspace:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <MoreHorizontal size={12} strokeWidth={2.2} />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-40">
-          <DropdownMenuItem onClick={() => void copyAgentreeLink({ workspaceId: workspace.id })}>
-            <Copy className="mr-2 h-4 w-4" />
-            Copy link
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => onRequestRename(workspace)}>
-            <Pencil className="mr-2 h-4 w-4" />
-            Rename
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            className="text-destructive focus:text-destructive"
-            onClick={() => onRequestDelete(workspace)}
-          >
-            <Trash2 className="mr-2 h-4 w-4" />
-            Delete
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
-  );
-}
-
-function RepositorySelector({
-  repositories,
-  selectedRepository,
-  onSelectRepository,
-}: {
-  repositories: RepoGroup[];
-  selectedRepository: RepoGroup | null;
-  onSelectRepository: (repositoryId: string) => void;
-}) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label="Select repository"
-          data-repository-selector
-          className="mt-2 flex w-full min-w-0 items-center gap-2 rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.62)] px-2 py-2 text-left shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-panel-strong)/0.7)] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-        >
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[hsl(var(--app-accent-soft)/0.56)] text-[hsl(var(--app-accent))]">
-            <FolderGit className="h-4 w-4" />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-[12px] font-semibold text-foreground">
-              {selectedRepository?.name ?? 'Choose repository'}
-            </span>
-            <span className="mt-0.5 block truncate text-[9px] text-muted-foreground">
-              {selectedRepository?.path || 'No repository selected'}
-            </span>
-          </span>
-          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" sideOffset={6} className="w-[17.5rem]">
-        {repositories.map((repository) => {
-          const selected = repository.id === selectedRepository?.id;
-          return (
-            <DropdownMenuItem
-              key={repository.id}
-              className="flex items-center gap-2 py-2"
-              onSelect={() => onSelectRepository(repository.id)}
-            >
-              <FolderGit className="h-4 w-4 shrink-0 text-[hsl(var(--app-accent))]" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-xs font-medium">{repository.name}</span>
-                {repository.path ? (
-                  <span className="mt-0.5 block truncate text-[9px] text-muted-foreground">{repository.path}</span>
-                ) : null}
-              </span>
-              <span className="font-mono text-[9px] tabular-nums text-muted-foreground">{repository.workspaces.length}</span>
-              <Check className={cn('h-4 w-4 shrink-0', selected ? 'opacity-100' : 'opacity-0')} />
-            </DropdownMenuItem>
-          );
-        })}
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 
@@ -830,11 +659,10 @@ export function WorkspaceNavigator({
   onCreateThread,
   onRepositoryConnected,
   threadNavigation,
-  threadsFocused: controlledThreadsFocused,
   onThreadsFocusedChange,
 }: WorkspaceNavigatorProps) {
   const queryClient = useQueryClient();
-  const { selectWorkspace, dispatchFocus } = useWorkspaceStore();
+  const { selectWorkspace, dispatchFocus, lastUsedWorkspaceAt } = useWorkspaceStore();
   const { data: workspacesData, isLoading, error, refetch } = useWorkspaces();
   const createWorkspace = useCreateWorkspace();
   const renameWorkspace = useRenameWorkspace();
@@ -848,18 +676,22 @@ export function WorkspaceNavigator({
   const [pendingFolderPath, setPendingFolderPath] = useState<string | null>(null);
   const [pendingPolicyPromptAfterSetup, setPendingPolicyPromptAfterSetup] = useState(false);
   const [checkpointMessage, setCheckpointMessage] = useState('WIP: pre-agentree checkpoint');
-  const [localThreadsFocused, setLocalThreadsFocused] = useState(false);
-  const lastWorkspaceByRepositoryRef = useRef(new Map<string, string>());
-  const threadsFocused = controlledThreadsFocused ?? localThreadsFocused;
-  const setThreadsFocused = onThreadsFocusedChange ?? setLocalThreadsFocused;
 
   const workspaces = useMemo(() => workspacesData ?? [], [workspacesData]);
   const repoGroups = useMemo(() => groupWorkspacesByRepo(workspaces), [workspaces]);
+  const selectedWorkspace = useMemo(
+    () => workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
+    [selectedWorkspaceId, workspaces],
+  );
+  const selectedWorkspaceRepositoryId = useMemo(
+    () => repoGroups.find((repo) => repo.workspaces.some((workspace) => workspace.id === selectedWorkspaceId))?.id ?? null,
+    [repoGroups, selectedWorkspaceId],
+  );
   const selectedRepository = useMemo(
-    () => repoGroups.find((repo) => repo.workspaces.some((workspace) => workspace.id === selectedWorkspaceId))
+    () => repoGroups.find((repo) => repo.id === selectedWorkspaceRepositoryId)
       ?? repoGroups[0]
       ?? null,
-    [repoGroups, selectedWorkspaceId],
+    [repoGroups, selectedWorkspaceRepositoryId],
   );
   const existingRepoPaths = useMemo(() => (
     new Set(
@@ -869,27 +701,13 @@ export function WorkspaceNavigator({
     )
   ), [repoGroups]);
   const selectedThreadModel = threadNavigation?.workspaceId === selectedWorkspaceId ? threadNavigation : null;
-  const selectedWorkspaceLastActiveAt = useMemo(
-    () => selectedThreadModel?.threadItems.reduce(
-      (latest, thread) => Math.max(latest, thread.lastUpdatedAt ?? 0),
-      0,
-    ) ?? 0,
-    [selectedThreadModel?.threadItems],
-  );
   const showThreadSections = activeView === 'chat';
-  const showFocusedThreads = threadsFocused && showThreadSections && Boolean(selectedWorkspaceId);
   const repoCount = repoGroups.filter((repo) => repo.id !== 'unassigned').length;
   const threadBarCollapsed = showThreadSections && Boolean(selectedThreadModel?.threadBarCollapsed);
 
   useEffect(() => {
-    if (!selectedWorkspaceId) setThreadsFocused(false);
-  }, [selectedWorkspaceId, setThreadsFocused]);
-
-  useEffect(() => {
-    if (!selectedWorkspaceId) return;
-    const repository = repoGroups.find((repo) => repo.workspaces.some((workspace) => workspace.id === selectedWorkspaceId));
-    if (repository) lastWorkspaceByRepositoryRef.current.set(repository.id, selectedWorkspaceId);
-  }, [repoGroups, selectedWorkspaceId]);
+    if (!selectedWorkspaceId) onThreadsFocusedChange?.(false);
+  }, [onThreadsFocusedChange, selectedWorkspaceId]);
 
   useEffect(() => {
     recordPerfEvent('query.workspace-switch.navigator-model-state', {
@@ -1013,17 +831,10 @@ export function WorkspaceNavigator({
     await createWorkspaceForFolder(folderPath);
   }, [addToast, createWorkspaceForFolder]);
 
-  const handleSelectRepository = useCallback((repositoryId: string) => {
-    const repository = repoGroups.find((candidate) => candidate.id === repositoryId);
-    if (!repository) return;
-
-    const rememberedWorkspaceId = lastWorkspaceByRepositoryRef.current.get(repository.id);
-    const targetWorkspace = repository.workspaces.find((workspace) => workspace.id === rememberedWorkspaceId)
-      ?? repository.workspaces[0];
-    if (targetWorkspace && targetWorkspace.id !== selectedWorkspaceId) {
-      onSelectWorkspace(targetWorkspace.id);
-    }
-  }, [onSelectWorkspace, repoGroups, selectedWorkspaceId]);
+  const handleWorkspaceMenuSelect = useCallback((workspaceId: string) => {
+    onThreadsFocusedChange?.(false);
+    onSelectWorkspace(workspaceId);
+  }, [onSelectWorkspace, onThreadsFocusedChange]);
 
   const continueAfterSetupRequirement = useCallback(async (options: {
     allowGitInit?: boolean;
@@ -1105,10 +916,6 @@ export function WorkspaceNavigator({
     })();
   }, [queryClient]);
 
-  const viewLabel = activeView === 'chat'
-    ? 'Graph'
-    : activeView[0].toUpperCase() + activeView.slice(1);
-
   const handleThreadBarExpandedChange = useCallback((collapsed: boolean) => {
     selectedThreadModel?.onThreadBarCollapsedChange(collapsed);
   }, [selectedThreadModel]);
@@ -1125,56 +932,214 @@ export function WorkspaceNavigator({
   }
 
   return (
-    <aside className="flex h-full w-[19rem] shrink-0 flex-col border-r border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-bg-muted)/0.82)] shadow-[inset_-1px_0_0_hsl(var(--foreground)/0.025)] dark:bg-[hsl(var(--app-panel-strong)/0.46)]">
-      <div className="shrink-0 border-b border-[hsl(var(--app-border)/0.56)] px-3 py-2">
-        <div className="flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <div className="truncate text-[11px] font-semibold uppercase tracking-[0.14em] text-[hsl(var(--app-accent))]">
-              {viewLabel}
-            </div>
-            <div className="mt-0.5 truncate text-sm font-semibold text-foreground">Repository</div>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {selectedThreadModel ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label="Collapse navigator"
-                    onClick={() => handleThreadBarExpandedChange(true)}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.64)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-accent-soft)/0.56)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-                  >
-                    <ChevronLeft size={14} strokeWidth={2.2} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" align="end">
-                  Collapse navigator
-                </TooltipContent>
-              </Tooltip>
-            ) : null}
+    <aside className="flex h-full w-[19rem] shrink-0 flex-col border-r border-[hsl(var(--app-border)/0.46)] bg-[hsl(var(--app-bg-muted)/0.72)] shadow-[inset_-1px_0_0_hsl(var(--foreground)/0.02)] dark:bg-[hsl(var(--app-panel-strong)/0.42)]">
+      <div className="shrink-0 bg-[hsl(var(--app-panel-strong)/0.72)] px-2 py-2 shadow-[inset_0_-1px_0_hsl(var(--app-border-strong)/0.54),inset_0_1px_0_hsl(var(--foreground)/0.035)]">
+        <div className="flex items-center gap-1.5">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                aria-label={selectedWorkspace && selectedRepository
+                  ? `Choose workspace, current ${getWorkspaceDisplayName(selectedWorkspace)} in ${selectedRepository.name}`
+                  : 'Choose workspace'}
+                disabled={!selectedRepository}
+                className="h-11 min-w-0 flex-1 justify-start gap-2 rounded-xl bg-[hsl(var(--app-bg-muted)/0.72)] px-2 text-foreground shadow-[0_1px_2px_-1px_hsl(var(--foreground)/0.14),inset_0_0_0_1px_hsl(var(--app-border)/0.56),inset_0_1px_0_hsl(var(--foreground)/0.035)] transition-[background-color,box-shadow,transform] duration-150 hover:bg-[hsl(var(--app-panel)/0.82)] hover:shadow-[0_2px_5px_-3px_hsl(var(--foreground)/0.28),inset_0_0_0_1px_hsl(var(--app-border-strong)/0.58)] focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:shadow-[0_2px_5px_-3px_hsl(var(--foreground)/0.28),inset_0_0_0_1px_hsl(var(--foreground)/0.18)] active:scale-[0.96] data-[state=open]:bg-[hsl(var(--app-panel)/0.88)] data-[state=open]:shadow-[0_2px_5px_-3px_hsl(var(--foreground)/0.28),inset_0_0_0_1px_hsl(var(--app-border-strong)/0.62)]"
+              >
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))]">
+                  <FolderGit size={14} strokeWidth={2} />
+                </span>
+                <span className="min-w-0 flex-1 text-left">
+                  <span className="block truncate text-sm font-bold leading-5 tracking-[-0.01em]">
+                    {selectedWorkspace ? getWorkspaceDisplayName(selectedWorkspace) : 'Choose workspace'}
+                  </span>
+                  <span className="block truncate text-[9px] font-medium leading-3 text-muted-foreground/72">
+                    {selectedRepository?.name ?? 'No repository'}
+                  </span>
+                </span>
+                {selectedRepository ? (
+                  <span className="shrink-0 rounded-md bg-[hsl(var(--app-panel-strong)/0.56)] px-1.5 py-0.5 text-[9px] font-semibold tabular-nums text-muted-foreground">
+                    {selectedRepository.workspaces.length}
+                  </span>
+                ) : null}
+                <ChevronDown size={14} strokeWidth={2.2} className="shrink-0 text-muted-foreground" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              side="bottom"
+              className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-[14rem] rounded-lg p-1"
+            >
+              {repoGroups.map((repository) => {
+                return (
+                  <DropdownMenuSub key={repository.id}>
+                    <DropdownMenuSubTrigger
+                      className={cn(
+                        'h-10 gap-2 rounded-md pr-2 text-xs',
+                        repository.id === selectedWorkspaceRepositoryId && 'bg-[hsl(var(--app-accent-soft)/0.54)] text-foreground',
+                      )}
+                    >
+                      <FolderGit size={14} strokeWidth={2} />
+                      <span className="min-w-0 flex-1 truncate font-semibold">{repository.name}</span>
+                      <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                        {repository.workspaces.length}
+                      </span>
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent
+                      sideOffset={6}
+                      alignOffset={-5}
+                      className="min-w-[20rem] rounded-lg p-1"
+                    >
+                      {repository.workspaces.map((workspace) => {
+                        const lastActiveLabel = formatWorkspaceLastActive(
+                          workspace,
+                          lastUsedWorkspaceAt[workspace.id],
+                        );
+                        return (
+                          <div
+                            key={workspace.id}
+                            data-workspace-menu-item={workspace.id}
+                            onPointerEnter={() => handlePrefetchWorkspace(workspace.id)}
+                            className={cn(
+                              'group/workspace-menu flex h-10 items-center rounded-md transition-colors duration-150',
+                              workspace.id === selectedWorkspaceId
+                                ? 'bg-[hsl(var(--app-accent-soft)/0.62)] text-foreground'
+                                : 'hover:bg-accent hover:text-accent-foreground',
+                            )}
+                          >
+                            <DropdownMenuItem
+                              asChild
+                              onSelect={() => handleWorkspaceMenuSelect(workspace.id)}
+                              className="h-10 min-w-0 flex-1 gap-2 rounded-md bg-transparent px-2 text-xs focus:bg-transparent"
+                            >
+                              <button
+                                type="button"
+                                aria-label={`Select workspace ${getWorkspaceDisplayName(workspace)}`}
+                                onFocus={() => handlePrefetchWorkspace(workspace.id)}
+                              >
+                                <FolderOpen size={14} strokeWidth={2} />
+                                <span className="min-w-0 flex-1 text-left">
+                                  <span className={cn(
+                                    'block truncate leading-4',
+                                    workspace.id === selectedWorkspaceId && 'font-semibold',
+                                  )}>
+                                    {getWorkspaceDisplayName(workspace)}
+                                  </span>
+                                  {lastActiveLabel ? (
+                                    <span className="block truncate text-[9px] leading-3 text-muted-foreground tabular-nums">
+                                      Last active {lastActiveLabel}
+                                    </span>
+                                  ) : null}
+                                </span>
+                              </button>
+                            </DropdownMenuItem>
+                            <div className="pointer-events-none flex shrink-0 items-center opacity-0 transition-opacity duration-150 group-hover/workspace-menu:pointer-events-auto group-hover/workspace-menu:opacity-100 group-focus-within/workspace-menu:pointer-events-auto group-focus-within/workspace-menu:opacity-100">
+                              <Tooltip>
+                                <DropdownMenuItem
+                                  asChild
+                                  onSelect={() => void copyAgentreeLink({ workspaceId: workspace.id })}
+                                  className="size-10 justify-center rounded-md p-0 text-muted-foreground focus:text-foreground"
+                                >
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      type="button"
+                                      aria-label={`Copy workspace link for ${getWorkspaceDisplayName(workspace)}`}
+                                    >
+                                      <Copy size={14} strokeWidth={2} />
+                                    </button>
+                                  </TooltipTrigger>
+                                </DropdownMenuItem>
+                                <TooltipContent side="top" sideOffset={6}>
+                                  Copy workspace link
+                                </TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <DropdownMenuItem
+                                  asChild
+                                  onSelect={() => setWorkspacePendingRename(workspace)}
+                                  className="size-10 justify-center rounded-md p-0 text-muted-foreground focus:text-foreground"
+                                >
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      type="button"
+                                      aria-label={`Rename ${getWorkspaceDisplayName(workspace)}`}
+                                    >
+                                      <Pencil size={14} strokeWidth={2} />
+                                    </button>
+                                  </TooltipTrigger>
+                                </DropdownMenuItem>
+                                <TooltipContent side="top" sideOffset={6}>
+                                  Rename workspace
+                                </TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <DropdownMenuItem
+                                  asChild
+                                  variant="destructive"
+                                  onSelect={() => setWorkspacePendingDelete(workspace)}
+                                  className="size-10 justify-center rounded-md p-0"
+                                >
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      type="button"
+                                      aria-label={`Delete ${getWorkspaceDisplayName(workspace)}`}
+                                    >
+                                      <Trash2 size={14} strokeWidth={2} />
+                                    </button>
+                                  </TooltipTrigger>
+                                </DropdownMenuItem>
+                                <TooltipContent side="top" sideOffset={6}>
+                                  Delete workspace
+                                </TooltipContent>
+                              </Tooltip>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <DropdownMenuSeparator />
+                      {repository.path ? (
+                        <DropdownMenuItem
+                          disabled={createWorkspace.isPending}
+                          onSelect={() => void handleAddWorkspaceToRepo(repository.path)}
+                          className="h-9 rounded-md text-xs"
+                        >
+                          {createWorkspace.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" strokeWidth={2.3} />}
+                          Add workspace
+                        </DropdownMenuItem>
+                      ) : null}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                );
+              })}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                disabled={createWorkspace.isPending}
+                onSelect={handleCreateRepo}
+                className="h-9 rounded-md text-xs"
+              >
+                {createWorkspace.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" strokeWidth={2.3} />}
+                Add repository
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          {selectedThreadModel ? (
             <Tooltip>
               <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  aria-label="Add repository"
-                  disabled={createWorkspace.isPending}
-                  onClick={handleCreateRepo}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.64)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-accent-soft)/0.56)] hover:text-foreground active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Collapse navigator"
+                  onClick={() => handleThreadBarExpandedChange(true)}
+                  className="size-10 rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-150 hover:bg-[hsl(var(--app-panel)/0.82)] hover:text-foreground active:scale-[0.96]"
                 >
-                  {createWorkspace.isPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} strokeWidth={2.3} />}
-                </button>
+                  <ChevronLeft size={16} strokeWidth={2.2} />
+                </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom" align="end">
-                Add repository
+                Collapse navigator
               </TooltipContent>
             </Tooltip>
-          </div>
+          ) : null}
         </div>
-        <RepositorySelector
-          repositories={repoGroups}
-          selectedRepository={selectedRepository}
-          onSelectRepository={handleSelectRepository}
-        />
       </div>
 
       {setupRequirement?.type === 'git_init' ? (
@@ -1249,112 +1214,57 @@ export function WorkspaceNavigator({
         </DialogContent>
       </Dialog>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
-        {isLoading ? (
-          <div className="space-y-3 p-2">
-            <div className="app-skeleton h-8 w-full" />
-            <div className="app-skeleton h-24 w-full" />
-            <div className="app-skeleton h-16 w-4/5" />
-          </div>
-        ) : error ? (
-          <div className="flex h-full flex-col items-center justify-center p-4 text-center">
-            <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg bg-destructive/10 text-destructive">
-              <HardDrive className="h-5 w-5" />
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="min-h-full px-2 pb-3 pt-1">
+          {isLoading ? (
+            <div className="space-y-3 p-2">
+              <div className="app-skeleton h-10 w-full" />
+              <div className="app-skeleton h-28 w-full" />
+              <div className="app-skeleton h-16 w-4/5" />
             </div>
-            <div className="text-sm font-semibold text-destructive">Error loading workspaces</div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {error instanceof Error ? error.message : 'Failed to load workspaces'}
-            </p>
-            <Button className="mt-3" size="sm" variant="outline" onClick={() => void refetch()}>
-              Try again
-            </Button>
-          </div>
-        ) : workspaces.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center p-4 text-center">
-            <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg bg-[hsl(var(--app-bg-muted))] text-muted-foreground">
-              <FolderGit className="h-5 w-5" />
-            </div>
-            <div className="text-sm font-semibold text-foreground">No repositories yet</div>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              Add a repository to start using Agentree.
-            </p>
-            <Button className="mt-4 gap-2" size="sm" variant="outline" onClick={handleCreateRepo} disabled={createWorkspace.isPending}>
-              {createWorkspace.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <FolderOpen className="h-4 w-4" />}
-              Add repository
-            </Button>
-          </div>
-        ) : selectedRepository ? (
-          <div className={cn(showFocusedThreads ? 'space-y-0' : 'space-y-3')}>
-            {!showFocusedThreads ? (
-              <section aria-labelledby="workspace-navigation-heading">
-              <div className="mb-2 flex items-center justify-between gap-2 px-1">
-                <div className="flex min-w-0 items-center gap-2">
-                  <h2 id="workspace-navigation-heading" className="text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground/66">
-                    Workspaces
-                  </h2>
-                  <span className="rounded bg-[hsl(var(--app-bg-muted)/0.72)] px-1.5 py-0.5 font-mono text-[9px] font-semibold tabular-nums text-muted-foreground">
-                    {selectedRepository.workspaces.length}
-                  </span>
-                </div>
-                {selectedRepository.path ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        aria-label={`Add workspace to ${selectedRepository.name}`}
-                        disabled={createWorkspace.isPending}
-                        onClick={() => void handleAddWorkspaceToRepo(selectedRepository.path)}
-                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-panel)/0.5)] text-muted-foreground transition-[background-color,border-color,color,transform] duration-150 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.5)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        {createWorkspace.isPending ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} strokeWidth={2.3} />}
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" align="end">
-                      Add workspace to {selectedRepository.name}
-                    </TooltipContent>
-                  </Tooltip>
-                ) : null}
+          ) : error ? (
+            <div className="flex min-h-[18rem] flex-col items-center justify-center p-4 text-center">
+              <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg bg-destructive/10 text-destructive">
+                <HardDrive className="h-5 w-5" />
               </div>
-              <div className="space-y-1">
-                {selectedRepository.workspaces.map((workspace) => (
-                  <WorkspaceRow
-                    key={workspace.id}
-                    workspace={workspace}
-                    selected={selectedWorkspaceId === workspace.id}
-                    threadCount={selectedWorkspaceId === workspace.id ? selectedThreadModel?.threadItems.length : undefined}
-                    lastActiveAt={selectedWorkspaceId === workspace.id ? selectedWorkspaceLastActiveAt : undefined}
-                    onSelectWorkspace={onSelectWorkspace}
-                    onRequestRename={setWorkspacePendingRename}
-                    onRequestDelete={setWorkspacePendingDelete}
-                    onPrefetchWorkspace={handlePrefetchWorkspace}
+              <div className="text-sm font-semibold text-destructive">Error loading workspaces</div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {error instanceof Error ? error.message : 'Failed to load workspaces'}
+              </p>
+              <Button className="mt-3" size="sm" variant="outline" onClick={() => void refetch()}>
+                Try again
+              </Button>
+            </div>
+          ) : workspaces.length === 0 ? (
+            <div className="flex min-h-[18rem] flex-col items-center justify-center p-4 text-center">
+              <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg bg-[hsl(var(--app-bg-muted))] text-muted-foreground">
+                <FolderGit className="h-5 w-5" />
+              </div>
+              <div className="text-sm font-semibold text-foreground">No repositories yet</div>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                Add a repository to start using Agentree.
+              </p>
+              <Button className="mt-4 gap-2" size="sm" variant="outline" onClick={handleCreateRepo} disabled={createWorkspace.isPending}>
+                {createWorkspace.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <FolderOpen className="h-4 w-4" />}
+                Add repository
+              </Button>
+            </div>
+          ) : selectedRepository ? (
+            <div>
+              {showThreadSections && selectedWorkspaceId && selectedRepository.id === selectedWorkspaceRepositoryId ? (
+                <section aria-label="Threads in selected workspace">
+                  <WorkspaceThreadSection
+                    model={selectedThreadModel}
+                    onOpenThread={onOpenThread}
+                    onCreateThread={onCreateThread}
+                    onThreadRename={setThreadPendingRename}
                   />
-                ))}
-              </div>
-              </section>
-            ) : null}
-
-            {showThreadSections && selectedWorkspaceId ? (
-              <section aria-label="Threads in selected workspace">
-                <WorkspaceThreadSection
-                  model={selectedThreadModel}
-                  onOpenThread={onOpenThread}
-                  onCreateThread={onCreateThread}
-                  onThreadRename={setThreadPendingRename}
-                  threadsFocused={threadsFocused}
-                  onThreadsFocusedChange={setThreadsFocused}
-                />
-              </section>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-
-      {workspaces.length > 0 && !showFocusedThreads ? (
-        <div className="flex shrink-0 items-center justify-between border-t border-[hsl(var(--app-border)/0.56)] px-3 py-2 text-[11px] text-muted-foreground">
-          <span>{repoCount} repos</span>
-          <span>{selectedRepository?.workspaces.length ?? 0} workspaces here</span>
+                </section>
+              ) : null}
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      </ScrollArea>
 
       <WorkspaceDeleteDialog
         workspace={workspacePendingDelete}

@@ -379,7 +379,7 @@ export const GraphNodeWrapper = memo(({
         ...style,
         contain: 'layout paint style',
         borderColor: isFocused || isFocusFeedbackActive
-          ? '#6366f1'
+          ? 'hsl(var(--app-selection) / 0.92)'
           : isBaseCommitHighlighted
             ? '#059669'
             : isSelected
@@ -394,11 +394,13 @@ export const GraphNodeWrapper = memo(({
         CARD_TOKENS.radius,
         'border',
         isFocused || isFocusFeedbackActive
-          ? 'transition-all duration-200 ring-2 ring-indigo-500 shadow-md'
+          ? 'transition-all duration-200 ring-2 ring-[hsl(var(--app-selection)/0.9)] shadow-md'
           : isBaseCommitHighlighted
             ? 'transition-all duration-200 ring-2 ring-emerald-600/80 shadow-sm'
             : 'transition-all duration-200 shadow-sm hover:shadow-md',
-        isSelected && !isBaseCommitHighlighted ? 'ring-2 ring-blue-500' : '',
+        isSelected && !isFocused && !isFocusFeedbackActive && !isBaseCommitHighlighted
+          ? 'ring-2 ring-blue-500'
+          : '',
         className
       )}
     >

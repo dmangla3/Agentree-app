@@ -119,6 +119,7 @@
     --app-graph-commit: 154 44% 38%;
     --app-graph-summary: 263 42% 50%;
     --app-graph-external: 34 70% 46%;
+    --app-selection: 23 44% 39%;
     --app-focus: 23 52% 43%;
     --app-shadow-soft: 0 14px 38px -26px hsl(34 28% 18% / 0.34);
     --app-shadow-panel: 0 22px 70px -46px hsl(34 28% 18% / 0.38), 0 1px 0 hsl(44 80% 99% / 0.72) inset;
@@ -183,6 +184,7 @@
     --app-graph-commit: 154 42% 58%;
     --app-graph-summary: 263 52% 68%;
     --app-graph-external: 34 80% 62%;
+    --app-selection: 240 5% 76%;
     --app-focus: 215 45% 65%;
     --app-shadow-soft: 0 16px 40px -32px hsl(0 0% 0% / 0.72);
     --app-shadow-panel: 0 20px 58px -46px hsl(0 0% 0% / 0.76), 0 1px 0 hsl(0 0% 100% / 0.025) inset;
@@ -312,12 +314,6 @@
     outline: none;
   }
 
-  .app-focus-ring:focus-visible {
-    box-shadow:
-      0 0 0 2px hsl(var(--background)),
-      0 0 0 4px hsl(var(--app-focus) / 0.56);
-  }
-
   .app-rail-button {
     position: relative;
     display: inline-flex;
@@ -329,13 +325,41 @@
     border: 1px solid transparent;
     border-radius: 0.5rem;
     color: hsl(var(--muted-foreground));
-    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
   }
 
   .app-rail-button:hover {
     background: hsl(var(--app-panel-strong) / 0.62);
     color: hsl(var(--foreground));
-    transform: translateY(-1px);
+  }
+
+  .app-fill-icon {
+    position: relative;
+    display: block;
+    flex-shrink: 0;
+  }
+
+  .app-fill-icon > svg {
+    position: absolute;
+    inset: 0;
+  }
+
+  .app-fill-icon-filled {
+    display: none;
+  }
+
+  :is(.app-rail-button, .app-fill-icon-trigger):hover .app-fill-icon-outline,
+  :is(.app-rail-button, .app-fill-icon-trigger):focus-visible .app-fill-icon-outline,
+  :is(.app-rail-button, .app-fill-icon-trigger)[data-active="true"] .app-fill-icon-outline,
+  :is(.app-rail-button, .app-fill-icon-trigger)[data-state="open"] .app-fill-icon-outline {
+    display: none;
+  }
+
+  :is(.app-rail-button, .app-fill-icon-trigger):hover .app-fill-icon-filled,
+  :is(.app-rail-button, .app-fill-icon-trigger):focus-visible .app-fill-icon-filled,
+  :is(.app-rail-button, .app-fill-icon-trigger)[data-active="true"] .app-fill-icon-filled,
+  :is(.app-rail-button, .app-fill-icon-trigger)[data-state="open"] .app-fill-icon-filled {
+    display: block;
   }
 
   .app-rail-button[data-active="true"] {
@@ -418,13 +442,6 @@
       scaleY(0.96);
   }
 
-  .app-split-handle:focus-visible {
-    box-shadow:
-      0 0 0 2px hsl(var(--background)),
-      0 0 0 4px hsl(var(--app-focus) / 0.56),
-      var(--app-shadow-floating);
-  }
-
   .app-skeleton {
     position: relative;
     overflow: hidden;
@@ -491,6 +508,15 @@
   * {
     @apply border-border;
     /* Ensure all borders use the CSS variable */
+  }
+
+  *:focus {
+    outline: none !important;
+  }
+
+  *:focus-visible {
+    --tw-ring-offset-shadow: 0 0 #0000 !important;
+    --tw-ring-shadow: 0 0 #0000 !important;
   }
 
   body {

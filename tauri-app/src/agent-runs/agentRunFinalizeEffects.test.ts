@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { agentRunManager } from './agentRunManager';
 import {
   registerAgentRunEffectsQueryClient,
+  registerAgentRunFinalizeListener,
   resetAgentRunEffectsForTest,
 } from './agentRunEffects';
 import { flushAgentWorkspaceRefreshesForTest } from './agentRunWorkspaceRefresh';
@@ -154,6 +155,8 @@ describe('agentRun finalize effects', () => {
   });
 
   it('applies late finalize ack cache convergence after a run is already terminal', () => {
+    const finalizeListener = vi.fn();
+    const unregisterFinalizeListener = registerAgentRunFinalizeListener(finalizeListener);
     queryClient.setQueryData(['messages', 'workspace-1'], [message({ status: 'completed' })]);
     agentRunManager.dispatch('assistant-1', {
       type: 'terminal',
@@ -169,6 +172,8 @@ describe('agentRun finalize effects', () => {
       executionData: {},
     });
 
+    expect(finalizeListener).not.toHaveBeenCalled();
+
     agentRunManager.dispatch('assistant-1', {
       type: 'finalize_ack',
       status: 'completed',
@@ -177,6 +182,13 @@ describe('agentRun finalize effects', () => {
     } as any);
 
     expect(queryClient.getQueryData<any[]>(['messages', 'workspace-1'])?.[0].output_commit_sha).toBe('commit-late');
+    expect(finalizeListener).toHaveBeenCalledOnce();
+    expect(finalizeListener).toHaveBeenCalledWith(expect.objectContaining({
+      nodeId: 'assistant-1',
+      status: 'completed',
+      finalizeAck: expect.objectContaining({ outputCommitSha: 'commit-late' }),
+    }));
+    unregisterFinalizeListener();
   });
 
   it('patches message and local-node caches from a terminal snapshot without finalize ack', () => {
@@ -210,6 +222,31 @@ describe('agentRun finalize effects', () => {
       id: 'assistant-1',
       status: 'completed',
     });
+  });
+
+  it('notifies finalized listeners immediately for failed runs without a finalize ack', () => {
+    const finalizeListener = vi.fn();
+    const unregisterFinalizeListener = registerAgentRunFinalizeListener(finalizeListener);
+
+    agentRunManager.dispatch('assistant-failed', {
+      type: 'terminal',
+      status: 'failed',
+      content: 'failed',
+      reason: 'launch failed',
+      holdMs: 100,
+    }, {
+      workspaceId: 'workspace-1',
+      parentId: 'user-1',
+      role: 'assistant',
+      executionData: { meta: { auto_checkout_requested: true } },
+    });
+
+    expect(finalizeListener).toHaveBeenCalledOnce();
+    expect(finalizeListener).toHaveBeenCalledWith(expect.objectContaining({
+      nodeId: 'assistant-failed',
+      status: 'failed',
+    }));
+    unregisterFinalizeListener();
   });
 
   it('patches terminal cache convergence even when the actor was already terminal', () => {

@@ -89,6 +89,15 @@ describe('RuntimeHealthCard', () => {
     delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
   });
 
+  it('uses cached runtime validation on open and forces validation only on refresh', async () => {
+    render(<RuntimeHealthCard />);
+
+    await waitFor(() => expect(mocks.checkManagedRuntimeDoctor).toHaveBeenCalledWith(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh runtime health' }));
+
+    await waitFor(() => expect(mocks.checkManagedRuntimeDoctor).toHaveBeenLastCalledWith(true));
+  });
+
   it('shows immediate indeterminate progress while a runtime install is pending', async () => {
     let resolveRepair: (entry: ManagedRuntimeDoctorEntry) => void = () => {};
     mocks.repairManagedRuntimeComponent.mockImplementation(

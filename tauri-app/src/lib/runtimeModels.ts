@@ -1,4 +1,5 @@
-import type { OpenCodeRuntimeModel } from './agentClient';
+import type { RuntimeModelCatalogRecord } from './agentClient';
+import type { OpenCodeRuntimeModel } from './openCodeModelCatalog';
 
 export type RuntimeProvider = 'claude' | 'codex' | 'opencode';
 
@@ -16,6 +17,7 @@ export interface RuntimeModelCapabilities {
 
 export interface AgentModelConfig {
   model?: string | null;
+  canonicalModelId?: string | null;
   familyKey?: string | null;
   familyLabel?: string | null;
   familyDescription?: string | null;
@@ -34,6 +36,7 @@ export interface RuntimeModel {
   id: string;
   provider: RuntimeProvider;
   modelId: string;
+  canonicalModelId?: string | null;
   familyKey: string;
   familyLabel: string;
   familyDescription: string;
@@ -51,6 +54,68 @@ export interface RuntimeModel {
   status?: RuntimeModelStatus | null;
   isFree?: boolean | null;
 }
+
+export interface RuntimeModelIdentity {
+  provider: RuntimeProvider;
+  modelId: string;
+  reasoningEffort?: string | null;
+}
+
+// Compact projection for legacy surfaces (graph legend and advanced search).
+// RuntimeModel remains the single catalog source of truth.
+export interface RuntimeCatalogModel {
+  id: string;
+  key: string;
+  provider: RuntimeProvider;
+  name: string;
+  description: string;
+  inputModalities: RuntimeModelModality[];
+  outputModalities: RuntimeModelModality[];
+  isFree: boolean;
+}
+
+const encodeRuntimeModelKeyPart = (value: string) => encodeURIComponent(value);
+
+const decodeRuntimeModelKeyPart = (value: string): string | null => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+};
+
+export const getRuntimeModelFamilyKey = (
+  provider?: string | null,
+  modelId?: string | null,
+): string | null => {
+  if (!provider || !modelId) return null;
+  return `${provider}:${encodeRuntimeModelKeyPart(modelId)}`;
+};
+
+export const getRuntimeModelKey = (
+  provider?: string | null,
+  modelId?: string | null,
+  reasoningEffort?: string | null,
+): string | null => {
+  const familyKey = getRuntimeModelFamilyKey(provider, modelId);
+  if (!familyKey) return null;
+  return reasoningEffort
+    ? `${familyKey}:${encodeRuntimeModelKeyPart(reasoningEffort)}`
+    : familyKey;
+};
+
+export const parseRuntimeModelKey = (key?: string | null): RuntimeModelIdentity | null => {
+  if (!key) return null;
+  const [provider, encodedModelId, encodedReasoningEffort, ...extra] = key.split(':');
+  if (extra.length > 0 || !provider || !encodedModelId) return null;
+  if (provider !== 'codex' && provider !== 'claude' && provider !== 'opencode') return null;
+  const modelId = decodeRuntimeModelKeyPart(encodedModelId);
+  const reasoningEffort = encodedReasoningEffort
+    ? decodeRuntimeModelKeyPart(encodedReasoningEffort)
+    : null;
+  if (!modelId || (encodedReasoningEffort && !reasoningEffort)) return null;
+  return { provider, modelId, reasoningEffort };
+};
 
 const openCodeStatusRank: Record<RuntimeModelStatus, number> = {
   active: 0,
@@ -120,11 +185,11 @@ const makeClaudeModel = ({
   effort: typeof reasoningEffortsByProvider.claude[number];
   description?: string;
 }): RuntimeModel => ({
-  key: `claude:${id}:${effort.id}`,
+  key: getRuntimeModelKey('claude', id, effort.id)!,
   id: `${id}:${effort.id}`,
   provider: 'claude',
   modelId,
-  familyKey: `claude:${id}`,
+  familyKey: getRuntimeModelFamilyKey('claude', id)!,
   familyLabel: label,
   familyDescription: description ?? `${label} reasoning modes`,
   effortLabel: effort.label,
@@ -150,11 +215,11 @@ const makeCodexModel = ({
   description: string;
   effort: typeof reasoningEffortsByProvider.codex[number];
 }): RuntimeModel => ({
-  key: `codex:${id}:${effort.id}`,
+  key: getRuntimeModelKey('codex', id, effort.id)!,
   id: `${id}:${effort.id}`,
   provider: 'codex',
   modelId: id,
-  familyKey: `codex:${id}`,
+  familyKey: getRuntimeModelFamilyKey('codex', id)!,
   familyLabel: label,
   familyDescription: description,
   effortLabel: effort.label,
@@ -178,11 +243,11 @@ const makeCodexImageModel = ({
   label: string;
   description: string;
 }): RuntimeModel => ({
-  key: `codex:${id}`,
+  key: getRuntimeModelKey('codex', id)!,
   id,
   provider: 'codex',
   modelId: id,
-  familyKey: `codex:${id}`,
+  familyKey: getRuntimeModelFamilyKey('codex', id)!,
   familyLabel: label,
   familyDescription: description,
   effortLabel: 'Image',
@@ -275,7 +340,12 @@ const codexImageModels: RuntimeModel[] = codexImageModelBases.map((model) =>
   makeCodexImageModel(model)
 );
 
-export const runtimeModels: RuntimeModel[] = [...codexModels, ...codexImageModels, ...claudeModels];
+// Bootstrap catalog used until the background/native catalog service has a
+// fresher snapshot. Keep runtime discovery out of React render and send paths.
+export const bootstrapRuntimeModels: RuntimeModel[] = [...codexModels, ...codexImageModels, ...claudeModels];
+
+/** @deprecated Use the current catalog returned by useRuntimeModelCatalog. */
+export const runtimeModels = bootstrapRuntimeModels;
 
 const openCodeEffortLabel = (variant: string | null) => {
   if (!variant) return 'Default';
@@ -285,13 +355,12 @@ const openCodeEffortLabel = (variant: string | null) => {
 export const runtimeModelsFromOpenCodeCatalog = (models: OpenCodeRuntimeModel[]): RuntimeModel[] => (
   models.flatMap((model) => {
     const variants = model.variants.length > 0 ? model.variants : [null];
-    const encodedModelId = encodeURIComponent(model.id);
     return variants.map((variant) => ({
-      key: variant ? `opencode:${encodedModelId}:${encodeURIComponent(variant)}` : `opencode:${encodedModelId}`,
+      key: getRuntimeModelKey('opencode', model.id, variant)!,
       id: variant ? `${model.id}:${variant}` : model.id,
       provider: 'opencode' as const,
       modelId: model.id,
-      familyKey: `opencode:${encodedModelId}`,
+      familyKey: getRuntimeModelFamilyKey('opencode', model.id)!,
       familyLabel: model.name,
       familyDescription: `${model.providerName} model available through OpenCode`,
       effortLabel: openCodeEffortLabel(variant),
@@ -320,39 +389,168 @@ export const runtimeModelsFromOpenCodeCatalog = (models: OpenCodeRuntimeModel[])
   })
 );
 
+export const openCodeRuntimeModelsFromCatalogRecords = (
+  records: RuntimeModelCatalogRecord[],
+): OpenCodeRuntimeModel[] => records.flatMap((record) => {
+  if (record.provider !== 'opencode') return [];
+  const separator = record.cliModelId.indexOf('/');
+  const providerId = record.upstreamProviderId
+    ?? (separator > 0 ? record.cliModelId.slice(0, separator) : 'opencode');
+  const modelId = separator > 0
+    ? record.cliModelId.slice(separator + 1)
+    : record.cliModelId;
+  return [{
+    id: record.cliModelId,
+    providerId,
+    providerName: record.providerName ?? providerId,
+    modelId,
+    name: record.name,
+    reasoning: record.reasoning ?? (record.supportedReasoningEfforts?.length ?? 0) > 0,
+    attachment: record.attachment ?? (record.inputModalities ?? []).some((value) => value !== 'text'),
+    toolCall: record.toolCall ?? true,
+    inputModalities: record.inputModalities ?? [],
+    outputModalities: record.outputModalities ?? [],
+    variants: record.supportedReasoningEfforts ?? [],
+    contextWindow: record.contextWindow ?? null,
+    maxOutputTokens: record.maxOutputTokens ?? null,
+    releaseDate: record.releaseDate ?? null,
+    status: record.status ?? null,
+    isFree: record.isFree ?? null,
+  }];
+});
+
+const runtimeModalities = (values: string[] | undefined): RuntimeModelModality[] => (
+  (values ?? []).filter((value): value is RuntimeModelModality => (
+    ['text', 'image', 'audio', 'pdf', 'video'].includes(value)
+  ))
+);
+
+const runtimeModelStatus = (status: string | null | undefined): RuntimeModelStatus | null => (
+  status === 'active' || status === 'beta' || status === 'alpha' || status === 'deprecated'
+    ? status
+    : null
+);
+
+const reasoningEffortMetadata = (provider: 'codex' | 'claude', effort: string | null) => {
+  if (!effort) {
+    return { label: 'Default', description: 'Provider default reasoning level' };
+  }
+  const known = reasoningEffortsByProvider[provider].find((option) => option.id === effort);
+  return known ?? {
+    label: effort.charAt(0).toUpperCase() + effort.slice(1).replace(/_/g, ' '),
+    description: `${provider === 'codex' ? 'Codex' : 'Claude'} ${effort} reasoning level`,
+  };
+};
+
+export const runtimeModelsFromNativeCatalog = (
+  records: RuntimeModelCatalogRecord[],
+): RuntimeModel[] => records.flatMap((record) => {
+  if (record.provider !== 'codex' && record.provider !== 'claude') return [];
+  const provider = record.provider;
+  const inputModalities = runtimeModalities(record.inputModalities);
+  const outputModalities = runtimeModalities(record.outputModalities);
+  const isImageOutput = outputModalities.includes('image');
+  const advertisedEfforts = isImageOutput ? [] : (record.supportedReasoningEfforts ?? []);
+  const efforts: Array<string | null> = advertisedEfforts.length > 0
+    ? advertisedEfforts
+    : [null];
+  const familyKey = getRuntimeModelFamilyKey(provider, record.canonicalModelId)!;
+
+  return efforts.map((effort) => {
+    const effortMeta = reasoningEffortMetadata(provider, effort);
+    const label = effort ? `${record.name} ${effortMeta.label}` : record.name;
+    const effortArg = effort
+      ? provider === 'codex'
+        ? ` --reasoning-effort ${effort}`
+        : ` --effort ${effort}`
+      : '';
+    const cliArgs = provider === 'codex'
+      ? `--model ${record.cliModelId}${effortArg}`
+      : `--permission-mode auto --print --output-format stream-json --verbose --no-session-persistence --model ${record.cliModelId}${effortArg}`;
+
+    return {
+      key: getRuntimeModelKey(provider, record.canonicalModelId, effort)!,
+      id: effort ? `${record.canonicalModelId}:${effort}` : record.canonicalModelId,
+      provider,
+      modelId: record.cliModelId,
+      canonicalModelId: record.canonicalModelId,
+      familyKey,
+      familyLabel: record.name,
+      familyDescription: record.description || `${record.name} runtime model`,
+      effortLabel: isImageOutput ? 'Image' : effortMeta.label,
+      effortDescription: isImageOutput ? 'Image generation and editing' : effortMeta.description,
+      reasoningEffort: effort,
+      label,
+      providerLabel: provider === 'codex' ? 'Codex' : 'Claude',
+      description: record.description || label,
+      cliArgs,
+      promptFlag: null,
+      color: provider === 'codex' ? 'green' : 'amber',
+      capabilities: {
+        inputModalities: inputModalities.length > 0 ? inputModalities : ['text'],
+        outputModalities: outputModalities.length > 0 ? outputModalities : ['text'],
+        reasoningEffort: advertisedEfforts.length > 0,
+        reasoning: advertisedEfforts.length > 0,
+        toolCall: !isImageOutput,
+        attachments: inputModalities.some((modality) => modality !== 'text'),
+      },
+      releaseDate: record.releaseDate ?? null,
+      status: runtimeModelStatus(record.status),
+      isFree: record.isFree ?? null,
+    };
+  });
+});
+
 export const defaultRuntimeModelKey = 'codex:gpt-5.5:high';
 
-export const getRuntimeModelByKey = (key?: string | null): RuntimeModel | null =>
-  runtimeModels.find((model) => model.key === key) ?? null;
+export const getRuntimeModelByKey = (
+  key?: string | null,
+  catalog: readonly RuntimeModel[] = bootstrapRuntimeModels,
+): RuntimeModel | null => catalog.find((model) => model.key === key) ?? null;
 
 export const getRuntimeModelByProviderAndId = (
   provider?: string | null,
-  modelId?: string | null
+  modelId?: string | null,
+  catalog: readonly RuntimeModel[] = bootstrapRuntimeModels,
+  reasoningEffort?: string | null,
 ): RuntimeModel | null => {
   if (!provider || !modelId) return null;
-  return runtimeModels.find((model) => model.provider === provider && model.modelId === modelId) ?? null;
+  return catalog.find((model) => (
+    model.provider === provider
+    && (model.modelId === modelId || model.canonicalModelId === modelId)
+    && (reasoningEffort == null || model.reasoningEffort === reasoningEffort)
+  )) ?? null;
 };
 
-export const getRuntimeModelById = (modelId?: string | null): RuntimeModel | null => {
+export const getRuntimeModelById = (
+  modelId?: string | null,
+  catalog: readonly RuntimeModel[] = bootstrapRuntimeModels,
+): RuntimeModel | null => {
   if (!modelId) return null;
-  return runtimeModels.find((model) => model.modelId === modelId) ?? null;
+  return catalog.find((model) => (
+    model.modelId === modelId || model.canonicalModelId === modelId
+  )) ?? null;
 };
 
 export const getRuntimeModelLabel = (
   modelId?: string | null,
-  provider?: string | null
+  provider?: string | null,
+  catalog: readonly RuntimeModel[] = bootstrapRuntimeModels,
 ): string => {
-  const runtimeModel = getRuntimeModelByProviderAndId(provider, modelId) ?? getRuntimeModelById(modelId);
+  const runtimeModel = getRuntimeModelByProviderAndId(provider, modelId, catalog)
+    ?? getRuntimeModelById(modelId, catalog);
   if (runtimeModel) return runtimeModel.label;
   if (!modelId) return 'Unknown Model';
   return modelId.split('/').pop()?.split(':').shift() || modelId;
 };
 
-export const getRuntimeModelKey = (
-  provider?: string | null,
-  modelId?: string | null,
-  reasoningEffort?: string | null
-): string | null => {
-  if (!provider || !modelId) return null;
-  return reasoningEffort ? `${provider}:${modelId}:${reasoningEffort}` : `${provider}:${modelId}`;
-};
+export const projectRuntimeCatalogModel = (model: RuntimeModel): RuntimeCatalogModel => ({
+  id: model.modelId,
+  key: model.key,
+  provider: model.provider,
+  name: model.label,
+  description: model.description,
+  inputModalities: model.capabilities.inputModalities,
+  outputModalities: model.capabilities.outputModalities,
+  isFree: model.isFree === true,
+});

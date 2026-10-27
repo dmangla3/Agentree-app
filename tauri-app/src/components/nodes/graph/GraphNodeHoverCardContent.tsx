@@ -195,7 +195,7 @@ export function GraphNodeHoverCardContent({
         navigateToMessage(pendingReplyAgentMessageId);
       }}
       className={cn(
-        "flex h-10 items-center gap-1.5 rounded-full border border-[hsl(var(--app-accent)/0.34)] bg-[hsl(var(--app-accent-soft)/0.48)] px-3 text-[11px] font-semibold text-[hsl(var(--app-accent))] shadow-[0_8px_20px_-16px_hsl(var(--app-accent)/0.8)] transition-[background-color,border-color,box-shadow,transform] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.72)] active:scale-[0.96]",
+        "flex h-7 items-center gap-1 rounded-full border border-[hsl(var(--app-accent)/0.34)] bg-[hsl(var(--app-accent-soft)/0.48)] px-2 text-[10px] font-semibold text-[hsl(var(--app-accent))] transition-[background-color,border-color,transform] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.72)] active:scale-[0.96]",
         replyAttentionActive && "motion-safe:animate-pulse",
       )}
     >

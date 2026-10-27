@@ -667,6 +667,7 @@ export const ChatAssistantCard = memo(({
   entity,
   isFocused,
   isSelected,
+  layout,
   onFocus,
   onSelect,
   onContextMenu,
@@ -844,7 +845,10 @@ export const ChatAssistantCard = memo(({
       )}
     >
       {/* Header */}
-      <div className="relative z-10 mb-4 min-w-0 max-w-full">
+      <div className={cn(
+        "relative z-10 min-w-0 max-w-full",
+        layout === 'hovercard' ? "mb-0" : "mb-4",
+      )}>
         <div className="flex min-w-0 w-full max-w-full flex-wrap items-start gap-3">
           <div className="flex min-w-0 max-w-full flex-1 items-start gap-3">
             <div className="min-w-0 flex-1">
@@ -949,6 +953,13 @@ export const ChatAssistantCard = memo(({
           </div>
         </div>
       </div>
+
+      {layout === 'hovercard' ? (
+        <div
+          data-agentree-message-header-separator="true"
+          className="my-2 h-px w-full shrink-0 bg-[hsl(var(--app-border)/0.46)]"
+        />
+      ) : null}
 
       {providerErrorCode === 'usage_limit_exceeded' && (
         <div className="relative z-10 mb-4 flex min-w-0 max-w-full items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">

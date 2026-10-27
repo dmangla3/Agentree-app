@@ -519,27 +519,18 @@ impl ThreadControlService {
             .unwrap_or_else(|| "full-access".to_string());
         let inherited_profile = value_string(caller_meta, "login_profile_id");
         let profiles = self.telemetry().list_login_profiles()?;
-        let selected_profile = inherited_profile
-            .as_deref()
-            .and_then(|profile_id| {
-                profiles.iter().find(|profile| {
-                    profile.id == profile_id
-                        && profile.provider == provider
-                        && profile.status == "ready"
-                })
-            })
-            .or_else(|| {
-                profiles.iter().find(|profile| {
-                    profile.provider == provider && profile.status == "ready" && profile.is_default
-                })
-            })
-            .or_else(|| {
-                profiles
-                    .iter()
-                    .find(|profile| profile.provider == provider && profile.status == "ready")
-            })
-            .ok_or_else(|| crate::login_profiles::provider_login_required_message(&provider))?;
-        validate_model_for_profile(&provider, &model, &selected_profile.auth_type)?;
+        let selected_profile = crate::login_profiles::select_login_profile_for_provider(
+            &profiles,
+            &provider,
+            inherited_profile.as_deref(),
+        )
+        .ok_or_else(|| crate::login_profiles::provider_login_required_message(&provider))?;
+        validate_model_for_profile(
+            &self.telemetry(),
+            &provider,
+            &model,
+            &selected_profile.auth_type,
+        )?;
         let label = model_label(&provider, &model);
         Ok(RuntimeConfig {
             provider: provider.clone(),
@@ -914,10 +905,16 @@ fn model_label(provider: &str, model: &str) -> String {
     format!("{} {}", provider_label, model)
 }
 
-fn validate_model_for_profile(provider: &str, model: &str, auth_type: &str) -> Result<(), String> {
+fn validate_model_for_profile(
+    db: &crate::db::TelemetryDb,
+    provider: &str,
+    model: &str,
+    auth_type: &str,
+) -> Result<(), String> {
     if provider == "codex"
         && auth_type == "codex_chatgpt_session"
-        && !crate::agents::codex_chatgpt_session_supports_model(Some(model))
+        && crate::runtime_model_catalog::cached_provider_supports_model(db, provider, model)?
+            == Some(false)
     {
         return Err(format!(
             "{model} is not available through the selected Codex ChatGPT subscription. Choose a model from Agentree's current Codex catalog."
@@ -1284,18 +1281,6 @@ mod tests {
             failure_reason_from_payload(&payload).as_deref(),
             Some("provider rejected the model")
         );
-    }
-
-    #[test]
-    fn orchestration_rejects_unsupported_subscription_model_before_launch() {
-        let error = validate_model_for_profile("codex", "gpt-5-nano", "codex_chatgpt_session")
-            .expect_err("unsupported subscription model");
-
-        assert!(error.contains("not available"));
-        assert!(
-            validate_model_for_profile("codex", "gpt-5.6-luna", "codex_chatgpt_session").is_ok()
-        );
-        assert!(validate_model_for_profile("codex", "custom-model", "codex_api_key").is_ok());
     }
 
     #[test]

@@ -14,7 +14,7 @@ import {
 } from '../lib/runtimeModels';
 import { cn } from '../lib/utils';
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
-import { useModelStore } from '../stores/modelStore';
+import { getEffectiveVisibleFamilyKeys, useModelStore } from '../stores/modelStore';
 
 type ModelFamily = {
   key: string;
@@ -94,12 +94,12 @@ export function ModelVisibilitySettingsPanel({
   initialProvider = 'codex',
   showHeader = true,
 }: ModelVisibilitySettingsPanelProps) {
+  const [activeProvider, setActiveProvider] = useState<RuntimeProvider>(initialProvider);
   const { data: agentsData } = useAgents();
   const agents = useMemo(() => agentsData ?? [], [agentsData]);
   const loginProfiles = useLoginProfilesStore((state) => state.profiles);
   const visibleFamilyKeysByProvider = useModelStore((state) => state.visibleFamilyKeysByProvider);
   const setVisibleFamilyKeys = useModelStore((state) => state.setVisibleFamilyKeys);
-  const [activeProvider, setActiveProvider] = useState<RuntimeProvider>(initialProvider);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedOnly, setSelectedOnly] = useState(false);
   const [modelProviderFilter, setModelProviderFilter] = useState('all');
@@ -146,7 +146,10 @@ export function ModelVisibilitySettingsPanel({
   const families = familiesByProvider[activeProvider];
   const configuredKeys = visibleFamilyKeysByProvider[activeProvider];
   const selectedKeys = useMemo(
-    () => new Set(configuredKeys ?? families.map((family) => family.key)),
+    () => new Set(getEffectiveVisibleFamilyKeys(
+      configuredKeys,
+      families.map((family) => family.key),
+    )),
     [configuredKeys, families],
   );
   const modelProviders = useMemo(() => (
@@ -164,7 +167,7 @@ export function ModelVisibilitySettingsPanel({
   const hasOpenCodeProfile = loginProfiles.some((profile) => profile.provider === 'opencode');
 
   const toggleFamily = (familyKey: string, checked: boolean) => {
-    const next = new Set(configuredKeys ?? families.map((family) => family.key));
+    const next = new Set(configuredKeys ?? []);
     if (checked) next.add(familyKey);
     else next.delete(familyKey);
     setVisibleFamilyKeys(activeProvider, Array.from(next));
@@ -200,9 +203,9 @@ export function ModelVisibilitySettingsPanel({
             const active = activeProvider === provider.id;
             const providerFamilies = familiesByProvider[provider.id];
             const providerConfigured = visibleFamilyKeysByProvider[provider.id];
-            const visibleCount = providerConfigured === undefined
-              ? providerFamilies.length
-              : providerFamilies.filter((family) => providerConfigured.includes(family.key)).length;
+            const visibleCount = providerFamilies
+              .filter((family) => providerConfigured?.includes(family.key) === true)
+              .length;
             return (
               <button
                 key={provider.id}
@@ -292,10 +295,16 @@ export function ModelVisibilitySettingsPanel({
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Eye className="h-4 w-4" />
             <span className="tabular-nums">{selectedCount} of {families.length} families visible</span>
-            {configuredKeys === undefined ? <span>· New models appear automatically</span> : null}
+            <span>· New models stay unselected</span>
           </div>
           <div className="flex items-center gap-2">
-            <Button type="button" variant="ghost" size="sm" className="h-10" onClick={() => setVisibleFamilyKeys(activeProvider, null)}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-10"
+              onClick={() => setVisibleFamilyKeys(activeProvider, families.map((family) => family.key))}
+            >
               Select all
             </Button>
             <Button type="button" variant="ghost" size="sm" className="h-10" onClick={() => setVisibleFamilyKeys(activeProvider, [])}>

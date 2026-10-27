@@ -149,9 +149,16 @@ export function NodeHoverCardContent({
     >
     <div
       data-agentree-node-hover-card="true"
-      className="flex w-[min(920px,var(--radix-hover-card-content-available-width),calc(100vw-2rem))] max-w-[min(920px,var(--radix-hover-card-content-available-width),calc(100vw-2rem))] flex-col overflow-hidden rounded-[24px] border border-[hsl(var(--app-border)/0.76)] bg-[hsl(var(--app-panel)/0.96)] p-3 text-foreground shadow-[0_24px_64px_-40px_hsl(var(--foreground)/0.58),0_10px_24px_-20px_hsl(var(--foreground)/0.32),inset_0_1px_0_hsl(var(--background)/0.22)]"
+      className="relative flex w-[min(920px,var(--radix-hover-card-content-available-width),calc(100vw-2rem))] max-w-[min(920px,var(--radix-hover-card-content-available-width),calc(100vw-2rem))] flex-col overflow-visible rounded-[24px] border border-[hsl(var(--app-border)/0.76)] bg-[hsl(var(--app-panel)/0.96)] p-3 text-foreground shadow-[0_24px_64px_-40px_hsl(var(--foreground)/0.58),0_10px_24px_-20px_hsl(var(--foreground)/0.32),inset_0_1px_0_hsl(var(--background)/0.22)]"
     >
-      {headerAccessory}
+      {headerAccessory ? (
+        <div
+          data-agentree-hover-navigation-dock="attached"
+          className="absolute right-4 top-px z-20 -translate-y-full"
+        >
+          {headerAccessory}
+        </div>
+      ) : null}
       {replyParentId && isAssistantAgentHover ? (
         <AgentResourceUsageBadge
           assistantNodeId={replyParentId}

@@ -3,7 +3,7 @@ import {
   defaultRootRuntimeModelKey,
   resolveComposerDefaultAgentId,
 } from './composerModelDefaults';
-import { runtimeModels } from './runtimeModels';
+import { getRuntimeModelKey, runtimeModels } from './runtimeModels';
 
 const agent = (key: string) => {
   const runtimeModel = runtimeModels.find((model) => model.key === key);
@@ -82,5 +82,28 @@ describe('resolveComposerDefaultAgentId', () => {
       fallbackAgents: [],
       parentMessage: null,
     })).toBeNull();
+  });
+
+  it('inherits an exact dynamic OpenCode variant from the current agent catalog', () => {
+    const dynamicId = getRuntimeModelKey('opencode', 'openrouter/vendor:model', 'extra:high')!;
+    const dynamicAgent = {
+      id: dynamicId,
+      type: 'opencode',
+      model_config: {
+        model: 'openrouter/vendor:model',
+        reasoningEffort: 'extra:high',
+      },
+    };
+
+    expect(resolveComposerDefaultAgentId({
+      agents: [...agents, dynamicAgent],
+      parentMessage: {
+        llmProvider: 'opencode',
+        llmModel: 'openrouter/vendor:model',
+        execution_data: {
+          meta: { provider_reasoning_effort: 'extra:high' },
+        },
+      },
+    })).toBe(dynamicId);
   });
 });

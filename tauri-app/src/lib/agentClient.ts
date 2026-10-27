@@ -1,14 +1,33 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
-import { commands as tauriCommands } from '../generated/tauri-bindings';
+import { commands as tauriCommands, events as tauriEvents } from '../generated/tauri-bindings';
 import type {
+    ActiveLoginProfileRun as NativeActiveLoginProfileRun,
+    AgentLaunchContext as NativeAgentLaunchContext,
+    AgentLaunchRequest_Deserialize as NativeAgentLaunchRequest,
+    AgentLaunchResponse as NativeAgentLaunchResponse,
     AgentResourceUsage as NativeAgentResourceUsage,
+    ClaudeOAuthLoginStart as NativeClaudeOAuthLoginStart,
+    CodexLoginStart as NativeCodexLoginStart,
     ConvertSubgraphToThreadResult,
+    ImportLoginCandidateRequest as NativeImportLoginCandidateRequest,
+    LoginImportCandidate as NativeLoginImportCandidate,
+    LoginProfile as NativeLoginProfile,
+    LoginProfilesChangedEvent as NativeLoginProfilesChangedEvent,
     ManagedRuntimeDoctorEntry,
-    OpenCodeRuntimeModel,
+    RuntimeModelCatalogCache,
+    RuntimeModelCatalogRefreshResult,
+    StartAgentRunIntent as NativeStartAgentRunIntent,
+    StartAgentRunResponse as NativeStartAgentRunResponse,
     ThreadSessionPayload,
+    UpsertLoginProfileRequest as NativeUpsertLoginProfileRequest,
 } from '../generated/tauri-bindings';
-export type { OpenCodeRuntimeModel } from '../generated/tauri-bindings';
+export type {
+    RuntimeModelCatalogCache,
+    RuntimeModelCatalogRecord,
+    RuntimeModelCatalogRefreshResult,
+    RuntimeModelCatalogSnapshot,
+} from '../generated/tauri-bindings';
 
 const hasTauriRuntime = () =>
     typeof window !== 'undefined' &&
@@ -68,39 +87,6 @@ export interface LocalEnvironmentStatus {
     claude_auth: CliToolStatus;
 }
 
-export type RuntimeReadinessStatus =
-    | 'ready'
-    | 'cli_missing'
-    | 'cli_not_executable'
-    | 'auth_missing'
-    | 'keychain_unavailable'
-    | 'usage_limit_exceeded'
-    | 'unknown_error';
-
-export type RuntimeProvider = 'codex' | 'claude' | 'gemini' | string;
-
-export interface RuntimeReadiness {
-    provider: RuntimeProvider;
-    status: RuntimeReadinessStatus;
-    cliPath?: string | null;
-    cliVersion?: string | null;
-    homeDir?: string | null;
-    authMode?: 'chatgpt' | 'api_key' | 'file' | 'keychain' | string | null;
-    planType?: string | null;
-    hasAuthFile?: boolean | null;
-    hasOpenaiApiKey?: boolean;
-    hasCodexApiKey?: boolean;
-    recommendedCommand?: string | null;
-    message: string;
-    diagnostics?: Record<string, unknown>;
-    loginStatus?: {
-        ok?: boolean;
-        exit_code?: number;
-        output_excerpt?: string;
-        error_type?: string;
-    };
-}
-
 export interface ProviderSkill {
     id: string;
     name: string;
@@ -109,9 +95,6 @@ export interface ProviderSkill {
     source: string;
     path: string;
 }
-
-export type CodexReadinessStatus = RuntimeReadinessStatus;
-export type CodexReadiness = RuntimeReadiness;
 
 export interface WorktreeInfo {
     node_id: string;
@@ -359,124 +342,62 @@ export interface LocalCommitGraphSnapshot {
 
 export type { ConvertSubgraphToThreadResult, ThreadSessionPayload };
 
-export interface StartAgentRunIntent {
-    runId: string;
-    assistantNodeId: string;
+export type StartAgentRunIntent = Omit<
+    NativeStartAgentRunIntent,
+    'workspaceId' | 'currentUserId' | 'traceId' | 'runContext'
+> & {
     workspaceId?: string | null;
-    repoPath: string;
-    parentCommit: string;
-    agentType: string;
-    args: string[];
-    authToken: string;
     currentUserId?: string | null;
     traceId?: string | null;
     runContext: AgentRunContext;
-    loginProfileId?: string | null;
-}
+};
 
-export interface LoginProfile {
-    id: string;
-    provider: string;
-    displayName: string;
-    authType: string;
-    redactedHint?: string | null;
-    config?: Record<string, any> | null;
-    status: string;
-    statusMessage?: string | null;
-    planType?: string | null;
-    isDefault: boolean;
-    createdAt?: number;
-    updatedAt?: number;
-    lastCheckedAt?: number | null;
-}
+export type LoginProfile = Omit<NativeLoginProfile, 'config'> & {
+    config: Record<string, any> | null;
+};
 
-export interface UpsertLoginProfileRequest {
+export type UpsertLoginProfileRequest = Omit<
+    NativeUpsertLoginProfileRequest,
+    'id' | 'secret' | 'config' | 'makeDefault'
+> & {
     id?: string | null;
-    provider: string;
-    displayName: string;
-    authType: string;
     secret?: string | null;
     config?: Record<string, any> | null;
     makeDefault?: boolean | null;
-}
+};
 
-export interface LoginImportCandidate {
-    id: string;
-    provider: string;
-    displayName: string;
-    authType: string;
-    sourceKind: string;
-    sourceLabel: string;
-    redactedHint?: string | null;
-    importable: boolean;
-}
+export type LoginImportCandidate = NativeLoginImportCandidate;
 
-export interface ImportLoginCandidateRequest {
-    candidateId: string;
+export type ImportLoginCandidateRequest = Omit<
+    NativeImportLoginCandidateRequest,
+    'displayName' | 'makeDefault'
+> & {
     displayName?: string | null;
     makeDefault?: boolean | null;
-}
+};
 
-export interface ActiveLoginProfileRun {
-    loginProfileId: string;
-    runId: string;
-    assistantNodeId: string;
-    workspaceId?: string | null;
-    agentType?: string | null;
-    status: string;
-    phase: string;
-    updatedAt: number;
-}
+export type ActiveLoginProfileRun = NativeActiveLoginProfileRun;
 
-export interface LoginProfilesChangedEvent {
-    profileId: string;
-    status: string;
-}
+export type LoginProfilesChangedEvent = NativeLoginProfilesChangedEvent;
 
-export interface CodexLoginStart {
-    profileId: string;
-    deviceUrl: string;
-    deviceCode: string;
-}
+export type CodexLoginStart = NativeCodexLoginStart;
+export type ClaudeOAuthLoginStart = NativeClaudeOAuthLoginStart;
+export type StartAgentRunResponse = NativeStartAgentRunResponse;
 
-export interface ClaudeOAuthLoginStart {
-    profileId: string;
-    loginUrl: string;
-}
-
-export interface StartAgentRunResponse {
-    runId: string;
-    assistantNodeId: string;
-    worktreePath: string;
-    branchName: string;
-    pid: number | null;
-    initialStatus: string;
-}
-
-export interface AgentLaunchRequest {
-    requestId: string;
-    runId: string;
-    workspaceId: string;
-    threadId?: string | null;
-    parentNodeId?: string | null;
-    contextParentNodeId?: string | null;
-    baseNodeId?: string | null;
-    baseCommit: string;
-    userNodeId: string;
-    assistantNodeId: string;
-    userPrompt: string;
-    agentType: string;
-    model?: string | null;
-    reasoningEffort?: string | null;
-    permissionMode?: string;
-    loginProfileId?: string | null;
-    agentId?: string | null;
-    agentName?: string | null;
-    agentCliArgs?: string | null;
-    agentPromptFlag?: string | null;
+export type AgentLaunchRequest = Omit<
+    NativeAgentLaunchRequest,
+    | 'authToken'
+    | 'currentUserId'
+    | 'contextPolicy'
+    | 'contextMode'
+    | 'contextManifest'
+    | 'modelCapabilities'
+    | 'threadTitleMode'
+    | 'userNode'
+    | 'assistantNode'
+> & {
     authToken: string;
     currentUserId?: string | null;
-    traceId?: string | null;
     contextPolicy?: 'continue' | 'fresh';
     contextMode?: 'active' | 'none';
     contextManifest?: Record<string, unknown> | null;
@@ -484,33 +405,17 @@ export interface AgentLaunchRequest {
     threadTitleMode?: 'first_thread_message' | 'none' | null;
     userNode: Record<string, unknown>;
     assistantNode: Record<string, unknown>;
-}
+};
 
-export interface AgentLaunchContext {
-    providerThreadStrategy: string;
-    providerThreadStrategyRequested: string;
-    providerContextRoutingMode: string;
-    providerContextRoutingReason: string;
-    parentProvider?: string | null;
-    parentProviderThreadId?: string | null;
-    parentProviderTurnId?: string | null;
-    parentProviderLineageId?: string | null;
-    isBranchFromInterior: boolean;
-    agentreeContextAvailableChars: number;
-    agentreeContextInjectedChars: number;
-}
+export type AgentLaunchContext = NativeAgentLaunchContext;
+export type AgentLaunchResponse = NativeAgentLaunchResponse;
 
-export interface AgentLaunchResponse {
-    runId: string;
-    userNodeId: string;
-    assistantNodeId: string;
-    worktreePath?: string | null;
-    branchName?: string | null;
-    pid?: number | null;
-    initialStatus: string;
-    existing: boolean;
-    launchContext: AgentLaunchContext;
-}
+const normalizeLoginProfile = (profile: NativeLoginProfile): LoginProfile => ({
+    ...profile,
+    config: profile.config && typeof profile.config === 'object' && !Array.isArray(profile.config)
+        ? profile.config as Record<string, any>
+        : null,
+});
 
 export interface GitMergePreview {
     has_conflicts: boolean;
@@ -1072,7 +977,8 @@ export const agentClient = {
                 authUserId: intent.runContext.authUserId ?? currentUserId,
             },
             loginProfileId: intent.loginProfileId ?? null,
-        } as any);
+            traceId: intent.traceId ?? null,
+        });
     },
     launchAgentMessage: async (request: AgentLaunchRequest): Promise<AgentLaunchResponse> => {
         const currentUserId = request.currentUserId ?? await currentLocalUserId();
@@ -1081,59 +987,71 @@ export const agentClient = {
             currentUserId,
             contextManifest: request.contextManifest ?? {},
             modelCapabilities: request.modelCapabilities ?? {},
-        } as any) as AgentLaunchResponse;
+        });
     },
     listLoginProfiles: async (): Promise<LoginProfile[]> => {
         if (!hasTauriRuntime()) return [];
-        return await (tauriCommands as any).listLoginProfiles() as LoginProfile[];
+        return (await tauriCommands.listLoginProfiles()).map(normalizeLoginProfile);
     },
     readOpenCodeLoginProfileAuth: async (profileId: string): Promise<string> => {
-        return await (tauriCommands as any).readOpencodeLoginProfileAuth(profileId) as string;
+        return await tauriCommands.readOpencodeLoginProfileAuth(profileId);
     },
     upsertLoginProfile: async (request: UpsertLoginProfileRequest): Promise<LoginProfile> => {
-        return await (tauriCommands as any).upsertLoginProfile(request) as LoginProfile;
+        const profile = await tauriCommands.upsertLoginProfile({
+            ...request,
+            id: request.id ?? null,
+            secret: request.secret ?? null,
+            config: request.config ?? null,
+            makeDefault: request.makeDefault ?? null,
+        });
+        return normalizeLoginProfile(profile);
     },
     deleteLoginProfile: async (profileId: string): Promise<void> => {
-        await (tauriCommands as any).deleteLoginProfile(profileId);
+        await tauriCommands.deleteLoginProfile(profileId);
     },
     setDefaultLoginProfile: async (provider: string, profileId: string | null): Promise<LoginProfile[]> => {
-        return await (tauriCommands as any).setDefaultLoginProfile(provider, profileId) as LoginProfile[];
+        return (await tauriCommands.setDefaultLoginProfile(provider, profileId)).map(normalizeLoginProfile);
     },
     checkLoginProfileReadiness: async (profileId: string): Promise<LoginProfile> => {
-        return await (tauriCommands as any).checkLoginProfileReadiness(profileId) as LoginProfile;
+        return normalizeLoginProfile(await tauriCommands.checkLoginProfileReadiness(profileId));
     },
+    // Compatibility name: the native launch preflight is local-only and never probes a provider.
     ensureLoginProfileReady: async (profileId: string): Promise<LoginProfile> => {
-        return await (tauriCommands as any).ensureLoginProfileReady(profileId) as LoginProfile;
+        return normalizeLoginProfile(await tauriCommands.ensureLoginProfileReady(profileId));
     },
     connectCodexLoginProfile: async (profileId: string): Promise<CodexLoginStart> => {
-        return await (tauriCommands as any).connectCodexLoginProfile(profileId) as CodexLoginStart;
+        return await tauriCommands.connectCodexLoginProfile(profileId);
     },
     connectClaudeOauthLoginProfile: async (profileId: string): Promise<ClaudeOAuthLoginStart> => {
-        return await (tauriCommands as any).connectClaudeOauthLoginProfile(profileId) as ClaudeOAuthLoginStart;
+        return await tauriCommands.connectClaudeOauthLoginProfile(profileId);
     },
     pollClaudeOauthLoginProfile: async (profileId: string): Promise<LoginProfile> => {
-        return await (tauriCommands as any).pollClaudeOauthLoginProfile(profileId) as LoginProfile;
+        return normalizeLoginProfile(await tauriCommands.pollClaudeOauthLoginProfile(profileId));
     },
     submitClaudeOauthLoginCode: async (profileId: string, code: string): Promise<LoginProfile> => {
-        return await (tauriCommands as any).submitClaudeOauthLoginCode(profileId, code) as LoginProfile;
+        return normalizeLoginProfile(await tauriCommands.submitClaudeOauthLoginCode(profileId, code));
     },
     checkAllLoginProfileReadiness: async (): Promise<LoginProfile[]> => {
         if (!hasTauriRuntime()) return [];
-        return await (tauriCommands as any).checkAllLoginProfileReadiness() as LoginProfile[];
+        return (await tauriCommands.checkAllLoginProfileReadiness()).map(normalizeLoginProfile);
     },
     listActiveLoginProfileRuns: async (): Promise<ActiveLoginProfileRun[]> => {
         if (!hasTauriRuntime()) return [];
-        return await (tauriCommands as any).listActiveLoginProfileRuns() as ActiveLoginProfileRun[];
+        return await tauriCommands.listActiveLoginProfileRuns();
     },
     importExistingRuntimeLogin: async (provider: string, displayName: string): Promise<LoginProfile> => {
-        return await (tauriCommands as any).importExistingRuntimeLogin(provider, displayName) as LoginProfile;
+        return normalizeLoginProfile(await tauriCommands.importExistingRuntimeLogin(provider, displayName));
     },
     discoverLoginImportCandidates: async (): Promise<LoginImportCandidate[]> => {
         if (!hasTauriRuntime()) return [];
-        return await (tauriCommands as any).discoverLoginImportCandidates() as LoginImportCandidate[];
+        return await tauriCommands.discoverLoginImportCandidates();
     },
     importDiscoveredLoginProfile: async (request: ImportLoginCandidateRequest): Promise<LoginProfile> => {
-        return await (tauriCommands as any).importDiscoveredLoginProfile(request) as LoginProfile;
+        return normalizeLoginProfile(await tauriCommands.importDiscoveredLoginProfile({
+            ...request,
+            displayName: request.displayName ?? null,
+            makeDefault: request.makeDefault ?? null,
+        }));
     },
 
     onEvent: async (callback: (event: AgentRuntimeEventEnvelope) => void): Promise<UnlistenFn> => {
@@ -1143,7 +1061,13 @@ export const agentClient = {
     },
     onLoginProfilesChanged: async (callback: (event: LoginProfilesChangedEvent) => void): Promise<UnlistenFn> => {
         if (!hasTauriRuntime()) return () => {};
-        return await listen<LoginProfilesChangedEvent>('login-profiles:changed', (event) => {
+        return await tauriEvents.loginProfilesChanged.listen((event) => {
+            callback(event.payload);
+        });
+    },
+    onRuntimeModelCatalogChanged: async (callback: (event: RuntimeModelCatalogCache) => void): Promise<UnlistenFn> => {
+        if (!hasTauriRuntime()) return () => {};
+        return await listen<RuntimeModelCatalogCache>('runtime-model-catalog:changed', (event) => {
             callback(event.payload);
         });
     },
@@ -1160,27 +1084,24 @@ export const agentClient = {
     checkLocalEnvironment: async (): Promise<LocalEnvironmentStatus> => {
         return await invoke('check_local_environment');
     },
-    checkRuntimeReadiness: async (provider: RuntimeProvider): Promise<RuntimeReadiness> => {
+    getRuntimeModelCatalogs: async (opencodeProfileId?: string | null): Promise<RuntimeModelCatalogCache> => {
+        if (!hasTauriRuntime()) {
+            return { supported: [], opencodeAccessible: null, staleProviders: [] };
+        }
+        return await tauriCommands.getRuntimeModelCatalogs(opencodeProfileId ?? null);
+    },
+    refreshRuntimeModelCatalogs: async (): Promise<RuntimeModelCatalogRefreshResult> => {
         if (!hasTauriRuntime()) {
             return {
-                provider,
-                status: 'ready',
-                message: 'Browser preview runtime bypass is active.',
-                diagnostics: { browserPreview: true },
+                cache: { supported: [], opencodeAccessible: null, staleProviders: [] },
+                failures: [],
             };
         }
-        return await tauriCommands.checkRuntimeReadiness(provider) as RuntimeReadiness;
+        return await tauriCommands.refreshRuntimeModelCatalogs();
     },
-    checkAllRuntimeReadiness: async (): Promise<RuntimeReadiness[]> => {
-        return await tauriCommands.checkAllRuntimeReadiness() as RuntimeReadiness[];
-    },
-    listOpenCodeModels: async (profileId: string): Promise<OpenCodeRuntimeModel[]> => {
+    checkManagedRuntimeDoctor: async (forceFingerprint = false): Promise<ManagedRuntimeDoctorEntry[]> => {
         if (!hasTauriRuntime()) return [];
-        return await tauriCommands.listOpencodeModels(profileId);
-    },
-    checkManagedRuntimeDoctor: async (): Promise<ManagedRuntimeDoctorEntry[]> => {
-        if (!hasTauriRuntime()) return [];
-        return await tauriCommands.checkManagedRuntimeDoctor();
+        return await tauriCommands.checkManagedRuntimeDoctor(forceFingerprint);
     },
     repairManagedRuntimeComponent: async (component: string): Promise<ManagedRuntimeDoctorEntry> => {
         return await tauriCommands.repairManagedRuntimeComponent(component);

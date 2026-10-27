@@ -64,6 +64,34 @@ export interface ComposerContextPathParams {
     contextStartId?: string | null;
 }
 
+export function appendComposerContextArtifactInputs(
+    manifest: ComposerContextManifest,
+    artifacts: readonly ArtifactRef[],
+): ComposerContextManifest {
+    if (artifacts.length === 0) return manifest;
+    const artifactInputs = Array.from(
+        [...manifest.artifactInputs, ...artifacts]
+            .reduce((map, artifact) => map.set(artifact.id, artifact), new Map<string, ArtifactRef>())
+            .values()
+    );
+    const manifestHash = fnv1aHash(JSON.stringify({
+        baseManifestHash: manifest.manifestHash,
+        artifactInputs: artifactInputs.map((artifact) => ({
+            id: artifact.id,
+            role: artifact.role,
+            kind: artifact.kind,
+            mimeType: artifact.mimeType,
+            storage: artifact.storage,
+            thumbnail: artifact.thumbnail,
+        })),
+    }));
+    return {
+        ...manifest,
+        artifactInputs,
+        manifestHash,
+    };
+}
+
 const estimateTokens = (text: string) => Math.ceil((text || '').length / 4);
 const DEFAULT_TOOL_CONTEXT_TOKEN_BUDGET = 8000;
 const DEFAULT_TOOL_CONTEXT_MAX_ENTRY_TOKENS = 6000;

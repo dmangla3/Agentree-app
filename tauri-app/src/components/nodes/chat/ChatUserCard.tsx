@@ -16,6 +16,7 @@ export const ChatUserCard = memo(({
   entity,
   isFocused,
   isSelected,
+  layout,
   onFocus,
   onSelect,
   onContextMenu,
@@ -67,7 +68,10 @@ export const ChatUserCard = memo(({
       )}
     >
       {/* Header with timestamp pill */}
-      <div className="mb-3 flex min-w-0 max-w-full flex-wrap items-center justify-between gap-2">
+      <div className={cn(
+        "flex min-w-0 max-w-full flex-wrap items-center justify-between gap-2",
+        layout === 'hovercard' ? "mb-0" : "mb-3",
+      )}>
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
           <div className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.15em]", ROLE_COLORS.user_message.chip)}>
             <Sparkles size={10} strokeWidth={2} />
@@ -104,6 +108,13 @@ export const ChatUserCard = memo(({
           )}
         </div>
       </div>
+
+      {layout === 'hovercard' ? (
+        <div
+          data-agentree-message-header-separator="true"
+          className="my-1.5 h-px w-full shrink-0 bg-[hsl(var(--app-border)/0.46)]"
+        />
+      ) : null}
 
       {/* Content */}
       <div className={cn(

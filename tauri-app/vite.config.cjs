@@ -7,6 +7,14 @@ const { viteCacheDir } = require("./scripts/vite-cache-dir.cjs");
 
 const reactPlugin = react.default ?? react;
 const host = process.env.TAURI_DEV_HOST;
+const configuredDevPort = Number.parseInt(process.env.AGENTREE_DEV_PORT ?? "", 10);
+const devPort = Number.isInteger(configuredDevPort) && configuredDevPort > 0
+  ? configuredDevPort
+  : 1420;
+const configuredHmrPort = Number.parseInt(process.env.AGENTREE_DEV_HMR_PORT ?? "", 10);
+const hmrPort = Number.isInteger(configuredHmrPort) && configuredHmrPort > 0
+  ? configuredHmrPort
+  : 1421;
 const agentreeViteCacheDir = viteCacheDir();
 const envDir = path.resolve(__dirname, ".env-files-disabled");
 
@@ -64,14 +72,14 @@ module.exports = defineConfig(async ({ command, mode }) => {
     },
     // 2. tauri expects a fixed port, fail if that port is not available
     server: {
-      port: 1420,
+      port: devPort,
       strictPort: true,
       host: host || false,
       hmr: host
         ? {
             protocol: "ws",
             host,
-            port: 1421,
+            port: hmrPort,
           }
         : undefined,
       watch: {

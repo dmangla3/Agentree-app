@@ -61,7 +61,7 @@ vi.mock('../components/onboarding/FirstRunExperience', () => ({
 vi.mock('../components/AppHeader', () => ({ AppHeader: () => <div /> }));
 vi.mock('../components/Sidebar', () => ({ Sidebar: () => <div /> }));
 vi.mock('../components/navigation/WorkspaceNavigator', () => ({ WorkspaceNavigator: () => <div /> }));
-vi.mock('../components/ChatInput', () => ({ ChatInput: () => <div /> }));
+vi.mock('../composer/GraphDockComposer', () => ({ GraphDockComposer: () => <div /> }));
 vi.mock('../../@/components/ui/resizable', () => ({
   ResizableHandle: () => <div />,
   ResizablePanel: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,

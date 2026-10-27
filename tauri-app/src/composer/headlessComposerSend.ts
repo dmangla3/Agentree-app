@@ -1,10 +1,12 @@
 import { AGENT_STATUS } from '@shared/agentStatus';
-import type { Message, Workspace } from '../stores/workspaceStore';
+import type { AttachmentMetadata, Message, Workspace } from '../stores/workspaceStore';
 import type { Agent } from '../hooks/useAgents';
 import { createSendFlowId, recordSendFlowEvent } from '../perf/sendFlow';
 import { getLegacyThreadIdForMessage, getMessageThreadSessionId } from '../lib/threadSessions';
 import { resolveLocalWorkspaceRepoPath } from '../lib/workspaceRepoPath';
 import { buildAgentRunContextManifest } from '../lib/agentRunLaunchContext';
+import { appendComposerContextArtifactInputs } from '../lib/composerContext';
+import { appendInputArtifactsToPrompt, attachmentToArtifact } from '../lib/artifacts';
 import {
   DEFAULT_COMPOSER_PERMISSION_MODE,
   type ComposerPermissionMode,
@@ -40,6 +42,7 @@ export interface HeadlessComposerReplyInput {
   createRunId?: () => string;
   nowIso?: () => string;
   selectedLoginProfileId?: string | null;
+  attachments?: readonly AttachmentMetadata[];
 }
 
 export interface HeadlessComposerMessageInput extends Omit<HeadlessComposerReplyInput, 'replyParentId'> {
@@ -65,6 +68,7 @@ const createLocalHeadlessMessages = (input: {
   contextPolicy: 'continue' | 'fresh' | undefined;
   contextStartId: string | null | undefined;
   prompt: string;
+  attachments: readonly AttachmentMetadata[] | undefined;
   agent: Agent;
   base: HeadlessComposerBase;
   meta?: Record<string, unknown>;
@@ -102,7 +106,7 @@ const createLocalHeadlessMessages = (input: {
     content: input.prompt,
     parentId: input.parentMessageId,
     workspaceId: input.workspaceId,
-    attachments: [],
+    attachments: input.attachments?.map((attachment) => ({ ...attachment })) ?? [],
     createdAt: input.nowIso,
     updatedAt: input.nowIso,
     path_ids: userPathIds,
@@ -197,6 +201,7 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
     contextPolicy: input.contextPolicy,
     contextStartId: input.contextStartId,
     prompt,
+    attachments: input.attachments,
     agent: input.agent,
     base: input.base,
     meta: input.meta,
@@ -272,12 +277,17 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
     const contextParentId = input.contextPolicy === 'fresh'
       ? null
       : input.contextParentId ?? input.parentMessageId;
-    const contextManifest = buildAgentRunContextManifest({
+    const inheritedContextManifest = buildAgentRunContextManifest({
       messages: input.messages,
       contextParentMessageId: contextParentId,
       contextPolicy: input.contextPolicy ?? 'continue',
       contextStartMessageId: input.contextStartId ?? null,
     });
+    const currentInputArtifacts = (userMessage.attachments ?? []).map((attachment) => (
+      attachmentToArtifact(attachment, userMessage)
+    ));
+    const contextManifest = appendComposerContextArtifactInputs(inheritedContextManifest, currentInputArtifacts);
+    const promptWithInputArtifacts = appendInputArtifactsToPrompt(prompt, userMessage.attachments);
     const executionData = {
       ...(assistantMessage.execution_data ?? {}),
       current_run_id: runId,
@@ -322,7 +332,7 @@ export async function sendHeadlessComposerMessage(input: HeadlessComposerMessage
         contextParentNodeId: contextParentId,
         baseNodeId: input.parentMessageId,
         baseCommit: input.base.commitSha,
-        userPrompt: prompt,
+        userPrompt: promptWithInputArtifacts,
         agentType: input.agent.type,
         model: input.agent.model_config?.model ?? null,
         reasoningEffort: input.agent.model_config?.reasoningEffort ?? null,

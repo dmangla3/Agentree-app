@@ -29,6 +29,7 @@ describe('loginProfiles helpers', () => {
   it('maps non-ready statuses to actionable tones', () => {
     expect(getLoginProfileStatusTone('ready')).toBe('success');
     expect(getLoginProfileStatusTone('expired')).toBe('danger');
+    expect(getLoginProfileStatusTone('runtime_error')).toBe('danger');
     expect(getLoginProfileStatusTone('usage_limited')).toBe('warning');
   });
 

@@ -217,7 +217,7 @@ function waitForAbort(signal) {
 
 // The SDK performs authentication while initializing. A never-yielding prompt
 // lets initialization complete without writing a user message or API request.
-export async function probeClaudeSdkReadiness(queryFactory = query) {
+async function initializeClaudeSdk(queryFactory = query) {
   const abortController = new AbortController();
   try {
     const stream = queryFactory({
@@ -238,7 +238,15 @@ export async function probeClaudeSdkReadiness(queryFactory = query) {
         allowedTools: [],
       },
     });
-    const initialization = await stream.initializationResult();
+    return await stream.initializationResult();
+  } finally {
+    abortController.abort();
+  }
+}
+
+export async function probeClaudeSdkReadiness(queryFactory = query) {
+  try {
+    const initialization = await initializeClaudeSdk(queryFactory);
     return {
       status: 'ready',
       authMode: initialization?.account?.tokenSource ?? initialization?.account?.apiProvider ?? null,
@@ -247,9 +255,36 @@ export async function probeClaudeSdkReadiness(queryFactory = query) {
     };
   } catch (error) {
     return readinessStatusFromError(error);
-  } finally {
-    abortController.abort();
   }
+}
+
+export async function listClaudeModelCatalog(queryFactory = query, checkedAt = nowMs()) {
+  const initialization = await initializeClaudeSdk(queryFactory);
+  const models = Array.isArray(initialization?.models) ? initialization.models : [];
+  return models.map((model) => {
+    const cliModelId = String(model?.value || '').trim();
+    const canonicalModelId = String(model?.resolvedModel || cliModelId).trim();
+    const efforts = Array.isArray(model?.supportedEffortLevels)
+      ? model.supportedEffortLevels.filter((effort) => typeof effort === 'string' && effort.trim())
+      : [];
+    return {
+      provider: 'claude',
+      canonicalModelId,
+      cliModelId,
+      name: String(model?.displayName || cliModelId),
+      description: String(model?.description || ''),
+      supportedReasoningEfforts: efforts,
+      defaultReasoningEffort: null,
+      inputModalities: ['text'],
+      outputModalities: ['text'],
+      hidden: false,
+      isDefault: null,
+      status: 'active',
+      isFree: null,
+      sourceVersion: process.env.AGENTREE_CLAUDE_RUNTIME_VERSION || null,
+      checkedAt,
+    };
+  }).filter((model) => model.cliModelId && model.canonicalModelId);
 }
 
 const AGENTREE_SANDBOX_PATH_ENV_KEYS = [
@@ -360,6 +395,7 @@ export function claudeCustomizationOptions() {
 function parseArgs(argv) {
   const parsed = {
     readinessCheck: false,
+    listModels: false,
     prompt: '',
     model: null,
     effort: null,
@@ -446,6 +482,9 @@ function parseArgs(argv) {
         break;
       case '--readiness-check':
         parsed.readinessCheck = true;
+        break;
+      case '--list-models':
+        parsed.listModels = true;
         break;
       case '--print':
       case '--verbose':
@@ -863,6 +902,19 @@ function createControlReader(onControl) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.listModels) {
+    const authError = probeClaudeAuth();
+    if (authError) throw new Error(authError);
+    const checkedAt = nowMs();
+    emit({
+      type: 'model_catalog',
+      provider: 'claude',
+      sourceVersion: process.env.AGENTREE_CLAUDE_RUNTIME_VERSION || null,
+      checkedAt,
+      models: await listClaudeModelCatalog(query, checkedAt),
+    });
+    return 0;
+  }
   if (args.readinessCheck) {
     const authError = probeClaudeAuth();
     const readiness = authError

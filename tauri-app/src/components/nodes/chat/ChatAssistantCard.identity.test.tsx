@@ -94,6 +94,52 @@ const makeUserEntity = (overrides: Partial<ProjectedNodeEntity> = {}): Projected
 };
 
 describe('ChatAssistantCard identity', () => {
+  it('adds a compact header separator only in hovercard message previews', () => {
+    const { container, rerender } = render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity()}
+        isFocused={false}
+        isSelected={false}
+        layout="hovercard"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    const assistantSeparator = container.querySelector('[data-agentree-message-header-separator="true"]');
+    expect(assistantSeparator?.className).toContain('my-2');
+
+    rerender(
+      <ChatUserCard
+        entity={makeUserEntity()}
+        isFocused={false}
+        isSelected={false}
+        layout="hovercard"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    const userSeparator = container.querySelector('[data-agentree-message-header-separator="true"]');
+    expect(userSeparator?.className).toContain('my-1.5');
+
+    rerender(
+      <ChatAssistantCard
+        entity={makeAssistantEntity()}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    expect(container.querySelector('[data-agentree-message-header-separator="true"]')).toBeNull();
+  });
+
   it('uses the model identity for the agent chip and shows the generated AI label separately', () => {
     render(
       <ChatAssistantCard

@@ -139,7 +139,7 @@ export function GraphCanvasIndexPanel({
   return (
     <>
       {isVisible ? (
-        <div className="absolute top-3 right-3 bg-background/95 dark:bg-slate-900/95 rounded-lg shadow-sm border border-border/50 dark:border-slate-700/50 p-2 text-[10px] max-w-[180px] max-h-[240px] overflow-y-auto z-20">
+        <div className="absolute top-3 right-3 bg-background/95 dark:bg-zinc-800 rounded-lg shadow-sm border border-border/50 dark:border-slate-700/50 p-2 text-[10px] max-w-[180px] max-h-[240px] overflow-y-auto z-20">
           <div className="mb-2 flex items-center justify-between gap-2">
             <div className="font-medium text-foreground dark:text-slate-200 text-xs">Index</div>
             <button

@@ -31,6 +31,7 @@ struct AdapterArgs {
     raw_events: bool,
     readiness_check: bool,
     rate_limits_read: bool,
+    list_models: bool,
     prompt: String,
     input_artifacts: Vec<JsonValue>,
 }
@@ -190,6 +191,9 @@ fn run(argv: Vec<String>, managed_codex_bin: &str) -> Result<i32, AdapterError> 
     if args.rate_limits_read {
         return Ok(emit_rate_limits_read(managed_codex_bin));
     }
+    if args.list_models {
+        return emit_model_catalog(managed_codex_bin);
+    }
     run_turn(args, managed_codex_bin)
 }
 
@@ -212,6 +216,7 @@ fn parse_args(argv: Vec<String>) -> Result<AdapterArgs, AdapterError> {
         raw_events: false,
         readiness_check: false,
         rate_limits_read: false,
+        list_models: false,
         prompt: String::new(),
         input_artifacts: Vec::new(),
     };
@@ -251,6 +256,7 @@ fn parse_args(argv: Vec<String>) -> Result<AdapterArgs, AdapterError> {
             "--raw-events" => args.raw_events = true,
             "--readiness-check" => args.readiness_check = true,
             "--rate-limits-read" => args.rate_limits_read = true,
+            "--list-models" => args.list_models = true,
             value if value.starts_with("--") => {}
             value => {
                 args.prompt = value.to_string();
@@ -852,6 +858,164 @@ fn emit_rate_limits_read(managed_codex_bin: &str) -> i32 {
             1
         }
     }
+}
+
+fn emit_model_catalog(managed_codex_bin: &str) -> Result<i32, AdapterError> {
+    let codex_bin = resolve_codex_bin(managed_codex_bin)?;
+    let codex_home = resolve_codex_home();
+    let version_probe = run_codex_probe(
+        &codex_bin,
+        &["--version"],
+        &codex_home,
+        CODEX_VERSION_PROBE_TIMEOUT,
+    );
+    let source_version = version_probe
+        .get("output_excerpt")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let mut client = start_codex_app_server(
+        &codex_bin,
+        ".",
+        &codex_home,
+        "agentree_codex_model_catalog",
+        "Agentree Codex Model Catalog",
+        app_server_config_overrides(&codex_home, false),
+    )?;
+    let checked_at = now_ms();
+    let mut raw_models = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+
+    loop {
+        let response = client.request(
+            "model/list",
+            json!({
+                "cursor": cursor,
+                "includeHidden": true,
+                "limit": 100,
+            }),
+        )?;
+        let page = response
+            .get("data")
+            .and_then(JsonValue::as_array)
+            .ok_or_else(|| {
+                AdapterError::new(
+                    "codex_model_catalog_invalid",
+                    "Codex app-server returned a model list without a data array.",
+                )
+            })?;
+        raw_models.extend(page.iter().cloned());
+
+        let next_cursor = response
+            .get("nextCursor")
+            .and_then(JsonValue::as_str)
+            .map(str::to_string)
+            .filter(|value| !value.is_empty());
+        let Some(next_cursor) = next_cursor else {
+            break;
+        };
+        if !seen_cursors.insert(next_cursor.clone()) {
+            return Err(AdapterError::new(
+                "codex_model_catalog_invalid",
+                "Codex app-server repeated a model-list cursor.",
+            ));
+        }
+        cursor = Some(next_cursor);
+    }
+
+    let models = normalize_codex_models(&raw_models, source_version.as_deref(), checked_at);
+    emit(json!({
+        "type": "model_catalog",
+        "provider": "codex",
+        "sourceVersion": source_version,
+        "checkedAt": checked_at,
+        "models": models,
+    }));
+    Ok(0)
+}
+
+fn normalize_codex_models(
+    raw_models: &[JsonValue],
+    source_version: Option<&str>,
+    checked_at: i64,
+) -> Vec<JsonValue> {
+    raw_models
+        .iter()
+        .filter(|model| {
+            !model
+                .get("hidden")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false)
+        })
+        .filter_map(|model| {
+            let cli_model_id = model.get("id")?.as_str()?.trim();
+            let canonical_model_id = model
+                .get("model")
+                .and_then(JsonValue::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(cli_model_id);
+            if cli_model_id.is_empty() || canonical_model_id.is_empty() {
+                return None;
+            }
+            let supported_reasoning_efforts = model
+                .get("supportedReasoningEfforts")
+                .and_then(JsonValue::as_array)
+                .map(|efforts| {
+                    efforts
+                        .iter()
+                        .filter_map(|effort| {
+                            effort
+                                .get("reasoningEffort")
+                                .and_then(JsonValue::as_str)
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                                .map(str::to_string)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let input_modalities = model
+                .get("inputModalities")
+                .and_then(JsonValue::as_array)
+                .map(|modalities| {
+                    modalities
+                        .iter()
+                        .filter_map(JsonValue::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let image_output = model
+                .get("modelSpecialty")
+                .and_then(JsonValue::as_str)
+                .is_some_and(|specialty| specialty.to_ascii_lowercase().contains("image"));
+            let output_modalities = if image_output {
+                vec!["image"]
+            } else {
+                vec!["text"]
+            };
+            Some(json!({
+                "provider": "codex",
+                "canonicalModelId": canonical_model_id,
+                "cliModelId": cli_model_id,
+                "name": model.get("displayName").and_then(JsonValue::as_str).unwrap_or(cli_model_id),
+                "description": model.get("description").and_then(JsonValue::as_str).unwrap_or(""),
+                "supportedReasoningEfforts": supported_reasoning_efforts,
+                "defaultReasoningEffort": model.get("defaultReasoningEffort").cloned().unwrap_or(JsonValue::Null),
+                "inputModalities": input_modalities,
+                "outputModalities": output_modalities,
+                "hidden": false,
+                "isDefault": model.get("isDefault").and_then(JsonValue::as_bool),
+                "status": "active",
+                "isFree": JsonValue::Null,
+                "sourceVersion": source_version,
+                "checkedAt": checked_at,
+            }))
+        })
+        .collect()
 }
 
 fn start_codex_app_server(
@@ -2397,6 +2561,50 @@ mod tests {
             .and_then(JsonValue::as_str)
             .unwrap()
             .contains("commit body"));
+    }
+
+    #[test]
+    fn model_catalog_normalizes_aliases_and_excludes_hidden_models() {
+        let models = normalize_codex_models(
+            &[
+                json!({
+                    "id": "gpt-latest",
+                    "model": "gpt-6",
+                    "displayName": "GPT 6",
+                    "description": "Current frontier model.",
+                    "hidden": false,
+                    "isDefault": true,
+                    "inputModalities": ["text", "image"],
+                    "defaultReasoningEffort": "medium",
+                    "supportedReasoningEfforts": [
+                        { "reasoningEffort": "low", "description": "Fast" },
+                        { "reasoningEffort": "medium", "description": "Balanced" }
+                    ]
+                }),
+                json!({
+                    "id": "gpt-old",
+                    "model": "gpt-old",
+                    "displayName": "GPT Old",
+                    "description": "Hidden legacy model.",
+                    "hidden": true,
+                    "isDefault": false,
+                    "supportedReasoningEfforts": []
+                }),
+            ],
+            Some("codex-cli 1.2.3"),
+            42,
+        );
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["provider"], "codex");
+        assert_eq!(models[0]["canonicalModelId"], "gpt-6");
+        assert_eq!(models[0]["cliModelId"], "gpt-latest");
+        assert_eq!(
+            models[0]["supportedReasoningEfforts"],
+            json!(["low", "medium"])
+        );
+        assert_eq!(models[0]["defaultReasoningEffort"], "medium");
+        assert_eq!(models[0]["checkedAt"], 42);
     }
 
     #[test]

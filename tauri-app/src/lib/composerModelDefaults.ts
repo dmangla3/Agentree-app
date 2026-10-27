@@ -1,4 +1,4 @@
-import { type AgentModelConfig, getRuntimeModelKey, runtimeModels } from './runtimeModels';
+import { defaultRuntimeModelKey, type AgentModelConfig, getRuntimeModelKey } from './runtimeModels';
 
 type ComposerAgent = {
   id: string;
@@ -16,13 +16,16 @@ type ComposerParentMessage = {
   } | null;
 } | null;
 
-export const defaultRootRuntimeModelKey = 'codex:gpt-5.5:high';
+export const defaultRootRuntimeModelKey = defaultRuntimeModelKey;
 
 const stringValue = (value: unknown): string | null => (
   typeof value === 'string' && value.trim() ? value.trim() : null
 );
 
-const getParentRuntimeModelPreference = (parentMessage: ComposerParentMessage): {
+const getParentRuntimeModelPreference = (
+  parentMessage: ComposerParentMessage,
+  agents: ComposerAgent[],
+): {
   key: string | null;
   provider: string | null;
   model: string | null;
@@ -30,12 +33,12 @@ const getParentRuntimeModelPreference = (parentMessage: ComposerParentMessage): 
   if (!parentMessage) return null;
 
   const agentId = stringValue(parentMessage.agent_id);
-  if (agentId && (runtimeModels.some((model) => model.key === agentId) || agentId.startsWith('opencode:'))) {
-    const runtimeModel = runtimeModels.find((model) => model.key === agentId);
+  const parentAgent = agentId ? agents.find((agent) => agent.id === agentId) : null;
+  if (parentAgent) {
     return {
-      key: agentId,
-      provider: runtimeModel?.provider ?? (agentId.startsWith('opencode:') ? 'opencode' : null),
-      model: runtimeModel?.modelId ?? null,
+      key: parentAgent.id,
+      provider: stringValue(parentAgent.type),
+      model: stringValue(parentAgent.model_config?.model),
     };
   }
 
@@ -48,14 +51,14 @@ const getParentRuntimeModelPreference = (parentMessage: ComposerParentMessage): 
   const reasoningEffort = stringValue(meta.provider_reasoning_effort);
 
   const exactKey = getRuntimeModelKey(provider, model, reasoningEffort);
-  if (exactKey && runtimeModels.some((runtimeModel) => runtimeModel.key === exactKey)) {
+  if (exactKey && agents.some((agent) => agent.id === exactKey)) {
     return { key: exactKey, provider, model };
   }
 
-  const matchingModel = runtimeModels.find((runtimeModel) => (
-    runtimeModel.provider === provider && runtimeModel.modelId === model
+  const matchingModel = agents.find((agent) => (
+    agent.type === provider && agent.model_config?.model === model
   ));
-  return { key: matchingModel?.key ?? null, provider, model };
+  return { key: matchingModel?.id ?? null, provider, model };
 };
 
 export const resolveComposerDefaultAgentId = ({
@@ -67,7 +70,7 @@ export const resolveComposerDefaultAgentId = ({
   fallbackAgents?: ComposerAgent[];
   parentMessage: ComposerParentMessage;
 }): string | null => {
-  const parentPreference = getParentRuntimeModelPreference(parentMessage);
+  const parentPreference = getParentRuntimeModelPreference(parentMessage, agents);
   if (parentPreference?.key && agents.some((agent) => agent.id === parentPreference.key)) {
     return parentPreference.key;
   }

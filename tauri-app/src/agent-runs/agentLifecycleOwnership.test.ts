@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const readChatInputSource = () => readFileSync(join(process.cwd(), 'src/components/ChatInput.tsx'), 'utf8');
+const readComposerSource = () => readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
+const readHeadlessSendSource = () => readFileSync(join(process.cwd(), 'src/composer/headlessComposerSend.ts'), 'utf8');
 const readAgentsSource = () => readFileSync(join(process.cwd(), 'src-tauri/src/agents.rs'), 'utf8');
 const readGeneratedBindingsSource = () => readFileSync(join(process.cwd(), 'src/generated/tauri-bindings.ts'), 'utf8');
 const readStreamDispatchSource = () => readFileSync(join(process.cwd(), 'src/agent-runs/agentRunStreamDispatch.ts'), 'utf8');
@@ -13,38 +14,23 @@ const readClaudeAdapterSource = () => readFileSync(join(process.cwd(), 'src-taur
 const readCodexAdapterSource = () => readFileSync(join(process.cwd(), 'src-tauri/src/codex_adapter.rs'), 'utf8');
 
 describe('agent lifecycle ownership boundaries', () => {
-  it('does not persist terminal agent payloads directly from ChatInput', () => {
-    const source = readChatInputSource();
+  it('does not persist terminal agent payloads directly from the composer', () => {
+    const source = readComposerSource();
     expect(source).not.toContain('const finalizeAgentRunMessage =');
     expect(source).not.toContain('patchPersistedMessageLocally');
   });
 
-  it('limits ChatInput local-node writes to optimistic node creation', () => {
-    const source = readChatInputSource();
-    const callIndexes = [...source.matchAll(/agentClient\.upsertLocalNode/g)].map((match) => match.index ?? -1);
-    const localFirstRegionStart = source.indexOf(
-      'if (hasLocalAgentRuntime && optimisticAssistantMessageIds.length > 0)'
-    );
-    const localFirstRegionEnd = source.indexOf(
-      "releaseSendAcceptance('local-first-persisted');",
-      localFirstRegionStart
-    );
-    expect(localFirstRegionStart).toBeGreaterThan(-1);
-    expect(localFirstRegionEnd).toBeGreaterThan(localFirstRegionStart);
-    const localFirstRegion = source.slice(localFirstRegionStart, localFirstRegionEnd);
-
-    expect(callIndexes).toHaveLength(2);
-    for (const index of callIndexes) {
-      expect(index).toBeGreaterThanOrEqual(localFirstRegionStart);
-      expect(index).toBeLessThan(localFirstRegionEnd);
-    }
-    expect(localFirstRegion).toContain('optimisticPair');
-    expect(localFirstRegion).toContain('optimisticUserMessages');
-    expect(localFirstRegion).toContain('assistantMessages');
+  it('limits composer local-node writes to the shared optimistic send boundary', () => {
+    const composerSource = readComposerSource();
+    const sendSource = readHeadlessSendSource();
+    expect(composerSource).toContain('persistLocalNode:');
+    expect(composerSource).not.toContain('patchPersistedMessageLocally');
+    expect(sendSource).toContain('await Promise.all(createdMessages.map');
+    expect(sendSource).not.toContain('patchFinalizedMessages');
   });
 
-  it('keeps stream projection dispatch outside ChatInput', () => {
-    const source = readChatInputSource();
+  it('keeps stream projection dispatch outside the composer', () => {
+    const source = readComposerSource();
     expect(source).not.toContain('const processAgentEvent');
     expect(source).not.toContain('const addTimelineEvent');
     expect(source).not.toContain('const updateAgentRunUsage');
@@ -52,8 +38,8 @@ describe('agent lifecycle ownership boundaries', () => {
     expect(source).not.toContain('dispatchProviderStreamEvent');
   });
 
-  it('does not patch terminal finalize caches directly from ChatInput', () => {
-    const source = readChatInputSource();
+  it('does not patch terminal finalize caches directly from the composer', () => {
+    const source = readComposerSource();
     expect(source).not.toContain('patchFinalizedMessages');
     expect(source).not.toContain('patchFinalizedLocalNodes');
     expect(source).not.toContain("queryClient.setQueryData<Message[]>(\n                        ['messages', workspaceId]");
@@ -61,8 +47,7 @@ describe('agent lifecycle ownership boundaries', () => {
   });
 
   it('does not let user message lifecycle metadata drive the composer cancel state', () => {
-    const source = readChatInputSource();
-    expect(source).toContain("const selectedNodeRole = selectedProjection?.role ?? selectedNodeMessage?.role ?? null;");
+    const source = readComposerSource();
     expect(source).toContain("import { isSteerableAssistantNode } from '../lib/agentRunSteering';");
     expect(source).toContain('const isSteeringRunningAssistant = isSteerableAssistantNode({');
   });
@@ -105,12 +90,11 @@ describe('agent lifecycle ownership boundaries', () => {
   });
 
   it('routes running-assistant composer submissions through steering instead of child branching', () => {
-    const source = readChatInputSource();
+    const source = readComposerSource();
     expect(source).toContain('const isSteeringRunningAssistant =');
-    expect(source).toContain('await commands.steerAgentRun(');
+    expect(source).toContain('await agentClient.steerAgentRun(');
     expect(source).toContain("const sendButtonLabel = isSteeringRunningAssistant ? 'Steer'");
-    expect(source).toContain('const showPrimaryCancel = showCancel && !isSteeringRunningAssistant;');
-    expect(source).toContain('disabled={showPrimaryCancel ? false : isPrimaryActionDisabled}');
+    expect(source).toContain('data-testid="graph-dock-cancel-running-agent-button"');
   });
 
   it('projects steering requests into the assistant timeline', () => {
@@ -134,54 +118,12 @@ describe('agent lifecycle ownership boundaries', () => {
     expect(source).toContain('provider_item_id: lastAssistantUuid ?? null');
   });
 
-  it('paints optimistic send feedback before graph focus and agent status work', () => {
-    const source = readChatInputSource();
-    const paintWaitIndex = source.indexOf('await waitForOptimisticSendPaint();');
-    const optimisticFocusIndex = source.indexOf('dispatchSendFlowFocus({', paintWaitIndex);
-    const initialStatusIndex = source.indexOf("setNodeStatus(run.assistantMessageId, 'initializing');");
-
-    expect(paintWaitIndex).toBeGreaterThan(-1);
-    expect(optimisticFocusIndex).toBeGreaterThan(paintWaitIndex);
-    expect(initialStatusIndex).toBeGreaterThan(paintWaitIndex);
-  });
-
-  it('flushes cancel affordance and composer clearing before the pre-optimistic yield', () => {
-    const source = readChatInputSource();
-    const armStart = source.indexOf('const flowId = createSendFlowId();');
-    const preOptimisticYield = source.indexOf('await new Promise<void>((resolve) => window.setTimeout(resolve, 0));', armStart);
-    expect(armStart).toBeGreaterThan(-1);
-    expect(preOptimisticYield).toBeGreaterThan(armStart);
-
-    const armRegion = source.slice(armStart, preOptimisticYield);
-    expect(armRegion).toContain('flushSync(() => {');
-    expect(armRegion).toContain('setCurrentAbortController(controller);');
-    expect(armRegion).toContain("setComposerPrompt('');");
-  });
-
-  it('releases the composer cancel affordance once the send is accepted', () => {
-    const source = readChatInputSource();
-    const releaseStart = source.indexOf('const releaseSendAcceptance = (reason: string) => {');
-    const releaseEnd = source.indexOf("recordSendFlowEvent('queue.acceptance-released'", releaseStart);
-    expect(releaseStart).toBeGreaterThan(-1);
-    expect(releaseEnd).toBeGreaterThan(releaseStart);
-
-    const releaseRegion = source.slice(releaseStart, releaseEnd);
-    expect(releaseRegion).toContain('setActiveComposerSend((current) => current?.flowId === flowId ? null : current);');
-    expect(releaseRegion).toContain('setCurrentAbortController((current) => current === controller ? null : current);');
-  });
-
-  it('tracks restored active agents through the shared stream coordinator', () => {
-    const source = readChatInputSource();
-    expect(source).toContain('trackAgentRunLiveStreamMessage(message)');
-    expect(source).not.toContain('registerBackgroundStreamForNode(message)');
-  });
-
   it('keeps native stream subscription ownership in the shared coordinator', () => {
-    const chatInputSource = readChatInputSource();
+    const composerSource = readComposerSource();
     const coordinatorSource = readLiveStreamCoordinatorSource();
     const homePageSource = readHomePageSource();
-    expect(chatInputSource).not.toContain('createAgentRunLiveStreamRuntime');
-    expect(chatInputSource).not.toContain('agentClient.onEvent');
+    expect(composerSource).not.toContain('createAgentRunLiveStreamRuntime');
+    expect(composerSource).not.toContain('agentClient.onEvent');
     expect(coordinatorSource).toContain('agentClient.onEvent');
     expect(homePageSource).toContain('<AgentRunLiveStreamCoordinator />');
   });

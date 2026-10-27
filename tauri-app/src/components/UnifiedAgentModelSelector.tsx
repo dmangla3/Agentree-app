@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
-import { Check, ChevronRight, CircleGauge, Code2, KeyRound, Minus, Plus, Search, Settings2, Sparkles, X } from 'lucide-react';
+import { Check, ChevronRight, KeyRound, Minus, Plus, Settings2, Sparkles, X } from 'lucide-react';
 import { useAgents, type Agent } from '../hooks/useAgents';
 import {
     getReasoningEffortSortOrder,
-    runtimeModels,
+    bootstrapRuntimeModels,
     type AgentModelConfig,
     type RuntimeProvider,
 } from '../lib/runtimeModels';
@@ -12,7 +12,6 @@ import { dispatchOpenLoginProfiles } from '../lib/loginNavigationEvents';
 import { dispatchOpenModelConfiguration } from '../lib/modelConfigurationEvents';
 import { ScrollArea } from "../../@/components/ui/scroll-area";
 import { Checkbox } from "../../@/components/ui/checkbox";
-import { Input } from "../../@/components/ui/input";
 import { cn } from '../lib/utils';
 import {
     getProviderLimitSeverity,
@@ -25,9 +24,8 @@ import {
 import { useLoginProfilesStore } from '../stores/loginProfilesStore';
 import { isModelFamilyVisible, useModelStore } from '../stores/modelStore';
 import {
-    hasActiveLoginProfileForProvider,
     isLoginProfileActive,
-    isLoginProfileCompatibleWithProvider,
+    selectLoginProfileForProvider,
 } from '../lib/loginProfiles';
 
 interface UnifiedAgentModelSelectorProps {
@@ -45,23 +43,10 @@ type AgentWithMeta = Agent & {
 type AgentFamily = {
     key: string;
     label: string;
-    description: string;
     provider: string;
-    modesCount: number;
     models: AgentWithMeta[];
     defaultAgentId: string | null;
     selectedAgentId: string | null;
-};
-
-export const modelFamilyMatchesSearch = (
-    family: Pick<AgentFamily, 'label' | 'description' | 'models'>,
-    normalizedSearch: string,
-) => {
-    if (!normalizedSearch) return true;
-    const modelProviders = family.models
-        .map((model) => `${model.model_config?.modelProvider ?? ''} ${model.model_config?.model ?? ''}`)
-        .join(' ');
-    return `${family.label} ${family.description} ${modelProviders}`.toLowerCase().includes(normalizedSearch);
 };
 
 type ModelAvailability = {
@@ -112,8 +97,6 @@ const isPointInTriangle = (
     return !(hasNegative && hasPositive);
 };
 
-const providerEffortNoun = (provider: string) => (provider === 'claude' ? 'Thinking' : 'Reasoning');
-
 const isRuntimeProvider = (provider: string): provider is RuntimeProvider => (
     provider === 'codex' || provider === 'claude' || provider === 'opencode'
 );
@@ -121,43 +104,25 @@ const isRuntimeProvider = (provider: string): provider is RuntimeProvider => (
 const providerAccentClasses = (provider: string) => {
     if (provider === 'claude') {
         return {
-            text: 'text-stone-700 dark:text-stone-200',
-            mutedText: 'text-stone-600/75 dark:text-stone-300/75',
             iconText: 'text-[#9a6b3d] dark:text-[#d2a06b]',
-            iconSurface: 'bg-[#f4eadf] text-[#9a6b3d] shadow-[inset_0_0_0_1px_rgba(154,107,61,0.18)] dark:bg-[#38291d] dark:text-[#d2a06b]',
-            rail: 'bg-[#b6814f]',
-            selectedSurface: 'bg-[#fff8f0] shadow-[inset_0_0_0_1px_rgba(182,129,79,0.18)] dark:bg-[#2a211a]',
-            hoverSurface: 'hover:bg-[#fff9f2] dark:hover:bg-[#251f1a]',
             dot: 'bg-[#b6814f]',
         };
     }
     if (provider === 'opencode') {
         return {
-            text: 'text-sky-900 dark:text-sky-100',
-            mutedText: 'text-sky-800/70 dark:text-sky-200/70',
             iconText: 'text-sky-700 dark:text-sky-300',
-            iconSurface: 'bg-sky-50 text-sky-700 shadow-[inset_0_0_0_1px_rgba(3,105,161,0.16)] dark:bg-sky-950/55 dark:text-sky-300',
-            rail: 'bg-sky-600',
-            selectedSurface: 'bg-sky-50/85 shadow-[inset_0_0_0_1px_rgba(3,105,161,0.17)] dark:bg-sky-950/35',
-            hoverSurface: 'hover:bg-sky-50/70 dark:hover:bg-sky-950/25',
             dot: 'bg-sky-600',
         };
     }
     return {
-        text: 'text-emerald-900 dark:text-emerald-100',
-        mutedText: 'text-emerald-800/70 dark:text-emerald-200/70',
         iconText: 'text-emerald-700 dark:text-emerald-300',
-        iconSurface: 'bg-emerald-50 text-emerald-700 shadow-[inset_0_0_0_1px_rgba(16,135,93,0.16)] dark:bg-emerald-950/55 dark:text-emerald-300',
-        rail: 'bg-emerald-600',
-        selectedSurface: 'bg-emerald-50/85 shadow-[inset_0_0_0_1px_rgba(16,135,93,0.17)] dark:bg-emerald-950/35',
-        hoverSurface: 'hover:bg-emerald-50/70 dark:hover:bg-emerald-950/25',
         dot: 'bg-emerald-600',
     };
 };
 
 const familyOrderByKey = new Map<string, number>();
 const providerOrderByKey = new Map<string, number>();
-for (const model of runtimeModels) {
+for (const model of bootstrapRuntimeModels) {
     if (!providerOrderByKey.has(model.provider)) {
         providerOrderByKey.set(model.provider, providerOrderByKey.size);
     }
@@ -272,6 +237,21 @@ function AnthropicMark({ className }: { className?: string }) {
     );
 }
 
+function OpenCodeMark({ className }: { className?: string }) {
+    return (
+        <svg viewBox="0 0 300 300" fill="none" className={className} aria-hidden="true" data-provider-icon="opencode">
+            <g transform="translate(30 0)">
+                <path d="M180 240H60V120H180V240Z" className="fill-[#cfcecd] dark:fill-[#4b4646]" />
+                <path
+                    d="M180 60H60V240H180V60ZM240 300H0V0H240V300Z"
+                    className="fill-[#211e1e] dark:fill-[#f1ecec]"
+                    fillRule="evenodd"
+                />
+            </g>
+        </svg>
+    );
+}
+
 export function UnifiedAgentModelSelector({
     onSelectAgent,
     selectedAgentId,
@@ -290,7 +270,6 @@ export function UnifiedAgentModelSelector({
     const loginProfiles = useLoginProfilesStore((state) => state.profiles);
     const visibleFamilyKeysByProvider = useModelStore((state) => state.visibleFamilyKeysByProvider);
     const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
-    const [searchTerm, setSearchTerm] = useState('');
     const [hoveredFamilyKey, setHoveredFamilyKey] = useState<string | null>(null);
     const hoveredFamilyKeyRef = useRef<string | null>(null);
     const activeFamilyKeyRef = useRef<string | null>(null);
@@ -314,17 +293,12 @@ export function UnifiedAgentModelSelector({
     };
 
     const getSelectedLoginProfileForProvider = (provider: string) => {
-        const compatible = loginProfiles.filter((profile) => isLoginProfileCompatibleWithProvider(profile, provider));
-        return compatible.find((profile) => profile.isDefault)
-            ?? compatible[0]
-            ?? null;
+        return selectLoginProfileForProvider(loginProfiles, provider);
     };
 
     const isProviderSelectable = (provider: string) => {
         const selectedProfile = getSelectedLoginProfileForProvider(provider);
-        if (selectedProfile) return isLoginProfileActive(selectedProfile);
-        if (hasActiveLoginProfileForProvider(loginProfiles, provider)) return true;
-        return false;
+        return selectedProfile ? isLoginProfileActive(selectedProfile) : false;
     };
 
     const getModelAvailability = (agent: AgentWithMeta): ModelAvailability => {
@@ -460,9 +434,6 @@ export function UnifiedAgentModelSelector({
             const providerFamilies = providerGroups.get(provider) ?? new Map<string, AgentFamily>();
             const familyKey = agent.model_config?.familyKey ?? `${provider}:${agent.model_config?.model ?? agent.id}`;
             const familyLabel = agent.model_config?.familyLabel ?? agent.name;
-            const familyDescription = agent.model_config?.familyDescription
-                ?? agent.model_config?.effortDescription
-                ?? agent.name;
             const existing = providerFamilies.get(familyKey);
             if (existing) {
                 existing.models.push(agent);
@@ -473,9 +444,7 @@ export function UnifiedAgentModelSelector({
                 providerFamilies.set(familyKey, {
                     key: familyKey,
                     label: familyLabel,
-                    description: familyDescription,
                     provider,
-                    modesCount: 1,
                     models: [agent],
                     defaultAgentId: null,
                     selectedAgentId: agent.id === selectedAgentId || (agentRunCounts?.[agent.id] ?? 0) > 0 ? agent.id : null,
@@ -506,7 +475,6 @@ export function UnifiedAgentModelSelector({
 
                     return {
                         ...family,
-                        modesCount: sortedModels.length,
                         models: sortedModels,
                         defaultAgentId: defaultAgent?.id ?? null,
                         selectedAgentId: sortedModels.find((model) => model.id === selectedAgentId || (agentRunCounts?.[model.id] ?? 0) > 0)?.id ?? null,
@@ -520,16 +488,14 @@ export function UnifiedAgentModelSelector({
             });
     }, [agents, selectedAgentId, agentRunCounts]);
 
-    const normalizedSearch = searchTerm.trim().toLowerCase();
     const visibleGroupedAgents = useMemo(() => groupedAgents.map((group) => ({
         ...group,
         families: group.families.filter((family) => {
             if (family.selectedAgentId != null) return true;
-            const visible = !isRuntimeProvider(group.provider)
+            return !isRuntimeProvider(group.provider)
                 || isModelFamilyVisible(visibleFamilyKeysByProvider, group.provider, family.key);
-            return visible && modelFamilyMatchesSearch(family, normalizedSearch);
         }),
-    })), [groupedAgents, normalizedSearch, visibleFamilyKeysByProvider]);
+    })), [groupedAgents, visibleFamilyKeysByProvider]);
 
     const activeProviderGroup = useMemo(() => (
         visibleGroupedAgents.find((group) => group.provider === selectedProvider)
@@ -606,19 +572,9 @@ export function UnifiedAgentModelSelector({
 
     return (
         <div className="flex h-full w-full min-w-0 flex-col overflow-hidden bg-[hsl(var(--app-bg-elevated))] text-popover-foreground">
-            <div className="shrink-0 border-b border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong))] px-4 py-3 shadow-[0_1px_0_rgba(255,255,255,0.7)_inset] dark:shadow-[0_1px_0_rgba(255,255,255,0.05)_inset]">
-                <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                        <h4 className="text-[13px] font-semibold leading-none text-foreground">Models</h4>
-                        <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">Hover a model to pick its effort level.</p>
-                    </div>
-                    <div className="hidden h-8 shrink-0 items-center gap-1.5 rounded-md bg-background/80 px-2.5 text-[10.5px] font-medium text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.7)] sm:flex">
-                        <CircleGauge className="h-3.5 w-3.5" />
-                        Effort
-                    </div>
-                </div>
+            <div className="shrink-0 border-b border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong))] px-3 py-2 shadow-[0_1px_0_rgba(255,255,255,0.7)_inset] dark:shadow-[0_1px_0_rgba(255,255,255,0.05)_inset]">
                 {groupedAgents.length > 0 ? (
-                    <div role="tablist" aria-label="Model providers" className="mt-3 flex items-center gap-1 rounded-lg bg-background/58 p-1 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]">
+                    <div role="tablist" aria-label="Model providers" className="flex items-center gap-0.5 rounded-md bg-background/58 p-0.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]">
                         {visibleGroupedAgents.map(({ provider, families }) => {
                             const meta = providerMeta(provider);
                             const accent = providerAccentClasses(provider);
@@ -633,16 +589,16 @@ export function UnifiedAgentModelSelector({
                                     data-model-provider-tab={provider}
                                     onClick={() => setSelectedProvider(provider)}
                                     className={cn(
-                                        "flex min-w-0 flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-[12px] font-semibold outline-none transition-[background-color,box-shadow,color,transform] duration-150 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]",
+                                        "flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded px-2 py-1.5 text-[11.5px] font-semibold outline-none transition-[background-color,box-shadow,color,transform] duration-150 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]",
                                         isActive
                                             ? "bg-background text-foreground shadow-[0_8px_18px_-16px_rgba(15,23,42,0.72),inset_0_0_0_1px_hsl(var(--app-border)/0.76)]"
-                                            : "text-muted-foreground hover:bg-background/62 hover:text-foreground"
+                                            : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                                     )}
                                 >
                                     {provider === 'claude' ? (
                                         <AnthropicMark className={cn("h-3.5 w-3.5 shrink-0", accent.iconText)} />
                                     ) : provider === 'opencode' ? (
-                                        <Code2 className={cn("h-3.5 w-3.5 shrink-0", accent.iconText)} />
+                                        <OpenCodeMark className="h-3.5 w-3.5 shrink-0" />
                                     ) : (
                                         <OpenAiMark className={cn("h-3.5 w-3.5 shrink-0", accent.iconText)} />
                                     )}
@@ -659,16 +615,6 @@ export function UnifiedAgentModelSelector({
                         })}
                     </div>
                 ) : null}
-                <div className="relative mt-3">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                    <Input
-                        value={searchTerm}
-                        onChange={(event) => setSearchTerm(event.target.value)}
-                        placeholder="Search models or providers"
-                        aria-label="Search models"
-                        className="h-9 bg-background/82 pl-9 text-xs"
-                    />
-                </div>
             </div>
 
             {visibleGroupedAgents.every((group) => group.families.length === 0) ? (
@@ -676,16 +622,12 @@ export function UnifiedAgentModelSelector({
                     <div className="flex min-h-[220px] w-full flex-col items-center justify-center rounded-lg bg-background/65 px-5 text-center shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.7)]">
                         <Sparkles className="h-4 w-4 text-muted-foreground" />
                         <div className="mt-2 text-[13px] font-semibold text-foreground">
-                            {normalizedSearch
-                                ? 'No matching models'
-                                : allAgents.length > 0 && excludedAgentIdSet.size > 0
-                                    ? 'All models selected'
-                                    : 'No runtimes available'}
+                            {allAgents.length > 0 && excludedAgentIdSet.size > 0
+                                ? 'All models selected'
+                                : 'No runtimes available'}
                         </div>
                         <p className="mt-1 max-w-[26ch] text-[11px] leading-relaxed text-muted-foreground">
-                            {normalizedSearch
-                                ? 'Try another model or provider name.'
-                                : allAgents.length > 0 && excludedAgentIdSet.size > 0
+                            {allAgents.length > 0 && excludedAgentIdSet.size > 0
                                 ? 'Every available model is already included in this run.'
                                 : 'Add an agent provider before selecting a composer model.'}
                         </p>
@@ -703,7 +645,7 @@ export function UnifiedAgentModelSelector({
                         <div
                             ref={familyListRef}
                             data-model-family-list="true"
-                            className="space-y-3 p-2.5"
+                            className="space-y-2 p-2"
                             onPointerMove={trackPointerLocation}
                             onPointerLeave={() => {
                                 pointerLocationsRef.current = [];
@@ -715,7 +657,6 @@ export function UnifiedAgentModelSelector({
                             {activeProviderGroup ? (() => {
                                 const { provider, families } = activeProviderGroup;
                                 const meta = providerMeta(provider);
-                                const accent = providerAccentClasses(provider);
                                 const providerSelectable = isProviderSelectable(provider);
                                 const selectedLoginProfile = getSelectedLoginProfileForProvider(provider);
                                 const limitsSnapshot = provider === 'claude' || provider === 'codex'
@@ -730,7 +671,7 @@ export function UnifiedAgentModelSelector({
                                         key={provider}
                                         data-login-provider-active={providerSelectable ? 'true' : 'false'}
                                         className={cn(
-                                            "rounded-lg bg-background/72 p-2 shadow-[0_12px_34px_-30px_rgba(15,23,42,0.45),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]"
+                                            "rounded-lg bg-background/72 p-1.5 shadow-[0_12px_34px_-30px_rgba(15,23,42,0.45),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]"
                                         )}
                                     >
                                         {!providerSelectable || displayedLimitWindows.length > 0 ? (
@@ -801,10 +742,13 @@ export function UnifiedAgentModelSelector({
                                                             if (providerSelectable) activateFamilyImmediately(family.key);
                                                         }}
                                                         className={cn(
-                                                            "group relative flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-2.5 text-left outline-none transition-[background-color,box-shadow,transform] duration-150 ease-out",
+                                                            "group relative flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left outline-none transition-[background-color,box-shadow,color,transform] duration-150 ease-out",
                                                             "focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1 focus-visible:ring-offset-background active:scale-[0.96]",
-                                                            accent.hoverSurface,
-                                                            isActive ? accent.selectedSurface : "bg-transparent",
+                                                            isActive
+                                                                ? "bg-accent text-accent-foreground"
+                                                                : isSelected
+                                                                    ? "bg-[hsl(var(--app-accent-soft)/0.62)] text-foreground"
+                                                                    : "bg-transparent hover:bg-accent hover:text-accent-foreground",
                                                             isSelectedActive && "shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.4)]"
                                                         )}
                                                         aria-pressed={isActive}
@@ -813,26 +757,18 @@ export function UnifiedAgentModelSelector({
                                                         <span
                                                             className={cn(
                                                                 "absolute left-0 top-2 bottom-2 w-0.5 rounded-full opacity-0 transition-opacity duration-150",
-                                                                accent.rail,
+                                                                "bg-foreground/45",
                                                                 isActive && "opacity-100"
                                                             )}
                                                             aria-hidden="true"
                                                         />
-                                                        <div className="min-w-0 flex-1">
-                                                            <div className={cn(
-                                                                "truncate text-[13px] leading-tight",
-                                                                isSelected ? cn("font-semibold", accent.text) : "font-medium text-foreground/86 group-hover:text-foreground"
-                                                            )}>
-                                                                {family.label}
-                                                            </div>
-                                                            <div className="mt-1 truncate text-[10.5px] leading-none text-muted-foreground">
-                                                                {family.description}
-                                                            </div>
+                                                        <div className={cn(
+                                                            "min-w-0 flex-1 truncate text-[12px] leading-5",
+                                                            isSelected ? "font-semibold text-foreground" : "font-medium text-foreground/86 group-hover:text-accent-foreground"
+                                                        )}>
+                                                            {family.label}
                                                         </div>
-                                                        <div className="flex shrink-0 items-center gap-2 pl-2">
-                                                            <span className="rounded bg-muted/45 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.55)]">
-                                                                {family.modesCount}x
-                                                            </span>
+                                                        <div className="flex shrink-0 items-center gap-2 pl-1">
                                                             {showSeverityHint ? (
                                                                 <span
                                                                     className={cn(
@@ -856,11 +792,10 @@ export function UnifiedAgentModelSelector({
                     <div
                         ref={effortPanelRef}
                         data-model-effort-column="true"
-                        className="min-w-0 overflow-x-hidden overflow-y-auto bg-[hsl(var(--app-bg-elevated))] p-2.5"
+                        className="min-w-0 overflow-x-hidden overflow-y-auto bg-[hsl(var(--app-bg-elevated))] p-2"
                     >
                         {activeFamily ? (() => {
                             const provider = activeFamily.provider;
-                            const accent = providerAccentClasses(provider);
                             const providerSelectable = isProviderSelectable(provider);
                             const meta = providerMeta(provider);
                             if (!providerSelectable) {
@@ -895,23 +830,19 @@ export function UnifiedAgentModelSelector({
                             return (
                                 <div
                                     data-model-effort-panel={activeFamily.key}
-                                    className="min-h-full min-w-0 overflow-hidden rounded-lg bg-background/74 p-2 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72)]"
+                                    className="min-h-full min-w-0 overflow-hidden rounded-lg bg-background/74 p-1.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72)]"
                                 >
-                                    <div className="border-b border-[hsl(var(--app-border)/0.58)] px-2 pb-2">
-                                        <div className="text-[11px] font-medium text-muted-foreground">
-                                            {providerEffortNoun(provider)} effort
-                                        </div>
-                                        <div className="mt-1 truncate text-[13px] font-semibold leading-tight text-foreground">
+                                    <div className="border-b border-[hsl(var(--app-border)/0.58)] px-2 py-1.5">
+                                        <div className="truncate text-[12px] font-semibold leading-tight text-foreground">
                                             {activeFamily.label}
                                         </div>
                                     </div>
-                                    <div className="mt-2 space-y-1">
+                                    <div className="mt-1 space-y-0.5">
                                         {activeFamily.models.map((agent) => {
                                             const count = getAgentRunCount(agent.id);
                                             const isSelected = count > 0;
                                             const canRemove = totalSelectedRuns > count;
                                             const effortLabel = agent.model_config?.effortLabel ?? agent.model_config?.reasoningEffort ?? 'default';
-                                            const effortDescription = agent.model_config?.effortDescription ?? 'Available mode';
                                             const availability = getModelAvailability(agent);
                                             const isModelSelectable = availability.selectable;
                                             const increment = () => updateAgentRunCount(agent.id, count + 1);
@@ -947,9 +878,11 @@ export function UnifiedAgentModelSelector({
                                                     }}
                                                     data-model-effort={agent.model_config?.reasoningEffort ?? 'default'}
                                                     className={cn(
-                                                        "group/effort flex w-full min-w-0 flex-wrap items-start justify-between gap-3 overflow-hidden rounded-md px-2.5 py-2.5 text-left outline-none transition-[background-color,box-shadow,transform] duration-150 ease-out",
-                                                        "hover:bg-[hsl(var(--app-bg-elevated))] focus-visible:bg-[hsl(var(--app-bg-elevated))] focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1 focus-visible:ring-offset-background active:scale-[0.96]",
-                                                        isSelected ? "bg-[hsl(var(--app-bg-elevated))] shadow-[0_10px_24px_-22px_rgba(15,23,42,0.7),inset_0_0_0_1px_hsl(var(--app-border)/0.8)]" : "bg-transparent",
+                                                        "group/effort flex w-full min-w-0 flex-wrap items-center justify-between gap-2 overflow-hidden rounded-md px-2.5 py-1.5 text-left outline-none transition-[background-color,box-shadow,color,transform] duration-150 ease-out",
+                                                        "focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1 focus-visible:ring-offset-background active:scale-[0.96]",
+                                                        isSelected
+                                                            ? "bg-[hsl(var(--app-bg-elevated))] shadow-[0_10px_24px_-22px_rgba(15,23,42,0.7),inset_0_0_0_1px_hsl(var(--app-border)/0.8)]"
+                                                            : "bg-transparent hover:bg-accent hover:text-accent-foreground",
                                                         !isModelSelectable && "cursor-not-allowed opacity-45 hover:bg-transparent active:scale-100"
                                                     )}
                                                     aria-disabled={!isModelSelectable}
@@ -976,22 +909,17 @@ export function UnifiedAgentModelSelector({
                                                             <span
                                                                 className={cn(
                                                                     "mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full opacity-60 transition-opacity duration-150",
-                                                                    accent.dot,
+                                                                    "bg-foreground/45",
                                                                     isSelected && "opacity-100"
                                                                 )}
                                                                 aria-hidden="true"
                                                             />
                                                         )}
-                                                        <div className="min-w-0 flex-1">
-                                                            <div className={cn(
-                                                                "truncate text-[13px] leading-tight",
-                                                                isSelected ? "font-semibold text-foreground" : "font-medium text-foreground/82 group-hover/effort:text-foreground"
-                                                            )}>
-                                                                {effortLabel}
-                                                            </div>
-                                                            <div className="mt-1 truncate text-[10.5px] leading-none text-muted-foreground">
-                                                                {effortDescription}
-                                                            </div>
+                                                        <div className={cn(
+                                                            "min-w-0 flex-1 truncate text-[12px] leading-5",
+                                                            isSelected ? "font-semibold text-foreground" : "font-medium text-foreground/82 group-hover/effort:text-accent-foreground"
+                                                        )}>
+                                                            {effortLabel}
                                                         </div>
                                                     </div>
                                                     <div
@@ -1032,17 +960,14 @@ export function UnifiedAgentModelSelector({
                                                                     type="button"
                                                                     onClick={increment}
                                                                     disabled={!isModelSelectable}
-                                                                    className={cn(
-                                                                        "flex h-6 w-6 items-center justify-center rounded text-white shadow-[0_8px_18px_-12px_rgba(16,185,129,0.7)] transition-[background-color,transform,box-shadow] duration-150 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35",
-                                                                        provider === 'claude' ? "bg-[#b6814f] hover:bg-[#a47346]" : "bg-emerald-600 hover:bg-emerald-700"
-                                                                    )}
+                                                                    className="flex h-6 w-6 items-center justify-center rounded bg-background text-foreground shadow-[0_1px_2px_rgba(15,23,42,0.08),inset_0_0_0_1px_hsl(var(--app-border)/0.8)] transition-[background-color,color,transform,opacity] duration-150 hover:bg-muted active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
                                                                     aria-label={`Increase ${effortLabel}`}
                                                                 >
                                                                     <Plus className="h-3.5 w-3.5" strokeWidth={2.6} />
                                                                 </button>
                                                             </>
                                                         ) : isSelected ? (
-                                                            <Check className={cn("h-3.5 w-3.5", accent.text)} strokeWidth={2.5} />
+                                                            <Check className="h-3.5 w-3.5 text-foreground" strokeWidth={2.5} />
                                                         ) : null}
                                                     </div>
                                                 </div>

@@ -110,7 +110,7 @@ describe('loginProfilesStore', () => {
     expect(cleanup).toHaveBeenCalledOnce();
   });
 
-  it('updates the cached profile after a pre-send readiness check', async () => {
+  it('updates the cached profile after a pre-send local eligibility check', async () => {
     const { agentClient } = await import('../lib/agentClient');
     const readyProfile = {
       id: 'p1',

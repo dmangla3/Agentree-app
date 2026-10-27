@@ -14,6 +14,7 @@ export function NodePreviewRenderer({ entity, projection }: NodePreviewRendererP
       projection={projection}
       focusedMessageId={null}
       isSelected={false}
+      layout="hovercard"
       onFocus={() => {}}
       onSelect={() => {}}
       onContextMenu={() => {}}

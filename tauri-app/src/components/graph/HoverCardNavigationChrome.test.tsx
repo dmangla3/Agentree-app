@@ -35,7 +35,7 @@ describe('HoverCardNavigationChrome', () => {
   it('renders the shared counter, controls, accessory, and next attention state', () => {
     const onPrevious = vi.fn();
     const onNext = vi.fn();
-    render(
+    const { container } = render(
       <HoverCardNavigationChrome
         position={2}
         itemCount={4}
@@ -51,6 +51,10 @@ describe('HoverCardNavigationChrome', () => {
       />,
     );
 
+    const chrome = container.querySelector('[data-agentree-hover-navigation-chrome="true"]');
+    expect(chrome?.className).toContain('h-8');
+    expect(chrome?.className).toContain('w-fit');
+    expect(chrome?.className).not.toContain('min-h-11');
     expect(screen.getByText('2 / 4')).toBeTruthy();
     expect(screen.getByText('New reply ready').className).toContain('sr-only');
     expect(screen.getByRole('button', { name: 'Show newer agent message' }).getAttribute('data-navigation-attention')).toBe('true');

@@ -82,7 +82,7 @@ const panelCopy = {
     title: 'OpenCode environments',
     description: 'Each environment keeps its connected OpenCode providers and refreshed credentials isolated from other accounts.',
     emptyTitle: 'No OpenCode environments',
-    emptyBody: 'Import your current OpenCode auth.json automatically, or paste its contents manually before selecting OpenCode models.',
+    emptyBody: 'Use your current OpenCode login. Agentree detects and imports it automatically before loading your available models.',
     setupTitle: 'Managed OpenCode environment',
     setupBody: 'OpenCode usually stores credentials at ~/.local/share/opencode/auth.json (or $XDG_DATA_HOME/opencode/auth.json). Importing copies that file into an isolated Agentree profile.',
   },
@@ -128,6 +128,7 @@ export function LoginProfilesPanel({
     checkProfile,
     discoverImportCandidates,
     importCandidate,
+    readOpenCodeAuth,
     startSync,
   } = useLoginProfilesStore();
   const providerLimits = useProviderLimitsStore((state) => state.byProvider);
@@ -144,6 +145,7 @@ export function LoginProfilesPanel({
   const [importCandidates, setImportCandidates] = useState<LoginImportCandidate[]>([]);
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(new Set());
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const [detectedOpenCodeAuthPath, setDetectedOpenCodeAuthPath] = useState<string | null>(null);
   const runtimeHealthRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => startSync(), [startSync]);
@@ -187,6 +189,30 @@ export function LoginProfilesPanel({
       setEditingProfile(latest);
     }
   }, [editingProfile, profiles]);
+
+  useEffect(() => {
+    if (!editorOpen || editorProvider !== 'opencode') {
+      setDetectedOpenCodeAuthPath(null);
+      return;
+    }
+    let cancelled = false;
+    void discoverImportCandidates()
+      .then((candidates) => {
+        if (cancelled) return;
+        const detected = candidates.find((candidate) => (
+          candidate.provider === 'opencode'
+          && candidate.sourceKind === 'file'
+          && candidate.importable
+        ));
+        setDetectedOpenCodeAuthPath(detected?.sourceLabel ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setDetectedOpenCodeAuthPath(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [discoverImportCandidates, editorOpen, editorProvider]);
 
   useEffect(() => {
     filteredProfiles
@@ -265,22 +291,66 @@ export function LoginProfilesPanel({
     return saved;
   };
 
+  const importProfilesFromCandidates = async (candidates: LoginImportCandidate[]) => {
+    if (!candidates.length) return;
+    setIsImportingCandidates(true);
+    setDiscoveryError(null);
+    try {
+      for (const candidate of candidates) {
+        await importCandidate({
+          candidateId: candidate.id,
+          displayName: candidate.displayName,
+          makeDefault: candidate.authType === 'external_cli' ? false : true,
+        });
+      }
+      setDiscoveryOpen(false);
+    } catch (error) {
+      setDiscoveryError(error instanceof Error ? error.message : String(error));
+      throw error;
+    } finally {
+      setIsImportingCandidates(false);
+    }
+  };
+
   const runDiscovery = async () => {
     setIsDiscovering(true);
     setDiscoveryError(null);
+    setImportCandidates([]);
+    setSelectedCandidateIds(new Set());
     try {
       const discovered = await discoverImportCandidates();
       const candidates = providerFilter === 'opencode'
         ? discovered.filter((candidate) => candidate.provider === 'opencode')
         : discovered;
+      const importableCandidates = candidates.filter((candidate) => candidate.importable);
       setImportCandidates(candidates);
-      setSelectedCandidateIds(new Set(candidates.filter((candidate) => candidate.importable).map((candidate) => candidate.id)));
+      setSelectedCandidateIds(new Set(importableCandidates.map((candidate) => candidate.id)));
+      if (providerFilter === 'opencode' && importableCandidates.length === 1) {
+        await importProfilesFromCandidates(importableCandidates);
+        return;
+      }
       setDiscoveryOpen(true);
     } catch (error) {
       setDiscoveryError(error instanceof Error ? error.message : String(error));
+      throw error;
     } finally {
       setIsDiscovering(false);
     }
+  };
+
+  const runPanelDiscovery = async () => {
+    try {
+      await runDiscovery();
+    } catch {
+      // Panel-triggered failures are presented in the discovery dialog. The editor
+      // calls runDiscovery directly so it can keep its own dialog open on failure.
+      setDiscoveryOpen(true);
+    }
+  };
+
+  const openOpenCodeAdvancedSetup = () => {
+    setDiscoveryOpen(false);
+    openNewEditor('opencode');
   };
 
   const toggleCandidate = (candidateId: string, checked: boolean) => {
@@ -294,23 +364,9 @@ export function LoginProfilesPanel({
 
   const importSelectedCandidates = async () => {
     const selected = importCandidates.filter((candidate) => selectedCandidateIds.has(candidate.id));
-    if (!selected.length) return;
-    setIsImportingCandidates(true);
-    setDiscoveryError(null);
     try {
-      for (const candidate of selected) {
-        await importCandidate({
-          candidateId: candidate.id,
-          displayName: candidate.displayName,
-          makeDefault: candidate.authType === 'external_cli' ? false : true,
-        });
-      }
-      setDiscoveryOpen(false);
-    } catch (error) {
-      setDiscoveryError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setIsImportingCandidates(false);
-    }
+      await importProfilesFromCandidates(selected);
+    } catch { /* The shared importer keeps the dialog open and presents the error. */ }
   };
 
   return (
@@ -327,13 +383,23 @@ export function LoginProfilesPanel({
               <RefreshCw className={cn('h-4 w-4', isLoading && 'animate-spin')} />
               Refresh
             </Button>
-            <Button variant="outline" size="sm" onClick={() => void runDiscovery()} disabled={isDiscovering || isMutating}>
-              <Download className={cn('h-4 w-4', isDiscovering && 'animate-pulse')} />
-              {providerFilter === 'opencode' ? 'Import current auth.json' : 'Find existing'}
-            </Button>
-            <Button size="sm" onClick={() => openNewEditor(providerFilter)}>
-              <Plus className="h-4 w-4" />
-              Add {providerFilter === 'codex' ? 'Codex' : providerFilter === 'claude' ? 'Claude' : 'OpenCode'}
+            {providerFilter !== 'opencode' ? (
+              <Button variant="outline" size="sm" onClick={() => void runPanelDiscovery()} disabled={isDiscovering || isMutating}>
+                <Download className={cn('h-4 w-4', isDiscovering && 'animate-pulse')} />
+                Find existing
+              </Button>
+            ) : null}
+            <Button
+              size="sm"
+              onClick={() => providerFilter === 'opencode' ? void runPanelDiscovery() : openNewEditor(providerFilter)}
+              disabled={providerFilter === 'opencode' && (isDiscovering || isImportingCandidates || isMutating)}
+            >
+              {providerFilter === 'opencode' && (isDiscovering || isImportingCandidates) ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : <Plus className="h-4 w-4" />}
+              {providerFilter === 'opencode'
+                ? 'Add OpenCode'
+                : `Add ${providerFilter === 'codex' ? 'Codex' : 'Claude'}`}
             </Button>
           </div>
         </header>
@@ -404,13 +470,15 @@ export function LoginProfilesPanel({
                 <p className="mt-1 max-w-sm text-sm leading-6 text-muted-foreground">{copy.emptyBody}</p>
                 {providerFilter === 'opencode' ? (
                   <div className="mt-5 flex flex-wrap justify-center gap-2">
-                    <Button size="sm" onClick={() => void runDiscovery()} disabled={isDiscovering || isMutating}>
-                      <Download className={cn('h-4 w-4', isDiscovering && 'animate-pulse')} />
-                      Import current auth.json
+                    <Button size="sm" onClick={() => void runPanelDiscovery()} disabled={isDiscovering || isMutating}>
+                      {isDiscovering || isImportingCandidates ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : <Plus className="h-4 w-4" />}
+                      Add OpenCode
                     </Button>
                     <Button variant="outline" size="sm" onClick={() => openNewEditor(providerFilter)}>
                       <Plus className="h-4 w-4" />
-                      Paste auth.json
+                      Advanced setup
                     </Button>
                   </div>
                 ) : (
@@ -543,6 +611,12 @@ export function LoginProfilesPanel({
         error={error}
         onOpenChange={setEditorOpen}
         onSave={saveEditorProfile}
+        onLoadOpenCodeAuth={readOpenCodeAuth}
+        openCodeAuthPath={detectedOpenCodeAuthPath}
+        onImportExistingOpenCode={async () => {
+          await runDiscovery();
+          setEditorOpen(false);
+        }}
         onConnectCodex={connectCodexProfile}
         onConnectClaudeOauth={connectClaudeOauthProfile}
         onPollClaudeOauth={pollClaudeOauthProfile}
@@ -616,16 +690,28 @@ export function LoginProfilesPanel({
           ) : null}
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setDiscoveryOpen(false)} disabled={isImportingCandidates}>
+            <Button type="button" variant="outline" onClick={() => setDiscoveryOpen(false)} disabled={isDiscovering || isImportingCandidates}>
               Cancel
             </Button>
-            <Button
-              type="button"
-              onClick={() => void importSelectedCandidates()}
-              disabled={isImportingCandidates || selectedCandidateIds.size === 0}
-            >
-              Import selected
-            </Button>
+            {providerFilter === 'opencode' && !importCandidates.some((candidate) => candidate.importable) ? (
+              <Button type="button" variant="outline" onClick={openOpenCodeAdvancedSetup} disabled={isDiscovering || isImportingCandidates}>
+                Advanced setup
+              </Button>
+            ) : null}
+            {discoveryError && importCandidates.length === 0 ? (
+              <Button type="button" onClick={() => void runPanelDiscovery()} disabled={isDiscovering || isImportingCandidates}>
+                {isDiscovering ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                Retry discovery
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                onClick={() => void importSelectedCandidates()}
+                disabled={isDiscovering || isImportingCandidates || selectedCandidateIds.size === 0}
+              >
+                Import selected
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

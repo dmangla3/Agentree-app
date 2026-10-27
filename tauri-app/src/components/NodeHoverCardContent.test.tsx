@@ -196,6 +196,22 @@ describe('NodeHoverCardContent', () => {
     expect(screen.getByText('Quick Reply')).toBeTruthy();
   });
 
+  it('attaches header controls outside the hovercard content flow', () => {
+    const { container } = render(
+      <NodeHoverCardContent
+        entity={makeEntity('assistant_message')}
+        projection={makeProjection()}
+        headerAccessory={<button type="button">Message navigator</button>}
+      />
+    );
+
+    const dock = container.querySelector('[data-agentree-hover-navigation-dock="attached"]');
+    expect(dock).toBeTruthy();
+    expect(dock?.className).toContain('absolute');
+    expect(dock?.className).toContain('-translate-y-full');
+    expect(screen.getByRole('button', { name: 'Message navigator' })).toBeTruthy();
+  });
+
   it('updates an open assistant hover from the live projection store', async () => {
     const message = makeMessage({
       id: 'assistant-live',

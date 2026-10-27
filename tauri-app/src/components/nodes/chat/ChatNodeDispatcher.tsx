@@ -4,6 +4,7 @@ import { ChatAssistantCard } from './ChatAssistantCard';
 import { ChatCommitCard } from './ChatCommitCard';
 import { ChatSummaryCard } from './ChatSummaryCard';
 import type { ProjectedNodeEntity } from '../../../domain/workspaceProjection';
+import type { ViewLayout } from '../../../types/nodes';
 
 
 interface ChatNodeDispatcherProps {
@@ -12,6 +13,7 @@ interface ChatNodeDispatcherProps {
   projection: any; // workspace projection
   focusedMessageId: string | null;
   isSelected: boolean;
+  layout?: ViewLayout;
   onFocus: (id: string, metadata?: Record<string, unknown>) => void;
   onSelect: (id: string, multi: boolean) => void;
   onContextMenu: (id: string, e: React.MouseEvent) => void;
@@ -23,6 +25,7 @@ export const ChatNodeDispatcher = memo(({
   projection,
   focusedMessageId,
   isSelected,
+  layout = 'chat',
   onFocus,
   onSelect,
   onContextMenu
@@ -52,7 +55,7 @@ export const ChatNodeDispatcher = memo(({
   const sharedProps = {
     isFocused: entity?.focusMessageId === focusedMessageId,
     isSelected,
-    layout: 'chat' as const,
+    layout,
     onFocus: handleFocus,
     onSelect: handleSelect,
     onContextMenu: handleContextMenu,

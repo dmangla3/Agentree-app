@@ -72,11 +72,13 @@ describe('UnifiedAgentModelSelector runtime catalog', () => {
     );
 
     expect(visibleEfforts(container)).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
-    expect(container.querySelector('[data-model-effort="max"]')?.textContent).toContain('Maximum Codex reasoning level');
-    expect(container.querySelector('[data-model-effort="ultra"]')?.textContent).toContain('Highest supported Codex reasoning level');
+    expect(container.querySelector('[data-model-effort="max"]')?.textContent).toContain('Max');
+    expect(container.querySelector('[data-model-effort="max"]')?.textContent).not.toContain('Maximum Codex reasoning level');
+    expect(container.querySelector('[data-model-effort="ultra"]')?.textContent).toContain('Ultra');
+    expect(container.querySelector('[data-model-effort="ultra"]')?.textContent).not.toContain('Highest supported Codex reasoning level');
   });
 
-  it('renders only supported Claude families with every requested effort and description', () => {
+  it('renders only supported Claude families with every requested effort label', () => {
     const { container, getByRole } = render(
       <UnifiedAgentModelSelector
         selectedAgentId="codex:gpt-5.6-sol:high"
@@ -103,7 +105,9 @@ describe('UnifiedAgentModelSelector runtime catalog', () => {
 
       expect(visibleEfforts(container)).toEqual(expectedEfforts);
       for (const effort of reasoningEffortsByProvider.claude) {
-        expect(container.querySelector(`[data-model-effort="${effort.id}"]`)?.textContent).toContain(effort.description);
+        const effortRow = container.querySelector(`[data-model-effort="${effort.id}"]`);
+        expect(effortRow?.textContent).toContain(effort.label);
+        expect(effortRow?.textContent).not.toContain(effort.description);
       }
     }
 

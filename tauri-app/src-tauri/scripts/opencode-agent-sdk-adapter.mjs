@@ -403,7 +403,7 @@ export function structuredOutputRecovery({ error, finalText, usage, toolActivity
   return null;
 }
 
-export function normalizeModelCatalog(catalog) {
+function normalizeModelCatalogForScope(catalog, connectedOnly) {
   const connected = new Set(Array.isArray(catalog?.connected) ? catalog.connected : []);
   const modalities = (value) => {
     if (Array.isArray(value)) return value.filter((kind) => typeof kind === 'string');
@@ -411,7 +411,7 @@ export function normalizeModelCatalog(catalog) {
   };
   const statusRank = { active: 0, beta: 1, alpha: 2, deprecated: 3 };
   return (Array.isArray(catalog?.all) ? catalog.all : [])
-    .filter((provider) => connected.has(provider.id))
+    .filter((provider) => !connectedOnly || connected.has(provider.id))
     .flatMap((provider) => Object.values(provider.models || {}).map((model) => {
       const capabilities = model.capabilities || {};
       const input = capabilities.input || model.modalities?.input || {};
@@ -431,6 +431,7 @@ export function normalizeModelCatalog(catalog) {
         providerName: provider.name,
         modelId: model.id,
         name: model.name || model.id,
+        description: typeof model.description === 'string' ? model.description : '',
         reasoning: capabilities.reasoning === true || model.reasoning === true,
         attachment: capabilities.attachment === true || model.attachment === true,
         toolCall: capabilities.toolcall === true || model.tool_call === true,
@@ -457,6 +458,30 @@ export function normalizeModelCatalog(catalog) {
     });
 }
 
+export function normalizeModelCatalog(catalog) {
+  return normalizeModelCatalogForScope(catalog, true);
+}
+
+export function normalizeSupportedModelCatalog(catalog) {
+  return normalizeModelCatalogForScope(catalog, false);
+}
+
+export function toOpenCodeCatalogRecords(models, sourceVersion, checkedAt = nowMs()) {
+  return models.map((model) => ({
+    ...model,
+    provider: 'opencode',
+    canonicalModelId: model.id,
+    cliModelId: model.id,
+    upstreamProviderId: model.providerId,
+    supportedReasoningEfforts: model.variants,
+    defaultReasoningEffort: null,
+    hidden: false,
+    isDefault: null,
+    sourceVersion: sourceVersion || null,
+    checkedAt,
+  }));
+}
+
 function parseArgs(argv) {
   const parsed = {
     prompt: '',
@@ -475,6 +500,7 @@ function parseArgs(argv) {
     opencodeBin: process.env.AGENTREE_OPENCODE_BIN || 'opencode',
     readinessCheck: false,
     listModels: false,
+    listSupportedModels: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -501,6 +527,7 @@ function parseArgs(argv) {
       }
       case '--readiness-check': parsed.readinessCheck = true; break;
       case '--list-models': parsed.listModels = true; break;
+      case '--list-supported-models': parsed.listSupportedModels = true; break;
       case '--print':
       case '--verbose':
       case '--no-session-persistence':
@@ -744,10 +771,20 @@ async function inspectRuntime(args) {
     ]);
     if (!healthResponse.ok) throw new Error(`OpenCode health check failed with HTTP ${healthResponse.status}.`);
     const health = await healthResponse.json();
-    const models = normalizeModelCatalog(providers);
-    if (args.listModels) {
-      emit({ type: 'model_catalog', provider: 'opencode', cli_version: health.version, models });
-    } else {
+    const checkedAt = nowMs();
+    const normalizedModels = args.listSupportedModels
+      ? normalizeSupportedModelCatalog(providers)
+      : normalizeModelCatalog(providers);
+    const models = toOpenCodeCatalogRecords(normalizedModels, health.version, checkedAt);
+    emit({
+      type: 'model_catalog',
+      provider: 'opencode',
+      catalogScope: args.listSupportedModels ? 'supported' : 'accessible',
+      sourceVersion: health.version,
+      checkedAt,
+      models,
+    });
+    if (!args.listModels && !args.listSupportedModels) {
       const capabilities = addProviderModelCounts(
         await checkProviderCapabilities(server.client, providers),
         models,
@@ -776,7 +813,7 @@ async function inspectRuntime(args) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (args.readinessCheck || args.listModels) return inspectRuntime(args);
+  if (args.readinessCheck || args.listModels || args.listSupportedModels) return inspectRuntime(args);
   if (!args.model) throw new Error('An OpenCode model is required.');
   const model = parseOpenCodeModel(args.model);
   const server = await startServer(args);

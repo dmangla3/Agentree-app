@@ -23,12 +23,12 @@
         "linux-x86_64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-claude-sdk-0.3.207-linux-x86_64.tar.gz",
           "sha256": "d0f25e47968df176d4c98051d5529d900dbfc93ab40ca5cb1f962475201b0f8b",
-          "treeSha256": "9a19b50d6c1e478b4d0f977191232bcb8fc6de7d456ea988aa35a94c1441a015"
+          "treeSha256": "150b43c72619824f0d15985f093305da14c1d04a35937828eab4da98b64ed13c"
         },
         "darwin-aarch64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-claude-sdk-0.3.207-darwin-aarch64.tar.gz",
           "sha256": "b58aab455d9d3b4b070ab139328e0a2c50ec921cd2671910f9f0367c9d65bbe2",
-          "treeSha256": "91b99fdd47435606e2503bbab45950091ca0fccbe124786460b0f5890a72731c"
+          "treeSha256": "bd02a2a9127652baaaac8bf9e77f6771f389e81025752cc1bce4ef8e3446eb16"
         }
       }
     },
@@ -54,12 +54,12 @@
         "linux-x86_64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-opencode-1.18.3-linux-x86_64.tar.gz",
           "sha256": "47c46cb274ec5b13e546851879c88d652059f13334fb47e50a527565607406ef",
-          "treeSha256": "a89b2fecee363220fc5436067e84b323acf94e1054d852201108b86699760081"
+          "treeSha256": "6a41c7156535dbc0bdad2b51a2b1277604ae67c5b66495ae5aa49fcf75c59577"
         },
         "darwin-aarch64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-opencode-1.18.3-darwin-aarch64.tar.gz",
           "sha256": "edaaf2b83f21832a64e4a74678c7a965e1337a79ec259913940a224b74c5bd2d",
-          "treeSha256": "227f96c1efbc73e03c30d8ead71e23a33590f7b49313f55094bc931f459c4b31"
+          "treeSha256": "bb89b0552a724d78ab4b6cca416794c6ccf478584e896bcad56cb1fa2f54ade3"
         }
       }
     }

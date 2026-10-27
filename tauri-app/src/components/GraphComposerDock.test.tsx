@@ -78,7 +78,7 @@ describe('GraphComposerDock', () => {
 
     expect(dockSource).toContain("import { GraphDockComposer } from '../composer/GraphDockComposer';");
     expect(dockSource).not.toContain("import { ChatInput } from './ChatInput';");
-    expect(composerSource).not.toContain('ChatInput');
+    expect(composerSource).not.toContain("import { ChatInput }");
     expect(composerSource).not.toContain('useWorkspaceMessages');
   });
 
@@ -151,8 +151,7 @@ describe('GraphComposerDock', () => {
     const composerSource = readFileSync(join(process.cwd(), 'src/composer/GraphDockComposer.tsx'), 'utf8');
 
     expect(composerSource).toContain('const footerStatusText = error ?? (');
-    expect(composerSource).toContain('pendingOrchestration');
-    expect(composerSource).toContain('child runs planned');
+    expect(composerSource).toContain("isSteeringRunningAssistant ? 'Steer the running agent' : ''");
     expect(composerSource).not.toContain("selectedFlow ? `${selectedFlow.label} · ${flowParallelCount} parallel runs` : modelSelectorLabel");
   });
 

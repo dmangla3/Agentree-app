@@ -14,6 +14,7 @@ import type { BranchPointer } from '../../../stores/workspaceStore';
 import { CopyCommitShaButton } from '../../CopyCommitShaButton';
 import { CommitCheckoutButton } from '../../CommitCheckoutButton';
 import { OpenCommitTerminalButton } from '../../OpenCommitTerminalButton';
+import { CommitActionButton, commitActionIconClassName } from '../../CommitActionButton';
 import { getMessageOutputCommitSha } from '../../../lib/graph/commitAccessors';
 import { useAgentreeSurface } from '../../graph/surfaceCapabilities';
 
@@ -124,8 +125,8 @@ export const ChatCommitCard = memo(({
       className={cn(
         ROLE_COLORS.commit_message.bg,
         ROLE_COLORS.commit_message.border,
-        compact && isFocused && 'border-indigo-500/60 bg-indigo-50/80 dark:border-indigo-400/60 dark:bg-indigo-950/30 shadow-lg',
-        compact && isSelected && !isFocused && 'border-blue-500/70 bg-blue-50/80 dark:border-blue-400/70 dark:bg-blue-950/30 shadow-md'
+        compact && isFocused && 'border-[hsl(var(--app-selection)/0.68)] bg-[hsl(var(--app-selection)/0.08)] shadow-lg',
+        compact && isSelected && !isFocused && 'border-blue-500/70 bg-blue-50/80 shadow-md dark:border-blue-400/70 dark:bg-blue-950/30'
       )}
     >
       <div className="flex min-w-0 max-w-full flex-col gap-3">
@@ -222,19 +223,20 @@ export const ChatCommitCard = memo(({
               </>
             ) : null}
             {capabilities.canMutate && parentCommit && nodeCommit ? (
-              <button
+              <CommitActionButton
                 type="button"
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
                   setExpanded((current) => !current);
                 }}
-                className="inline-flex items-center gap-1 rounded-md border border-emerald-200/70 bg-white/70 px-2 py-1 text-[10px] font-medium text-emerald-700 transition-colors hover:bg-emerald-50 dark:border-emerald-800/70 dark:bg-slate-950/30 dark:text-emerald-300 dark:hover:bg-emerald-950/30"
               >
-                {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                <FileCode2 size={12} />
+                {expanded
+                  ? <ChevronDown className={commitActionIconClassName()} />
+                  : <ChevronRight className={commitActionIconClassName()} />}
+                <FileCode2 className={commitActionIconClassName()} />
                 {expanded ? 'Hide diff' : 'Show diff'}
-              </button>
+              </CommitActionButton>
             ) : null}
           </div>
         </div>

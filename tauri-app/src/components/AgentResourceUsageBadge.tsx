@@ -16,7 +16,7 @@ export function AgentResourceUsageBadge({
   enabled: boolean;
 }) {
   const usage = useAgentResourceUsage(assistantNodeId, enabled);
-  if (!usage || usage.processCount === 0) return null;
+  if (!enabled || !usage || usage.processCount === 0) return null;
 
   const cpu = usage.cpuPercent > 0 && usage.cpuPercent < 1
     ? '<1%'

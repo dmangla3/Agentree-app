@@ -140,6 +140,57 @@ describe('LoginProfileEditor', () => {
     expect((getByLabelText('key value for OpenRouter') as HTMLInputElement).type).toBe('password');
   });
 
+  it('shows the detected auth path with a compact import action', async () => {
+    const onImportExistingOpenCode = vi.fn().mockResolvedValue(undefined);
+    const { getByRole, getByText, queryByText } = render(
+      <LoginProfileEditor
+        open
+        provider="opencode"
+        profile={null}
+        isSaving={false}
+        error={null}
+        onOpenChange={vi.fn()}
+        onSave={vi.fn()}
+        onImportExistingOpenCode={onImportExistingOpenCode}
+        openCodeAuthPath="/Users/test/.local/share/opencode/auth.json"
+      />
+    );
+
+    expect(getByText(/Auth file found at/)).toBeTruthy();
+    expect(getByText('/Users/test/.local/share/opencode/auth.json')).toBeTruthy();
+    expect(queryByText(/Already signed in to OpenCode/)).toBeNull();
+    const importButton = getByRole('button', { name: 'Import' });
+    expect(importButton.className).toContain('h-8');
+    fireEvent.click(importButton);
+    await waitFor(() => expect(onImportExistingOpenCode).toHaveBeenCalledOnce());
+  });
+
+  it('shows automatic OpenCode import failures and allows retrying', async () => {
+    const onImportExistingOpenCode = vi.fn()
+      .mockRejectedValueOnce(new Error('Could not import auth.json'))
+      .mockResolvedValueOnce(undefined);
+    const { getByRole, getByText, queryByText } = render(
+      <LoginProfileEditor
+        open
+        provider="opencode"
+        profile={null}
+        isSaving={false}
+        error={null}
+        onOpenChange={vi.fn()}
+        onSave={vi.fn()}
+        onImportExistingOpenCode={onImportExistingOpenCode}
+        openCodeAuthPath="/Users/test/.local/share/opencode/auth.json"
+      />
+    );
+
+    fireEvent.click(getByRole('button', { name: 'Import' }));
+    await waitFor(() => expect(getByText('Could not import auth.json')).toBeTruthy());
+
+    fireEvent.click(getByRole('button', { name: 'Import' }));
+    await waitFor(() => expect(onImportExistingOpenCode).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(queryByText('Could not import auth.json')).toBeNull());
+  });
+
   it('adds and removes fields in the structured OpenCode editor', async () => {
     const onSave = vi.fn().mockResolvedValue({});
     const user = userEvent.setup({ document });
