@@ -256,6 +256,27 @@ export function addProviderModelCounts(capabilities, models) {
   });
 }
 
+export function summarizeReadiness({ models, capabilities, requestedProviders = [] }) {
+  const selected = requestedProviders && requestedProviders.length
+    ? new Set(requestedProviders)
+    : null;
+  const scopedCapabilities = selected
+    ? (capabilities || []).filter((capability) => selected.has(capability.providerId))
+    : (capabilities || []);
+  const scopedModels = selected
+    ? (models || []).filter((model) => selected.has(model.providerId))
+    : (models || []);
+  const usableModels = filterModelsByProviderCapabilities(scopedModels, scopedCapabilities);
+  return {
+    connected_providers: scopedCapabilities.map((capability) => capability.providerId),
+    model_count: scopedModels.length,
+    usable_model_count: usableModels.length,
+    invalid_provider_count: scopedCapabilities.filter((capability) => capability.credentials === 'invalid').length,
+    priced_provider_count: scopedCapabilities.filter((capability) => capability.pricedModelAccess === 'available').length,
+    free_only_provider_count: scopedCapabilities.filter((capability) => capability.credentials === 'valid' && capability.pricedModelAccess === 'unavailable').length,
+  };
+}
+
 export function opencodePermissionConfig(permissionMode, cwd = process.cwd()) {
   if (permissionMode === 'full-access') return 'allow';
   const worktreePattern = `${path.resolve(cwd).replaceAll('\\', '/')}/**`;
@@ -275,6 +296,10 @@ export function opencodePermissionConfig(permissionMode, cwd = process.cwd()) {
     edit,
     external_directory: 'ask',
   };
+}
+
+export function isStructuredOutputTool(toolName) {
+  return toolName === 'StructuredOutput';
 }
 
 export function permissionResponse(permissionMode, permissionType, toolName) {
@@ -501,6 +526,7 @@ function parseArgs(argv) {
     readinessCheck: false,
     listModels: false,
     listSupportedModels: false,
+    providers: [],
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -526,6 +552,13 @@ function parseArgs(argv) {
         break;
       }
       case '--readiness-check': parsed.readinessCheck = true; break;
+      case '--providers': {
+        const raw = take();
+        parsed.providers = raw
+          ? raw.split(',').map((value) => value.trim()).filter(Boolean)
+          : [];
+        break;
+      }
       case '--list-models': parsed.listModels = true; break;
       case '--list-supported-models': parsed.listSupportedModels = true; break;
       case '--print':
@@ -746,9 +779,16 @@ async function mapWithConcurrency(values, limit, mapper) {
   return results;
 }
 
-async function checkProviderCapabilities(client, catalog) {
+export function selectProbeProviders(catalog, requested = []) {
   const connected = new Set(catalog.connected || []);
-  const providers = (catalog.all || []).filter((provider) => connected.has(provider.id));
+  const selected = requested && requested.length ? new Set(requested) : null;
+  return (catalog.all || []).filter((provider) => (
+    connected.has(provider.id) && (!selected || selected.has(provider.id))
+  ));
+}
+
+async function checkProviderCapabilities(client, catalog, requested = []) {
+  const providers = selectProbeProviders(catalog, requested);
   return mapWithConcurrency(providers, 3, async (provider) => {
     const direct = await directProviderCapability(provider.id);
     if (
@@ -786,10 +826,10 @@ async function inspectRuntime(args) {
     });
     if (!args.listModels && !args.listSupportedModels) {
       const capabilities = addProviderModelCounts(
-        await checkProviderCapabilities(server.client, providers),
+        await checkProviderCapabilities(server.client, providers, args.providers),
         models,
       );
-      const usableModels = filterModelsByProviderCapabilities(models, capabilities);
+      const readiness = summarizeReadiness({ models, capabilities, requestedProviders: args.providers });
       emit({ type: 'provider_capabilities', provider: 'opencode', capabilities });
       emit({
         type: 'readiness',
@@ -797,12 +837,7 @@ async function inspectRuntime(args) {
         status: 'ready',
         cli_path: args.opencodeBin,
         cli_version: health.version,
-        connected_providers: providers.connected || [],
-        model_count: models.length,
-        usable_model_count: usableModels.length,
-        invalid_provider_count: capabilities.filter((capability) => capability.credentials === 'invalid').length,
-        priced_provider_count: capabilities.filter((capability) => capability.pricedModelAccess === 'available').length,
-        free_only_provider_count: capabilities.filter((capability) => capability.credentials === 'valid' && capability.pricedModelAccess === 'unavailable').length,
+        ...readiness,
       });
     }
     return 0;
@@ -946,6 +981,10 @@ async function main() {
               const state = part.state;
               toolStates.set(part.id, state.status);
               toolNamesByCallID.set(part.callID, part.tool);
+              // The StructuredOutput tool is the internal delivery channel for
+              // structured results. It must not surface in the execution timeline
+              // (same treatment as the Claude adapter's isStructuredOutputBlock).
+              if (isStructuredOutputTool(part.tool)) continue;
               if ((state.status === 'pending' || state.status === 'running') && previous !== state.status) {
                 emit({
                   type: 'tool_use',

@@ -26,7 +26,7 @@ interface LoginProfilesState {
   submitClaudeOauthCode: (profileId: string, code: string) => Promise<LoginProfileSummary>;
   deleteProfile: (profileId: string) => Promise<void>;
   setDefaultProfile: (provider: string, profileId: string | null) => Promise<void>;
-  checkProfile: (profileId: string) => Promise<void>;
+  checkProfile: (profileId: string, providers?: string[] | null) => Promise<void>;
   /** Local-only launch eligibility; live provider verification is explicit account management. */
   ensureReady: (profileId: string) => Promise<LoginProfileSummary>;
   checkAllProfiles: () => Promise<void>;
@@ -187,10 +187,10 @@ export const useLoginProfilesStore = create<LoginProfilesState>((set) => ({
       set({ isMutating: false });
     }
   },
-  checkProfile: async (profileId) => {
+  checkProfile: async (profileId, providers = null) => {
     set({ isMutating: true, error: null });
     try {
-      await agentClient.checkLoginProfileReadiness(profileId);
+      await agentClient.checkLoginProfileReadiness(profileId, providers);
       await useLoginProfilesStore.getState().refresh();
     } catch (error) {
       set({ error: messageFromError(error) });

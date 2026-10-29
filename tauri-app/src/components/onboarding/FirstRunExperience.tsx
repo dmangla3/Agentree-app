@@ -121,7 +121,7 @@ function StatusRow({
   const iconClassName = 'h-4 w-4';
   const statusLabel = {
     pending: 'Pending',
-    checking: 'Checking',
+    checking: 'Testing',
     ready: 'Ready',
     missing: 'Action needed',
   }[status];
@@ -176,7 +176,7 @@ function StatusRow({
 }
 
 function toolDetail(label: string, tool: CliToolStatus | null, missingMessage: string) {
-  if (!tool) return `${label} has not been checked yet.`;
+  if (!tool) return `${label} has not been tested yet.`;
   if (tool.installed) return tool.version || `${label} is available.`;
   return tool.error || missingMessage;
 }
@@ -587,9 +587,9 @@ export function FirstRunExperience({
                     <Badge variant="outline" className={stepBadgeClassName}>
                       Step 1 of 3
                     </Badge>
-                    <CardTitle className="text-3xl text-balance">Checking requirements</CardTitle>
+                    <CardTitle className="text-3xl text-balance">Testing requirements</CardTitle>
                     <CardDescription className="text-base leading-7 text-pretty dark:text-zinc-300">
-                      {userName ? `${userName}, ` : ''}Agentree checks Git locally, then verifies active login profiles for Codex, Claude, and OpenCode before the first run. You can continue once Git is ready and at least one provider login is ready.
+                      {userName ? `${userName}, ` : ''}Agentree tests Git locally, then verifies active login profiles for Codex, Claude, and OpenCode before the first run. You can continue once Git is ready and at least one provider login is ready.
                     </CardDescription>
                   </CardHeader>
 
@@ -597,10 +597,10 @@ export function FirstRunExperience({
                     <div className={cn('rounded-2xl p-4', onboardingPanelClassName)}>
                       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div>
-                          <div className="text-sm font-medium text-foreground dark:text-zinc-100">Machine checks</div>
+                          <div className="text-sm font-medium text-foreground dark:text-zinc-100">Machine tests</div>
                           <p className="mt-1 text-sm text-muted-foreground dark:text-zinc-300">
                             {isCheckingEnvironment
-                              ? 'Agentree is checking each local requirement now.'
+                              ? 'Agentree is testing each local requirement now.'
                               : environmentReady
                                 ? 'Git is ready and at least one active login profile is available.'
                                 : 'Agentree needs Git plus at least one available agent runtime before continuing.'}
@@ -717,7 +717,7 @@ export function FirstRunExperience({
                           ) : (
                             <RefreshCw className="h-4 w-4" />
                           )}
-                          Run checks
+                          Run tests
                         </Button>
                         <Button
                           size="lg"

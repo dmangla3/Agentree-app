@@ -359,6 +359,7 @@ export function GraphDockComposer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const promptRef = useRef('');
+  const lastSubmittedSignatureRef = useRef<string | null>(null);
   const [composerTargetMode, setComposerTargetMode] = useState<ComposerTargetMode>('reply');
   const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
   const [contextPolicy, setContextPolicy] = useState<ContextPolicy>('continue');
@@ -1409,6 +1410,16 @@ export function GraphDockComposer({
           agent,
         }]
         : [];
+    const sendSignature = `${trimmedPrompt}\u0000${hasAttachments ? composerAttachments.metadata.map((attachment) => getComposerAttachmentId(attachment)).join(',') : ''}`;
+    if (lastSubmittedSignatureRef.current != null && lastSubmittedSignatureRef.current === sendSignature) {
+      // The input stays populated until the send is durably accepted, so a
+      // rapid repeat send would otherwise queue an identical duplicate run.
+      recordSendFlowEvent('graph-dock.blocked-duplicate', {
+        workspaceId: selectedWorkspaceId,
+        promptLength: trimmedPrompt.length,
+      }, { source: 'GraphDockComposer' });
+      return;
+    }
     if (!agent || runsToSend.length === 0) {
       recordSendFlowEvent('graph-dock.blocked', {
         workspaceId: selectedWorkspaceId,
@@ -1449,6 +1460,7 @@ export function GraphDockComposer({
     const attachmentsForSend = Object.freeze(
       composerAttachments.metadata.map((attachment) => Object.freeze({ ...attachment })),
     );
+    lastSubmittedSignatureRef.current = sendSignature;
     const queuedSend = sendAcceptanceQueueRef.current!.submit(
       { prompt: promptForAgent },
       async (sendSnapshot, accepted) => {
@@ -1469,7 +1481,19 @@ export function GraphDockComposer({
           onSendComplete?.();
         };
         const acceptRun = (runKey: string) => {
+          const isFirstAcceptedRun = acceptedRunKeys.size === 0;
           acceptedRunKeys.add(runKey);
+          if (isFirstAcceptedRun) {
+            // Clear input only once the first run is durably visible, so a
+            // send that fails before message creation never destroys the
+            // user's prompt, draft, or attachments.
+            lastSubmittedSignatureRef.current = null;
+            clearComposerDraft(selectedWorkspaceId, composerDraftTargetId);
+            setEditDraftSource(null);
+            clearPrompt();
+            composerAttachments.clearAttachments();
+            resetComposerTargetAfterSuccessfulSend();
+          }
           if (acceptedRunKeys.size < runsToLaunch.length) return;
           // The entire batch is durable before the next queued batch begins.
           // Native launches continue independently after this boundary.
@@ -1630,6 +1654,11 @@ export function GraphDockComposer({
           setError(message);
         } finally {
           accepted();
+          if (acceptedRunKeys.size === 0) {
+            // The batch never became durable; release the duplicate-send guard
+            // so the user can retry the same prompt or attachments.
+            lastSubmittedSignatureRef.current = null;
+          }
           if (acceptedRunKeys.size > 0) notifySendComplete();
         }
       },
@@ -1641,11 +1670,6 @@ export function GraphDockComposer({
       parentId: target.parentMessageId,
       promptLength: promptForAgent.length,
     }, { source: 'GraphDockComposer' });
-    clearComposerDraft(selectedWorkspaceId, composerDraftTargetId);
-    setEditDraftSource(null);
-    clearPrompt();
-    composerAttachments.clearAttachments();
-    resetComposerTargetAfterSuccessfulSend();
     await queuedSend.completion;
   }, [
     addToast,

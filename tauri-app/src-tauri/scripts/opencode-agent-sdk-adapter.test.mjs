@@ -15,6 +15,7 @@ import {
   isAssistantForPrompt,
   isAssistantForPromptSet,
   isPromptSetComplete,
+  isStructuredOutputTool,
   managedOpenCodeProviderIds,
   normalizeStructuredOutput,
   normalizeModelCatalog,
@@ -26,7 +27,9 @@ import {
   resolveSession,
   opencodePermissionConfig,
   parseOpenCodeModel,
+  selectProbeProviders,
   structuredOutputRecovery,
+  summarizeReadiness,
   toOpenCodeCatalogRecords,
   usageFromAssistantMessage,
 } from './opencode-agent-sdk-adapter.mjs';
@@ -427,6 +430,12 @@ test('OpenCode event helpers normalize session, structured output, and usage', (
   assert.equal(opencodeErrorMessage({ name: 'APIError', data: { message: 'Upstream failed' } }), 'Upstream failed');
 });
 
+test('OpenCode structured output tool is hidden from the execution timeline', () => {
+  assert.equal(isStructuredOutputTool('StructuredOutput'), true);
+  assert.equal(isStructuredOutputTool('bash'), false);
+  assert.equal(isStructuredOutputTool('read'), false);
+});
+
 test('OpenCode turn correlation ignores stale and title assistant events', () => {
   assert.equal(isAssistantForPrompt({ role: 'assistant', parentID: 'msg_current', mode: 'build' }, 'msg_current'), true);
   assert.equal(isAssistantForPrompt({ role: 'assistant', parentID: 'msg_previous', mode: 'build' }, 'msg_current'), false);
@@ -561,4 +570,61 @@ test('OpenCode file parts map to Agentree artifact storage backends', () => {
     backend: 'inline',
     url: 'data:image/png;base64,AA==',
   });
+});
+
+test('provider selection probes only connected providers within the requested set', () => {
+  const catalog = {
+    connected: ['deepseek', 'openai'],
+    all: [
+      { id: 'deepseek' },
+      { id: 'openai' },
+      { id: 'groq' },
+      { id: 'openrouter' },
+    ],
+  };
+  assert.deepEqual(
+    selectProbeProviders(catalog).map((provider) => provider.id),
+    ['deepseek', 'openai'],
+  );
+  assert.deepEqual(
+    selectProbeProviders(catalog, ['openai']).map((provider) => provider.id),
+    ['openai'],
+  );
+  assert.deepEqual(
+    selectProbeProviders(catalog, ['groq']).map((provider) => provider.id),
+    [],
+  );
+  assert.deepEqual(
+    selectProbeProviders(catalog, ['deepseek', 'openai', 'openrouter']).map((provider) => provider.id),
+    ['deepseek', 'openai'],
+  );
+});
+
+test('readiness counters reflect only the requested providers', () => {
+  const models = [
+    { providerId: 'deepseek', modelId: 'deepseek-r1', isFree: false },
+    { providerId: 'openai', modelId: 'gpt-4o', isFree: false },
+    { providerId: 'openai', modelId: 'gpt-4o-mini', isFree: true },
+  ];
+  const capabilities = addProviderModelCounts([
+    { providerId: 'deepseek', credentials: 'valid', pricedModelAccess: 'available' },
+    { providerId: 'openai', credentials: 'valid', pricedModelAccess: 'unavailable' },
+  ], models);
+
+  const all = summarizeReadiness({ models, capabilities });
+  assert.equal(all.connected_providers.length, 2);
+  assert.equal(all.model_count, 3);
+  assert.equal(all.usable_model_count, 2);
+  assert.equal(all.invalid_provider_count, 0);
+
+  const openaiOnly = summarizeReadiness({ models, capabilities, requestedProviders: ['openai'] });
+  assert.deepEqual(openaiOnly.connected_providers, ['openai']);
+  assert.equal(openaiOnly.model_count, 2);
+  assert.equal(openaiOnly.usable_model_count, 1);
+  assert.equal(openaiOnly.free_only_provider_count, 1);
+
+  const none = summarizeReadiness({ models, capabilities, requestedProviders: ['openrouter'] });
+  assert.deepEqual(none.connected_providers, []);
+  assert.equal(none.model_count, 0);
+  assert.equal(none.usable_model_count, 0);
 });

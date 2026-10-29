@@ -1012,8 +1012,8 @@ export const agentClient = {
     setDefaultLoginProfile: async (provider: string, profileId: string | null): Promise<LoginProfile[]> => {
         return (await tauriCommands.setDefaultLoginProfile(provider, profileId)).map(normalizeLoginProfile);
     },
-    checkLoginProfileReadiness: async (profileId: string): Promise<LoginProfile> => {
-        return normalizeLoginProfile(await tauriCommands.checkLoginProfileReadiness(profileId));
+    checkLoginProfileReadiness: async (profileId: string, providers?: string[] | null): Promise<LoginProfile> => {
+        return normalizeLoginProfile(await tauriCommands.checkLoginProfileReadiness(profileId, providers ?? null));
     },
     // Compatibility name: the native launch preflight is local-only and never probes a provider.
     ensureLoginProfileReady: async (profileId: string): Promise<LoginProfile> => {

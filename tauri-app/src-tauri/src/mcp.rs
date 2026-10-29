@@ -26,6 +26,13 @@ static MCP_WORKSPACE_ID: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(N
 /// explicit port override is configured the server binds to an OS-assigned free
 /// port, and this is how the rest of the app learns which one it got.
 static MCP_ACTUAL_PORT: AtomicU16 = AtomicU16::new(0);
+const WORKING_MEMORY_VALUE_MAX_BYTES: usize = 32 * 1024;
+const SAVED_NODE_SET_MAX_ITEMS: usize = 5_000;
+const RESULT_READ_DEFAULT_LIMIT: usize = 5;
+const RESULT_READ_MAX_LIMIT: usize = 20;
+const RESULT_READ_DEFAULT_CONTENT_CHARS: u32 = 4_000;
+const RESULT_READ_MAX_CONTENT_CHARS: u32 = 8_000;
+const RESULT_READ_MAX_TOTAL_CHARS: usize = 20_000;
 
 fn configured_mcp_bind_addr() -> String {
     env::var("AGENTREE_MCP_BIND").unwrap_or_else(|_| "127.0.0.1".to_string())
@@ -511,7 +518,7 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                 },
                 {
                     "name": "graph_query",
-                    "description": "Search and filter graph nodes. The workspace_id is auto-detected from current context; do not pass it unless querying a different workspace.",
+                    "description": "Search and filter graph nodes. The workspace_id is auto-detected from current context; do not pass it unless querying a different workspace. For large result sets, provide save_as and return_mode='handle' so only a durable handle enters context.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -521,9 +528,70 @@ fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                             },
                             "filters": { "type": "object", "description": "Filter criteria like {role: 'assistant', status: 'completed'}" },
                             "limit": { "type": "number", "description": "Maximum nodes to return" },
-                            "offset": { "type": "number", "description": "Pagination offset" }
+                            "offset": { "type": "number", "description": "Pagination offset" },
+                            "save_as": { "type": "string", "description": "Optional working-memory name for a durable node-set handle owned by the current agent run." },
+                            "return_mode": { "type": "string", "enum": ["page", "handle"], "description": "Defaults to page. Use handle with save_as to keep matching node details out of model context." }
                         },
                         "required": []
+                    }
+                },
+                {
+                    "name": "working_memory_put",
+                    "description": "Store a small named JSON value for the current agent run. The value survives provider compaction and process recovery without being added to model context until read.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "description": "Stable 1-64 character name using letters, numbers, '.', '-', or '_'." },
+                            "value": { "description": "JSON value to retain. Large graph results should use graph_query save_as instead." }
+                        },
+                        "required": ["name", "value"]
+                    }
+                },
+                {
+                    "name": "working_memory_get",
+                    "description": "Read one named JSON value from working memory for the current agent run.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string" }
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "working_memory_list",
+                    "description": "List working-memory names, kinds, and sizes for the current agent run without loading their values into context.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                },
+                {
+                    "name": "working_memory_delete",
+                    "description": "Delete one named working-memory value or saved graph result owned by the current agent run.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string" }
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "graph_read_result",
+                    "description": "Read a filtered page from a graph node set previously saved by graph_query. Only the requested slice enters model context.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "description": "Working-memory name passed earlier as graph_query save_as." },
+                            "content_query": { "type": "string", "description": "Optional case-insensitive text filter applied before pagination." },
+                            "offset": { "type": "number" },
+                            "limit": { "type": "number", "description": "Defaults to 5 and is capped at 20." },
+                            "include_content": { "type": "boolean", "description": "Defaults to true." },
+                            "max_content_length": { "type": "number", "description": "Per-node content limit, capped at 8000 characters." }
+                        },
+                        "required": ["name"]
                     }
                 },
                 {
@@ -734,7 +802,39 @@ async fn handle_tools_call(
                 .and_then(|args| args.get("offset"))
                 .and_then(|value| value.as_u64())
                 .map(|value| value as u32);
-            handle_graph_query(id, state, workspace_id.unwrap(), filters, limit, offset).await
+            let save_as = arguments.and_then(|args| read_arg_string(args, "save_as"));
+            let return_mode = arguments.and_then(|args| read_arg_string(args, "return_mode"));
+            handle_graph_query(
+                id,
+                state,
+                workspace_id.unwrap(),
+                filters,
+                limit,
+                offset,
+                save_as,
+                return_mode,
+                mcp_request_node_id(&uri),
+            )
+            .await
+        }
+        Some("working_memory_put") => {
+            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
+            handle_working_memory_put(id, state, args, mcp_request_node_id(&uri))
+        }
+        Some("working_memory_get") => {
+            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
+            handle_working_memory_get(id, state, args, mcp_request_node_id(&uri))
+        }
+        Some("working_memory_list") => {
+            handle_working_memory_list(id, state, mcp_request_node_id(&uri))
+        }
+        Some("working_memory_delete") => {
+            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
+            handle_working_memory_delete(id, state, args, mcp_request_node_id(&uri))
+        }
+        Some("graph_read_result") => {
+            let args = arguments.cloned().unwrap_or_else(|| serde_json::json!({}));
+            handle_graph_read_result(id, state, args, mcp_request_node_id(&uri)).await
         }
         Some("graph_read_node") => {
             let node_id = arguments
@@ -1864,6 +1964,11 @@ mod tests {
         assert!(!names.contains(&"complete_orchestration"));
         assert!(!names.contains(&"graph_live_query"));
         assert!(names.contains(&"show_output"));
+        assert!(names.contains(&"working_memory_put"));
+        assert!(names.contains(&"working_memory_get"));
+        assert!(names.contains(&"working_memory_list"));
+        assert!(names.contains(&"working_memory_delete"));
+        assert!(names.contains(&"graph_read_result"));
         assert!(names.contains(&"list_thread_sessions"));
         assert!(names.contains(&"read_thread"));
         assert!(names.contains(&"query_commits"));
@@ -1919,6 +2024,43 @@ mod tests {
         assert!(wait_properties.contains_key("condition"));
         assert!(!wait_properties.contains_key("timeout_ms"));
 
+        let graph_query = tools
+            .iter()
+            .find(|tool| tool.get("name").and_then(|name| name.as_str()) == Some("graph_query"))
+            .expect("graph_query tool");
+        let graph_query_properties = graph_query["inputSchema"]["properties"]
+            .as_object()
+            .expect("graph_query properties");
+        assert!(graph_query_properties.contains_key("save_as"));
+        assert!(graph_query_properties.contains_key("return_mode"));
+        assert_eq!(
+            graph_query_properties["return_mode"]["enum"],
+            serde_json::json!(["page", "handle"])
+        );
+
+        let working_memory_put = tools
+            .iter()
+            .find(|tool| {
+                tool.get("name").and_then(|name| name.as_str()) == Some("working_memory_put")
+            })
+            .expect("working_memory_put tool");
+        assert!(working_memory_put["inputSchema"]["required"]
+            .as_array()
+            .is_some_and(|required| {
+                required.contains(&serde_json::json!("name"))
+                    && required.contains(&serde_json::json!("value"))
+            }));
+
+        let graph_read_result = tools
+            .iter()
+            .find(|tool| {
+                tool.get("name").and_then(|name| name.as_str()) == Some("graph_read_result")
+            })
+            .expect("graph_read_result tool");
+        assert!(graph_read_result["inputSchema"]["required"]
+            .as_array()
+            .is_some_and(|required| required.contains(&serde_json::json!("name"))));
+
         let stop_agent = tools
             .iter()
             .find(|tool| tool.get("name").and_then(|name| name.as_str()) == Some("stop_agent"))
@@ -1934,6 +2076,20 @@ mod tests {
         assert!(!serialized.contains("project_id"));
         assert!(!serialized.contains("messages"));
         assert!(!serialized.contains("workspace tree"));
+    }
+
+    #[test]
+    fn saved_node_ids_rejects_malformed_handles_without_dropping_entries() {
+        assert_eq!(
+            saved_node_ids(r#"{"nodeIds":["assistant-1","assistant-2"]}"#).expect("valid node set"),
+            vec!["assistant-1", "assistant-2"]
+        );
+        assert!(saved_node_ids(r#"{"nodeIds":["assistant-1",42]}"#)
+            .expect_err("non-string IDs must fail")
+            .contains("non-string"));
+        assert!(saved_node_ids(r#"{"nodes":[]}"#)
+            .expect_err("missing nodeIds must fail")
+            .contains("no nodeIds"));
     }
 
     #[test]
@@ -2484,7 +2640,17 @@ async fn handle_graph_query(
     filters: Option<serde_json::Value>,
     limit: Option<u32>,
     offset: Option<u32>,
+    save_as: Option<String>,
+    return_mode: Option<String>,
+    request_node_id: Option<String>,
 ) -> JsonRpcResponse {
+    let return_mode = return_mode.as_deref().unwrap_or("page");
+    if !matches!(return_mode, "page" | "handle") {
+        return missing_args_response(id, "return_mode must be page or handle");
+    }
+    if return_mode == "handle" && save_as.is_none() {
+        return missing_args_response(id, "return_mode=handle requires save_as");
+    }
     let nodes = match local_nodes_for_workspace(&state, &workspace_id) {
         Ok(nodes) => nodes,
         Err(err) => {
@@ -2500,12 +2666,77 @@ async fn handle_graph_query(
         .into_iter()
         .filter(|node| node_matches_filters(node, filters.as_ref()))
         .collect();
+    if matches.len() > SAVED_NODE_SET_MAX_ITEMS && save_as.is_some() {
+        return local_data_error(
+            id,
+            format!(
+                "Cannot save {} matching nodes; saved result sets are capped at {}.",
+                matches.len(),
+                SAVED_NODE_SET_MAX_ITEMS
+            ),
+        );
+    }
+    if let Some(name) = save_as.as_deref() {
+        let (owner_node_id, owner_workspace_id) =
+            match working_memory_scope(&state, request_node_id) {
+                Ok(scope) => scope,
+                Err(error) => return rpc_error_result(id, error),
+            };
+        if owner_workspace_id != workspace_id {
+            return local_data_error(
+                id,
+                "Saved graph results must belong to the current agent run's workspace.",
+            );
+        }
+        let value = serde_json::json!({
+            "nodeIds": matches
+                .iter()
+                .map(|node| node.row.node_id.as_str())
+                .collect::<Vec<_>>(),
+            "filters": filters,
+        });
+        let serialized = match serde_json::to_string(&value) {
+            Ok(serialized) => serialized,
+            Err(error) => {
+                return local_data_error(id, format!("Failed to encode saved result: {error}"))
+            }
+        };
+        if let Err(error) = telemetry_db(&state).put_orchestration_memory(
+            &owner_node_id,
+            &workspace_id,
+            name,
+            "node_set",
+            &serialized,
+        ) {
+            return local_data_error(id, error);
+        }
+    }
     let page = paged(&matches, limit, offset);
 
     let mut output = String::new();
     output.push_str("Source: local Agentree database\n");
     output.push_str(&format!("Workspace: {}\n", workspace_id));
     output.push_str(&format!("Matched nodes: {}\n", matches.len()));
+    if let Some(name) = save_as.as_deref() {
+        output.push_str(&format!(
+            "Saved result: {} (read lazily with graph_read_result)\n",
+            name
+        ));
+    }
+    if return_mode == "handle" {
+        return JsonRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: Some(serde_json::json!({
+                "content": [{ "type": "text", "text": output }],
+                "metadata": {
+                    "savedResult": save_as,
+                    "matchedNodes": matches.len(),
+                }
+            })),
+            error: None,
+        };
+    }
     output.push_str(&format!(
         "Returned nodes: {} (offset={}, limit={})\n\n",
         page.len(),
@@ -2517,6 +2748,353 @@ async fn handle_graph_query(
     }
 
     text_result(id, output)
+}
+
+fn rpc_error_result(id: serde_json::Value, error: JsonRpcError) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        id,
+        result: None,
+        error: Some(error),
+    }
+}
+
+fn working_memory_scope(
+    state: &Arc<McpState>,
+    request_node_id: Option<String>,
+) -> Result<(String, String), JsonRpcError> {
+    let owner_node_id = request_node_id.ok_or_else(|| JsonRpcError {
+        code: -32602,
+        message: "Working memory requires the current assistant node context.".to_string(),
+    })?;
+    let payload = local_node_payload(state, &owner_node_id)?;
+    let workspace_id = node_workspace_id(&payload)
+        .map(str::to_string)
+        .ok_or_else(|| JsonRpcError {
+            code: -32006,
+            message: format!("Node {owner_node_id} has no workspace."),
+        })?;
+    Ok((owner_node_id, workspace_id))
+}
+
+fn saved_node_ids(value_json: &str) -> Result<Vec<String>, String> {
+    let stored = serde_json::from_str::<JsonValue>(value_json)
+        .map_err(|error| format!("Saved graph result is invalid: {error}"))?;
+    let values = stored
+        .get("nodeIds")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| "Saved graph result has no nodeIds array.".to_string())?;
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "Saved graph result contains a non-string node ID.".to_string())
+        })
+        .collect()
+}
+
+fn handle_working_memory_put(
+    id: serde_json::Value,
+    state: Arc<McpState>,
+    args: JsonValue,
+    request_node_id: Option<String>,
+) -> JsonRpcResponse {
+    let Some(name) = read_arg_string(&args, "name") else {
+        return missing_args_response(id, "name is required");
+    };
+    let Some(value) = args.get("value") else {
+        return missing_args_response(id, "value is required");
+    };
+    let serialized = match serde_json::to_string(value) {
+        Ok(serialized) => serialized,
+        Err(error) => return local_data_error(id, format!("Failed to encode value: {error}")),
+    };
+    if serialized.len() > WORKING_MEMORY_VALUE_MAX_BYTES {
+        return local_data_error(
+            id,
+            format!(
+                "Working-memory values are capped at {} bytes; save graph results by handle instead.",
+                WORKING_MEMORY_VALUE_MAX_BYTES
+            ),
+        );
+    }
+    let (owner_node_id, workspace_id) = match working_memory_scope(&state, request_node_id) {
+        Ok(scope) => scope,
+        Err(error) => return rpc_error_result(id, error),
+    };
+    if let Err(error) = telemetry_db(&state).put_orchestration_memory(
+        &owner_node_id,
+        &workspace_id,
+        &name,
+        "value",
+        &serialized,
+    ) {
+        return local_data_error(id, error);
+    }
+    text_result(
+        id,
+        format!(
+            "Stored working-memory value '{}' ({} bytes).",
+            name,
+            serialized.len()
+        ),
+    )
+}
+
+fn handle_working_memory_get(
+    id: serde_json::Value,
+    state: Arc<McpState>,
+    args: JsonValue,
+    request_node_id: Option<String>,
+) -> JsonRpcResponse {
+    let Some(name) = read_arg_string(&args, "name") else {
+        return missing_args_response(id, "name is required");
+    };
+    let (owner_node_id, _) = match working_memory_scope(&state, request_node_id) {
+        Ok(scope) => scope,
+        Err(error) => return rpc_error_result(id, error),
+    };
+    let entry = match telemetry_db(&state).get_orchestration_memory(&owner_node_id, &name) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => {
+            return local_data_error(id, format!("Working-memory value '{name}' not found."))
+        }
+        Err(error) => return local_data_error(id, error),
+    };
+    if entry.kind == "node_set" {
+        let node_count = match saved_node_ids(&entry.value_json) {
+            Ok(node_ids) => node_ids.len(),
+            Err(error) => return local_data_error(id, error),
+        };
+        return JsonRpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: Some(serde_json::json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!(
+                        "Working memory: {}\nKind: node_set\nNodes: {}\nUse graph_read_result to materialize a filtered page.",
+                        name, node_count
+                    )
+                }],
+                "metadata": {
+                    "name": name,
+                    "kind": "node_set",
+                    "nodeCount": node_count,
+                    "sizeBytes": entry.value_json.len(),
+                    "updatedAt": entry.updated_at,
+                }
+            })),
+            error: None,
+        };
+    }
+    let value = match serde_json::from_str::<JsonValue>(&entry.value_json) {
+        Ok(value) => value,
+        Err(error) => {
+            return local_data_error(
+                id,
+                format!("Stored working-memory value is invalid: {error}"),
+            )
+        }
+    };
+    let pretty = serde_json::to_string_pretty(&value).unwrap_or_else(|_| entry.value_json.clone());
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        id,
+        result: Some(serde_json::json!({
+            "content": [{ "type": "text", "text": format!("Working memory: {}\nKind: {}\n\n{}", name, entry.kind, pretty) }],
+            "metadata": {
+                "name": name,
+                "kind": entry.kind,
+                "sizeBytes": entry.value_json.len(),
+                "updatedAt": entry.updated_at,
+            }
+        })),
+        error: None,
+    }
+}
+
+fn handle_working_memory_list(
+    id: serde_json::Value,
+    state: Arc<McpState>,
+    request_node_id: Option<String>,
+) -> JsonRpcResponse {
+    let (owner_node_id, _) = match working_memory_scope(&state, request_node_id) {
+        Ok(scope) => scope,
+        Err(error) => return rpc_error_result(id, error),
+    };
+    let entries = match telemetry_db(&state).list_orchestration_memory(&owner_node_id) {
+        Ok(entries) => entries,
+        Err(error) => return local_data_error(id, error),
+    };
+    let summaries = entries
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "name": entry.name,
+                "kind": entry.kind,
+                "sizeBytes": entry.value_json.len(),
+                "updatedAt": entry.updated_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut output = format!("Working-memory entries: {}\n", summaries.len());
+    for entry in &summaries {
+        output.push_str(&format!(
+            "- {} kind={} size={} bytes updated={}\n",
+            entry.get("name").and_then(JsonValue::as_str).unwrap_or("-"),
+            entry.get("kind").and_then(JsonValue::as_str).unwrap_or("-"),
+            entry
+                .get("sizeBytes")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0),
+            entry
+                .get("updatedAt")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("-"),
+        ));
+    }
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        id,
+        result: Some(serde_json::json!({
+            "content": [{ "type": "text", "text": output }],
+            "metadata": { "entries": summaries }
+        })),
+        error: None,
+    }
+}
+
+fn handle_working_memory_delete(
+    id: serde_json::Value,
+    state: Arc<McpState>,
+    args: JsonValue,
+    request_node_id: Option<String>,
+) -> JsonRpcResponse {
+    let Some(name) = read_arg_string(&args, "name") else {
+        return missing_args_response(id, "name is required");
+    };
+    let (owner_node_id, _) = match working_memory_scope(&state, request_node_id) {
+        Ok(scope) => scope,
+        Err(error) => return rpc_error_result(id, error),
+    };
+    match telemetry_db(&state).delete_orchestration_memory(&owner_node_id, &name) {
+        Ok(true) => text_result(id, format!("Deleted working-memory value '{name}'.")),
+        Ok(false) => local_data_error(id, format!("Working-memory value '{name}' not found.")),
+        Err(error) => local_data_error(id, error),
+    }
+}
+
+async fn handle_graph_read_result(
+    id: serde_json::Value,
+    state: Arc<McpState>,
+    args: JsonValue,
+    request_node_id: Option<String>,
+) -> JsonRpcResponse {
+    let Some(name) = read_arg_string(&args, "name") else {
+        return missing_args_response(id, "name is required");
+    };
+    let (owner_node_id, workspace_id) = match working_memory_scope(&state, request_node_id) {
+        Ok(scope) => scope,
+        Err(error) => return rpc_error_result(id, error),
+    };
+    let entry = match telemetry_db(&state).get_orchestration_memory(&owner_node_id, &name) {
+        Ok(Some(entry)) if entry.kind == "node_set" => entry,
+        Ok(Some(_)) => {
+            return local_data_error(
+                id,
+                format!("Working-memory value '{name}' is not a graph result."),
+            )
+        }
+        Ok(None) => return local_data_error(id, format!("Saved graph result '{name}' not found.")),
+        Err(error) => return local_data_error(id, error),
+    };
+    let node_ids = match saved_node_ids(&entry.value_json) {
+        Ok(node_ids) => node_ids,
+        Err(error) => return local_data_error(id, error),
+    };
+    let nodes = match local_nodes_for_workspace(&state, &workspace_id) {
+        Ok(nodes) => nodes,
+        Err(error) => return rpc_error_result(id, error),
+    };
+    let nodes_by_id = nodes
+        .into_iter()
+        .map(|node| (node.row.node_id.clone(), node))
+        .collect::<HashMap<_, _>>();
+    let content_query = read_arg_string(&args, "content_query").map(|value| value.to_lowercase());
+    let matches = node_ids
+        .iter()
+        .filter_map(|node_id| nodes_by_id.get(node_id).cloned())
+        .filter(|node| {
+            content_query
+                .as_ref()
+                .map(|query| {
+                    node_content(&node.payload).to_lowercase().contains(query)
+                        || node_summary(node).to_lowercase().contains(query)
+                })
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    let offset = read_arg_u64(&args, "offset").unwrap_or(0) as usize;
+    let limit = read_arg_u64(&args, "limit")
+        .unwrap_or(RESULT_READ_DEFAULT_LIMIT as u64)
+        .min(RESULT_READ_MAX_LIMIT as u64) as usize;
+    let page = matches
+        .iter()
+        .skip(offset)
+        .take(limit)
+        .cloned()
+        .collect::<Vec<_>>();
+    let include_content = read_arg_bool(&args, "include_content").unwrap_or(true);
+    let max_content_length = read_arg_u64(&args, "max_content_length")
+        .unwrap_or(RESULT_READ_DEFAULT_CONTENT_CHARS as u64)
+        .min(RESULT_READ_MAX_CONTENT_CHARS as u64) as u32;
+
+    let mut output = String::new();
+    output.push_str("Source: saved Agentree graph result\n");
+    output.push_str(&format!("Result: {name}\n"));
+    output.push_str(&format!("Matched nodes: {}\n", matches.len()));
+    output.push_str(&format!(
+        "Returned nodes: {} (offset={}, limit={})\n",
+        page.len(),
+        offset,
+        limit
+    ));
+    for node in &page {
+        output.push_str(&format!("\n{}\n", node_summary(node)));
+        if include_content {
+            let used = output.chars().count();
+            let remaining = RESULT_READ_MAX_TOTAL_CHARS.saturating_sub(used);
+            if remaining == 0 {
+                output.push_str("[content budget exhausted]\n");
+                continue;
+            }
+            let node_limit = (max_content_length as usize).min(remaining) as u32;
+            output.push_str(&truncate_chars(
+                node_content(&node.payload),
+                Some(node_limit),
+            ));
+            output.push('\n');
+        }
+    }
+    output = truncate_chars(&output, Some(RESULT_READ_MAX_TOTAL_CHARS as u32));
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        id,
+        result: Some(serde_json::json!({
+            "content": [{ "type": "text", "text": output }],
+            "metadata": {
+                "name": name,
+                "matchedNodes": matches.len(),
+                "returnedNodeIds": page.iter().map(|node| node.row.node_id.as_str()).collect::<Vec<_>>(),
+                "offset": offset,
+                "limit": limit,
+            }
+        })),
+        error: None,
+    }
 }
 
 async fn handle_graph_read_node(

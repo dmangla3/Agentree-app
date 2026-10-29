@@ -93,10 +93,10 @@ export const getOpenCodeProviderSummary = (
   const capabilities = getOpenCodeProviderCapabilities(profile);
   if (!capabilities.length) return null;
   const reconnectCount = capabilities.filter((capability) => capability.access === 'invalid').length;
-  if (reconnectCount > 0) return `${capabilities.length} checked · ${reconnectCount} invalid`;
+  if (reconnectCount > 0) return `${capabilities.length} tested · ${reconnectCount} invalid`;
   const unconfirmedCount = capabilities.filter((capability) => capability.access === 'unconfirmed').length;
-  if (unconfirmedCount > 0) return `${capabilities.length} checked · ${unconfirmedCount} not confirmed`;
-  return `${capabilities.length} checked`;
+  if (unconfirmedCount > 0) return `${capabilities.length} tested · ${unconfirmedCount} not confirmed`;
+  return `${capabilities.length} tested`;
 };
 
 export const getLoginProfileProviderLabel = (provider: LoginProvider) => {

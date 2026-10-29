@@ -43,6 +43,7 @@ import { cn } from '../../lib/utils';
 import { dispatchOpenModelConfiguration } from '../../lib/modelConfigurationEvents';
 import { LoginProfileEditor } from './LoginProfileEditor';
 import { LoginProfileRows } from './LoginProfileRows';
+import { OpenCodeProviderTestButton } from './OpenCodeProviderTestButton';
 import { RuntimeHealthCard } from './RuntimeHealthCard';
 
 type ProviderFilter = 'codex' | 'claude' | 'opencode';
@@ -98,7 +99,7 @@ const statusPillClasses = {
 const formatStatus = (status: string) => status.replace(/_/g, ' ');
 
 const formatCheckedAt = (timestamp?: number | null) => {
-  if (!timestamp) return 'Not checked';
+  if (!timestamp) return 'Not tested';
   return new Intl.DateTimeFormat(undefined, {
     hour: 'numeric',
     minute: '2-digit',
@@ -458,6 +459,7 @@ export function LoginProfilesPanel({
                 onSelect={(profile) => setSelectedProfileId(profile.id)}
                 onEdit={openEdit}
                 onCheck={(profile) => void runProfileAction(profile, () => checkProfile(profile.id))}
+                onTestProviders={(profile, providers) => void runProfileAction(profile, () => checkProfile(profile.id, providers))}
                 onSetDefault={(profile) => void runProfileAction(profile, () => setDefaultProfile(profile.provider, profile.id))}
                 onDelete={(profile) => void runProfileAction(profile, () => deleteProfile(profile.id))}
               />
@@ -523,7 +525,7 @@ export function LoginProfilesPanel({
                       <div className="mt-1 text-[12px] font-semibold text-foreground tabular-nums">{activeProfileRuns.length} active</div>
                     </div>
                     <div className="min-w-0 rounded-lg bg-muted/38 p-3">
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Checked</div>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Tested</div>
                       <div className="mt-1 min-w-0 break-words text-[12px] font-semibold text-foreground [overflow-wrap:anywhere]">{formatCheckedAt(selectedProfile.lastCheckedAt)}</div>
                     </div>
                   </div>
@@ -535,19 +537,34 @@ export function LoginProfilesPanel({
                   ) : null}
 
                   <div className="flex flex-wrap gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void runProfileAction(selectedProfile, () => checkProfile(selectedProfile.id))}
-                      disabled={
-                        pendingProfileId === selectedProfile.id
-                        || selectedProfile.status === 'checking'
-                        || !canCheckLoginProfileReadiness(selectedProfile)
-                      }
-                    >
-                      {selectedProfile.status === 'checking' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                      Check account
-                    </Button>
+                    {selectedProfile.provider === 'opencode' ? (
+                      <OpenCodeProviderTestButton
+                        profile={selectedProfile}
+                        disabled={
+                          pendingProfileId === selectedProfile.id
+                          || !canCheckLoginProfileReadiness(selectedProfile)
+                        }
+                        isTesting={selectedProfile.status === 'checking'}
+                        onTest={(providers) => void runProfileAction(
+                          selectedProfile,
+                          () => checkProfile(selectedProfile.id, providers),
+                        )}
+                      />
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void runProfileAction(selectedProfile, () => checkProfile(selectedProfile.id))}
+                        disabled={
+                          pendingProfileId === selectedProfile.id
+                          || selectedProfile.status === 'checking'
+                          || !canCheckLoginProfileReadiness(selectedProfile)
+                        }
+                      >
+                        {selectedProfile.status === 'checking' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                        Test account
+                      </Button>
+                    )}
                     <Button size="sm" variant="outline" onClick={() => openEdit(selectedProfile)}>
                       <KeyRound className="h-4 w-4" />
                       Reconnect

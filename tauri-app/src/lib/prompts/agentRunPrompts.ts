@@ -78,6 +78,7 @@ export function buildAgentRunPrompt(input: BuildAgentRunPromptInput): BuildAgent
     body = `${body}\n\n${titleInstruction}`;
   }
   body = `${body}\n\n${getEffectiveDefaultPromptText('delegation_control', defaultPromptOverrides)}`;
+  body = `${body}\n\n${getEffectiveDefaultPromptText('rlm_loop', defaultPromptOverrides)}`;
 
   return {
     prompt: `${dependencyGuard}\n\n${getEffectiveDefaultPromptText('artifact_path', defaultPromptOverrides)}\n\n${body}`,

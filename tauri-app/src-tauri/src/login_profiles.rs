@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -1089,6 +1089,79 @@ fn persist_opencode_provider_capabilities(
     merge_opencode_provider_capabilities(&mut profile.config, capabilities);
     profile.updated_at = unix_timestamp();
     db.upsert_login_profile_metadata(&profile, None)
+}
+
+fn merged_opencode_profile_readiness(
+    config: &JsonValue,
+) -> Option<Result<ProviderReadiness, LiveCheckFailure>> {
+    let models = config
+        .get(OPENCODE_MODEL_CATALOG_CONFIG_KEY)
+        .and_then(JsonValue::as_array)?;
+    let capabilities = config
+        .get(OPENCODE_PROVIDER_CAPABILITIES_CONFIG_KEY)
+        .and_then(JsonValue::as_object);
+    let mut providers = HashSet::new();
+    let usable_models = models
+        .iter()
+        .filter(|model| {
+            let Some(provider_id) = model.get("providerId").and_then(JsonValue::as_str) else {
+                return false;
+            };
+            providers.insert(provider_id);
+            let capability = capabilities.and_then(|stored| stored.get(provider_id));
+            if capability
+                .and_then(|value| value.get("authStatus"))
+                .and_then(JsonValue::as_str)
+                == Some("invalid")
+            {
+                return false;
+            }
+            if capability
+                .and_then(|value| value.get("pricedModelAccess"))
+                .and_then(JsonValue::as_str)
+                == Some("unavailable")
+            {
+                return model.get("isFree").and_then(JsonValue::as_bool) == Some(true);
+            }
+            true
+        })
+        .count();
+    if providers.is_empty() {
+        return None;
+    }
+    if usable_models > 0 {
+        return Some(Ok(ProviderReadiness {
+            message: format!(
+                "OpenCode account connected with {usable_models} usable models across {} providers.",
+                providers.len()
+            ),
+            plan_type: None,
+        }));
+    }
+    let all_credentials_invalid = providers.iter().all(|provider_id| {
+        capabilities
+            .and_then(|stored| stored.get(*provider_id))
+            .and_then(|value| value.get("authStatus"))
+            .and_then(JsonValue::as_str)
+            == Some("invalid")
+    });
+    Some(Err(LiveCheckFailure {
+        code: Some(
+            if all_credentials_invalid {
+                "auth_missing"
+            } else {
+                "usage_limited"
+            }
+            .to_string(),
+        ),
+        message: if all_credentials_invalid {
+            "All connected OpenCode provider credentials were rejected. Reconnect this profile."
+                .to_string()
+        } else {
+            "OpenCode provider credentials are valid, but no currently visible model has usable balance."
+                .to_string()
+        },
+    }))
 }
 
 fn merge_opencode_model_catalog(config: &mut JsonValue, catalog: &JsonValue, checked_at: i64) {
@@ -2609,6 +2682,7 @@ fn run_opencode_readiness_check(
     db: &TelemetryDb,
     profile: &LoginProfile,
     materialized: &MaterializedRuntimeCredentials,
+    providers: Option<Vec<String>>,
 ) -> Result<ProviderReadiness, LiveCheckFailure> {
     let invocation = crate::managed_runtime::opencode_adapter_invocation(app)?;
     let mut command = Command::new(&invocation.node_program);
@@ -2619,6 +2693,12 @@ fn run_opencode_readiness_check(
         .arg("--readiness-check")
         .current_dir(std::env::temp_dir())
         .env("PATH", crate::cli_path::build_tool_path());
+    if let Some(providers) = providers
+        .as_deref()
+        .filter(|providers| !providers.is_empty())
+    {
+        command.arg("--providers").arg(providers.join(","));
+    }
     for (key, value) in &materialized.env {
         command.env(key, value);
     }
@@ -2644,6 +2724,17 @@ fn run_opencode_readiness_check(
             }
             if value.get("type").and_then(JsonValue::as_str) != Some("readiness") {
                 continue;
+            }
+            if providers
+                .as_ref()
+                .is_some_and(|providers| !providers.is_empty())
+            {
+                let refreshed_profile = db.get_login_profile(&profile.id)?;
+                if let Some(readiness) =
+                    merged_opencode_profile_readiness(&refreshed_profile.config)
+                {
+                    return readiness;
+                }
             }
             let connected = value
                 .get("connected_providers")
@@ -2766,6 +2857,7 @@ fn run_login_profile_readiness_check(
     vault: &dyn CredentialVault,
     profile: &LoginProfile,
     cache_dir: PathBuf,
+    providers: Option<Vec<String>>,
 ) -> Result<ProviderReadiness, LiveCheckFailure> {
     match (profile.provider.as_str(), profile.auth_type.as_str()) {
         ("claude", "external_cli") => run_claude_readiness_check(app, profile, None),
@@ -2789,7 +2881,8 @@ fn run_login_profile_readiness_check(
                 }
                 "claude" => run_claude_readiness_check(app, profile, Some(&materialized)),
                 "opencode" => {
-                    let result = run_opencode_readiness_check(app, db, profile, &materialized);
+                    let result =
+                        run_opencode_readiness_check(app, db, profile, &materialized, providers);
                     if result.is_ok() {
                         if let Some(auth_path) = materialized.opencode_auth_path.as_deref() {
                             persist_opencode_auth_state(db, vault, &profile.id, auth_path)?;
@@ -2842,7 +2935,7 @@ pub fn mark_login_profile_provider_failure(
             "invalid",
             "unknown",
             format!(
-                "{} authentication failed. Reconnect this provider and run Check providers.",
+                "{} authentication failed. Reconnect this provider and run Test providers.",
                 provider_label
             ),
         )
@@ -2921,6 +3014,7 @@ fn attempt_login_profile_readiness_check(
     vault: &dyn CredentialVault,
     profile_id: &str,
     generation: u64,
+    providers: Option<Vec<String>>,
 ) -> Result<ReadinessCheckAttempt, String> {
     let outcome = (|| {
         let profile = db.get_login_profile(profile_id)?;
@@ -2929,7 +3023,7 @@ fn attempt_login_profile_readiness_check(
             .app_cache_dir()
             .map_err(|error| format!("Could not resolve app cache dir: {}", error))?;
         let readiness_result =
-            run_login_profile_readiness_check(app, db, vault, &profile, cache_dir);
+            run_login_profile_readiness_check(app, db, vault, &profile, cache_dir, providers);
         let (status, message, plan_type) = match readiness_result {
             Ok(readiness) => ("ready", readiness.message, readiness.plan_type),
             Err(failure) => {
@@ -2983,9 +3077,17 @@ fn run_readiness_flight(
     vault: &dyn CredentialVault,
     profile_id: &str,
     mut generation: u64,
+    providers: Option<Vec<String>>,
 ) -> Result<LoginProfile, String> {
     loop {
-        match attempt_login_profile_readiness_check(app, db, vault, profile_id, generation)? {
+        match attempt_login_profile_readiness_check(
+            app,
+            db,
+            vault,
+            profile_id,
+            generation,
+            providers.clone(),
+        )? {
             ReadinessCheckAttempt::Completed(result) => return result,
             ReadinessCheckAttempt::Superseded(current_generation) => {
                 crate::app_log!(
@@ -3144,11 +3246,18 @@ fn spawn_login_profile_readiness_check(
     profile_id: String,
     flight: Arc<ReadinessFlight>,
     generation: u64,
+    providers: Option<Vec<String>>,
 ) {
     thread::spawn(move || {
         let db = app.state::<TelemetryDb>();
-        let result =
-            run_readiness_flight(&app, &db, &KeyringCredentialVault, &profile_id, generation);
+        let result = run_readiness_flight(
+            &app,
+            &db,
+            &KeyringCredentialVault,
+            &profile_id,
+            generation,
+            providers,
+        );
         if let Ok(profile) = &result {
             emit_login_profiles_changed(&app, profile);
         } else if let Err(error) = &result {
@@ -3166,6 +3275,7 @@ fn enqueue_login_profile_readiness_check(
     app: tauri::AppHandle,
     db: &TelemetryDb,
     profile_id: &str,
+    providers: Option<Vec<String>>,
 ) -> Result<LoginProfile, String> {
     match begin_readiness_flight(profile_id)? {
         ReadinessFlightRole::Owner { flight, generation } => {
@@ -3173,7 +3283,7 @@ fn enqueue_login_profile_readiness_check(
                 db.mark_login_profile_status(
                     profile_id,
                     "checking",
-                    Some("Checking account credentials without starting an agent run."),
+                    Some("Testing account credentials without starting an agent run."),
                     None,
                     unix_timestamp(),
                 )
@@ -3185,13 +3295,19 @@ fn enqueue_login_profile_readiness_check(
                     return Err(error);
                 }
                 Ok(None) => {
-                    let error = "Account check was superseded before it started.".to_string();
+                    let error = "Account test was superseded before it started.".to_string();
                     complete_readiness_flight(profile_id, &flight, Err(error.clone()));
                     return Err(error);
                 }
             };
             emit_login_profiles_changed(&app, &profile);
-            spawn_login_profile_readiness_check(app, profile_id.to_string(), flight, generation);
+            spawn_login_profile_readiness_check(
+                app,
+                profile_id.to_string(),
+                flight,
+                generation,
+                providers,
+            );
             Ok(profile)
         }
         ReadinessFlightRole::Waiter => db.get_login_profile(profile_id),
@@ -3262,7 +3378,7 @@ pub fn upsert_login_profile(
     let profile = upsert_login_profile_with_vault(&db, &KeyringCredentialVault, request)?;
     if refresh_cache {
         refresh_opencode_auth_cache(&app, &KeyringCredentialVault, &profile)?;
-        return enqueue_login_profile_readiness_check(app, &db, &profile.id);
+        return enqueue_login_profile_readiness_check(app, &db, &profile.id, None);
     }
     Ok(profile)
 }
@@ -3299,8 +3415,9 @@ pub fn check_login_profile_readiness(
     app: tauri::AppHandle,
     db: State<TelemetryDb>,
     profile_id: String,
+    providers: Option<Vec<String>>,
 ) -> Result<LoginProfile, String> {
-    enqueue_login_profile_readiness_check(app, &db, &profile_id)
+    enqueue_login_profile_readiness_check(app, &db, &profile_id, providers)
 }
 
 #[tauri::command]
@@ -3805,7 +3922,7 @@ pub fn check_all_login_profile_readiness(
 ) -> Result<Vec<LoginProfile>, String> {
     let profiles = db.list_login_profiles()?;
     for profile in profiles {
-        let _ = enqueue_login_profile_readiness_check(app.clone(), &db, &profile.id);
+        let _ = enqueue_login_profile_readiness_check(app.clone(), &db, &profile.id, None);
     }
     db.list_login_profiles()
 }
@@ -4114,7 +4231,7 @@ pub fn import_discovered_login_profile(
         import_discovered_login_profile_with_vault(&db, &KeyringCredentialVault, &env, request)?;
     if profile.provider == "opencode" {
         refresh_opencode_auth_cache(&app, &KeyringCredentialVault, &profile)?;
-        return enqueue_login_profile_readiness_check(app, &db, &profile.id);
+        return enqueue_login_profile_readiness_check(app, &db, &profile.id, None);
     }
     Ok(profile)
 }
@@ -4643,6 +4760,56 @@ mod tests {
             config["opencode_provider_capabilities"]["openai"]["authStatus"],
             serde_json::json!("valid")
         );
+    }
+
+    #[test]
+    fn scoped_opencode_failure_preserves_global_readiness_when_another_provider_is_usable() {
+        let config = serde_json::json!({
+            "opencode_provider_capabilities": {
+                "deepseek": {
+                    "authStatus": "valid",
+                    "pricedModelAccess": "available"
+                },
+                "openai": {
+                    "authStatus": "invalid",
+                    "pricedModelAccess": "unknown"
+                }
+            },
+            "opencode_model_catalog": [
+                { "providerId": "deepseek", "isFree": false },
+                { "providerId": "openai", "isFree": false }
+            ]
+        });
+
+        let readiness = merged_opencode_profile_readiness(&config)
+            .expect("persisted catalog should determine readiness")
+            .expect("another usable provider should keep the profile ready");
+
+        assert_eq!(
+            readiness.message,
+            "OpenCode account connected with 1 usable models across 2 providers."
+        );
+    }
+
+    #[test]
+    fn scoped_opencode_failure_still_fails_when_no_provider_is_usable() {
+        let config = serde_json::json!({
+            "opencode_provider_capabilities": {
+                "openai": {
+                    "authStatus": "invalid",
+                    "pricedModelAccess": "unknown"
+                }
+            },
+            "opencode_model_catalog": [
+                { "providerId": "openai", "isFree": false }
+            ]
+        });
+
+        let failure = merged_opencode_profile_readiness(&config)
+            .expect("persisted catalog should determine readiness")
+            .expect_err("an entirely invalid profile should remain unavailable");
+
+        assert_eq!(failure.code.as_deref(), Some("auth_missing"));
     }
 
     #[test]

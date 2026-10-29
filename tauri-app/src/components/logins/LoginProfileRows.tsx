@@ -20,6 +20,7 @@ import {
 } from '../../lib/loginProfiles';
 import type { ProviderLimitSeverity } from '../../stores/providerLimitsStore';
 import { cn } from '../../lib/utils';
+import { OpenCodeProviderTestButton } from './OpenCodeProviderTestButton';
 
 interface LoginProfileRowsProps {
   activeRunsByProfile: Record<string, ActiveLoginProfileRun[]>;
@@ -30,6 +31,7 @@ interface LoginProfileRowsProps {
   onEdit: (profile: LoginProfileSummary) => void;
   onSelect?: (profile: LoginProfileSummary) => void;
   onSetDefault: (profile: LoginProfileSummary) => void;
+  onTestProviders?: (profile: LoginProfileSummary, providers: string[] | null) => void;
   pendingProfileId: string | null;
   profiles: LoginProfileSummary[];
   selectedProfileId?: string | null;
@@ -122,6 +124,7 @@ export function LoginProfileRows({
   onEdit,
   onSelect,
   onSetDefault,
+  onTestProviders,
   pendingProfileId,
   profiles,
   selectedProfileId,
@@ -204,19 +207,30 @@ export function LoginProfileRows({
               </div>
 
               <div className="flex shrink-0 items-center justify-end gap-1.5" onClick={(event) => event.stopPropagation()}>
-                <button
-                  type="button"
-                  onClick={() => onCheck(profile)}
-                  disabled={isPending || !canCheckLoginProfileReadiness(profile)}
-                  className="h-8 rounded-md bg-muted px-2.5 text-[11px] font-semibold text-foreground transition-[background-color,transform,opacity] hover:bg-muted/80 active:scale-[0.96] disabled:opacity-50"
-                >
-                  {profile.status === 'checking' ? (
-                    <span className="inline-flex items-center gap-1.5">
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      Checking
-                    </span>
-                  ) : profile.provider === 'opencode' ? 'Check models' : 'Check'}
-                </button>
+                {profile.provider === 'opencode' && onTestProviders ? (
+                  <OpenCodeProviderTestButton
+                    profile={profile}
+                    variant="muted"
+                    disabled={hasPendingMutation || !canCheckLoginProfileReadiness(profile)}
+                    isTesting={profile.status === 'checking'}
+                    onTest={(providers) => onTestProviders(profile, providers)}
+                    className="h-8 px-2.5 text-[11px] font-semibold"
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onCheck(profile)}
+                    disabled={isPending || !canCheckLoginProfileReadiness(profile)}
+                    className="h-8 rounded-md bg-muted px-2.5 text-[11px] font-semibold text-foreground transition-[background-color,transform,opacity] hover:bg-muted/80 active:scale-[0.96] disabled:opacity-50"
+                  >
+                    {profile.status === 'checking' ? (
+                      <span className="inline-flex items-center gap-1.5">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Testing
+                      </span>
+                    ) : 'Test'}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => onSetDefault(profile)}

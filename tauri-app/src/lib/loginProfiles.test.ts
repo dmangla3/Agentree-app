@@ -102,6 +102,6 @@ describe('loginProfiles helpers', () => {
       { id: 'openai', name: 'OpenAI', access: 'unconfirmed', modelCount: 2, freeModelCount: 0 },
       { id: 'openrouter', name: 'OpenRouter', access: 'invalid', modelCount: 2, freeModelCount: 1 },
     ]);
-    expect(getOpenCodeProviderSummary(profile)).toBe('4 checked · 1 invalid');
+    expect(getOpenCodeProviderSummary(profile)).toBe('4 tested · 1 invalid');
   });
 });

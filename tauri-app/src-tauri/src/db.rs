@@ -9,6 +9,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
 
 const LOCAL_COMMIT_PARENT_CLOSURE_LIMIT: usize = 5_000;
+const ORCHESTRATION_MEMORY_MAX_ENTRIES: i64 = 128;
+const ORCHESTRATION_MEMORY_MAX_VALUE_BYTES: usize = 512 * 1024;
 
 fn unix_timestamp() -> i64 {
     SystemTime::now()
@@ -19,6 +21,14 @@ fn unix_timestamp() -> i64 {
 
 fn utc_iso_now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn valid_orchestration_memory_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
 fn normalize_thread_title(value: &str) -> Option<String> {
@@ -438,6 +448,18 @@ pub struct LocalNodeRow {
     pub retry_attempt: i64,
     pub next_retry_at: Option<i64>,
     pub last_upload_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OrchestrationMemoryRow {
+    pub owner_node_id: String,
+    pub workspace_id: String,
+    pub name: String,
+    pub kind: String,
+    pub value_json: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -1283,6 +1305,20 @@ impl TelemetryDb {
             CREATE INDEX IF NOT EXISTS idx_local_nodes_workspace ON local_nodes(workspace_id, deleted_at, created_at);
             CREATE INDEX IF NOT EXISTS idx_local_nodes_parent ON local_nodes(parent_id);
 
+            CREATE TABLE IF NOT EXISTS orchestration_memory (
+                owner_node_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('value', 'node_set')),
+                value_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(owner_node_id, name),
+                FOREIGN KEY(owner_node_id) REFERENCES local_nodes(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_orchestration_memory_workspace
+                ON orchestration_memory(workspace_id, owner_node_id, updated_at);
+
             CREATE TABLE IF NOT EXISTS thread_sessions (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -1813,6 +1849,168 @@ impl TelemetryDb {
             |row| row.get::<_, String>(0),
         )
         .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    pub(crate) fn put_orchestration_memory(
+        &self,
+        owner_node_id: &str,
+        workspace_id: &str,
+        name: &str,
+        kind: &str,
+        value_json: &str,
+    ) -> Result<(), String> {
+        if !valid_orchestration_memory_name(name) {
+            return Err(
+                "Working-memory names must be 1-64 characters using letters, numbers, '.', '-', or '_' only."
+                    .to_string(),
+            );
+        }
+        if !matches!(kind, "value" | "node_set") {
+            return Err("Working-memory kind must be value or node_set.".to_string());
+        }
+        if value_json.len() > ORCHESTRATION_MEMORY_MAX_VALUE_BYTES {
+            return Err(format!(
+                "Working-memory value exceeds the {} byte limit.",
+                ORCHESTRATION_MEMORY_MAX_VALUE_BYTES
+            ));
+        }
+        serde_json::from_str::<JsonValue>(value_json)
+            .map_err(|error| format!("Working-memory value must be valid JSON: {error}"))?;
+
+        let now = utc_iso_now();
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        let owner_workspace = tx
+            .query_row(
+                "SELECT workspace_id FROM local_nodes WHERE id = ?1 AND deleted_at IS NULL",
+                params![owner_node_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Unknown local node {owner_node_id}."))?;
+        if owner_workspace != workspace_id {
+            return Err("Working-memory owner does not belong to this workspace.".to_string());
+        }
+
+        let already_exists = tx
+            .query_row(
+                "SELECT 1 FROM orchestration_memory WHERE owner_node_id = ?1 AND name = ?2",
+                params![owner_node_id, name],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .is_some();
+        if !already_exists {
+            let entry_count: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM orchestration_memory WHERE owner_node_id = ?1",
+                    params![owner_node_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if entry_count >= ORCHESTRATION_MEMORY_MAX_ENTRIES {
+                return Err(format!(
+                    "Working memory is limited to {} named entries per agent run.",
+                    ORCHESTRATION_MEMORY_MAX_ENTRIES
+                ));
+            }
+        }
+
+        tx.execute(
+            r#"
+            INSERT INTO orchestration_memory (
+                owner_node_id, workspace_id, name, kind, value_json, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+            ON CONFLICT(owner_node_id, name) DO UPDATE SET
+                kind = excluded.kind,
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            "#,
+            params![owner_node_id, workspace_id, name, kind, value_json, now],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub(crate) fn get_orchestration_memory(
+        &self,
+        owner_node_id: &str,
+        name: &str,
+    ) -> Result<Option<OrchestrationMemoryRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            r#"
+            SELECT owner_node_id, workspace_id, name, kind, value_json, created_at, updated_at
+            FROM orchestration_memory
+            WHERE owner_node_id = ?1 AND name = ?2
+            "#,
+            params![owner_node_id, name],
+            |row| {
+                Ok(OrchestrationMemoryRow {
+                    owner_node_id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    name: row.get(2)?,
+                    kind: row.get(3)?,
+                    value_json: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    pub(crate) fn list_orchestration_memory(
+        &self,
+        owner_node_id: &str,
+    ) -> Result<Vec<OrchestrationMemoryRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut statement = conn
+            .prepare(
+                r#"
+                SELECT owner_node_id, workspace_id, name, kind, value_json, created_at, updated_at
+                FROM orchestration_memory
+                WHERE owner_node_id = ?1
+                ORDER BY name ASC
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map(params![owner_node_id], |row| {
+                Ok(OrchestrationMemoryRow {
+                    owner_node_id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    name: row.get(2)?,
+                    kind: row.get(3)?,
+                    value_json: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    pub(crate) fn delete_orchestration_memory(
+        &self,
+        owner_node_id: &str,
+        name: &str,
+    ) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM orchestration_memory WHERE owner_node_id = ?1 AND name = ?2",
+            params![owner_node_id, name],
+        )
+        .map(|changed| changed > 0)
         .map_err(|e| e.to_string())
     }
 
@@ -9889,6 +10087,122 @@ mod tests {
             phase: "accepted".to_string(),
             login_profile_id: None,
         }
+    }
+
+    #[test]
+    fn orchestration_memory_is_durable_node_scoped_and_json_validated() {
+        let (_dir, db) = open_test_db();
+        db.upsert_local_node(
+            "orchestrator-1",
+            "workspace-1",
+            r#"{
+                "id":"orchestrator-1",
+                "workspaceId":"workspace-1",
+                "role":"assistant",
+                "content":"working",
+                "status":"streaming",
+                "createdAt":"2026-08-06T00:00:00.000Z",
+                "updatedAt":"2026-08-06T00:00:00.000Z"
+            }"#,
+        )
+        .expect("seed orchestrator node");
+        db.upsert_local_node(
+            "child-1",
+            "workspace-1",
+            r#"{
+                "id":"child-1",
+                "workspaceId":"workspace-1",
+                "role":"assistant",
+                "content":"child",
+                "status":"streaming",
+                "controlledByNodeId":"orchestrator-1",
+                "createdAt":"2026-08-06T00:00:01.000Z",
+                "updatedAt":"2026-08-06T00:00:01.000Z"
+            }"#,
+        )
+        .expect("seed child node");
+
+        db.put_orchestration_memory(
+            "orchestrator-1",
+            "workspace-1",
+            "research.questions",
+            "value",
+            r#"{"open":["persistence","permissions"]}"#,
+        )
+        .expect("store structured memory");
+        db.put_orchestration_memory(
+            "orchestrator-1",
+            "workspace-1",
+            "planner-results",
+            "node_set",
+            r#"{"nodeIds":["assistant-2","assistant-3"]}"#,
+        )
+        .expect("store node set");
+
+        let stored = db
+            .get_orchestration_memory("orchestrator-1", "research.questions")
+            .expect("read memory")
+            .expect("memory exists");
+        assert_eq!(stored.kind, "value");
+        assert_eq!(
+            serde_json::from_str::<JsonValue>(&stored.value_json).expect("valid stored json"),
+            serde_json::json!({"open": ["persistence", "permissions"]})
+        );
+        db.put_orchestration_memory(
+            "child-1",
+            "workspace-1",
+            "research.questions",
+            "value",
+            r#"{"open":["child-only"]}"#,
+        )
+        .expect("store child memory with the same name");
+        let child_value = db
+            .get_orchestration_memory("child-1", "research.questions")
+            .expect("read child memory")
+            .expect("child memory exists");
+        assert_ne!(child_value.value_json, stored.value_json);
+        let listed = db
+            .list_orchestration_memory("orchestrator-1")
+            .expect("list memory");
+        assert_eq!(
+            listed
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["planner-results", "research.questions"]
+        );
+
+        assert!(db
+            .put_orchestration_memory(
+                "orchestrator-1",
+                "workspace-other",
+                "forbidden",
+                "value",
+                "{}",
+            )
+            .expect_err("workspace mismatch must fail")
+            .contains("does not belong"));
+        assert!(db
+            .put_orchestration_memory("orchestrator-1", "workspace-1", "bad name", "value", "{}",)
+            .expect_err("invalid names must fail")
+            .contains("names must be"));
+        assert!(db
+            .put_orchestration_memory(
+                "orchestrator-1",
+                "workspace-1",
+                "invalid-json",
+                "value",
+                "not-json",
+            )
+            .expect_err("invalid json must fail")
+            .contains("valid JSON"));
+        assert!(db
+            .delete_orchestration_memory("orchestrator-1", "research.questions")
+            .expect("delete memory"));
+        assert!(db
+            .get_orchestration_memory("orchestrator-1", "research.questions")
+            .expect("read deleted memory")
+            .is_none());
     }
 
     #[test]

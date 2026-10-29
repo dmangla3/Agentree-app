@@ -6,7 +6,8 @@ export type DefaultPromptId =
   | 'agentree_context_envelope'
   | 'thread_title_first'
   | 'thread_title_none'
-  | 'delegation_control';
+  | 'delegation_control'
+  | 'rlm_loop';
 
 export interface DefaultPromptDefinition {
   id: DefaultPromptId;

@@ -78,6 +78,13 @@ describe('agent run prompts', () => {
     expect(result.prompt).toContain('call spawn_thread once to create one child thread');
     expect(result.prompt).toContain('do not create a separate thread for every worker');
     expect(result.prompt).toContain('Start all related workers in that thread with send_message');
+    expect(result.prompt).toContain('keep small plans, decisions, and indexes outside model context with working_memory_put');
+    expect(result.prompt).toContain("graph_query with save_as and return_mode='handle'");
+    expect(result.prompt).toContain('materialize only relevant slices with graph_read_result');
+    expect(result.prompt).toContain('[Agentree RLM Loop]');
+    expect(result.prompt).toContain('Treat your context window as a scarce resource for the whole run');
+    expect(result.prompt).toContain('Push token-heavy work to child threads');
+    expect(result.prompt).toContain('recover the index with working_memory_list');
     expect(result.prompt).toContain('Review this generated implementation.');
     expect(result.agentreeContextInjected).toBe(false);
   });

@@ -658,6 +658,8 @@ impl AgentLaunchService {
         }
         body.push_str("\n\n");
         body.push_str(&self.effective_prompt("delegation_control", &[])?);
+        body.push_str("\n\n");
+        body.push_str(&self.effective_prompt("rlm_loop", &[])?);
         Ok(format!(
             "{}\n\n{}\n\n{}",
             self.effective_prompt("dependency_guard", &[])?,
