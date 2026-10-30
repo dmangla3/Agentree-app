@@ -62,7 +62,7 @@ const formatStatus = (status: string) => status.replace(/_/g, ' ');
 
 const STATUS_MESSAGE_POPOVER_CLOSE_DELAY_MS = 140;
 
-function StatusMessagePopover({ message }: { message: string }) {
+function StatusMessagePopover({ message, tone }: { message: string; tone: keyof typeof statusClasses }) {
   const [open, setOpen] = useState(false);
   const closeTimerRef = useRef<number | null>(null);
 
@@ -91,7 +91,10 @@ function StatusMessagePopover({ message }: { message: string }) {
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <p
-          className="mt-1 line-clamp-2 min-w-0 cursor-help break-words text-[11px] leading-4 text-muted-foreground [overflow-wrap:anywhere]"
+          className={cn(
+            'mt-1 line-clamp-2 min-w-0 cursor-help break-words text-[11px] leading-4 [overflow-wrap:anywhere]',
+            tone === 'danger' ? 'text-destructive' : tone === 'warning' ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'
+          )}
           onFocus={show}
           onBlur={scheduleHide}
           onPointerEnter={show}
@@ -131,8 +134,8 @@ export function LoginProfileRows({
   detailColumnLabel = 'Limit',
 }: LoginProfileRowsProps) {
   return (
-    <div className="overflow-hidden rounded-xl bg-background/86 shadow-[0_18px_52px_-44px_rgba(15,23,42,0.65),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
-      <div className="grid grid-cols-[minmax(13rem,1.35fr)_minmax(8rem,0.7fr)_minmax(8rem,0.8fr)_auto] gap-3 border-b border-[hsl(var(--app-border)/0.62)] bg-muted/35 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground max-md:hidden">
+    <div className="overflow-hidden bg-background/75">
+      <div className="grid grid-cols-[minmax(13rem,1.35fr)_minmax(8rem,0.7fr)_minmax(8rem,0.8fr)_auto] gap-3 border-b border-[hsl(var(--app-border)/0.62)] bg-muted/30 px-3 py-2 text-[11px] font-medium text-muted-foreground max-md:hidden">
         <span>Account</span>
         <span>Status</span>
         <span>{detailColumnLabel}</span>
@@ -152,8 +155,8 @@ export function LoginProfileRows({
             <article
               key={profile.id}
               className={cn(
-                'grid cursor-pointer grid-cols-[minmax(13rem,1.35fr)_minmax(8rem,0.7fr)_minmax(8rem,0.8fr)_auto] items-center gap-3 px-3 py-3 transition-[background-color,box-shadow] max-md:grid-cols-1 max-md:gap-2',
-                selected ? 'bg-[hsl(var(--app-accent-soft))]/58 shadow-[inset_3px_0_0_hsl(var(--app-accent))]' : 'hover:bg-muted/38'
+                'grid cursor-pointer grid-cols-[minmax(13rem,1.35fr)_minmax(8rem,0.7fr)_minmax(8rem,0.8fr)_auto] items-center gap-3 px-3 py-3 transition-[background-color,box-shadow] duration-150 ease-out max-md:grid-cols-1 max-md:gap-2',
+                selected ? 'bg-muted/55 shadow-[inset_2px_0_0_hsl(var(--foreground)/0.55)]' : 'hover:bg-muted/35'
               )}
               onClick={() => onSelect?.(profile)}
             >
@@ -163,7 +166,7 @@ export function LoginProfileRows({
                     {profile.displayName}
                   </span>
                   {profile.isDefault ? (
-                    <span className="inline-flex h-5 items-center gap-1 rounded-md bg-[hsl(var(--app-accent-soft))] px-1.5 text-[10px] font-semibold text-[hsl(var(--app-accent))]">
+                    <span className="inline-flex h-5 items-center gap-1 rounded-md bg-foreground/[0.07] px-1.5 text-[10px] font-semibold text-foreground">
                       <Star className="h-3 w-3 fill-current" />
                       Active
                     </span>
@@ -186,18 +189,18 @@ export function LoginProfileRows({
               </div>
 
               <div className="min-w-0">
-                <span className={cn('inline-flex h-6 items-center gap-1.5 rounded-md px-2 text-[11px] font-semibold capitalize', statusClasses[tone])}>
+                <span className={cn('inline-flex h-6 items-center gap-1.5 rounded-full px-2 text-[11px] font-semibold capitalize', statusClasses[tone])}>
                   <StatusIcon status={profile.status} />
                   {formatStatus(profile.status)}
                 </span>
                 {profile.statusMessage && !(profile.provider === 'opencode' && profile.status === 'ready') ? (
-                  <StatusMessagePopover message={profile.statusMessage} />
+                  <StatusMessagePopover message={profile.statusMessage} tone={tone} />
                 ) : null}
               </div>
 
               <div className="min-w-0">
                 {limitSummary ? (
-                  <span className={cn('inline-flex h-6 items-center gap-1.5 whitespace-nowrap rounded-md px-2 text-[11px] font-semibold tabular-nums', limitClasses[limitSeverity])}>
+                  <span className={cn('inline-flex h-6 items-center gap-1.5 whitespace-nowrap rounded-full px-2 text-[11px] font-semibold tabular-nums', limitClasses[limitSeverity])}>
                     <CircleGauge className="h-3.5 w-3.5" />
                     {limitSummary}
                   </span>
@@ -214,14 +217,14 @@ export function LoginProfileRows({
                     disabled={hasPendingMutation || !canCheckLoginProfileReadiness(profile)}
                     isTesting={profile.status === 'checking'}
                     onTest={(providers) => onTestProviders(profile, providers)}
-                    className="h-8 px-2.5 text-[11px] font-semibold"
+                    className="h-10 rounded-lg px-2.5 text-[11px] font-semibold"
                   />
                 ) : (
                   <button
                     type="button"
                     onClick={() => onCheck(profile)}
                     disabled={isPending || !canCheckLoginProfileReadiness(profile)}
-                    className="h-8 rounded-md bg-muted px-2.5 text-[11px] font-semibold text-foreground transition-[background-color,transform,opacity] hover:bg-muted/80 active:scale-[0.96] disabled:opacity-50"
+                    className="h-10 rounded-lg bg-muted px-3 text-[11px] font-semibold text-foreground transition-[background-color,transform,opacity] duration-150 ease-out hover:bg-muted/80 active:scale-[0.96] disabled:opacity-50"
                   >
                     {profile.status === 'checking' ? (
                       <span className="inline-flex items-center gap-1.5">
@@ -235,14 +238,14 @@ export function LoginProfileRows({
                   type="button"
                   onClick={() => onSetDefault(profile)}
                   disabled={profile.isDefault || isPending}
-                  className="h-8 rounded-md bg-muted px-2.5 text-[11px] font-semibold text-foreground transition-[background-color,transform,opacity] hover:bg-muted/80 active:scale-[0.96] disabled:opacity-45"
+                  className="h-10 rounded-lg bg-muted px-3 text-[11px] font-semibold text-foreground transition-[background-color,transform,opacity] duration-150 ease-out hover:bg-muted/80 active:scale-[0.96] disabled:opacity-45"
                 >
                   Use
                 </button>
                 <button
                   type="button"
                   onClick={() => onEdit(profile)}
-                  className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,transform] hover:bg-muted hover:text-foreground active:scale-[0.96]"
+                  className="flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-150 ease-out hover:bg-muted hover:text-foreground active:scale-[0.96]"
                   aria-label={`Edit ${profile.displayName}`}
                 >
                   <MoreHorizontal className="h-4 w-4" />
@@ -251,7 +254,7 @@ export function LoginProfileRows({
                   type="button"
                   onClick={() => onDelete(profile)}
                   disabled={activeRuns.length > 0 || hasPendingMutation}
-                  className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,transform,opacity] hover:bg-red-50 hover:text-red-600 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35 dark:hover:bg-red-950/35 dark:hover:text-red-300"
+                  className="flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground transition-[background-color,color,transform,opacity] duration-150 ease-out hover:bg-red-50 hover:text-red-600 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35 dark:hover:bg-red-950/35 dark:hover:text-red-300"
                   aria-label={`Delete ${profile.displayName}`}
                 >
                   <Trash2 className="h-4 w-4" />

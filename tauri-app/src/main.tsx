@@ -9,6 +9,7 @@ import App from './App.tsx'
 import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { initAnalytics } from './lib/analytics';
 import { applyStoredAppFontSizePreference } from './lib/appFontSizePreference';
+import { applyStoredAppThemePreference } from './lib/themePreference';
 import { devLogLazy } from './lib/appLogger';
 import { getKindeRedirectUri, initKindeDeepLinkHandler, restoreDesktopCloudSession, shouldUseDesktopBrowserAuth } from './lib/kindeDesktopAuth';
 import { getElapsedSinceAppStartMs, recordPerfEvent } from './lib/perfRecorder';
@@ -36,6 +37,7 @@ const scheduleAnalyticsInit = () => {
 
 devLogLazy(() => [`[PERF][main.tsx] ${Date.now()} - All imports complete, creating QueryClient...`]);
 applyStoredAppFontSizePreference();
+applyStoredAppThemePreference();
 
 const queryClient = new QueryClient({
   defaultOptions: {

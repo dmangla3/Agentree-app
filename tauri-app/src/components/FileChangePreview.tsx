@@ -75,12 +75,12 @@ export function FileChangePreview({
     };
 
     return (
-        <div className={cn("rounded border border-border/40 bg-muted/20 overflow-hidden", className)}>
-            <div className="flex items-center justify-between px-2 py-1.5 bg-muted/30 border-b border-border/30">
-                <div className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+        <div data-design-scope="panels" className={cn("overflow-hidden rounded-xl bg-[hsl(var(--app-panel))] shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]", className)}>
+            <div className="flex min-h-10 items-center justify-between border-b border-border/40 bg-muted/30 px-3 py-1.5">
+                <div className="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground">
                     <FileText size={10} />
-                    <span>Files Changed</span>
-                    <span className="bg-muted px-1 py-0 rounded text-[9px] text-foreground/80 min-w-[16px] text-center">
+                    <span>Files changed</span>
+                    <span className="min-w-[18px] rounded-md bg-muted px-1.5 py-0.5 text-center text-[9px] tabular-nums text-foreground/80">
                         {filesToShow.length}
                     </span>
                 </div>
@@ -94,10 +94,10 @@ export function FileChangePreview({
                         <div
                             key={`${file.path}-${idx}`}
                             onClick={() => handleFileClick(file.path)}
-                            className="flex items-center gap-1.5 text-[10px] font-mono px-1.5 py-0.5 rounded hover:bg-muted/50 transition-colors group cursor-pointer"
+                            className="group flex min-h-10 cursor-pointer items-center gap-2 rounded-lg px-2 font-mono text-[10px] transition-[background-color,color,transform] duration-150 ease-out hover:bg-muted/50 active:scale-[0.96]"
                         >
                             <span className={cn(
-                                "flex items-center justify-center w-3.5 h-3.5 rounded-sm shrink-0",
+                                "flex h-5 w-5 shrink-0 items-center justify-center rounded-md",
                                 file.status === 'added' && "text-green-600 bg-green-500/10 dark:bg-green-500/20",
                                 file.status === 'deleted' && "text-red-600 bg-red-500/10 dark:bg-red-500/20",
                                 (file.status === 'modified' || file.status === 'renamed') && "text-amber-600 bg-amber-500/10 dark:bg-amber-500/20"
@@ -107,7 +107,7 @@ export function FileChangePreview({
                                 {(file.status === 'modified' || file.status === 'renamed') && <Edit2 size={8} strokeWidth={2.5} />}
                             </span>
                             <span className={cn(
-                                "truncate text-foreground/80 group-hover:text-foreground transition-colors",
+                                "truncate text-foreground/80 transition-colors duration-150 group-hover:text-foreground",
                                 file.status === 'deleted' && "line-through opacity-70"
                             )}>
                                 {file.path}

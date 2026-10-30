@@ -62,7 +62,13 @@ import {
 	    Highlighter,
 	    Trash2,
 	} from 'lucide-react';
-	import { cn } from '../../lib/utils';
+import { cn } from '../../lib/utils';
+import {
+    graphHeaderControlClass,
+    graphHeaderControlIconClass,
+    graphHeaderControlLabelClass,
+    graphHeaderControlSelectedClass,
+} from '../graphHeaderControlStyles';
 	import { FillIcon } from '../RailIcon';
 	import type { Insight, Message, MessageHighlightColor, Summary } from '../../stores/workspaceStore';
 import type { MergeTabRunIndicator } from '../../stores/integrationStore';
@@ -264,8 +270,9 @@ export function ThreadUnreadBadge({
     return (
         <span
             aria-label={label}
+            data-design-typography="graph-selected-count"
             className={cn(
-                "inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full border border-[hsl(var(--background)/0.88)] bg-[hsl(var(--app-accent)/0.94)] px-1.5 font-mono text-[9px] font-bold leading-none text-white shadow-[0_7px_16px_-12px_hsl(var(--app-accent)/0.95),inset_0_1px_0_rgba(255,255,255,0.22)] ring-1 ring-white/25 tabular-nums dark:border-[hsl(var(--app-panel-strong)/0.92)] dark:ring-white/10",
+                "inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full border border-[hsl(var(--background)/0.88)] bg-[hsl(var(--app-accent)/0.94)] px-1.5 font-mono text-[9px] font-medium leading-none text-[hsl(40_24%_96%)] shadow-[0_7px_16px_-12px_hsl(var(--app-accent)/0.95),inset_0_1px_0_rgba(255,255,255,0.22)] ring-1 ring-white/25 tabular-nums dark:border-[hsl(var(--app-panel-strong)/0.92)] dark:ring-white/10",
                 className,
             )}
         >
@@ -667,15 +674,16 @@ export function GraphControls({
             tone: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-300',
         },
     ];
-    const toolbarButtonClass = "border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel-strong)/0.74)] text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)] transition-[background-color,border-color,color,box-shadow] duration-150 hover:border-[hsl(var(--app-border-strong)/0.75)] hover:bg-[hsl(var(--app-accent-soft)/0.52)] hover:text-foreground";
-    const activeToolbarButtonClass = "border-[hsl(var(--app-accent)/0.35)] bg-[hsl(var(--app-accent-soft)/0.72)] text-[hsl(var(--app-accent))] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.05)]";
+    const toolbarHitTargetClass = "relative after:absolute after:left-1/2 after:top-1/2 after:h-8 after:w-full after:min-w-8 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']";
+    const toolbarButtonClass = cn("border border-[hsl(var(--app-border)/0.58)] bg-transparent text-muted-foreground transition-[background-color,border-color,color,box-shadow,transform] duration-normal ease-out-cubic motion-reduce:transition-none hover:border-[hsl(var(--app-border-strong)/0.7)] hover:bg-[hsl(var(--app-bg-muted)/0.58)] hover:text-foreground active:scale-[0.96]", toolbarHitTargetClass);
+    const activeToolbarButtonClass = "border-[hsl(var(--app-border-strong)/0.8)] bg-[hsl(var(--app-bg-muted)/0.82)] text-foreground shadow-[inset_0_0_0_1px_hsl(var(--foreground)/0.035)]";
     const toolbarDividerClass = "h-5 w-px bg-[hsl(var(--app-border)/0.68)]";
-    const pillClass = "inline-flex items-center gap-1.5 rounded-md border border-[hsl(var(--app-accent)/0.18)] bg-[hsl(var(--app-accent-soft)/0.48)] px-2 py-0.5 text-[11px] font-medium text-[hsl(var(--app-accent))]";
-    const sectionClass = "rounded-xl border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel-strong)/0.62)] p-3 space-y-2.5 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]";
-    const toggleButtonClass = "h-7 px-2.5 text-[11px] font-medium transition-all duration-150";
+    const pillClass = "inline-flex items-center gap-1.5 rounded-md border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-bg-muted)/0.58)] px-2 py-0.5 text-[11px] font-medium text-foreground";
+    const sectionClass = "space-y-2.5 rounded-lg bg-[hsl(var(--app-bg-muted)/0.34)] p-3";
+    const toggleButtonClass = "h-8 px-2.5 text-[11px] font-medium transition-[background-color,border-color,color,box-shadow,transform] duration-normal ease-out-cubic motion-reduce:transition-none active:scale-[0.96]";
 
-    const iconButtonBase = "app-fill-icon-trigger group relative flex items-center justify-center rounded-lg transition-[background-color,border-color,color,box-shadow] duration-150 ease-out";
-    const iconButtonGhost = cn("h-8 w-8 px-0", toolbarButtonClass);
+    const iconButtonBase = "app-fill-icon-trigger group relative flex items-center justify-center rounded-lg";
+    const iconButtonGhost = cn("h-8 w-10 px-0", toolbarButtonClass);
     const iconContainer = "flex items-center justify-center";
     const iconGlow = "absolute inset-0 rounded-lg bg-[hsl(var(--app-accent-soft)/0.28)] opacity-0 transition-opacity duration-150 group-hover:opacity-100";
     const mergeButtonActive = mergeDropdownOpen || mergeSourceCount > 0 || mergeRunIndicator !== 'idle';
@@ -712,42 +720,43 @@ export function GraphControls({
     return (
         <div
             ref={controlsRef}
-            className="z-20 flex-shrink-0 border-b border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel)/0.92)] shadow-[inset_0_-1px_0_hsl(var(--foreground)/0.03)] backdrop-blur-md"
+            data-design-scope="graph"
+            data-design-part="graph-toolbar"
+            className="z-20 flex-shrink-0 border-b border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.97)]"
         >
             {/* Main Row - Compact */}
-            <div className="flex items-center justify-between gap-3 px-3 py-1.5">
+            <div data-design-part="graph-toolbar-row" className="flex min-h-10 w-max min-w-full items-center justify-between gap-2 overflow-x-auto px-2.5 py-0.5">
                 {/* LEFT GROUP: Compact Actions */}
-                <div className="flex items-center gap-2">
+                <div className="flex shrink-0 items-center gap-1.5">
                     {/* Filter - Modern Compact */}
                     <div className="relative">
                     <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                         <button
                             type="button"
+                            data-design-part="graph-header-filter"
                             className={cn(
-                                iconButtonBase,
-                                toolbarButtonClass,
-                                "h-8 gap-1.5 pl-2.5 text-xs font-medium",
+                                graphHeaderControlClass,
                                 activeFilterCount > 0 ? "pr-7" : "pr-2",
-                                activeFilterCount > 0 && activeToolbarButtonClass
+                                activeFilterCount > 0 && graphHeaderControlSelectedClass
                             )}
                         >
-                            <span className={iconContainer}>
-                                <FillIcon icon={FilterHeaderIcon} size={13} />
+                            <span className={cn(iconContainer, graphHeaderControlIconClass)}>
+                                <FillIcon icon={FilterHeaderIcon} size={14} />
                             </span>
-                            <span className="hidden md:inline font-medium">{filterButtonText}</span>
+                            <span className={graphHeaderControlLabelClass}>{filterButtonText}</span>
                             <span className={cn(
-                                "min-w-[1.25rem] rounded-md border px-1.5 py-0 text-center text-[10px] font-semibold tabular-nums transition-all",
+                                "min-w-[1.25rem] rounded-md border px-1.5 py-0 text-center text-[10px] font-medium tabular-nums transition-[background-color,border-color,color] duration-normal ease-out-cubic motion-reduce:transition-none",
                                 activeFilterCount > 0
                                     ? "border-[hsl(var(--app-accent)/0.22)] bg-[hsl(var(--app-accent)/0.12)] text-[hsl(var(--app-accent))]"
                                     : "border-[hsl(var(--app-border)/0.55)] bg-[hsl(var(--background)/0.72)] text-muted-foreground"
-                            )}>
+                            )} data-design-typography="graph-filter-count">
                                 {matchingCount}
                             </span>
                         </button>
                     </DropdownMenuTrigger>
                         <DropdownMenuContent className="w-[min(420px,calc(100vw-2rem))] p-0 overflow-hidden" align="start">
-                            <div className="border-b border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-panel-strong)/0.64)] p-4 pb-3">
+                            <div className="border-b border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-bg-muted)/0.36)] p-4 pb-3">
                                 <div className="flex items-center justify-between">
                                     <div className="flex items-center gap-2">
                                         <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-primary/10 text-primary">
@@ -904,7 +913,7 @@ export function GraphControls({
                                                     type="button"
                                                     onClick={() => onNodeTypeFilterChange(option.id, !selectedNodeTypes.has(option.id))}
                                                     className={cn(
-                                                        "flex items-center justify-between rounded-lg border px-2.5 py-2 text-left transition-all",
+                                                        "flex items-center justify-between rounded-lg border px-2.5 py-2 text-left transition-[background-color,border-color] duration-normal ease-out-cubic motion-reduce:transition-none",
                                                         selectedNodeTypes.has(option.id)
                                                             ? "border-[hsl(var(--app-accent)/0.35)] bg-[hsl(var(--app-accent-soft)/0.66)]"
                                                             : "border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.68)] hover:bg-[hsl(var(--app-accent-soft)/0.38)]"
@@ -1111,7 +1120,7 @@ export function GraphControls({
                 </div>
 
                 {/* RIGHT GROUP: Compact */}
-                <div className="flex items-center gap-2">
+                <div data-design-part="graph-toolbar-actions" className="flex shrink-0 items-center gap-2">
                     {/* View Mode Toggle - Pill Style (matches chat/merge tabs) */}
                     <div className="flex items-center rounded-lg border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-bg-muted)/0.72)] p-0.5 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]">
                         <button
@@ -1119,9 +1128,10 @@ export function GraphControls({
                             onClick={() => onViewModeChange('branch')}
                             data-active={viewMode === 'branch' ? 'true' : undefined}
                             className={cn(
-                                "app-fill-icon-trigger flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-[background-color,color,box-shadow] duration-150",
+                                "app-fill-icon-trigger flex min-w-10 items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-[background-color,color,box-shadow] duration-150",
+                                toolbarHitTargetClass,
                                 viewMode === 'branch'
-                                    ? "bg-[hsl(var(--app-panel))] text-[hsl(var(--app-accent))] shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72),0_1px_2px_hsl(var(--foreground)/0.05)]"
+                                    ? "bg-[hsl(var(--app-panel))] text-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border-strong)/0.62)]"
                                     : "text-muted-foreground hover:bg-[hsl(var(--app-panel)/0.58)] hover:text-foreground"
                             )}
                             title="Tree View"
@@ -1134,9 +1144,10 @@ export function GraphControls({
                             onClick={() => onViewModeChange('list')}
                             data-active={viewMode === 'list' ? 'true' : undefined}
                             className={cn(
-                                "app-fill-icon-trigger flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-[background-color,color,box-shadow] duration-150",
+                                "app-fill-icon-trigger flex min-w-10 items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-[background-color,color,box-shadow] duration-150",
+                                toolbarHitTargetClass,
                                 viewMode === 'list'
-                                    ? "bg-[hsl(var(--app-panel))] text-[hsl(var(--app-accent))] shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72),0_1px_2px_hsl(var(--foreground)/0.05)]"
+                                    ? "bg-[hsl(var(--app-panel))] text-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border-strong)/0.62)]"
                                     : "text-muted-foreground hover:bg-[hsl(var(--app-panel)/0.58)] hover:text-foreground"
                             )}
                             title="List View"
@@ -1211,7 +1222,7 @@ export function GraphControls({
                             side="bottom"
                             sideOffset={10}
                             collisionPadding={12}
-                            className="z-50 h-[min(760px,calc(100vh-5rem))] w-[min(440px,calc(100vw-1.5rem))] overflow-hidden rounded-[22px] border border-slate-200/82 bg-slate-50/96 p-0 shadow-[0_30px_90px_-46px_rgba(15,23,42,0.66),0_14px_34px_-24px_rgba(15,23,42,0.34),inset_0_1px_0_rgba(255,255,255,0.76)] backdrop-blur-xl dark:border-slate-800/88 dark:bg-slate-950/96 dark:shadow-[0_30px_92px_-46px_rgba(0,0,0,0.82),inset_0_1px_0_rgba(255,255,255,0.04)]"
+                            className="h-[min(760px,calc(100vh-5rem))] w-[min(440px,calc(100vw-1.5rem))] overflow-hidden rounded-2xl p-0"
                             onOpenAutoFocus={(event) => event.preventDefault()}
                             onWheelCapture={stopNestedScrollPropagation}
                             onTouchMoveCapture={stopNestedScrollPropagation}
@@ -1273,7 +1284,7 @@ export function GraphControls({
                             side="bottom"
                             sideOffset={8}
                             collisionPadding={12}
-                            className="h-[min(760px,calc(100vh-5rem))] w-[min(1020px,calc(100vw-2rem))] overflow-hidden rounded-[18px] border border-[hsl(var(--app-border)/0.7)] bg-[linear-gradient(180deg,hsl(var(--app-panel)/0.98),hsl(var(--app-bg)/0.96))] p-0 shadow-[0_32px_90px_-42px_hsl(var(--foreground)/0.55),0_12px_28px_-22px_hsl(var(--foreground)/0.36),inset_0_1px_0_hsl(var(--foreground)/0.045)] backdrop-blur-xl dark:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-bg)/0.98))]"
+                            className="h-[min(760px,calc(100vh-5rem))] w-[min(1020px,calc(100vw-2rem))] overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--app-panel)/0.98)] p-0 shadow-[0_28px_72px_-40px_hsl(var(--foreground)/0.5),inset_0_1px_0_hsl(var(--foreground)/0.04)]"
                             onOpenAutoFocus={(event) => event.preventDefault()}
                             onWheelCapture={stopNestedScrollPropagation}
                             onTouchMoveCapture={stopNestedScrollPropagation}
@@ -1517,16 +1528,16 @@ export function GraphControls({
                             <div className="p-2">
                                 {viewMode === 'branch' && (
                                     <DropdownMenuSub>
-                                        <DropdownMenuSubTrigger className="text-xs">
+                                        <DropdownMenuSubTrigger>
                                             <GitBranch size={14} className="mr-2" />
                                             Layout Engine
                                         </DropdownMenuSubTrigger>
                                         <DropdownMenuSubContent className="w-56">
                                             <DropdownMenuRadioGroup value={layoutMode} onValueChange={(v) => onLayoutModeChange(v as LayoutMode)}>
-                                                <DropdownMenuRadioItem value="dagre" className="cursor-pointer text-xs hover:bg-muted focus:bg-muted">Dagre (Classic)</DropdownMenuRadioItem>
-                                                <DropdownMenuRadioItem value="lane" className="cursor-pointer text-xs hover:bg-muted focus:bg-muted">Lane (Temporal)</DropdownMenuRadioItem>
-                                                <DropdownMenuRadioItem value="tidy" className="cursor-pointer text-xs hover:bg-muted focus:bg-muted">Tidy Tree (Compact)</DropdownMenuRadioItem>
-                                                <DropdownMenuRadioItem value="sugiyama" className="cursor-pointer text-xs hover:bg-muted focus:bg-muted">Sugiyama (Hierarchical)</DropdownMenuRadioItem>
+                                                <DropdownMenuRadioItem value="dagre" className="cursor-pointer">Dagre (Classic)</DropdownMenuRadioItem>
+                                                <DropdownMenuRadioItem value="lane" className="cursor-pointer">Lane (Temporal)</DropdownMenuRadioItem>
+                                                <DropdownMenuRadioItem value="tidy" className="cursor-pointer">Tidy Tree (Compact)</DropdownMenuRadioItem>
+                                                <DropdownMenuRadioItem value="sugiyama" className="cursor-pointer">Sugiyama (Hierarchical)</DropdownMenuRadioItem>
                                             </DropdownMenuRadioGroup>
 
                                             {layoutMode === 'lane' && (
@@ -1536,8 +1547,8 @@ export function GraphControls({
                                                         Lane Strategy
                                                     </DropdownMenuLabel>
                                                     <DropdownMenuRadioGroup value={laneStrategy} onValueChange={(v) => onLaneStrategyChange(v as LaneStrategy)}>
-                                                        <DropdownMenuRadioItem value="right" className="cursor-pointer text-xs hover:bg-muted focus:bg-muted">Right Drift</DropdownMenuRadioItem>
-                                                        <DropdownMenuRadioItem value="balanced" className="cursor-pointer text-xs hover:bg-muted focus:bg-muted">Balanced</DropdownMenuRadioItem>
+                                                        <DropdownMenuRadioItem value="right" className="cursor-pointer">Right Drift</DropdownMenuRadioItem>
+                                                        <DropdownMenuRadioItem value="balanced" className="cursor-pointer">Balanced</DropdownMenuRadioItem>
                                                     </DropdownMenuRadioGroup>
                                                 </>
                                             )}
@@ -1546,7 +1557,7 @@ export function GraphControls({
                                 )}
 
                                 <DropdownMenuSub>
-                                    <DropdownMenuSubTrigger className="text-xs">
+                                    <DropdownMenuSubTrigger>
                                         <Zap size={14} className="mr-2 text-amber-500" />
                                         Insights
                                     </DropdownMenuSubTrigger>
@@ -1554,14 +1565,12 @@ export function GraphControls({
                                         <DropdownMenuCheckboxItem
                                             checked={insightsEnabled}
                                             onCheckedChange={() => onToggleInsightsEnabled?.()}
-                                            className="text-xs"
                                         >
                                             Generate Insights
                                         </DropdownMenuCheckboxItem>
                                         <DropdownMenuCheckboxItem
                                             checked={showInsightsInGraph}
                                             onCheckedChange={onToggleShowInsightsInGraph}
-                                            className="text-xs"
                                         >
                                             Show Insight Nodes in Graph
                                         </DropdownMenuCheckboxItem>

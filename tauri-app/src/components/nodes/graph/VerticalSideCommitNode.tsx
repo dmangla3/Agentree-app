@@ -16,7 +16,7 @@ export function VerticalSideCommitNode({ entity, className }: VerticalSideCommit
   return (
     <div
       className={cn(
-        'flex min-h-20 w-12 flex-col items-center justify-center gap-1 rounded-xl border border-emerald-200/70 bg-emerald-50/80 px-1 py-2 text-emerald-700 shadow-sm dark:border-emerald-800/70 dark:bg-emerald-950/40 dark:text-emerald-300',
+        'flex min-h-20 w-12 flex-col items-center justify-center gap-1 rounded-lg border border-[hsl(var(--app-graph-commit)/0.28)] bg-[hsl(var(--app-graph-commit)/0.08)] px-1 py-2 text-[hsl(var(--app-graph-commit))] shadow-[0_8px_20px_-18px_hsl(var(--foreground)/0.3)]',
         className,
       )}
       title={commitSha ?? entity.preview}

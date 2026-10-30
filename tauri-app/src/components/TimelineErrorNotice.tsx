@@ -46,7 +46,7 @@ export function TimelineErrorNotice({
             <span className="text-[11px] font-semibold">{presentation.title}</span>
             {presentation.isRetrying ? (
               <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/12 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.04em] text-amber-800 tabular-nums dark:text-amber-200">
-                <RefreshCw size={9} className="animate-spin" />
+                <RefreshCw size={9} className="animate-spin motion-reduce:animate-none" />
                 {presentation.retryAttempt !== null && presentation.retryLimit !== null
                   ? `Retrying ${presentation.retryAttempt} of ${presentation.retryLimit}`
                   : 'Retrying'}
@@ -68,7 +68,7 @@ export function TimelineErrorNotice({
         <div className="border-t border-black/10 dark:border-white/10">
           <button
             type="button"
-            className="flex min-h-10 w-full items-center justify-between gap-3 px-3 text-left text-[10px] font-medium opacity-[0.65] transition-[background-color,opacity] duration-150 hover:bg-foreground/[0.04] hover:opacity-100"
+            className="flex min-h-10 w-full items-center justify-between gap-3 px-3 text-left text-[10px] font-medium opacity-[0.65] transition-[background-color,opacity] duration-150 ease-out hover:bg-foreground/[0.04] hover:opacity-100 motion-reduce:transition-none"
             onClick={(event) => {
               event.stopPropagation();
               setShowDetails((current) => !current);
@@ -79,7 +79,7 @@ export function TimelineErrorNotice({
             <span>Technical details</span>
             <ChevronDown
               size={12}
-              className={cn('transition-transform duration-150', showDetails && 'rotate-180')}
+              className={cn('transition-transform duration-150 ease-out motion-reduce:transition-none', showDetails && 'rotate-180')}
             />
           </button>
           {showDetails ? (

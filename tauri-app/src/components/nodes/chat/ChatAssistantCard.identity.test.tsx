@@ -1,12 +1,18 @@
 // @vitest-environment jsdom
 import '../../../test/setup';
-import { fireEvent, render, screen } from '@testing-library/react';
+import type { ReactNode } from 'react';
+import { fireEvent, render as renderWithoutTooltips, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ChatAssistantCard } from './ChatAssistantCard';
 import { ChatUserCard } from './ChatUserCard';
 import { AgentreeSurfaceProvider, publicShareCapabilities } from '../../graph/surfaceCapabilities';
 import type { ProjectedNodeEntity } from '../../../domain/workspaceProjection';
 import { LOGIN_PROFILES_NAVIGATION_EVENT } from '../../../lib/loginNavigationEvents';
+import { TooltipProvider } from '../../../../@/components/ui/tooltip';
+
+const render = (ui: ReactNode) => renderWithoutTooltips(
+  <TooltipProvider delayDuration={0}>{ui}</TooltipProvider>
+);
 
 vi.mock('../../../hooks/useAgents', () => ({
   useAgents: () => ({ data: [] }),
@@ -94,36 +100,6 @@ const makeUserEntity = (overrides: Partial<ProjectedNodeEntity> = {}): Projected
 };
 
 describe('ChatAssistantCard identity', () => {
-  it('adds a header separator only in hovercard message previews', () => {
-    const { container, rerender } = render(
-      <ChatAssistantCard
-        entity={makeAssistantEntity()}
-        isFocused={false}
-        isSelected={false}
-        layout="hovercard"
-        onFocus={() => {}}
-        onSelect={() => {}}
-        onContextMenu={() => {}}
-      />
-    );
-
-    expect(container.querySelector('[data-agentree-message-header-separator="true"]')).toBeTruthy();
-
-    rerender(
-      <ChatAssistantCard
-        entity={makeAssistantEntity()}
-        isFocused={false}
-        isSelected={false}
-        layout="chat"
-        onFocus={() => {}}
-        onSelect={() => {}}
-        onContextMenu={() => {}}
-      />
-    );
-
-    expect(container.querySelector('[data-agentree-message-header-separator="true"]')).toBeNull();
-  });
-
   it('uses the model identity for the agent chip and shows the generated AI label separately', () => {
     render(
       <ChatAssistantCard
@@ -146,12 +122,11 @@ describe('ChatAssistantCard identity', () => {
     );
 
     expect(screen.getByText('GPT 5.5')).toBeTruthy();
-    // The reasoning effort renders in its own span that escapes the chip's
-    // uppercase styling, so it displays as "High" rather than "HIGH".
     expect(screen.getByText('High')).toBeTruthy();
+    expect(screen.getByLabelText('Model used: GPT 5.5. Reasoning effort: High.')).toBeTruthy();
   });
 
-  it('shows the assistant base commit chip with the full commit in the title', () => {
+  it('shows the assistant base commit chip with the full commit in its accessible label', () => {
     const baseCommitSha = 'abcdef1234567890abcdef1234567890abcdef12';
 
     render(
@@ -170,8 +145,104 @@ describe('ChatAssistantCard identity', () => {
       />
     );
 
-    expect(screen.getByText('Base abcdef12')).toBeTruthy();
-    expect(screen.getByTitle(`Base commit: ${baseCommitSha}`)).toBeTruthy();
+    expect(screen.getByText('abcdef12')).toBeTruthy();
+    expect(screen.getByLabelText(`Base commit: ${baseCommitSha}`)).toBeTruthy();
+    expect(screen.getByTitle(`Copy commit SHA: ${baseCommitSha}`)).toBeTruthy();
+  });
+
+  it('groups assistant header metadata and explains each element with informational tooltips', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const baseCommitSha = 'eea7a34e1234567890abcdef1234567890abcdef';
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          status: 'cancelled' as any,
+          toolCallCount: 22,
+          commitCount: 3,
+          message: {
+            id: 'dd9348a7-9bdc-4adb-89aa-179d9b0b125b',
+            status: 'cancelled' as any,
+            base_commit_sha: baseCommitSha,
+            aiLabel: 'Plan review',
+            tags: ['docs'],
+            execution_data: {
+              meta: { provider_reasoning_effort: 'high' },
+              usage: {
+                input_tokens: 40_400,
+                output_tokens: 583,
+                cached_input_tokens: 34_200,
+                reasoning_tokens: 1_250,
+                total_tokens: 40_900,
+              },
+            },
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    const usage = screen.getByLabelText('Token usage');
+
+    expect(screen.getByText('GPT 5.5')).toBeTruthy();
+    expect(screen.getByText('High')).toBeTruthy();
+    expect(screen.getByText('Cancelled')).toBeTruthy();
+    expect(screen.queryByLabelText('22 tool calls')).toBeNull();
+    expect(screen.getByLabelText('3 commits created by this agent run')).toBeTruthy();
+    expect(screen.getByText('eea7a34e')).toBeTruthy();
+    expect(screen.getByText('dd9348a7')).toBeTruthy();
+    expect(screen.getByText('Plan review')).toBeTruthy();
+    expect(screen.getByText('docs')).toBeTruthy();
+    expect(usage.textContent).toContain('40.4k');
+    expect(usage.textContent).toContain('583');
+    expect(usage.textContent).toContain('34.2k');
+    expect(usage.textContent).toContain('1.3k');
+    expect(usage.textContent).toContain('40.9k');
+    expect(screen.getByLabelText('40,400 input tokens')).toBeTruthy();
+    expect(screen.getByLabelText('40,900 total tokens')).toBeTruthy();
+
+    fireEvent.focus(screen.getByLabelText('Model used: GPT 5.5. Reasoning effort: High.'));
+    await waitFor(() => expect(screen.getByRole('tooltip').textContent).toBe(
+      'Model used: GPT 5.5 · Reasoning effort: High',
+    ));
+    fireEvent.blur(screen.getByLabelText('Model used: GPT 5.5. Reasoning effort: High.'));
+
+    fireEvent.focus(screen.getByLabelText(`Base commit: ${baseCommitSha}`));
+    await waitFor(() => expect(screen.getByRole('tooltip').textContent).toBe(
+      "This base commit was used to create the agent's worktree.",
+    ));
+    fireEvent.blur(screen.getByLabelText(`Base commit: ${baseCommitSha}`));
+
+    fireEvent.focus(screen.getByLabelText('Agent status: Cancelled'));
+    await waitFor(() => expect(screen.getByRole('tooltip').textContent).toBe('Agent status: Cancelled'));
+    fireEvent.blur(screen.getByLabelText('Agent status: Cancelled'));
+
+    fireEvent.focus(screen.getByLabelText('Message ID: dd9348a7-9bdc-4adb-89aa-179d9b0b125b'));
+    await waitFor(() => expect(screen.getByRole('tooltip').textContent).toBe(
+      'Unique ID for this message. Pass it to any agent to reference this message.',
+    ));
+    fireEvent.blur(screen.getByLabelText('Message ID: dd9348a7-9bdc-4adb-89aa-179d9b0b125b'));
+
+    fireEvent.focus(screen.getByLabelText('AI-generated summary: Plan review'));
+    await waitFor(() => expect(screen.getByRole('tooltip').textContent).toBe('AI-generated summary of this message.'));
+    fireEvent.blur(screen.getByLabelText('AI-generated summary: Plan review'));
+
+    fireEvent.focus(screen.getByLabelText('40,400 input tokens'));
+    await waitFor(() => expect(screen.getByRole('tooltip').textContent).toBe(
+      'Input tokens: 40,400 sent as context for this response.',
+    ));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy message ID' }));
+    expect(writeText).toHaveBeenCalledWith('dd9348a7-9bdc-4adb-89aa-179d9b0b125b');
     expect(screen.getByTitle(`Copy commit SHA: ${baseCommitSha}`)).toBeTruthy();
   });
 
@@ -203,7 +274,7 @@ describe('ChatAssistantCard identity', () => {
       />
     );
 
-    expect(screen.getByTitle(`Agent Failed: ${reason}`)).toBeTruthy();
+    expect(screen.getByLabelText('Agent status: Failed')).toBeTruthy();
     expect(screen.getByText('Assistant content')).toBeTruthy();
     expect(screen.getByText('Run failed')).toBeTruthy();
     expect(screen.getByText(reason)).toBeTruthy();

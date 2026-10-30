@@ -4,7 +4,6 @@ import {
   Check,
   FileText,
   RotateCcw,
-  SlidersHorizontal,
   AlertTriangle,
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
@@ -80,12 +79,15 @@ export function DefaultPromptSettingsPanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col bg-background">
-      <div className="border-b border-border/70 px-5 py-3.5">
+      <header className="border-b border-border/70 bg-[hsl(var(--app-panel-strong))] px-5 py-4">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <FileText size={17} className="text-muted-foreground" />
               <h2 className="text-base font-semibold leading-6 text-foreground">Default prompts</h2>
+              <span className="rounded-full bg-muted/60 px-2 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
+                {overrideCount} override{overrideCount === 1 ? '' : 's'}
+              </span>
             </div>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
               View built-in prompt text and save local overrides for future agent runs.
@@ -103,20 +105,17 @@ export function DefaultPromptSettingsPanel() {
               setDraftText(builtInPrompt.defaultText);
             }}
             disabled={overrideCount === 0}
+            className="h-10 rounded-lg"
           >
             <RotateCcw size={15} />
             Reset all
           </Button>
         </div>
-        <div className="mt-3 flex items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-          <SlidersHorizontal size={14} className="shrink-0" />
-          <span>{overrideCount} prompt override{overrideCount === 1 ? '' : 's'} active</span>
-        </div>
-      </div>
+      </header>
 
       <div className="grid min-h-0 flex-1 bg-muted/20 md:grid-cols-[minmax(15rem,0.36fr)_minmax(0,1fr)]">
         <div className="min-h-0 overflow-y-auto border-b border-border/70 p-3 md:border-b-0 md:border-r">
-          <div className="space-y-1">
+          <div className="divide-y divide-border/50 border-y border-border/55">
             {prompts.map((prompt) => {
               const selected = selectedPromptId === prompt.id;
               const edited = editedPromptIds.has(prompt.id);
@@ -126,9 +125,9 @@ export function DefaultPromptSettingsPanel() {
                   type="button"
                   onClick={() => loadPromptDraft(prompt.id)}
                   className={cn(
-                    'app-focus-ring flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left transition-[background-color,color,transform] active:scale-[0.99]',
+                    'app-focus-ring flex min-h-10 w-full items-start gap-2 px-2.5 py-2 text-left transition-[background-color,color,transform] duration-150 ease-out active:scale-[0.96]',
                     selected
-                      ? 'bg-background text-foreground shadow-sm ring-1 ring-border/70'
+                      ? 'bg-background text-foreground shadow-[inset_2px_0_0_hsl(var(--foreground)/0.55)]'
                       : 'text-muted-foreground hover:bg-background/70 hover:text-foreground',
                   )}
                 >
@@ -136,7 +135,7 @@ export function DefaultPromptSettingsPanel() {
                   <span className="min-w-0 flex-1">
                     <span className="flex min-w-0 items-center gap-1.5">
                       <span className="truncate text-[13px] font-medium leading-5">{prompt.label}</span>
-                      <span className="shrink-0 rounded border border-border/65 px-1.5 py-0.5 text-[9px] uppercase tracking-[0.08em] text-muted-foreground">
+                      <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground">
                         {edited ? 'Edited' : 'Built-in'}
                       </span>
                     </span>
@@ -156,10 +155,7 @@ export function DefaultPromptSettingsPanel() {
               <div className="shrink-0 border-b border-border/60 px-4 py-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[hsl(var(--app-accent))]">
-                      Editor
-                    </div>
-                    <div className="mt-1 truncate text-sm font-semibold text-foreground">
+                    <div className="truncate text-sm font-semibold text-foreground">
                       {draftPrompt.label}
                     </div>
                     {draftPrompt.variables?.length ? (
@@ -175,7 +171,7 @@ export function DefaultPromptSettingsPanel() {
                       </div>
                     ) : null}
                   </div>
-                  <span className="shrink-0 rounded-md border border-border/70 bg-muted/35 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  <span className="shrink-0 rounded-full bg-muted/55 px-2.5 py-1 text-[10px] font-medium text-muted-foreground">
                     {editedPromptIds.has(draftPrompt.id) ? 'Edited' : 'Built-in'}
                   </span>
                 </div>
@@ -194,8 +190,8 @@ export function DefaultPromptSettingsPanel() {
                 </label>
 
                 {editedPromptIds.has(draftPrompt.id) ? (
-                  <div className="rounded-lg border border-border/65 bg-muted/30 px-3 py-2">
-                    <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                  <div className="border-l-2 border-border bg-muted/25 px-3 py-2">
+                    <div className="text-[10px] font-semibold text-muted-foreground">
                       Built-in default
                     </div>
                     <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-4 text-muted-foreground">
@@ -226,6 +222,7 @@ export function DefaultPromptSettingsPanel() {
                     setSelectedPromptId(draftPrompt.id);
                   }}
                   disabled={!editedPromptIds.has(draftPrompt.id)}
+                  className="h-10 rounded-lg"
                 >
                   <RotateCcw size={15} />
                   Reset prompt
@@ -236,6 +233,7 @@ export function DefaultPromptSettingsPanel() {
                   data-testid="save-default-prompt-button"
                   onClick={savePromptDraft}
                   disabled={!canSavePrompt}
+                  className="h-10 rounded-lg"
                 >
                   <Check size={15} />
                   Save prompt

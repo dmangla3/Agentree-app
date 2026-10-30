@@ -104,7 +104,7 @@ export const ListCommitRow = memo(({
             </Badge>
           )}
           {hasHead && (
-            <Badge className="h-4 border-none bg-[hsl(var(--app-graph-commit))] px-1 text-[8px] text-white hover:bg-[hsl(var(--app-graph-commit))]">
+            <Badge data-design-typography="soft-on-color" className="h-4 border-none bg-[hsl(var(--app-graph-commit))] px-1 text-[8px] font-medium text-[hsl(40_24%_96%)] hover:bg-[hsl(var(--app-graph-commit))]">
               HEAD
             </Badge>
           )}

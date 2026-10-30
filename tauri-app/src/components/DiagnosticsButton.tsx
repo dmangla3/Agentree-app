@@ -9,7 +9,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '../../@/components/ui/dropdown-menu';
 import { useToastHelpers } from './Toast';
@@ -158,15 +157,15 @@ export function DiagnosticsButton({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="right" align="end" className="w-52">
-        <DropdownMenuLabel>Help</DropdownMenuLabel>
         <DropdownMenuItem
           disabled={copying}
+          className="min-h-9"
           onSelect={() => {
             void handleCopy();
           }}
         >
           {copying ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" />
           ) : copied ? (
             <Check className="h-4 w-4" />
           ) : (

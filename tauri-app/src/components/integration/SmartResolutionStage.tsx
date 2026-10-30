@@ -605,18 +605,18 @@ export function SmartResolutionStage() {
 
   return (
     <div className="flex flex-col h-full space-y-0 relative">
-      <div className="flex-1 overflow-y-auto space-y-6 pb-20 pr-2">
-        <div className="space-y-1">
-          <h3 className="text-lg font-semibold flex items-center gap-2">
+      <div className="flex-1 space-y-3 overflow-y-auto pb-16 pr-1">
+        <div className="space-y-1 border-b border-[hsl(var(--app-border)/0.52)] px-1 pb-3">
+          <h3 className="flex items-center gap-2 text-base font-semibold">
             <Bot className="h-5 w-5 text-primary" />
             AI Resolve
           </h3>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs leading-5 text-muted-foreground">
             Review the merge with AI, make any semantic decisions, then apply the merge from this page.
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap gap-2">
           <Badge variant="outline" className="h-7 px-3 gap-1.5 font-medium">
             <GitMerge className="h-3 w-3" />
             {session.fileDecisions.length} Changed Files
@@ -635,8 +635,8 @@ export function SmartResolutionStage() {
           </Badge>
         </div>
 
-        <Card className="bg-muted/30 border-dashed">
-          <CardContent className="p-4 flex flex-col sm:flex-row items-end sm:items-center gap-4">
+        <Card className="rounded-lg border-[hsl(var(--app-border)/0.58)] bg-muted/20 shadow-none">
+          <CardContent className="flex flex-col items-end gap-3 p-3 sm:flex-row sm:items-center">
             <div className="flex-1 space-y-1.5 w-full">
               <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Resolution Agent</Label>
               <Popover open={isAgentPopoverOpen} onOpenChange={setIsAgentPopoverOpen}>
@@ -693,20 +693,20 @@ export function SmartResolutionStage() {
           </div>
         )}
 
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid gap-3 lg:grid-cols-2">
           <div className="space-y-2 flex flex-col">
             <div className="flex items-center gap-2 px-1">
               <SquareTerminal className="h-4 w-4 text-muted-foreground" />
               <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Review Progress</span>
             </div>
-            <div className="flex-1 rounded-lg border bg-black/95 text-green-400 font-mono text-[11px] p-0 overflow-hidden shadow-inner flex flex-col min-h-[220px]">
+            <div className="flex min-h-[220px] flex-1 flex-col overflow-hidden rounded-lg border bg-black/95 p-0 font-mono text-[11px] text-zinc-200 shadow-inner">
               <ScrollArea className="h-[220px]">
                 <div className="p-3 space-y-1">
                   {session.reviewTimeline.length === 0 ? (
-                    <p className="text-green-400/40 italic">Waiting for analysis to start...</p>
+                    <p className="italic text-zinc-500">Waiting for analysis to start...</p>
                   ) : session.reviewTimeline.map((event, index) => (
                     <div key={`${event.timestamp}-${index}`} className="flex gap-3 leading-relaxed">
-                      <span className="text-green-400/30 shrink-0 select-none">
+                      <span className="shrink-0 select-none text-zinc-600">
                         [{new Date(event.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]
                       </span>
                       <span className={cn(
@@ -727,7 +727,7 @@ export function SmartResolutionStage() {
               <GitMerge className="h-4 w-4 text-muted-foreground" />
               <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Merge Intelligence</span>
             </div>
-            <Card className="flex-1 flex flex-col bg-card/50 min-h-[220px]">
+            <Card className="flex min-h-[220px] flex-1 flex-col rounded-lg bg-card/40 shadow-none">
               <CardContent className="p-0 flex-1 overflow-hidden">
                 {session.reviewSummary ? (
                   <ScrollArea className="h-[220px]">
@@ -761,9 +761,9 @@ export function SmartResolutionStage() {
                     </div>
                   </ScrollArea>
                 ) : (
-                  <div className="h-full flex flex-col items-center justify-center text-center space-y-3 px-4 py-4">
-                    <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center">
-                      <Bot className="h-5 w-5 text-muted-foreground/40" />
+                  <div className="flex h-full flex-col items-center justify-center space-y-2 px-4 py-4 text-center">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted">
+                      <Bot className="h-4 w-4 text-muted-foreground/50" />
                     </div>
                     <p className="text-xs text-muted-foreground leading-relaxed">
                       AI is analyzing the merge matrix to identify semantic conflicts and architectural mismatches.
@@ -776,7 +776,7 @@ export function SmartResolutionStage() {
         </div>
 
         {session.reviewSummary && reviewIssues.length === 0 && (
-          <Card className="border-emerald-500/20 bg-emerald-500/5">
+          <Card className="rounded-lg border-[hsl(var(--app-success)/0.22)] bg-[hsl(var(--app-success)/0.06)] shadow-none">
             <CardContent className="p-4 flex items-start gap-3">
               <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0 mt-0.5" />
               <div className="space-y-1">
@@ -796,11 +796,11 @@ export function SmartResolutionStage() {
               <span className="text-[10px] text-muted-foreground italic">Only unresolved product or behavior choices are shown</span>
             </div>
 
-            <div className="space-y-4">
+            <div className="divide-y divide-[hsl(var(--app-border)/0.48)] overflow-hidden rounded-lg border border-[hsl(var(--app-border)/0.58)]">
               {reviewIssues.map((issue) => {
                 const selectedOptionId = session.issueSelections[issue.id] || null;
                 return (
-                  <Card key={issue.id} className="overflow-hidden border-muted-foreground/20">
+                  <Card key={issue.id} className="overflow-hidden rounded-none border-0 bg-transparent shadow-none">
                     <div className={cn(
                       'h-1 w-full',
                       issue.riskLevel === 'high' ? 'bg-destructive' : 'bg-amber-500'
@@ -854,14 +854,14 @@ export function SmartResolutionStage() {
           </div>
         )}
 
-        <Card className="shrink-0">
-          <CardContent className="pt-6">
+        <Card className="shrink-0 rounded-lg border-[hsl(var(--app-border)/0.58)] bg-transparent shadow-none">
+          <CardContent className="p-3">
             <div className="flex items-center gap-4">
-              <div className={cn('flex h-12 w-12 items-center justify-center rounded-full', config.bg)}>
-                <Icon className={cn('h-6 w-6', config.color, applyState.status === 'running' && 'animate-spin')} />
+              <div className={cn('flex h-9 w-9 items-center justify-center rounded-lg', config.bg)}>
+                <Icon className={cn('h-5 w-5', config.color, applyState.status === 'running' && 'animate-spin')} />
               </div>
               <div>
-                <p className={cn('text-lg font-semibold', config.color)}>{config.label}</p>
+                <p className={cn('text-base font-semibold', config.color)}>{config.label}</p>
                 <p className="text-xs text-muted-foreground">
                   {applyState.status === 'not-run' && 'Apply the merge directly from this page once review is complete.'}
                   {applyState.status === 'running' && (session.reviewSummary
@@ -899,24 +899,24 @@ export function SmartResolutionStage() {
                 </span>
               </div>
             </div>
-            <div className="flex-1 rounded-lg border bg-black/95 text-cyan-100 font-mono text-[11px] shadow-inner overflow-hidden min-h-[300px]">
+            <div className="min-h-[300px] flex-1 overflow-hidden rounded-lg border bg-black/95 font-mono text-[11px] text-zinc-200 shadow-inner">
               <ScrollArea className="h-[300px]">
                 <div className="p-3 space-y-1.5">
                   {agentTimeline.length === 0 ? (
-                    <p className="text-cyan-100/40 italic">
+                    <p className="italic text-zinc-500">
                       {session.reviewSummary
                         ? 'Agent activity will appear here during semantic synthesis and apply.'
                         : 'No apply activity yet.'}
                     </p>
                   ) : agentTimeline.map((event, index) => (
                     <div key={`${event.timestamp}-${index}`} className="flex gap-3 leading-relaxed">
-                      <span className="text-cyan-100/30 shrink-0 select-none">
+                      <span className="shrink-0 select-none text-zinc-600">
                         [{new Date(event.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]
                       </span>
                       <span className={cn(
                         event.level === 'error' && 'text-red-400',
                         event.level === 'warning' && 'text-amber-400',
-                        event.level === 'info' && 'text-cyan-100'
+                        event.level === 'info' && 'text-zinc-200'
                       )}>
                         {event.message}
                       </span>
@@ -947,7 +947,7 @@ export function SmartResolutionStage() {
                       {applyState.log}
                     </pre>
                   ) : (
-                    <div className="text-green-400/20 h-full flex items-center justify-center italic">
+                    <div className="flex h-full items-center justify-center text-zinc-600 italic">
                       Terminal ready. Waiting for apply...
                     </div>
                   )}
@@ -984,7 +984,7 @@ export function SmartResolutionStage() {
         )}
       </div>
 
-      <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between border-t bg-background/95 backdrop-blur pt-4 pb-2 pr-4 z-10">
+      <div className="absolute bottom-0 left-0 right-0 z-10 flex items-center justify-between border-t bg-background/95 py-2 pr-2">
         <Button
           variant="outline"
           onClick={() => moveToStage('setup')}

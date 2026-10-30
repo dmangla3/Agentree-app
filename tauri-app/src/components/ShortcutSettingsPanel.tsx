@@ -3,7 +3,6 @@ import {
   AlertTriangle,
   Keyboard,
   RotateCcw,
-  SlidersHorizontal,
 } from 'lucide-react';
 import { hasNonModifierKey, normalizeHotkeyFromEvent, normalizeRegisterableHotkey } from '@tanstack/react-hotkeys';
 import type { RegisterableHotkey } from '@tanstack/react-hotkeys';
@@ -85,12 +84,15 @@ export function ShortcutSettingsPanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col bg-background">
-      <div className="border-b border-border/70 px-5 py-3.5">
+      <header className="border-b border-border/70 bg-[hsl(var(--app-panel-strong))] px-5 py-4">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Keyboard size={17} className="text-muted-foreground" />
               <h2 className="text-base font-semibold leading-6 text-foreground">Keyboard shortcuts</h2>
+              <span className="rounded-full bg-muted/60 px-2 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
+                {overrideCount} override{overrideCount === 1 ? '' : 's'}
+              </span>
             </div>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
               Review active bindings and replace them with local overrides.
@@ -105,25 +107,22 @@ export function ShortcutSettingsPanel() {
               setRecordingId(null);
             }}
             disabled={overrideCount === 0}
+            className="h-10 rounded-lg"
           >
             <RotateCcw size={15} />
             Reset all
           </Button>
         </div>
-        <div className="mt-3 flex items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-          <SlidersHorizontal size={14} className="shrink-0" />
-          <span>{overrideCount} override{overrideCount === 1 ? '' : 's'} active</span>
-        </div>
-      </div>
+      </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto bg-muted/20 p-4">
-        <div className="space-y-4">
+        <div className="overflow-hidden rounded-xl bg-background shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.7)]">
           {groupedShortcuts.map(([scope, shortcuts]) => (
-            <section key={scope} className="space-y-2">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+            <section key={scope} className="border-b border-border/60 last:border-b-0">
+              <div className="bg-muted/30 px-3 py-2 text-[11px] font-semibold text-muted-foreground">
                 {scopeLabels[scope]}
               </div>
-              <div className="overflow-hidden rounded-lg border border-border/70 bg-background shadow-[0_10px_30px_-24px_hsl(var(--foreground)/0.35)] divide-y divide-border/50">
+              <div className="divide-y divide-border/50">
                 {shortcuts.map(([id, shortcut]) => {
                   const isRecording = recordingId === id;
                   const effective = getEffectiveShortcutHotkeys(id, overrides);
@@ -153,9 +152,9 @@ export function ShortcutSettingsPanel() {
                       <div className="min-w-0 space-y-1">
                         <div
                           className={cn(
-                            'inline-flex min-h-7 max-w-full items-center rounded-md border px-2.5 py-0.5 font-mono text-[11px] leading-4',
+                            'inline-flex min-h-8 max-w-full items-center rounded-md border px-2.5 py-0.5 font-mono text-[11px] leading-4',
                             override
-                              ? 'border-primary/30 bg-primary/10 text-primary'
+                              ? 'border-foreground/20 bg-foreground/[0.06] text-foreground'
                               : 'border-border/70 bg-muted/40 text-foreground/85'
                           )}
                           title={getShortcutDisplayLabels(effective)}
@@ -174,7 +173,7 @@ export function ShortcutSettingsPanel() {
                               type="button"
                               variant="outline"
                               size="sm"
-                              className="h-7 min-w-24 justify-center border-primary/35 bg-primary/10 px-2 text-xs text-primary"
+                              className="h-10 min-w-24 justify-center rounded-lg border-foreground/20 bg-foreground/[0.06] px-2 text-xs text-foreground"
                               onClick={() => setRecordingId(null)}
                             >
                               Listening
@@ -183,7 +182,7 @@ export function ShortcutSettingsPanel() {
                               type="button"
                               variant="ghost"
                               size="sm"
-                              className="h-7 px-2 text-xs"
+                              className="h-10 rounded-lg px-2 text-xs"
                               onClick={() => setRecordingId(null)}
                             >
                               Cancel
@@ -195,7 +194,7 @@ export function ShortcutSettingsPanel() {
                               type="button"
                               variant="outline"
                               size="sm"
-                              className="h-7 px-2.5 text-xs"
+                              className="h-10 rounded-lg px-2.5 text-xs"
                               onClick={() => setRecordingId(id)}
                             >
                               Change
@@ -204,7 +203,7 @@ export function ShortcutSettingsPanel() {
                               type="button"
                               variant="ghost"
                               size="sm"
-                              className="h-7 px-2 text-xs"
+                              className="h-10 rounded-lg px-2 text-xs"
                               onClick={() => resetShortcutOverride(id)}
                               disabled={!override}
                             >

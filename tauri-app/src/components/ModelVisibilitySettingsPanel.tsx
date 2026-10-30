@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, Eye, KeyRound, Search, SlidersHorizontal } from 'lucide-react';
+import { Check, ChevronDown, Eye, KeyRound, Search, SlidersHorizontal } from 'lucide-react';
 import { Button } from '../../@/components/ui/button';
 import { Checkbox } from '../../@/components/ui/checkbox';
 import { Input } from '../../@/components/ui/input';
@@ -184,7 +184,7 @@ export function ModelVisibilitySettingsPanel({
       {showHeader ? (
         <header className="shrink-0 border-b border-border/70 px-5 py-4">
           <div className="flex items-start gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))]">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted/60 text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border)/0.55)]">
               <SlidersHorizontal className="h-5 w-5" />
             </div>
             <div className="min-w-0">
@@ -197,8 +197,8 @@ export function ModelVisibilitySettingsPanel({
         </header>
       ) : null}
 
-      <div className="shrink-0 border-b border-border/60 px-5 py-3">
-        <div className="grid grid-cols-3 gap-2 rounded-xl bg-muted/30 p-1.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]">
+      <div className="shrink-0 border-b border-border/60 px-5 py-2.5">
+        <div className="grid grid-cols-3 gap-1 rounded-lg bg-muted/45 p-1">
           {providers.map((provider) => {
             const active = activeProvider === provider.id;
             const providerFamilies = familiesByProvider[provider.id];
@@ -212,10 +212,10 @@ export function ModelVisibilitySettingsPanel({
                 type="button"
                 onClick={() => setActiveProvider(provider.id)}
                 className={cn(
-                  'min-h-11 rounded-lg px-3 py-2 text-left transition-[background-color,box-shadow,transform] duration-150 active:scale-[0.96]',
+                  'min-h-10 rounded-md px-3 py-1.5 text-left transition-[background-color,box-shadow,transform] duration-150 ease-out active:scale-[0.96]',
                   active
-                    ? 'bg-background text-foreground shadow-[0_8px_22px_-18px_rgba(15,23,42,0.75),inset_0_0_0_1px_hsl(var(--app-border)/0.78)]'
-                    : 'text-muted-foreground hover:bg-background/65 hover:text-foreground',
+                    ? 'bg-background text-foreground shadow-[0_1px_2px_hsl(var(--foreground)/0.08),inset_0_0_0_1px_hsl(var(--border)/0.55)]'
+                    : 'text-muted-foreground hover:bg-background/55 hover:text-foreground',
                 )}
                 aria-pressed={active}
               >
@@ -241,15 +241,18 @@ export function ModelVisibilitySettingsPanel({
           />
         </div>
         {activeProvider === 'opencode' && modelProviders.length > 1 ? (
-          <select
-            value={modelProviderFilter}
-            onChange={(event) => setModelProviderFilter(event.target.value)}
-            aria-label="Filter OpenCode source"
-            className="h-10 max-w-48 rounded-md border border-input bg-background px-3 text-xs text-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <option value="all">All sources</option>
-            {modelProviders.map((provider) => <option key={provider} value={provider}>{formatModelProvider(provider)}</option>)}
-          </select>
+          <div className="relative">
+            <select
+              value={modelProviderFilter}
+              onChange={(event) => setModelProviderFilter(event.target.value)}
+              aria-label="Filter OpenCode source"
+              className="h-10 max-w-48 appearance-none rounded-lg border border-[hsl(var(--app-border)/0.74)] bg-[hsl(var(--app-panel-strong)/0.78)] pl-3 pr-8 text-xs font-medium text-foreground outline-none transition-[background-color,border-color,box-shadow] duration-150 hover:border-[hsl(var(--app-border-strong)/0.78)] hover:bg-[hsl(var(--app-panel-strong))] focus-visible:border-[hsl(var(--app-border-strong))] focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus)/0.22)] motion-reduce:transition-none"
+            >
+              <option value="all">All sources</option>
+              {modelProviders.map((provider) => <option key={provider} value={provider}>{formatModelProvider(provider)}</option>)}
+            </select>
+            <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          </div>
         ) : null}
         <Button
           type="button"
@@ -274,7 +277,7 @@ export function ModelVisibilitySettingsPanel({
                 type="button"
                 size="sm"
                 variant={active ? 'secondary' : 'outline'}
-                className="h-8 px-2.5 text-xs"
+                className="h-10 rounded-lg px-3 text-xs"
                 aria-pressed={active}
                 onClick={() => toggleCapabilityFilter(filter.id)}
               >
@@ -283,7 +286,7 @@ export function ModelVisibilitySettingsPanel({
             );
           })}
           {capabilityFilters.length > 0 ? (
-            <Button type="button" size="sm" variant="ghost" className="h-8 px-2.5 text-xs" onClick={() => setCapabilityFilters([])}>
+            <Button type="button" size="sm" variant="ghost" className="h-10 rounded-lg px-3 text-xs" onClick={() => setCapabilityFilters([])}>
               Reset
             </Button>
           ) : null}
@@ -313,7 +316,7 @@ export function ModelVisibilitySettingsPanel({
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto rounded-xl bg-background/75 p-1.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
+        <div className="min-h-0 flex-1 overflow-auto border-y border-border/60 bg-background/55">
           {activeProvider === 'opencode' && families.length === 0 && !hasOpenCodeProfile ? (
             <div className="flex min-h-56 flex-col items-center justify-center px-6 text-center">
               <KeyRound className="h-5 w-5 text-muted-foreground" />
@@ -336,7 +339,7 @@ export function ModelVisibilitySettingsPanel({
                 return (
                   <label
                     key={family.key}
-                    className="flex min-h-14 cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 transition-[background-color,transform] duration-150 hover:bg-muted/45 active:scale-[0.99]"
+                    className="flex min-h-14 cursor-pointer items-center gap-3 px-3 py-2.5 transition-[background-color,transform] duration-150 ease-out hover:bg-muted/45 active:scale-[0.96]"
                   >
                     <Checkbox
                       checked={checked}
@@ -349,16 +352,16 @@ export function ModelVisibilitySettingsPanel({
                         <span className="truncate text-[13px] font-semibold text-foreground">{family.label}</span>
                         {activeProvider === 'opencode' ? (
                           <>
-                            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                            <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                               {formatModelProvider(family.modelProvider)}
                             </span>
                             {family.isFree === true ? (
-                              <span className="shrink-0 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                              <span className="shrink-0 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
                                 Free
                               </span>
                             ) : null}
                             {family.status && family.status !== 'active' ? (
-                              <span className="shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium capitalize text-amber-700 dark:text-amber-300">
+                              <span className="shrink-0 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium capitalize text-amber-700 dark:text-amber-300">
                                 {family.status}
                               </span>
                             ) : null}

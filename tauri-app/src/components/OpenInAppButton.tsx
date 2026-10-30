@@ -157,8 +157,13 @@ export function OpenInAppButton({
 
   if (loading) {
     return (
-      <Button variant="outline" size="sm" disabled className={cn(compact ? 'h-6 text-[10px] px-2 gap-1' : 'h-8 text-xs gap-1.5', className)}>
-        <Loader2 size={compact ? 10 : 12} className="animate-spin" />
+      <Button
+        variant="outline"
+        size="sm"
+        disabled
+        className={cn(compact ? 'h-8 gap-1 px-2 text-[10px]' : 'h-10 gap-1.5 text-xs', 'rounded-lg', className)}
+      >
+        <Loader2 size={compact ? 10 : 12} className="animate-spin motion-reduce:animate-none" />
         {!compact && 'Open'}
       </Button>
     );
@@ -172,9 +177,9 @@ export function OpenInAppButton({
           size="sm"
           className={cn(
             compact
-              ? 'h-6 text-[10px] px-2 gap-1 hover:bg-primary/5 hover:text-primary hover:border-primary/30'
-              : 'flex-1 h-8 text-xs gap-1.5 hover:bg-primary/5 hover:text-primary hover:border-primary/30',
-            'transition-colors',
+              ? 'h-8 gap-1 px-2 text-[10px] hover:border-primary/30 hover:bg-primary/5 hover:text-primary'
+              : 'h-10 flex-1 gap-1.5 text-xs hover:border-primary/30 hover:bg-primary/5 hover:text-primary',
+            'rounded-lg transition-[background-color,border-color,color,transform] duration-150 ease-out active:scale-[0.96] motion-reduce:transition-none',
             className
           )}
         >
@@ -186,7 +191,7 @@ export function OpenInAppButton({
       <DropdownMenuContent align="start" className="w-48">
         {editors.length > 0 && (
           <>
-            <DropdownMenuLabel className="text-[10px] text-muted-foreground uppercase tracking-wider">
+            <DropdownMenuLabel className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
               Editors
             </DropdownMenuLabel>
             {editors.map((app) => (
@@ -194,9 +199,9 @@ export function OpenInAppButton({
                 key={app.id}
                 onClick={() => handleOpen(app)}
                 disabled={opening === app.id}
-                className="gap-2 text-xs cursor-pointer"
+                className="min-h-9 cursor-pointer"
               >
-                {opening === app.id ? <Loader2 size={14} className="animate-spin" /> : app.icon}
+                {opening === app.id ? <Loader2 size={14} className="animate-spin motion-reduce:animate-none" /> : app.icon}
                 {app.name}
               </DropdownMenuItem>
             ))}
@@ -205,7 +210,7 @@ export function OpenInAppButton({
         {editors.length > 0 && terminals.length > 0 && <DropdownMenuSeparator />}
         {terminals.length > 0 && (
           <>
-            <DropdownMenuLabel className="text-[10px] text-muted-foreground uppercase tracking-wider">
+            <DropdownMenuLabel className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
               Terminals
             </DropdownMenuLabel>
             {terminals.map((app) => (
@@ -213,9 +218,9 @@ export function OpenInAppButton({
                 key={app.id}
                 onClick={() => handleOpen(app)}
                 disabled={opening === app.id}
-                className="gap-2 text-xs cursor-pointer"
+                className="min-h-10 cursor-pointer gap-2 rounded-lg text-xs"
               >
-                {opening === app.id ? <Loader2 size={14} className="animate-spin" /> : app.icon}
+                {opening === app.id ? <Loader2 size={14} className="animate-spin motion-reduce:animate-none" /> : app.icon}
                 {app.name}
               </DropdownMenuItem>
             ))}

@@ -334,7 +334,7 @@ function GraphDockPromptTextarea({
       }}
       onPaste={onPaste}
       placeholder="Ask anything... Type @ for files, # for orchestration, or $ for skills"
-      className="max-h-[216px] min-h-[58px] w-full resize-none overflow-y-auto rounded-lg bg-[hsl(var(--background)/0.44)] px-2.5 py-2 text-[13px] leading-5 text-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.54)] outline-none transition-[background-color,box-shadow] duration-150 placeholder:text-muted-foreground/68 focus:bg-[hsl(var(--background)/0.64)] focus:shadow-[inset_0_0_0_1px_hsl(var(--app-focus)/0.48),0_0_0_3px_hsl(var(--app-focus)/0.08)]"
+      className="max-h-[216px] min-h-[58px] w-full resize-none overflow-y-auto rounded-lg border border-[hsl(var(--app-border)/0.54)] bg-[hsl(var(--background)/0.44)] px-2.5 py-2 text-[13px] leading-5 text-foreground outline-none transition-[background-color,border-color] duration-150 placeholder:text-muted-foreground/68 focus:border-[hsl(var(--app-focus)/0.48)] focus:bg-[hsl(var(--background)/0.64)] dark:bg-zinc-800 dark:focus:bg-zinc-800"
       disabled={disabled}
       minRows={2}
       maxRows={10}
@@ -743,7 +743,7 @@ export function GraphDockComposer({
       const existing = commitsBySha.get(sha);
       commitsBySha.set(sha, {
         sha,
-        subject: commit.subject ?? existing?.subject ?? null,
+        subject: existing?.subject ?? commit.subject ?? null,
         parents: Array.isArray(commit.parents) ? commit.parents : existing?.parents ?? [],
         produced_by_node_id: commit.produced_by_node_id ?? existing?.produced_by_node_id ?? null,
         authored_at: commit.authored_at ?? existing?.authored_at ?? null,
@@ -895,14 +895,15 @@ export function GraphDockComposer({
   }, [activeTemplateMention, orchestrationTemplates]);
   const isBaseChoicesLoading = localRefsQuery.isLoading || trackedRefsQuery.isLoading || gitRefSnapshotQuery.isLoading || lazyCommitsQuery.isLoading || baseCommitCandidatesQuery.isLoading || baseCommitAncestorsQuery.isLoading;
   const footerStatusText = error ?? (isSteeringRunningAssistant ? 'Steer the running agent' : '');
+  const composerButtonHitTargetClass = "relative after:absolute after:left-1/2 after:top-1/2 after:h-10 after:w-full after:min-w-10 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']";
   const dockControlButtonClass = cn(
-    'group/control flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-[hsl(var(--app-border)/0.78)]',
-    'bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-panel)/0.82))]',
-    'pl-2 pr-2 text-left text-[11px] font-semibold text-foreground shadow-[inset_0_1px_0_hsl(44_80%_99%/0.55)]',
-    'transition-[background-color,border-color,box-shadow,transform,color] duration-200 ease-out',
-    'hover:-translate-y-0.5 hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-panel-strong)/0.98)]',
-    'active:translate-y-0 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]',
-    'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0'
+    'group/control flex h-8 min-w-0 items-center gap-1.5 rounded-md border border-[hsl(var(--app-border)/0.72)]',
+    'bg-[hsl(var(--app-panel-strong)/0.72)] px-2 text-left text-[11px] font-semibold text-foreground',
+    'transition-[background-color,border-color,box-shadow,transform,color] duration-normal ease-out-cubic motion-reduce:transition-none',
+    'hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-panel-strong)/0.96)]',
+    'active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]',
+    'disabled:cursor-not-allowed disabled:opacity-50',
+    composerButtonHitTargetClass
   );
 
   useEffect(() => {
@@ -1768,18 +1769,20 @@ export function GraphDockComposer({
     <div
       data-testid="graph-dock-composer"
       data-composer-surface={surface}
+      data-design-scope={surface === 'graph' ? 'graph' : surface === 'chat-panel' ? 'chat' : 'nodes'}
+      data-design-part="composer"
       aria-label={surface === 'graph' ? 'Graph composer' : surface === 'chat-panel' ? 'Chat composer' : 'Reply composer'}
       className={cn(
         'pointer-events-auto overflow-visible rounded-xl',
         surface === 'graph'
           ? 'mx-auto w-[min(50rem,calc(100vw-1rem))] max-w-4xl sm:w-[min(50rem,calc(100vw-7rem))]'
           : 'w-full max-w-none',
-        'border border-[hsl(var(--app-border)/0.86)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-panel)/0.95))]',
-        'shadow-[0_22px_70px_-40px_hsl(34_28%_18%/0.72),0_1px_0_hsl(44_80%_99%/0.72)_inset,0_-1px_0_hsl(var(--app-border)/0.26)_inset] backdrop-blur-xl'
+        'border border-[hsl(var(--app-border)/0.78)] bg-[hsl(var(--app-panel)/0.97)]',
+        'shadow-[0_22px_64px_-42px_hsl(var(--foreground)/0.48)]'
       )}
     >
-      <div className="flex min-w-0 items-center justify-between gap-2 border-b border-[hsl(var(--app-border)/0.68)] bg-[linear-gradient(180deg,hsl(var(--app-bg-elevated)/0.78),hsl(var(--app-panel)/0.58))] px-2.5 py-1.5 text-[11px]">
-        <div className="grid min-w-0 max-w-[min(28rem,calc(100vw-5rem))] grid-cols-[auto_minmax(0,1fr)] items-center gap-2 rounded-lg border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--background)/0.42)] px-2 py-1 shadow-[inset_0_1px_0_hsl(44_80%_99%/0.42)] sm:max-w-[30rem]">
+      <div data-design-part="composer-header" className="flex min-w-0 items-center justify-between gap-2 border-b border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.38)] px-2.5 py-1.5 text-[11px]">
+        <div data-design-part="composer-target" className="grid min-w-0 max-w-[min(28rem,calc(100vw-5rem))] grid-cols-[auto_minmax(0,1fr)] items-center gap-2 px-1 py-1 sm:max-w-[30rem]">
           <span className="flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-[hsl(var(--app-accent-soft)/0.74)] px-1.5 text-[10px] font-semibold text-[hsl(var(--app-accent))] shadow-[inset_0_0_0_1px_hsl(var(--app-accent)/0.12)]">
             {isRootComposerTarget ? <Plus className="h-3 w-3" /> : <CornerDownRight className="h-3 w-3" />}
             {targetModeLabel}
@@ -1792,7 +1795,7 @@ export function GraphDockComposer({
           {base ? shortCommitSha(base.commitSha) : 'No base'}
         </span>
       </div>
-      <div className="p-2">
+      <div data-design-part="composer-body" className="p-2">
         {editDraftSource ? (
           <div className="mb-1.5 flex items-center justify-between gap-2 rounded-lg border border-[hsl(var(--app-warning)/0.28)] bg-[hsl(var(--app-warning)/0.08)] px-2.5 py-1.5 text-[11px] text-foreground">
             <div className="flex min-w-0 items-center gap-1.5">
@@ -1812,7 +1815,7 @@ export function GraphDockComposer({
         ) : null}
         <div className="relative">
           {activeFileMention ? (
-            <div className="absolute inset-x-0 bottom-[calc(100%+8px)] z-50 overflow-hidden rounded-xl border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong)/0.98)] shadow-[0_20px_60px_-28px_rgba(15,23,42,0.45)] backdrop-blur-xl">
+            <div className="absolute inset-x-0 bottom-[calc(100%+8px)] z-[90] overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.74)] bg-[hsl(var(--app-panel-strong)/0.98)] shadow-[0_0_0_1px_hsl(var(--foreground)/0.025),0_20px_52px_-26px_hsl(var(--foreground)/0.42)] backdrop-blur-xl">
               <div className="flex items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 text-[11px] font-semibold text-foreground">
@@ -1871,7 +1874,7 @@ export function GraphDockComposer({
             </div>
           ) : null}
           {activeSkillMention ? (
-            <div className="absolute inset-x-0 bottom-[calc(100%+8px)] z-50 overflow-hidden rounded-xl border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong)/0.98)] shadow-[0_20px_60px_-28px_rgba(15,23,42,0.45)] backdrop-blur-xl">
+            <div className="absolute inset-x-0 bottom-[calc(100%+8px)] z-[90] overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.74)] bg-[hsl(var(--app-panel-strong)/0.98)] shadow-[0_0_0_1px_hsl(var(--foreground)/0.025),0_20px_52px_-26px_hsl(var(--foreground)/0.42)] backdrop-blur-xl">
               <div className="flex items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 text-[11px] font-semibold text-foreground">
@@ -1941,7 +1944,7 @@ export function GraphDockComposer({
             </div>
           ) : null}
           {activeTemplateMention ? (
-            <div className="absolute inset-x-0 bottom-[calc(100%+8px)] z-50 overflow-hidden rounded-xl border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong)/0.98)] shadow-[0_20px_60px_-28px_rgba(15,23,42,0.45)] backdrop-blur-xl">
+            <div className="absolute inset-x-0 bottom-[calc(100%+8px)] z-[90] overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.74)] bg-[hsl(var(--app-panel-strong)/0.98)] shadow-[0_0_0_1px_hsl(var(--foreground)/0.025),0_20px_52px_-26px_hsl(var(--foreground)/0.42)] backdrop-blur-xl">
               <div className="flex items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 text-[11px] font-semibold text-foreground">
@@ -2033,53 +2036,71 @@ export function GraphDockComposer({
             ))}
           </div>
         ) : null}
-        <div data-testid="graph-dock-control-row" className="mt-1.5 grid min-w-0 grid-cols-3 gap-1.5 border-t border-[hsl(var(--app-border)/0.52)] px-0.5 pt-1.5">
+        <div data-testid="graph-dock-control-row" data-design-part="composer-control-row" className="mt-2 grid min-w-0 grid-cols-3 gap-1.5 border-t border-[hsl(var(--app-border)/0.48)] px-0.5 pt-2">
           <DropdownMenu open={isBasePickerOpen} onOpenChange={setIsBasePickerOpen}>
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
                 aria-label="Select code base commit"
+                data-design-part="composer-config-control"
                 title="Base commit to use"
                 disabled={isComposerConfigurationDisabled || !effectiveBase}
                 className={cn(
                   dockControlButtonClass,
-                  'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
-                  'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
-                  'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]'
+                  'w-full justify-start px-2.5'
                 )}
               >
-                <GitBranchIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
-                <span className="truncate">{effectiveBaseLabel}</span>
-                <span className="hidden font-mono text-[10px] text-muted-foreground md:inline">{effectiveBase ? shortCommitSha(effectiveBase.commitSha) : ''}</span>
-                <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+                <span className="flex size-5 shrink-0 items-center justify-center rounded-md bg-[hsl(var(--app-bg-elevated)/0.72)] text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.42)]">
+                  <GitBranchIcon className="h-3 w-3" />
+                </span>
+                <span className="min-w-0 flex-1 truncate font-medium">{effectiveBaseLabel}</span>
+                <span className="hidden shrink-0 rounded-md bg-[hsl(var(--app-bg-elevated)/0.72)] px-1.5 py-0.5 font-mono text-[9px] font-medium tabular-nums text-muted-foreground md:inline-flex">
+                  {effectiveBase ? shortCommitSha(effectiveBase.commitSha) : ''}
+                </span>
+                <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground transition-transform duration-150 ease-out group-data-[state=open]/control:rotate-180 motion-reduce:transition-none" />
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" side="top" sideOffset={8} className="w-[min(24rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-border/70 bg-popover/95 p-0 shadow-xl backdrop-blur-xl">
-              <div className="border-b border-border/60 p-2.5">
-                <DropdownMenuLabel className="px-0 pb-2 pt-0 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Run from code base</DropdownMenuLabel>
-                <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/80 px-2.5 py-1.5">
-                  <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <DropdownMenuContent
+              align="start"
+              side="top"
+              sideOffset={8}
+              data-design-part="composer-base-menu"
+              className="w-[min(25rem,calc(100vw-1.5rem))] overflow-hidden rounded-2xl border border-[hsl(var(--app-border)/0.72)] bg-[hsl(var(--app-panel-strong)/0.98)] p-0 shadow-[0_0_0_1px_hsl(var(--foreground)/0.025),0_18px_50px_-22px_hsl(var(--foreground)/0.34)] backdrop-blur-xl"
+            >
+              <div className="border-b border-[hsl(var(--app-border)/0.54)] px-3 pb-2.5 pt-3">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <DropdownMenuLabel className="px-0 py-0 text-[11px] font-semibold tracking-[-0.01em] text-foreground">Choose code base</DropdownMenuLabel>
+                  <span className="shrink-0 text-[10px] font-medium tabular-nums text-muted-foreground">
+                    {filteredBasePickerItems.length} {filteredBasePickerItems.length === 1 ? 'option' : 'options'}
+                  </span>
+                </div>
+                <div className="flex h-9 items-center gap-2 rounded-[0.625rem] border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-bg)/0.58)] px-2.5 transition-[border-color,box-shadow] duration-150 ease-out focus-within:border-[hsl(var(--app-border-strong)/0.88)] focus-within:shadow-[0_0_0_2px_hsl(var(--app-focus)/0.18)]">
+                  <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                   <input
                     value={baseCommitSearch}
                     onChange={(event) => setBaseCommitSearch(event.target.value)}
-                    onKeyDown={(event) => event.stopPropagation()}
-                    placeholder="Search branches, commits, SHA"
-                    className="h-6 min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/70"
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Escape') event.stopPropagation();
+                    }}
+                    aria-label="Search code bases"
+                    placeholder="Search branch, subject, or SHA"
+                    className="h-full min-w-0 flex-1 bg-transparent text-[11px] font-medium text-foreground outline-none placeholder:font-normal placeholder:text-muted-foreground/70"
                   />
-                  {isBaseChoicesLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" /> : null}
+                  {isBaseChoicesLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" aria-label="Loading code bases" /> : null}
                 </div>
                 {baseChipItems.length > 0 ? (
-                  <div className="mt-2 flex max-h-14 flex-wrap gap-1.5 overflow-hidden">
+                  <div aria-label="Quick code bases" className="mt-2 flex gap-1.5 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                     {baseChipItems.map((chip) => (
                       <button
                         key={chip.key}
                         type="button"
                         onClick={() => handleBaseSelect(chip.item)}
+                        aria-pressed={chip.item.selected}
                         className={cn(
-                          'max-w-[10rem] truncate rounded-full border px-2 py-1 text-[10px] font-medium transition-colors',
+                          'h-6 max-w-[11rem] shrink-0 truncate rounded-md px-2 text-[10px] font-medium transition-[background-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.96] motion-reduce:transition-none',
                           chip.item.selected
-                            ? 'border-[hsl(var(--app-accent)/0.42)] bg-[hsl(var(--app-accent)/0.10)] text-foreground'
-                            : 'border-border/70 bg-background/60 text-muted-foreground hover:bg-muted/70 hover:text-foreground'
+                            ? 'bg-[hsl(var(--app-selection)/0.10)] text-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border-strong)/0.72)]'
+                            : 'bg-[hsl(var(--app-bg-elevated)/0.58)] text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.52)] hover:bg-[hsl(var(--app-bg-elevated)/0.92)] hover:text-foreground'
                         )}
                       >
                         {chip.label}
@@ -2090,18 +2111,54 @@ export function GraphDockComposer({
               </div>
               <div className="max-h-[min(19rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto p-1.5">
                 {filteredBasePickerItems.length > 0 ? (
-                  filteredBasePickerItems.map((item) => (
-                    <DropdownMenuItem key={item.sha} onClick={() => handleBaseSelect(item)} className="min-h-11 gap-2 rounded-lg px-2 py-1.5" title={`${item.sha} ${item.subject}`.trim()}>
-                      {item.selected ? <Check className="h-3.5 w-3.5" /> : <GitCommitHorizontal className="h-3.5 w-3.5" />}
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-[12px] font-semibold">{item.primaryLabel}</div>
-                        <div className="truncate font-mono text-[10px] text-muted-foreground">{shortCommitSha(item.sha)} · {item.secondaryLabel}</div>
-                      </div>
-                    </DropdownMenuItem>
-                  ))
+                  filteredBasePickerItems.map((item) => {
+                    const abbreviatedSha = shortCommitSha(item.sha);
+                    const supportingLabel = item.secondaryLabel !== abbreviatedSha
+                      ? item.secondaryLabel
+                      : item.subject !== item.primaryLabel && item.subject !== abbreviatedSha
+                        ? item.subject
+                        : item.selected
+                          ? 'Current starting point'
+                          : '';
+
+                    return (
+                      <DropdownMenuItem
+                        key={item.sha}
+                        onClick={() => handleBaseSelect(item)}
+                        aria-current={item.selected ? 'true' : undefined}
+                        data-design-part="composer-base-option"
+                        data-design-selected={item.selected ? 'true' : 'false'}
+                        className={cn(
+                          'group/item min-h-[2.875rem] gap-2.5 rounded-[0.625rem] px-2 py-1.5 transition-[background-color,color,box-shadow] duration-150 ease-out',
+                          item.selected
+                            ? 'bg-[hsl(var(--app-selection)/0.10)] text-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border-strong)/0.58)] focus:bg-[hsl(var(--app-selection)/0.10)]'
+                            : 'focus:bg-[hsl(var(--app-bg-elevated)/0.78)]'
+                        )}
+                        title={`${item.sha} ${item.subject}`.trim()}
+                      >
+                        <span className={cn(
+                          'flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color] duration-150 ease-out',
+                          item.selected
+                            ? 'bg-[hsl(var(--app-panel-strong)/0.92)] text-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border-strong)/0.58)]'
+                            : 'bg-[hsl(var(--app-bg-elevated)/0.62)] group-data-[highlighted]/item:text-foreground'
+                        )}>
+                          {item.selected ? <Check className="h-3.5 w-3.5" strokeWidth={2.25} /> : <GitCommitHorizontal className="h-3.5 w-3.5" />}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[12px] font-medium leading-4 text-foreground">{item.primaryLabel}</span>
+                          {supportingLabel ? (
+                            <span className="mt-0.5 block truncate text-[10px] leading-3.5 text-muted-foreground">{supportingLabel}</span>
+                          ) : null}
+                        </span>
+                        <span className="shrink-0 rounded-md bg-[hsl(var(--app-bg)/0.48)] px-1.5 py-1 font-mono text-[9px] font-medium tabular-nums text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.42)]">
+                          {abbreviatedSha}
+                        </span>
+                      </DropdownMenuItem>
+                    );
+                  })
                 ) : (
-                  <DropdownMenuItem disabled className="min-h-10 rounded-lg px-2 py-1.5 text-xs text-muted-foreground">
-                    {isBaseChoicesLoading ? 'Loading code bases...' : 'No matching code base'}
+                  <DropdownMenuItem disabled className="min-h-12 justify-center rounded-[0.625rem] px-3 py-2 text-[11px] font-medium text-muted-foreground">
+                    {isBaseChoicesLoading ? 'Loading code bases...' : 'No matching code bases'}
                   </DropdownMenuItem>
                 )}
               </div>
@@ -2113,14 +2170,13 @@ export function GraphDockComposer({
               <button
                 type="button"
                 aria-label="Select context"
+                data-design-part="composer-config-control"
                 title="Manually filter context if required."
                 disabled={isComposerConfigurationDisabled}
                 className={cn(
                   dockControlButtonClass,
-                  'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
-                  'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
-                  'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]',
-                  effectiveContextPolicy === 'fresh' && 'border-[hsl(var(--app-accent)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-accent-soft)/0.58),hsl(var(--app-panel-strong)/0.94))] shadow-[inset_0_1px_0_hsl(44_80%_99%/0.54),inset_0_-1px_0_hsl(var(--app-accent)/0.16),0_11px_24px_-18px_hsl(34_28%_18%/0.62)]'
+                  'w-full',
+                  effectiveContextPolicy === 'fresh' && 'border-[hsl(var(--app-accent)/0.38)] bg-[hsl(var(--app-accent-soft)/0.58)] text-[hsl(var(--app-accent))]'
                 )}
               >
                 <History className="h-3 w-3 shrink-0 text-muted-foreground" />
@@ -2128,7 +2184,7 @@ export function GraphDockComposer({
                 <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" side="top" sideOffset={8} className="w-80 rounded-xl border border-border/70 bg-popover/95 p-1.5 shadow-xl backdrop-blur-xl">
+            <DropdownMenuContent align="end" side="top" sideOffset={8} className="w-80">
               <DropdownMenuLabel className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">End context</DropdownMenuLabel>
               {mergeContextOptions.length > 0 ? (
                 mergeContextOptions.map((option) => {
@@ -2141,12 +2197,12 @@ export function GraphDockComposer({
                         setContextPolicy('continue');
                         setSelectedMergeContextParentId(option.id);
                       }}
-                      className="min-h-11 gap-2 rounded-lg"
+                      className="min-h-10"
                       title={option.label}
                     >
                       <GitBranchIcon className="h-3.5 w-3.5" />
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">{option.label.slice(0, 52)}</div>
+                        <div className="truncate text-xs font-medium">{option.label.slice(0, 52)}</div>
                         <div className="truncate text-[11px] text-muted-foreground">{option.role}</div>
                       </div>
                       {selected ? <Check className="ml-auto h-3.5 w-3.5" /> : null}
@@ -2157,12 +2213,12 @@ export function GraphDockComposer({
                 <DropdownMenuItem
                   disabled={!target.parentMessageId}
                   onClick={() => setContextPolicy('continue')}
-                  className="min-h-11 gap-2 rounded-lg"
+                  className="min-h-10"
                   title={getMessagePreviewText(effectiveContextParentMessage) || 'Use inferred conversation context'}
                 >
                   <GitBranchIcon className="h-3.5 w-3.5" />
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">{formatContextParentLabel(effectiveContextParentMessage, 'No prior conversation')}</div>
+                    <div className="truncate text-xs font-medium">{formatContextParentLabel(effectiveContextParentMessage, 'No prior conversation')}</div>
                     <div className="truncate text-[11px] text-muted-foreground">Inferred from reply</div>
                   </div>
                   {effectiveContextPolicy === 'continue' ? <Check className="ml-auto h-3.5 w-3.5" /> : null}
@@ -2181,12 +2237,12 @@ export function GraphDockComposer({
                           setContextPolicy('continue');
                           setSelectedContextStartId(option.id);
                         }}
-                        className="min-h-11 gap-2 rounded-lg"
+                        className="min-h-10"
                         title={option.label}
                       >
                         {option.isFreshBoundary ? <RotateCcw className="h-3.5 w-3.5" /> : <GitBranchIcon className="h-3.5 w-3.5" />}
                         <div className="min-w-0">
-                          <div className="truncate text-sm font-medium">{option.label.slice(0, 52)}</div>
+                          <div className="truncate text-xs font-medium">{option.label.slice(0, 52)}</div>
                           <div className="truncate text-[11px] text-muted-foreground">
                             {option.isFreshBoundary ? 'Fresh boundary' : option.id === defaultContextStartMessage?.id ? 'Inferred start' : option.role}
                           </div>
@@ -2198,10 +2254,10 @@ export function GraphDockComposer({
                 </>
               ) : null}
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => setContextPolicy('fresh')} className="min-h-11 gap-2 rounded-lg">
+              <DropdownMenuItem onClick={() => setContextPolicy('fresh')} className="min-h-10">
                 <RotateCcw className="h-3.5 w-3.5" />
                 <div className="min-w-0">
-                  <div className="text-sm font-medium">Fresh context</div>
+                  <div className="text-xs font-medium">Fresh context</div>
                   <div className="truncate text-[11px] text-muted-foreground">Start without inherited conversation context</div>
                 </div>
                 {effectiveContextPolicy === 'fresh' ? <Check className="ml-auto h-3.5 w-3.5" /> : null}
@@ -2219,13 +2275,12 @@ export function GraphDockComposer({
               <button
                 type="button"
                 aria-label="Select permissions"
+                data-design-part="composer-config-control"
                 title={selectedPermissionOption.description}
                 disabled={isComposerConfigurationDisabled}
                 className={cn(
                   dockControlButtonClass,
-                  'w-full border-[hsl(var(--app-border-strong)/0.42)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-accent-soft)/0.34)_52%,hsl(var(--app-panel)/0.86))]',
-                  'shadow-[inset_0_1px_0_hsl(44_80%_99%/0.62),inset_0_-1px_0_hsl(var(--app-border)/0.28),0_9px_20px_-18px_hsl(34_28%_18%/0.58)]',
-                  'hover:border-[hsl(var(--app-border-strong)/0.62)] hover:bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-accent-soft)/0.46)_52%,hsl(var(--app-panel)/0.9))]',
+                  'w-full',
                   permissionMode === 'full-access' && 'border-[hsl(var(--app-warning)/0.36)]'
                 )}
               >
@@ -2234,17 +2289,17 @@ export function GraphDockComposer({
                 <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" side="top" sideOffset={8} className="w-[min(20rem,calc(100vw-1.5rem))] rounded-xl border border-border/70 bg-popover/95 p-1.5 shadow-xl backdrop-blur-xl">
+            <DropdownMenuContent align="end" side="top" sideOffset={8} className="w-[min(20rem,calc(100vw-1.5rem))]">
               <DropdownMenuLabel className="px-1.5 py-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Permissions</DropdownMenuLabel>
               {COMPOSER_PERMISSION_OPTIONS.map((option) => (
                 <DropdownMenuItem
                   key={option.id}
                   onClick={() => setPermissionMode(option.id)}
-                  className="min-h-11 gap-2 rounded-lg px-2 py-1.5"
+                  className="min-h-10 px-2 py-1.5"
                 >
                   {permissionMode === option.id ? <Check className="h-3.5 w-3.5" /> : <Shield className="h-3.5 w-3.5" />}
                   <div className="min-w-0">
-                    <div className="truncate text-[12px] font-semibold">{option.label}</div>
+                    <div className="truncate text-[12px] font-medium">{option.label}</div>
                     <div className="truncate text-[10.5px] text-muted-foreground">{option.description}</div>
                   </div>
                 </DropdownMenuItem>
@@ -2252,7 +2307,7 @@ export function GraphDockComposer({
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-        <div className="mt-1.5 flex items-center justify-between gap-2 px-0.5 pb-0.5">
+        <div data-design-part="composer-footer-row" className="mt-2 flex items-center justify-between gap-2 px-0.5 pb-0.5">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <div className="min-w-0 shrink truncate text-[11px] text-muted-foreground">
               {footerStatusText}
@@ -2340,9 +2395,10 @@ export function GraphDockComposer({
               </Popover>
             ) : null}
           </div>
-          <div className="flex shrink-0 items-center gap-1.5">
+          <div data-design-part="composer-actions" className="flex shrink-0 items-center gap-2">
             <button
               type="button"
+              data-design-part="composer-checkout-button"
               aria-label="Auto checkout generated commit"
               aria-pressed={autoCheckoutOnAgentCommit && selectedRunTotal === 1}
               title={selectedRunTotal > 1
@@ -2351,8 +2407,9 @@ export function GraphDockComposer({
               disabled={isComposerConfigurationDisabled || !selectedWorkspaceId || selectedRunTotal > 1}
               onClick={() => setAutoCheckoutOnAgentCommit(!autoCheckoutOnAgentCommit)}
               className={cn(
-                'flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg border px-2 text-[10.5px] font-semibold transition-[background-color,border-color,color,transform]',
+                'flex h-8 shrink-0 items-center justify-center gap-1 rounded-md border px-2 text-[10.5px] font-semibold transition-[background-color,border-color,color,transform] duration-normal ease-out-cubic motion-reduce:transition-none',
                 'active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50',
+                composerButtonHitTargetClass,
                 autoCheckoutOnAgentCommit && selectedRunTotal === 1
                   ? 'border-[hsl(var(--app-accent)/0.45)] bg-[hsl(var(--app-accent-soft)/0.72)] text-foreground'
                   : 'border-[hsl(var(--app-border)/0.78)] bg-[hsl(var(--app-panel-strong)/0.72)] text-muted-foreground hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-panel)/0.9)] hover:text-foreground'
@@ -2377,9 +2434,10 @@ export function GraphDockComposer({
             />
             <button
               type="button"
+              data-design-part="composer-attach-button"
               onClick={() => fileInputRef.current?.click()}
               disabled={isBlockingPrimaryAction || !selectedWorkspaceId}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-border)/0.78)] bg-[hsl(var(--app-panel-strong)/0.72)] text-muted-foreground transition-[background-color,border-color,color,transform] hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-panel)/0.9)] hover:text-foreground active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
+              className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[hsl(var(--app-border)/0.72)] bg-[hsl(var(--app-panel-strong)/0.64)] text-muted-foreground transition-[background-color,border-color,color,transform] duration-normal ease-out-cubic motion-reduce:transition-none hover:border-[hsl(var(--app-border-strong)/0.72)] hover:bg-[hsl(var(--app-panel)/0.9)] hover:text-foreground active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50", composerButtonHitTargetClass)}
               aria-label="Attach files"
               title="Attach files"
             >
@@ -2389,14 +2447,16 @@ export function GraphDockComposer({
               <button
                 type="button"
                 data-testid="graph-dock-cancel-running-agent-button"
+                data-design-part="composer-cancel-button"
                 disabled={isCancellingRun}
                 onClick={() => void handleCancelRunningAgent()}
                 className={cn(
-                  'flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[hsl(var(--app-border)/0.78)] px-2.5 text-xs font-semibold text-muted-foreground',
-                  'bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-panel)/0.84))] shadow-[inset_0_1px_0_hsl(44_80%_99%/0.44)]',
-                  'transition-[background-color,border-color,color,box-shadow,transform,opacity] duration-150 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]',
-                  'hover:-translate-y-0.5 hover:border-destructive/35 hover:bg-destructive/10 hover:text-destructive active:translate-y-0',
-                  'disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:translate-y-0 disabled:hover:border-[hsl(var(--app-border)/0.78)] disabled:hover:text-muted-foreground'
+                  'flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-[hsl(var(--app-border)/0.72)] px-2.5 text-xs font-semibold text-muted-foreground',
+                  'bg-[hsl(var(--app-panel-strong)/0.72)]',
+                  composerButtonHitTargetClass,
+                  'transition-[background-color,border-color,color,box-shadow,transform,opacity] duration-normal ease-out-cubic motion-reduce:transition-none active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]',
+                  'hover:border-destructive/35 hover:bg-destructive/10 hover:text-destructive',
+                  'disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:border-[hsl(var(--app-border)/0.78)] disabled:hover:text-muted-foreground'
                 )}
                 aria-label="Cancel running agent"
                 title="Cancel running agent"
@@ -2408,13 +2468,15 @@ export function GraphDockComposer({
             <button
               type="button"
               data-testid="graph-dock-send-button"
+              data-design-part="composer-send-button"
               disabled={!canSend}
               onClick={() => void handleSend()}
               className={cn(
-                'flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg px-3.5 text-xs font-semibold',
-                'transition-[background-color,box-shadow,opacity,transform,filter] duration-150 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]',
+                'flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md px-3 text-xs font-semibold',
+                composerButtonHitTargetClass,
+                'transition-[background-color,box-shadow,opacity,transform,filter] duration-normal ease-out-cubic motion-reduce:transition-none active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]',
                 canSend
-                  ? 'bg-[hsl(var(--app-accent))] text-white shadow-[0_16px_36px_-20px_hsl(var(--app-accent)/0.68),inset_0_1px_0_hsl(44_80%_99%/0.24)] hover:-translate-y-0.5 hover:brightness-105 active:translate-y-0'
+                  ? 'bg-[hsl(var(--app-accent))] text-white shadow-[0_16px_36px_-20px_hsl(var(--app-accent)/0.68)] hover:brightness-105'
                   : 'cursor-not-allowed bg-muted text-muted-foreground opacity-60'
               )}
               aria-label={isSteeringRunningAssistant ? "Steer running agent" : "Send graph composer message"}

@@ -34,6 +34,7 @@ import { useToast } from '../components/Toast';
 import { PanelRightClose, PanelRightOpen, X } from 'lucide-react';
 import { dispatchOpenCommitTerminal } from '../lib/commitTerminalEvents';
 import { resolveFocusedCommitSha } from '../lib/composerSendParent';
+import { dispatchOpenModelConfiguration } from '../lib/modelConfigurationEvents';
 
 const AdvancedSearchPanel = lazy(() => import('../components/AdvancedSearchPanel').then((module) => ({ default: module.AdvancedSearchPanel })));
 const ChatInterface = lazy(() => import('../components/ChatInterface').then((module) => ({ default: module.ChatInterface })));
@@ -79,6 +80,11 @@ export function HomePage() {
   const [searchParams] = useSearchParams();
   const nodeId = searchParams.get('nodeId')?.trim() || searchParams.get('messageId')?.trim() || null;
   const threadId = nodeId ? null : searchParams.get('threadId')?.trim() || null;
+  const designReviewSurface = import.meta.env.DEV ? searchParams.get('designReview') : null;
+  const designReviewRun = import.meta.env.DEV ? searchParams.get('designReviewRun') : null;
+  const isWorkspaceDesignReview = Boolean(
+    designReviewSurface && designReviewSurface !== 'auth' && designReviewSurface !== 'onboarding'
+  );
   const { addToast } = useToast();
   const terminalShortcutLabel = useShortcutDisplayLabels('terminal.toggle');
 
@@ -424,6 +430,23 @@ export function HomePage() {
     }, { source: 'HomePage' });
   }, [activeView, isChatCollapsed, restoreChatPanel, selectedWorkspaceId]);
 
+  useEffect(() => {
+    if (!designReviewSurface || designReviewSurface === 'auth' || designReviewSurface === 'onboarding') return;
+
+    setActiveView('chat');
+    setIsSearchPanelOpen(designReviewSurface === 'panels');
+    if (designReviewSurface === 'graph' && !isChatCollapsed) {
+      toggleChatPanelCollapsed();
+    } else if (designReviewSurface === 'chat' || designReviewSurface === 'nodes') {
+      restoreChatPanel();
+    }
+
+    if (designReviewSurface === 'controls') {
+      const timer = window.setTimeout(() => dispatchOpenModelConfiguration('codex'), 0);
+      return () => window.clearTimeout(timer);
+    }
+  }, [designReviewRun]); // eslint-disable-line react-hooks/exhaustive-deps -- the run token intentionally replays the requested destination
+
   const showTerminalDock = useCallback(() => {
     setIsTerminalDockVisible(true);
     window.requestAnimationFrame(() => {
@@ -497,7 +520,7 @@ export function HomePage() {
     return <PanelLoading />;
   }
 
-  if (!hasCompletedOnboarding && !isLoadingWorkspaces) {
+  if ((designReviewSurface === 'onboarding' || (!hasCompletedOnboarding && !isWorkspaceDesignReview)) && !isLoadingWorkspaces) {
     devLogLazy(() => ['[ROUTE][HomePage] Rendering FirstRunExperience']);
     return (
       <Suspense fallback={<PanelLoading />}>
@@ -507,6 +530,7 @@ export function HomePage() {
           onSelectWorkspace={(workspaceId) => selectAndNavigateWorkspace(workspaceId, null, { replace: true })}
           onComplete={(workspaceId) => markCompletedOnboarding(effectiveUserId, workspaceId)}
           onRepositoryConnected={handleOnboardingRepositoryConnected}
+          reviewMode={designReviewSurface === 'onboarding'}
         />
       </Suspense>
     );
@@ -524,7 +548,7 @@ export function HomePage() {
 
   devLogLazy(() => ['[ROUTE][HomePage] Rendering main workspace shell']);
   return (
-    <div className="app-shell-background flex h-screen w-full flex-col overflow-hidden">
+    <div data-design-scope="shell" data-design-part="workspace-shell" className="app-shell-background flex h-[100dvh] w-full flex-col overflow-hidden antialiased">
       <AgentRunLiveStreamCoordinator />
       <AppHeader
         selectedWorkspaceId={selectedWorkspaceId}
@@ -539,7 +563,7 @@ export function HomePage() {
         onToggleTerminalDock={toggleOrOpenTerminalDock}
       />
 
-      <div className="app-shell-content flex min-h-0 flex-1 overflow-hidden">
+      <div data-design-part="shell-body" className="app-shell-content flex min-h-0 flex-1 overflow-hidden">
         <Sidebar
           activeView={activeView}
           onViewChange={setActiveView}
@@ -564,7 +588,7 @@ export function HomePage() {
           />
         </div>
 
-        <main className="app-shell-stage flex h-full min-w-0 flex-1 flex-col overflow-hidden" aria-label="Agentree workspace shell">
+        <main data-design-part="workspace-stage" className="app-shell-stage flex h-full min-w-0 flex-1 flex-col overflow-hidden" aria-label="Agentree workspace shell">
           <ResizablePanelGroup direction="vertical" className="min-h-0 w-full flex-1 border-0">
             <ResizablePanel
               id="workspace-stage"
@@ -614,9 +638,9 @@ export function HomePage() {
                       title={isChatCollapsed ? 'Restore chat panel' : 'Hide chat panel'}
                     >
                       {isChatCollapsed ? (
-                        <PanelRightOpen className={`${isChatCollapsed ? 'h-4 w-4' : 'h-3.5 w-3.5'} transition-transform duration-300 [transition-timing-function:cubic-bezier(0.32,_0.72,_0,_1)] group-hover:translate-x-0.5`} />
+                        <PanelRightOpen className={`${isChatCollapsed ? 'h-4 w-4' : 'h-3.5 w-3.5'} transition-transform duration-200 [transition-timing-function:cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none group-hover:translate-x-0.5`} />
                       ) : (
-                        <PanelRightClose className="h-3.5 w-3.5 transition-transform duration-300 [transition-timing-function:cubic-bezier(0.32,_0.72,_0,_1)] group-hover:-translate-x-0.5" />
+                        <PanelRightClose className="h-3.5 w-3.5 transition-transform duration-200 [transition-timing-function:cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none group-hover:-translate-x-0.5" />
                       )}
                     </button>
                   </ResizableHandle>
@@ -628,7 +652,7 @@ export function HomePage() {
                     collapsedSize={0}
                   >
                     {/* Right Panel: Chat */}
-                    <div className="flex h-full min-w-0 flex-col overflow-hidden border-l border-[hsl(var(--app-border)/0.72)] bg-[hsl(var(--app-panel)/0.96)]">
+                    <div data-design-part="chat-pane" className="flex h-full min-w-0 flex-col overflow-hidden border-l border-[hsl(var(--app-border)/0.72)] bg-[hsl(var(--app-panel)/0.96)] dark:border-white/10">
                       {!isChatCollapsed && (
                         <div className="flex-1 min-w-0 overflow-hidden">
                           <Suspense fallback={<PanelLoading />}>
@@ -644,24 +668,24 @@ export function HomePage() {
                 </ResizablePanelGroup>
               </div>
             ) : activeView === 'chat' ? (
-              <div className="app-view-surface flex h-full items-center justify-center px-6">
-                <div className="app-panel max-w-md rounded-2xl p-6 text-center">
+              <div data-design-scope="panels" className="app-view-surface flex h-full items-center justify-center px-6">
+                <div data-design-part="empty-workspace" className="max-w-sm border-y border-[hsl(var(--app-border)/0.68)] py-6 text-center dark:border-white/10">
                   <div className="text-sm font-semibold text-foreground">No workspace selected</div>
-                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  <p className="mt-1.5 text-sm leading-5 text-muted-foreground">
                     Choose a workspace in the navigator to load its graph, chat, and merge history.
                   </p>
                 </div>
               </div>
             ) : null}
           {activeView === 'chat' ? null : activeView === 'orchestration' ? (
-            <div className="app-view-surface h-full w-full overflow-auto p-5">
+            <div data-design-scope="panels" data-design-part="workspace-view" className="app-view-surface h-full w-full overflow-auto p-4">
               <div className="app-view-frame mx-auto flex h-full w-full max-w-6xl flex-col">
-                <header className="app-view-header">
+                <header data-design-part="workspace-view-header" className="app-view-header mb-3 border-b border-[hsl(var(--app-border)/0.68)] pb-3 dark:border-white/10">
                   <div className="min-w-0">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[hsl(var(--app-accent))]">Workspace orchestration</p>
-                    <h1 className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-foreground">Orchestration</h1>
-                    <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                      Manage reusable node prompts and natural-language orchestration prompts for the graph composer.
+                    <p data-design-part="before-panel-kicker" className="hidden">Workspace orchestration</p>
+                    <h1 data-design-part="workspace-view-title" className="text-balance text-lg font-semibold tracking-[-0.02em] text-foreground">Orchestration</h1>
+                    <p data-design-part="workspace-view-description" className="mt-1 max-w-2xl text-pretty text-sm leading-5 text-muted-foreground">
+                      Create reusable prompts for graph workflows.
                     </p>
                   </div>
                 </header>
@@ -673,7 +697,7 @@ export function HomePage() {
               </div>
             </div>
           ) : activeView === 'tracking' ? (
-            <div className="app-view-surface h-full w-full overflow-auto p-5">
+            <div data-design-scope="panels" data-design-part="workspace-view" className="app-view-surface h-full w-full overflow-auto p-4">
               <Suspense fallback={<PanelLoading />}>
                 <TrackingDashboard workspace={selectedWorkspace} />
               </Suspense>
@@ -686,18 +710,18 @@ export function HomePage() {
               />
             </Suspense>
           ) : (
-            <div className="app-view-surface h-full w-full p-5">
+            <div data-design-scope="panels" data-design-part="workspace-view" className="app-view-surface h-full w-full p-4">
               <div className="app-view-frame mx-auto flex h-full w-full max-w-6xl flex-col">
-                <header className="app-view-header">
+                <header data-design-part="workspace-view-header" className="app-view-header mb-3 border-b border-[hsl(var(--app-border)/0.68)] pb-3 dark:border-white/10">
                   <div className="min-w-0">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[hsl(var(--app-accent))]">Workspace context</p>
-                    <h1 className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-foreground">Knowledge base</h1>
-                    <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                      Keep project documents, references, and folders close to the current workspace.
+                    <p data-design-part="before-panel-kicker" className="hidden">Workspace context</p>
+                    <h1 data-design-part="workspace-view-title" className="text-balance text-lg font-semibold tracking-[-0.02em] text-foreground">Knowledge base</h1>
+                    <p data-design-part="workspace-view-description" className="mt-1 max-w-2xl text-pretty text-sm leading-5 text-muted-foreground">
+                      Project documents and references for this workspace.
                     </p>
                   </div>
                 </header>
-                <div className="app-panel min-h-0 flex-1 overflow-hidden rounded-2xl">
+                <div data-design-part="workspace-view-content" className="min-h-0 flex-1 overflow-hidden">
                   <Suspense fallback={<PanelLoading />}>
                     <KnowledgeBase />
                   </Suspense>
@@ -709,7 +733,7 @@ export function HomePage() {
             </ResizablePanel>
             <ResizableHandle
               className={isTerminalDockVisible
-                ? 'h-1.5 cursor-row-resize bg-[hsl(var(--app-border)/0.72)] after:h-2 hover:bg-[hsl(var(--app-accent)/0.34)]'
+                ? 'h-1.5 cursor-row-resize bg-[hsl(var(--app-border)/0.72)] after:h-2 hover:bg-[hsl(var(--app-accent)/0.34)] dark:bg-white/10 dark:hover:bg-white/25'
                 : 'pointer-events-none h-0 bg-transparent after:h-0'}
               aria-hidden={!isTerminalDockVisible}
             />
@@ -738,15 +762,16 @@ export function HomePage() {
 
       {isFloatingChatInputOpen && floatingChatInputParentId && (
         <div className="fixed inset-x-0 bottom-5 z-[70] flex justify-center px-4 pointer-events-none">
-          <div className="w-full max-w-3xl rounded-[22px] border border-border/70 bg-background/95 p-3 shadow-[0_28px_80px_-30px_rgba(15,23,42,0.45),0_10px_24px_-18px_rgba(15,23,42,0.25)] ring-1 ring-black/5 backdrop-blur-xl pointer-events-auto dark:ring-white/10">
+          <div data-design-part="floating-reply" className="pointer-events-auto w-full max-w-3xl rounded-xl border border-[hsl(var(--app-border)/0.72)] bg-[hsl(var(--app-panel)/0.96)] p-3 shadow-[0_24px_64px_-32px_hsl(var(--foreground)/0.5)] ring-1 ring-black/5 backdrop-blur-xl dark:border-white/10 dark:ring-white/10">
             <div className="mb-2 flex items-center justify-between gap-3 px-1">
               <div className="min-w-0 text-xs font-medium text-muted-foreground">
-                Replying from hovercard
+                Quick reply
               </div>
               <button
                 type="button"
                 onClick={closeFloatingChatInput}
-                className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                data-design-part="floating-reply-close"
+                className="flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-white/10"
                 aria-label="Close floating reply input"
               >
                 <X className="h-4 w-4" />

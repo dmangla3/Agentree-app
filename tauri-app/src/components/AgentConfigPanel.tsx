@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Button } from '../../@/components/ui/button';
 import { Label } from '../../@/components/ui/label';
 import { Textarea } from '../../@/components/ui/textarea';
-import { ExternalLink, Save, RotateCcw, Bot } from 'lucide-react';
+import { ExternalLink, Save, RotateCcw, Bot, Folder } from 'lucide-react';
 import { Workspace } from '../stores/workspaceStore';
 import { useQueryClient, useMutation } from '@tanstack/react-query';
 import { api } from '../lib/api';
@@ -82,90 +82,102 @@ export function AgentConfigPanel({ workspace, agentName = 'Claude Code', agentTy
 
     if (!workspace) {
         return (
-            <div className="p-4 rounded-lg border bg-muted/30">
-                <p className="text-sm text-muted-foreground">Select a workspace to configure agent.</p>
+            <div className="rounded-xl border border-border/70 bg-[hsl(var(--app-panel))] p-5 shadow-[var(--app-shadow-soft)]">
+                <p className="text-pretty text-sm text-muted-foreground">Select a workspace to configure the agent.</p>
             </div>
         );
     }
 
     return (
-        <div className="space-y-4 p-4 rounded-lg border bg-card">
+        <section className="overflow-hidden rounded-xl border border-border/70 bg-[hsl(var(--app-panel-strong))] shadow-[var(--app-shadow-panel)]">
             {/* Header */}
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between border-b border-border/60 px-5 py-4">
                 <div className="flex items-center gap-2">
-                    <Bot className="h-5 w-5 text-primary" />
-                    <span className="font-medium">Agent: {agentName}</span>
+                    <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))]">
+                        <Bot className="h-5 w-5" />
+                    </span>
+                    <div>
+                        <div className="text-sm font-medium text-foreground">{agentName}</div>
+                        <div className="mt-0.5 text-xs text-muted-foreground">Agent configuration</div>
+                    </div>
                 </div>
             </div>
 
-            {/* CLI Arguments */}
-            <div className="space-y-2">
-                <Label htmlFor="cli-args" className="text-sm font-medium">
-                    CLI Arguments
-                </Label>
-                <Textarea
-                    id="cli-args"
-                    value={args}
-                    onChange={(e) => {
-                        setArgs(e.target.value);
-                        setIsDirty(true);
-                    }}
-                    placeholder="--model sonnet --permission-mode plan --max-turns 20"
-                    className="font-mono text-sm min-h-[60px]"
-                />
-            </div>
-
-            {/* Quick Toggles */}
-            <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">Quick:</span>
-                {PERMISSION_PRESETS.map((preset) => (
-                    <Button
-                        key={preset.label}
-                        variant={args.includes(preset.args.split(' ')[0]) ? 'secondary' : 'outline'}
-                        size="sm"
-                        onClick={() => handlePresetClick(preset.args)}
-                        className="text-xs"
-                    >
-                        {preset.label}
-                    </Button>
-                ))}
-            </div>
-
-            {/* Workspace */}
-            {workspace.folderPath && (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <span>📁</span>
-                    <span className="truncate font-mono text-xs">{workspace.folderPath}</span>
+            <div className="space-y-5 p-5">
+                {/* CLI Arguments */}
+                <div className="space-y-2">
+                    <Label htmlFor="cli-args" className="text-xs font-medium">
+                        CLI arguments
+                    </Label>
+                    <Textarea
+                        id="cli-args"
+                        value={args}
+                        onChange={(e) => {
+                            setArgs(e.target.value);
+                            setIsDirty(true);
+                        }}
+                        placeholder="--model sonnet --permission-mode plan --max-turns 20"
+                        className="min-h-24 rounded-lg font-mono text-xs leading-5 transition-[border-color,box-shadow] duration-150"
+                    />
                 </div>
-            )}
+
+                {/* Quick Toggles */}
+                <div className="space-y-2">
+                    <span className="text-xs font-medium text-muted-foreground">Permission preset</span>
+                    <div className="flex flex-wrap items-center gap-2">
+                        {PERMISSION_PRESETS.map((preset) => (
+                            <Button
+                                key={preset.label}
+                                variant={args.includes(preset.args.split(' ')[0]) ? 'secondary' : 'outline'}
+                                size="sm"
+                                onClick={() => handlePresetClick(preset.args)}
+                                className="h-10 rounded-lg px-3 text-xs"
+                            >
+                                {preset.label}
+                            </Button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Workspace */}
+                {workspace.folderPath && (
+                    <div className="flex min-h-10 items-center gap-2 rounded-lg bg-muted/35 px-3 text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.58)]">
+                        <Folder className="h-4 w-4 shrink-0" />
+                        <span className="truncate font-mono text-xs">{workspace.folderPath}</span>
+                    </div>
+                )}
+            </div>
 
             {/* Actions */}
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border/60 px-5 py-4">
                 <Button
                     variant="outline"
                     size="sm"
                     onClick={() => window.open(getDocsUrl(), '_blank')}
+                    className="h-10 rounded-lg"
                 >
-                    <ExternalLink className="h-4 w-4 mr-1" />
+                    <ExternalLink className="h-4 w-4" />
                     Docs
                 </Button>
                 <Button
                     variant="outline"
                     size="sm"
                     onClick={handleReset}
+                    className="h-10 rounded-lg"
                 >
-                    <RotateCcw className="h-4 w-4 mr-1" />
+                    <RotateCcw className="h-4 w-4" />
                     Reset
                 </Button>
                 <Button
                     size="sm"
                     onClick={handleSave}
                     disabled={!isDirty || updateArgs.isPending}
+                    className="h-10 rounded-lg"
                 >
-                    <Save className="h-4 w-4 mr-1" />
+                    <Save className="h-4 w-4" />
                     {updateArgs.isPending ? 'Saving...' : 'Save'}
                 </Button>
             </div>
-        </div>
+        </section>
     );
 }

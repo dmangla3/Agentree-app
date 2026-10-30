@@ -81,11 +81,11 @@ const getBreadcrumbKindMeta = (entity: ProjectedNodeEntity) => {
         idleClassName: cn(
           ROLE_COLORS.thread_link.bg,
           ROLE_COLORS.thread_link.border,
-          'text-cyan-800 hover:border-cyan-300/70 hover:bg-cyan-50/90 dark:text-cyan-200 dark:hover:border-cyan-800'
+          'text-foreground/80 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-panel-strong)/0.72)]'
         ),
-        focusedClassName: 'border-cyan-400/70 bg-cyan-100 text-cyan-950 shadow-[0_8px_24px_rgba(8,145,178,0.14)] dark:border-cyan-500/70 dark:bg-cyan-950/55 dark:text-cyan-50',
-        iconClassName: 'border-cyan-200/80 bg-white text-cyan-600 dark:border-cyan-800 dark:bg-slate-950/80 dark:text-cyan-300',
-        labelClassName: 'text-cyan-800 dark:text-cyan-100',
+        focusedClassName: 'border-[hsl(var(--app-accent)/0.38)] bg-[hsl(var(--app-accent-soft)/0.68)] text-foreground shadow-[0_10px_24px_-20px_hsl(var(--app-accent)/0.34)]',
+        iconClassName: 'border-cyan-300/60 bg-[hsl(var(--app-panel))] text-cyan-600 dark:border-white/10 dark:text-zinc-300',
+        labelClassName: 'text-foreground/85',
       };
     case 'user_message':
       return {
@@ -94,11 +94,11 @@ const getBreadcrumbKindMeta = (entity: ProjectedNodeEntity) => {
         idleClassName: cn(
           ROLE_COLORS.user_message.bg,
           ROLE_COLORS.user_message.border,
-          'text-slate-700 hover:border-slate-300 hover:bg-slate-100/90 dark:text-slate-200 dark:hover:border-slate-600'
+          'text-foreground/80 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-panel-strong)/0.72)]'
         ),
-        focusedClassName: 'border-slate-400/70 bg-slate-200 text-slate-950 shadow-[0_6px_20px_rgba(15,23,42,0.12)] dark:border-slate-500/70 dark:bg-slate-800 dark:text-slate-50',
-        iconClassName: 'border-slate-300/70 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-300',
-        labelClassName: 'text-slate-700 dark:text-slate-200',
+        focusedClassName: 'border-[hsl(var(--app-accent)/0.38)] bg-[hsl(var(--app-accent-soft)/0.68)] text-foreground shadow-[0_10px_24px_-20px_hsl(var(--app-accent)/0.34)]',
+        iconClassName: 'border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel))] text-muted-foreground',
+        labelClassName: 'text-foreground/85',
       };
     case 'commit_message':
       return {
@@ -107,11 +107,11 @@ const getBreadcrumbKindMeta = (entity: ProjectedNodeEntity) => {
         idleClassName: cn(
           ROLE_COLORS.commit_message.bg,
           ROLE_COLORS.commit_message.border,
-          'text-emerald-800 hover:border-emerald-300/70 hover:bg-emerald-50/90 dark:text-emerald-200 dark:hover:border-emerald-700'
+          'text-foreground/80 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-panel-strong)/0.72)]'
         ),
-        focusedClassName: 'border-emerald-400/70 bg-emerald-100 text-emerald-950 shadow-[0_8px_24px_rgba(16,185,129,0.16)] dark:border-emerald-500/70 dark:bg-emerald-950/50 dark:text-emerald-50',
-        iconClassName: 'border-emerald-200/80 bg-emerald-50 text-emerald-600 dark:border-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300',
-        labelClassName: 'text-emerald-800 dark:text-emerald-100',
+        focusedClassName: 'border-[hsl(var(--app-accent)/0.38)] bg-[hsl(var(--app-accent-soft)/0.68)] text-foreground shadow-[0_10px_24px_-20px_hsl(var(--app-accent)/0.34)]',
+        iconClassName: 'border-emerald-300/60 bg-[hsl(var(--app-panel))] text-emerald-600 dark:border-emerald-800 dark:text-emerald-300',
+        labelClassName: 'text-foreground/85',
       };
     case 'assistant_message':
     default:
@@ -121,11 +121,11 @@ const getBreadcrumbKindMeta = (entity: ProjectedNodeEntity) => {
         idleClassName: cn(
           ROLE_COLORS.assistant_message.bg,
           ROLE_COLORS.assistant_message.border,
-          'text-sky-800 hover:border-sky-300/70 hover:bg-sky-50/90 dark:text-sky-200 dark:hover:border-sky-800'
+          'text-foreground/80 hover:border-[hsl(var(--app-border-strong)/0.68)] hover:bg-[hsl(var(--app-panel-strong)/0.72)]'
         ),
-        focusedClassName: 'border-sky-400/70 bg-sky-100 text-sky-950 shadow-[0_8px_24px_rgba(14,165,233,0.14)] dark:border-sky-500/70 dark:bg-sky-950/55 dark:text-sky-50',
-        iconClassName: 'border-sky-200/80 bg-white text-sky-600 dark:border-sky-800 dark:bg-slate-950/80 dark:text-sky-300',
-        labelClassName: 'text-sky-800 dark:text-sky-100',
+        focusedClassName: 'border-[hsl(var(--app-accent)/0.38)] bg-[hsl(var(--app-accent-soft)/0.68)] text-foreground shadow-[0_10px_24px_-20px_hsl(var(--app-accent)/0.34)]',
+        iconClassName: 'border-blue-300/60 bg-[hsl(var(--app-panel))] text-[hsl(var(--app-accent))] dark:border-white/10',
+        labelClassName: 'text-foreground/85',
       };
   }
 };
@@ -156,7 +156,7 @@ function EntityNavigationRail({
   return (
     <nav
       aria-label={ariaLabel}
-      className="flex items-start gap-2 border-b border-border bg-muted/30 px-4 py-1.5 dark:bg-muted/20"
+      className="flex items-start gap-2 border-b border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.9)] px-4 py-1.5"
     >
       <span className="min-w-[3.5rem] shrink-0 pt-1 text-[11px] uppercase tracking-wide text-muted-foreground">{label}</span>
       <div className="relative min-w-0 flex-1">
@@ -191,8 +191,7 @@ function EntityNavigationRail({
                       aria-label={`${kindMeta.typeLabel}: ${getBreadcrumbTitle(entity)}`}
                       title={`${kindMeta.typeLabel}: ${getBreadcrumbTitle(entity)}`}
                       className={cn(
-                        'group flex max-w-[220px] items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none transition-[background-color,border-color,color,box-shadow,transform] duration-200 ease-out',
-                        'shadow-sm hover:-translate-y-[1px]',
+                        'group flex min-h-10 max-w-[220px] items-center gap-1.5 rounded-lg border px-2 text-[10px] font-medium leading-none transition-[background-color,border-color,color,box-shadow,transform] duration-normal ease-out-cubic active:scale-[0.96] motion-reduce:transition-none',
                         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
                         isFocused
                           ? kindMeta.focusedClassName
@@ -202,14 +201,14 @@ function EntityNavigationRail({
                       <span
                         aria-hidden="true"
                         className={cn(
-                          'flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-full border shadow-sm transition-transform duration-200 group-hover:scale-105',
+                          'flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-transform duration-normal ease-out-cubic motion-reduce:transition-none group-hover:scale-105',
                           kindMeta.iconClassName
                         )}
                       >
                         <Icon size={10} strokeWidth={2.1} />
                       </span>
                       {entity.kind === 'commit_message' && entity.shortSha ? (
-                        <code className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-emerald-700 dark:bg-emerald-400/12 dark:text-emerald-300">
+                        <code className="shrink-0 rounded-md bg-emerald-500/12 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-emerald-700 dark:bg-emerald-400/12 dark:text-emerald-300">
                           {entity.shortSha}
                         </code>
                       ) : null}

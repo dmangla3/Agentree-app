@@ -342,6 +342,11 @@ export const GraphNodeWrapper = memo(({
   const nodeBody = (
     <div
       ref={rootRef}
+      data-design-scope="nodes"
+      data-design-part="graph-node"
+      data-design-base-highlighted={isBaseCommitHighlighted ? 'true' : 'false'}
+      data-design-focused={isFocused || isFocusFeedbackActive ? 'true' : 'false'}
+      data-design-selected={isSelected ? 'true' : 'false'}
       data-agentree-graph-node-id={nodeId}
       data-agentree-graph-height-key={heightKey}
       onPointerDown={(e) => {
@@ -383,7 +388,7 @@ export const GraphNodeWrapper = memo(({
           : isBaseCommitHighlighted
             ? '#059669'
             : isSelected
-              ? '#3b82f6'
+              ? 'hsl(var(--app-selection) / 0.68)'
               : undefined,
         boxShadow: isBaseCommitHighlighted
           ? '0 0 0 1.5px rgba(5,150,105,0.72), 0 14px 28px -22px rgba(4,120,87,0.86)'
@@ -392,19 +397,20 @@ export const GraphNodeWrapper = memo(({
       className={cn(
         'agentree-graph-node-card relative flex flex-col overflow-hidden bg-background cursor-default pointer-events-auto',
         CARD_TOKENS.radius,
+        'rounded-xl',
         'border',
         isFocused || isFocusFeedbackActive
-          ? 'transition-all duration-200 ring-2 ring-[hsl(var(--app-selection)/0.9)] shadow-md'
+          ? 'transition-[border-color,box-shadow,transform] duration-normal ease-out-cubic motion-reduce:transition-none ring-2 ring-[hsl(var(--app-selection)/0.9)] shadow-[0_12px_30px_-25px_hsl(var(--foreground)/0.44)]'
           : isBaseCommitHighlighted
-            ? 'transition-all duration-200 ring-2 ring-emerald-600/80 shadow-sm'
-            : 'transition-all duration-200 shadow-sm hover:shadow-md',
+            ? 'transition-[border-color,box-shadow,transform] duration-normal ease-out-cubic motion-reduce:transition-none ring-2 ring-emerald-600/80 shadow-sm'
+            : 'transition-[border-color,box-shadow,transform] duration-normal ease-out-cubic motion-reduce:transition-none shadow-sm hover:shadow-[0_12px_30px_-25px_hsl(var(--foreground)/0.4)]',
         isSelected && !isFocused && !isFocusFeedbackActive && !isBaseCommitHighlighted
-          ? 'ring-2 ring-blue-500'
+          ? 'ring-2 ring-[hsl(var(--app-selection)/0.58)]'
           : '',
         className
       )}
     >
-      <div className={cn(
+      <div data-design-part="graph-node-body" className={cn(
         "pl-3 pr-3 py-2.5 flex-1 flex flex-col min-w-0",
         "backdrop-blur-0",
         bodyClassName

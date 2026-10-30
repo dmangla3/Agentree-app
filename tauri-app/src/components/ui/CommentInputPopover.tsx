@@ -12,7 +12,7 @@ import {
     DropdownMenuItem,
     DropdownMenuTrigger,
 } from "../../../@/components/ui/dropdown-menu";
-import { MessageSquarePlus, Loader2, Sparkles, ArrowRightLeft, LogOut, Lightbulb, StickyNote, ChevronDown } from 'lucide-react';
+import { MessageSquarePlus, Loader2, ArrowRightLeft, LogOut, Lightbulb, StickyNote, ChevronDown } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
 interface CommentInputPopoverProps {
@@ -29,11 +29,11 @@ interface CommentInputPopoverProps {
 }
 
 const COMMENT_TYPES = [
-    { value: 'transition_reason', label: 'Transition Reason', icon: ArrowRightLeft, description: 'Why we switched to this branch' },
-    { value: 'exit_reason', label: 'Exit Reason', icon: LogOut, description: 'Why this path was abandoned' },
-    { value: 'scout_summary', label: 'Scout Summary', icon: Sparkles, description: "Preview of what's down this path" },
+    { value: 'transition_reason', label: 'Transition reason', icon: ArrowRightLeft, description: 'Why this branch was chosen' },
+    { value: 'exit_reason', label: 'Exit reason', icon: LogOut, description: 'Why this path was stopped' },
+    { value: 'scout_summary', label: 'Scout summary', icon: MessageSquarePlus, description: "What's available down this path" },
     { value: 'insight', label: 'Insight', icon: Lightbulb, description: 'Key observation or discovery' },
-    { value: 'note', label: 'General Note', icon: StickyNote, description: 'Any context or reminder' },
+    { value: 'note', label: 'General note', icon: StickyNote, description: 'Context or a reminder' },
 ];
 
 export function CommentInputPopover({
@@ -94,11 +94,11 @@ export function CommentInputPopover({
                     variant="ghost"
                     size="icon"
                     className={cn(
-                        "h-6 w-6 p-1 text-muted-foreground hover:text-foreground transition-colors",
+                        "h-8 w-8 text-muted-foreground transition-[background-color,color,transform] duration-150 hover:text-foreground active:scale-[0.96]",
                         triggerClassName
                     )}
                     aria-label="Add context note"
-                    title="Add Context Note"
+                    title="Add context note"
                 >
                     {children || <MessageSquarePlus size={14} />}
                 </Button>
@@ -122,15 +122,15 @@ export function CommentInputPopover({
                 }}
             >
                 {/* Header */}
-                <div className="px-4 py-3 bg-gradient-to-r from-blue-500/10 via-purple-500/10 to-pink-500/10 border-b border-border/50">
+                <div className="border-b border-border/60 bg-muted/36 px-4 py-3">
                     <div className="flex items-center gap-2">
                         <div className="p-1.5 rounded-md bg-primary/10">
                             <MessageSquarePlus size={14} className="text-primary" />
                         </div>
                         <div>
-                            <h4 className="font-semibold text-sm">Add Context Note</h4>
+                            <h4 className="text-sm font-semibold tracking-[-0.01em]">Context note</h4>
                             <p className="text-[10px] text-muted-foreground">
-                                Annotate this node for AI navigation
+                                Help agents understand this branch.
                             </p>
                         </div>
                     </div>
@@ -141,13 +141,13 @@ export function CommentInputPopover({
                     {/* Comment Type Selector */}
                     <div className="space-y-1.5">
                         <label className="text-xs font-medium text-muted-foreground">
-                            Note Type
+                            Note type
                         </label>
                         <DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen} modal={false}>
                             <DropdownMenuTrigger asChild>
                                 <Button
                                     variant="outline"
-                                    className="w-full h-9 justify-between text-xs font-normal"
+                                    className="h-10 w-full justify-between text-xs font-normal"
                                     onClick={(e) => {
                                         e.stopPropagation();
                                     }}
@@ -197,7 +197,7 @@ export function CommentInputPopover({
                             onChange={(e) => setContentValue(e.target.value)}
                             onKeyDown={handleKeyDown}
                             placeholder={selectedType.description || "Add your note..."}
-                            className="min-h-[80px] text-xs resize-none focus-visible:ring-primary/50"
+                            className="min-h-[80px] resize-none text-xs focus-visible:ring-primary/30"
                             disabled={isLoading}
                         />
                         <p className="text-[10px] text-muted-foreground text-right">
@@ -205,18 +205,17 @@ export function CommentInputPopover({
                         </p>
                     </div>
 
-                    {/* Action Button */}
                     <Button
                         onClick={handleAdd}
                         disabled={!contentValue.trim() || isLoading}
-                        className="w-full h-9 text-xs font-medium bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white shadow-md hover:shadow-lg transition-all"
+                        className="h-10 w-full text-xs font-medium"
                     >
                         {isLoading ? (
                             <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
                         ) : (
-                            <Sparkles className="mr-2 h-3.5 w-3.5" />
+                            <MessageSquarePlus className="mr-2 h-3.5 w-3.5" />
                         )}
-                        Add Note
+                        Add note
                     </Button>
                 </div>
             </PopoverContent>

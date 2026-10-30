@@ -72,9 +72,9 @@ export const NodeLink: FC<NodeLinkProps> = ({
                     onClick={handleNavigate}
                     onKeyDown={(e) => e.key === 'Enter' && handleNavigate(e as unknown as React.MouseEvent)}
                     className={cn(
-                        "font-mono text-xs px-1.5 py-0.5 rounded-md transition-all inline-flex items-center gap-0.5",
-                        "bg-blue-500/15 hover:bg-blue-500/25 text-blue-600 dark:text-blue-400",
-                        "cursor-pointer border border-blue-500/30 hover:border-blue-500/50",
+                        "inline-flex items-center gap-0.5 rounded-md border px-1.5 py-0.5 font-mono text-xs",
+                        "border-[hsl(var(--app-accent)/0.3)] bg-[hsl(var(--app-accent-soft)/0.58)] text-[hsl(var(--app-accent))]",
+                        "cursor-pointer transition-[background-color,border-color,color,transform] duration-normal ease-out-cubic hover:border-[hsl(var(--app-accent)/0.5)] hover:bg-[hsl(var(--app-accent-soft)/0.82)] active:scale-[0.96] motion-reduce:transition-none",
                         "no-underline" // Ensure no underline from parent
                     )}
                 >
@@ -89,7 +89,7 @@ export const NodeLink: FC<NodeLinkProps> = ({
                 {hoverEntity ? (
                     <NodeHoverCardContent entity={hoverEntity} projection={projection} />
                 ) : (
-                    <div className="bg-card text-card-foreground shadow-xl rounded-lg border p-3">
+                    <div className="rounded-lg border border-[hsl(var(--app-border)/0.72)] bg-[hsl(var(--app-panel))] p-3 text-card-foreground shadow-[0_16px_40px_-28px_hsl(var(--foreground)/0.42)]">
                         <span className="text-sm text-muted-foreground">Message not found</span>
                     </div>
                 )}

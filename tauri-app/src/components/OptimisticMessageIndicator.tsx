@@ -20,11 +20,10 @@ export function OptimisticMessageIndicator({ message, className }: OptimisticMes
   if (status === 'failed' || error) {
     return (
       <div className={cn(
-        "flex items-center gap-2 px-3 py-1.5 rounded-md",
-        "bg-destructive/10 text-destructive text-sm",
+        "flex items-center gap-2 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive",
         className
       )}>
-        <AlertCircle size={14} />
+        <AlertCircle size={14} aria-hidden="true" />
         <span className="font-medium">Failed</span>
         {error && (
           <span className="text-destructive/80 text-xs ml-1 truncate max-w-[200px]">
@@ -38,14 +37,13 @@ export function OptimisticMessageIndicator({ message, className }: OptimisticMes
   // Pending/Initializing state
   return (
     <div className={cn(
-      "flex items-center gap-2 px-3 py-1.5 rounded-md",
-      "bg-primary/5 text-primary/80 text-sm",
+      "flex items-center gap-2 rounded-lg border border-primary/15 bg-primary/5 px-3 py-2 text-sm text-primary/80",
       className
     )}>
       {status === 'running' ? (
-        <Clock size={14} className="animate-pulse" />
+        <Clock size={14} className="animate-pulse motion-reduce:animate-none" aria-hidden="true" />
       ) : (
-        <Loader2 size={14} className="animate-spin" />
+        <Loader2 size={14} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
       )}
       <span className="font-medium">
         {progress || 'Processing...'}
@@ -62,16 +60,16 @@ export function OptimisticBadge({ message }: { message: AgentRunProjectedMessage
   
   if (status === 'failed') {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-destructive/10 text-destructive">
-        <AlertCircle size={10} />
+      <span className="inline-flex items-center gap-1 rounded-md bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive">
+        <AlertCircle size={10} aria-hidden="true" />
         Failed
       </span>
     );
   }
 
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-primary/10 text-primary animate-pulse">
-      <Loader2 size={10} className="animate-spin" />
+    <span className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+      <Loader2 size={10} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
       {status === 'pending' && 'Sending'}
       {status === 'creating' && 'Creating'}
       {status === 'initializing' && 'Initializing'}

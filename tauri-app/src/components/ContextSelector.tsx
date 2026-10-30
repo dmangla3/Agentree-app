@@ -64,7 +64,7 @@ export function ContextSelector({
                     className={cn('w-full justify-start gap-2')}
                     onClick={() => setContextMode('active')}
                 >
-                    <CheckCircle2 className="w-3 h-3 text-green-500" />
+                    <CheckCircle2 className="h-3 w-3 text-[hsl(var(--app-accent))]" />
                     <span>Active</span>
                 </Button>
                 <Button
@@ -72,7 +72,7 @@ export function ContextSelector({
                     className={cn('w-full justify-start gap-2')}
                     onClick={() => setContextMode('none')}
                 >
-                    <Minus className="w-3 h-3 text-amber-500" />
+                    <Minus className="h-3 w-3 text-muted-foreground" />
                     <span>None</span>
                 </Button>
                 {contextMode === 'active' && contextNodes.length > 0 && (
@@ -93,7 +93,7 @@ export function ContextSelector({
                                     onClick={() => onToggleContextNode?.(node.id, !node.active)}
                                 >
                                     {node.active ? (
-                                        <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                                        <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[hsl(var(--app-accent))]" />
                                     ) : (
                                         <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                                     )}

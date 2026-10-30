@@ -434,7 +434,11 @@ const isCandidateArchived = (candidate: LocalInsightCandidateRecord): boolean =>
   || candidate.status === 'dismissed'
 );
 
-const extractCandidateUsage = (candidate: LocalInsightCandidateRecord): TokenUsage & { sourceRunNodeId: string | null } => {
+const extractCandidateUsage = (
+  candidate: LocalInsightCandidateRecord,
+): Pick<TokenUsage, 'promptTokens' | 'completionTokens' | 'totalTokens' | 'hasUsage'> & {
+  sourceRunNodeId: string | null;
+} => {
   const payload = safeJsonObject(candidate.payload);
   const promptTokens = toFiniteNumber(payload.promptTokens) ?? toFiniteNumber(payload.prompt_tokens) ?? 0;
   const completionTokens = toFiniteNumber(payload.completionTokens) ?? toFiniteNumber(payload.completion_tokens) ?? 0;

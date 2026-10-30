@@ -59,7 +59,7 @@ function SessionHeader({ onClose, closeSessionOnClose = true }: SessionHeaderPro
             <span className="max-w-[18rem] truncate">{targetLabel}</span>
           </h2>
           <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
-            <span className="rounded-full border border-[hsl(var(--app-border)/0.56)] bg-[hsl(var(--app-bg-muted)/0.48)] px-1.5 py-0.5 font-medium leading-none">
+            <span className="rounded-md border border-[hsl(var(--app-border)/0.56)] bg-[hsl(var(--app-bg-muted)/0.48)] px-1.5 py-0.5 font-medium leading-none">
               {session.resolutionMode === 'manual' && 'Manual resolution'}
               {session.resolutionMode === 'smart' && 'Smart AI resolution'}
             </span>
@@ -70,7 +70,7 @@ function SessionHeader({ onClose, closeSessionOnClose = true }: SessionHeaderPro
       
       <div className="flex shrink-0 items-center gap-2">
         {isApplying && (
-          <div className="flex items-center gap-2 rounded-full border border-[hsl(var(--app-warning)/0.24)] bg-[hsl(var(--app-warning)/0.1)] px-2.5 py-1 text-xs font-medium text-[hsl(var(--app-warning))]">
+          <div className="flex items-center gap-2 rounded-md border border-[hsl(var(--app-warning)/0.24)] bg-[hsl(var(--app-warning)/0.1)] px-2.5 py-1 text-xs font-medium text-[hsl(var(--app-warning))]">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             <span>Applying</span>
           </div>
@@ -79,7 +79,7 @@ function SessionHeader({ onClose, closeSessionOnClose = true }: SessionHeaderPro
           type="button"
           onClick={(e) => handleClose(e)}
           disabled={isApplying}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-sm font-medium text-muted-foreground transition-[background-color,color,transform,opacity] duration-150 hover:bg-[hsl(var(--app-bg-muted)/0.78)] hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-sm font-medium text-muted-foreground transition-[background-color,color,transform,opacity] duration-150 [transition-timing-function:cubic-bezier(0.2,0,0,1)] hover:bg-[hsl(var(--app-bg-muted)/0.78)] hover:text-foreground active:scale-[0.96] motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
           aria-label="Close merge panel"
         >
           <X className="h-4 w-4" />
@@ -158,12 +158,12 @@ export function EmbeddedIntegrationWorkspace({ onClose }: EmbeddedIntegrationWor
   if (!session) return null;
   
   return (
-    <div className="flex h-full flex-col bg-[hsl(var(--app-bg))]">
+    <div data-design-scope="panels" className="flex h-full flex-col bg-[hsl(var(--app-bg))] antialiased">
       <SessionHeader onClose={handleEmbeddedClose} closeSessionOnClose={false} />
       
       <ErrorBanner />
       
-      <div className="relative flex flex-1 flex-col overflow-hidden px-3 pt-3">
+      <div className="relative flex flex-1 flex-col overflow-hidden px-2.5 pt-2.5">
         {renderStage()}
       </div>
       
@@ -200,7 +200,7 @@ export function IntegrationWorkspace() {
   if (!isMergeOpen || !session) return null;
   
   return (
-    <div className="fixed inset-0 z-50 flex">
+    <div data-design-scope="panels" className="fixed inset-0 z-50 flex antialiased">
       {/* Backdrop */}
       <div 
         className="flex-1 bg-black/40 backdrop-blur-sm cursor-pointer"
@@ -211,7 +211,7 @@ export function IntegrationWorkspace() {
       />
       
       {/* Panel */}
-      <div className="flex w-full max-w-5xl flex-col border-l bg-background shadow-2xl">
+      <div className="flex w-full max-w-4xl flex-col border-l border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg))] shadow-[0_24px_64px_-32px_hsl(var(--foreground)/0.5)]">
         <SessionHeader onClose={undefined} />
 
         <Separator />
@@ -219,7 +219,7 @@ export function IntegrationWorkspace() {
         <ErrorBanner />
         
         <ScrollArea className="flex-1">
-          <div className="p-6">
+          <div className="p-3">
             {renderStage()}
           </div>
         </ScrollArea>

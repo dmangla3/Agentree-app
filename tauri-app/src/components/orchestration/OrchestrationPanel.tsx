@@ -100,17 +100,20 @@ export function OrchestrationPanel({ className }: { className?: string }) {
     kind: OrchestrationTemplateKind,
     items: OrchestrationPromptTemplate[],
   ) => (
-    <section className="min-h-0 overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.72)] bg-background/42 shadow-[0_14px_34px_-30px_hsl(var(--foreground)/0.42)]">
-      <div className="flex items-center justify-between border-b border-border/70 bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.92),hsl(var(--app-panel)/0.72))] px-3 py-2.5">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border/70 bg-background/72 text-[hsl(var(--app-accent))] shadow-sm">
-            {label === 'Orchestration prompts' ? <Workflow className="h-3.5 w-3.5" /> : <Puzzle className="h-3.5 w-3.5" />}
-          </span>
+    <section className={cn(
+      'min-h-0 overflow-hidden',
+      kind === 'node' && 'border-b border-[hsl(var(--app-border)/0.68)] md:border-b-0 md:border-r lg:border-b lg:border-r-0 dark:border-white/10',
+    )}>
+      <div className="flex items-center justify-between border-b border-border/70 px-3 py-2.5 dark:border-white/10">
+        <div className="flex min-w-0 items-center gap-2">
+          {label === 'Orchestration prompts'
+            ? <Workflow className="h-3.5 w-3.5 shrink-0 text-[hsl(var(--app-accent))] dark:text-white/70" />
+            : <Puzzle className="h-3.5 w-3.5 shrink-0 text-[hsl(var(--app-accent))] dark:text-white/70" />}
           <div className="min-w-0">
-            <div className="truncate text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            <div className="truncate text-xs font-semibold text-foreground">
               {label}
             </div>
-            <div className="mt-0.5 text-[10px] font-medium text-muted-foreground/75">
+            <div className="mt-0.5 text-[10px] text-muted-foreground">
               {items.length} saved
             </div>
           </div>
@@ -119,14 +122,14 @@ export function OrchestrationPanel({ className }: { className?: string }) {
           <button
             type="button"
             onClick={() => resetTemplateDraft(kind)}
-            className="flex h-7 items-center gap-1 rounded-md border border-[hsl(var(--app-accent)/0.28)] bg-[hsl(var(--app-accent-soft))] px-2 text-[10.5px] font-semibold normal-case tracking-normal text-[hsl(var(--app-accent))] transition-[background-color,filter,transform] hover:brightness-105 active:scale-[0.96]"
+            className="flex h-10 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-[hsl(var(--app-accent))] transition-[background-color,color,transform] duration-150 [transition-timing-function:cubic-bezier(0.2,0,0,1)] hover:bg-[hsl(var(--app-accent)/0.1)] active:scale-[0.96] motion-reduce:transition-none dark:text-foreground dark:hover:bg-white/[0.08]"
           >
             <Plus className="h-3 w-3" />
             New
           </button>
         </div>
       </div>
-      <div className="max-h-[18rem] space-y-1 overflow-y-auto p-1.5">
+      <div className="max-h-[18rem] overflow-y-auto p-1.5">
         {items.map((template) => {
           const isUserTemplate = userTemplateIds.has(template.id);
           const selected = selectedTemplateId === template.id;
@@ -136,14 +139,16 @@ export function OrchestrationPanel({ className }: { className?: string }) {
               type="button"
               onClick={() => loadTemplateDraft(template)}
               className={cn(
-                'flex min-h-12 w-full items-start gap-2 rounded-lg px-2 py-2 text-left transition-[background-color,color,transform] active:scale-[0.99]',
-                selected ? 'bg-[hsl(var(--app-accent-soft))] text-foreground shadow-sm' : 'hover:bg-muted/60',
+                'flex min-h-12 w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-[background-color,color,transform] duration-150 active:scale-[0.96] motion-reduce:transition-none',
+                selected
+                  ? 'bg-[hsl(var(--app-accent)/0.1)] text-foreground shadow-[inset_2px_0_0_hsl(var(--app-accent))] dark:bg-white/[0.08] dark:shadow-[inset_2px_0_0_hsl(0_0%_100%)]'
+                  : 'hover:bg-muted/60 dark:hover:bg-white/[0.06]',
               )}
             >
               {template.kind === 'orchestration' ? (
-                <Workflow className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[hsl(var(--app-accent))]" />
+                <Workflow className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[hsl(var(--app-accent))] dark:text-white/70" />
               ) : (
-                <Puzzle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[hsl(var(--app-accent))]" />
+                <Puzzle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[hsl(var(--app-accent))] dark:text-white/70" />
               )}
               <span className="min-w-0 flex-1">
                 <span className="flex min-w-0 items-center gap-1.5">
@@ -164,34 +169,33 @@ export function OrchestrationPanel({ className }: { className?: string }) {
   );
 
   return (
-    <div className={cn('grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,28rem)]', className)}>
-      <div className="grid min-h-0 gap-4 md:grid-cols-2 lg:grid-cols-1">
+    <div data-design-scope="panels" className={cn('grid h-full min-h-0 overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel)/0.72)] antialiased dark:border-white/10 dark:bg-[hsl(var(--app-bg-elevated))] lg:grid-cols-[minmax(0,1fr)_minmax(22rem,28rem)]', className)}>
+      <div className="grid min-h-0 border-b border-[hsl(var(--app-border)/0.68)] md:grid-cols-2 lg:grid-cols-1 lg:border-b-0 lg:border-r dark:border-white/10">
         {renderTemplateList('Node prompts', 'node', nodeTemplates)}
         {renderTemplateList('Orchestration prompts', 'orchestration', orchestrationPromptTemplates)}
       </div>
 
-      <section className="app-panel flex min-h-0 flex-col rounded-2xl border border-[hsl(var(--app-border)/0.78)] bg-[linear-gradient(180deg,hsl(var(--app-panel-strong)/0.98),hsl(var(--app-panel)/0.94))]">
+      <section className="flex min-h-0 flex-col bg-[hsl(var(--app-panel)/0.58)] dark:bg-[hsl(var(--app-panel))]">
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
           <div className="min-w-0">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[hsl(var(--app-accent))]">
-              Editor
-            </div>
-            <div className="mt-1 truncate text-sm font-semibold text-foreground">
+            <div className="truncate text-sm font-semibold text-foreground">
               {selectedTemplate ? selectedTemplate.label : `New ${getTemplateKindLabel(draftKind).toLowerCase()}`}
             </div>
           </div>
         </div>
 
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
-          <div className="grid grid-cols-2 gap-1 rounded-lg border border-border/70 bg-background/72 p-1">
+          <div className="grid grid-cols-2 border-b border-border/70 dark:border-white/10">
             {(['node', 'orchestration'] as const).map((kind) => (
               <button
                 key={kind}
                 type="button"
                 onClick={() => setDraftKind(kind)}
                 className={cn(
-                  'h-8 rounded-md text-xs font-semibold transition-[background-color,color,transform] active:scale-[0.98]',
-                  draftKind === kind ? 'bg-foreground text-background shadow-sm' : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                  'h-10 border-b-2 text-xs font-semibold transition-[background-color,border-color,color,transform] duration-150 [transition-timing-function:cubic-bezier(0.2,0,0,1)] active:scale-[0.96] motion-reduce:transition-none',
+                  draftKind === kind
+                    ? 'border-[hsl(var(--app-accent))] text-foreground dark:border-white'
+                    : 'border-transparent text-muted-foreground hover:bg-muted hover:text-foreground dark:hover:bg-white/[0.06]',
                 )}
               >
                 {getTemplateKindLabel(kind)}
@@ -204,7 +208,7 @@ export function OrchestrationPanel({ className }: { className?: string }) {
             <input
               value={draftId}
               onChange={(event) => setDraftId(event.target.value)}
-              className="h-9 w-full rounded-lg border border-border/70 bg-background/80 px-2.5 font-mono text-xs outline-none transition-[border-color,box-shadow] focus:border-[hsl(var(--app-focus)/0.72)] focus:shadow-[0_0_0_3px_hsl(var(--app-focus)/0.10)]"
+              className="h-10 w-full rounded-lg border border-border/70 bg-background/80 px-3 font-mono text-xs outline-none transition-[border-color,box-shadow] duration-150 focus:border-[hsl(var(--app-focus)/0.72)] focus:shadow-[0_0_0_3px_hsl(var(--app-focus)/0.10)] motion-reduce:transition-none dark:border-white/15 dark:bg-white/[0.04]"
               placeholder="#custom_reviewer"
             />
           </label>
@@ -215,7 +219,7 @@ export function OrchestrationPanel({ className }: { className?: string }) {
               value={draftPrompt}
               templates={templates}
               onChange={(event) => setDraftPrompt(event.target.value)}
-              className="min-h-48 w-full resize-y rounded-lg border border-border/70 bg-background/80 px-2.5 py-2 text-xs leading-5 outline-none transition-[border-color,box-shadow] focus:border-[hsl(var(--app-focus)/0.72)] focus:shadow-[0_0_0_3px_hsl(var(--app-focus)/0.10)]"
+              className="min-h-48 w-full resize-y rounded-lg border border-border/70 bg-background/80 px-2.5 py-2 text-xs leading-5 outline-none transition-[border-color,box-shadow] focus:border-[hsl(var(--app-focus)/0.72)] focus:shadow-[0_0_0_3px_hsl(var(--app-focus)/0.10)] dark:border-white/15 dark:bg-white/[0.04]"
               placeholder="Review {{request}} for correctness and validation gaps."
               minRows={8}
               maxRows={18}
@@ -223,12 +227,12 @@ export function OrchestrationPanel({ className }: { className?: string }) {
           </label>
 
           {draftKind === 'node' ? (
-            <label className="flex items-center gap-2 rounded-lg border border-border/65 bg-background/58 px-2.5 py-2 text-xs font-medium text-muted-foreground">
+            <label className="flex min-h-10 items-center gap-2 border-y border-border/65 py-2 text-xs font-medium text-muted-foreground dark:border-white/10">
               <input
                 type="checkbox"
                 checked={draftRequiresCommit}
                 onChange={(event) => setDraftRequiresCommit(event.target.checked)}
-                className="h-3.5 w-3.5 accent-[hsl(var(--app-accent))]"
+                className="h-3.5 w-3.5 accent-[hsl(var(--app-accent))] dark:accent-white"
               />
               Requires commit
             </label>
@@ -244,7 +248,7 @@ export function OrchestrationPanel({ className }: { className?: string }) {
               resetTemplateDraft();
             }}
             disabled={!selectedTemplateId || !userTemplateIds.has(selectedTemplateId)}
-            className="flex h-8 items-center gap-1.5 rounded-lg border border-border/70 bg-background/68 px-2.5 text-xs font-semibold text-muted-foreground transition-[background-color,color,transform,opacity] hover:bg-red-50 hover:text-red-600 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+            className="flex h-10 items-center gap-1.5 rounded-lg border border-border/70 bg-background/68 px-3 text-xs font-semibold text-muted-foreground transition-[background-color,color,transform,opacity] duration-150 [transition-timing-function:cubic-bezier(0.2,0,0,1)] hover:bg-destructive/10 hover:text-destructive active:scale-[0.96] motion-reduce:transition-none disabled:pointer-events-none disabled:opacity-40"
           >
             <Trash2 className="h-3 w-3" />
             Delete edit
@@ -255,9 +259,9 @@ export function OrchestrationPanel({ className }: { className?: string }) {
             onClick={saveTemplateDraft}
             disabled={!canSaveTemplate}
             className={cn(
-              'flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition-[background-color,box-shadow,opacity,transform] active:scale-[0.96]',
+              'flex h-10 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition-[background-color,box-shadow,opacity,transform] duration-150 [transition-timing-function:cubic-bezier(0.2,0,0,1)] active:scale-[0.96] motion-reduce:transition-none',
               canSaveTemplate
-                ? 'bg-[hsl(var(--app-accent))] text-white shadow-[0_12px_28px_-18px_hsl(var(--app-accent)/0.62)] hover:brightness-105'
+                ? 'bg-[hsl(var(--app-accent))] text-white hover:brightness-105 dark:bg-white dark:text-black dark:hover:bg-white/90'
                 : 'cursor-not-allowed bg-muted text-muted-foreground opacity-60',
             )}
           >

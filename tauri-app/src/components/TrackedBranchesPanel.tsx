@@ -36,6 +36,7 @@ interface TrackedBranchesPanelProps {
 }
 
 const shortCommitSha = (commitSha: string): string => commitSha.slice(0, 8);
+const compactHeaderHitTargetClass = "relative after:absolute after:left-0 after:top-1/2 after:h-10 after:w-full after:-translate-y-1/2 after:content-['']";
 
 const formatCommitAge = (committedAt: string | null | undefined): string => {
   if (!committedAt) return 'unknown';
@@ -380,19 +381,21 @@ export function TrackedBranchesPanel({
   }
 
   return (
-    <div className={cn('flex flex-row items-center w-full gap-3 border-b border-border/40 bg-background/95 px-3 py-1.5 backdrop-blur-md', className)}>
+    <div data-design-scope="panels" data-design-part="graph-refs-toolbar" className={cn('flex min-h-10 w-full flex-row items-center gap-2 border-b border-[hsl(var(--app-border)/0.48)] bg-[hsl(var(--app-panel)/0.96)] px-2.5 py-0.5 antialiased', className)}>
       {/* 1. Checked Out Zone */}
       <HoverCard openDelay={500}>
         <HoverCardTrigger asChild>
           <button
             type="button"
+            data-design-part="graph-current-ref"
             className={cn(
-              "group flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 transition-all text-left",
+              "group flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-left transition-[background-color,border-color,color,box-shadow,transform] duration-150 active:scale-[0.96]",
+              compactHeaderHitTargetClass,
               currentHeadSha?.trim() && selectedComposerCommitSha === currentHeadSha.trim()
                 ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/50 hover:bg-emerald-500/15"
                 : currentCheckout.kind === 'unknown'
                 ? "bg-muted/40 text-muted-foreground border border-border/50"
-                : "bg-blue-500/10 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400 border border-blue-500/30 hover:bg-blue-500/20"
+                : "border border-[hsl(var(--app-graph-agent)/0.28)] bg-[hsl(var(--app-graph-agent)/0.08)] text-[hsl(var(--app-graph-agent))] hover:bg-[hsl(var(--app-graph-agent)/0.12)]"
             )}
             aria-label={`Focus currently checked out ${currentCheckout.title}`}
             onClick={focusCurrentCheckout}
@@ -406,7 +409,7 @@ export function TrackedBranchesPanel({
             )}
           </button>
         </HoverCardTrigger>
-        <HoverCardContent className="w-64 rounded-xl border border-border/70 bg-popover px-3 py-2 text-xs leading-relaxed text-muted-foreground shadow-lg">
+        <HoverCardContent className="w-64 px-3 py-2 text-[11px] leading-5 text-muted-foreground">
           Currently checked out: {currentCheckout.title}. Click to focus this node in the graph.
         </HoverCardContent>
       </HoverCard>
@@ -422,7 +425,7 @@ export function TrackedBranchesPanel({
               <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70 shrink-0">Tracked</span>
             </div>
           </HoverCardTrigger>
-          <HoverCardContent className="w-64 rounded-xl border border-border/70 bg-popover px-3 py-2 text-xs leading-relaxed text-muted-foreground shadow-lg">
+          <HoverCardContent className="w-64 px-3 py-2 text-[11px] leading-5 text-muted-foreground">
             Agentree continuously checks tracked branches and imports new commits when their refs move.
           </HoverCardContent>
         </HoverCard>
@@ -454,7 +457,7 @@ export function TrackedBranchesPanel({
           <PopoverContent
             align="start"
             sideOffset={7}
-            className="w-[min(23rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-border/70 bg-popover/95 p-2 shadow-xl backdrop-blur-xl"
+            className="w-[min(23rem,calc(100vw-1.5rem))] overflow-hidden p-2"
           >
             <div className="flex items-start gap-3 px-2 pb-2 pt-1">
               <div className="min-w-0 flex-1">
@@ -608,8 +611,9 @@ export function TrackedBranchesPanel({
           return (
             <div
               key={ref.id}
+              data-design-part="graph-tracked-ref"
               className={cn(
-                "group flex shrink-0 items-center rounded-full border bg-background px-1.5 py-0.5 text-[10px] font-medium transition-[background-color,border-color,color] duration-150",
+                "group flex min-h-8 shrink-0 items-center rounded-lg border bg-background px-2 py-1 text-[10px] font-medium transition-[background-color,border-color,color,transform] duration-150 active:scale-[0.96]",
                 isSelectedForComposer
                   ? "border-emerald-500/70 text-emerald-700 bg-emerald-500/10 dark:text-emerald-300"
                   : countsAsMerged
@@ -619,7 +623,7 @@ export function TrackedBranchesPanel({
             >
               <button
                 type="button"
-                className="truncate max-w-[120px] px-1 hover:underline outline-none"
+                className={cn("max-w-[120px] truncate px-1 outline-none hover:underline", compactHeaderHitTargetClass)}
                 title={ref.git_ref}
                 onClick={() => focusTrackedRef(ref.git_ref)}
               >
@@ -629,7 +633,7 @@ export function TrackedBranchesPanel({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-4 w-4 rounded-full p-0 ml-0.5 opacity-0 group-hover:opacity-100 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-opacity outline-none focus:opacity-100"
+                className={cn("ml-0.5 h-4 w-4 rounded-full p-0 text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-destructive/10 hover:text-destructive focus:opacity-100 group-hover:opacity-100", compactHeaderHitTargetClass)}
                 disabled={deleteTrackedRef.isPending}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -650,9 +654,10 @@ export function TrackedBranchesPanel({
             <PopoverTrigger asChild>
               <Button
                 type="button"
+                data-design-part="graph-track-ref"
                 variant="ghost"
                 size="sm"
-                className="h-7 min-w-[8.5rem] justify-between gap-2 rounded-md border border-border/50 bg-muted/35 px-2 text-[10.5px] font-semibold text-muted-foreground shadow-[0_1px_0_rgba(255,255,255,0.7)_inset] transition-[background-color,border-color,color,transform] hover:border-border hover:bg-muted/55 hover:text-foreground active:scale-[0.96] dark:bg-slate-900/80 dark:shadow-none dark:hover:bg-slate-800/90"
+                className={cn("h-8 min-w-[8.5rem] justify-between gap-2 rounded-lg border border-border/50 bg-muted/35 px-3 text-[10.5px] font-semibold text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.035)] transition-[background-color,border-color,color,transform] duration-150 hover:border-border hover:bg-muted/55 hover:text-foreground active:scale-[0.96] motion-reduce:transition-none", compactHeaderHitTargetClass)}
                 disabled={createTrackedRef.isPending || trackableRefs.length === 0}
                 title={trackableRefs.length === 0 ? 'No untracked branches available' : 'Track a branch'}
               >
@@ -670,7 +675,7 @@ export function TrackedBranchesPanel({
             <PopoverContent
               align="end"
               sideOffset={6}
-              className="w-[min(22rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-border/70 bg-popover/95 p-1.5 shadow-xl backdrop-blur-xl"
+              className="w-[min(22rem,calc(100vw-1.5rem))] overflow-hidden p-1.5"
             >
               <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
                 Newest branch tips

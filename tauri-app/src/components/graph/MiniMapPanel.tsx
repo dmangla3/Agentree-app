@@ -577,7 +577,7 @@ export function MiniMapPanel({ graphNodes, graphEdges, threadRootIdByMessageId =
         'top-left': 'top-4 left-4',
     }[position];
 
-    const iconButtonBase = "app-focus-ring group relative flex items-center justify-center rounded-md transition-all duration-200 ease-out";
+    const iconButtonBase = "app-focus-ring group relative flex items-center justify-center rounded-md transition-[background-color,border-color,color,box-shadow,transform] duration-normal ease-out-cubic motion-reduce:transition-none";
     const iconButtonGhost = "border border-transparent bg-background/65 text-muted-foreground shadow-[0_1px_0_hsl(var(--foreground)/0.06)_inset] hover:border-border/75 hover:bg-muted/70 hover:text-foreground active:scale-95";
     const iconContainer = "flex items-center justify-center transition-transform duration-200 group-hover:scale-110 group-active:scale-95";
 
@@ -607,9 +607,8 @@ export function MiniMapPanel({ graphNodes, graphEdges, threadRootIdByMessageId =
         <div className={cn("absolute", minimapLayerClass, positionClass)}>
             <div
                 className={cn(
-                    "group isolate overflow-hidden rounded-xl border transition-all duration-300 ease-out",
-                    "border-[hsl(var(--app-border)/0.72)] bg-[hsl(var(--app-panel)/0.82)] shadow-[var(--app-shadow-floating)] backdrop-blur-2xl",
-                    "ring-1 ring-white/45 dark:ring-white/5"
+                    "group isolate overflow-hidden rounded-lg border transition-[background-color,border-color,box-shadow] duration-normal ease-out-cubic motion-reduce:transition-none",
+                    "border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel)/0.94)] shadow-[0_16px_36px_-28px_hsl(var(--foreground)/0.42)]"
                 )}
                 style={{
                     width: minimapSize.width,
@@ -618,13 +617,10 @@ export function MiniMapPanel({ graphNodes, graphEdges, threadRootIdByMessageId =
                 role="region"
                 aria-label={`Graph minimap, ${nodeSummary}, ${positionLabel}`}
             >
-                <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_12%_18%,hsl(var(--app-accent)/0.16),transparent_36%),linear-gradient(145deg,hsl(var(--app-panel-strong)/0.96),hsl(var(--app-panel)/0.74)_52%,hsl(var(--app-bg-muted)/0.88))]" />
-                <div className="pointer-events-none absolute inset-0 z-0 opacity-[0.38] [background-image:linear-gradient(hsl(var(--foreground)/0.055)_1px,transparent_1px),linear-gradient(90deg,hsl(var(--foreground)/0.055)_1px,transparent_1px)] [background-size:18px_18px]" />
-
                 <div className="absolute left-2.5 right-2.5 top-2 z-10 flex items-start justify-between gap-3">
                     <div className="pointer-events-none min-w-0">
                         <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/75">
-                            Graph map
+                            Map
                         </div>
                         <div className="mt-0.5 max-w-[11rem] truncate font-mono text-[10px] tabular-nums text-foreground/75">
                             {nodeSummary}
@@ -805,7 +801,7 @@ export function MiniMapPanel({ graphNodes, graphEdges, threadRootIdByMessageId =
                                 setPosition(item.value);
                             }}
                             className={cn(
-                                "app-focus-ring relative rounded-[3px] transition-all duration-150 hover:bg-foreground/10",
+                                "app-focus-ring relative rounded-[3px] transition-[background-color,box-shadow] duration-fast ease-out-cubic motion-reduce:transition-none hover:bg-foreground/10",
                                 position === item.value ? "bg-[hsl(var(--app-accent))] shadow-sm" : "bg-foreground/10"
                             )}
                             aria-label={`Move minimap to ${item.label}`}

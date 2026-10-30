@@ -50,7 +50,7 @@ export function ArtifactGraphPreview({
   return (
     <div
       className={cn(
-        'relative z-10 mb-2 h-[44px] overflow-hidden rounded-md border border-zinc-200/80 bg-zinc-100/70 dark:border-zinc-800/80 dark:bg-zinc-900/70',
+        'relative z-10 mb-2 h-11 overflow-hidden rounded-lg bg-muted/45 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]',
         className,
       )}
       title={title}
@@ -60,16 +60,16 @@ export function ArtifactGraphPreview({
           src={previewUrl}
           alt={title}
           loading="lazy"
-          className="h-full w-full object-cover"
+          className="h-full w-full object-cover outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
         />
       ) : (
-        <div className="flex h-full w-full items-center gap-2 px-2 text-[10px] font-medium text-zinc-600 dark:text-zinc-300">
+        <div className="flex h-full w-full items-center gap-2 px-2 text-[10px] font-medium text-muted-foreground">
           <Icon size={14} strokeWidth={2} />
           <span className="min-w-0 flex-1 truncate">{title}</span>
         </div>
       )}
       {extraCount > 0 ? (
-        <div className="absolute right-1 top-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-white/70 bg-zinc-950/80 px-1.5 text-[9px] font-semibold text-white shadow-sm dark:border-zinc-800">
+        <div className="absolute right-1 top-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-foreground/85 px-1.5 text-[9px] font-semibold tabular-nums text-background shadow-sm">
           +{extraCount}
         </div>
       ) : null}
@@ -103,7 +103,7 @@ export function ArtifactChipList({
                 src={previewUrl}
                 alt=""
                 loading="lazy"
-                className="h-4 w-4 shrink-0 rounded-sm object-cover"
+                className="h-4 w-4 shrink-0 rounded object-cover outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
               />
             ) : (
               <Icon size={13} strokeWidth={2} className="shrink-0" />
@@ -142,26 +142,27 @@ export function ArtifactGallery({
   return (
     <section
       className={cn(
-        'relative z-10 mb-4 min-w-0 max-w-full overflow-hidden rounded-md border border-border/60 bg-background/70 shadow-sm',
+        'relative z-10 mb-4 min-w-0 max-w-full overflow-hidden rounded-xl bg-[hsl(var(--app-panel-strong))] shadow-[var(--app-shadow-panel)]',
         className,
       )}
+      data-design-scope="panels"
     >
       <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border/50 px-3 py-2">
         <button
           type="button"
           onClick={() => setIsOpen((value) => !value)}
-          className="inline-flex min-w-0 items-center gap-2 text-left text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:text-foreground"
+          className="inline-flex min-h-10 min-w-0 items-center gap-2 rounded-lg text-left text-[11px] font-semibold text-muted-foreground transition-[background-color,color,transform] duration-150 ease-out hover:text-foreground active:scale-[0.96]"
           aria-expanded={isOpen}
         >
           <Layers size={13} strokeWidth={2.2} className="shrink-0" />
           <span className="min-w-0 truncate">Previews</span>
-          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] tabular-nums">
+          <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] tabular-nums">
             {artifacts.length}
           </span>
           <ChevronDown
             size={13}
             strokeWidth={2.2}
-            className={cn('shrink-0 transition-transform', isOpen && 'rotate-180')}
+            className={cn('shrink-0 transition-transform duration-150 ease-out', isOpen && 'rotate-180')}
           />
         </button>
         {canOpen ? (
@@ -169,7 +170,7 @@ export function ArtifactGallery({
             href={previewUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-150 ease-out hover:bg-accent hover:text-foreground active:scale-[0.96]"
             aria-label="Open preview"
             title="Open preview"
           >
@@ -180,13 +181,13 @@ export function ArtifactGallery({
 
       {isOpen ? (
         <div className="min-w-0 max-w-full p-3">
-          <div className="min-w-0 overflow-hidden rounded-md border border-border/50 bg-muted/20">
+          <div className="min-w-0 overflow-hidden rounded-lg bg-muted/20 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.58)]">
             {previewUrl && isImageArtifact(primary) ? (
               <img
                 src={previewUrl}
                 alt={title}
                 loading="lazy"
-                className="max-h-[320px] w-full object-contain"
+                className="max-h-[320px] w-full object-contain outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
               />
             ) : (
               <div className="flex min-h-[120px] items-center justify-center gap-2 px-4 text-sm font-medium text-muted-foreground">
@@ -205,7 +206,7 @@ export function ArtifactGallery({
               ) : null}
             </div>
             {primary.width && primary.height ? (
-              <span className="shrink-0 rounded-full bg-muted px-2 py-1 text-[10px] text-muted-foreground tabular-nums">
+              <span className="shrink-0 rounded-md bg-muted px-2 py-1 text-[10px] tabular-nums text-muted-foreground">
                 {primary.width}x{primary.height}
               </span>
             ) : null}
@@ -223,7 +224,7 @@ export function ArtifactGallery({
                     key={artifact.id}
                     onClick={() => setSelectedId(artifact.id)}
                     className={cn(
-                      'h-12 w-16 shrink-0 overflow-hidden rounded-md border bg-muted/20 text-muted-foreground transition-colors',
+                      'h-12 w-16 shrink-0 overflow-hidden rounded-lg border bg-muted/20 text-muted-foreground transition-[border-color,box-shadow,transform] duration-150 ease-out active:scale-[0.96]',
                       selected ? 'border-primary/70 ring-2 ring-primary/20' : 'border-border/60 hover:border-border',
                     )}
                     title={artifactTitle}
@@ -234,7 +235,7 @@ export function ArtifactGallery({
                         src={artifactPreviewUrl}
                         alt=""
                         loading="lazy"
-                        className="h-full w-full object-cover"
+                        className="h-full w-full object-cover outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
                       />
                     ) : (
                       <span className="flex h-full w-full items-center justify-center">

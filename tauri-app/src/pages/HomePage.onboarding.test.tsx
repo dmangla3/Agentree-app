@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { render, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HomePage } from './HomePage';
 import type { Workspace } from '../stores/workspaceStore';
 
@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   selectWorkspace: vi.fn(),
   clearSelectedWorkspace: vi.fn(),
   navigate: vi.fn(),
+  searchParams: new URLSearchParams(),
+  hasCompletedOnboarding: false,
 }));
 
 vi.mock('../stores/authStore', () => ({
@@ -34,7 +36,7 @@ vi.mock('../stores/workspaceStore', () => ({
 vi.mock('../stores/onboardingStore', () => ({
   useOnboardingStore: (selector: (state: unknown) => unknown) =>
     selector({
-      hasCompletedForUser: () => false,
+      hasCompletedForUser: () => mocks.hasCompletedOnboarding,
       markCompleted: mocks.markCompleted,
     }),
 }));
@@ -51,11 +53,13 @@ vi.mock('../hooks/useHotSendMessageDeltas', () => ({ useHotSendMessageDeltas: vi
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mocks.navigate,
   useParams: () => ({}),
-  useSearchParams: () => [new URLSearchParams()],
+  useSearchParams: () => [mocks.searchParams],
 }));
 
 vi.mock('../components/onboarding/FirstRunExperience', () => ({
-  FirstRunExperience: () => <div data-testid="first-run">First run</div>,
+  FirstRunExperience: ({ reviewMode }: { reviewMode?: boolean }) => (
+    <div data-testid="first-run" data-review-mode={reviewMode ? 'true' : 'false'}>First run</div>
+  ),
 }));
 
 vi.mock('../components/AppHeader', () => ({ AppHeader: () => <div /> }));
@@ -99,8 +103,12 @@ describe('HomePage onboarding gate', () => {
     mocks.workspaces = [];
     mocks.isLoadingWorkspaces = false;
     mocks.selectedWorkspaceId = null;
+    mocks.searchParams = new URLSearchParams();
+    mocks.hasCompletedOnboarding = false;
     vi.clearAllMocks();
   });
+
+  afterEach(() => cleanup());
 
   it('uses the local workspace list independently of the signed-in account id', async () => {
     mocks.workspaces = [workspace('local-workspace', 'local-owner')];
@@ -110,5 +118,14 @@ describe('HomePage onboarding gate', () => {
     await waitFor(() => {
       expect(mocks.markCompleted).toHaveBeenCalledWith('new-user', 'local-workspace');
     });
+  });
+
+  it('opens a safe onboarding preview after onboarding is complete', async () => {
+    mocks.hasCompletedOnboarding = true;
+    mocks.searchParams = new URLSearchParams('designReview=onboarding&designReviewRun=1');
+
+    const view = render(<HomePage />);
+
+    expect(view.getByTestId('first-run').getAttribute('data-review-mode')).toBe('true');
   });
 });

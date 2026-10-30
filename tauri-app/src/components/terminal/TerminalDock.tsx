@@ -152,7 +152,8 @@ export function TerminalDock({ onRequestShow, onTabsChange }: TerminalDockProps)
 
   return (
     <section
-      className="flex h-full min-h-0 flex-col overflow-hidden bg-[hsl(var(--app-bg)/0.98)] shadow-[0_-14px_40px_-34px_hsl(var(--foreground)/0.5)]"
+      data-design-scope="panels"
+      className="flex h-full min-h-0 flex-col overflow-hidden rounded-t-xl bg-[hsl(var(--app-bg)/0.98)] shadow-[0_-18px_44px_-38px_hsl(var(--foreground)/0.52),inset_0_0_0_1px_hsl(var(--app-border)/0.56)]"
       aria-label="Commit terminals"
     >
       <div className="flex h-10 shrink-0 items-stretch border-b border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel)/0.9)]">
@@ -180,7 +181,7 @@ export function TerminalDock({ onRequestShow, onTabsChange }: TerminalDockProps)
                     role="tab"
                     aria-selected={active}
                     onClick={() => setActiveTabId(tab.id)}
-                    className="flex min-w-0 flex-1 items-center gap-2 px-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[hsl(var(--app-focus))] active:scale-[0.96] transition-transform duration-150"
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-3 text-left outline-none transition-transform duration-150 ease-out active:scale-[0.96] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[hsl(var(--app-focus))]"
                     title={`${tab.label}\n${tab.commitSha}`}
                   >
                     {tab.status === 'starting' || tab.status === 'closing' ? (
@@ -203,7 +204,7 @@ export function TerminalDock({ onRequestShow, onTabsChange }: TerminalDockProps)
                   <button
                     type="button"
                     onClick={() => requestClose(tab.id)}
-                    className="flex h-10 w-10 shrink-0 items-center justify-center text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 hover:bg-muted/70 hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[hsl(var(--app-focus))] active:scale-[0.96]"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted-foreground outline-none transition-[background-color,color,transform] duration-150 ease-out hover:bg-muted/70 hover:text-foreground active:scale-[0.96] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[hsl(var(--app-focus))]"
                     aria-label={`Close terminal ${tab.label}`}
                     title="Close terminal and release its worktree attachment"
                   >
@@ -219,7 +220,7 @@ export function TerminalDock({ onRequestShow, onTabsChange }: TerminalDockProps)
           type="button"
           onClick={duplicateActiveCommit}
           disabled={!activeTab}
-          className="flex h-10 w-10 shrink-0 items-center justify-center border-l border-[hsl(var(--app-border)/0.52)] text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 hover:bg-muted/70 hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[hsl(var(--app-focus))] active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border-l border-[hsl(var(--app-border)/0.52)] text-muted-foreground outline-none transition-[background-color,color,transform] duration-150 ease-out hover:bg-muted/70 hover:text-foreground active:scale-[0.96] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[hsl(var(--app-focus))] disabled:pointer-events-none disabled:opacity-40"
           aria-label="New terminal at active commit"
           title="Open another shell in this commit worktree"
         >
@@ -259,7 +260,7 @@ export function TerminalDock({ onRequestShow, onTabsChange }: TerminalDockProps)
 
         {activeTab?.status === 'failed' ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center px-4">
-            <div className="max-w-2xl rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive shadow-[0_0_0_1px_hsl(var(--destructive)/0.24)]">
+            <div className="max-w-2xl rounded-xl bg-destructive/10 px-3 py-2 text-xs text-destructive shadow-[0_8px_24px_-18px_hsl(var(--destructive)/0.38),inset_0_0_0_1px_hsl(var(--destructive)/0.24)]">
               {activeTab.error || 'The terminal could not be started.'}
             </div>
           </div>

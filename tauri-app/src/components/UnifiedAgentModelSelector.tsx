@@ -574,7 +574,7 @@ export function UnifiedAgentModelSelector({
         <div className="flex h-full w-full min-w-0 flex-col overflow-hidden bg-[hsl(var(--app-bg-elevated))] text-popover-foreground">
             <div className="shrink-0 border-b border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong))] px-3 py-2 shadow-[0_1px_0_rgba(255,255,255,0.7)_inset] dark:shadow-[0_1px_0_rgba(255,255,255,0.05)_inset]">
                 {groupedAgents.length > 0 ? (
-                    <div role="tablist" aria-label="Model providers" className="flex items-center gap-0.5 rounded-md bg-background/58 p-0.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]">
+                    <div role="tablist" aria-label="Model providers" className="flex items-center gap-0.5 rounded-lg bg-background/58 p-0.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]">
                         {visibleGroupedAgents.map(({ provider, families }) => {
                             const meta = providerMeta(provider);
                             const accent = providerAccentClasses(provider);
@@ -589,7 +589,7 @@ export function UnifiedAgentModelSelector({
                                     data-model-provider-tab={provider}
                                     onClick={() => setSelectedProvider(provider)}
                                     className={cn(
-                                        "flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded px-2 py-1.5 text-[11.5px] font-semibold outline-none transition-[background-color,box-shadow,color,transform] duration-150 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]",
+                                        "flex h-10 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-2 text-[11.5px] font-semibold outline-none transition-[background-color,box-shadow,color,transform] duration-150 ease-out active:scale-[0.96] focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]",
                                         isActive
                                             ? "bg-background text-foreground shadow-[0_8px_18px_-16px_rgba(15,23,42,0.72),inset_0_0_0_1px_hsl(var(--app-border)/0.76)]"
                                             : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
@@ -684,7 +684,7 @@ export function UnifiedAgentModelSelector({
                                                         <button
                                                             type="button"
                                                             onClick={() => openLoginProfilesForProvider(provider)}
-                                                            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-amber-50 px-2 text-[10.5px] font-semibold text-amber-800 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.18)] transition-[background-color,transform] duration-150 hover:bg-amber-100 active:scale-[0.96] dark:bg-amber-950/35 dark:text-amber-300 dark:hover:bg-amber-950/55"
+                                                            className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-lg bg-amber-50 px-3 text-[10.5px] font-semibold text-amber-800 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.18)] transition-[background-color,transform] duration-150 ease-out hover:bg-amber-100 active:scale-[0.96] dark:bg-amber-950/35 dark:text-amber-300 dark:hover:bg-amber-950/55"
                                                         >
                                                             <KeyRound className="h-3 w-3" />
                                                             Login to {meta.title}
@@ -742,7 +742,7 @@ export function UnifiedAgentModelSelector({
                                                             if (providerSelectable) activateFamilyImmediately(family.key);
                                                         }}
                                                         className={cn(
-                                                            "group relative flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left outline-none transition-[background-color,box-shadow,color,transform] duration-150 ease-out",
+                                                            "group relative flex min-h-10 w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left outline-none transition-[background-color,box-shadow,color,transform] duration-150 ease-out",
                                                             "focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1 focus-visible:ring-offset-background active:scale-[0.96]",
                                                             isActive
                                                                 ? "bg-accent text-accent-foreground"
@@ -817,7 +817,7 @@ export function UnifiedAgentModelSelector({
                                                 <button
                                                     type="button"
                                                     onClick={() => openLoginProfilesForProvider(provider)}
-                                                    className="mt-4 inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-foreground px-3 text-[11px] font-semibold text-background shadow-[0_10px_24px_-18px_rgba(15,23,42,0.75)] transition-[background-color,transform] duration-150 hover:bg-foreground/88 active:scale-[0.96]"
+                                                    className="mt-4 inline-flex h-10 items-center justify-center gap-1.5 rounded-lg bg-foreground px-3 text-[11px] font-semibold text-background shadow-[0_10px_24px_-18px_rgba(15,23,42,0.75)] transition-[background-color,transform] duration-150 ease-out hover:bg-foreground/88 active:scale-[0.96]"
                                                 >
                                                     <KeyRound className="h-3.5 w-3.5" />
                                                     Login to {meta.title}
@@ -878,7 +878,7 @@ export function UnifiedAgentModelSelector({
                                                     }}
                                                     data-model-effort={agent.model_config?.reasoningEffort ?? 'default'}
                                                     className={cn(
-                                                        "group/effort flex w-full min-w-0 flex-wrap items-center justify-between gap-2 overflow-hidden rounded-md px-2.5 py-1.5 text-left outline-none transition-[background-color,box-shadow,color,transform] duration-150 ease-out",
+                                                        "group/effort flex min-h-10 w-full min-w-0 flex-wrap items-center justify-between gap-2 overflow-hidden rounded-lg px-2.5 py-1.5 text-left outline-none transition-[background-color,box-shadow,color,transform] duration-150 ease-out",
                                                         "focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))] focus-visible:ring-offset-1 focus-visible:ring-offset-background active:scale-[0.96]",
                                                         isSelected
                                                             ? "bg-[hsl(var(--app-bg-elevated))] shadow-[0_10px_24px_-22px_rgba(15,23,42,0.7),inset_0_0_0_1px_hsl(var(--app-border)/0.8)]"
@@ -924,7 +924,7 @@ export function UnifiedAgentModelSelector({
                                                     </div>
                                                     <div
                                                         className={cn(
-                                                            "ml-auto flex min-h-7 max-w-full shrink-0 items-center gap-1.5 rounded-md bg-muted/35 p-0.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.55)] transition-[opacity,transform,background-color,box-shadow] duration-150 ease-out",
+                                                            "ml-auto flex min-h-10 max-w-full shrink-0 items-center gap-1.5 rounded-lg bg-muted/35 p-0.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.55)] transition-[opacity,transform,background-color,box-shadow] duration-150 ease-out",
                                                             supportsMultiRun && !isSelected && "opacity-0 group-hover/effort:opacity-100 group-focus-visible/effort:opacity-100",
                                                             isSelected && "bg-background shadow-[0_8px_20px_-16px_rgba(15,23,42,0.8),inset_0_0_0_1px_hsl(var(--app-border)/0.8)]"
                                                         )}
@@ -938,7 +938,7 @@ export function UnifiedAgentModelSelector({
                                                                         type="button"
                                                                         onClick={remove}
                                                                         disabled={!isModelSelectable || !canRemove}
-                                                                        className="flex h-6 w-6 items-center justify-center rounded bg-background text-muted-foreground shadow-[0_1px_2px_rgba(15,23,42,0.08),inset_0_0_0_1px_hsl(var(--app-border)/0.8)] transition-[background-color,color,transform,opacity] duration-150 hover:bg-red-50 hover:text-red-600 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+                                                                        className="flex h-10 w-10 items-center justify-center rounded-lg bg-background text-muted-foreground shadow-[0_1px_2px_rgba(15,23,42,0.08),inset_0_0_0_1px_hsl(var(--app-border)/0.8)] transition-[background-color,color,transform,opacity] duration-150 ease-out hover:bg-red-50 hover:text-red-600 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35 dark:hover:bg-red-950/40 dark:hover:text-red-300"
                                                                         aria-label={`Remove ${effortLabel}`}
                                                                     >
                                                                         <X className="h-3.5 w-3.5" strokeWidth={2.4} />
@@ -948,7 +948,7 @@ export function UnifiedAgentModelSelector({
                                                                     type="button"
                                                                     onClick={decrement}
                                                                     disabled={!isModelSelectable || !isSelected || !canRemove}
-                                                                    className="flex h-6 w-6 items-center justify-center rounded bg-background text-muted-foreground shadow-[0_1px_2px_rgba(15,23,42,0.08),inset_0_0_0_1px_hsl(var(--app-border)/0.8)] transition-[background-color,color,transform,opacity] duration-150 hover:bg-muted hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
+                                                                    className="flex h-10 w-10 items-center justify-center rounded-lg bg-background text-muted-foreground shadow-[0_1px_2px_rgba(15,23,42,0.08),inset_0_0_0_1px_hsl(var(--app-border)/0.8)] transition-[background-color,color,transform,opacity] duration-150 ease-out hover:bg-muted hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
                                                                     aria-label={`Decrease ${effortLabel}`}
                                                                 >
                                                                     <Minus className="h-3.5 w-3.5" strokeWidth={2.4} />
@@ -960,7 +960,7 @@ export function UnifiedAgentModelSelector({
                                                                     type="button"
                                                                     onClick={increment}
                                                                     disabled={!isModelSelectable}
-                                                                    className="flex h-6 w-6 items-center justify-center rounded bg-background text-foreground shadow-[0_1px_2px_rgba(15,23,42,0.08),inset_0_0_0_1px_hsl(var(--app-border)/0.8)] transition-[background-color,color,transform,opacity] duration-150 hover:bg-muted active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
+                                                                    className="flex h-10 w-10 items-center justify-center rounded-lg bg-background text-foreground shadow-[0_1px_2px_rgba(15,23,42,0.08),inset_0_0_0_1px_hsl(var(--app-border)/0.8)] transition-[background-color,color,transform,opacity] duration-150 ease-out hover:bg-muted active:scale-[0.96] disabled:pointer-events-none disabled:opacity-35"
                                                                     aria-label={`Increase ${effortLabel}`}
                                                                 >
                                                                     <Plus className="h-3.5 w-3.5" strokeWidth={2.6} />
@@ -987,7 +987,7 @@ export function UnifiedAgentModelSelector({
                         const provider = activeProviderGroup?.provider;
                         dispatchOpenModelConfiguration(isRuntimeProvider(provider ?? '') ? provider as RuntimeProvider : 'codex');
                     }}
-                    className="flex h-9 w-full items-center justify-center gap-2 rounded-md text-[11px] font-semibold text-muted-foreground transition-[background-color,color,transform] duration-150 hover:bg-muted hover:text-foreground active:scale-[0.96]"
+                    className="flex h-10 w-full items-center justify-center gap-2 rounded-lg text-[11px] font-semibold text-muted-foreground transition-[background-color,color,transform] duration-150 ease-out hover:bg-muted hover:text-foreground active:scale-[0.96]"
                 >
                     <Settings2 className="h-3.5 w-3.5" />
                     Manage visible models
@@ -995,7 +995,7 @@ export function UnifiedAgentModelSelector({
             </div>
             {isMenuAimDebugEnabledRef.current && menuAimDebugState?.points && typeof document !== 'undefined' ? createPortal((
                 <svg
-                    className="pointer-events-none fixed inset-0 z-[2147483647] h-screen w-screen"
+                    className="pointer-events-none fixed inset-0 z-[2147483647]"
                     aria-hidden="true"
                 >
                     <polygon

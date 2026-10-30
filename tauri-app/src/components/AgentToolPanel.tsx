@@ -72,7 +72,7 @@ function ToolCallCard({ toolCall, index }: { toolCall: ToolCall; index: number }
     return (
         <div
             className={cn(
-                "rounded-lg border transition-all duration-200",
+                "rounded-lg border transition-[background-color,border-color] duration-normal ease-out-cubic motion-reduce:transition-none",
                 isSuccess
                     ? "border-emerald-500/30 bg-emerald-500/5 hover:border-emerald-500/50"
                     : "border-red-500/30 bg-red-500/5 hover:border-red-500/50"
@@ -187,8 +187,8 @@ export function AgentToolPanel({ annotations, reasoning, className }: AgentToolP
             <button
                 onClick={() => setIsExpanded(!isExpanded)}
                 className={cn(
-                    "w-full flex items-center gap-2 px-2.5 py-1.5 rounded-full transition-all duration-200",
-                    "bg-background/80 backdrop-blur-xl border border-border/40 shadow-[0_1px_3px_rgba(0,0,0,0.04)]",
+                    "w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition-[background-color,box-shadow] duration-normal ease-out-cubic motion-reduce:transition-none",
+                    "bg-background/80 border border-border/40 shadow-[0_1px_3px_rgba(0,0,0,0.04)]",
                     "hover:shadow-md hover:bg-background/90 ring-1 ring-white/10 dark:ring-white/5",
                     "group"
                 )}

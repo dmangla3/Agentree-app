@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  AlertCircle,
   CheckCircle2,
   CircleGauge,
   Download,
@@ -375,22 +376,22 @@ export function LoginProfilesPanel({
       <div className="app-view-frame mx-auto flex min-h-full w-full max-w-7xl flex-col">
         <header className="mb-5 flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[hsl(var(--app-accent))]">{copy.eyebrow}</p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight text-foreground">{copy.title}</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">{copy.description}</p>
+            <h1 className="text-balance text-2xl font-semibold tracking-[-0.025em] text-foreground">{copy.title}</h1>
+            <p className="mt-1.5 max-w-2xl text-pretty text-sm leading-6 text-muted-foreground">{copy.description}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={isLoading}>
+            <Button className="h-10 rounded-lg" variant="outline" size="sm" onClick={() => void refresh()} disabled={isLoading}>
               <RefreshCw className={cn('h-4 w-4', isLoading && 'animate-spin')} />
               Refresh
             </Button>
             {providerFilter !== 'opencode' ? (
-              <Button variant="outline" size="sm" onClick={() => void runPanelDiscovery()} disabled={isDiscovering || isMutating}>
+              <Button className="h-10 rounded-lg" variant="outline" size="sm" onClick={() => void runPanelDiscovery()} disabled={isDiscovering || isMutating}>
                 <Download className={cn('h-4 w-4', isDiscovering && 'animate-pulse')} />
                 Find existing
               </Button>
             ) : null}
             <Button
+              className="h-10 rounded-lg"
               size="sm"
               onClick={() => providerFilter === 'opencode' ? void runPanelDiscovery() : openNewEditor(providerFilter)}
               disabled={providerFilter === 'opencode' && (isDiscovering || isImportingCandidates || isMutating)}
@@ -405,18 +406,18 @@ export function LoginProfilesPanel({
           </div>
         </header>
 
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="inline-flex rounded-lg bg-background/82 p-1 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.7)]">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-y border-border/60 py-2">
+          <div className="inline-flex rounded-lg bg-muted/45 p-1">
             {providerFilters.map((filter) => (
               <button
                 key={filter.id}
                 type="button"
                 onClick={() => setProviderFilter(filter.id)}
                 className={cn(
-                  'h-9 min-w-24 rounded-md px-3 text-[12px] font-semibold transition-[background-color,color,box-shadow,transform] active:scale-[0.96]',
+                  'h-10 min-w-24 rounded-md px-3 text-[12px] font-semibold transition-[background-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.96]',
                   providerFilter === filter.id
-                    ? 'bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))] shadow-[inset_0_0_0_1px_hsl(var(--app-accent)/0.16)]'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                    ? 'bg-background text-foreground shadow-[0_1px_2px_hsl(var(--foreground)/0.08),inset_0_0_0_1px_hsl(var(--border)/0.55)]'
+                    : 'text-muted-foreground hover:bg-background/55 hover:text-foreground'
                 )}
               >
                 {filter.label}
@@ -424,15 +425,15 @@ export function LoginProfilesPanel({
             ))}
           </div>
           <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-            <span className="inline-flex h-7 items-center gap-1.5 rounded-md bg-background/82 px-2.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]">
+            <span className="inline-flex h-7 items-center gap-1.5 px-2">
               <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
               <span className="font-mono tabular-nums">{readyCount}</span> ready
             </span>
-            <span className="inline-flex h-7 items-center gap-1.5 rounded-md bg-background/82 px-2.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]">
+            <span className="inline-flex h-7 items-center gap-1.5 border-l border-border/60 px-2.5">
               <Activity className="h-3.5 w-3.5" />
               <span className="font-mono tabular-nums">{activeRunCount}</span> running
             </span>
-            <span className="inline-flex h-7 items-center gap-1.5 rounded-md bg-background/82 px-2.5 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]">
+            <span className="inline-flex h-7 items-center gap-1.5 border-l border-border/60 px-2.5">
               <CircleGauge className="h-3.5 w-3.5" />
               <span className="font-mono tabular-nums">{limitedCount}</span> limited
             </span>
@@ -440,12 +441,13 @@ export function LoginProfilesPanel({
         </div>
 
         {error ? (
-          <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/35 dark:text-red-300">
-            {error}
+          <div className="mb-3 flex items-start gap-2 rounded-lg bg-destructive/[0.06] px-3 py-2 text-sm text-destructive shadow-[inset_0_0_0_1px_hsl(var(--destructive)/0.18)]">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{error}</span>
           </div>
         ) : null}
 
-        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="grid min-h-0 flex-1 overflow-hidden rounded-xl bg-background/80 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72)] lg:grid-cols-[minmax(0,1fr)_22rem]">
           <section className="min-w-0">
             {filteredProfiles.length > 0 ? (
               <LoginProfileRows
@@ -464,8 +466,8 @@ export function LoginProfilesPanel({
                 onDelete={(profile) => void runProfileAction(profile, () => deleteProfile(profile.id))}
               />
             ) : (
-              <div className="flex min-h-[360px] flex-col items-center justify-center rounded-xl bg-background/78 p-8 text-center shadow-[0_18px_52px_-44px_rgba(15,23,42,0.65),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
-                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))]">
+              <div className="flex min-h-[280px] flex-col items-center justify-center p-8 text-center">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted/60 text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border)/0.55)]">
                   <KeyRound className="h-5 w-5" />
                 </div>
                 <div className="mt-4 text-sm font-semibold text-foreground">{copy.emptyTitle}</div>
@@ -493,8 +495,8 @@ export function LoginProfilesPanel({
             )}
           </section>
 
-          <aside className="space-y-3">
-            <section className="min-w-0 rounded-xl bg-background/82 p-4 shadow-[0_18px_52px_-44px_rgba(15,23,42,0.65),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
+          <aside className="divide-y divide-border/60 border-t border-border/60 lg:border-l lg:border-t-0">
+            <section className="min-w-0 p-4">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Selected</div>
@@ -503,7 +505,7 @@ export function LoginProfilesPanel({
                   </h2>
                 </div>
                 {selectedProfile ? (
-                  <span className={cn('inline-flex h-7 shrink-0 items-center rounded-md px-2 text-[11px] font-semibold capitalize', statusPillClasses[getLoginProfileStatusTone(selectedProfile.status)])}>
+                  <span className={cn('inline-flex h-7 shrink-0 items-center rounded-full px-2.5 text-[11px] font-semibold capitalize', statusPillClasses[getLoginProfileStatusTone(selectedProfile.status)])}>
                     {formatStatus(selectedProfile.status)}
                   </span>
                 ) : null}
@@ -511,27 +513,32 @@ export function LoginProfilesPanel({
 
               {selectedProfile ? (
                 <div className="mt-4 space-y-3">
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="min-w-0 rounded-lg bg-muted/38 p-3">
+                  <div className="grid grid-cols-2 overflow-hidden border-y border-border/55">
+                    <div className="min-w-0 border-b border-r border-border/55 p-3">
                       <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Auth</div>
                       <div className="mt-1 min-w-0 break-words text-[12px] font-semibold text-foreground [overflow-wrap:anywhere]">{getLoginProfileAuthTypeLabel(selectedProfile.authType)}</div>
                     </div>
-                    <div className="min-w-0 rounded-lg bg-muted/38 p-3">
+                    <div className="min-w-0 border-b border-border/55 p-3">
                       <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Limits</div>
                       <div className="mt-1 min-w-0 break-words text-[12px] font-semibold text-foreground tabular-nums [overflow-wrap:anywhere]">{activeProfileLimitSummary ?? 'No data'}</div>
                     </div>
-                    <div className="min-w-0 rounded-lg bg-muted/38 p-3">
+                    <div className="min-w-0 border-r border-border/55 p-3">
                       <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Runs</div>
                       <div className="mt-1 text-[12px] font-semibold text-foreground tabular-nums">{activeProfileRuns.length} active</div>
                     </div>
-                    <div className="min-w-0 rounded-lg bg-muted/38 p-3">
+                    <div className="min-w-0 p-3">
                       <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Tested</div>
                       <div className="mt-1 min-w-0 break-words text-[12px] font-semibold text-foreground [overflow-wrap:anywhere]">{formatCheckedAt(selectedProfile.lastCheckedAt)}</div>
                     </div>
                   </div>
 
                   {selectedProfile.statusMessage ? (
-                    <p className="min-w-0 break-words rounded-lg bg-muted/38 px-3 py-2 text-[12px] leading-5 text-muted-foreground [overflow-wrap:anywhere]">
+                    <p className={cn(
+                      'min-w-0 break-words border-l-2 px-3 py-2 text-[12px] leading-5 [overflow-wrap:anywhere]',
+                      getLoginProfileStatusTone(selectedProfile.status) === 'danger'
+                        ? 'border-destructive/40 bg-destructive/[0.05] text-destructive'
+                        : 'border-border bg-muted/25 text-muted-foreground'
+                    )}>
                       {selectedProfile.statusMessage}
                     </p>
                   ) : null}
@@ -576,23 +583,23 @@ export function LoginProfilesPanel({
               )}
             </section>
 
-            <section className="rounded-xl bg-background/82 p-4 shadow-[0_18px_52px_-44px_rgba(15,23,42,0.65),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
+            <section className="p-4">
               <div className="flex items-center gap-2 text-[13px] font-semibold text-foreground">
-                {providerFilter === 'codex' ? <ShieldCheck className="h-4 w-4 text-[hsl(var(--app-accent))]" /> : <Terminal className="h-4 w-4 text-[hsl(var(--app-accent))]" />}
+                {providerFilter === 'codex' ? <ShieldCheck className="h-4 w-4 text-muted-foreground" /> : <Terminal className="h-4 w-4 text-muted-foreground" />}
                 {copy.setupTitle}
               </div>
               <p className="mt-2 text-[12px] leading-5 text-muted-foreground">{copy.setupBody}</p>
               <div className="mt-3 space-y-2 text-[11px] text-muted-foreground">
                 <div className="flex items-start gap-2">
-                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(var(--app-accent))]" />
+                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-muted-foreground/55" />
                   <span>One profile per account.</span>
                 </div>
                 <div className="flex items-start gap-2">
-                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(var(--app-accent))]" />
+                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-muted-foreground/55" />
                   <span>Default profile is used by model selection.</span>
                 </div>
                 <div className="flex items-start gap-2">
-                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(var(--app-accent))]" />
+                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-muted-foreground/55" />
                   <span>Usage limits refresh per account.</span>
                 </div>
               </div>
@@ -701,8 +708,9 @@ export function LoginProfilesPanel({
           )}
 
           {discoveryError ? (
-            <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/35 dark:text-red-300">
-              {discoveryError}
+            <div className="flex items-start gap-2 rounded-lg bg-destructive/[0.06] px-3 py-2 text-sm text-destructive shadow-[inset_0_0_0_1px_hsl(var(--destructive)/0.18)]">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{discoveryError}</span>
             </div>
           ) : null}
 

@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Card, CardContent, CardHeader, CardTitle } from '../../../@/components/ui/card';
+import { Card } from '../../../@/components/ui/card';
 import { cn } from '../../lib/utils';
 import { useAuthStore } from '../../stores/authStore';
 import { useKindeAuth } from "@kinde-oss/kinde-auth-react";
@@ -11,12 +11,15 @@ import logoSrc from '../../assets/logo.png';
 import { devLogLazy } from '../../lib/appLogger';
 import { openKindeAuthInSystemBrowser, shouldUseDesktopBrowserAuth } from '../../lib/kindeDesktopAuth';
 import { hasAppAccess } from '../../lib/appAccess';
+import { usesMacOSOverlayTitleBar } from '../../hooks/useTauriWorkspace';
 
 export function LoginPage() {
   const { authErrorReason, clearAuthErrorReason, desktopSession, setAuthErrorReason, user } = useAuthStore();
   const { isAuthenticated, login, register } = useKindeAuth();
   const devBypass = import.meta.env.VITE_DEV_AUTH_BYPASS === 'true';
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const isDesignReviewPreview = import.meta.env.DEV && searchParams.get('designReview') === 'auth';
   const usesDesktopAuth = shouldUseDesktopBrowserAuth();
   const canAccessApp = hasAppAccess({
     devAuthBypass: devBypass,
@@ -30,6 +33,7 @@ export function LoginPage() {
   ]);
 
   const startAuth = async (intent: 'login' | 'register') => {
+    if (isDesignReviewPreview) return;
     try {
       clearAuthErrorReason();
       if (usesDesktopAuth) {
@@ -58,124 +62,142 @@ export function LoginPage() {
   }, [authErrorReason, clearAuthErrorReason]);
 
   useEffect(() => {
-    if (canAccessApp) {
+    if (canAccessApp && !isDesignReviewPreview) {
       navigate('/', { replace: true });
     }
-  }, [canAccessApp, navigate]);
+  }, [canAccessApp, isDesignReviewPreview, navigate]);
 
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.16),_transparent_28%),linear-gradient(135deg,_hsl(var(--background))_0%,_hsl(214_45%_98%)_46%,_hsl(201_50%_96%)_100%)] p-4 text-foreground dark:bg-[radial-gradient(circle_at_top_left,_rgba(56,189,248,0.12),_transparent_30%),linear-gradient(135deg,_hsl(var(--background))_0%,_hsl(var(--app-bg-elevated))_48%,_hsl(var(--app-bg-muted))_100%)] dark:text-zinc-50">
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(to_bottom,rgba(148,163,184,0.08)_1px,transparent_1px)] bg-[size:72px_72px] opacity-50 dark:opacity-20" />
+    <div
+      data-design-scope="auth"
+      data-design-part="auth-root"
+      className="app-shell-background relative flex min-h-[100dvh] items-center justify-center overflow-hidden px-5 py-8 text-foreground"
+    >
+      {usesMacOSOverlayTitleBar() ? (
+        <div data-tauri-drag-region className="fixed inset-x-0 top-0 z-20 h-12" aria-hidden="true" />
+      ) : null}
+      <div data-design-part="auth-layout" className="contents">
+        <motion.div
+          data-design-part="auth-after"
+          initial={{ opacity: 0, y: 10, filter: 'blur(4px)' }}
+          animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+          transition={{ type: 'spring', duration: 0.3, bounce: 0 }}
+          className="relative w-full max-w-sm"
+        >
+        <div data-design-part="auth-brand" className="mb-6 flex items-center justify-center gap-2.5">
+          <img src={logoSrc} alt="Agentree" className="h-8 w-auto" />
+          <span className="rounded-md bg-muted/65 px-2 py-1 text-[11px] font-medium text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border)/0.6)]">
+            Beta
+          </span>
+        </div>
 
-      <motion.div
-        initial={{ opacity: 0, y: 18, filter: 'blur(8px)' }}
-        animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-        transition={{ type: 'spring', duration: 0.35, bounce: 0 }}
-        className="relative w-full max-w-5xl"
-      >
-        <Card className="grid overflow-hidden border-border/60 bg-background/92 p-0 text-foreground shadow-[0_28px_90px_-42px_rgba(15,23,42,0.45)] backdrop-blur-xl dark:border-white/10 dark:bg-zinc-950/94 dark:text-zinc-50 dark:shadow-[0_28px_90px_-42px_rgba(0,0,0,0.82)] md:grid-cols-[1.05fr_0.95fr]">
-          <div className="border-b border-border/60 bg-slate-950 px-8 py-10 text-slate-50 md:border-b-0 md:border-r">
-            <div className="flex items-center gap-3">
-              <img src={logoSrc} alt="Agentree" className="h-8 w-auto" />
-              <span className="rounded-full border border-white/10 bg-white/8 px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-sky-100">
-                Beta
-              </span>
-            </div>
+        <div data-design-part="auth-heading" className="mb-5 text-center">
+          <h1 className="text-balance text-2xl font-semibold tracking-[-0.025em]">Sign in to Agentree</h1>
+          <p className="mt-2 text-pretty text-sm leading-6 text-muted-foreground">
+            Continue in your browser, then return to the app.
+          </p>
+        </div>
 
-            <div className="mt-6 space-y-4">
-              <h1 className="max-w-md text-4xl font-semibold leading-tight text-balance">
-                <span
-                  className="block text-[2.9rem] font-normal italic leading-[0.95] tracking-[-0.05em] text-sky-100"
-                  style={{ fontFamily: 'Georgia, "Times New Roman", serif' }}
-                >
-                  Welcome
-                </span>
-                <span className="mt-2 block text-slate-50">
-                  to Agentree
-                </span>
-              </h1>
-              <p className="max-w-md text-base leading-7 text-slate-300 text-pretty">
-                Work locally by default. Connect Agentree Cloud when you want backup, sync, sharing, or collaboration.
-              </p>
-            </div>
+        <Card data-design-part="auth-card" className="gap-0 overflow-hidden border-0 bg-[hsl(var(--app-panel-strong))] p-0 shadow-[var(--app-shadow-floating)] ring-1 ring-border/65">
+          <div data-design-part="auth-card-content" className="p-5 sm:p-6">
+            {authErrorReason && (
+              <Alert variant="destructive" className="mb-4 rounded-lg">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{authErrorReason}</AlertDescription>
+              </Alert>
+            )}
 
-            <div className="mt-10 grid gap-3">
-              {[
-                'Local work remains available when cloud is disconnected.',
-                'Backup stays off until you enable it for a workspace.',
-                'Sharing starts only after you explicitly publish.',
-              ].map((item) => (
-                <div key={item} className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-slate-200">
-                  {item}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="bg-card/70 px-6 py-8 dark:bg-zinc-950/90 sm:px-8 sm:py-10">
-            <CardHeader className="px-0 pb-6">
-              <CardTitle className="text-2xl text-foreground dark:text-zinc-50">Sign in to Agentree</CardTitle>
-              <p className="text-sm leading-6 text-muted-foreground dark:text-zinc-300">
-                Sign-in opens in your browser, then returns you to the app. A saved session lets you keep working offline.
-              </p>
-            </CardHeader>
-            <CardContent className="px-0">
-              {authErrorReason && (
-                <Alert variant="destructive" className="mb-4">
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertDescription>{authErrorReason}</AlertDescription>
-                </Alert>
+            <button
+              type="button"
+              onClick={() => startAuth('login')}
+              className={cn(
+                'flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground',
+                'shadow-[0_8px_20px_-16px_hsl(var(--foreground)/0.5)] transition-[background-color,box-shadow,transform] duration-150 ease-out hover:bg-primary/90 active:scale-[0.96]'
               )}
+            >
+              Sign in
+              <ArrowRight className="h-4 w-4" />
+            </button>
 
-              <div className="space-y-3">
-                <button
-                  onClick={() => startAuth('login')}
-                  className={cn(
-                    "w-full rounded-xl bg-primary px-4 py-3 text-primary-foreground hover:bg-primary/90",
-                    "flex items-center justify-center gap-2 text-sm font-medium shadow-[0_12px_30px_-18px_rgba(37,99,235,0.55)]"
-                  )}
-                >
-                  Sign in
-                  <ArrowRight className="h-4 w-4" />
-                </button>
+            <div data-design-part="auth-divider" className="my-5 flex items-center gap-3">
+              <div aria-hidden="true" className="h-px flex-1 bg-border/65" />
+              <span className="text-xs text-muted-foreground">New to Agentree?</span>
+              <div aria-hidden="true" className="h-px flex-1 bg-border/65" />
+            </div>
 
-                <button
-                  onClick={() => startAuth('register')}
-                  className={cn(
-                    "w-full rounded-xl border border-input bg-background px-4 py-3 hover:bg-accent hover:text-accent-foreground dark:border-white/12 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800",
-                    "flex items-center justify-center gap-2 text-sm font-medium"
-                  )}
-                >
-                  Create account
-                </button>
-              </div>
-
-              <p className="mt-6 text-xs leading-5 text-muted-foreground dark:text-zinc-400">
-                By creating an account, you agree to our{' '}
-                <a
-                  href="https://agentree.app/terms"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline underline-offset-4 hover:text-foreground dark:hover:text-zinc-100"
-                >
-                  Terms of Service
-                </a>{' '}
-                and{' '}
-                <a
-                  href="https://agentree.app/privacy"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline underline-offset-4 hover:text-foreground dark:hover:text-zinc-100"
-                >
-                  Privacy Policy
-                </a>
-                .
-              </p>
-            </CardContent>
+            <button
+              type="button"
+              onClick={() => startAuth('register')}
+              className={cn(
+                'flex h-10 w-full items-center justify-center rounded-lg border border-input bg-background px-4 text-sm font-medium',
+                'transition-[background-color,color,transform] duration-150 ease-out hover:bg-accent hover:text-accent-foreground active:scale-[0.96]'
+              )}
+            >
+              Create account
+            </button>
           </div>
         </Card>
-      </motion.div>
+
+        <p data-design-part="auth-terms" className="mx-auto mt-5 max-w-xs text-center text-pretty text-xs leading-5 text-muted-foreground">
+          Your local work remains available offline. By creating an account, you agree to our{' '}
+          <a
+            href="https://agentree.app/terms"
+            target="_blank"
+            rel="noreferrer"
+            className="transition-colors duration-150 hover:text-foreground hover:underline hover:underline-offset-4"
+          >
+            Terms of Service
+          </a>{' '}
+          and{' '}
+          <a
+            href="https://agentree.app/privacy"
+            target="_blank"
+            rel="noreferrer"
+            className="transition-colors duration-150 hover:text-foreground hover:underline hover:underline-offset-4"
+          >
+            Privacy Policy
+          </a>
+          .
+        </p>
+        </motion.div>
+
+        {import.meta.env.DEV ? <div data-design-part="auth-before" aria-hidden="true" className="hidden">
+        <div className="flex items-center gap-3">
+          <img src={logoSrc} alt="" className="h-8 w-auto" />
+          <span className="rounded-full border border-white/10 bg-white/8 px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-sky-100">
+            Beta
+          </span>
+        </div>
+
+        <div className="mt-6 space-y-4">
+          <h1 className="max-w-md text-balance text-4xl font-semibold leading-tight">
+            <span
+              className="block text-[2.9rem] font-normal italic leading-[0.95] tracking-[-0.05em] text-sky-100"
+              style={{ fontFamily: 'Georgia, "Times New Roman", serif' }}
+            >
+              Welcome
+            </span>
+            <span className="mt-2 block text-slate-50">to Agentree</span>
+          </h1>
+          <p className="max-w-md text-pretty text-base leading-7 text-slate-300">
+            Work locally by default. Connect Agentree Cloud when you want backup, sync, sharing, or collaboration.
+          </p>
+        </div>
+
+        <div className="mt-10 grid gap-3">
+          {[
+            'Local work remains available when cloud is disconnected.',
+            'Backup stays off until you enable it for a workspace.',
+            'Sharing starts only after you explicitly publish.',
+          ].map((item) => (
+            <div key={item} className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-slate-200">
+              {item}
+            </div>
+          ))}
+        </div>
+        </div> : null}
+      </div>
     </div>
   );
 }

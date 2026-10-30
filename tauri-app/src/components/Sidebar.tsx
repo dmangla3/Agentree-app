@@ -39,8 +39,8 @@ export function Sidebar({
     ];
 
     return (
-        <aside className="app-side-rail flex w-16 flex-shrink-0 flex-col items-center py-3">
-            <nav className="flex flex-1 flex-col items-center gap-1.5 px-2" aria-label="Primary app views">
+        <aside data-design-scope="navigation" data-design-part="primary-rail" className="app-side-rail flex w-14 flex-shrink-0 flex-col items-center py-2 antialiased dark:border-white/10 dark:bg-[hsl(var(--app-panel))]">
+            <nav data-design-part="primary-navigation" className="flex flex-1 flex-col items-center gap-0.5 px-2" aria-label="Primary app views">
                 {navItems.map((item) => {
                     const Icon = item.icon;
                     const isActive = activeView === item.id;
@@ -49,7 +49,7 @@ export function Sidebar({
                         <button
                             key={item.id}
                             type="button"
-                            className="app-rail-button app-focus-ring"
+                            className="app-rail-button app-focus-ring relative transition-[background-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.96] motion-reduce:transition-none dark:hover:bg-white/[0.06] dark:data-[active=true]:bg-white/[0.09] dark:data-[active=true]:text-white dark:data-[active=true]:shadow-[inset_0_0_0_1px_rgb(255_255_255/0.08)]"
                             data-active={isActive ? 'true' : 'false'}
                             onClick={() => onViewChange(item.id)}
                             title={item.label}
@@ -62,29 +62,34 @@ export function Sidebar({
                 })}
             </nav>
 
-            <div className="mt-auto flex w-full flex-col items-center gap-3 px-2 pb-2">
-                <Avatar className="h-8 w-8 cursor-pointer rounded-lg ring-1 ring-border/70 transition-[box-shadow] hover:ring-[hsl(var(--app-focus)/0.45)]" title={user?.name || 'User'}>
+            <div data-design-part="rail-utilities" className="mt-auto flex w-10 flex-col items-center border-t border-border/60 pt-2 dark:border-white/10">
+                <div data-design-part="rail-tools" className="flex flex-col items-center gap-0.5">
+                    <DiagnosticsButton
+                        selectedWorkspaceId={selectedWorkspaceId}
+                        selectedWorkspaceName={selectedWorkspaceName}
+                    />
+
+                    <ConfigButton
+                        repoPath={selectedWorkspaceRepoPath}
+                        open={worktreePolicyOpen}
+                        onOpenChange={onWorktreePolicyOpenChange}
+                        allowContinueWithDefaultPolicy={allowContinueWithDefaultPolicy}
+                    />
+                </div>
+
+                <div data-design-part="rail-divider" className="my-1.5 h-px w-6 bg-border/60 dark:bg-white/10" />
+
+                <Avatar data-design-part="rail-avatar" className="mb-1 h-8 w-8 rounded-lg ring-1 ring-border/60 dark:ring-white/10" title={user?.name || 'User'}>
                     <AvatarImage src={user?.pictureUrl || undefined} />
-                    <AvatarFallback className="rounded-lg bg-[hsl(var(--app-accent-soft))] text-xs font-semibold text-[hsl(var(--app-accent))]">
+                    <AvatarFallback className="rounded-lg bg-[hsl(var(--app-accent-soft))] text-[11px] font-semibold text-[hsl(var(--app-accent))] dark:bg-white/[0.08] dark:text-white/80">
                         {user?.name?.[0]?.toUpperCase() || 'U'}
                     </AvatarFallback>
                 </Avatar>
 
-                <DiagnosticsButton
-                    selectedWorkspaceId={selectedWorkspaceId}
-                    selectedWorkspaceName={selectedWorkspaceName}
-                />
-
-                <ConfigButton
-                    repoPath={selectedWorkspaceRepoPath}
-                    open={worktreePolicyOpen}
-                    onOpenChange={onWorktreePolicyOpenChange}
-                    allowContinueWithDefaultPolicy={allowContinueWithDefaultPolicy}
-                />
-
                 <button
                     type="button"
-                    className={cn("app-rail-button app-focus-ring hover:text-destructive")}
+                    data-design-part="rail-logout"
+                    className={cn("app-rail-button app-focus-ring transition-[background-color,color,transform] duration-150 ease-out hover:text-destructive active:scale-[0.96] motion-reduce:transition-none dark:hover:bg-white/[0.06]")}
                     onClick={() => {
                         if (shouldUseDesktopBrowserAuth()) {
                             void logoutDesktopBrowserAuth();

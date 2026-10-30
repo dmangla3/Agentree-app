@@ -102,7 +102,7 @@ const SegmentedControl = <T extends string>({
   size?: 'sm' | 'md';
 }) => (
   <div className={cn(
-    "inline-flex bg-muted/60 rounded-lg p-1 gap-0.5",
+    "inline-flex gap-0.5 rounded-lg bg-muted/45",
     size === 'sm' ? 'p-0.5' : 'p-1'
   )}>
     {options.map((option) => (
@@ -111,7 +111,7 @@ const SegmentedControl = <T extends string>({
         onClick={() => !option.disabled && onChange(option.value)}
         disabled={option.disabled}
         className={cn(
-          "relative flex items-center gap-1.5 font-medium transition-all duration-200",
+          "relative flex min-h-10 items-center gap-1.5 font-medium transition-[background-color,color,box-shadow,transform] duration-200 [transition-timing-function:cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none",
           "rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
           size === 'sm' ? 'px-2.5 py-1 text-xs' : 'px-3 py-1.5 text-sm',
           value === option.value
@@ -143,14 +143,14 @@ const FilterChip = ({
     pressed={pressed}
     onPressedChange={onPressedChange}
     className={cn(
-      "h-auto px-3 py-2 rounded-lg border transition-all duration-200",
+      "min-h-10 rounded-lg border px-3 py-2 transition-[background-color,border-color,color,transform] duration-200 [transition-timing-function:cubic-bezier(0.2,0,0,1)] active:scale-[0.96] motion-reduce:transition-none",
       "data-[state=on]:bg-primary/10 data-[state=on]:border-primary/30 data-[state=on]:text-primary",
       "data-[state=off]:bg-card data-[state=off]:border-border data-[state=off]:hover:border-muted-foreground/30",
-      "flex flex-col items-center gap-1.5 min-w-[90px]"
+      "flex min-w-0 items-center gap-2"
     )}
   >
     <span className={cn(
-      "p-1.5 rounded-md transition-colors",
+      "rounded-md p-1 transition-colors",
       pressed ? "bg-primary/20" : "bg-muted"
     )}>
       {icon}
@@ -375,26 +375,26 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
   if (!isOpen) return null;
 
   const renderSearchForm = () => (
-    <CardHeader className="pb-4 space-y-6">
+    <CardHeader className="space-y-4 border-b border-[hsl(var(--app-border)/0.56)] px-5 pb-4 pt-4">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <CardTitle className="flex items-center gap-2.5 text-xl">
-          <div className="p-2 bg-primary/10 rounded-lg">
-            <Search className="h-5 w-5 text-primary" />
+        <CardTitle className="flex items-center gap-2.5 text-base font-semibold tracking-[-0.01em]">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[hsl(var(--app-bg-muted)/0.76)] text-muted-foreground">
+            <Search className="h-4 w-4" />
           </div>
           Advanced Search
         </CardTitle>
-        <Button variant="ghost" size="icon" onClick={onClose} className="rounded-full h-8 w-8">
+        <Button variant="ghost" size="icon" aria-label="Close search" onClick={onClose} className="h-10 w-10 rounded-lg active:scale-[0.96]">
           <X className="h-4 w-4" />
         </Button>
       </div>
 
-      <form onSubmit={handleSearch} className="space-y-6">
+      <form onSubmit={handleSearch} className="space-y-4">
         {/* Search Input - Large and prominent */}
         <div className="relative">
           <div className={cn(
-            "relative flex items-center rounded-xl border bg-card transition-all duration-200",
-            "focus-within:border-primary/50 focus-within:ring-4 focus-within:ring-primary/10 focus-within:shadow-lg"
+            "relative flex min-h-12 items-center rounded-lg border border-[hsl(var(--app-border)/0.7)] bg-[hsl(var(--app-bg)/0.86)] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)] transition-[border-color,box-shadow] duration-150",
+            "focus-within:border-[hsl(var(--app-border-strong)/0.82)] focus-within:ring-2 focus-within:ring-[hsl(var(--app-focus)/0.18)]"
           )}>
             <Search className="absolute left-4 h-5 w-5 text-muted-foreground" />
             <Input
@@ -402,7 +402,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search workspaces with natural language..."
-              className="border-0 bg-transparent text-lg pl-12 pr-32 py-4 h-auto focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60"
+              className="h-12 border-0 bg-transparent py-3 pl-12 pr-32 text-base focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60"
             />
             <div className="absolute right-2 flex items-center gap-1.5">
               <Button
@@ -411,7 +411,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
                 size="sm"
                 onClick={handleSaveSearch}
                 disabled={!query.trim()}
-                className="h-9 px-2.5 text-muted-foreground hover:text-foreground"
+                className="h-10 rounded-lg px-3 text-muted-foreground active:scale-[0.96] hover:text-foreground"
               >
                 <Bookmark className="h-4 w-4" />
               </Button>
@@ -419,7 +419,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
                 type="submit"
                 size="sm"
                 disabled={isSearching || !query.trim()}
-                className="h-9 px-4 gap-2"
+                className="h-10 gap-2 rounded-lg px-4 active:scale-[0.96]"
               >
                 {isSearching ? (
                   <div className="h-4 w-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
@@ -435,13 +435,13 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
           {suggestions.length > 0 && (
             <div
               ref={suggestionsRef}
-              className="absolute top-full left-0 right-0 mt-2 bg-popover border rounded-xl shadow-xl z-10 overflow-hidden"
+              className="absolute left-0 right-0 top-full z-[90] mt-2 overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.74)] bg-[hsl(var(--app-panel-strong)/0.98)] p-1 shadow-[0_0_0_1px_hsl(var(--foreground)/0.025),0_20px_52px_-26px_hsl(var(--foreground)/0.42)] backdrop-blur-xl"
             >
               {suggestions.map((suggestion, index) => (
                 <button
                   key={index}
                   type="button"
-                  className="w-full text-left px-4 py-3 hover:bg-muted transition-colors text-sm flex items-center gap-3"
+                  className="flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-foreground transition-[background-color,color] duration-150 hover:bg-[hsl(var(--app-accent-soft)/0.72)] focus-visible:bg-[hsl(var(--app-accent-soft)/0.72)] focus-visible:outline-none motion-reduce:transition-none"
                   onClick={() => handleSuggestionClick(suggestion)}
                 >
                   <Search className="h-4 w-4 text-muted-foreground" />
@@ -453,10 +453,10 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
         </div>
 
         {/* Controls Row */}
-        <div className="flex flex-wrap items-center gap-6">
+        <div className="flex flex-wrap items-center gap-3">
           {/* Search Type */}
           <div className="flex items-center gap-3">
-            <span className="text-sm font-medium text-muted-foreground">Search</span>
+            <span className="text-xs font-medium text-muted-foreground">Mode</span>
             <SegmentedControl
               value={searchType}
               onChange={(v) => setSearchType(v)}
@@ -474,7 +474,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
 
           {/* Search location */}
           <div className="flex items-center gap-3">
-            <span className="text-sm font-medium text-muted-foreground">Search in</span>
+            <span className="text-xs font-medium text-muted-foreground">Scope</span>
             <SegmentedControl
               value={searchArea}
               onChange={(v) => setSearchArea(v)}
@@ -494,9 +494,9 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
             size="sm"
             onClick={() => setShowFilters(!showFilters)}
             className={cn(
-              "gap-2 ml-auto",
-              showFilters && "bg-accent text-accent-foreground",
-              activeFiltersCount > 0 && "border-primary/50 text-primary"
+              "ml-auto h-10 gap-2 rounded-lg transition-[background-color,border-color,color,transform] duration-150 active:scale-[0.96]",
+              showFilters && "bg-[hsl(var(--app-bg-muted))] text-foreground",
+              activeFiltersCount > 0 && "border-[hsl(var(--app-border-strong)/0.82)] text-foreground"
             )}
           >
             <SlidersHorizontal className="h-4 w-4" />
@@ -506,16 +506,16 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
                 {activeFiltersCount}
               </Badge>
             )}
-            <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", showFilters && "rotate-180")} />
+            <ChevronDown className={cn("h-3.5 w-3.5 transition-transform duration-150 motion-reduce:transition-none", showFilters && "rotate-180")} />
           </Button>
         </div>
 
         {/* Filters Panel */}
         {showFilters && (
-          <div className="rounded-xl border bg-muted/30 p-5 space-y-5 animate-in slide-in-from-top-2 duration-200">
+          <div className="animate-in space-y-4 rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-muted/20 p-4 duration-200 slide-in-from-top-2 motion-reduce:animate-none">
             {/* Content Types */}
             <div>
-              <label className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <label className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                 <Filter className="h-4 w-4 text-muted-foreground" />
                 Content Types
               </label>
@@ -542,7 +542,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
             </div>
 
             {/* Grid for other filters */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 pt-2">
+            <div className="grid grid-cols-1 gap-4 border-t border-border/40 pt-4 md:grid-cols-2">
               {/* Date Range */}
               <div className="space-y-2">
                 <label className="text-sm font-semibold flex items-center gap-2">
@@ -632,7 +632,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
                       setAdvancedOptions(prev => ({ ...prev, [opt.key]: pressed }))
                     }
                     className={cn(
-                      "h-auto px-3 py-2 rounded-lg border text-sm transition-all",
+                      "min-h-10 rounded-lg border px-3 py-2 text-sm transition-[background-color,border-color,color,transform] duration-150 active:scale-[0.96]",
                       "data-[state=on]:bg-primary/10 data-[state=on]:border-primary/30 data-[state=on]:text-primary",
                       "data-[state=off]:bg-background data-[state=off]:border-border"
                     )}
@@ -695,7 +695,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
               variant="outline"
               size="sm"
               onClick={() => setViewMode('search')}
-              className="gap-2 rounded-full px-4"
+              className="h-10 gap-2 rounded-lg px-4 active:scale-[0.96]"
             >
               <ArrowLeft className="h-4 w-4" />
               Back
@@ -715,7 +715,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
               )}
             </span>
           </div>
-          <Button variant="ghost" size="icon" onClick={onClose} className="rounded-full h-8 w-8">
+          <Button variant="ghost" size="icon" aria-label="Close search" onClick={onClose} className="h-10 w-10 rounded-lg active:scale-[0.96]">
             <X className="h-4 w-4" />
           </Button>
         </div>
@@ -730,14 +730,13 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
               </div>
             </div>
           ) : results.length > 0 ? (
-            <div className="space-y-3">
+            <div className="divide-y divide-[hsl(var(--app-border)/0.48)] overflow-hidden rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.56)]">
               {results.map((result: SearchResult, index: number) => (
                 <Card
                   key={result.id}
                   className={cn(
-                    "group p-4 rounded-xl border transition-all duration-200",
-                    "hover:border-primary/30 hover:shadow-md hover:bg-muted/30",
-                    "cursor-pointer"
+                    "group rounded-none border-0 bg-transparent p-3 shadow-none transition-[background-color] duration-200 [transition-timing-function:cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none",
+                    "hover:bg-muted/30"
                   )}
                   style={{ animationDelay: `${index * 30}ms` }}
                 >
@@ -747,10 +746,10 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
                       <div className="flex items-center gap-2.5 flex-wrap">
                         {/* Role Badge */}
                         <div className={cn(
-                          "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold",
+                          "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold",
                           result.role === 'user'
-                            ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                            : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                            ? "bg-[hsl(var(--app-graph-user)/0.1)] text-[hsl(var(--app-graph-user))]"
+                            : "bg-[hsl(var(--app-graph-agent)/0.1)] text-[hsl(var(--app-graph-agent))]"
                         )}>
                           {result.role === 'user' ? (
                             <User className="h-3.5 w-3.5" />
@@ -762,7 +761,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
 
                         {/* Model Badge */}
                         {result.llmModel && (
-                          <Badge variant="outline" className="rounded-full text-xs font-normal bg-background">
+                          <Badge variant="outline" className="rounded-md bg-background text-xs font-normal">
                             {result.llmModel}
                           </Badge>
                         )}
@@ -772,7 +771,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
                           <Badge
                             variant="default"
                             className={cn(
-                              "rounded-full text-xs",
+                              "rounded-md text-xs",
                               (result.relevance || result.similarity || 0) > 0.8
                                 ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20"
                                 : (result.relevance || result.similarity || 0) > 0.5
@@ -810,13 +809,13 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
                               <Badge
                                 key={tag}
                                 variant="secondary"
-                                className="rounded-full text-[10px] px-2 py-0.5 font-normal"
+                                className="rounded-md px-2 py-0.5 text-[10px] font-normal"
                               >
                                 {tag}
                               </Badge>
                             ))}
                             {result.tags.length > 3 && (
-                              <Badge variant="secondary" className="rounded-full text-[10px] px-2 py-0.5 font-normal">
+                              <Badge variant="secondary" className="rounded-md px-2 py-0.5 text-[10px] font-normal">
                                 +{result.tags.length - 3}
                               </Badge>
                             )}
@@ -835,7 +834,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
                           variant="ghost"
                           aria-label="Copy link to search result"
                           onClick={() => void copyAgentreeLink({ workspaceId: result.workspaceId, nodeId: result.id })}
-                          className="h-7 px-2.5 text-xs gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                          className="h-10 gap-1.5 rounded-lg px-3 text-xs opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-visible:opacity-100 active:scale-[0.96]"
                         >
                           <Copy className="h-3.5 w-3.5" />
                           Copy link
@@ -846,7 +845,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
                           size="sm"
                           variant="ghost"
                           onClick={() => onNavigateToMessage?.(result.id, result.workspaceId)}
-                          className="h-7 px-2.5 text-xs gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-primary/10 hover:text-primary"
+                          className="h-10 gap-1.5 rounded-lg px-3 text-xs opacity-0 transition-[background-color,color,opacity,transform] duration-150 group-hover:opacity-100 focus-visible:opacity-100 hover:bg-primary/10 hover:text-primary active:scale-[0.96]"
                         >
                           <ExternalLink className="h-3.5 w-3.5" />
                           View
@@ -858,11 +857,11 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
               ))}
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <div className="p-4 bg-muted/50 rounded-full mb-4">
-                <Search className="h-8 w-8 text-muted-foreground/60" />
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-muted/50">
+                <Search className="h-5 w-5 text-muted-foreground/60" />
               </div>
-              <p className="text-lg font-medium text-foreground mb-1">No results found</p>
+              <p className="mb-1 text-sm font-medium text-foreground">No results found</p>
               <p className="text-sm text-muted-foreground max-w-sm">
                 We couldn&apos;t find any matches for &quot;{query}&quot;. Try adjusting your search terms or filters.
               </p>
@@ -874,8 +873,8 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
   );
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-start justify-center pt-16 animate-in fade-in duration-200">
-      <Card className="w-full max-w-4xl mx-4 max-h-[85vh] flex flex-col shadow-2xl border-border/50 animate-in zoom-in-95 slide-in-from-top-4 duration-300">
+    <div data-design-scope="panels" data-design-part="advanced-search-overlay" className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 pt-14 backdrop-blur-sm animate-in fade-in duration-200 motion-reduce:animate-none">
+      <Card data-design-part="advanced-search-panel" className="mx-4 flex max-h-[85vh] w-full max-w-4xl flex-col rounded-xl border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel))] shadow-[0_24px_60px_-34px_hsl(var(--foreground)/0.5)] animate-in duration-200 zoom-in-95 slide-in-from-top-4 motion-reduce:animate-none">
         {viewMode === 'search' && renderSearchForm()}
         {viewMode === 'results' && renderResults()}
         {viewMode === 'search' && !showFilters && (
@@ -893,7 +892,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
                       <Badge
                         key={index}
                         variant="outline"
-                        className="group cursor-pointer rounded-full px-3 py-1.5 hover:border-primary/50 hover:bg-primary/5 transition-colors"
+                        className="group min-h-10 cursor-pointer rounded-lg px-3 py-2 transition-[background-color,border-color] duration-150 hover:border-primary/50 hover:bg-primary/5"
                       >
                         <span onClick={() => handleLoadSearch(search)} className="flex items-center gap-2">
                           <Bookmark className="h-3 w-3 text-muted-foreground" />
@@ -904,7 +903,7 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
                             e.stopPropagation();
                             handleDeleteSearch(search);
                           }}
-                          className="ml-2 p-0.5 rounded-full opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-all"
+                          className="ml-2 flex h-8 w-8 items-center justify-center rounded-lg opacity-0 transition-[background-color,color,opacity,transform] duration-150 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive active:scale-[0.96]"
                         >
                           <X className="h-3 w-3" />
                         </button>
@@ -917,9 +916,9 @@ export const AdvancedSearchPanel: React.FC<AdvancedSearchPanelProps> = ({
 
             {/* Empty State */}
             {savedSearches.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-12 text-center">
-                <div className="p-4 bg-primary/5 rounded-2xl mb-4">
-                  <Brain className="h-8 w-8 text-primary/60" />
+              <div className="flex flex-col items-center justify-center py-9 text-center">
+                <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-[hsl(var(--app-bg-muted)/0.68)]">
+                  <Brain className="h-5 w-5 text-muted-foreground" />
                 </div>
                 <p className="text-sm font-medium text-foreground mb-1">Start searching</p>
                 <p className="text-xs text-muted-foreground max-w-xs">

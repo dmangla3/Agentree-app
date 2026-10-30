@@ -79,7 +79,7 @@ function BranchPointerSelector() {
             key={target.gitRef}
             onClick={() => setPromotionTarget(isSelected ? null : target)}
             className={cn(
-              'flex w-full items-center gap-2 rounded-md border px-3 py-2 text-left text-sm transition-all',
+              'flex min-h-10 w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition-[background-color,border-color,color,transform] duration-150 [transition-timing-function:cubic-bezier(0.2,0,0,1)] active:scale-[0.96] motion-reduce:transition-none',
               isSelected 
                 ? 'border-primary bg-primary/5' 
                 : 'border-border hover:border-primary/50'
@@ -166,29 +166,29 @@ export function ResultStage() {
 
   return (
     <div className="flex flex-col h-full space-y-0 relative">
-      <div className="flex-1 overflow-y-auto space-y-6 pb-20 pr-2">
+      <div className="flex-1 space-y-3 overflow-y-auto pb-16 pr-1">
         {/* Success Header */}
-        <div className="flex flex-col items-center justify-center space-y-3 py-6 text-center">
-          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 border border-emerald-500/20 shadow-sm">
-            <Check className="h-8 w-8 text-emerald-500" />
+        <div className="flex items-center gap-3 border-b border-[hsl(var(--app-border)/0.52)] px-1 pb-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-success)/0.24)] bg-[hsl(var(--app-success)/0.1)]">
+            <Check className="h-5 w-5 text-[hsl(var(--app-success))]" />
           </div>
           <div>
-            <h3 className="text-xl font-bold text-foreground">Merge Complete!</h3>
-            <p className="text-sm text-muted-foreground max-w-xs">
-              The integration has been successfully finalized and added to the graph.
+            <h3 className="text-balance text-base font-semibold text-foreground">Merge complete</h3>
+            <p className="max-w-md text-pretty text-xs leading-5 text-muted-foreground">
+              The merge is finalized and available in the graph.
             </p>
           </div>
         </div>
 
         {/* Result Card */}
-        <Card className="shadow-sm">
-          <CardHeader className="pb-3 border-b bg-muted/30">
+        <Card className="rounded-lg border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.64)] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)]">
+          <CardHeader className="border-b bg-muted/20 px-4 py-3">
             <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
               <GitMerge className="h-3.5 w-3.5" />
               Merge Summary
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-5 pt-4">
+          <CardContent className="space-y-3 p-4">
             {/* Commit SHA */}
             <div className="space-y-1.5">
               <Label className="text-[10px] font-bold uppercase text-muted-foreground">Generated Commit</Label>
@@ -206,16 +206,16 @@ export function ResultStage() {
             </div>
 
             {/* Stats */}
-            <div className="grid grid-cols-3 gap-4">
-              <div className="text-center p-2 rounded-lg bg-background border shadow-sm">
+            <div className="grid grid-cols-3 divide-x divide-[hsl(var(--app-border)/0.52)] overflow-hidden rounded-lg border border-[hsl(var(--app-border)/0.56)]">
+              <div className="p-2 text-center">
                 <p className="text-xl font-bold">{session.sources.length}</p>
                 <p className="text-[9px] font-bold uppercase text-muted-foreground">Sources</p>
               </div>
-              <div className="text-center p-2 rounded-lg bg-background border shadow-sm">
+              <div className="p-2 text-center">
                 <p className="text-xl font-bold">{session.fileDecisions.length}</p>
                 <p className="text-[9px] font-bold uppercase text-muted-foreground">Files</p>
               </div>
-              <div className="text-center p-2 rounded-lg bg-background border shadow-sm">
+              <div className="p-2 text-center">
                 <p className="text-xl font-bold">{session.reviewIssues.length}</p>
                 <p className="text-[9px] font-bold uppercase text-muted-foreground">Issues</p>
               </div>
@@ -224,14 +224,14 @@ export function ResultStage() {
         </Card>
 
         {(session.reviewSummary || session.synthesizedSummaryText || resolvedDecisions.length > 0) && (
-          <Card className="shadow-sm border-primary/10">
-            <CardHeader className="pb-3 border-b bg-primary/5">
-              <CardTitle className="text-xs font-bold uppercase tracking-wider text-primary flex items-center gap-2">
+          <Card className="rounded-lg border-[hsl(var(--app-border)/0.58)] bg-transparent shadow-none">
+            <CardHeader className="border-b bg-muted/20 px-4 py-3">
+              <CardTitle className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                 <GitMerge className="h-3.5 w-3.5" />
                 Agent Summary
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4 pt-4">
+            <CardContent className="space-y-3 p-4">
               {session.reviewSummary ? (
                 <div className="space-y-2">
                   <div className="flex flex-wrap gap-2">
@@ -258,7 +258,7 @@ export function ResultStage() {
                 <div className="space-y-2">
                   <Label className="text-[10px] font-bold uppercase text-muted-foreground">Resolved Semantic Decisions</Label>
                   {resolvedDecisions.map(({ issue, option }) => (
-                    <div key={issue.id} className="rounded-md border bg-background p-3 shadow-sm">
+                    <div key={issue.id} className="border-b border-[hsl(var(--app-border)/0.46)] py-3 last:border-b-0">
                       <div className="flex items-start justify-between gap-3">
                         <div className="space-y-1">
                           <p className="text-sm font-semibold">{issue.title}</p>
@@ -291,14 +291,14 @@ export function ResultStage() {
         )}
 
         {/* Promotion */}
-        <Card className="shadow-sm border-primary/20">
-          <CardHeader className="pb-3 border-b bg-primary/5">
-            <CardTitle className="text-xs font-bold uppercase tracking-wider text-primary flex items-center gap-2">
+        <Card className="rounded-lg border-[hsl(var(--app-border)/0.58)] bg-transparent shadow-none">
+          <CardHeader className="border-b bg-muted/20 px-4 py-3">
+            <CardTitle className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
               <GitBranch className="h-3.5 w-3.5" />
               Promote Result
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4 pt-4">
+          <CardContent className="space-y-3 p-4">
             <p className="text-xs text-muted-foreground leading-relaxed font-medium">
               Select a branch or Agentree pointer to update its reference to this new merge commit:
             </p>
@@ -336,7 +336,7 @@ export function ResultStage() {
       </div>
 
       {/* Footer Actions */}
-      <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between border-t bg-background/95 backdrop-blur pt-4 pb-2 pr-4 z-10">
+      <div className="absolute bottom-0 left-0 right-0 z-10 flex items-center justify-between border-t bg-background/95 py-2 pr-2">
         <Button
           variant="outline"
           onClick={closeMergeSession}

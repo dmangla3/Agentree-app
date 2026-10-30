@@ -89,4 +89,11 @@ describe('AdvancedSearchPanel', () => {
     });
     expect(apiMock.post).toHaveBeenCalledTimes(1);
   });
+
+  it('marks the real search overlay and panel for the design reviewer', () => {
+    const { container } = render(<AdvancedSearchPanel isOpen onClose={vi.fn()} />);
+
+    expect(container.querySelector('[data-design-scope="panels"][data-design-part="advanced-search-overlay"]')).not.toBeNull();
+    expect(container.querySelector('[data-design-part="advanced-search-panel"]')).not.toBeNull();
+  });
 });

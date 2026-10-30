@@ -123,7 +123,7 @@ export function UpdateManager({ children }: { children: ReactNode }) {
             <div className="mt-2 flex items-center gap-2">
               <Button
                 size="sm"
-                className="h-8 rounded-lg"
+                className="h-10 rounded-lg transition-transform duration-150 ease-out active:scale-[0.96] motion-reduce:transition-none dark:bg-white dark:text-black dark:hover:bg-white/90"
                 onClick={() => {
                   void installUpdate();
                 }}
@@ -134,7 +134,7 @@ export function UpdateManager({ children }: { children: ReactNode }) {
               <Button
                 size="sm"
                 variant="ghost"
-                className="h-8 rounded-lg"
+                className="h-10 rounded-lg transition-transform duration-150 ease-out active:scale-[0.96] motion-reduce:transition-none"
                 onClick={() => {
                   clearAvailableToast();
                 }}
@@ -316,14 +316,14 @@ export function UpdateToolbarButton() {
       }}
       disabled={checking || installing}
       className={cn(
-        'h-8 w-8 rounded-lg p-0',
-        availableVersion && 'shadow-[0_12px_30px_-18px_rgba(37,99,235,0.55)]'
+        'h-10 w-10 rounded-lg p-0 transition-transform duration-150 ease-out active:scale-[0.96] motion-reduce:transition-none',
+        availableVersion && 'shadow-[0_12px_30px_-18px_hsl(var(--foreground)/0.35)] dark:bg-white dark:text-black dark:shadow-none dark:hover:bg-white/90'
       )}
       aria-label={availableVersion ? `Install version ${availableVersion}` : 'Check for updates'}
       title={availableVersion ? `Install version ${availableVersion}` : 'Check for updates'}
     >
       {checking || installing ? (
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
       ) : availableVersion ? (
         <ArrowUpCircle className="h-3.5 w-3.5" />
       ) : (

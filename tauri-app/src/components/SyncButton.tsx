@@ -33,7 +33,7 @@ export function SyncButton({
       data-agentree-merge-source-button="true"
       disabled={selectionMode}
       className={cn(
-        'p-1 rounded hover:bg-background hover:shadow-sm transition-all',
+        'inline-flex size-8 items-center justify-center rounded-lg transition-[background-color,color,transform,box-shadow] duration-150 ease-out hover:bg-background hover:shadow-sm active:scale-[0.96] motion-reduce:transition-none',
         hasFileChanges
           ? 'text-emerald-500 hover:text-emerald-400'
           : 'text-muted-foreground hover:text-foreground',
@@ -55,21 +55,21 @@ export function MergeSelectionOverlay() {
   if (!selectionMode) return null;
 
   return (
-    <div className="fixed top-4 left-1/2 z-50 -translate-x-1/2">
-      <div className="flex items-center gap-3 rounded-lg border border-blue-500/40 bg-blue-950/85 px-4 py-2.5 shadow-lg backdrop-blur-sm">
-        <GitMerge className="h-5 w-5 text-blue-300" />
+    <div className="fixed left-1/2 top-4 z-50 -translate-x-1/2">
+      <div className="flex items-center gap-3 rounded-xl border border-primary/25 bg-popover/95 px-4 py-3 shadow-[0_0_0_1px_hsl(var(--foreground)/0.025),0_14px_38px_-18px_hsl(var(--foreground)/0.42)] backdrop-blur-md">
+        <GitMerge className="h-5 w-5 text-primary" />
         <div>
-          <div className="text-sm font-medium text-white">Select Merge Target</div>
-          <div className="text-xs text-blue-200/80">
+          <div className="text-sm font-semibold text-foreground">Select merge target</div>
+          <div className="mt-0.5 text-pretty text-xs text-muted-foreground">
             Click another node to merge from {sourceLabel ?? sourceNodeId?.slice(0, 8)}.
           </div>
         </div>
         <button
           onClick={exitSelectionMode}
-          className="ml-2 rounded p-1 transition-colors hover:bg-blue-900/60"
+          className="ml-1 flex size-10 items-center justify-center rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-150 ease-out hover:bg-muted hover:text-foreground active:scale-[0.96] motion-reduce:transition-none"
           title="Cancel"
         >
-          <X className="h-4 w-4 text-blue-200" />
+          <X className="h-4 w-4" />
         </button>
       </div>
     </div>

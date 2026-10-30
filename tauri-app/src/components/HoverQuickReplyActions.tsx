@@ -298,7 +298,7 @@ const HoverQuickReplyComposer = memo(function HoverQuickReplyComposer({
           }
         }}
         placeholder={placeholder}
-        className="max-h-[132px] min-h-8 min-w-0 flex-1 resize-none overflow-y-auto rounded-lg border border-[hsl(var(--app-border)/0.72)] bg-[hsl(var(--app-bg-muted)/0.54)] px-3 py-1.5 text-xs leading-5 text-foreground shadow-[inset_0_1px_0_hsl(var(--background)/0.12)] outline-none transition-[background-color,border-color,box-shadow] duration-150 placeholder:text-muted-foreground focus-visible:border-[hsl(var(--app-border-strong)/0.9)] focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus)/0.22)]"
+        className="max-h-[132px] min-h-10 min-w-0 flex-1 resize-none overflow-y-auto rounded-lg border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-bg-muted)/0.42)] px-3 py-2 text-xs leading-5 text-foreground outline-none transition-[background-color,border-color,box-shadow] duration-normal ease-out-cubic placeholder:text-muted-foreground focus-visible:border-[hsl(var(--app-border-strong)/0.86)] focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus)/0.2)] motion-reduce:transition-none"
         disabled={isSending || isCancelling}
         minRows={1}
         maxRows={6}
@@ -313,7 +313,7 @@ const HoverQuickReplyComposer = memo(function HoverQuickReplyComposer({
         size="sm"
         variant="secondary"
         className={cn(
-          "h-8 shrink-0 gap-1.5 rounded-lg px-3 text-xs font-medium transition-[background-color,color,box-shadow,transform,opacity]",
+          "h-10 shrink-0 gap-1.5 rounded-lg px-3 text-xs font-medium transition-[background-color,color,box-shadow,transform,opacity] duration-normal ease-out-cubic active:scale-[0.96] motion-reduce:transition-none",
           canSendQuickReply && "border border-[hsl(var(--app-accent)/0.48)] bg-[hsl(var(--app-accent))] text-white shadow-[0_12px_28px_-20px_hsl(var(--app-accent)/0.72),inset_0_1px_0_rgba(255,255,255,0.16)] hover:brightness-105 dark:text-white"
         )}
         disabled={!canSendQuickReply}
@@ -336,7 +336,7 @@ const HoverQuickReplyComposer = memo(function HoverQuickReplyComposer({
           size="sm"
           variant="secondary"
           className={cn(
-            "h-8 shrink-0 gap-1.5 rounded-lg border border-[hsl(var(--app-border)/0.76)] px-2.5 text-xs font-medium text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--background)/0.16)] transition-[background-color,border-color,color,box-shadow,transform,opacity]",
+            "h-10 shrink-0 gap-1.5 rounded-lg border border-[hsl(var(--app-border)/0.72)] px-2.5 text-xs font-medium text-muted-foreground transition-[background-color,border-color,color,box-shadow,transform,opacity] duration-normal ease-out-cubic motion-reduce:transition-none",
             "hover:border-destructive/35 hover:bg-destructive/10 hover:text-destructive active:scale-[0.96]",
             "focus-visible:ring-[hsl(var(--app-focus)/0.22)]",
             "disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-background disabled:hover:text-muted-foreground"

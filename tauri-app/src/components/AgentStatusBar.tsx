@@ -69,15 +69,15 @@ export function AgentStatusBar({
     }
 
     return (
-        <div className="rounded-lg border bg-card overflow-hidden">
+        <div className="overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.66)] bg-[hsl(var(--app-panel)/0.94)] shadow-[0_12px_30px_-28px_hsl(var(--foreground)/0.32)]">
             {/* Status Bar */}
-            <div className="flex items-center justify-between p-3 bg-muted/30">
+            <div className="flex items-center justify-between bg-[hsl(var(--app-bg-muted)/0.36)] p-3">
                 <div className="flex items-center gap-4">
                     {/* Status Indicator */}
                     <div className="flex items-center gap-2">
                         <div className={cn(
                             "h-2 w-2 rounded-full",
-                            isRunning ? "bg-green-500 animate-pulse" : "bg-gray-400"
+                            isRunning ? "animate-pulse bg-[hsl(var(--app-accent))] motion-reduce:animate-none" : "bg-muted-foreground/45"
                         )} />
                         <span className="text-sm font-medium">
                             {isRunning ? 'Agent Running' : 'Agent Stopped'}
@@ -86,7 +86,7 @@ export function AgentStatusBar({
 
                     {/* Turn Counter */}
                     {turnCount > 0 && (
-                        <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                        <div className="flex items-center gap-1 text-sm text-muted-foreground tabular-nums">
                             <Activity className="h-4 w-4" />
                             <span>Turn {turnCount}/{maxTurns}</span>
                         </div>
@@ -94,7 +94,7 @@ export function AgentStatusBar({
 
                     {/* Token Count */}
                     {tokenCount !== undefined && (
-                        <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                        <div className="flex items-center gap-1 text-sm text-muted-foreground tabular-nums">
                             <Zap className="h-4 w-4" />
                             <span>{tokenCount.toLocaleString()} tokens</span>
                         </div>
@@ -106,6 +106,7 @@ export function AgentStatusBar({
                     <Button
                         variant="outline"
                         size="sm"
+                        className="h-10 rounded-lg transition-transform active:scale-[0.96]"
                         onClick={handleViewChanges}
                         disabled={!sessionId}
                     >
@@ -117,6 +118,7 @@ export function AgentStatusBar({
                         <Button
                             variant="destructive"
                             size="sm"
+                            className="h-10 rounded-lg transition-transform active:scale-[0.96]"
                             onClick={onStop}
                         >
                             <Square className="h-4 w-4 mr-1" />
@@ -128,7 +130,7 @@ export function AgentStatusBar({
 
             {/* Changes Panel */}
             {showingChanges && changes.length > 0 && (
-                <div className="border-t p-3 bg-background">
+                <div className="border-t border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-panel))] p-3">
                     <div className="text-sm font-medium mb-2">Changed Files ({changes.length})</div>
                     <ul className="space-y-1 max-h-32 overflow-y-auto">
                         {changes.map((file, idx) => (
@@ -148,7 +150,7 @@ export function AgentStatusBar({
             )}
 
             {showingChanges && changes.length === 0 && (
-                <div className="border-t p-3 bg-background">
+                <div className="border-t border-[hsl(var(--app-border)/0.5)] bg-[hsl(var(--app-panel))] p-3">
                     <p className="text-sm text-muted-foreground">No file changes detected.</p>
                 </div>
             )}

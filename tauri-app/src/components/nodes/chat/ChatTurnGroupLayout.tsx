@@ -11,10 +11,15 @@ export const ChatTurnGroupLayout = memo(({
   isFocused
 }: ChatTurnGroupLayoutProps) => {
   return (
-    <div className={cn(
-      "box-border flex min-w-0 w-full max-w-full flex-col gap-1.5 px-3 py-3 md:px-6 md:py-4 mb-8 last:mb-0 rounded-[28px] transition-colors",
-      isFocused && "bg-slate-100/90 dark:bg-slate-900/30"
-    )}>
+    <div
+      data-design-scope="chat"
+      data-design-part="chat-turn-group"
+      data-design-focused={isFocused ? 'true' : 'false'}
+      className={cn(
+        "mb-4 box-border flex min-w-0 w-full max-w-full flex-col gap-1.5 rounded-xl px-3 py-2 transition-colors duration-normal ease-out-cubic last:mb-0 motion-reduce:transition-none md:px-5 md:py-3",
+        isFocused && "bg-[hsl(var(--app-bg-muted)/0.62)]"
+      )}
+    >
       {children}
     </div>
   );

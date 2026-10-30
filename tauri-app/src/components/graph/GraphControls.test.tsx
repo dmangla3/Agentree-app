@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import '../../test/setup';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { TooltipProvider } from '../../../@/components/ui/tooltip';
@@ -108,6 +110,77 @@ describe('GraphControls', () => {
     expect(screen.queryByRole('button', { name: /reset graph/i })).toBeNull();
     expect(screen.queryByText(/repo refs/i)).toBeNull();
     expect(screen.queryByText(/automatic graph sync/i)).toBeNull();
+  });
+
+  it('keeps the After header compact and reachable at narrow split widths', () => {
+    const { container } = render(
+      <TooltipProvider>
+        <GraphControls {...makeProps()} />
+      </TooltipProvider>
+    );
+
+    const toolbarRow = container.querySelector('[data-design-part="graph-toolbar-row"]') as HTMLElement;
+    const toolbarActions = container.querySelector('[data-design-part="graph-toolbar-actions"]') as HTMLElement;
+    const filterButton = screen.getByRole('button', { name: /filters/i });
+    const displaySettingsButton = screen.getByRole('button', { name: 'Display settings' });
+
+    expect(toolbarRow.className).toContain('min-h-10');
+    expect(toolbarRow.className).toContain('py-0.5');
+    expect(toolbarRow.className).toContain('w-max');
+    expect(toolbarRow.className).toContain('min-w-full');
+    expect(toolbarRow.className).toContain('overflow-x-auto');
+    expect(toolbarActions.className).toContain('shrink-0');
+    expect(toolbarActions.className).toContain('gap-2');
+    expect(filterButton.className).toContain('h-8');
+    expect(filterButton.className).toContain('after:h-10');
+    expect(filterButton.className).toContain('after:min-w-10');
+    expect(displaySettingsButton.className).toContain('h-8');
+    expect(displaySettingsButton.className).toContain('w-10');
+    expect(displaySettingsButton.className).toContain('after:h-8');
+    expect(displaySettingsButton.className).toContain('after:min-w-8');
+  });
+
+  it('compacts the tracked-ref row while preserving its graph Before dimensions', () => {
+    const trackedRefsSource = readFileSync(join(process.cwd(), 'src/components/TrackedBranchesPanel.tsx'), 'utf8');
+    const reviewStyles = readFileSync(join(process.cwd(), 'src/App.css'), 'utf8');
+
+    expect(trackedRefsSource).toContain('data-design-part="graph-refs-toolbar"');
+    expect(trackedRefsSource).toContain("'flex min-h-10 w-full flex-row items-center");
+    expect(trackedRefsSource).toContain('data-design-part="graph-current-ref"');
+    expect(trackedRefsSource).toContain('"group flex h-8 shrink-0 items-center');
+    expect(trackedRefsSource).toContain('data-design-part="graph-track-ref"');
+    expect(trackedRefsSource).toContain('"h-8 min-w-[8.5rem]');
+    expect(trackedRefsSource).toContain('after:h-10');
+
+    expect(reviewStyles).toContain(":root[data-design-graph='before'] [data-design-part='graph-refs-toolbar']");
+    expect(reviewStyles).toContain('min-height: 2.75rem !important;');
+    expect(reviewStyles).toContain(":root[data-design-graph='before'] [data-design-part='graph-current-ref']");
+    expect(reviewStyles).toContain('height: 2.5rem !important;');
+  });
+
+  it('uses one visible control family for Search, Filters, and Shared nodes', () => {
+    const graphControlsSource = readFileSync(join(process.cwd(), 'src/components/graph/GraphControls.tsx'), 'utf8');
+    const appHeaderSource = readFileSync(join(process.cwd(), 'src/components/AppHeader.tsx'), 'utf8');
+    const workspaceShareSource = readFileSync(join(process.cwd(), 'src/components/WorkspaceShareDialog.tsx'), 'utf8');
+    const sharedStyles = readFileSync(join(process.cwd(), 'src/components/graphHeaderControlStyles.ts'), 'utf8');
+    const reviewStyles = readFileSync(join(process.cwd(), 'src/App.css'), 'utf8');
+
+    expect(graphControlsSource).toContain('data-design-part="graph-header-filter"');
+    expect(appHeaderSource).toContain('data-design-part="graph-header-search"');
+    expect(workspaceShareSource).toContain('data-design-part="graph-header-shared"');
+    for (const source of [graphControlsSource, appHeaderSource, workspaceShareSource]) {
+      expect(source).toContain('graphHeaderControlClass');
+      expect(source).toContain('graphHeaderControlIconClass');
+      expect(source).toContain('graphHeaderControlLabelClass');
+    }
+
+    expect(sharedStyles).toContain('h-8 min-w-10');
+    expect(sharedStyles).toContain('rounded-md');
+    expect(sharedStyles).toContain('text-xs font-medium');
+    expect(sharedStyles).toContain('after:h-10');
+    expect(sharedStyles).toContain('graphHeaderControlSelectedClass');
+    expect(reviewStyles).toContain('[data-design-part="graph-header-search"]');
+    expect(reviewStyles).toContain("[data-design-part='graph-header-filter']");
   });
 
   it('shows a workspace execution timeline popover from any view mode', () => {

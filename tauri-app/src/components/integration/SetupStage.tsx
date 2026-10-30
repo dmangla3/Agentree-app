@@ -958,9 +958,9 @@ export function SetupStage() {
 
   return (
     <div className="relative flex h-full flex-col space-y-0">
-      <div className="flex-1 space-y-3 overflow-y-auto pb-20 pr-2">
+      <div className="flex-1 space-y-2.5 overflow-y-auto pb-16 pr-1">
         {/* Header */}
-        <div className="flex flex-col gap-1.5 rounded-xl border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.58)] p-3 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.035)]">
+        <div className="flex flex-col gap-1 border-b border-[hsl(var(--app-border)/0.52)] px-1 pb-2.5">
           <div className="flex items-center gap-1.5">
             <span className="flex h-6 w-6 items-center justify-center rounded-md bg-[hsl(var(--app-graph-commit)/0.11)] text-[hsl(var(--app-graph-commit))]">
               <GitMerge className="h-3.5 w-3.5" strokeWidth={1.9} />
@@ -974,13 +974,13 @@ export function SetupStage() {
 
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
           {/* Source Selection */}
-          <Card className="gap-2 overflow-hidden border-[hsl(var(--app-border)/0.66)] bg-[hsl(var(--app-panel)/0.72)] p-2.5 shadow-[0_14px_34px_-30px_hsl(var(--foreground)/0.4),inset_0_1px_0_hsl(var(--foreground)/0.035)]">
+          <Card className="gap-2 overflow-hidden rounded-lg border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.58)] p-2.5 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)]">
             <CardHeader className="p-0">
               <CardTitle className="flex items-center gap-1.5 text-[13px] leading-none">
                 <GitBranch className="h-3.5 w-3.5 text-[hsl(var(--app-graph-agent))]" />
                 Sources ({session.sources.length})
                 {session.sources.length > 1 && (
-                  <Badge variant="secondary" className="rounded-full border border-[hsl(var(--app-border)/0.54)] bg-[hsl(var(--app-bg-muted)/0.46)] text-[10px]">Multi-source</Badge>
+                  <Badge variant="secondary" className="rounded-md border border-[hsl(var(--app-border)/0.54)] bg-[hsl(var(--app-bg-muted)/0.46)] text-[10px]">Multi-source</Badge>
                 )}
               </CardTitle>
             </CardHeader>
@@ -993,7 +993,7 @@ export function SetupStage() {
                 isLoading={isLoadingTarget}
               />
               {!session.target ? (
-                <div className="rounded-xl border border-dashed border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.28)] px-3 py-2 text-center text-xs text-muted-foreground">
+                <div className="rounded-lg border border-dashed border-[hsl(var(--app-border)/0.58)] px-3 py-2 text-center text-xs text-muted-foreground">
                   Select a target when ready to preview or apply the queued sources.
                 </div>
               ) : null}
@@ -1001,7 +1001,7 @@ export function SetupStage() {
           </Card>
 
           {/* Target Selection */}
-          <Card className="gap-2 overflow-hidden border-[hsl(var(--app-border)/0.66)] bg-[hsl(var(--app-panel)/0.72)] p-2.5 shadow-[0_14px_34px_-30px_hsl(var(--foreground)/0.4),inset_0_1px_0_hsl(var(--foreground)/0.035)]">
+          <Card className="gap-2 overflow-hidden rounded-lg border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.58)] p-2.5 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)]">
             <CardHeader className="p-0">
               <CardTitle className="flex items-center gap-1.5 text-[13px] leading-none">
                 <Target className="h-3.5 w-3.5 text-[hsl(var(--app-graph-commit))]" />
@@ -1010,7 +1010,7 @@ export function SetupStage() {
             </CardHeader>
             <CardContent className="space-y-2 p-0">
               {session.target ? (
-                <div className="flex items-center gap-2.5 rounded-xl border border-[hsl(var(--app-graph-commit)/0.28)] bg-[hsl(var(--app-graph-commit)/0.08)] px-3 py-2 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]">
+                <div className="flex items-center gap-2.5 rounded-lg border border-[hsl(var(--app-graph-commit)/0.28)] bg-[hsl(var(--app-graph-commit)/0.08)] px-3 py-2">
                   <Target className="h-4 w-4 shrink-0 text-[hsl(var(--app-graph-commit))]" />
                   <div className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold">{session.target.label}</span>
@@ -1018,7 +1018,7 @@ export function SetupStage() {
                       {session.target.commitSha.slice(0, 7)}
                     </span>
                   </div>
-                  <Badge variant="secondary" className="rounded-full border border-[hsl(var(--app-graph-commit)/0.2)] bg-[hsl(var(--app-graph-commit)/0.11)] text-[10px] text-[hsl(var(--app-graph-commit))]">Selected</Badge>
+                  <Badge variant="secondary" className="rounded-md border border-[hsl(var(--app-graph-commit)/0.2)] bg-[hsl(var(--app-graph-commit)/0.11)] text-[10px] text-[hsl(var(--app-graph-commit))]">Selected</Badge>
                   <Button
                     variant="ghost"
                     size="icon"
@@ -1054,8 +1054,8 @@ export function SetupStage() {
       </div>
 
       {/* Footer Actions */}
-      <div className="absolute bottom-0 left-0 right-0 z-10 flex flex-col gap-2 border-t border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg)/0.88)] py-2 pr-3 backdrop-blur-md sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0 rounded-full border border-[hsl(var(--app-border)/0.52)] bg-[hsl(var(--app-panel)/0.7)] px-3 py-1.5 text-xs text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.035)]">
+      <div className="absolute bottom-0 left-0 right-0 z-10 flex flex-col gap-2 border-t border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg)/0.96)] py-2 pr-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0 px-1 text-xs text-muted-foreground">
           {isLoadingCommits ? (
             <span>Loading commits...</span>
           ) : canProceed && !repoPath ? (
@@ -1125,7 +1125,7 @@ export function SetupStage() {
                   <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
                 </Button>
               </PopoverTrigger>
-              <PopoverContent className="h-[400px] w-[min(500px,calc(100vw-2rem))] overflow-hidden rounded-2xl border-[hsl(var(--app-border)/0.7)] p-0 shadow-[0_24px_70px_-38px_hsl(var(--foreground)/0.54)]" align="end" sideOffset={8}>
+              <PopoverContent className="h-[400px] w-[min(500px,calc(100vw-2rem))] overflow-hidden rounded-xl border-[hsl(var(--app-border)/0.7)] p-0 shadow-[0_24px_64px_-38px_hsl(var(--foreground)/0.5)]" align="end" sideOffset={8}>
                 <UnifiedAgentModelSelector
                   onSelectAgent={(id) => { setSelectedAgentId(id); setIsAgentPopoverOpen(false); }}
                   selectedAgentId={selectedAgentId}
@@ -1142,7 +1142,7 @@ export function SetupStage() {
                 title={
                   targetBranchLocked
                     ? `'${targetBranchName}' has uncommitted changes in its checked-out folder. Commit or stash them to enable moving it.`
-                    : `Fast-forwards '${targetBranchName}' to the merge commit. Off by default — the merge commit is created either way.`
+                    : `Fast-forwards '${targetBranchName}' to the merge commit. Off by default. The merge commit is created either way.`
                 }
               >
                 <Checkbox

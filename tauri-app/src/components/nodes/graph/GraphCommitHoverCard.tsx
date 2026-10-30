@@ -25,7 +25,7 @@ export function RichCommitRow({
   return (
     <button
       type="button"
-      className="group/commit relative w-full rounded-[8px] border border-zinc-200/80 bg-white/88 px-3 py-2.5 text-left shadow-[0_1px_0_rgba(255,255,255,0.85)_inset] transition-all duration-200 hover:-translate-y-px hover:border-emerald-300/85 hover:bg-white hover:shadow-[0_14px_28px_-22px_rgba(4,120,87,0.78)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70 dark:border-zinc-800/80 dark:bg-zinc-950/72 dark:shadow-none dark:hover:border-emerald-700/80 dark:hover:bg-zinc-950"
+      className="group/commit relative w-full rounded-[8px] border border-zinc-200/80 bg-white/88 px-3 py-2.5 text-left shadow-[0_1px_0_rgba(255,255,255,0.85)_inset] transition-[background-color,border-color,box-shadow,transform] duration-normal ease-out-cubic hover:-translate-y-px hover:border-emerald-300/85 hover:bg-white hover:shadow-[0_14px_28px_-22px_rgba(4,120,87,0.78)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70 motion-reduce:transition-none dark:border-zinc-800/80 dark:bg-zinc-950/72 dark:shadow-none dark:hover:border-emerald-700/80 dark:hover:bg-zinc-950"
       onClick={(event) => {
         event.stopPropagation();
         onSelectBase?.(commit);

@@ -239,25 +239,25 @@ export function AddCommitDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-[min(48rem,calc(100vw-2rem))] max-w-none flex-col gap-0 overflow-hidden border-border/60 bg-[#fbfaf7] p-0 shadow-[0_28px_80px_-36px_rgba(15,23,42,0.45),0_12px_28px_-20px_rgba(15,23,42,0.32)] dark:bg-slate-950">
-        <div className="border-b border-border/60 bg-white/70 px-5 py-4 dark:bg-white/[0.03]">
+      <DialogContent data-design-scope="panels" className="flex max-h-[calc(100dvh-2rem)] w-[min(48rem,calc(100vw-2rem))] max-w-none flex-col gap-0 overflow-hidden border-border/60 bg-[hsl(var(--app-panel-strong))] p-0 shadow-[var(--app-shadow-floating)]">
+        <div className="border-b border-border/60 bg-[hsl(var(--app-panel-strong))] px-4 py-3">
         <DialogHeader>
-          <DialogTitle>Add Commit</DialogTitle>
+          <DialogTitle>Add commit</DialogTitle>
           <DialogDescription>
             Add descendant commits after the selected node as individual graph commits.
           </DialogDescription>
         </DialogHeader>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-5 py-4">
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/80 px-3 py-2 shadow-[0_1px_0_rgba(255,255,255,0.92)_inset,0_8px_22px_-18px_rgba(15,23,42,0.45)] ring-1 ring-black/[0.06] dark:bg-white/[0.04] dark:ring-white/10">
+        <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-hidden px-4 py-3">
+          <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 border-b border-[hsl(var(--app-border)/0.48)] px-1 pb-2">
             <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
               <GitCommitHorizontal size={14} className="shrink-0" />
               <span className="shrink-0">Current code</span>
               <code className="truncate font-mono text-foreground">{shortSha(baseCommit)}</code>
             </div>
             {rankedCandidates.length > 0 ? (
-              <span className="text-xs text-muted-foreground">
+              <span className="text-xs tabular-nums text-muted-foreground">
                 {rankedCandidates.length} available
               </span>
             ) : null}
@@ -269,12 +269,12 @@ export function AddCommitDialog({
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search commits, branches, refs, or SHA"
-              className="h-9 rounded-xl border-border/60 bg-white/85 pl-8 text-sm shadow-[0_1px_0_rgba(255,255,255,0.88)_inset] dark:bg-white/[0.04]"
+              className="h-10 rounded-lg border-border/60 bg-background/85 pl-8 text-sm"
             />
           </div>
 
-          <ScrollArea className="h-[min(390px,calc(100dvh-18rem))] min-h-[180px] rounded-2xl bg-white/72 shadow-[0_1px_0_rgba(255,255,255,0.92)_inset,0_18px_44px_-34px_rgba(15,23,42,0.7)] ring-1 ring-black/[0.06] dark:bg-white/[0.035] dark:ring-white/10">
-            <div className="p-2">
+          <ScrollArea className="h-[min(390px,calc(100dvh-18rem))] min-h-[180px] overflow-hidden rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.58)]">
+            <div className="divide-y divide-[hsl(var(--app-border)/0.46)]">
               {isLoadingCandidates ? (
                 <div className="flex items-center gap-2 px-3 py-8 text-sm text-muted-foreground">
                   <Loader2 size={14} className="animate-spin" />
@@ -300,18 +300,18 @@ export function AddCommitDialog({
                       void handleSubmit(candidate);
                     }}
                     className={cn(
-                      'mb-1.5 grid w-full min-w-0 grid-cols-[minmax(0,1fr)_88px] items-center gap-3 rounded-xl px-2.5 py-2 text-left outline-none ring-1 transition-[background-color,box-shadow] duration-150',
+                      'grid min-h-10 w-full min-w-0 grid-cols-[minmax(0,1fr)_88px] items-center gap-3 px-3 py-2 text-left outline-none transition-[background-color,box-shadow,transform] duration-150 ease-out active:scale-[0.96]',
                       selected
-                        ? 'bg-emerald-50/90 shadow-[0_10px_26px_-20px_rgba(16,185,129,0.75),0_1px_0_rgba(255,255,255,0.92)_inset] ring-emerald-300/80 dark:bg-emerald-950/35 dark:ring-emerald-800/80'
-                        : 'bg-[#fffefa]/78 shadow-[0_1px_0_rgba(255,255,255,0.9)_inset] ring-black/[0.05] hover:bg-white hover:shadow-[0_10px_24px_-22px_rgba(15,23,42,0.75),0_1px_0_rgba(255,255,255,0.9)_inset] hover:ring-black/[0.08] dark:bg-white/[0.035] dark:ring-white/10 dark:hover:bg-white/[0.06]'
+                        ? 'bg-[hsl(var(--app-accent-soft))] shadow-[inset_0_0_0_1px_hsl(var(--app-accent)/0.28)]'
+                        : 'bg-transparent hover:bg-background/72'
                     )}
                   >
                     <div className="flex min-w-0 items-center gap-2.5 overflow-hidden">
                       <div className={cn(
                         'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg shadow-[0_1px_0_rgba(255,255,255,0.82)_inset] ring-1',
                         selected
-                          ? 'bg-emerald-100 text-emerald-700 ring-emerald-300/70 dark:bg-emerald-950/60 dark:text-emerald-300 dark:ring-emerald-800'
-                          : 'bg-white text-muted-foreground ring-black/[0.06] dark:bg-white/[0.06] dark:ring-white/10'
+                          ? 'bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))] ring-[hsl(var(--app-accent)/0.2)]'
+                          : 'bg-background text-muted-foreground ring-[hsl(var(--app-border)/0.58)]'
                       )}>
                         {selected ? <Check size={14} /> : <GitBranch size={14} />}
                       </div>
@@ -344,15 +344,15 @@ export function AddCommitDialog({
           </ScrollArea>
         </div>
 
-        {error ? <div className="mx-5 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}
+        {error ? <div className="mx-4 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive shadow-[inset_0_0_0_1px_hsl(var(--destructive)/0.24)]">{error}</div> : null}
 
-        <DialogFooter className="border-t border-border/60 bg-white/55 px-5 py-4 dark:bg-white/[0.025]">
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={isSubmitting}>
+        <DialogFooter className="border-t border-border/60 bg-muted/20 px-4 py-3">
+          <Button className="h-10 rounded-lg" type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={isSubmitting}>
             Cancel
           </Button>
-          <Button type="button" onClick={() => void handleSubmit()} disabled={!selectedCandidate || isSubmitting}>
+          <Button className="h-10 rounded-lg" type="button" onClick={() => void handleSubmit()} disabled={!selectedCandidate || isSubmitting}>
             {isSubmitting ? <Loader2 size={14} className="mr-2 animate-spin" /> : null}
-            {isSubmitting ? 'Adding...' : 'Add Commit'}
+            {isSubmitting ? 'Adding...' : 'Add commit'}
           </Button>
         </DialogFooter>
       </DialogContent>

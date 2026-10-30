@@ -12,6 +12,7 @@ import type { ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspa
 import { useWorkspaceStore, type Message } from '../stores/workspaceStore';
 import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
 import { AgentreeSurfaceProvider, publicShareCapabilities } from './graph/surfaceCapabilities';
+import { TooltipProvider } from '../../@/components/ui/tooltip';
 
 const quickReplyMocks = vi.hoisted(() => ({
   sendQuickReply: vi.fn(),
@@ -99,7 +100,7 @@ const render = (ui: ReactElement) => {
 
   return rtlRender(
     <QueryClientProvider client={queryClient}>
-      {ui}
+      <TooltipProvider delayDuration={0}>{ui}</TooltipProvider>
     </QueryClientProvider>
   );
 };

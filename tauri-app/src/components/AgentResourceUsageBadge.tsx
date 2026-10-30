@@ -25,7 +25,7 @@ export function AgentResourceUsageBadge({
 
   return (
     <div
-      className="mb-2 flex w-fit items-center gap-1.5 rounded-full border border-[hsl(var(--app-border)/0.64)] bg-[hsl(var(--app-bg-muted)/0.56)] px-2.5 py-1 text-[11px] font-medium tabular-nums text-muted-foreground"
+      className="mb-2 flex w-fit items-center gap-1.5 rounded-md border border-[hsl(var(--app-border)/0.64)] bg-[hsl(var(--app-bg-muted)/0.56)] px-2.5 py-1 text-[11px] font-medium tabular-nums text-muted-foreground"
       title="Current CPU and memory used by this agent's full process tree. Informational only; Agentree does not throttle it."
       data-agent-resource-usage={assistantNodeId}
     >

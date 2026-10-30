@@ -132,14 +132,14 @@ export function GraphCanvasIndexPanel({
   }, [agentLabelsById, messages]);
 
   // Modern icon button styles
-  const iconButtonBase = "group relative flex items-center justify-center rounded-lg transition-all duration-200 ease-out";
+  const iconButtonBase = "group relative flex items-center justify-center rounded-lg transition-[background-color,border-color,color,box-shadow,transform] duration-normal ease-out-cubic motion-reduce:transition-none active:scale-[0.96]";
   const iconButtonGhost = "hover:bg-gradient-to-br hover:from-muted/80 hover:to-muted/40 hover:shadow-sm hover:shadow-black/5 active:scale-95";
-  const iconContainer = "flex items-center justify-center transition-transform duration-200 group-hover:scale-110 group-active:scale-95";
+  const iconContainer = "flex items-center justify-center transition-transform duration-normal ease-out-cubic motion-reduce:transition-none group-hover:scale-105 group-active:scale-[0.96]";
 
   return (
     <>
       {isVisible ? (
-        <div className="absolute top-3 right-3 bg-background/95 dark:bg-zinc-800 rounded-lg shadow-sm border border-border/50 dark:border-slate-700/50 p-2 text-[10px] max-w-[180px] max-h-[240px] overflow-y-auto z-20">
+        <div className="absolute right-3 top-3 z-20 max-h-[240px] max-w-[180px] overflow-y-auto rounded-xl border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.96)] p-2 text-[10px] shadow-[0_16px_36px_-28px_hsl(var(--foreground)/0.4)]">
           <div className="mb-2 flex items-center justify-between gap-2">
             <div className="font-medium text-foreground dark:text-slate-200 text-xs">Index</div>
             <button
@@ -334,7 +334,7 @@ export function GraphCanvasIndexPanel({
             className={cn(
               iconButtonBase,
               iconButtonGhost,
-              "h-8 w-8 rounded-md border border-border/50 dark:border-slate-700/50 bg-background/95 dark:bg-slate-900/95 text-muted-foreground dark:text-slate-400 shadow-sm hover:text-foreground dark:hover:text-slate-200"
+              "h-10 w-10 rounded-lg border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.96)] text-muted-foreground shadow-[0_12px_28px_-24px_hsl(var(--foreground)/0.36)] hover:text-foreground"
             )}
             aria-label="Show index"
             title="Show index"

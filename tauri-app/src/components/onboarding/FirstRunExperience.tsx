@@ -42,6 +42,7 @@ import { ModelVisibilitySettingsPanel } from '../ModelVisibilitySettingsPanel';
 import type { Workspace } from '../../stores/workspaceStore';
 import logoSrc from '../../assets/logo.png';
 import { bucketCount, track, trackOnboardingStepViewed } from '../../lib/analytics';
+import { usesMacOSOverlayTitleBar } from '../../hooks/useTauriWorkspace';
 
 type StepId = 'environment' | 'models' | 'workspace';
 
@@ -51,43 +52,44 @@ interface FirstRunExperienceProps {
   onSelectWorkspace: (workspaceId: string) => void;
   onComplete: (workspaceId?: string | null) => void;
   onRepositoryConnected?: (repoPath: string, workspaceId: string) => void;
+  reviewMode?: boolean;
 }
 
 const onboardingTips = [
   {
     icon: MessageSquare,
-    eyebrow: 'Tip 01',
-    title: 'Start with one concrete ask.',
-    body: 'Use the first run to test a narrow thread on a real repository so you can see how Agentree records context, outputs, and branch history.',
-    caption: 'Best first prompt: a contained bug fix, refactor, or code review.',
+    eyebrow: 'Focused tasks',
+    title: 'Start with one clear task.',
+    body: 'Try a contained task in a real repository to see its context, output, and branch history.',
+    caption: 'A bug fix, refactor, or code review works well.',
   },
   {
     icon: GitBranch,
-    eyebrow: 'Tip 02',
+    eyebrow: 'Branching',
     title: 'Branch when ideas diverge.',
-    body: 'If one thread turns into multiple approaches, branch from the relevant node instead of forcing everything into one linear conversation.',
-    caption: 'Parallel runs stay easier to compare when each branch has a clear intent.',
+    body: 'Start each approach from the relevant node instead of forcing every idea into one conversation.',
+    caption: 'Clear branch intent makes parallel runs easier to compare.',
   },
   {
     icon: FolderSearch,
-    eyebrow: 'Tip 03',
-    title: 'Start from any commit you choose.',
-    body: 'Select a commit as the base state and let Agentree branch agent work from that exact point, instead of always starting from the latest checkout.',
-    caption: 'Useful when you want to compare approaches, revisit older states, or run parallel work from a stable base.',
+    eyebrow: 'Starting points',
+    title: 'Start from any commit.',
+    body: 'Choose the exact base state instead of always working from the latest checkout.',
+    caption: 'Compare approaches or revisit an earlier state without losing context.',
   },
 ] as const;
 
 const stepBadgeClassName =
-  'w-fit rounded-full border-border/70 bg-background/70 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-muted-foreground dark:border-white/12 dark:bg-white/6 dark:text-zinc-200';
+  'w-fit rounded-full border-border/70 bg-muted/45 px-2.5 py-1 text-[11px] font-medium text-muted-foreground';
 
 const onboardingCardClassName =
-  'border-border/60 bg-background/92 text-foreground shadow-[0_28px_90px_-42px_rgba(15,23,42,0.45)] backdrop-blur-xl dark:border-white/10 dark:bg-zinc-950/94 dark:text-zinc-100 dark:shadow-[0_28px_90px_-42px_rgba(0,0,0,0.82)]';
+  'gap-5 border-border/70 bg-[hsl(var(--app-panel-strong))] text-foreground shadow-[var(--app-shadow-panel)]';
 
 const onboardingPanelClassName =
-  'border border-border/60 bg-card/80 shadow-[0_18px_48px_-32px_rgba(15,23,42,0.35)] dark:border-white/10 dark:bg-zinc-900/78 dark:shadow-[0_18px_54px_-34px_rgba(0,0,0,0.78)]';
+  'border border-border/65 bg-[hsl(var(--app-panel))] shadow-[0_12px_34px_-28px_hsl(var(--foreground)/0.28)]';
 
 const outlineButtonClassName =
-  'rounded-xl dark:border-white/12 dark:bg-zinc-900/90 dark:text-zinc-100 dark:hover:bg-zinc-800';
+  'h-9 rounded-md';
 
 const normalizePath = (value?: string | null): string | null => {
   if (!value) return null;
@@ -128,21 +130,21 @@ function StatusRow({
 
   return (
     <div
+      role="listitem"
+      data-design-part="onboarding-status-row"
+      data-status={status}
       className={cn(
-        'flex min-h-16 items-start gap-3 rounded-xl border px-4 py-3 transition-colors',
-        status === 'ready' && 'border-emerald-200 bg-emerald-50/70 dark:border-emerald-400/35 dark:bg-emerald-950/55',
-        status === 'missing' && 'border-amber-200 bg-amber-50/70 dark:border-amber-400/35 dark:bg-amber-950/55',
-        status === 'checking' && 'border-sky-200 bg-sky-50/70 dark:border-sky-400/35 dark:bg-sky-950/55',
-        status === 'pending' && 'border-border/60 bg-background/80 dark:border-white/10 dark:bg-zinc-900/72'
+        'grid min-h-14 grid-cols-[auto_minmax(0,1fr)] gap-x-2.5 gap-y-1.5 px-3.5 py-2.5 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center',
+        status === 'missing' && 'bg-destructive/[0.035] dark:bg-destructive/[0.06]'
       )}
     >
       <div
+        data-design-part="onboarding-status-icon"
         className={cn(
-          'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border bg-background',
-          status === 'ready' && 'border-emerald-200 text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-950/60 dark:text-emerald-300',
-          status === 'missing' && 'border-amber-200 text-amber-700 dark:border-amber-500/40 dark:bg-amber-950/60 dark:text-amber-300',
-          status === 'checking' && 'border-sky-200 text-sky-700 dark:border-sky-500/40 dark:bg-sky-950/60 dark:text-sky-300',
-          status === 'pending' && 'border-border text-muted-foreground dark:border-white/12 dark:bg-zinc-950/80 dark:text-zinc-300'
+          'flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted/60 text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border)/0.55)]',
+          status === 'ready' && 'text-emerald-700 dark:text-emerald-400',
+          status === 'missing' && 'text-destructive',
+          status === 'checking' && 'text-foreground'
         )}
       >
         {status === 'ready' && <CheckCircle2 className={iconClassName} />}
@@ -151,25 +153,32 @@ function StatusRow({
         {status === 'pending' && <CircleDashed className={iconClassName} />}
       </div>
 
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-sm font-medium text-foreground dark:text-zinc-100">{label}</div>
-          <Badge
-            variant="outline"
-            className={cn(
-              'w-fit rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em]',
-              status === 'ready' && 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/35 dark:bg-emerald-500/12 dark:text-emerald-300',
-              status === 'missing' && 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/35 dark:bg-amber-500/12 dark:text-amber-300',
-              status === 'checking' && 'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/35 dark:bg-sky-500/12 dark:text-sky-300',
-              status === 'pending' && 'border-border bg-muted/40 text-muted-foreground dark:border-white/12 dark:bg-white/8 dark:text-zinc-300'
-            )}
-          >
-            {statusLabel}
-          </Badge>
+      <div data-design-part="onboarding-status-content" className="min-w-0">
+        <div data-design-part="onboarding-status-heading" className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <div className="text-sm font-medium text-foreground">{label}</div>
+          <div data-design-part="onboarding-status-command" className="truncate font-mono text-[11px] text-muted-foreground/75">{command}</div>
         </div>
-        <div className="mt-1 break-words text-sm text-muted-foreground dark:text-zinc-300">{detail}</div>
-        <div className="mt-2 font-mono text-xs text-muted-foreground/80 dark:text-zinc-400">{command}</div>
-        {action ? <div className="mt-3">{action}</div> : null}
+        <div data-design-part="onboarding-status-detail" className={cn('mt-0.5 break-words text-xs leading-5 text-muted-foreground', status === 'missing' && 'text-destructive/85')}>
+          {detail}
+        </div>
+      </div>
+
+      <div data-design-part="onboarding-status-trailing" className="col-span-2 flex items-center justify-between gap-2 pl-9 sm:col-span-1 sm:pl-0">
+        <Badge
+          data-design-part="onboarding-status-badge"
+          variant="outline"
+          className={cn(
+            'w-fit rounded-full border px-2 py-0.5 text-[11px] font-medium',
+            status === 'ready' && 'border-emerald-600/20 bg-emerald-600/[0.07] text-emerald-700 dark:text-emerald-400',
+            status === 'missing' && 'border-destructive/20 bg-destructive/[0.06] text-destructive',
+            status === 'checking' && 'border-border/70 bg-muted/55 text-foreground',
+            status === 'pending' && 'border-border/70 bg-muted/40 text-muted-foreground'
+          )}
+          aria-label={`${label}: ${statusLabel}`}
+        >
+          {statusLabel}
+        </Badge>
+        {action}
       </div>
     </div>
   );
@@ -212,6 +221,7 @@ export function FirstRunExperience({
   onSelectWorkspace,
   onComplete,
   onRepositoryConnected,
+  reviewMode = false,
 }: FirstRunExperienceProps) {
   const [currentStep, setCurrentStep] = useState<StepId>('environment');
   const [activeTipIndex, setActiveTipIndex] = useState(0);
@@ -316,13 +326,14 @@ export function FirstRunExperience({
   }, [selectedFolderPath, workspaces]);
 
   useEffect(() => {
-    if (currentStep !== 'environment' || environment) return;
+    if (reviewMode || currentStep !== 'environment' || environment) return;
     void refreshEnvironment();
-  }, [currentStep]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentStep, reviewMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    if (reviewMode) return;
     trackOnboardingStepViewed(currentStep);
-  }, [currentStep]);
+  }, [currentStep, reviewMode]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -486,140 +497,165 @@ export function FirstRunExperience({
   };
 
   return (
-    <div className="relative flex min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.18),_transparent_32%),linear-gradient(135deg,_hsl(var(--background))_0%,_hsl(215_45%_98%)_46%,_hsl(205_55%_96%)_100%)] text-foreground dark:bg-[radial-gradient(circle_at_top_left,_rgba(56,189,248,0.12),_transparent_30%),linear-gradient(135deg,_hsl(var(--background))_0%,_hsl(var(--app-bg-elevated))_48%,_hsl(var(--app-bg-muted))_100%)]">
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(to_bottom,rgba(148,163,184,0.08)_1px,transparent_1px)] bg-[size:72px_72px] opacity-50 dark:opacity-20" />
-      <div className="relative hidden w-[38%] flex-col justify-between border-r border-border/50 bg-slate-950 px-10 py-12 text-slate-50 lg:flex">
+    <div
+      data-design-scope="onboarding"
+      data-design-part="onboarding-root"
+      data-review-preview={reviewMode ? 'true' : undefined}
+      className="app-shell-background relative flex min-h-[100dvh] overflow-hidden text-foreground"
+      onClickCapture={reviewMode ? (event) => {
+        if ((event.target as HTMLElement).closest('[data-design-review-navigation="true"]')) return;
+        event.preventDefault();
+        event.stopPropagation();
+      } : undefined}
+      onChangeCapture={reviewMode ? (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      } : undefined}
+      onSubmitCapture={reviewMode ? (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      } : undefined}
+    >
+      {usesMacOSOverlayTitleBar() ? (
+        <div data-tauri-drag-region className="fixed inset-x-0 top-0 z-20 h-12" aria-hidden="true" />
+      ) : null}
+      <div data-design-part="onboarding-aside" className="relative hidden w-[35%] max-w-[30rem] flex-col justify-between border-r border-border/65 bg-[hsl(var(--app-bg-muted)/0.62)] px-9 py-10 lg:flex">
         <motion.div
-          initial={{ opacity: 0, y: 18 }}
+          initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.35, ease: [0.2, 0, 0, 1] }}
-          className="space-y-8"
+          transition={{ duration: 0.2, ease: [0.2, 0, 0, 1] }}
+          className="space-y-10"
         >
-          <div className="inline-flex w-fit items-center gap-3">
+          <div data-design-part="onboarding-brand" className="inline-flex w-fit items-center gap-3">
             <img src={logoSrc} alt="Agentree" className="h-8 w-auto" />
-            <span className="rounded-full border border-white/12 bg-white/6 px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-sky-100/80">
+            <span className="rounded-full bg-muted/65 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
               Beta
             </span>
           </div>
 
-          <div className="space-y-4">
-            <div className="text-xs uppercase tracking-[0.22em] text-sky-100/70">Agentree Tips</div>
-            <h2 className="max-w-sm text-4xl font-semibold leading-tight text-balance">
-              Track What You Explored.
+          <div data-design-part="onboarding-intro" className="space-y-4">
+            <div className="text-xs font-medium text-muted-foreground">Agentree tips</div>
+            <h2 className="max-w-sm text-3xl font-semibold leading-tight tracking-[-0.03em] text-balance">
+              See every path.
               <br />
-              Branch from Any Message.
+              Branch at any point.
             </h2>
-            <p className="max-w-md text-base leading-7 text-slate-300 text-pretty">
-              Every branch. Every agent. Every failed attempt. All visible, all connected, all explorable across your entire team.
+            <p className="max-w-md text-sm leading-6 text-muted-foreground text-pretty">
+              Keep every agent run, branch, and outcome visible in one connected workspace.
             </p>
           </div>
         </motion.div>
 
         <motion.div
-          initial={{ opacity: 0, y: 18 }}
+          initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.35, delay: 0.1, ease: [0.2, 0, 0, 1] }}
-          className="space-y-4"
+          transition={{ duration: 0.2, delay: 0.08, ease: [0.2, 0, 0, 1] }}
+          className="space-y-2"
         >
-          <div className="relative overflow-hidden rounded-[2rem] border border-white/10 bg-white/[0.05] p-6 shadow-[0_28px_70px_-42px_rgba(14,165,233,0.35)]">
-            <AnimatePresence mode="wait">
+          <div data-design-part="onboarding-tip-card" className="relative overflow-hidden rounded-xl border border-border/70 bg-[hsl(var(--app-panel-strong))] p-5 shadow-[var(--app-shadow-panel)]">
+            <AnimatePresence initial={false} mode="wait">
               <motion.div
                 key={activeTipIndex}
-                initial={{ opacity: 0, y: 14, filter: 'blur(6px)' }}
+                initial={{ opacity: 0, y: 8, filter: 'blur(4px)' }}
                 animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-                exit={{ opacity: 0, y: -10, filter: 'blur(4px)' }}
-                transition={{ duration: 0.28, ease: [0.2, 0, 0, 1] }}
+                exit={{ opacity: 0, y: -6, filter: 'blur(4px)' }}
+                transition={{ type: 'spring', duration: 0.3, bounce: 0 }}
                 className="space-y-4"
               >
-                <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-sky-300/20 bg-sky-300/10 text-sky-100">
+                <div data-design-part="onboarding-tip-icon" className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted/65 text-foreground shadow-[inset_0_0_0_1px_hsl(var(--border)/0.55)]">
                   {(() => {
                     const Icon = onboardingTips[activeTipIndex].icon;
                     return <Icon className="h-5 w-5" />;
                   })()}
                 </div>
                 <div className="space-y-2">
-                  <div className="text-xs uppercase tracking-[0.2em] text-slate-300/70">
+                  <div data-design-part="onboarding-tip-eyebrow" className="text-xs font-medium text-muted-foreground">
                     {onboardingTips[activeTipIndex].eyebrow}
                   </div>
-                  <div className="text-2xl font-semibold leading-tight text-balance">
+                  <div data-design-part="onboarding-tip-title" className="text-xl font-semibold leading-tight tracking-[-0.02em] text-balance">
                     {onboardingTips[activeTipIndex].title}
                   </div>
-                  <p className="text-sm leading-7 text-slate-300/85 text-pretty">
+                  <p data-design-part="onboarding-tip-body" className="text-sm leading-6 text-muted-foreground text-pretty">
                     {onboardingTips[activeTipIndex].body}
                   </p>
                 </div>
-                <div className="rounded-2xl border border-white/8 bg-black/20 px-4 py-3 text-sm leading-6 text-slate-200/80">
+                <div data-design-part="onboarding-tip-caption" className="rounded-lg bg-muted/45 px-3 py-2.5 text-xs leading-5 text-muted-foreground">
                   {onboardingTips[activeTipIndex].caption}
                 </div>
               </motion.div>
             </AnimatePresence>
           </div>
 
-          <div className="flex gap-2">
+          <div data-design-part="onboarding-tip-nav" className="flex gap-0.5" role="group" aria-label="Onboarding tips">
             {onboardingTips.map((tip, index) => (
               <button
                 key={tip.eyebrow}
                 type="button"
                 aria-label={`Show ${tip.eyebrow}`}
+                data-design-review-navigation="true"
                 onClick={() => setActiveTipIndex(index)}
-                className={cn(
-                  'h-2.5 rounded-full transition-all duration-200',
-                  index === activeTipIndex ? 'w-10 bg-sky-300' : 'w-2.5 bg-white/25 hover:bg-white/40'
-                )}
-              />
+                className="flex h-10 w-10 items-center justify-center rounded-lg transition-[background-color,transform] duration-150 ease-out hover:bg-muted/65 active:scale-[0.96]"
+              >
+                <span
+                  className={cn(
+                    'h-1.5 rounded-full transition-[width,background-color] duration-200',
+                    index === activeTipIndex ? 'w-6 bg-foreground/75' : 'w-1.5 bg-muted-foreground/35'
+                  )}
+                />
+              </button>
             ))}
           </div>
         </motion.div>
       </div>
-      <div className="relative flex flex-1 items-center justify-center px-5 py-10 sm:px-8 lg:px-12">
+      <div data-design-part="onboarding-main" className="relative flex flex-1 items-center justify-center px-5 py-8 sm:px-8 lg:px-10">
         <div className="w-full max-w-3xl">
           <AnimatePresence initial={false} mode="wait">
             {currentStep === 'environment' && (
               <motion.div
                 key="environment"
-                initial={{ opacity: 0, y: 18, filter: 'blur(8px)' }}
+                initial={{ opacity: 0, y: 10, filter: 'blur(4px)' }}
                 animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
                 exit={{ opacity: 0, y: -10, filter: 'blur(4px)' }}
                 transition={{ type: 'spring', duration: 0.3, bounce: 0 }}
               >
-                <Card className={onboardingCardClassName}>
+                <Card data-design-part="onboarding-step-card" className={onboardingCardClassName}>
                   <CardHeader className="pb-4">
                     <Badge variant="outline" className={stepBadgeClassName}>
                       Step 1 of 3
                     </Badge>
-                    <CardTitle className="text-3xl text-balance">Testing requirements</CardTitle>
-                    <CardDescription className="text-base leading-7 text-pretty dark:text-zinc-300">
-                      {userName ? `${userName}, ` : ''}Agentree tests Git locally, then verifies active login profiles for Codex, Claude, and OpenCode before the first run. You can continue once Git is ready and at least one provider login is ready.
+                    <CardTitle className="text-balance text-2xl tracking-[-0.025em]">Testing requirements</CardTitle>
+                    <CardDescription className="max-w-2xl text-pretty text-sm leading-6">
+                      {userName ? `${userName}, confirm ` : 'Confirm '}Git and one active provider login before your first run.
                     </CardDescription>
                   </CardHeader>
 
                   <CardContent className="space-y-6">
-                    <div className={cn('rounded-2xl p-4', onboardingPanelClassName)}>
-                      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div data-design-part="onboarding-environment-panel" className={cn('overflow-hidden rounded-xl', onboardingPanelClassName)}>
+                      <div data-design-part="onboarding-environment-header" className="flex flex-col gap-3 border-b border-border/60 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
                         <div>
-                          <div className="text-sm font-medium text-foreground dark:text-zinc-100">Machine tests</div>
-                          <p className="mt-1 text-sm text-muted-foreground dark:text-zinc-300">
+                          <div className="text-sm font-medium text-foreground">Local requirements</div>
+                          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
                             {isCheckingEnvironment
-                              ? 'Agentree is testing each local requirement now.'
+                              ? 'Checking your machine now.'
                               : environmentReady
-                                ? 'Git is ready and at least one active login profile is available.'
-                                : 'Agentree needs Git plus at least one available agent runtime before continuing.'}
+                                ? 'Git and an agent runtime are ready.'
+                                : 'Git and one agent runtime are required.'}
                           </p>
                         </div>
                         <Badge
                           variant="outline"
                           className={cn(
-                            'w-fit rounded-full px-3 py-1 text-[11px] uppercase tracking-[0.14em]',
+                            'w-fit rounded-full px-2.5 py-0.5 text-[11px] font-medium tabular-nums',
                             environmentReady
-                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/35 dark:bg-emerald-500/12 dark:text-emerald-300'
-                              : 'border-border bg-background text-muted-foreground dark:border-white/12 dark:bg-white/8 dark:text-zinc-300'
+                              ? 'border-emerald-600/20 bg-emerald-600/[0.07] text-emerald-700 dark:text-emerald-400'
+                              : 'border-border/70 bg-muted/40 text-muted-foreground'
                           )}
                         >
                           {completedEnvironmentChecks} of {environmentChecks.length} ready
                         </Badge>
                       </div>
 
-                      <div className="grid gap-3">
+                      <div data-design-part="onboarding-environment-list" role="list" aria-label="Environment requirements" className="divide-y divide-border/55">
                         {environmentChecks.map((check) => (
                           <StatusRow
                             key={check.label}
@@ -632,7 +668,7 @@ export function FirstRunExperience({
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                className="rounded-lg dark:border-white/12 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+                                className="h-8 rounded-md"
                                 onClick={() => openLoginSetup(check.provider!)}
                                 disabled={isCheckingEnvironment}
                               >
@@ -646,7 +682,7 @@ export function FirstRunExperience({
                     </div>
 
                     {!environmentReady && importCandidates.length > 0 ? (
-                      <div className="rounded-2xl border border-border/60 bg-background/74 p-4 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72)] dark:border-white/10 dark:bg-zinc-900/72 dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]">
+                      <div className="rounded-xl border border-border/60 bg-background/74 p-4 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.72)] dark:border-white/10 dark:bg-zinc-900/72 dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]">
                         <div className="text-sm font-medium text-foreground dark:text-zinc-100">Detected logins</div>
                         <p className="mt-1 text-sm leading-6 text-muted-foreground dark:text-zinc-300">
                           Import one of these after reviewing it. Secret values stay hidden.
@@ -692,15 +728,13 @@ export function FirstRunExperience({
                     ) : null}
 
                     {!environmentReady && (
-                      <Alert className="border-amber-200 bg-amber-50/80 text-amber-950 dark:border-amber-500/30 dark:bg-amber-950/35 dark:text-amber-100">
-                        <Terminal className="h-4 w-4" />
-                        <AlertTitle>Finish login setup</AlertTitle>
-                        <AlertDescription className="text-amber-900 dark:text-amber-100/85">
-                          <p>Agentree requires Git plus one ready active login profile for Codex, Claude, or OpenCode.</p>
-                          <p className="font-mono text-xs text-amber-900/90 dark:text-amber-100/80">git --version</p>
-                          <p className="break-all font-mono text-xs text-amber-900/90 dark:text-amber-100/80">Managed Codex, Claude, or OpenCode credentials</p>
-                        </AlertDescription>
-                      </Alert>
+                      <div data-design-part="onboarding-setup-notice" className="flex items-start gap-3 rounded-lg bg-muted/45 px-3.5 py-3 text-sm shadow-[inset_0_0_0_1px_hsl(var(--border)/0.55)]">
+                        <Terminal className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                        <p className="text-pretty leading-5 text-muted-foreground">
+                          <span className="font-medium text-foreground">Finish login setup.</span>{' '}
+                          Git and one ready Codex, Claude, or OpenCode profile are required to continue.
+                        </p>
+                      </div>
                     )}
 
                     <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
@@ -721,8 +755,9 @@ export function FirstRunExperience({
                         </Button>
                         <Button
                           size="lg"
-                          className="rounded-xl"
-                          disabled={!environmentReady}
+                          className="h-10 rounded-lg"
+                          disabled={!reviewMode && !environmentReady}
+                          data-design-review-navigation="true"
                           onClick={() => setCurrentStep('models')}
                         >
                           Continue to models
@@ -743,7 +778,7 @@ export function FirstRunExperience({
                 exit={{ opacity: 0, y: -10, filter: 'blur(4px)' }}
                 transition={{ type: 'spring', duration: 0.3, bounce: 0 }}
               >
-                <Card className={cn(onboardingCardClassName, 'flex h-[min(760px,calc(100vh-5rem))] flex-col overflow-hidden')}>
+                <Card data-design-part="onboarding-step-card" className={cn(onboardingCardClassName, 'flex h-[min(760px,calc(100vh-5rem))] flex-col overflow-hidden')}>
                   <CardHeader className="shrink-0 pb-4">
                     <Badge variant="outline" className={stepBadgeClassName}>
                       Step 2 of 3
@@ -755,14 +790,14 @@ export function FirstRunExperience({
                   </CardHeader>
 
                   <CardContent className="flex min-h-0 flex-1 flex-col gap-4 pb-6">
-                    <div className={cn('flex min-h-0 flex-1 overflow-hidden rounded-2xl', onboardingPanelClassName)}>
+                    <div className={cn('flex min-h-0 flex-1 overflow-hidden rounded-xl', onboardingPanelClassName)}>
                       <ModelVisibilitySettingsPanel showHeader={false} />
                     </div>
                     <div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <Button variant="outline" size="lg" className={outlineButtonClassName} onClick={() => setCurrentStep('environment')}>
+                      <Button variant="outline" size="lg" className={outlineButtonClassName} data-design-review-navigation="true" onClick={() => setCurrentStep('environment')}>
                         Back
                       </Button>
-                      <Button size="lg" className="rounded-xl" onClick={() => setCurrentStep('workspace')}>
+                      <Button size="lg" className="h-10 rounded-lg" data-design-review-navigation="true" onClick={() => setCurrentStep('workspace')}>
                         Continue to workspace
                         <ArrowRight className="h-4 w-4" />
                       </Button>
@@ -780,7 +815,7 @@ export function FirstRunExperience({
                 exit={{ opacity: 0, y: -10, filter: 'blur(4px)' }}
                 transition={{ type: 'spring', duration: 0.3, bounce: 0 }}
               >
-                <Card className={onboardingCardClassName}>
+                <Card data-design-part="onboarding-step-card" className={onboardingCardClassName}>
                   <CardHeader className="pb-4">
                     <Badge variant="outline" className={stepBadgeClassName}>
                       Step 3 of 3
@@ -792,7 +827,7 @@ export function FirstRunExperience({
                   </CardHeader>
 
                   <CardContent className="space-y-6">
-                    <div className={cn('rounded-3xl p-5', onboardingPanelClassName)}>
+                    <div className={cn('rounded-xl p-5', onboardingPanelClassName)}>
                       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                         <div className="space-y-1">
                           <div className="text-sm font-medium text-foreground dark:text-zinc-100">Project directory</div>
@@ -807,16 +842,16 @@ export function FirstRunExperience({
                       </div>
 
                       {existingWorkspaceForSelection?.id && (
-                        <Alert className="mt-4 border-sky-200 bg-sky-50/80 text-sky-950 dark:border-sky-500/30 dark:bg-sky-950/35 dark:text-sky-100">
+                        <Alert className="mt-4 border-border/65 bg-muted/45 text-foreground">
                           <CheckCircle2 className="h-4 w-4" />
                           <AlertTitle>Existing workspace found</AlertTitle>
-                          <AlertDescription className="text-sky-900 dark:text-sky-100/85">
+                          <AlertDescription className="text-muted-foreground">
                             <p>
                               <span className="font-medium">{existingWorkspaceForSelection.name}</span> is already attached to this path.
                             </p>
                             <Button
                               variant="link"
-                              className="mt-1 h-auto p-0 text-sky-800 dark:text-sky-200"
+                              className="mt-1 h-auto p-0 text-foreground"
                               onClick={() => completeWithWorkspace(existingWorkspaceForSelection.id)}
                             >
                               Open existing workspace
@@ -833,7 +868,7 @@ export function FirstRunExperience({
                         <AlertDescription className="text-orange-900 dark:text-orange-100/85">
                           <p className="mb-3">Agentree can initialize Git and create the first base commit automatically.</p>
                           <div className="flex flex-wrap gap-3">
-                            <Button size="sm" className="rounded-xl" onClick={() => void handleCreateWorkspace({ allowGitInit: true })}>
+                            <Button size="sm" className="h-10 rounded-lg" onClick={() => void handleCreateWorkspace({ allowGitInit: true })}>
                               Initialize Git and continue
                             </Button>
                             <Button size="sm" variant="outline" className={outlineButtonClassName} onClick={() => setSetupRequirement(null)}>
@@ -858,12 +893,12 @@ export function FirstRunExperience({
                               value={checkpointMessage}
                               onChange={(event) => setCheckpointMessage(event.target.value)}
                               placeholder="Checkpoint commit message"
-                              className="rounded-xl border-orange-200 bg-white text-orange-950 dark:border-orange-500/30 dark:bg-background/80 dark:text-foreground"
+                              className="h-10 rounded-lg border-orange-200 bg-white text-orange-950 dark:border-orange-500/30 dark:bg-background/80 dark:text-foreground"
                             />
                             <div className="flex flex-wrap gap-3">
                               <Button
                                 size="sm"
-                                className="rounded-xl"
+                                className="h-10 rounded-lg"
                                 onClick={() => void handleCreateWorkspace({
                                   dirtyStrategy: 'checkpoint',
                                   commitMessage: checkpointMessage,
@@ -874,7 +909,7 @@ export function FirstRunExperience({
                               <Button
                                 size="sm"
                                 variant="outline"
-                                className="rounded-xl border-orange-200 bg-white text-orange-950 hover:bg-orange-50 dark:border-orange-500/35 dark:bg-zinc-950/80 dark:text-orange-100 dark:hover:bg-orange-950/55"
+                                className="h-10 rounded-lg border-orange-200 bg-white text-orange-950 hover:bg-orange-50 dark:border-orange-500/35 dark:bg-zinc-950/80 dark:text-orange-100 dark:hover:bg-orange-950/55"
                                 onClick={() => void handleCreateWorkspace({ dirtyStrategy: 'last-commit' })}
                               >
                                 Use last commit
@@ -893,12 +928,12 @@ export function FirstRunExperience({
                     )}
 
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <Button variant="outline" size="lg" className={outlineButtonClassName} onClick={() => setCurrentStep('models')}>
+                      <Button variant="outline" size="lg" className={outlineButtonClassName} data-design-review-navigation="true" onClick={() => setCurrentStep('models')}>
                         Back
                       </Button>
                       <Button
                         size="lg"
-                        className="rounded-xl"
+                        className="h-10 rounded-lg"
                         disabled={!selectedFolderPath || createWorkspace.isPending}
                         onClick={() => void handleCreateWorkspace()}
                       >

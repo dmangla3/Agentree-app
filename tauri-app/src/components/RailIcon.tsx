@@ -10,7 +10,7 @@ interface FillIconProps {
 export function FillIcon({ icon: IconComponent, size = 18, className }: FillIconProps) {
   return (
     <span
-      className={cn('app-fill-icon', className)}
+      className={cn('app-fill-icon relative shrink-0', className)}
       style={{ height: size, width: size }}
       aria-hidden="true"
     >

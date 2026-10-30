@@ -38,6 +38,10 @@ export const ListRowWrapper = memo(({
   const rowBody = (
     <div
       id={rowId}
+      data-design-scope="nodes"
+      data-design-part="list-node"
+      data-design-focused={isFocused ? 'true' : 'false'}
+      data-design-selected={isSelected ? 'true' : 'false'}
       data-agentree-list-message-id={messageId || undefined}
       onClick={(e) => {
         e.stopPropagation();
@@ -57,17 +61,18 @@ export const ListRowWrapper = memo(({
         borderColor: isFocused
           ? 'hsl(var(--app-selection) / 0.92)'
           : isSelected
-            ? '#3b82f6'
+            ? 'hsl(var(--app-selection) / 0.68)'
             : style?.borderColor,
       }}
       className={cn(
-        "group relative flex w-full min-w-0 cursor-pointer items-start gap-2.5 border px-3 py-2.5 transition-[background-color,border-color,box-shadow,transform] duration-200",
+        "group relative flex w-full min-w-0 cursor-pointer items-start gap-2.5 border px-3 py-2.5 transition-[background-color,border-color,box-shadow,transform] duration-normal ease-out-cubic motion-reduce:transition-none",
         CARD_TOKENS.radius,
+        "rounded-xl",
         isFocused
           ? "z-10 bg-[hsl(var(--app-accent-soft)/0.34)] shadow-md ring-2 ring-[hsl(var(--app-selection)/0.9)]"
           : "border-[hsl(var(--app-border)/0.58)] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.035)]",
-        isSelected && !isFocused && "bg-[hsl(var(--app-accent-soft)/0.24)] ring-2 ring-blue-500",
-        !isFocused && "hover:-translate-y-[1px] hover:border-[hsl(var(--app-border)/0.82)] hover:bg-[hsl(var(--app-panel-strong)/0.78)] hover:shadow-[0_12px_28px_-26px_hsl(var(--foreground)/0.48),inset_0_1px_0_hsl(var(--foreground)/0.04)] dark:hover:bg-white/[0.055]",
+        isSelected && !isFocused && "bg-[hsl(var(--app-bg-muted)/0.62)] ring-2 ring-[hsl(var(--app-selection)/0.58)]",
+        !isFocused && "hover:border-[hsl(var(--app-border)/0.82)] hover:bg-[hsl(var(--app-panel-strong)/0.78)] hover:shadow-[0_12px_28px_-26px_hsl(var(--foreground)/0.48),inset_0_1px_0_hsl(var(--foreground)/0.04)] dark:hover:bg-white/[0.055]",
         className
       )}
     >
@@ -79,7 +84,7 @@ export const ListRowWrapper = memo(({
         </div>
       )}
 
-      <div className="relative flex min-w-0 flex-1 flex-col gap-1.5">
+      <div data-design-part="list-node-content" className="relative flex min-w-0 flex-1 flex-col gap-1.5">
         {children}
       </div>
     </div>

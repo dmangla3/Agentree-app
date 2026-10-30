@@ -169,25 +169,25 @@ export function ToolFileChangesDiff({ payload, className }: { payload: unknown; 
     };
 
     return (
-        <div className={cn(className, 'min-w-0 max-h-none max-w-full space-y-2')} data-tool-file-changes-diff>
+        <div className={cn(className, 'min-w-0 max-h-none max-w-full divide-y divide-[hsl(var(--app-border)/0.48)] overflow-hidden rounded-lg border border-[hsl(var(--app-border)/0.58)]')} data-tool-file-changes-diff>
             {changes.map((change, index) => {
                 const isExpanded = expandedIndexes.has(index);
                 const hasTextChanges = change.oldCode !== change.newCode;
                 return (
-                    <section key={`${change.path}:${index}`} className="min-w-0 overflow-hidden rounded-lg border border-border/60 bg-background/55">
+                    <section key={`${change.path}:${index}`} className="min-w-0 overflow-hidden bg-background/35">
                         <button
                             type="button"
-                            className="flex min-h-10 w-full min-w-0 items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                            className="flex min-h-10 w-full min-w-0 items-center gap-2 px-3 py-2 text-left transition-[background-color,transform] duration-150 ease-out hover:bg-muted/35 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                             onClick={() => toggleExpanded(index)}
                             aria-expanded={isExpanded}
                         >
-                            <ChevronDown size={12} className={cn('shrink-0 text-muted-foreground/60 transition-transform', !isExpanded && '-rotate-90')} />
+                            <ChevronDown size={12} className={cn('shrink-0 text-muted-foreground/60 transition-transform duration-150 ease-out', !isExpanded && '-rotate-90')} />
                             <FileCode2 size={13} className="shrink-0 text-muted-foreground/65" />
                             <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-foreground/80" title={change.path}>
                                 {change.path}
                                 {change.movePath ? ` → ${change.movePath}` : ''}
                             </span>
-                            <span className={cn('shrink-0 rounded border px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wide', kindTone(change.kind))}>
+                            <span className={cn('shrink-0 rounded-md px-2 py-0.5 text-[8px] font-semibold', kindTone(change.kind))}>
                                 {formatKind(change.kind)}
                             </span>
                         </button>
@@ -205,7 +205,7 @@ export function ToolFileChangesDiff({ payload, className }: { payload: unknown; 
                                         maxHeight="360px"
                                     />
                                 ) : (
-                                    <div className="rounded-md border border-border/50 bg-muted/25 px-3 py-4 text-center text-[10px] text-muted-foreground">
+                                    <div className="px-3 py-4 text-center text-[10px] text-muted-foreground">
                                         No textual changes
                                     </div>
                                 )}

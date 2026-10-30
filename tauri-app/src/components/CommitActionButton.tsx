@@ -16,8 +16,8 @@ export function CommitActionButton({
       variant="outline"
       size="sm"
       className={cn(
-        compact ? 'h-6 gap-1 px-2 text-[10px]' : 'h-7 gap-1.5 px-2.5 text-xs',
-        'transition-[background-color,border-color,color,scale] duration-150 active:scale-[0.96]',
+        compact ? 'h-10 w-10 gap-1 rounded-lg p-0 text-[10px]' : 'h-10 gap-1.5 rounded-lg px-3 text-xs',
+        'transition-[background-color,border-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.96]',
         className,
       )}
       {...props}

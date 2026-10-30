@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, type MouseEvent } from 'react';
-import { Check, Clock, Copy, Hash, Pencil, Sparkles } from 'lucide-react';
+import { Check, Clock, Copy, Hash, Pencil, UserRound } from 'lucide-react';
 import { ChatCardWrapper } from './ChatCardWrapper';
 import { ChatMarkdown } from './ChatMarkdown';
 import { CopyMessageContentButton } from './CopyMessageContentButton';
@@ -11,6 +11,7 @@ import { useAgentreeSurface } from '../../graph/surfaceCapabilities';
 import { AttachmentPreview } from '../../AttachmentPreview';
 import { getMessageHighlights } from '../../../lib/messageHighlights';
 import { formatMessageTimestamp } from '../../../lib/messageTimestamp';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../../../@/components/ui/tooltip';
 
 export const ChatUserCard = memo(({
   entity,
@@ -73,26 +74,37 @@ export const ChatUserCard = memo(({
         layout === 'hovercard' ? "mb-0" : "mb-3",
       )}>
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-          <div className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.15em]", ROLE_COLORS.user_message.chip)}>
-            <Sparkles size={10} strokeWidth={2} />
+          <div className={cn("inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.12em]", ROLE_COLORS.user_message.chip)}>
+            <UserRound size={10} strokeWidth={2} />
             <span>You</span>
           </div>
           {messageId ? (
-            <>
-              <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground tabular-nums">
-                <Hash size={9} strokeWidth={2.5} />
-                {messageId.slice(0, 8)}
-              </span>
+            <span className="group/message-id inline-flex h-5 items-center rounded-md border border-[hsl(var(--app-border)/0.44)] bg-[hsl(var(--app-bg-muted)/0.68)] text-muted-foreground/62 tabular-nums">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    tabIndex={0}
+                    aria-label={`Message ID: ${messageId}`}
+                    className="inline-flex h-full items-center gap-1 rounded-l-md px-1.5 text-[10px] font-normal outline-none focus-visible:bg-[hsl(var(--app-focus)/0.12)] focus-visible:text-foreground"
+                  >
+                    <Hash size={9} strokeWidth={2} className="text-muted-foreground/52" />
+                    <span className="font-mono text-muted-foreground/76">{messageId.slice(0, 8)}</span>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-72">
+                  Unique ID for this message. Pass it to any agent to reference this message.
+                </TooltipContent>
+              </Tooltip>
               <button
                 type="button"
                 onClick={handleCopyMessageId}
-                className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-border/60 bg-background text-muted-foreground transition-colors hover:text-foreground"
+                className="relative inline-flex h-5 w-5 items-center justify-center rounded-r-md border-l border-[hsl(var(--app-border)/0.34)] text-muted-foreground/55 opacity-45 transition-[background-color,color,opacity,transform] duration-normal ease-out-cubic after:absolute after:-inset-1 hover:bg-[hsl(var(--app-accent-soft)/0.34)] hover:text-foreground hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus)/0.24)] group-hover/message-id:opacity-100 active:scale-[0.96]"
                 aria-label="Copy message ID"
                 title="Copy message ID"
               >
                 {copiedMessageId ? <Check size={10} strokeWidth={2.5} /> : <Copy size={10} strokeWidth={2.2} />}
               </button>
-            </>
+            </span>
           ) : null}
         </div>
 
@@ -150,7 +162,7 @@ export const ChatUserCard = memo(({
           type="button"
           onClick={handleEditClick}
           className={cn(
-            "absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full text-slate-500 transition-colors",
+            "absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-normal ease-out-cubic active:scale-[0.96]",
             "bg-background/70 opacity-0 shadow-sm backdrop-blur-sm",
             "hover:bg-slate-200/80 hover:text-slate-900 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400",
             "group-hover:opacity-100 dark:bg-slate-900/55 dark:text-slate-400 dark:hover:bg-slate-700/80 dark:hover:text-slate-100"
@@ -167,8 +179,8 @@ export const ChatUserCard = memo(({
         ariaLabel="Copy user message"
         title="Copy message"
         className={cn(
-          "absolute bottom-2 z-20 h-6 w-6 bg-background/70 opacity-0 backdrop-blur-sm",
-          capabilities.canMutate ? "right-9" : "right-2",
+          "absolute bottom-2 z-20 h-8 w-8 bg-background/70 opacity-0 backdrop-blur-sm",
+          capabilities.canMutate ? "right-11" : "right-2",
           "focus-visible:opacity-100 group-hover:opacity-100 dark:bg-slate-900/55"
         )}
       />

@@ -176,6 +176,10 @@ describe('GraphDockComposer steering behavior', () => {
     hookMocks.listProviderSkills.mockResolvedValue([]);
     hookMocks.listFilesAtCommit.mockReset();
     hookMocks.listFilesAtCommit.mockResolvedValue([]);
+    vi.mocked(agentClient.listLocalRefs).mockReset();
+    vi.mocked(agentClient.listLocalRefs).mockResolvedValue([]);
+    vi.mocked(agentClient.listAllCommits).mockReset();
+    vi.mocked(agentClient.listAllCommits).mockResolvedValue([]);
     hookMocks.createThreadSession.mockReset();
     hookMocks.createThreadSession.mockResolvedValue({
       id: 'created-thread',
@@ -554,6 +558,65 @@ describe('GraphDockComposer steering behavior', () => {
     expect(await screen.findByText('New thread')).toBeTruthy();
     expect(screen.getByText('Thread root')).toBeTruthy();
     expect(screen.queryByText('Workspace root')).toBeNull();
+  });
+
+  it('keeps the polished code base menu searchable and preserves commit selection', async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentClient.listLocalRefs).mockResolvedValue([
+      { git_ref: 'HEAD', short_name: 'HEAD', commit_sha: 'main-tip' },
+      { git_ref: 'refs/heads/main', short_name: 'main', commit_sha: 'main-tip' },
+      { git_ref: 'refs/heads/feature/polish', short_name: 'feature/polish', commit_sha: 'feature-tip' },
+    ]);
+    vi.mocked(agentClient.listAllCommits).mockResolvedValue([
+      {
+        sha: 'main-tip',
+        parents: [],
+        subject: 'Current workspace state',
+        author_name: null,
+        author_email: null,
+        authored_at: '2026-08-09T08:00:00.000Z',
+      },
+      {
+        sha: 'feature-tip',
+        parents: ['main-tip'],
+        subject: 'Refine commit selector',
+        author_name: null,
+        author_email: null,
+        authored_at: '2026-08-09T09:00:00.000Z',
+      },
+    ]);
+    useWorkspaceStore.setState({
+      focusedMessageId: null,
+      lastFocusSource: 'graph',
+      lastFocusMetadata: null,
+    });
+
+    renderComposer([]);
+
+    const trigger = screen.getByRole('button', { name: 'Select code base commit' });
+    await user.click(trigger);
+
+    const search = await screen.findByRole('textbox', { name: 'Search code bases' });
+    expect(screen.getByLabelText('Quick code bases')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'main' }).getAttribute('aria-pressed')).toBe('true');
+    expect(await screen.findByText('Current workspace state')).toBeTruthy();
+
+    await user.type(search, 'feature/polish');
+    expect(await screen.findByText('1 option')).toBeTruthy();
+    expect(screen.getByText('Refine commit selector')).toBeTruthy();
+
+    await user.click(screen.getByRole('menuitem', { name: /feature\/polish/ }));
+    await waitFor(() => {
+      expect(screen.queryByRole('textbox', { name: 'Search code bases' })).toBeNull();
+      expect(trigger.textContent).toContain('feature/polish');
+    });
+
+    await user.click(trigger);
+    const reopenedSearch = await screen.findByRole('textbox', { name: 'Search code bases' });
+    await user.click(reopenedSearch);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('textbox', { name: 'Search code bases' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Select code base commit' })).toBeTruthy();
   });
 
   it('returns the graph dock composer to reply mode after sending a new thread message', async () => {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Check, CheckCircle2, Code2, Copy, Download, KeyRound, Loader2, Plus, ShieldCheck, Terminal, Trash2 } from 'lucide-react';
+import { AlertCircle, Check, CheckCircle2, Code2, Copy, Download, KeyRound, Loader2, Plus, ShieldCheck, Terminal, Trash2 } from 'lucide-react';
 import { Button } from '../../../@/components/ui/button';
 import {
   Dialog,
@@ -470,16 +470,14 @@ export function LoginProfileEditor({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[calc(100vh-2rem)] max-w-2xl overflow-hidden p-0 sm:max-w-2xl">
+      <DialogContent data-design-scope="panels" className="max-h-[calc(100vh-2rem)] max-w-2xl overflow-hidden bg-[hsl(var(--app-panel-strong))] p-0 sm:max-w-2xl">
         <form onSubmit={handleSubmit} className="flex max-h-[calc(100vh-2rem)] flex-col">
-          <DialogHeader className="border-b border-[hsl(var(--app-border)/0.72)] bg-muted/28 px-5 py-4">
-            <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))]">
-                {provider === 'codex' ? <ShieldCheck className="h-5 w-5" /> : <Terminal className="h-5 w-5" />}
-              </div>
+          <DialogHeader className="border-b border-[hsl(var(--app-border)/0.72)] px-5 py-4">
+            <div className="flex items-start gap-2.5">
+              {provider === 'codex' ? <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" /> : <Terminal className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />}
               <div className="min-w-0">
-                <DialogTitle className="text-lg">{profile ? `Edit ${providerLabel} account` : `Add ${providerLabel} account`}</DialogTitle>
-                <DialogDescription className="mt-1">
+                <DialogTitle className="text-base">{profile ? `Edit ${providerLabel} account` : `Add ${providerLabel} account`}</DialogTitle>
+                <DialogDescription className="mt-0.5 text-pretty text-xs leading-5">
                   {provider === 'opencode' && profile
                     ? 'Edit the auth.json stored in this isolated OpenCode environment.'
                     : 'Profile secrets stay in the OS credential store; saved secret values are never shown here.'}
@@ -488,7 +486,7 @@ export function LoginProfileEditor({
             </div>
           </DialogHeader>
 
-          <div className="grid gap-5 overflow-y-auto px-5 py-5">
+          <div className="divide-y divide-border/60 overflow-y-auto [&>div]:px-5 [&>div]:py-4">
             <div className="grid gap-2">
               <Label htmlFor="login-display-name" className="text-[12px] font-semibold">Account name</Label>
               <Input
@@ -502,7 +500,7 @@ export function LoginProfileEditor({
 
             <div className="grid gap-2">
               <div className="text-[12px] font-semibold text-foreground">Authentication</div>
-              <div className="grid gap-2 sm:grid-cols-2">
+              <div className="grid gap-px overflow-hidden rounded-lg bg-border/60 p-px sm:grid-cols-2">
                 {authTypes.map(([value, label]) => {
                   const selected = authType === value;
                   const copy = authTypeCopy[value] ?? { title: label, body: '' };
@@ -512,10 +510,10 @@ export function LoginProfileEditor({
                       type="button"
                       onClick={() => setAuthType(value)}
                       className={cn(
-                        'min-h-20 rounded-lg px-3 py-3 text-left shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.7)] transition-[background-color,box-shadow,transform] active:scale-[0.985]',
+                        'min-h-14 rounded-[7px] bg-background px-3 py-2.5 text-left transition-[background-color,box-shadow,transform] duration-150 ease-out active:scale-[0.96]',
                         selected
-                          ? 'bg-[hsl(var(--app-accent-soft))] shadow-[inset_0_0_0_1px_hsl(var(--app-accent)/0.28)]'
-                          : 'bg-background hover:bg-muted/45'
+                          ? 'bg-muted/65 shadow-[inset_0_0_0_1px_hsl(var(--foreground)/0.14)]'
+                          : 'hover:bg-muted/35'
                       )}
                     >
                       <span className="flex items-center justify-between gap-3">
@@ -523,7 +521,7 @@ export function LoginProfileEditor({
                           <SecretIcon authType={value} />
                           {copy.title}
                         </span>
-                        {selected ? <CheckCircle2 className="h-4 w-4 text-[hsl(var(--app-accent))]" /> : null}
+                        {selected ? <CheckCircle2 className="h-4 w-4 text-foreground" /> : null}
                       </span>
                       <span className="mt-2 block text-[12px] leading-5 text-muted-foreground">{copy.body}</span>
                     </button>
@@ -536,7 +534,7 @@ export function LoginProfileEditor({
               <div className="grid gap-2">
                 <Label htmlFor="login-secret" className="text-[12px] font-semibold">{secretLabel}</Label>
                 {provider === 'opencode' && onImportExistingOpenCode && openCodeAuthPath ? (
-                  <div className="flex min-w-0 items-center gap-2 rounded-lg bg-[hsl(var(--app-accent-soft)/0.42)] py-1.5 pl-2.5 pr-1.5 shadow-[inset_0_0_0_1px_hsl(var(--app-accent)/0.16)]">
+                  <div className="flex min-w-0 items-center gap-2 rounded-lg bg-muted/45 py-1.5 pl-2.5 pr-1.5 shadow-[inset_0_0_0_1px_hsl(var(--border)/0.55)]">
                     <p className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" title={`Auth file found at ${openCodeAuthPath}`}>
                       <span className="font-medium text-foreground">Auth file found at </span>
                       <code className="font-mono">{openCodeAuthPath}</code>
@@ -575,7 +573,7 @@ export function LoginProfileEditor({
                         const expiry = formatOpenCodeExpiry(entry.value?.expires);
                         return (
                           <details key={entry.providerId} className="group overflow-hidden rounded-lg bg-muted/30 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.58)]">
-                            <summary className="cursor-pointer list-none px-3 py-2.5 marker:hidden">
+                            <summary className="flex min-h-10 cursor-pointer list-none items-center px-3 py-2.5 marker:hidden">
                               <span className="flex items-center justify-between gap-3">
                                 <span className="min-w-0">
                                   <span className="block truncate text-[12px] font-semibold text-foreground">{getOpenCodeProviderLabel(entry.providerId)}</span>
@@ -648,7 +646,7 @@ export function LoginProfileEditor({
                     ) : null}
 
                     <details className="group rounded-lg bg-background shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]" open={!profile}>
-                      <summary className="cursor-pointer list-none px-3 py-2.5 text-[11px] font-semibold text-foreground marker:hidden">
+                      <summary className="flex min-h-10 cursor-pointer list-none items-center px-3 py-2.5 text-[11px] font-semibold text-foreground marker:hidden">
                         Replace full auth.json
                         <span className="ml-2 font-normal text-muted-foreground">Advanced</span>
                       </summary>
@@ -698,7 +696,7 @@ export function LoginProfileEditor({
             ) : null}
 
             {isCodexManagedSession ? (
-              <div className="rounded-lg bg-background px-3 py-3 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.68)]">
+              <div>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="text-[12px] font-semibold text-foreground">Codex sign in</div>
@@ -715,7 +713,7 @@ export function LoginProfileEditor({
             ) : null}
 
             {isClaudeOAuth ? (
-              <div className="rounded-lg bg-background px-3 py-3 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.68)]">
+              <div>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="text-[12px] font-semibold text-foreground">Claude sign in</div>
@@ -732,7 +730,7 @@ export function LoginProfileEditor({
             ) : null}
 
             {claudeLoginStart ? (
-              <div className="rounded-lg bg-background px-3 py-3 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.68)]">
+              <div>
                 {claudeLoginReady ? (
                   <div className="flex items-center gap-2 text-[13px] font-semibold text-emerald-700 dark:text-emerald-300">
                     <CheckCircle2 className="h-4 w-4" />
@@ -743,7 +741,7 @@ export function LoginProfileEditor({
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 text-[12px] font-semibold text-foreground">
-                          <Loader2 className="h-4 w-4 animate-spin text-[hsl(var(--app-accent))]" />
+                          <Loader2 className="h-4 w-4 animate-spin text-foreground" />
                           Checking sign in
                         </div>
                         <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
@@ -755,7 +753,7 @@ export function LoginProfileEditor({
                           href={claudeLoginStart.loginUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="shrink-0 text-[12px] font-medium text-[hsl(var(--app-accent))] hover:underline"
+                          className="shrink-0 text-[12px] font-medium text-foreground underline-offset-4 hover:underline"
                         >
                           Open sign in
                         </a>
@@ -793,7 +791,7 @@ export function LoginProfileEditor({
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="mt-3 h-7 px-2 text-[12px]"
+                        className="mt-3 h-10 rounded-lg px-2 text-[12px]"
                         onClick={() => setShowClaudeCodeInput(true)}
                       >
                         Enter code manually
@@ -805,7 +803,7 @@ export function LoginProfileEditor({
             ) : null}
 
             {codexLoginStart ? (
-              <div className="rounded-lg bg-background px-3 py-3 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.68)]">
+              <div>
                 <div className="flex items-center justify-between gap-3">
                   <div className="text-[12px] font-semibold text-foreground">Codex sign in code</div>
                   <Button type="button" variant="outline" size="sm" onClick={() => void copyCodexCode()}>
@@ -820,7 +818,7 @@ export function LoginProfileEditor({
                   href={codexLoginStart.deviceUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="mt-2 inline-flex text-[12px] font-medium text-[hsl(var(--app-accent))] hover:underline"
+                  className="mt-2 inline-flex text-[12px] font-medium text-foreground underline-offset-4 hover:underline"
                 >
                   {codexLoginStart.deviceUrl}
                 </a>
@@ -842,28 +840,29 @@ export function LoginProfileEditor({
               </div>
             ) : null}
 
-            <label className="flex items-center justify-between gap-3 rounded-lg bg-muted/35 px-3 py-2.5 text-sm text-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.62)]">
+            <label className="flex items-center justify-between gap-3 border-t border-border/60 px-5 py-4 text-sm text-foreground">
               <span className="font-medium">Use as active login for {providerLabel}</span>
               <input
                 type="checkbox"
                 checked={makeDefault}
                 onChange={(event) => setMakeDefault(event.target.checked)}
-                className="h-4 w-4 accent-[hsl(var(--app-accent))]"
+                className="h-4 w-4 accent-foreground"
               />
             </label>
           </div>
 
           {localError || error ? (
-            <div className="mx-5 mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/35 dark:text-red-300">
-              {localError ?? error}
+            <div className="mx-5 mb-4 flex items-start gap-2 rounded-lg bg-destructive/[0.06] px-3 py-2 text-sm text-destructive shadow-[inset_0_0_0_1px_hsl(var(--destructive)/0.18)]">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{localError ?? error}</span>
             </div>
           ) : null}
 
-          <DialogFooter className="border-t border-[hsl(var(--app-border)/0.72)] bg-muted/24 px-5 py-4">
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+          <DialogFooter className="border-t border-[hsl(var(--app-border)/0.72)] bg-muted/20 px-5 py-3">
+            <Button className="h-10 rounded-lg" type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={isSaving || isLoadingOpenCodeAuth}>
+            <Button className="h-10 rounded-lg" type="submit" disabled={isSaving || isLoadingOpenCodeAuth}>
               {isSaving || isLoadingOpenCodeAuth ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               Save
             </Button>

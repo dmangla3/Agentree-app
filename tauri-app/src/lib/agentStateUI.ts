@@ -60,20 +60,20 @@ export function getAgentVisualState(status: AgentStatus | string | null | undefi
             return {
                 icon: Loader2,
                 label: 'Running',
-                colorClass: 'text-blue-500',
-                badgeContainerClass: 'bg-blue-50/80 border-blue-200/70 text-blue-700 dark:bg-blue-950/30 dark:border-blue-900 dark:text-blue-300',
-                bgColorClass: 'bg-blue-500/10',
-                borderColorClass: 'border-blue-500/20',
+                colorClass: 'text-[hsl(var(--app-accent))]',
+                badgeContainerClass: 'bg-[hsl(var(--app-accent-soft)/0.72)] border-[hsl(var(--app-accent)/0.22)] text-[hsl(var(--app-accent))]',
+                bgColorClass: 'bg-[hsl(var(--app-accent-soft)/0.72)]',
+                borderColorClass: 'border-[hsl(var(--app-accent)/0.22)]',
                 animate: true,
             };
         case 'finalizing':
             return {
                 icon: Loader2,
                 label: 'Finalizing',
-                colorClass: 'text-blue-500',
-                badgeContainerClass: 'bg-blue-50/80 border-blue-200/70 text-blue-700 dark:bg-blue-950/30 dark:border-blue-900 dark:text-blue-300',
-                bgColorClass: 'bg-blue-500/10',
-                borderColorClass: 'border-blue-500/20',
+                colorClass: 'text-[hsl(var(--app-accent))]',
+                badgeContainerClass: 'bg-[hsl(var(--app-accent-soft)/0.72)] border-[hsl(var(--app-accent)/0.22)] text-[hsl(var(--app-accent))]',
+                bgColorClass: 'bg-[hsl(var(--app-accent-soft)/0.72)]',
+                borderColorClass: 'border-[hsl(var(--app-accent)/0.22)]',
                 animate: true,
             };
         case 'completed':

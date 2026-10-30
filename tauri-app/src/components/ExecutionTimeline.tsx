@@ -133,13 +133,13 @@ export function ExecutionTimeline({ events, className, isNodeActive = false }: E
                             "bg-gradient-to-r from-muted/60 to-muted/30",
                             "hover:from-muted/70 hover:to-muted/40",
                             "border-b border-border/50",
-                            "transition-all duration-200"
+                            "transition-[background-color,border-color] duration-normal ease-out-cubic motion-reduce:transition-none"
                         )}
                         aria-label="Toggle execution timeline"
                     >
                         <div className="flex items-center gap-3">
                             <div className={cn(
-                                "p-1 rounded-md transition-all duration-200",
+                                "p-1 rounded-md transition-[background-color,transform] duration-normal ease-out-cubic motion-reduce:transition-none",
                                 isOpen ? "bg-primary/10 rotate-0" : "bg-muted -rotate-90"
                             )}>
                                 <ChevronDown size={14} className={isOpen ? "text-primary" : "text-muted-foreground"} />
@@ -247,10 +247,10 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                         "w-6 h-6 rounded-lg flex items-center justify-center shrink-0",
                         "bg-gradient-to-br from-blue-50 to-indigo-50",
                         "dark:from-blue-900/30 dark:to-indigo-900/20",
-                        "border border-blue-200 dark:border-blue-800",
+                        "border border-blue-200 dark:border-white/10 dark:bg-white/[0.04]",
                         "shadow-sm"
                     )}>
-                        <Sparkles size={12} className="text-blue-600 dark:text-blue-400" />
+                        <Sparkles size={12} className="text-blue-600 dark:text-zinc-300" />
                     </div>
                     {!isLast && (
                         <div className="w-px flex-1 bg-gradient-to-b from-border via-border/50 to-transparent my-1.5" />
@@ -282,17 +282,17 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                         "w-6 h-6 rounded-lg flex items-center justify-center shrink-0",
                         "bg-gradient-to-br from-violet-50 to-fuchsia-50",
                         "dark:from-violet-900/30 dark:to-fuchsia-900/20",
-                        "border border-violet-200 dark:border-violet-800",
+                        "border border-violet-200 dark:border-white/10 dark:bg-white/[0.04]",
                         "shadow-sm"
                     )}>
-                        <MessageSquarePlus size={12} className="text-violet-600 dark:text-violet-400" />
+                        <MessageSquarePlus size={12} className="text-violet-600 dark:text-zinc-300" />
                     </div>
                     {!isLast && (
                         <div className="w-px flex-1 bg-gradient-to-b from-border via-border/50 to-transparent my-1.5" />
                     )}
                 </div>
                 <div className="pb-2 flex-1 min-w-0 pt-0.5">
-                    <p className="text-[11px] font-semibold text-violet-700 dark:text-violet-300 mb-1 flex items-center gap-1.5">
+                    <p className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-violet-700 dark:text-zinc-300">
                         User Steer
                     </p>
                     <p className="text-muted-foreground/85 text-[11px] leading-relaxed whitespace-pre-wrap break-words">{row.content}</p>
@@ -333,7 +333,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                 <div className="flex flex-col items-center">
                     <div className={cn(
                         "w-6 h-6 rounded-lg flex items-center justify-center shrink-0",
-                        "border shadow-sm transition-all duration-200",
+                        "border shadow-sm transition-[background-color,border-color,color,box-shadow] duration-normal ease-out-cubic motion-reduce:transition-none",
                         isError
                             ? "bg-gradient-to-br from-red-50 to-rose-50 dark:from-red-900/30 dark:to-rose-900/20 border-red-200 dark:border-red-800 text-red-600 dark:text-red-400"
                             : isRunning
@@ -404,7 +404,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                 <div className="flex flex-col items-center">
                     <div className={cn(
                         "w-6 h-6 rounded-lg flex items-center justify-center shrink-0",
-                        "border shadow-sm transition-all duration-200",
+                        "border shadow-sm transition-[background-color,border-color,color,box-shadow] duration-normal ease-out-cubic motion-reduce:transition-none",
                         isError
                             ? "bg-gradient-to-br from-red-50 to-rose-50 dark:from-red-900/30 dark:to-rose-900/20 border-red-200 dark:border-red-800 text-red-600 dark:text-red-400"
                             : isRunning
@@ -423,7 +423,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                         className={cn(
                             "w-full text-left group rounded-lg px-2 py-1.5 -mx-1 -my-0.5",
                             "hover:bg-muted/60 hover:shadow-sm",
-                            "transition-all duration-200"
+                            "transition-[background-color,box-shadow] duration-normal ease-out-cubic motion-reduce:transition-none"
                         )}
                         onClick={() => setIsDetailsOpen(v => !v)}
                         aria-expanded={isDetailsOpen}
@@ -492,7 +492,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
             <div className="flex flex-col items-center">
                 <div className={cn(
                     "w-6 h-6 rounded-lg flex items-center justify-center shrink-0",
-                    "border shadow-sm transition-all duration-200",
+                    "border shadow-sm transition-[background-color,border-color,color,box-shadow] duration-normal ease-out-cubic motion-reduce:transition-none",
                     status === 'error'
                         ? "bg-gradient-to-br from-red-50 to-rose-50 dark:from-red-900/30 dark:to-rose-900/20 border-red-200 dark:border-red-800 text-red-600 dark:text-red-400"
                         : status === 'completed'
@@ -516,7 +516,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                     className={cn(
                         "w-full text-left group rounded-lg px-2 py-1.5 -mx-1 -my-0.5",
                         "hover:bg-muted/60 hover:shadow-sm",
-                        "transition-all duration-200"
+                        "transition-[background-color,box-shadow] duration-normal ease-out-cubic motion-reduce:transition-none"
                     )}
                     onClick={() => setIsDetailsOpen(v => !v)}
                     aria-expanded={isDetailsOpen}
@@ -865,7 +865,7 @@ function formatReadableToolValue(value: unknown, seen: WeakSet<object>): string 
     if (value === undefined) return 'undefined';
     if (typeof value === 'string') {
         if (value === '') return '""';
-        return isProbablyBinaryData(value) ? `[binary data omitted — ${value.length.toLocaleString()} characters]` : value;
+        return isProbablyBinaryData(value) ? `[binary data omitted - ${value.length.toLocaleString()} characters]` : value;
     }
     if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return String(value);
     if (typeof value !== 'object') return String(value);

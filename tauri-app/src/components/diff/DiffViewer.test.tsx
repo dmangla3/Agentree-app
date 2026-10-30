@@ -77,7 +77,7 @@ describe('DiffViewer', () => {
             expandUnchanged: false,
             collapsedContextThreshold: 3,
             lineDiffType: 'word',
-            overflow: 'scroll',
+            overflow: 'wrap',
             themeType: 'light',
         });
     });
@@ -157,5 +157,18 @@ describe('DiffViewer', () => {
 
         expect(latestOptions().diffStyle).toBe('unified');
         expect(onViewModeChange).toHaveBeenCalledWith(false);
+    });
+
+    it('wraps long lines by default and lets the user disable wrapping', () => {
+        render(<DiffViewer oldCode="before" newCode="after" />);
+
+        const wrapButton = screen.getByRole('button', { name: 'Disable line wrapping' });
+        expect(wrapButton.getAttribute('aria-pressed')).toBe('true');
+        expect(latestOptions().overflow).toBe('wrap');
+
+        fireEvent.click(wrapButton);
+
+        expect(screen.getByRole('button', { name: 'Enable line wrapping' }).getAttribute('aria-pressed')).toBe('false');
+        expect(latestOptions().overflow).toBe('scroll');
     });
 });

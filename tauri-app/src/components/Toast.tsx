@@ -104,7 +104,7 @@ function ToastContainer({
     onRemove: (id: string) => void;
 }) {
     return (
-        <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 max-w-md">
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[100] flex w-[min(24rem,calc(100vw-2rem))] flex-col gap-2">
             {toasts.map((toast) => (
                 <ToastItem key={toast.id} toast={toast} onRemove={onRemove} />
             ))}
@@ -141,7 +141,7 @@ function ToastItem({
             icon: Info,
             iconClass: 'text-muted-foreground',
             borderClass: 'border-border',
-            bgClass: 'bg-card',
+            bgClass: 'bg-popover/95',
         },
         success: {
             icon: CheckCircle2,
@@ -163,9 +163,9 @@ function ToastItem({
         },
         info: {
             icon: Info,
-            iconClass: 'text-sky-500',
-            borderClass: 'border-sky-500/30',
-            bgClass: 'bg-sky-500/5',
+            iconClass: 'text-[hsl(var(--app-accent))]',
+            borderClass: 'border-[hsl(var(--app-accent)/0.26)]',
+            bgClass: 'bg-[hsl(var(--app-accent-soft)/0.42)]',
         },
     };
 
@@ -175,12 +175,11 @@ function ToastItem({
     return (
         <div
             className={cn(
-                'relative flex items-start gap-3 p-4 rounded-xl border shadow-lg backdrop-blur-xl',
-                'animate-in slide-in-from-right-full duration-300',
+                'pointer-events-auto relative flex items-start gap-2.5 rounded-lg border p-3 shadow-[0_0_0_1px_hsl(var(--foreground)/0.025),0_14px_38px_-18px_hsl(var(--foreground)/0.42)] backdrop-blur-md',
+                'animate-in slide-in-from-right-full duration-200 motion-reduce:animate-none',
                 isExiting && 'animate-out slide-out-to-right-full duration-200',
                 config.borderClass,
-                config.bgClass,
-                'bg-background/95'
+                config.bgClass
             )}
         >
             {/* Icon */}
@@ -194,9 +193,9 @@ function ToastItem({
                     role={toast.variant === 'error' ? 'alert' : 'status'}
                     aria-atomic="true"
                 >
-                    <p className="font-medium text-sm text-foreground">{toast.title}</p>
+                    <p className="text-balance text-sm font-semibold text-foreground">{toast.title}</p>
                     {toast.description && (
-                        <p className="text-xs text-muted-foreground mt-0.5 break-words">
+                        <p className="mt-1 break-words text-pretty text-xs leading-5 text-muted-foreground">
                             {toast.description}
                         </p>
                     )}
@@ -210,7 +209,7 @@ function ToastItem({
                                 variant="outline"
                                 size="sm"
                                 onClick={toast.action.onClick}
-                                className="mt-2 h-7 text-xs gap-1"
+                                className="mt-3 min-h-10 gap-1.5 rounded-lg text-xs transition-transform duration-150 ease-out active:scale-[0.96] motion-reduce:transition-none"
                             >
                                 <ExternalLink size={12} aria-hidden="true" />
                                 {toast.action.label}
@@ -225,21 +224,21 @@ function ToastItem({
                 type="button"
                 aria-label={`Dismiss ${toast.title}`}
                 onClick={handleRemove}
-                className="flex-shrink-0 p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                className="flex size-9 flex-shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-[background-color,color,transform] duration-150 ease-out hover:bg-muted/60 hover:text-foreground active:scale-[0.96] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background motion-reduce:transition-none"
             >
                 <X size={14} aria-hidden="true" />
             </button>
 
             {/* Progress bar for timed toasts */}
             {!toast.persistent && toast.duration !== 0 && (
-                <div className="absolute bottom-0 left-0 right-0 h-0.5 overflow-hidden rounded-b-xl">
+                <div className="absolute inset-x-0 bottom-0 h-0.5 overflow-hidden rounded-b-xl">
                     <div
                         className={cn(
                             'h-full origin-left',
                             toast.variant === 'success' && 'bg-emerald-500',
                             toast.variant === 'error' && 'bg-red-500',
                             toast.variant === 'warning' && 'bg-amber-500',
-                            toast.variant === 'info' && 'bg-sky-500',
+                            toast.variant === 'info' && 'bg-[hsl(var(--app-accent))]',
                             !toast.variant && 'bg-muted-foreground'
                         )}
                         style={{

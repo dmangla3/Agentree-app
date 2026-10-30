@@ -1,4 +1,5 @@
-import { Sigma, Sparkles, Zap } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, BrainCircuit, Database, Sigma } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../@/components/ui/tooltip';
 
 export const formatTokenValue = (value: number | null | undefined): string | null => {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
@@ -31,51 +32,85 @@ export function TokenUsagePill({
   }
 
   return (
-    <div className="inline-flex min-w-0 max-w-full flex-wrap items-center overflow-hidden rounded-lg border border-border/50 bg-muted/30 dark:bg-slate-800/50">
+    <div
+      data-design-part="token-usage"
+      aria-label="Token usage"
+      className="inline-flex min-w-0 max-w-full flex-nowrap items-center overflow-x-auto rounded-md border border-[hsl(var(--app-border)/0.44)] bg-[hsl(var(--app-bg-muted)/0.68)] p-0.5 text-muted-foreground/72 tabular-nums [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+    >
       {formatTokenValue(promptTokens) ? (
-        <span
-          className="inline-flex items-center gap-1 border-r border-border/30 px-2 py-0.5 text-[10px] font-medium text-emerald-600 last:border-r-0 dark:text-emerald-400"
-          title={typeof promptTokens === 'number' ? `${promptTokens.toLocaleString()} input tokens sent as context for this response.` : undefined}
-        >
-          <Zap size={9} strokeWidth={2.5} className="text-emerald-500 dark:text-emerald-400" />
-          {formatTokenValue(promptTokens)}
-        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              tabIndex={0}
+              aria-label={`${promptTokens?.toLocaleString()} input tokens`}
+              className="inline-flex h-4 items-center gap-1 rounded-sm border-r border-[hsl(var(--app-border)/0.34)] px-1.5 text-[10px] font-normal outline-none last:border-r-0 focus-visible:bg-[hsl(var(--app-focus)/0.12)] focus-visible:text-foreground"
+            >
+              <ArrowDownToLine size={9} strokeWidth={1.8} className="text-muted-foreground/58" />
+              {formatTokenValue(promptTokens)}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top">Input tokens: {promptTokens?.toLocaleString()} sent as context for this response.</TooltipContent>
+        </Tooltip>
       ) : null}
       {formatTokenValue(completionTokens) ? (
-        <span
-          className="inline-flex items-center gap-1 border-r border-border/30 px-2 py-0.5 text-[10px] font-medium text-blue-600 last:border-r-0 dark:text-blue-400"
-          title={typeof completionTokens === 'number' ? `${completionTokens.toLocaleString()} output tokens generated in this response.` : undefined}
-        >
-          <Zap size={9} strokeWidth={2.5} className="text-blue-500 dark:text-blue-400" />
-          {formatTokenValue(completionTokens)}
-        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              tabIndex={0}
+              aria-label={`${completionTokens?.toLocaleString()} output tokens`}
+              className="inline-flex h-4 items-center gap-1 rounded-sm border-r border-[hsl(var(--app-border)/0.34)] px-1.5 text-[10px] font-normal outline-none last:border-r-0 focus-visible:bg-[hsl(var(--app-focus)/0.12)] focus-visible:text-foreground"
+            >
+              <ArrowUpFromLine size={9} strokeWidth={1.8} className="text-muted-foreground/58" />
+              {formatTokenValue(completionTokens)}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top">Output tokens: {completionTokens?.toLocaleString()} generated in this response.</TooltipContent>
+        </Tooltip>
       ) : null}
       {formatTokenValue(cachedInputTokens) ? (
-        <span
-          className="inline-flex items-center gap-1 border-r border-border/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 last:border-r-0 dark:text-cyan-400"
-          title={typeof cachedInputTokens === 'number' ? `${cachedInputTokens.toLocaleString()} cached input tokens reused from prior context.` : undefined}
-        >
-          <Sigma size={9} strokeWidth={2.5} className="text-cyan-500 dark:text-cyan-400" />
-          {formatTokenValue(cachedInputTokens)}
-        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              tabIndex={0}
+              aria-label={`${cachedInputTokens?.toLocaleString()} cached input tokens`}
+              className="inline-flex h-4 items-center gap-1 rounded-sm border-r border-[hsl(var(--app-border)/0.34)] px-1.5 text-[10px] font-normal outline-none last:border-r-0 focus-visible:bg-[hsl(var(--app-focus)/0.12)] focus-visible:text-foreground"
+            >
+              <Database size={9} strokeWidth={1.8} className="text-muted-foreground/58" />
+              {formatTokenValue(cachedInputTokens)}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top">Cached input: {cachedInputTokens?.toLocaleString()} tokens reused from prior context.</TooltipContent>
+        </Tooltip>
       ) : null}
       {formatTokenValue(reasoningTokens) ? (
-        <span
-          className="inline-flex items-center gap-1 border-r border-border/30 px-2 py-0.5 text-[10px] font-medium text-violet-600 last:border-r-0 dark:text-violet-400"
-          title={typeof reasoningTokens === 'number' ? `${reasoningTokens.toLocaleString()} internal reasoning tokens used by the model.` : undefined}
-        >
-          <Sparkles size={9} strokeWidth={2.5} className="text-violet-500 dark:text-violet-400" />
-          {formatTokenValue(reasoningTokens)}
-        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              tabIndex={0}
+              aria-label={`${reasoningTokens?.toLocaleString()} reasoning tokens`}
+              className="inline-flex h-4 items-center gap-1 rounded-sm border-r border-[hsl(var(--app-border)/0.34)] px-1.5 text-[10px] font-normal outline-none last:border-r-0 focus-visible:bg-[hsl(var(--app-focus)/0.12)] focus-visible:text-foreground"
+            >
+              <BrainCircuit size={9} strokeWidth={1.8} className="text-muted-foreground/58" />
+              {formatTokenValue(reasoningTokens)}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top">Reasoning tokens: {reasoningTokens?.toLocaleString()} used internally by the model.</TooltipContent>
+        </Tooltip>
       ) : null}
       {formatTokenValue(totalTokens) ? (
-        <span
-          className="inline-flex items-center gap-1 bg-amber-50/50 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:bg-amber-950/20 dark:text-amber-400"
-          title={typeof totalTokens === 'number' ? `${totalTokens.toLocaleString()} total input, output, cached, and reasoning tokens reported for this response.` : undefined}
-        >
-          <Sigma size={9} strokeWidth={2.5} className="text-amber-500 dark:text-amber-400" />
-          {formatTokenValue(totalTokens)}
-        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              tabIndex={0}
+              aria-label={`${totalTokens?.toLocaleString()} total tokens`}
+              className="inline-flex h-4 items-center gap-1 rounded-sm bg-[hsl(var(--foreground)/0.055)] px-1.5 text-[10px] font-medium text-foreground/72 outline-none focus-visible:bg-[hsl(var(--app-focus)/0.16)] focus-visible:text-foreground"
+            >
+              <Sigma size={9} strokeWidth={1.8} className="text-muted-foreground/66" />
+              {formatTokenValue(totalTokens)}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top">Total usage: {totalTokens?.toLocaleString()} tokens reported for this response.</TooltipContent>
+        </Tooltip>
       ) : null}
     </div>
   );

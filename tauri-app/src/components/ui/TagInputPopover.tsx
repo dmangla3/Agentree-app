@@ -66,7 +66,7 @@ export function TagInputPopover({
           size="icon" // Use size="icon" for consistent padding if an icon is expected
           className={cn(
              // Default styling, can be overridden by triggerClassName
-             "h-6 w-6 p-1 text-muted-foreground hover:text-foreground",
+             "h-8 w-8 text-muted-foreground transition-[background-color,color,transform] duration-150 hover:text-foreground active:scale-[0.96]",
              triggerClassName
            )}
           aria-label="Add tags"
@@ -86,7 +86,7 @@ export function TagInputPopover({
         {/* Keep existing PopoverContent structure */}
         <div className="grid gap-3">
           <div className="space-y-1">
-            <h4 className="font-medium leading-none text-sm">Add Tags</h4>
+            <h4 className="text-sm font-semibold leading-none tracking-[-0.01em]">Add tags</h4>
             <p className="text-xs text-muted-foreground">
               Enter tags separated by commas.
             </p>
@@ -100,31 +100,31 @@ export function TagInputPopover({
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="e.g., idea, important"
-              className="h-8 text-xs"
+              placeholder="idea, important"
+              className="h-10 text-xs"
               disabled={isLoading}
             />
             <Button
                 size="sm"
                 onClick={handleAdd}
                 disabled={!inputValue.trim() || isLoading}
-                className="h-8 text-xs"
+                className="h-10 text-xs"
             >
               {isLoading ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
                 <Check className="mr-2 h-4 w-4" />
               )}
-              Add Tags
+              Add tags
             </Button>
           </div>
            {/* Optionally display existing tags */}
            {existingTags && existingTags.length > 0 && (
-             <div className="mt-2 pt-2 border-t">
+             <div className="mt-2 border-t border-border/55 pt-2">
                 <p className="text-xs font-medium text-muted-foreground mb-1">Existing:</p>
                 <div className="flex flex-wrap gap-1">
                     {existingTags.map(tag => (
-                        <span key={tag} className="text-xs bg-secondary text-secondary-foreground px-1.5 py-0.5 rounded-sm">
+                        <span key={tag} className="rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
                             {tag}
                         </span>
                     ))}

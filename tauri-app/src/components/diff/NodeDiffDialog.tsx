@@ -98,7 +98,7 @@ function getRelationshipColor(relationship: DiffRelationship): string {
         case 'parent-child':
             return 'bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/30';
         case 'ancestor-descendant':
-            return 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30';
+            return 'bg-[hsl(var(--app-graph-agent)/0.1)] text-[hsl(var(--app-graph-agent))] border-[hsl(var(--app-graph-agent)/0.3)]';
         case 'siblings':
             return 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/30';
         case 'unrelated':
@@ -274,13 +274,13 @@ export function NodeDiffDialog({
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="!max-w-[95vw] !w-[95vw] !h-[90vh] max-w-none sm:max-w-[95vw] flex flex-col p-0">
+            <DialogContent data-design-scope="panels" className="!h-[88vh] !w-[94vw] !max-w-[94vw] max-w-none flex flex-col gap-0 overflow-hidden rounded-xl bg-[hsl(var(--app-panel-strong))] p-0 sm:max-w-[94vw]">
                 {/* Header */}
-                <DialogHeader className="px-6 py-4 border-b border-border/50 flex-shrink-0">
+                <DialogHeader className="flex-shrink-0 border-b border-border/60 bg-[hsl(var(--app-panel-strong))] px-4 py-3">
                     <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
-                            <GitCompare size={20} className="text-primary" />
-                            <DialogTitle className="text-lg">Compare Nodes</DialogTitle>
+                            <GitCompare size={17} className="text-muted-foreground" />
+                            <DialogTitle className="text-base">Compare nodes</DialogTitle>
                         </div>
                     </div>
                     <DialogDescription className="sr-only">
@@ -288,13 +288,13 @@ export function NodeDiffDialog({
                     </DialogDescription>
 
                     {/* Node comparison info */}
-                    <div className="flex items-center gap-3 mt-3">
+                    <div className="mt-3 flex flex-wrap items-center gap-3">
                         <div className="flex items-center gap-2 text-sm">
-                            <span className="px-2 py-1 rounded bg-muted font-mono text-xs">
+                            <span className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                                 {displayFromLabel}
                             </span>
                             <ArrowRight size={14} className="text-muted-foreground" />
-                            <span className="px-2 py-1 rounded bg-muted font-mono text-xs">
+                            <span className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                                 {displayToLabel}
                             </span>
                         </div>
@@ -303,7 +303,7 @@ export function NodeDiffDialog({
                             <>
                                 <span
                                     className={cn(
-                                        "px-2 py-0.5 rounded-full text-[10px] font-medium border",
+                                        "rounded-full px-2.5 py-1 text-[10px] font-medium",
                                         getRelationshipColor(relationship ?? diffResult.relationship)
                                     )}
                                 >
@@ -311,7 +311,7 @@ export function NodeDiffDialog({
                                 </span>
 
                                 {commonAncestorCommit && (
-                                    <span className="text-xs text-muted-foreground">
+                                    <span className="font-mono text-xs tabular-nums text-muted-foreground">
                                         Common ancestor: {truncateNodeId(commonAncestorCommit)}
                                     </span>
                                 )}
@@ -322,15 +322,15 @@ export function NodeDiffDialog({
 
                 {/* Stats bar */}
                 {stats && (
-                    <div className="px-6 py-3 bg-muted/30 border-b border-border/50 flex items-center justify-between flex-shrink-0">
+                    <div className="flex flex-shrink-0 items-center justify-between border-b border-border/50 bg-muted/30 px-6 py-3">
                         <div className="flex items-center gap-4 text-sm">
-                            <span className="text-muted-foreground">
+                            <span className="tabular-nums text-muted-foreground">
                                 {diffResult?.files.length || 0} files changed
                             </span>
-                            <span className="text-green-600 dark:text-green-400 font-medium">
+                            <span className="font-medium tabular-nums text-green-600 dark:text-green-400">
                                 +{stats.total_additions}
                             </span>
-                            <span className="text-red-600 dark:text-red-400 font-medium">
+                            <span className="font-medium tabular-nums text-red-600 dark:text-red-400">
                                 -{stats.total_deletions}
                             </span>
                         </div>
@@ -340,7 +340,7 @@ export function NodeDiffDialog({
                                 variant="ghost"
                                 size="sm"
                                 onClick={handleExpandAll}
-                                className="h-7 text-xs"
+                                className="h-10 rounded-lg text-xs"
                             >
                                 Expand All
                             </Button>
@@ -348,7 +348,7 @@ export function NodeDiffDialog({
                                 variant="ghost"
                                 size="sm"
                                 onClick={handleCollapseAll}
-                                className="h-7 text-xs"
+                                className="h-10 rounded-lg text-xs"
                             >
                                 Collapse All
                             </Button>
@@ -357,7 +357,7 @@ export function NodeDiffDialog({
                 )}
 
                 {/* Filters */}
-                <div className="px-6 py-2 border-b border-border/50 flex items-center gap-3 flex-shrink-0">
+                <div className="flex flex-shrink-0 items-center gap-3 border-b border-border/50 px-6 py-2">
                     {/* Search */}
                     <div className="relative flex-1 max-w-xs">
                         <Search
@@ -370,7 +370,7 @@ export function NodeDiffDialog({
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
                             className={cn(
-                                "w-full h-8 pl-8 pr-8 text-sm rounded-md",
+                                "h-10 w-full rounded-lg pl-8 pr-10 text-sm",
                                 "bg-muted/50 border border-border/50",
                                 "focus:outline-none focus:ring-2 focus:ring-ring",
                                 "placeholder:text-muted-foreground"
@@ -379,7 +379,7 @@ export function NodeDiffDialog({
                         {searchQuery && (
                             <button
                                 onClick={() => setSearchQuery('')}
-                                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                                className="absolute right-0 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-150 ease-out hover:bg-muted hover:text-foreground active:scale-[0.96]"
                             >
                                 <X size={14} />
                             </button>
@@ -389,7 +389,7 @@ export function NodeDiffDialog({
                     {/* Status filter */}
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                            <Button variant="outline" size="sm" className="h-8">
+                            <Button variant="outline" size="sm" className="h-10 rounded-lg">
                                 <Filter size={14} className="mr-1.5" />
                                 {statusFilter === 'all' ? 'All Files' : statusFilter}
                                 <ChevronDown size={14} className="ml-1.5" />

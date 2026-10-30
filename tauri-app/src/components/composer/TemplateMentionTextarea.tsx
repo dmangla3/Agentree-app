@@ -50,7 +50,7 @@ const TemplateMentionHoverCard = memo(function TemplateMentionHoverCard({
       <HoverCardContent
         side="top"
         align="start"
-        className="w-[min(34rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-[hsl(var(--app-border))] bg-[hsl(var(--app-panel-strong)/0.98)] p-0 shadow-[0_20px_60px_-28px_rgba(15,23,42,0.45)]"
+        className="w-[min(34rem,calc(100vw-2rem))] overflow-hidden"
       >
         <div className="border-b border-border/60 px-3 py-2.5">
           <div className="flex min-w-0 items-center gap-2 text-[12px] font-semibold text-foreground">

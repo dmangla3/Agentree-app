@@ -27,10 +27,10 @@ export function FilePreview() {
 
     if (!activeFile) {
         return (
-            <div className="h-full flex flex-col items-center justify-center text-gray-500 p-8 text-center">
-                <FileText className="h-16 w-16 mb-4 opacity-20" />
-                <h3 className="text-lg font-medium mb-2">No File Selected</h3>
-                <p className="text-sm max-w-xs">Select a file from the sidebar to view its content, details, and usage history.</p>
+            <div className="flex h-full flex-col items-center justify-center p-8 text-center text-muted-foreground">
+                <FileText className="mb-4 h-12 w-12 opacity-20" />
+                <h3 className="mb-2 text-base font-semibold text-foreground">No file selected</h3>
+                <p className="max-w-xs text-pretty text-sm leading-5">Select a file to view its content, details, and usage.</p>
             </div>
         );
     }
@@ -53,11 +53,11 @@ export function FilePreview() {
     };
 
     return (
-        <div className="h-full flex flex-col bg-background">
+        <div className="flex h-full flex-col bg-[hsl(var(--app-bg))] antialiased">
             {/* Header */}
-            <div className="flex items-center justify-between p-4 border-b">
+            <div className="flex min-h-14 items-center justify-between border-b border-[hsl(var(--app-border)/0.58)] px-4 py-2">
                 <div className="flex items-center gap-3 overflow-hidden">
-                    <div className="h-10 w-10 rounded bg-primary/10 flex items-center justify-center flex-shrink-0">
+                    <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--app-accent-soft))]">
                         <FileText className="h-5 w-5 text-primary" />
                     </div>
                     <div className="min-w-0">
@@ -67,27 +67,27 @@ export function FilePreview() {
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                     {fileContent?.signedUrl && (
-                        <Button variant="outline" size="icon" asChild>
+                        <Button variant="outline" size="icon" className="h-10 w-10 rounded-lg active:scale-[0.96]" asChild>
                             <a href={fileContent.signedUrl} download target="_blank" rel="noopener noreferrer">
                                 <Download className="h-4 w-4" />
                             </a>
                         </Button>
                     )}
-                    <Button variant="ghost" size="icon" onClick={handleDelete} className="text-destructive hover:text-destructive hover:bg-destructive/10">
+                    <Button variant="ghost" size="icon" onClick={handleDelete} className="h-10 w-10 rounded-lg text-destructive hover:bg-destructive/10 hover:text-destructive active:scale-[0.96]">
                         <Trash2 className="h-4 w-4" />
                     </Button>
                 </div>
             </div>
 
             {/* Info Bar */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 p-4 bg-muted/30 text-xs border-b">
+            <div className="grid grid-cols-2 gap-4 border-b border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.46)] p-4 text-xs sm:grid-cols-4">
                 <div className="flex flex-col gap-1">
                     <span className="text-muted-foreground flex items-center gap-1"><Database className="h-3 w-3" /> Tokens</span>
-                    <span className="font-medium">{activeFile.metadata?.tokenCount?.toLocaleString() || '-'}</span>
+                    <span className="font-medium tabular-nums">{activeFile.metadata?.tokenCount?.toLocaleString() || '-'}</span>
                 </div>
                 <div className="flex flex-col gap-1">
                     <span className="text-muted-foreground flex items-center gap-1"><File className="h-3 w-3" /> Vectors</span>
-                    <span className="font-medium">{activeFile.metadata?.vectorCount?.toLocaleString() || '-'}</span>
+                    <span className="font-medium tabular-nums">{activeFile.metadata?.vectorCount?.toLocaleString() || '-'}</span>
                 </div>
                 <div className="flex flex-col gap-1">
                     <span className="text-muted-foreground flex items-center gap-1"><Calendar className="h-3 w-3" /> Created</span>
@@ -102,10 +102,10 @@ export function FilePreview() {
             {/* Content Tabs */}
             <div className="flex-1 overflow-hidden flex flex-col">
                 <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
-                    <div className="px-4 pt-2 border-b">
-                        <TabsList className="w-full justify-start h-9 bg-transparent p-0">
-                            <TabsTrigger value="preview" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:shadow-none rounded-none px-4 pb-2">Parsed Text</TabsTrigger>
-                            <TabsTrigger value="original" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:shadow-none rounded-none px-4 pb-2">Original File</TabsTrigger>
+                    <div className="border-b border-[hsl(var(--app-border)/0.58)] px-4 pt-2">
+                        <TabsList className="h-10 w-full justify-start bg-transparent p-0">
+                            <TabsTrigger value="preview" className="h-10 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-[hsl(var(--app-accent))] data-[state=active]:bg-transparent data-[state=active]:shadow-none">Parsed text</TabsTrigger>
+                            <TabsTrigger value="original" className="h-10 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-[hsl(var(--app-accent))] data-[state=active]:bg-transparent data-[state=active]:shadow-none">Original file</TabsTrigger>
                             <TabsTrigger value="usage" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:shadow-none rounded-none px-4 pb-2">Usage ({fileContent?.usage?.length || 0})</TabsTrigger>
                         </TabsList>
                     </div>
@@ -151,7 +151,7 @@ export function FilePreview() {
                                         {fileContent?.usage && fileContent.usage.length > 0 ? (
                                             <div className="divide-y">
                                                 {fileContent.usage.map((item: { messageId: string; workspaceId: string; workspaceName: string; date: string; snippet: string }) => (
-                                                    <div key={item.messageId} className="p-4 hover:bg-muted/50 transition-colors">
+                                                    <div key={item.messageId} className="p-4 transition-[background-color] duration-150 hover:bg-muted/50">
                                                         <div className="flex items-center justify-between mb-1">
                                                             <Link to={`/workspaces/${item.workspaceId}?messageId=${item.messageId}`} className="font-medium text-sm hover:underline flex items-center gap-1 text-primary">
                                                                 <MessageSquare className="h-3 w-3" />

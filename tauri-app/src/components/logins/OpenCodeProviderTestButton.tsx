@@ -11,9 +11,9 @@ import {
 } from '../../lib/loginProfiles';
 import { cn } from '../../lib/utils';
 
-const successClassName = 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/35 dark:text-emerald-300';
-const warningClassName = 'bg-amber-50 text-amber-800 dark:bg-amber-950/35 dark:text-amber-300';
-const dangerClassName = 'bg-red-50 text-red-700 dark:bg-red-950/35 dark:text-red-300';
+const successClassName = 'bg-emerald-600/[0.08] text-emerald-700 dark:text-emerald-400';
+const warningClassName = 'bg-amber-600/[0.08] text-amber-700 dark:text-amber-400';
+const dangerClassName = 'bg-destructive/[0.07] text-destructive';
 
 const getAccessPresentation = (capability: OpenCodeProviderCapability) => {
   if (capability.access === 'full') {
@@ -55,7 +55,7 @@ const getAccessPresentation = (capability: OpenCodeProviderCapability) => {
   return {
     label: 'Test inconclusive',
     description: `The test could not confirm whether ${capability.name} credentials or models work. Try again; if this repeats, reconnect the provider.`,
-    className: 'bg-muted text-muted-foreground',
+    className: 'bg-muted/65 text-muted-foreground',
   };
 };
 
@@ -124,7 +124,7 @@ export function OpenCodeProviderTestButton({
           type="button"
           variant="outline"
           size="sm"
-          className={cn(buttonVariants[variant], className)}
+          className={cn('h-10 rounded-lg', buttonVariants[variant], className)}
           disabled={disabled || isTesting}
         >
           {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
@@ -134,7 +134,7 @@ export function OpenCodeProviderTestButton({
       <PopoverContent align="end" side="bottom" className="w-80 p-0" disableAnimation>
         <div className="border-b border-[hsl(var(--app-border)/0.62)] px-4 py-3">
           <div className="text-[13px] font-semibold text-foreground">Test providers</div>
-          <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
+          <p className="mt-0.5 text-[11px] leading-5 text-muted-foreground">
             Check credentials and model access for each selected provider.
           </p>
         </div>
@@ -145,8 +145,8 @@ export function OpenCodeProviderTestButton({
             </p>
           </div>
         ) : (
-          <div className="max-h-64 overflow-auto py-1">
-            <div className="flex items-center gap-2 px-4 py-2">
+          <div className="max-h-64 divide-y divide-border/55 overflow-auto">
+            <div className="flex min-h-10 items-center gap-2 bg-muted/25 px-4 py-2">
               <Checkbox
                 id="opencode-test-providers-all"
                 indicatorMode="check"
@@ -163,7 +163,7 @@ export function OpenCodeProviderTestButton({
               return (
                 <div
                   key={capability.id}
-                  className="flex min-h-10 items-center gap-2 px-4 hover:bg-muted/40"
+                  className="flex min-h-10 items-center gap-2 px-4 py-2 transition-[background-color] duration-150 ease-out hover:bg-muted/40"
                 >
                   <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 self-stretch">
                     <Checkbox
@@ -183,7 +183,7 @@ export function OpenCodeProviderTestButton({
                         className="flex min-h-10 shrink-0 cursor-help items-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
                         aria-label={`${capability.name}: ${presentation.label}`}
                       >
-                        <span className={cn('rounded-md px-1.5 py-0.5 text-[10px] font-semibold', presentation.className)}>
+                        <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-semibold', presentation.className)}>
                           {presentation.label}
                         </span>
                       </span>
@@ -201,6 +201,7 @@ export function OpenCodeProviderTestButton({
           <Button
             type="button"
             size="sm"
+            className="h-10 rounded-lg"
             disabled={capabilities.length > 0 && selected.size === 0}
             onClick={() => runTest(selected.size === 0 ? null : Array.from(selected))}
           >

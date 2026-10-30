@@ -27,7 +27,8 @@ export function CopyCommitShaButton({
         window.setTimeout(() => setIsCopied(false), 1500);
       }}
       className={cn(
-        'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-black/10 hover:text-foreground dark:hover:bg-white/10',
+        'relative inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,transform] duration-150 ease-out hover:bg-muted hover:text-foreground active:scale-[0.96]',
+        "after:absolute after:left-1/2 after:top-1/2 after:h-10 after:w-10 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']",
         className
       )}
       aria-label="Copy commit SHA"

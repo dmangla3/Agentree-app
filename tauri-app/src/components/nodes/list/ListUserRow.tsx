@@ -45,7 +45,7 @@ export const ListUserRow = memo(({
           <div className={cn("rounded border border-[hsl(var(--app-border)/0.48)] p-0.5", ROLE_COLORS.user_message.chip)} title="User message">
             <User size={10} />
           </div>
-          <span className="font-semibold text-muted-foreground">User</span>
+          <span data-design-typography="soft-label" className="font-medium text-muted-foreground">User</span>
           <div className="ml-auto flex shrink-0 items-center text-[10px] font-medium text-muted-foreground/70 tabular-nums">
             {timestamp}
           </div>

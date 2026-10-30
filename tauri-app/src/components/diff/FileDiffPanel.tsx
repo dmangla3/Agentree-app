@@ -78,7 +78,7 @@ function getStatusIcon(status: FileStatus) {
         case 'modified':
             return <FilePen size={14} className="text-amber-500" />;
         case 'renamed':
-            return <ArrowRight size={14} className="text-blue-500" />;
+            return <ArrowRight size={14} className="text-[hsl(var(--app-graph-agent))]" />;
         default:
             return <FileCode2 size={14} className="text-muted-foreground" />;
     }
@@ -100,7 +100,7 @@ function getStatusBadge(status: FileStatus) {
         },
         renamed: {
             label: 'Renamed',
-            className: 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30',
+            className: 'bg-[hsl(var(--app-graph-agent)/0.1)] text-[hsl(var(--app-graph-agent))] border-[hsl(var(--app-graph-agent)/0.3)]',
         },
         unchanged: {
             label: 'Unchanged',
@@ -250,9 +250,10 @@ export function FileDiffPanel({
             id={id}
             open={isExpanded}
             onOpenChange={setIsExpanded}
+            data-design-scope="panels"
             className={cn(
-                "min-w-0 max-w-full border border-border/60 rounded-lg overflow-hidden",
-                "bg-background/50 hover:bg-background/80 transition-colors",
+                "min-w-0 max-w-full overflow-hidden rounded-lg shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.58)]",
+                "bg-background/50 transition-[background-color,box-shadow] duration-150 ease-out hover:bg-background/80",
                 className
             )}
         >
@@ -260,8 +261,8 @@ export function FileDiffPanel({
             <CollapsibleTrigger asChild>
                 <button
                     className={cn(
-                        "min-w-0 w-full max-w-full flex items-center gap-3 px-3 py-2.5",
-                        "hover:bg-muted/50 transition-colors text-left",
+                        "min-h-10 min-w-0 w-full max-w-full flex items-center gap-2.5 rounded-lg px-3 py-2",
+                        "text-left transition-[background-color,transform] duration-150 ease-out hover:bg-muted/50 active:scale-[0.96]",
                         "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     )}
                     onClick={handleExpand}
@@ -331,7 +332,7 @@ export function FileDiffPanel({
                     {/* Status badge */}
                     <span
                         className={cn(
-                            "px-2 py-0.5 rounded-full text-[10px] font-medium border",
+                            "rounded-md border px-2 py-0.5 text-[10px] font-medium",
                             statusBadge.className
                         )}
                     >
@@ -345,7 +346,7 @@ export function FileDiffPanel({
                 <div className="min-w-0 max-w-full overflow-hidden border-t border-border/40">
                     {fileDiff.is_binary ? (
                         /* Binary file indicator */
-                        <div className="flex items-center justify-center p-8 text-muted-foreground">
+                        <div className="flex items-center justify-center p-6 text-muted-foreground">
                             <Binary size={20} className="mr-2" />
                             <span className="text-sm">Binary file - diff not available</span>
                         </div>
@@ -353,17 +354,17 @@ export function FileDiffPanel({
                         /* Tabs for Diff and Blame */
                         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'diff' | 'blame')}>
                             <div className="flex items-center justify-between px-3 py-1.5 bg-muted/30 border-b border-border/40">
-                                <TabsList className="h-7 bg-transparent p-0 gap-1">
+                                <TabsList className="h-10 gap-1 bg-transparent p-0">
                                     <TabsTrigger
                                         value="diff"
-                                        className="h-6 px-2.5 text-xs data-[state=active]:bg-background data-[state=active]:shadow-sm"
+                                        className="h-10 rounded-lg px-3 text-xs data-[state=active]:bg-background data-[state=active]:shadow-sm"
                                     >
                                         <SplitSquareHorizontal size={12} className="mr-1.5" />
                                         Diff
                                     </TabsTrigger>
                                     <TabsTrigger
                                         value="blame"
-                                        className="h-6 px-2.5 text-xs data-[state=active]:bg-background data-[state=active]:shadow-sm"
+                                        className="h-10 rounded-lg px-3 text-xs data-[state=active]:bg-background data-[state=active]:shadow-sm"
                                     >
                                         <GitBranch size={12} className="mr-1.5" />
                                         Blame
@@ -373,7 +374,7 @@ export function FileDiffPanel({
 
                             <TabsContent value="diff" className="m-0">
                                 {!hasHunks && !isLoadingFullDiff ? (
-                                    <div className="flex flex-col items-center justify-center p-8 gap-3">
+                                    <div className="flex flex-col items-center justify-center gap-2 p-6">
                                         <span className="text-sm text-muted-foreground">
                                             Diff content not loaded
                                         </span>
@@ -388,7 +389,7 @@ export function FileDiffPanel({
                                         )}
                                     </div>
                                 ) : isLoadingFullDiff ? (
-                                    <div className="flex items-center justify-center p-8 text-muted-foreground">
+                                    <div className="flex items-center justify-center p-6 text-muted-foreground">
                                         <Loader2 size={20} className="mr-2 animate-spin" />
                                         <span className="text-sm">Loading diff...</span>
                                     </div>
@@ -408,12 +409,12 @@ export function FileDiffPanel({
 
                             <TabsContent value="blame" className="m-0">
                                 {blameLoading ? (
-                                    <div className="flex items-center justify-center p-8 text-muted-foreground">
+                                    <div className="flex items-center justify-center p-6 text-muted-foreground">
                                         <Loader2 size={20} className="mr-2 animate-spin" />
                                         <span className="text-sm">Computing blame...</span>
                                     </div>
                                 ) : blameError ? (
-                                    <div className="flex flex-col items-center justify-center p-8 text-red-500">
+                                    <div className="flex flex-col items-center justify-center p-6 text-[hsl(var(--app-danger))]">
                                         <AlertTriangle size={20} className="mb-2" />
                                         <span className="text-sm">{blameError.message}</span>
                                     </div>
@@ -429,7 +430,7 @@ export function FileDiffPanel({
                         </Tabs>
                     ) : !hasHunks && !isLoadingFullDiff ? (
                         /* No diff content yet - offer to load */
-                        <div className="flex flex-col items-center justify-center p-8 gap-3">
+                        <div className="flex flex-col items-center justify-center gap-2 p-6">
                             <span className="text-sm text-muted-foreground">
                                 Diff content not loaded
                             </span>
@@ -445,7 +446,7 @@ export function FileDiffPanel({
                         </div>
                     ) : isLoadingFullDiff ? (
                         /* Loading state */
-                        <div className="flex items-center justify-center p-8 text-muted-foreground">
+                        <div className="flex items-center justify-center p-6 text-muted-foreground">
                             <Loader2 size={20} className="mr-2 animate-spin" />
                             <span className="text-sm">Loading diff...</span>
                         </div>
@@ -474,7 +475,7 @@ export function FileDiffPanel({
                                 <Button
                                     variant="outline"
                                     size="sm"
-                                    className="h-6 text-xs"
+                                    className="h-10 rounded-lg text-xs"
                                     onClick={onRequestFullDiff}
                                     disabled={isLoadingFullDiff}
                                 >

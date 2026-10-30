@@ -35,7 +35,7 @@ export function AgentStatusIndicator({ status, agentId, nodeId, className }: Age
         <Badge
             variant="outline"
             className={cn(
-                "flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium transition-colors group/agentBadge",
+                "group/agentBadge flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium transition-[background-color,border-color,color] duration-normal ease-out-cubic motion-reduce:transition-none",
                 config.colorClass,
                 config.bgColorClass,
                 config.borderColorClass,
@@ -49,10 +49,10 @@ export function AgentStatusIndicator({ status, agentId, nodeId, className }: Age
                     <span className="text-[10px] font-mono">({idToCopy.substring(0, 8)})</span>
                     <button
                         onClick={handleCopy}
-                        className="p-0.5 hover:bg-black/10 dark:hover:bg-white/10 rounded cursor-pointer transition-colors text-muted-foreground hover:text-foreground"
+                        className="cursor-pointer rounded p-0.5 text-muted-foreground transition-[background-color,color,transform] duration-normal ease-out-cubic hover:bg-foreground/10 hover:text-foreground active:scale-[0.96] motion-reduce:transition-none"
                         title="Copy Node ID"
                     >
-                        {isCopied ? <Check size={10} className="text-green-500" /> : <Copy size={10} />}
+                        {isCopied ? <Check size={10} className="text-[hsl(var(--app-success))]" /> : <Copy size={10} />}
                     </button>
                 </div>
             )}

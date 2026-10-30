@@ -40,25 +40,25 @@ export function ChangedFilesSummary({ files, maxVisible = 5 }: ChangedFilesSumma
   if (files.length === 0) return null;
 
   return (
-    <div className="mt-3 rounded-md border border-orange-200/80 bg-white/65 p-3 text-sm text-orange-950 dark:border-orange-500/30 dark:bg-orange-950/35 dark:text-orange-100">
+    <div className="mt-3 rounded-lg bg-[hsl(var(--app-warning)/0.08)] p-3 text-sm text-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-warning)/0.22)]">
       <div className="flex items-center gap-2 font-medium">
-        <FileText className="h-4 w-4 text-orange-700 dark:text-orange-300" />
-        <span>{files.length === 1 ? '1 changed file' : `${files.length} changed files`}</span>
+        <FileText className="h-4 w-4 text-[hsl(var(--app-warning))]" />
+        <span className="tabular-nums">{files.length === 1 ? '1 changed file' : `${files.length} changed files`}</span>
       </div>
-      <ul className="mt-2 space-y-1">
+      <ul className="mt-2 divide-y divide-[hsl(var(--app-warning)/0.14)]">
         {visibleFiles.map((file, index) => (
-          <li key={`${file.status}-${file.path}-${index}`} className="flex min-w-0 items-center gap-2">
-            <span className="shrink-0 rounded bg-orange-100 px-1.5 py-0.5 text-[11px] font-medium text-orange-800 dark:bg-orange-500/12 dark:text-orange-200">
+          <li key={`${file.status}-${file.path}-${index}`} className="flex min-w-0 items-center gap-2 py-1 first:pt-0 last:pb-0">
+            <span className="shrink-0 rounded-md bg-[hsl(var(--app-warning)/0.11)] px-2 py-0.5 text-[11px] font-medium text-[hsl(var(--app-warning))]">
               {file.status}
             </span>
-            <span className="truncate font-mono text-xs text-orange-950/85 dark:text-orange-100/80" title={file.path}>
+            <span className="truncate font-mono text-xs text-foreground/80" title={file.path}>
               {file.path}
             </span>
           </li>
         ))}
       </ul>
       {remainingCount > 0 && (
-        <p className="mt-2 text-xs text-orange-800 dark:text-orange-200/80">
+        <p className="mt-2 text-xs tabular-nums text-muted-foreground">
           +{remainingCount} more {remainingCount === 1 ? 'file' : 'files'}
         </p>
       )}

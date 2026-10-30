@@ -113,11 +113,10 @@ const AttachedThreadButton = ({
       aria-label={`Open attached thread: ${thread.title}`}
       title={thread.title}
       className={cn(
-        'nodrag nopan relative flex h-10 min-w-0 items-center gap-1.5 overflow-hidden rounded-[5px] bg-white px-2 text-left',
-        'shadow-[0_0_0_1px_rgba(0,0,0,0.055),0_1px_2px_-1px_rgba(0,0,0,0.08)]',
-        'transition-[background-color,box-shadow,scale] duration-150 ease-out hover:bg-cyan-50 active:scale-[0.96]',
-        'focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500',
-        'dark:bg-zinc-950 dark:shadow-[0_0_0_1px_rgba(255,255,255,0.09)] dark:hover:bg-cyan-950/55',
+        'nodrag nopan relative flex h-10 min-w-0 items-center gap-1.5 overflow-hidden rounded-[5px] bg-[hsl(var(--app-panel)/0.86)] px-2 text-left',
+        'shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.64)]',
+        'transition-[background-color,box-shadow,transform] duration-normal ease-out-cubic hover:bg-[hsl(var(--app-accent-soft)/0.42)] active:scale-[0.96] motion-reduce:transition-none',
+        'focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]',
         compact && 'justify-center px-1',
       )}
       onPointerDown={stopAttachedThreadEvent}
@@ -126,9 +125,9 @@ const AttachedThreadButton = ({
         onOpenThread(thread.threadRootId);
       }}
     >
-      <GitBranch size={compact ? 10 : 11} className="shrink-0 text-cyan-700 dark:text-cyan-300" />
+      <GitBranch size={compact ? 10 : 11} className="shrink-0 text-[hsl(var(--app-graph-agent))]" />
       {!compact ? (
-        <span className="min-w-0 flex-1 truncate text-[9px] font-medium leading-none text-zinc-700 dark:text-zinc-200">
+        <span className="min-w-0 flex-1 truncate text-[9px] font-medium leading-none text-foreground/80">
           {thread.title}
         </span>
       ) : null}
@@ -155,7 +154,7 @@ const AttachedThreadOverflowItem = ({
         onOpenThread(thread.threadRootId);
       }}
     >
-      <GitBranch size={12} className="shrink-0 text-cyan-700 dark:text-cyan-300" />
+      <GitBranch size={12} className="shrink-0 text-[hsl(var(--app-graph-agent))]" />
       <span className="min-w-0 flex-1 truncate">{thread.title}</span>
       <AttachedThreadStatus status={liveStatus ?? thread.status} />
     </DropdownMenuItem>
@@ -176,16 +175,16 @@ const AttachedThreadsTray = ({
 
   return (
     <div
-      className="relative z-20 mt-2 h-14 shrink-0 border-t border-zinc-200/80 pt-1 dark:border-zinc-800/80"
+      className="relative z-20 mt-2 h-14 shrink-0 border-t border-[hsl(var(--app-border)/0.64)] pt-1"
       onPointerDown={stopAttachedThreadEvent}
       onClick={stopAttachedThreadEvent}
     >
-      <div className="mb-1 flex h-3 items-center justify-between text-[8px] font-semibold uppercase tracking-[0.12em] text-zinc-400 dark:text-zinc-500">
+      <div data-design-typography="soft-label" className="mb-1 flex h-3 items-center justify-between text-[8px] font-medium uppercase tracking-[0.12em] text-muted-foreground/70">
         <span>Attached threads</span>
         <span className="tabular-nums">{threads.length}</span>
       </div>
       <div
-        className="grid h-10 gap-px rounded-md bg-zinc-200/80 p-px shadow-[0_1px_2px_-1px_rgba(0,0,0,0.08)] dark:bg-zinc-800/90 dark:shadow-none"
+        className="grid h-10 gap-px rounded-md bg-[hsl(var(--app-border)/0.62)] p-px"
         style={{ gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))` }}
       >
         {visibleThreads.map((thread) => (
@@ -202,12 +201,12 @@ const AttachedThreadsTray = ({
               <button
                 type="button"
                 aria-label={`Show ${overflowThreads.length} more attached threads`}
+                data-design-typography="soft-label"
                 className={cn(
-                  'nodrag nopan flex h-10 min-w-0 items-center justify-center rounded-[5px] bg-white text-[9px] font-semibold text-cyan-700',
-                  'shadow-[0_0_0_1px_rgba(0,0,0,0.055),0_1px_2px_-1px_rgba(0,0,0,0.08)] tabular-nums',
-                  'transition-[background-color,box-shadow,scale] duration-150 ease-out hover:bg-cyan-50 active:scale-[0.96]',
-                  'focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500',
-                  'dark:bg-zinc-950 dark:text-cyan-300 dark:shadow-[0_0_0_1px_rgba(255,255,255,0.09)] dark:hover:bg-cyan-950/55',
+                  'nodrag nopan flex h-10 min-w-0 items-center justify-center rounded-[5px] bg-[hsl(var(--app-panel)/0.86)] text-[9px] font-medium text-[hsl(var(--app-graph-agent))]',
+                  'shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.64)] tabular-nums',
+                  'transition-[background-color,box-shadow,transform] duration-normal ease-out-cubic hover:bg-[hsl(var(--app-accent-soft)/0.42)] active:scale-[0.96] motion-reduce:transition-none',
+                  'focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus))]',
                 )}
                 onPointerDown={stopAttachedThreadEvent}
                 onClick={stopAttachedThreadEvent}
@@ -279,11 +278,10 @@ const AttentionBadge = ({
           data-agentree-attention-badge
           className={cn(
             'app-focus-ring group/attention inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-1.5 pr-2',
-            'border border-amber-300/72 bg-amber-50/95 text-amber-800',
-            'shadow-[0_8px_18px_-14px_rgba(180,83,9,0.72),inset_0_1px_0_rgba(255,255,255,0.78)]',
-            'transition-[background-color,border-color,box-shadow,transform] duration-150 active:scale-[0.96]',
-            'hover:border-amber-400/80 hover:bg-amber-100',
-            'dark:border-amber-400/24 dark:bg-amber-950/48 dark:text-amber-100 dark:hover:border-amber-300/38 dark:hover:bg-amber-900/46',
+            'border border-[hsl(var(--app-warning)/0.34)] bg-[hsl(var(--app-warning)/0.1)] text-[hsl(var(--app-warning))]',
+            'shadow-[0_8px_18px_-14px_hsl(var(--app-warning)/0.48),inset_0_1px_0_hsl(var(--foreground)/0.04)]',
+            'transition-[background-color,border-color,box-shadow,transform] duration-normal ease-out-cubic active:scale-[0.96] motion-reduce:transition-none',
+            'hover:border-[hsl(var(--app-warning)/0.48)] hover:bg-[hsl(var(--app-warning)/0.15)]',
           )}
           aria-label={`${count} attention ${count === 1 ? 'item' : 'items'} from this turn`}
           onPointerEnter={() => onHoverChange(true)}
@@ -297,7 +295,7 @@ const AttentionBadge = ({
             event.stopPropagation();
           }}
         >
-          <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-500 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.3)] dark:bg-amber-300 dark:text-amber-950">
+          <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[hsl(var(--app-warning))] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.22)]">
             <Zap size={9} strokeWidth={2.4} />
           </span>
           <span className="font-mono text-[10px] font-bold leading-none tabular-nums">
@@ -310,7 +308,7 @@ const AttentionBadge = ({
         align="end"
         sideOffset={8}
         collisionPadding={12}
-        className="z-[70] w-72 overflow-hidden rounded-2xl border border-slate-200/82 bg-white/96 p-0 shadow-[0_24px_70px_-42px_rgba(15,23,42,0.62),0_10px_28px_-22px_rgba(15,23,42,0.36),inset_0_1px_0_rgba(255,255,255,0.8)] backdrop-blur-xl dark:border-slate-800/88 dark:bg-slate-950/96 dark:shadow-[0_24px_72px_-42px_rgba(0,0,0,0.78),inset_0_1px_0_rgba(255,255,255,0.05)]"
+        className="z-[70] w-72 overflow-hidden rounded-xl border border-[hsl(var(--app-border)/0.78)] bg-[hsl(var(--app-panel)/0.98)] p-0 shadow-[0_24px_64px_-38px_hsl(var(--foreground)/0.5),inset_0_1px_0_hsl(var(--foreground)/0.04)]"
         onPointerEnter={() => onHoverChange(true)}
         onPointerLeave={() => onHoverChange(false)}
         onClick={(event) => {
@@ -318,12 +316,12 @@ const AttentionBadge = ({
           event.stopPropagation();
         }}
       >
-        <div className="border-b border-slate-200/72 bg-amber-50/76 px-3 py-2.5 dark:border-slate-800/82 dark:bg-amber-950/24">
+        <div className="border-b border-[hsl(var(--app-border)/0.64)] bg-[hsl(var(--app-warning)/0.075)] px-3 py-2.5">
           <div className="flex items-center justify-between gap-2">
-            <div className="text-xs font-semibold text-slate-950 dark:text-slate-50">
+            <div className="text-xs font-semibold text-foreground">
               Attention from this turn
             </div>
-            <div className="rounded-full bg-white/80 px-2 py-0.5 font-mono text-[10px] font-semibold tabular-nums text-amber-700 shadow-[inset_0_0_0_1px_rgba(245,158,11,0.2)] dark:bg-slate-950/70 dark:text-amber-200">
+            <div className="rounded-md bg-[hsl(var(--app-panel-strong)/0.82)] px-2 py-0.5 font-mono text-[10px] font-semibold tabular-nums text-[hsl(var(--app-warning))] shadow-[inset_0_0_0_1px_hsl(var(--app-warning)/0.2)]">
               {count}
             </div>
           </div>
@@ -338,7 +336,7 @@ const AttentionBadge = ({
                   <button
                     key={item.id}
                     type="button"
-                    className="app-focus-ring w-full rounded-xl border border-slate-200/70 bg-white/82 p-2.5 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.68)] transition-[background-color,border-color,box-shadow,transform] duration-150 hover:border-amber-300/62 hover:bg-amber-50/62 active:scale-[0.98] dark:border-slate-800/78 dark:bg-slate-900/56 dark:hover:border-amber-400/28 dark:hover:bg-amber-950/18"
+                    className="app-focus-ring w-full rounded-lg border border-[hsl(var(--app-border)/0.66)] bg-[hsl(var(--app-bg-muted)/0.42)] p-2.5 text-left shadow-[inset_0_1px_0_hsl(var(--foreground)/0.035)] transition-[background-color,border-color,box-shadow,transform] duration-normal ease-out-cubic hover:border-[hsl(var(--app-warning)/0.38)] hover:bg-[hsl(var(--app-warning)/0.07)] active:scale-[0.98] motion-reduce:transition-none"
                     aria-expanded={expanded}
                     onClick={(event) => {
                       event.preventDefault();
@@ -347,20 +345,20 @@ const AttentionBadge = ({
                     }}
                   >
                     <div className="mb-1.5 flex items-center gap-1.5">
-                      <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.1em] text-amber-800 dark:bg-amber-400/12 dark:text-amber-200">
+                      <span data-design-typography="soft-label" className="rounded-md bg-[hsl(var(--app-warning)/0.12)] px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.1em] text-[hsl(var(--app-warning))]">
                         {kindLabel(item.kind)}
                       </span>
                       {item.status ? (
-                        <span className="min-w-0 truncate rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                        <span className="min-w-0 truncate rounded-md bg-[hsl(var(--app-bg-muted)/0.76)] px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground">
                           {item.status}
                         </span>
                       ) : null}
-                      <span className="ml-auto text-[9px] font-semibold uppercase tracking-[0.1em] text-slate-400">
+                      <span data-design-typography="soft-label" className="ml-auto text-[9px] font-medium uppercase tracking-[0.1em] text-muted-foreground/70">
                         {expanded ? 'Less' : canExpand ? 'More' : 'Open'}
                       </span>
                     </div>
                     <p className={cn(
-                      'text-[11px] font-medium leading-4 text-slate-800 dark:text-slate-100',
+                      'text-[11px] font-medium leading-4 text-foreground',
                       expanded ? 'whitespace-pre-wrap break-words' : 'line-clamp-2',
                     )}>
                       {item.label}
@@ -370,12 +368,12 @@ const AttentionBadge = ({
               })}
             </div>
           ) : (
-            <div className="px-3 py-5 text-center text-xs text-slate-500 dark:text-slate-400">
+            <div className="px-3 py-5 text-center text-xs text-muted-foreground">
               Attention details unavailable.
             </div>
           )}
           {hiddenCount > 0 ? (
-            <div className="mt-2 rounded-xl bg-slate-100/72 px-3 py-2 text-[11px] font-medium text-slate-500 dark:bg-slate-900/70 dark:text-slate-400">
+            <div className="mt-2 rounded-lg bg-[hsl(var(--app-bg-muted)/0.68)] px-3 py-2 text-[11px] font-medium text-muted-foreground">
               +{hiddenCount} more in the inbox
             </div>
           ) : null}
@@ -440,8 +438,8 @@ export const GraphAssistantNode = memo(({
       disableHoverCard={disableHoverCard || attentionHoverActive}
       heightKey={heightKey}
       className={cn(
-        'bg-white/95 border-zinc-200/95 dark:bg-zinc-950/90 dark:border-zinc-800/95',
-        'rounded-t-[5px] shadow-[0_10px_26px_-20px_rgba(24,24,27,0.58)]'
+        'border-[hsl(var(--app-border)/0.8)] bg-[hsl(var(--app-panel)/0.95)]',
+        'rounded-t-[5px] shadow-[0_10px_26px_-20px_hsl(var(--foreground)/0.32)]'
       )}
       style={{
         width: 200,
@@ -457,20 +455,20 @@ export const GraphAssistantNode = memo(({
       onContextMenu={onContextMenu}
     >
       {entity.commitCount !== undefined && entity.commitCount > 0 && (
-        <div className="absolute right-[-3px] top-1/2 z-10 h-2 w-2 -translate-y-1/2 rounded-full border border-white bg-emerald-500 dark:border-zinc-950" />
+        <div className="absolute right-[-3px] top-1/2 z-10 h-2 w-2 -translate-y-1/2 rounded-full border border-[hsl(var(--app-panel))] bg-[hsl(var(--app-graph-commit))]" />
       )}
 
       <div className="relative z-10 mb-2 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <div
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-700 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-bg-muted)/0.62)] text-foreground/80"
             title={`${assistantIdentityLabel} icon`}
             aria-label={`${assistantIconKind === 'generic' ? 'Assistant' : assistantIconKind === 'codex' ? 'Codex' : assistantIconKind === 'opencode' ? 'OpenCode' : 'Claude'} icon`}
           >
             <AssistantProviderIcon iconKind={assistantIconKind} />
           </div>
           <div className="min-w-0">
-            <div className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-500 dark:text-zinc-400">
+            <div data-design-typography="soft-label" className="text-[9px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
               {assistantIdentityLabel}
               {assistantReasoningEffortLabel && (
                 <span className="ml-1 normal-case">{assistantReasoningEffortLabel}</span>
@@ -496,23 +494,22 @@ export const GraphAssistantNode = memo(({
 
       {isMinimalDetail ? (
         <div className="relative z-10 flex min-h-0 flex-1 items-center">
-          <div className="h-1.5 w-full rounded-full bg-zinc-200/70 dark:bg-zinc-800/75" />
+          <div className="h-1.5 w-full rounded-full bg-[hsl(var(--app-border)/0.58)]" />
         </div>
       ) : isAssistantWorking ? (
         <div className={cn(
           'relative z-10 mb-2 flex-1 rounded-md border px-2.5 py-2',
-          'border-amber-200/75 bg-amber-50/80 text-amber-950',
-          'shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]',
-          'dark:border-amber-900/55 dark:bg-amber-950/20 dark:text-amber-100'
+          'border-[hsl(var(--app-warning)/0.28)] bg-[hsl(var(--app-warning)/0.08)] text-foreground',
+          'shadow-[inset_0_1px_0_hsl(var(--foreground)/0.035)]'
         )}>
           <div className="flex items-start gap-2">
-            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-amber-500 dark:bg-amber-400" />
+            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[hsl(var(--app-warning))] motion-reduce:animate-none" />
             <span className="min-w-0">
-              <span className="block text-[11px] font-semibold leading-tight">
+              <span data-design-typography="soft-body" className="block text-[11px] font-medium leading-tight">
                 Assistant is working.
               </span>
               <span className={cn(
-                'block text-[10px] font-medium leading-snug text-amber-800/80 dark:text-amber-200/75',
+                'block text-[10px] font-medium leading-snug text-muted-foreground',
                 isFullDetail ? 'line-clamp-2' : 'line-clamp-1'
               )}>
                 Please hover to check progress.
@@ -522,7 +519,7 @@ export const GraphAssistantNode = memo(({
         </div>
       ) : (
         <p className={cn(
-          'relative z-10 mb-2 flex-1 text-[12px] font-medium leading-snug text-zinc-900 dark:text-zinc-100',
+          'relative z-10 mb-2 flex-1 text-[12px] font-medium leading-snug text-foreground',
           isFullDetail ? 'line-clamp-2' : 'line-clamp-1',
         )}>
           {failureReason ?? entity.preview}
@@ -530,19 +527,19 @@ export const GraphAssistantNode = memo(({
       )}
 
       {isFullDetail && (
-      <div className="relative z-10 mt-auto flex items-center gap-3 border-t border-zinc-200/80 pt-1.5 text-[10px] text-zinc-500 dark:border-zinc-800/80 dark:text-zinc-400">
+      <div className="relative z-10 mt-auto flex items-center gap-3 border-t border-[hsl(var(--app-border)/0.64)] pt-1.5 text-[10px] text-muted-foreground">
         {entity.toolCallCount !== undefined && entity.toolCallCount > 0 && (
           <div
             className="flex items-center gap-1"
             title={`${entity.toolCallCount} tool calls`}
           >
-            <Wrench size={10} className="text-zinc-500" />
+            <Wrench size={10} className="text-muted-foreground" />
             {entity.toolCallCount}
           </div>
         )}
         {entity.commitCount !== undefined && entity.commitCount > 0 && (
           <div
-            className="flex items-center gap-1 text-emerald-700 dark:text-emerald-400"
+            className="flex items-center gap-1 text-[hsl(var(--app-graph-commit))]"
             title={`${entity.commitCount} commits`}
           >
             <GitCommitHorizontal size={10} />
@@ -554,7 +551,7 @@ export const GraphAssistantNode = memo(({
             className="ml-auto flex items-center gap-1"
             title={`${entity.totalTokens.toLocaleString()} tokens`}
           >
-            <Zap size={10} className="text-amber-600" />
+            <Zap size={10} className="text-[hsl(var(--app-warning))]" />
             {(entity.totalTokens / 1000).toFixed(1)}k
           </div>
         )}

@@ -64,12 +64,12 @@ export function DeleteBranchDialog({
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent className="overflow-hidden sm:max-w-[520px]">
+      <AlertDialogContent data-design-scope="panels" className="overflow-hidden bg-[hsl(var(--app-panel-strong))] sm:max-w-[520px]">
         <AlertDialogHeader>
           <div className="mb-1 flex items-center gap-3">
             <div
               className={cn(
-                'relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-colors duration-200',
+                'relative flex h-10 w-10 shrink-0 items-center justify-center rounded-lg transition-colors duration-200 ease-out',
                 isSuccess
                   ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
                   : 'bg-destructive/10 text-destructive'
@@ -106,7 +106,7 @@ export function DeleteBranchDialog({
 
         <div
           className={cn(
-            'rounded-lg border bg-muted/35 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] transition-[border-color,background-color] duration-200',
+            'rounded-xl bg-muted/35 p-3 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.58)] transition-[background-color,box-shadow] duration-200 ease-out',
             isSuccess && 'border-emerald-500/25 bg-emerald-500/10'
           )}
         >
@@ -121,7 +121,7 @@ export function DeleteBranchDialog({
                 isSuccess
                   ? 'bg-emerald-500'
                   : isDeleting
-                    ? 'w-1/2 animate-[pulse_1.1s_ease-in-out_infinite] bg-destructive'
+                    ? 'w-1/2 animate-[pulse_1.1s_ease-out_infinite] bg-destructive'
                     : 'bg-destructive'
               )}
               style={{ width: isSuccess ? '100%' : isDeleting ? undefined : '0%' }}
@@ -136,10 +136,10 @@ export function DeleteBranchDialog({
         </div>
 
         {hasDetails && !isSuccess ? (
-          <div className="max-h-64 overflow-y-auto rounded-lg border bg-background/70 p-3 text-sm">
+          <div className="max-h-64 overflow-y-auto rounded-xl bg-background/70 p-3 text-sm shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.58)]">
             {preview.threadLabel ? (
               <div className="mb-3 min-w-0">
-                <div className="text-xs font-medium uppercase text-muted-foreground">Thread</div>
+                <div className="text-xs font-medium text-muted-foreground">Thread</div>
                 <div className="mt-1 truncate font-medium text-foreground" title={preview.threadLabel}>
                   {preview.threadLabel}
                 </div>
@@ -148,7 +148,7 @@ export function DeleteBranchDialog({
 
             {preview.rootLabels.length > 0 ? (
               <div className="mb-3 min-w-0">
-                <div className="text-xs font-medium uppercase text-muted-foreground">Selected branches</div>
+                <div className="text-xs font-medium text-muted-foreground">Selected branches</div>
                 <ul className="mt-1 space-y-1">
                   {preview.rootLabels.map((item) => (
                     <li key={item.id} className="truncate text-foreground" title={item.label}>
@@ -165,7 +165,7 @@ export function DeleteBranchDialog({
                 if (items.length === 0) return null;
                 return (
                   <div key={key} className="min-w-0">
-                    <div className="text-xs font-medium uppercase text-muted-foreground">
+                    <div className="text-xs font-medium text-muted-foreground">
                       {label}
                     </div>
                     <ul className="mt-1 space-y-1">
@@ -184,7 +184,7 @@ export function DeleteBranchDialog({
 
         {removableCommitCount > 0 && !isSuccess ? (
           <label className={cn(
-            'flex items-start gap-3 rounded-md border bg-background/70 p-3 text-sm transition-colors',
+            'flex min-h-10 items-start gap-3 rounded-lg bg-background/70 p-3 text-sm shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.58)] transition-[background-color,opacity] duration-150 ease-out',
             (isDeleting || isSuccess) && 'opacity-70'
           )}>
             <Checkbox
@@ -203,7 +203,7 @@ export function DeleteBranchDialog({
         ) : null}
 
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={isDeleting || isSuccess} onClick={onCancel}>
+          <AlertDialogCancel className="h-10 rounded-lg" disabled={isDeleting || isSuccess} onClick={onCancel}>
             Cancel
           </AlertDialogCancel>
           <AlertDialogAction
@@ -212,7 +212,7 @@ export function DeleteBranchDialog({
               event.preventDefault();
               onConfirm();
             }}
-            className="min-w-32 bg-destructive text-destructive-foreground transition-[background-color,scale] duration-150 hover:bg-destructive/90 active:scale-[0.96]"
+            className="h-10 min-w-32 rounded-lg bg-destructive text-destructive-foreground transition-[background-color,transform] duration-150 ease-out hover:bg-destructive/90 active:scale-[0.96]"
           >
             {isDeleting ? (
               <span className="inline-flex items-center gap-2">

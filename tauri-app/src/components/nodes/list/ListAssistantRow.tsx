@@ -73,11 +73,11 @@ const AgentChip = ({
     reasoningEffort,
   });
   const colorName = agent?.color;
-  const colorClass = getAgentColorClass(colorName) || 'bg-slate-500';
+  const colorClass = getAgentColorClass(colorName) || 'bg-[hsl(var(--app-graph-agent))]';
 
   return (
-    <div className={cn(
-      "shrink-0 rounded px-1.5 py-0.5 text-[8px] font-bold uppercase leading-none tracking-wider text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.22)]",
+    <div data-design-typography="soft-on-color-bold" className={cn(
+      "shrink-0 rounded px-1.5 py-0.5 text-[8px] font-medium uppercase leading-none tracking-wider text-[hsl(40_24%_96%)] shadow-[inset_0_1px_0_rgba(255,255,255,0.22)]",
       colorClass
     )}>
       {label}

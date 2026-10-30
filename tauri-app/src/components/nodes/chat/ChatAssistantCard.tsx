@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { Wrench, ChevronDown, Terminal, Tag, X, Hash, Sparkles, AlertTriangle, Copy, Check, CheckCircle2, GitCommitHorizontal, MessageSquarePlus } from 'lucide-react';
+import { Bot, ChevronDown, Terminal, Tag, X, Hash, Sparkles, AlertTriangle, Copy, Check, CheckCircle2, GitCommitHorizontal, MessageSquarePlus } from 'lucide-react';
 import { ChatCardWrapper } from './ChatCardWrapper';
 import { ChatMarkdown } from './ChatMarkdown';
 import { CopyMessageContentButton } from './CopyMessageContentButton';
@@ -13,6 +13,7 @@ import { buildTimelineRows, countTimelineActivities, getToolGroupTitle, getToolS
 import { useUpdateTags } from '../../../hooks/useMessages';
 import { mergeLiveMessage } from '../../../hooks/useLiveMessages';
 import { Badge } from '../../../../@/components/ui/badge';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../../../@/components/ui/tooltip';
 import { TagInputPopover } from '../../ui/TagInputPopover';
 import { getAgentVisualState } from '../../../lib/agentStateUI';
 import { useAgentRunProjectionStore } from '../../../stores/agentRunProjectionStore';
@@ -58,15 +59,31 @@ const AgentChip = ({
   const colorClass = getAgentColorClass(colorName) || 'bg-slate-500';
 
   return (
-    <div className={cn(
-      "inline-flex min-w-0 max-w-[12rem] items-baseline rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white shadow-sm",
-      colorClass
-    )}>
-      <span className="truncate">{label}</span>
-      {reasoningEffortLabel && (
-        <span className="ml-1 shrink-0 normal-case">{reasoningEffortLabel}</span>
-      )}
-    </div>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div
+          tabIndex={0}
+          aria-label={reasoningEffortLabel
+            ? `Model used: ${label}. Reasoning effort: ${reasoningEffortLabel}.`
+            : `Model used: ${label}`}
+          className={cn(
+            "inline-flex h-5 min-w-0 max-w-[14rem] items-center overflow-hidden rounded-md px-1.5 text-[10px] tracking-[-0.01em] text-[hsl(40_24%_96%)] outline-none shadow-[inset_0_1px_0_rgb(255_255_255/0.12)] focus-visible:ring-2 focus-visible:ring-white/45 focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+            colorClass
+          )}
+        >
+          <span className="truncate font-medium">{label}</span>
+          {reasoningEffortLabel && (
+            <span className="ml-1.5 shrink-0 border-l border-white/24 pl-1.5 font-normal text-white/78">
+              {reasoningEffortLabel}
+            </span>
+          )}
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        Model used: {label}
+        {reasoningEffortLabel && <> · Reasoning effort: {reasoningEffortLabel}</>}
+      </TooltipContent>
+    </Tooltip>
   );
 };
 
@@ -75,13 +92,20 @@ const AiLabelChip = ({ aiLabel }: { aiLabel?: string | null }) => {
   if (!label) return null;
 
   return (
-    <span
-      className="inline-flex max-w-[16rem] items-center gap-1 rounded-full border border-border/60 bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
-      title={`AI label: ${label}`}
-    >
-      <Tag size={9} strokeWidth={2.5} />
-      <span className="truncate">{label}</span>
-    </span>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          data-design-part="assistant-ai-label"
+          tabIndex={0}
+          aria-label={`AI-generated summary: ${label}`}
+          className="inline-flex h-5 max-w-[16rem] items-center gap-1 rounded-md border border-[hsl(var(--app-border)/0.44)] bg-[hsl(var(--app-bg-muted)/0.68)] px-1.5 text-[10px] font-medium text-foreground/66 outline-none focus-visible:border-[hsl(var(--app-border-strong)/0.82)] focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus)/0.18)]"
+        >
+          <Bot size={9} strokeWidth={2} className="text-muted-foreground/68" />
+          <span className="truncate">{label}</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top">AI-generated summary of this message.</TooltipContent>
+    </Tooltip>
   );
 };
 
@@ -90,13 +114,23 @@ const BaseCommitChip = ({ commitSha }: { commitSha?: string | null }) => {
   if (!commitSha || !shortCommitSha) return null;
 
   return (
-    <span
-      className="inline-flex min-w-0 items-center gap-1 rounded-full border border-border/60 bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground tabular-nums"
-      title={`Base commit: ${commitSha}`}
-    >
-      <GitCommitHorizontal size={9} strokeWidth={2.5} />
-      <span className="shrink-0">Base {shortCommitSha}</span>
-      <CopyCommitShaButton commitSha={commitSha} className="h-3.5 w-3.5" />
+    <span className="group/base inline-flex h-6 min-w-0 items-center gap-0.5 border-l border-[hsl(var(--app-border)/0.44)] pl-2 text-[10px] text-muted-foreground tabular-nums">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            tabIndex={0}
+            aria-label={`Base commit: ${commitSha}`}
+            className="inline-flex min-w-0 items-center gap-1.5 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus)/0.2)]"
+          >
+            <GitCommitHorizontal size={9} strokeWidth={2} className="shrink-0 text-muted-foreground/55" />
+            <span className="shrink-0 font-mono font-medium text-muted-foreground/76">{shortCommitSha}</span>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-72">
+          This base commit was used to create the agent&apos;s worktree.
+        </TooltipContent>
+      </Tooltip>
+      <CopyCommitShaButton commitSha={commitSha} className="h-4 w-4 opacity-45 transition-opacity group-hover/base:opacity-100" />
     </span>
   );
 };
@@ -257,32 +291,14 @@ const LiveComposerCue = memo(function LiveComposerCue({
   return (
     <div
       aria-hidden="true"
-      className="pointer-events-none relative mt-3 overflow-hidden rounded-[1rem] border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel)/0.74)] px-3 py-2 shadow-[var(--app-shadow-soft)] backdrop-blur-xl"
+      className="pointer-events-none relative mt-3 overflow-hidden rounded-lg border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.68)] px-3 py-2"
     >
-      <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[hsl(var(--foreground)/0.16)] to-transparent" />
-      <div className="absolute -left-10 top-0 h-full w-24 -skew-x-12 animate-pulse bg-gradient-to-r from-transparent via-[hsl(var(--app-success)/0.14)] to-transparent" />
       <div className="relative flex items-center gap-2.5">
-        <div className="relative flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[hsl(var(--app-success)/0.24)] bg-[hsl(var(--app-success)/0.10)]">
-          <span className="absolute h-2.5 w-2.5 animate-ping rounded-full bg-[hsl(var(--app-success)/0.25)]" />
-          <span className="relative h-1.5 w-1.5 rounded-full bg-[hsl(var(--app-success))] shadow-[0_0_12px_hsl(var(--app-success)/0.45)]" />
+        <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[hsl(var(--app-success)/0.24)] bg-[hsl(var(--app-success)/0.1)]">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[hsl(var(--app-success))] motion-reduce:animate-none" />
         </div>
-        <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-semibold leading-none tracking-[0.01em] text-foreground">
-            {label}
-          </div>
-          <div className="mt-1 flex items-end gap-0.5" aria-hidden="true">
-            {[0, 1, 2, 3].map((bar) => (
-              <span
-                key={bar}
-                className="w-1 animate-pulse rounded-full bg-[hsl(var(--app-text-soft)/0.62)]"
-                style={{
-                  height: `${bar % 2 === 0 ? 5 : 8}px`,
-                  animationDelay: `${bar * 120}ms`,
-                  animationDuration: '900ms',
-                }}
-              />
-            ))}
-          </div>
+        <div data-design-typography="soft-label" className="min-w-0 flex-1 text-[11px] font-medium leading-none tracking-[0.01em] text-foreground">
+          {label}
         </div>
       </div>
     </div>
@@ -619,7 +635,7 @@ function TimelineRows({
             <div
               key={getTimelineRowReactKey(row, index, `${keyPrefix}-thinking`)}
               className={cn(
-                "min-w-0 max-w-full border border-blue-200/70 bg-blue-50/50 px-3 py-2 text-[11px] text-blue-900/80 dark:border-blue-900/70 dark:bg-blue-950/20 dark:text-blue-200/80",
+                "min-w-0 max-w-full border border-blue-200/70 bg-blue-50/50 px-3 py-2 text-[11px] text-blue-900/80 dark:border-white/10 dark:bg-white/[0.04] dark:text-zinc-300",
                 compact ? "rounded-lg" : "rounded-xl"
               )}
             >
@@ -638,7 +654,7 @@ function TimelineRows({
             <div
               key={getTimelineRowReactKey(row, index, `${keyPrefix}-user-steer`)}
               className={cn(
-                "min-w-0 max-w-full border border-violet-200/70 bg-violet-50/55 px-3 py-2 text-[11px] text-violet-950/85 dark:border-violet-900/70 dark:bg-violet-950/20 dark:text-violet-100/85",
+                "min-w-0 max-w-full border border-violet-200/70 bg-violet-50/55 px-3 py-2 text-[11px] text-violet-950/85 dark:border-white/10 dark:bg-white/[0.04] dark:text-zinc-200",
                 compact ? "rounded-lg" : "rounded-xl"
               )}
             >
@@ -731,18 +747,27 @@ const StatusBadge = ({
 
   const config = getAgentVisualState(status);
   const Icon = config.icon;
-  const title = isNodeFailureStatus(status) && failureReason
-    ? `Agent ${config.label}: ${failureReason}`
-    : undefined;
+  const tooltip = isNodeFailureStatus(status) && failureReason
+    ? `Agent status: ${config.label}. ${failureReason}`
+    : `Agent status: ${config.label}`;
 
   return (
-    <span className={cn(
-      "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium",
-      config.badgeContainerClass
-    )} title={title}>
-      <Icon size={10} className={cn(config.animate && "animate-spin")} strokeWidth={2.5} />
-      {config.label}
-    </span>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          tabIndex={0}
+          aria-label={`Agent status: ${config.label}`}
+          className={cn(
+            "inline-flex h-5 items-center gap-1 rounded-md border px-1.5 text-[10px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus)/0.22)]",
+            config.badgeContainerClass
+          )}
+        >
+          <Icon size={9} className={cn(config.animate && "animate-spin")} strokeWidth={2.25} />
+          {config.label}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-80">{tooltip}</TooltipContent>
+    </Tooltip>
   );
 };
 
@@ -930,119 +955,155 @@ export const ChatAssistantCard = memo(({
       {/* Header */}
       <div className={cn(
         "relative z-10 min-w-0 max-w-full",
-        layout === 'hovercard' ? "mb-0" : "mb-4",
+        layout === 'hovercard' ? "mb-0" : "mb-3",
       )}>
-        <div className="flex min-w-0 w-full max-w-full flex-wrap items-start gap-3">
-          <div className="flex min-w-0 max-w-full flex-1 items-start gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <AgentChip
-                  agentId={message?.agent_id}
-                  llmModel={message?.llmModel}
-                  llmProvider={message?.llmProvider}
-                  reasoningEffort={getAssistantReasoningEffortFromExecutionData(message?.execution_data)}
-                />
-                <StatusBadge status={displayStatus as any} failureReason={failureReason} />
-                {entity.toolCallCount ? (
-                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-200/70 bg-amber-50/80 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
-                    <Wrench size={9} strokeWidth={2.5} />
-                    {entity.toolCallCount}
-                  </span>
-                ) : null}
-
-                {entity.commitCount ? (
-                  <span className="inline-flex items-center gap-1 rounded-full border border-blue-200/70 bg-blue-50/80 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-300">
-                    <GitCommitHorizontal size={9} strokeWidth={2.5} />
-                    {entity.commitCount}
-                  </span>
-                ) : null}
-                {(baseCommitSha || timestamp) && (
-                  <span className="inline-flex basis-full items-center gap-1.5 sm:ml-auto sm:basis-auto">
-                    <BaseCommitChip commitSha={baseCommitSha} />
-                    {timestamp && (
+        <div data-design-part="assistant-card-header" className="min-w-0 w-full max-w-full">
+          <div
+            data-design-part="assistant-card-primary-meta"
+            className="flex min-w-0 flex-wrap items-center gap-1.5"
+          >
+            <div data-design-part="assistant-card-identity" className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <AgentChip
+                agentId={message?.agent_id}
+                llmModel={message?.llmModel}
+                llmProvider={message?.llmProvider}
+                reasoningEffort={getAssistantReasoningEffortFromExecutionData(message?.execution_data)}
+              />
+              <BaseCommitChip commitSha={baseCommitSha} />
+              <StatusBadge status={displayStatus as any} failureReason={failureReason} />
+              {entity.commitCount ? (
+                <span
+                  data-design-part="assistant-card-activity"
+                  className="inline-flex h-5 items-center text-muted-foreground/64 tabular-nums"
+                >
+                  <Tooltip>
+                    <TooltipTrigger asChild>
                       <span
-                        className="text-[10px] text-muted-foreground/60 tabular-nums"
-                        title={timestamp.title}
+                        tabIndex={0}
+                        aria-label={`${entity.commitCount} commits created by this agent run`}
+                        className="inline-flex h-full items-center gap-1 rounded-sm px-1 text-[10px] font-normal outline-none focus-visible:bg-[hsl(var(--app-focus)/0.12)] focus-visible:text-foreground"
                       >
-                        {timestamp.label}
+                        <GitCommitHorizontal size={9} strokeWidth={2} className="text-muted-foreground/52" />
+                        {entity.commitCount}
                       </span>
-                    )}
+                    </TooltipTrigger>
+                    <TooltipContent side="top">{entity.commitCount} commits created by this agent run.</TooltipContent>
+                  </Tooltip>
+                </span>
+              ) : null}
+            </div>
+            {timestamp && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    tabIndex={0}
+                    aria-label={`Message created: ${timestamp.title}`}
+                    className="ml-auto inline-flex h-6 shrink-0 items-center rounded-sm px-1 text-[10px] text-muted-foreground/58 outline-none tabular-nums focus-visible:bg-[hsl(var(--app-focus)/0.12)] focus-visible:text-foreground"
+                  >
+                    {timestamp.label}
                   </span>
-                )}
-              </div>
-              <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                {message?.id ? (
-                  <>
-                    <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground tabular-nums">
-                      <Hash size={9} strokeWidth={2.5} />
-                      {message.id.slice(0, 8)}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={handleCopyMessageId}
-                      className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-border/60 bg-background text-muted-foreground transition-colors hover:text-foreground"
-                      aria-label="Copy message ID"
-                      title="Copy message ID"
-                    >
-                      {copiedMessageId ? <Check size={10} strokeWidth={2.5} /> : <Copy size={10} strokeWidth={2.2} />}
-                    </button>
-                  </>
-                ) : null}
-                <AiLabelChip aiLabel={message?.aiLabel} />
-                <TokenUsagePill
-                  promptTokens={promptTokens}
-                  completionTokens={completionTokens}
-                  cachedInputTokens={cachedInputTokens}
-                  reasoningTokens={reasoningTokens}
-                  totalTokens={totalTokens}
-                />
-                {tags.map((tag: string) => (
-                  <Badge
-                    key={tag}
-                    variant="secondary"
-                    className={cn(
-                      "group/tag relative h-5 cursor-default text-[11px] font-medium shadow-xs",
-                      capabilities.canMutate && "pr-5"
-                    )}
-                  >
-                    <span className="opacity-90">{tag}</span>
-                    {capabilities.canMutate ? (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleRemoveTag(tag);
-                        }}
-                        className="absolute bottom-[1px] right-[1px] top-[1px] flex h-[calc(100%-2px)] w-4 items-center justify-center rounded-sm text-muted-foreground/60 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover/tag:opacity-100"
-                        aria-label={`Remove tag: ${tag}`}
-                        title={`Remove tag: ${tag}`}
+                </TooltipTrigger>
+                <TooltipContent side="top">Message created: {timestamp.title}</TooltipContent>
+              </Tooltip>
+            )}
+          </div>
+
+          <div
+            data-design-part="assistant-card-secondary-meta"
+            className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5"
+          >
+            <div data-design-part="assistant-card-provenance" className="flex min-w-0 flex-wrap items-center gap-1">
+              {message?.id ? (
+                <span className="group/message-id inline-flex h-5 items-center rounded-md border border-[hsl(var(--app-border)/0.44)] bg-[hsl(var(--app-bg-muted)/0.68)] text-muted-foreground/62 tabular-nums">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span
+                        tabIndex={0}
+                        aria-label={`Message ID: ${message.id}`}
+                        className="inline-flex h-full items-center gap-1 rounded-l-md px-1.5 text-[10px] font-normal outline-none focus-visible:bg-[hsl(var(--app-focus)/0.12)] focus-visible:text-foreground"
                       >
-                        <X size={10} strokeWidth={2.5} />
-                      </button>
-                    ) : null}
-                  </Badge>
-                ))}
-                {capabilities.canMutate && message?.id ? (
-                  <TagInputPopover
-                    messageId={message.id}
-                    existingTags={tags}
-                    onAddTags={handleAddTags}
-                    triggerClassName="h-5 w-5 rounded-full border border-dashed border-border/60 p-0.5 text-muted-foreground/70 transition-colors hover:bg-accent/50 hover:text-foreground"
+                        <Hash size={9} strokeWidth={2} className="text-muted-foreground/52" />
+                        <span className="font-mono text-muted-foreground/76">{message.id.slice(0, 8)}</span>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-72">
+                      Unique ID for this message. Pass it to any agent to reference this message.
+                    </TooltipContent>
+                  </Tooltip>
+                  <button
+                    type="button"
+                    onClick={handleCopyMessageId}
+                    className="relative inline-flex h-5 w-5 items-center justify-center rounded-r-md border-l border-[hsl(var(--app-border)/0.34)] text-muted-foreground/55 opacity-45 transition-[background-color,color,opacity,transform] duration-normal ease-out-cubic after:absolute after:-inset-1 hover:bg-[hsl(var(--app-accent-soft)/0.34)] hover:text-foreground hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus)/0.24)] group-hover/message-id:opacity-100 active:scale-[0.96]"
+                    aria-label="Copy message ID"
+                    title="Copy message ID"
                   >
-                    <Tag size={12} strokeWidth={2} />
-                  </TagInputPopover>
-                ) : null}
-              </div>
+                    {copiedMessageId ? <Check size={10} strokeWidth={2.5} /> : <Copy size={10} strokeWidth={2.2} />}
+                  </button>
+                </span>
+              ) : null}
+            </div>
+            <div data-design-part="assistant-card-annotations" className="flex min-w-0 flex-wrap items-center gap-1">
+              <AiLabelChip aiLabel={message?.aiLabel} />
+              {tags.map((tag: string) => (
+                <Badge
+                  key={tag}
+                  variant="secondary"
+                  className={cn(
+                    "group/tag relative h-5 cursor-default text-[11px] font-medium shadow-xs",
+                    capabilities.canMutate && "pr-5"
+                  )}
+                >
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span tabIndex={0} aria-label={`Message tag: ${tag}`} className="rounded-sm opacity-90 outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--app-focus)/0.2)]">{tag}</span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">Message tag: {tag}</TooltipContent>
+                  </Tooltip>
+                  {capabilities.canMutate ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRemoveTag(tag);
+                      }}
+                      className="absolute bottom-[1px] right-[1px] top-[1px] flex h-[calc(100%-2px)] w-4 items-center justify-center rounded-sm text-muted-foreground/60 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover/tag:opacity-100"
+                      aria-label={`Remove tag: ${tag}`}
+                      title={`Remove tag: ${tag}`}
+                    >
+                      <X size={10} strokeWidth={2.5} />
+                    </button>
+                  ) : null}
+                </Badge>
+              ))}
+              {capabilities.canMutate && message?.id ? (
+                <TagInputPopover
+                  messageId={message.id}
+                  existingTags={tags}
+                  onAddTags={handleAddTags}
+                  triggerClassName="h-6 w-6 rounded-md border border-dashed border-border/60 p-0.5 text-muted-foreground/70 transition-[background-color,color,transform] duration-normal ease-out-cubic hover:bg-accent/50 hover:text-foreground active:scale-[0.96]"
+                >
+                  <Tag size={12} strokeWidth={2} />
+                </TagInputPopover>
+              ) : null}
+            </div>
+            <div className="ml-auto min-w-0 max-w-full">
+              <TokenUsagePill
+                promptTokens={promptTokens}
+                completionTokens={completionTokens}
+                cachedInputTokens={cachedInputTokens}
+                reasoningTokens={reasoningTokens}
+                totalTokens={totalTokens}
+              />
             </div>
           </div>
+          <div
+            data-agentree-message-header-separator="true"
+            className={cn(
+              "h-px w-full shrink-0 bg-[hsl(var(--app-border)/0.46)]",
+              layout === 'hovercard' ? "my-2" : "mt-2",
+            )}
+          />
         </div>
       </div>
-
-      {layout === 'hovercard' ? (
-        <div
-          data-agentree-message-header-separator="true"
-          className="my-2 h-px w-full shrink-0 bg-[hsl(var(--app-border)/0.46)]"
-        />
-      ) : null}
 
       {providerErrorCode === 'usage_limit_exceeded' && (
         <div className="relative z-10 mb-4 flex min-w-0 max-w-full items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
@@ -1115,7 +1176,7 @@ export const ChatAssistantCard = memo(({
         ariaLabel="Copy assistant response"
         title="Copy response"
         className={cn(
-          "absolute bottom-2 right-2 z-20 h-6 w-6 bg-background/70 opacity-0 backdrop-blur-sm",
+          "absolute bottom-2 right-2 z-20 h-8 w-8 bg-background/70 opacity-0 backdrop-blur-sm",
           "focus-visible:opacity-100 group-hover:opacity-100 dark:bg-slate-900/55"
         )}
       />

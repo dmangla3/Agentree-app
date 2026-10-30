@@ -7,6 +7,10 @@ export function isTauriEnvironment(): boolean {
     (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== undefined;
 }
 
+export function usesMacOSOverlayTitleBar(): boolean {
+  return isTauriEnvironment() && typeof navigator !== 'undefined' && /Mac/.test(navigator.platform);
+}
+
 export const FORCE_SHOW_WORKSPACE_FEATURES = true;
 
 export function shouldShowWorkspaceFeatures(): boolean {

@@ -121,6 +121,22 @@ describe('default prompt store', () => {
     expect(getEffectiveDefaultPromptText('thread_title_none')).toContain('set thread_title to null');
   });
 
+  it('keeps the orchestrator light and integrates delegated commits', () => {
+    const prompt = getEffectiveDefaultPromptText('delegation_control');
+    const rlmPrompt = getEffectiveDefaultPromptText('rlm_loop');
+
+    expect(prompt).toContain('Delegate complete, end-to-end units of work');
+    expect(prompt).toContain('investigation, implementation, tests, and a commit');
+    expect(prompt).toContain('call wait_for_agents immediately');
+    expect(prompt).toContain('Do not repeat delegated file reads');
+    expect(prompt).toContain('review every worker commit');
+    expect(prompt).toContain('octopus merge commit');
+    expect(prompt).not.toContain('Work directly by default');
+    expect(rlmPrompt).toContain('token-heavy end-to-end work');
+    expect(rlmPrompt).toContain('implementation, tests');
+    expect(rlmPrompt).toContain('output commit identifiers');
+  });
+
   it('clears an existing override when saved text matches the built-in default', () => {
     const dependencyGuard = DEFAULT_PROMPT_DEFINITIONS.find((prompt) => prompt.id === 'dependency_guard');
 

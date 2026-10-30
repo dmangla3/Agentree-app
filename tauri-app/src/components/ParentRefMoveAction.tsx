@@ -208,7 +208,7 @@ export function ParentRefMoveAction({
           type="button"
           size="sm"
           variant="outline"
-          className={cn('h-7 gap-1.5 text-[11px]', className)}
+          className={cn('h-10 gap-1.5 rounded-lg text-[11px] transition-transform duration-150 ease-out active:scale-[0.96] motion-reduce:transition-none', className)}
           onClick={(event) => event.stopPropagation()}
         >
           <GitBranch className="h-3 w-3" />
@@ -223,8 +223,8 @@ export function ParentRefMoveAction({
       >
         <div className="space-y-3">
           <div className="space-y-1">
-            <div className="text-sm font-semibold text-foreground">Move parent refs to this commit</div>
-            <div className="text-xs text-muted-foreground">
+            <div className="text-balance text-sm font-semibold text-foreground">Move parent refs</div>
+            <div className="text-pretty text-xs leading-5 text-muted-foreground">
               Select which refs to retarget from <span className="font-medium text-foreground">{getNodeLabel(parentMessage)}</span> to{' '}
               <span className="font-mono text-foreground">{getMessageOutputCommitSha(message)?.slice(0, 7)}</span>.
             </div>
@@ -236,7 +236,7 @@ export function ParentRefMoveAction({
               return (
                 <label
                   key={pointer.id}
-                  className="flex items-center gap-3 rounded-md border px-2.5 py-2 text-sm hover:bg-muted/40"
+                  className="flex min-h-10 cursor-pointer items-center gap-3 rounded-lg border border-border/65 px-2.5 py-2 text-sm transition-colors duration-150 ease-out hover:bg-muted/45 motion-reduce:transition-none"
                 >
                   <Checkbox
                     checked={checked}
@@ -263,6 +263,7 @@ export function ParentRefMoveAction({
               type="button"
               size="sm"
               variant="ghost"
+              className="min-h-10 rounded-lg transition-transform duration-150 ease-out active:scale-[0.96] motion-reduce:transition-none"
               onClick={() => setOpen(false)}
               disabled={isSubmitting}
             >
@@ -273,9 +274,9 @@ export function ParentRefMoveAction({
               size="sm"
               onClick={handleMove}
               disabled={selectedPointers.length === 0 || isSubmitting}
-              className="gap-1.5"
+              className="min-h-10 gap-1.5 rounded-lg transition-transform duration-150 ease-out active:scale-[0.96] motion-reduce:transition-none"
             >
-              {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
+              {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" /> : <ArrowRight className="h-3.5 w-3.5" />}
               <span>{selectedPointers.length === 1 ? 'Move 1 Ref' : `Move ${selectedPointers.length} Refs`}</span>
             </Button>
           </div>

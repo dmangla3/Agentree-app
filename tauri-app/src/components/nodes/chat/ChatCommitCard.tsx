@@ -125,14 +125,14 @@ export const ChatCommitCard = memo(({
       className={cn(
         ROLE_COLORS.commit_message.bg,
         ROLE_COLORS.commit_message.border,
-        compact && isFocused && 'border-[hsl(var(--app-selection)/0.68)] bg-[hsl(var(--app-selection)/0.08)] shadow-lg',
-        compact && isSelected && !isFocused && 'border-blue-500/70 bg-blue-50/80 shadow-md dark:border-blue-400/70 dark:bg-blue-950/30'
+        compact && isFocused && 'border-[hsl(var(--app-selection)/0.68)] bg-[hsl(var(--app-selection)/0.08)] shadow-[0_14px_34px_-28px_hsl(var(--foreground)/0.38)]',
+        compact && isSelected && !isFocused && 'border-[hsl(var(--app-selection)/0.62)] bg-[hsl(var(--app-selection)/0.07)] shadow-[0_10px_28px_-24px_hsl(var(--foreground)/0.3)]'
       )}
     >
       <div className="flex min-w-0 max-w-full flex-col gap-3">
         <div className="flex min-w-0 flex-wrap items-start gap-2">
           {/* Compact Icon */}
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-emerald-200/60 bg-gradient-to-br from-emerald-100 to-teal-50 text-emerald-600 shadow-sm dark:border-emerald-800 dark:from-emerald-950/50 dark:to-teal-950/40 dark:text-emerald-400">
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-graph-commit)/0.22)] bg-[hsl(var(--app-graph-commit)/0.09)] text-[hsl(var(--app-graph-commit))]">
             <GitCommitHorizontal size={14} strokeWidth={2} />
           </div>
 
@@ -140,11 +140,12 @@ export const ChatCommitCard = memo(({
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               <code
-                className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-400 text-[10px] font-bold font-mono"
+                data-design-typography="soft-label-bold"
+                className="inline-flex items-center gap-0.5 rounded border border-[hsl(var(--app-graph-commit)/0.2)] bg-[hsl(var(--app-graph-commit)/0.08)] px-1 py-0.5 font-mono text-[10px] font-medium text-[hsl(var(--app-graph-commit))]"
                 title={nodeCommit || undefined}
               >
                 {entity.shortSha}
-                <CopyCommitShaButton commitSha={nodeCommit} className="h-3.5 w-3.5 text-emerald-700/70 dark:text-emerald-300/70" />
+                <CopyCommitShaButton commitSha={nodeCommit} className="h-3.5 w-3.5 text-[hsl(var(--app-graph-commit)/0.72)]" />
               </code>
               <span className="min-w-0 break-words text-[11px] text-muted-foreground">
                 {entity.authorName}
@@ -162,18 +163,19 @@ export const ChatCommitCard = memo(({
             {(hasHead || primaryBranch) && (
               <div className="mt-1 flex flex-wrap items-center gap-1.5">
                 {hasHead && (
-                  <span className="inline-flex items-center rounded-full bg-emerald-500 px-1.5 py-0.5 text-[9px] font-semibold text-white shadow-sm">
+                  <span data-design-typography="soft-on-color" className="inline-flex items-center rounded-md bg-[hsl(var(--app-graph-commit))] px-1.5 py-0.5 text-[9px] font-medium text-[hsl(40_24%_96%)]">
                     HEAD
                   </span>
                 )}
                 {primaryBranch && (
                   <span
-                    className="inline-flex max-w-[160px] items-center gap-1 rounded-full border border-sky-200/80 bg-sky-100/90 px-2 py-0.5 text-[9px] font-semibold text-sky-700 shadow-sm dark:border-sky-800/80 dark:bg-sky-950/60 dark:text-sky-300"
+                    data-design-typography="soft-label"
+                    className="inline-flex max-w-[160px] items-center gap-1 rounded-md border border-[hsl(var(--app-graph-agent)/0.24)] bg-[hsl(var(--app-graph-agent)/0.08)] px-2 py-0.5 text-[9px] font-medium text-[hsl(var(--app-graph-agent))]"
                     title={otherBranches.map((pointer: BranchPointer) => pointer.name).join(', ')}
                   >
                     <GitBranch size={9} />
                     <span className="truncate">{primaryBranch.name}</span>
-                    {extraBranchCount > 0 ? <span className="text-sky-500/80 dark:text-sky-300/80">+{extraBranchCount}</span> : null}
+                    {extraBranchCount > 0 ? <span className="text-[hsl(var(--app-graph-agent)/0.72)]">+{extraBranchCount}</span> : null}
                   </span>
                 )}
               </div>
@@ -186,18 +188,18 @@ export const ChatCommitCard = memo(({
                 </span>
               ) : fileCount > 0 ? (
                 <>
-                  <div className="flex items-center gap-1 font-medium text-slate-600 dark:text-slate-300">
+                  <div className="flex items-center gap-1 font-medium text-muted-foreground">
                     <Files size={10} />
                     <span>{fileCount} {fileCount === 1 ? 'file' : 'files'} changed</span>
                   </div>
                   {(totalAdditions > 0 || totalDeletions > 0) && (
                     <div className="flex items-center gap-1.5 font-medium">
-                      {totalAdditions > 0 && <span className="text-emerald-600 dark:text-emerald-400">+{totalAdditions}</span>}
-                      {totalDeletions > 0 && <span className="text-red-500 dark:text-red-400">-{totalDeletions}</span>}
+                      {totalAdditions > 0 && <span className="text-[hsl(var(--app-success))]">+{totalAdditions}</span>}
+                      {totalDeletions > 0 && <span className="text-[hsl(var(--app-danger))]">-{totalDeletions}</span>}
                     </div>
                   )}
                   {statusSummary && statusSummary.length > 0 && (
-                    <span className="text-[9px] text-slate-400">({statusSummary.join(', ')})</span>
+                    <span className="text-[9px] text-muted-foreground/70">({statusSummary.join(', ')})</span>
                   )}
                 </>
               ) : parentCommit && nodeCommit ? (

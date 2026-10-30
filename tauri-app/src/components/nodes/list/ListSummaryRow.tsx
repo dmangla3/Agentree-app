@@ -41,7 +41,7 @@ export const ListSummaryRow = memo(({
         <div className="mt-1 flex w-full flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
           <div className={cn("flex min-w-0 items-center gap-1 rounded border border-[hsl(var(--app-border)/0.48)] px-1 py-0.5", ROLE_COLORS.summary_block.chip)}>
             <Layers size={10} />
-            <span className="font-semibold text-[9px] uppercase tracking-wider">Summary</span>
+            <span data-design-typography="soft-label" className="text-[9px] font-medium uppercase tracking-wider">Summary</span>
           </div>
           <div className="ml-auto flex shrink-0 items-center text-[10px] font-medium text-muted-foreground/70 tabular-nums">
             {timestamp}

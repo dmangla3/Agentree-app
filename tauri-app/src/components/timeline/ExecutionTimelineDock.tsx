@@ -697,10 +697,10 @@ export const ExecutionTimelineDock = memo(({
                     className={cn(
                       "absolute z-20 flex min-w-0 items-center gap-1.5 rounded-md border px-2 text-left text-[11px] font-semibold leading-none shadow-sm transition-[opacity,box-shadow,border-color,background-color]",
                       bar.isActive
-                        ? "border-indigo-400/80 bg-indigo-500 text-white shadow-[0_12px_28px_-22px_rgba(79,70,229,0.82)]"
+                        ? "border-[hsl(var(--app-accent)/0.64)] bg-[hsl(var(--app-accent))] text-primary-foreground shadow-[0_12px_28px_-22px_hsl(var(--app-accent)/0.7)]"
                         : "border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel-strong)/0.88)] text-foreground",
-                      isFocused && "ring-2 ring-indigo-500",
-                      isSelected && "ring-2 ring-blue-500",
+                      isFocused && "ring-2 ring-[hsl(var(--app-focus))]",
+                      isSelected && "ring-2 ring-[hsl(var(--app-selection))]",
                       isHovered && "border-[hsl(var(--app-accent))] shadow-[0_14px_30px_-22px_hsl(var(--app-accent)/0.75)]",
                       hoveredMessageId && !isHovered && !isRelated && "opacity-45",
                     )}
@@ -748,8 +748,8 @@ export const ExecutionTimelineDock = memo(({
                       "absolute z-30 flex h-6 w-6 -translate-x-1/2 items-center justify-center rounded-full border bg-[hsl(var(--app-panel))] text-muted-foreground shadow-sm transition-[opacity,box-shadow,border-color,color]",
                       marker.kind === 'commit' && "border-emerald-400/75 text-emerald-700 dark:text-emerald-300",
                       marker.kind === 'user_message' && "border-slate-300/80 text-slate-700 dark:border-slate-700 dark:text-slate-200",
-                      isFocused && "ring-2 ring-indigo-500",
-                      isSelected && "ring-2 ring-blue-500",
+                      isFocused && "ring-2 ring-[hsl(var(--app-focus))]",
+                      isSelected && "ring-2 ring-[hsl(var(--app-selection))]",
                       isHovered && "border-[hsl(var(--app-accent))] text-[hsl(var(--app-accent))]",
                       hoveredMessageId && !isHovered && !isRelated && "opacity-45",
                     )}
@@ -806,7 +806,7 @@ export const ExecutionTimelineDock = memo(({
                   key={bar.id}
                   className={cn(
                     "absolute h-1.5 rounded-full",
-                    bar.isActive ? "bg-indigo-500" : "bg-slate-500/65 dark:bg-slate-300/55",
+                    bar.isActive ? "bg-[hsl(var(--app-accent))]" : "bg-slate-500/65 dark:bg-slate-300/55",
                   )}
                   style={{
                     left: `${leftPct}%`,
@@ -831,7 +831,7 @@ export const ExecutionTimelineDock = memo(({
               data-display-start-pct={brushLeftPct.toFixed(4)}
               data-display-end-pct={brushRightPct.toFixed(4)}
               data-display-span-pct={brushSpanPct.toFixed(4)}
-              className="absolute left-[var(--execution-timeline-brush-left)] top-1 h-12 w-[var(--execution-timeline-brush-width)] -translate-x-1/2 cursor-grab rounded-md border border-indigo-400/80 bg-indigo-500/10 shadow-[0_0_0_1px_rgba(99,102,241,0.14)_inset] transition-[border-color,background-color,box-shadow] hover:border-indigo-300 hover:bg-indigo-500/15 hover:shadow-[0_0_0_1px_rgba(99,102,241,0.22)_inset,0_10px_22px_-18px_rgba(79,70,229,0.72)] active:cursor-grabbing"
+              className="absolute left-[var(--execution-timeline-brush-left)] top-1 h-12 w-[var(--execution-timeline-brush-width)] -translate-x-1/2 cursor-grab rounded-md border border-[hsl(var(--app-selection)/0.72)] bg-[hsl(var(--app-accent-soft)/0.5)] shadow-[inset_0_0_0_1px_hsl(var(--app-selection)/0.12)] transition-[border-color,background-color,box-shadow] hover:border-[hsl(var(--app-selection)/0.9)] hover:bg-[hsl(var(--app-accent-soft)/0.72)] hover:shadow-[inset_0_0_0_1px_hsl(var(--app-selection)/0.2),0_10px_22px_-18px_hsl(var(--app-selection)/0.6)] active:cursor-grabbing"
               style={{
                 '--execution-timeline-brush-left': `clamp(${MINIMAP_BRUSH_MIN_WIDTH_PX / 2}px, ${brushCenterPct}%, calc(100% - ${MINIMAP_BRUSH_MIN_WIDTH_PX / 2}px))`,
                 '--execution-timeline-brush-width': `max(${MINIMAP_BRUSH_MIN_WIDTH_PX}px, ${brushSpanPct}%)`,
@@ -840,12 +840,12 @@ export const ExecutionTimelineDock = memo(({
             >
               <span
                 data-testid="execution-timeline-brush-left-handle"
-                className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize rounded-l-md border-l-2 border-indigo-300/95 bg-indigo-500/25 shadow-[6px_0_12px_-10px_rgba(79,70,229,0.95)] transition-[background-color,border-color] hover:border-indigo-200 hover:bg-indigo-500/35"
+                className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize rounded-l-md border-l-2 border-[hsl(var(--app-selection)/0.9)] bg-[hsl(var(--app-selection)/0.22)] transition-[background-color,border-color] hover:border-[hsl(var(--app-selection))] hover:bg-[hsl(var(--app-selection)/0.32)]"
                 onPointerDown={(event) => startBrushDrag(event, 'brush-left')}
               />
               <span
                 data-testid="execution-timeline-brush-right-handle"
-                className="absolute inset-y-0 right-0 z-10 w-1.5 cursor-ew-resize rounded-r-md border-r-2 border-indigo-300/95 bg-indigo-500/25 shadow-[-6px_0_12px_-10px_rgba(79,70,229,0.95)] transition-[background-color,border-color] hover:border-indigo-200 hover:bg-indigo-500/35"
+                className="absolute inset-y-0 right-0 z-10 w-1.5 cursor-ew-resize rounded-r-md border-r-2 border-[hsl(var(--app-selection)/0.9)] bg-[hsl(var(--app-selection)/0.22)] transition-[background-color,border-color] hover:border-[hsl(var(--app-selection))] hover:bg-[hsl(var(--app-selection)/0.32)]"
                 onPointerDown={(event) => startBrushDrag(event, 'brush-right')}
               />
             </div>

@@ -22,9 +22,9 @@ export function MergePanel({ onClose }: MergePanelProps) {
   const repoPath = selectedWorkspace?.git_repo_path || selectedWorkspace?.folderPath;
 
   const panelNotice = (message: string) => (
-    <div className="flex h-full items-center justify-center p-6">
-      <div className="flex w-full max-w-md items-start gap-3 rounded-xl border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel)/0.82)] p-4 shadow-[0_16px_36px_-30px_hsl(var(--foreground)/0.42),inset_0_1px_0_hsl(var(--foreground)/0.04)]">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--app-warning)/0.12)] text-[hsl(var(--app-warning))]">
+    <div data-design-scope="panels" className="flex h-full items-center justify-center p-6 antialiased">
+      <div className="flex w-full max-w-sm items-start gap-3 px-3 py-4">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--app-warning)/0.1)] text-[hsl(var(--app-warning))]">
           <AlertCircle className="h-4 w-4" />
         </div>
         <div className="space-y-1">
@@ -57,8 +57,8 @@ export function MergePanel({ onClose }: MergePanelProps) {
 
   if (!session) {
     return (
-      <div className="flex h-full items-center justify-center p-8">
-        <div className="flex items-center gap-3 rounded-xl border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.78)] px-4 py-3 text-sm text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--foreground)/0.04)]">
+      <div data-design-scope="panels" className="flex h-full items-center justify-center p-6 antialiased">
+        <div className="flex items-center gap-2.5 px-3 py-2 text-sm text-muted-foreground">
           <GitMerge className="h-4 w-4 text-[hsl(var(--app-graph-commit))]" />
           <Loader2 className="h-4 w-4 animate-spin" />
           Preparing merge workspace

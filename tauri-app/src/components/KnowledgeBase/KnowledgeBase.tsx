@@ -164,7 +164,7 @@ const FileTreeItem = ({ file, level, onSelect, onDelete, onUpload, onCreateFolde
                     )}
                 </div>
 
-                <div className="mr-2 text-blue-500">
+                <div className="mr-2 text-muted-foreground">
                     {file.type === 'folder' ? <Folder size={16} /> : <FileText size={16} />}
                 </div>
 
@@ -227,7 +227,7 @@ const FileTreeItem = ({ file, level, onSelect, onDelete, onUpload, onCreateFolde
                 <div>
                     {showNewFolderInput && (
                         <form onSubmit={submitNewFolder} className="flex items-center px-2 py-1" style={{ paddingLeft: `${(level + 1) * 12 + 8}px` }}>
-                            <Folder size={16} className="mr-2 text-blue-500" />
+                            <Folder size={16} className="mr-2 text-muted-foreground" />
                             <Input
                                 autoFocus
                                 value={newFolderName}
@@ -313,14 +313,14 @@ export const KnowledgeBase = () => {
     };
 
     return (
-        <div className="h-full flex w-full">
+        <div data-design-scope="panels" className="flex h-full w-full antialiased">
             {/* Left Sidebar: File Tree */}
-            <div className="w-1/3 min-w-[250px] max-w-[400px] border-r flex flex-col bg-card">
-                <div className="p-4 border-b flex items-center justify-between">
+            <div className="flex w-1/3 min-w-[250px] max-w-[400px] flex-col border-r border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.76)]">
+                <div className="flex min-h-14 items-center justify-between border-b border-[hsl(var(--app-border)/0.58)] px-3 py-2">
                     <h2 className="font-semibold text-sm">Knowledge Base</h2>
                     <Dialog>
                         <DialogTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-8 w-8">
+                            <Button variant="ghost" size="icon" className="h-10 w-10 rounded-lg active:scale-[0.96]">
                                 <Plus size={16} />
                             </Button>
                         </DialogTrigger>
@@ -341,7 +341,7 @@ export const KnowledgeBase = () => {
                     <Button
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8"
+                        className="h-10 w-10 rounded-lg active:scale-[0.96]"
                         onClick={() => {
                             const input = document.createElement('input');
                             input.type = 'file';
@@ -366,7 +366,7 @@ export const KnowledgeBase = () => {
                     <Button
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8"
+                        className="h-10 w-10 rounded-lg active:scale-[0.96]"
                         onClick={() => {
                             const input = document.createElement('input');
                             input.type = 'file';
@@ -396,7 +396,7 @@ export const KnowledgeBase = () => {
                 <ScrollArea className="flex-1">
                     <div
                         className={cn(
-                            "h-full min-h-[200px] p-2 transition-colors",
+                            "h-full min-h-[200px] p-2 transition-[background-color,border-color] duration-150",
                             isDragOver && "bg-accent/20 border-2 border-dashed border-primary m-2 rounded-lg"
                         )}
                         onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
@@ -412,9 +412,9 @@ export const KnowledgeBase = () => {
                                 <Skeleton className="h-8 w-full" />
                             </div>
                         ) : rootFiles.length === 0 ? (
-                            <div className="flex flex-col items-center justify-center h-40 text-muted-foreground text-xs text-center p-4">
+                            <div className="flex h-40 flex-col items-center justify-center p-4 text-center text-xs text-muted-foreground">
                                 <Upload className="mb-2 opacity-50" />
-                                <p>Drag & drop files here to upload</p>
+                                <p>Drop files here to upload</p>
                             </div>
                         ) : (
                             rootFiles.map(file => (
@@ -436,7 +436,7 @@ export const KnowledgeBase = () => {
             </div>
 
             {/* Right Panel: Preview */}
-            <div className="flex-1 h-full overflow-hidden bg-background">
+            <div className="h-full flex-1 overflow-hidden bg-[hsl(var(--app-bg))]">
                 <FilePreview />
             </div>
         </div>

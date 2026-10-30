@@ -2,6 +2,15 @@ import { useCapturedShortcut, useShortcut } from './useShortcut';
 
 export type GraphNavigationDirection = 'up' | 'down' | 'left' | 'right';
 
+const isDismissableLayerEvent = (event: KeyboardEvent): boolean => {
+  const target = event.target instanceof Element ? event.target : document.activeElement;
+  return Boolean(target?.closest([
+    '[data-slot="dropdown-menu-content"]',
+    '[data-slot="dialog-content"]',
+    '[data-slot="popover-content"]',
+  ].join(',')));
+};
+
 export function useGraphViewHotkeys(options: {
   hasSelection: boolean;
   isComposerOpen: boolean;
@@ -17,7 +26,8 @@ export function useGraphViewHotkeys(options: {
   closeThread: () => void;
   reopenLastClosedThread: () => void;
 }) {
-  useShortcut('graph.composer.close', () => {
+  useShortcut('graph.composer.close', (event) => {
+    if (isDismissableLayerEvent(event)) return;
     options.closeComposer();
   }, { enabled: options.isComposerOpen });
 

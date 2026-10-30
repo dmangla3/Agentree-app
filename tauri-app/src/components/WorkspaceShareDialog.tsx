@@ -17,6 +17,13 @@ import {
 } from '../hooks/useWorkspacePublicShare';
 import { writeClipboardText } from '../lib/clipboard';
 import { useToastHelpers } from './Toast';
+import {
+  graphHeaderControlClass,
+  graphHeaderControlIconClass,
+  graphHeaderControlLabelClass,
+  graphHeaderControlSelectedClass,
+} from './graphHeaderControlStyles';
+import { cn } from '../lib/utils';
 
 interface WorkspaceShareDialogProps {
   workspaceId: string | null;
@@ -67,39 +74,42 @@ export function WorkspaceShareDialog({
         variant="outline"
         size="sm"
         title="View shared node links"
+        aria-label="Shared nodes"
+        aria-pressed={open}
         disabled={!workspaceId}
         onClick={() => setOpen(true)}
-        className="h-8 gap-2"
+        data-design-part="graph-header-shared"
+        className={cn(graphHeaderControlClass, open && graphHeaderControlSelectedClass)}
       >
-        <Share2 className="h-3.5 w-3.5" />
-        <span className="hidden text-xs sm:inline">Shared Nodes</span>
+        <Share2 className={graphHeaderControlIconClass} />
+        <span className={graphHeaderControlLabelClass}>Shared nodes</span>
       </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-[calc(100vw-2rem)] overflow-hidden sm:max-w-2xl">
-          <DialogHeader>
+        <DialogContent data-design-scope="panels" data-design-part="workspace-share-dialog" className="max-w-[calc(100vw-2rem)] gap-0 overflow-hidden rounded-xl border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel))] p-0 shadow-[0_24px_64px_-32px_hsl(var(--foreground)/0.5)] dark:border-white/10 sm:max-w-2xl">
+          <DialogHeader className="border-b border-[hsl(var(--app-border)/0.68)] px-5 py-4 text-left dark:border-white/10">
             <DialogTitle className="flex items-center gap-2">
               <Globe2 className="h-4 w-4" />
-              Shared Node Links
+              Shared node links
             </DialogTitle>
             <DialogDescription>
-              Manage unlisted read-only graph links for {workspaceName || 'this workspace'}.
+              Read-only public links for {workspaceName || 'this workspace'}.
             </DialogDescription>
           </DialogHeader>
 
           {!cloudSyncEnabled ? (
-            <div className="rounded-md border border-border/70 bg-muted/30 p-4 text-sm leading-5 text-muted-foreground">
+            <div className="px-5 py-4 text-pretty text-sm leading-5 text-muted-foreground">
               Nothing from this workspace is stored on Agentree Cloud. Share a node from its menu to review and enable cloud sync.
             </div>
           ) : (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium uppercase text-muted-foreground">Active links</span>
-                <span className="text-xs text-muted-foreground">{shares.length}</span>
+            <div>
+              <div className="flex items-center justify-between border-b border-[hsl(var(--app-border)/0.68)] px-5 py-2.5 dark:border-white/10">
+                <span className="text-xs font-semibold text-foreground">Active links</span>
+                <span className="font-mono text-xs tabular-nums text-muted-foreground">{shares.length}</span>
               </div>
-              <div className="max-h-72 space-y-2 overflow-y-auto overflow-x-hidden pr-1">
+              <div className="max-h-80 divide-y divide-[hsl(var(--app-border)/0.58)] overflow-y-auto overflow-x-hidden dark:divide-white/10">
                 {sharesQuery.isError ? (
-                  <div role="alert" className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3">
+                  <div role="alert" className="flex items-center justify-between gap-3 bg-destructive/5 px-5 py-3">
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-destructive">
                         {shares.length > 0 ? 'Unable to refresh shared node links.' : 'Unable to load shared node links.'}
@@ -114,38 +124,38 @@ export function WorkspaceShareDialog({
                       size="sm"
                       disabled={sharesQuery.isFetching}
                       onClick={() => void sharesQuery.refetch()}
-                      className="shrink-0"
+                      className="h-10 shrink-0 rounded-lg active:scale-[0.96]"
                     >
                       {sharesQuery.isFetching ? 'Trying again...' : 'Try again'}
                     </Button>
                   </div>
                 ) : null}
                 {sharesQuery.isLoading ? (
-                  <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">Loading shared nodes...</div>
+                  <div className="px-5 py-5 text-sm text-muted-foreground">Loading shared nodes...</div>
                 ) : shares.length === 0 && !sharesQuery.isError ? (
-                  <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">No active public node links.</div>
+                  <div className="px-5 py-5 text-sm text-muted-foreground">No active public node links.</div>
                 ) : shares.map((share) => {
                   const created = new Date(share.createdAt);
                   const createdLabel = Number.isNaN(created.getTime())
                     ? null
                     : `Created ${formatDistanceToNowStrict(created, { addSuffix: true })}`;
                   return (
-                    <div key={share.id} className="flex max-w-full flex-col gap-2 rounded-lg border bg-background/80 p-3 sm:flex-row sm:items-center">
+                    <div key={share.id} className="flex max-w-full flex-col gap-2 px-5 py-3 sm:flex-row sm:items-center">
                       <div className="min-w-0 flex-1 overflow-hidden">
                         <div className="truncate text-sm font-medium" title={getShareTitle(share)}>{getShareTitle(share)}</div>
                         {createdLabel ? <div className="mt-0.5 text-xs text-muted-foreground">{createdLabel}</div> : null}
-                        <div className="mt-1 truncate rounded-md bg-muted/45 px-2 py-1 font-mono text-[11px] text-muted-foreground">
+                        <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
                           {getPublicShareUrl(share.publicId)}
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5 self-end sm:self-auto">
-                        <Button type="button" variant="outline" size="sm" onClick={() => handleCopy(share)} className="h-8 w-8 p-0" title="Copy link">
+                        <Button type="button" variant="outline" size="sm" onClick={() => handleCopy(share)} className="h-10 w-10 rounded-lg p-0 active:scale-[0.96]" title="Copy link">
                           {copiedPublicId === share.publicId ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
                         </Button>
-                        <Button type="button" variant="outline" size="sm" onClick={() => window.open(getPublicShareUrl(share.publicId), '_blank', 'noopener,noreferrer')} className="h-8 w-8 p-0" title="Open link">
+                        <Button type="button" variant="outline" size="sm" onClick={() => window.open(getPublicShareUrl(share.publicId), '_blank', 'noopener,noreferrer')} className="h-10 w-10 rounded-lg p-0 active:scale-[0.96]" title="Open link">
                           <ExternalLink className="h-3.5 w-3.5" />
                         </Button>
-                        <Button type="button" variant="outline" size="sm" onClick={() => handleRevoke(share)} disabled={revokeShare.isPending} className="h-8 w-8 p-0 text-destructive" title="Revoke link">
+                        <Button type="button" variant="outline" size="sm" onClick={() => handleRevoke(share)} disabled={revokeShare.isPending} className="h-10 w-10 rounded-lg p-0 text-destructive active:scale-[0.96]" title="Revoke link">
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                       </div>

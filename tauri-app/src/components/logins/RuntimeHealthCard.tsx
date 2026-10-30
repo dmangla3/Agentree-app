@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useSyncExternalStore, useState } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { Download, HeartPulse, Loader2, RefreshCw } from 'lucide-react';
+import { AlertCircle, Download, HeartPulse, Loader2, RefreshCw } from 'lucide-react';
 import { Button } from '../../../@/components/ui/button';
 import { agentClient } from '../../lib/agentClient';
 import type { ManagedRuntimeDoctorEntry } from '../../generated/tauri-bindings';
@@ -276,16 +276,16 @@ export function RuntimeHealthCard() {
   if (displayEntries.length === 0 && !visibleError) return null;
 
   return (
-    <section className="min-w-0 overflow-hidden rounded-xl bg-background/82 p-4 shadow-[0_18px_52px_-44px_rgba(15,23,42,0.65),inset_0_0_0_1px_hsl(var(--app-border)/0.72)]">
+    <section className="min-w-0 p-4">
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2 text-[13px] font-semibold text-foreground">
-          <HeartPulse className="h-4 w-4 shrink-0 text-[hsl(var(--app-accent))]" />
+          <HeartPulse className="h-4 w-4 shrink-0 text-muted-foreground" />
           <span className="min-w-0 truncate">Runtime health</span>
         </div>
         <Button
           variant="ghost"
           size="sm"
-          className="h-7 px-2"
+          className="h-10 w-10 rounded-lg px-0"
           aria-label="Refresh runtime health"
           disabled={isRefreshing || Boolean(repairSnapshot.busyComponent)}
           onClick={() => void refresh(true)}
@@ -293,12 +293,11 @@ export function RuntimeHealthCard() {
           <RefreshCw className={cn('h-3.5 w-3.5', isRefreshing && 'animate-spin')} />
         </Button>
       </div>
-      <p className="mt-2 min-w-0 break-words text-[12px] leading-5 text-muted-foreground [overflow-wrap:anywhere]">
-        Pinned provider toolchains managed by Agentree. Missing components download automatically on
-        first use.
+      <p className="mt-1 min-w-0 break-words text-[11px] leading-5 text-muted-foreground [overflow-wrap:anywhere]">
+        Agentree-managed provider toolchains. Missing components download on first use.
       </p>
 
-      <div className="mt-3 space-y-2">
+      <div className="mt-3 divide-y divide-border/55 border-y border-border/55">
         {displayEntries.map((entry) => {
           const progress = repairSnapshot.progressByComponent[entry.component];
           const isBusy = repairSnapshot.busyComponent === entry.component;
@@ -316,8 +315,9 @@ export function RuntimeHealthCard() {
       </div>
 
       {visibleError ? (
-        <div className="mt-2 min-w-0 break-words rounded-md bg-red-50 px-2.5 py-1.5 text-[11px] text-red-700 [overflow-wrap:anywhere] dark:bg-red-950/35 dark:text-red-300">
-          {visibleError}
+        <div className="mt-3 flex min-w-0 items-start gap-2 rounded-lg bg-destructive/[0.06] px-3 py-2 text-[11px] leading-5 text-destructive shadow-[inset_0_0_0_1px_hsl(var(--destructive)/0.18)] [overflow-wrap:anywhere]">
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 break-words">{visibleError}</span>
         </div>
       ) : null}
     </section>
@@ -344,7 +344,7 @@ const RuntimeEntryRow = memo(function RuntimeEntryRow({
     : `Preparing runtime ${actionLabel.toLowerCase()}`;
 
   return (
-    <div className="min-w-0 overflow-hidden rounded-lg bg-muted/38 p-3">
+    <div className="min-w-0 py-3">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <span className="flex min-w-0 flex-1 items-start gap-2">
           <span
@@ -366,7 +366,7 @@ const RuntimeEntryRow = memo(function RuntimeEntryRow({
           <Button
             variant="outline"
             size="sm"
-            className="h-7 w-fit shrink-0 px-2 text-[11px]"
+            className="h-10 w-fit shrink-0 rounded-lg px-3 text-[11px]"
             disabled={disabled}
             onClick={() => onInstall(entry)}
           >
@@ -408,7 +408,7 @@ const RuntimeEntryRow = memo(function RuntimeEntryRow({
           >
             <div
               className={cn(
-                'h-full rounded-full bg-[hsl(var(--app-accent))] transition-[width] duration-300',
+                'h-full rounded-full bg-foreground/75 transition-[width] duration-300',
                 percent === null && 'w-1/3 animate-pulse'
               )}
               style={percent === null ? undefined : { width: `${percent}%` }}

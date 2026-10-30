@@ -15,7 +15,13 @@
         "title": "Agentree",
         "width": 800,
         "height": 600,
-        "maximized": true
+        "maximized": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 26
+        }
       }
     ],
     "security": {

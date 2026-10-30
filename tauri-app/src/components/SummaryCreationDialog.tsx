@@ -99,47 +99,49 @@ export function SummaryCreationDialog({ isOpen, onClose, startMessageId, endMess
 
     return (
         <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-            <DialogContent className="sm:max-w-[800px]">
+            <DialogContent data-design-scope="panels" className="gap-0 overflow-hidden bg-[hsl(var(--app-panel-strong))] p-0 sm:max-w-[800px]">
+                <div className="border-b border-border/60 px-5 py-4">
                 <DialogHeader>
-                    <DialogTitle>Create Summary Node</DialogTitle>
+                    <DialogTitle>Create summary</DialogTitle>
                     <DialogDescription>
-                        Summarize the selected workspace range. This will create a parallel summary path.
+                        Summarize this workspace range as a parallel path.
                     </DialogDescription>
                 </DialogHeader>
+                </div>
 
-                <div className="flex gap-4 py-4 h-[400px]">
+                <div className="flex h-[400px] gap-4 px-5 py-4">
                     {/* Left Side: Tabs */}
                     <div className="w-1/3 border-r pr-4">
-                        <Tabs value={activeTab} onValueChange={handleTabChange} orientation="vertical" className="h-full flex flex-col">
-                            <TabsList className="flex flex-col h-auto bg-transparent p-0 gap-2 items-stretch">
-                                <TabsTrigger value="custom" className="justify-start data-[state=active]:bg-accent">
+                        <Tabs value={activeTab} onValueChange={handleTabChange} orientation="vertical" className="flex h-full flex-col">
+                            <TabsList className="flex h-auto flex-col items-stretch gap-1 rounded-xl bg-muted/30 p-1 shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.55)]">
+                                <TabsTrigger value="custom" className="h-10 justify-start rounded-lg transition-[background-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.96] data-[state=active]:bg-background">
                                     <PenTool className="mr-2 h-4 w-4" />
                                     Custom
                                 </TabsTrigger>
-                                <TabsTrigger value="insights" className="justify-start data-[state=active]:bg-accent">
+                                <TabsTrigger value="insights" className="h-10 justify-start rounded-lg transition-[background-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.96] data-[state=active]:bg-background">
                                     <Lightbulb className="mr-2 h-4 w-4" />
                                     Extract Insights
                                 </TabsTrigger>
-                                <TabsTrigger value="executive" className="justify-start data-[state=active]:bg-accent">
+                                <TabsTrigger value="executive" className="h-10 justify-start rounded-lg transition-[background-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.96] data-[state=active]:bg-background">
                                     <FileText className="mr-2 h-4 w-4" />
                                     Executive Summary
                                 </TabsTrigger>
                             </TabsList>
 
-                            <div className="mt-auto pt-4 space-y-2">
+                            <div className="mt-auto space-y-2 pt-4">
                                 <Label htmlFor="prompt" className="text-xs font-semibold text-muted-foreground">
-                                    Generation Prompt
+                                    Generation prompt
                                 </Label>
                                 <Textarea
                                     id="prompt"
                                     placeholder="Enter instructions for the AI..."
                                     value={prompt}
                                     onChange={(e) => setPrompt(e.target.value)}
-                                    className="h-32 resize-none text-xs"
+                                    className="h-32 resize-none rounded-lg text-xs leading-5"
                                 />
                                 <Button
                                     size="sm"
-                                    className="w-full"
+                                    className="h-10 w-full rounded-lg"
                                     onClick={handleGenerate}
                                     disabled={!prompt.trim() || isGenerating}
                                 >
@@ -151,27 +153,27 @@ export function SummaryCreationDialog({ isOpen, onClose, startMessageId, endMess
                     </div>
 
                     {/* Right Side: Content Editor */}
-                    <div className="w-2/3 pl-2 flex flex-col gap-2">
+                    <div className="flex w-2/3 flex-col gap-2 pl-2">
                         <Label htmlFor="summary-content" className="text-sm font-medium">
-                            Summary Content
+                            Summary content
                         </Label>
                         <Textarea
                             id="summary-content"
                             placeholder="Generated summary will appear here. You can also edit it manually."
                             value={content}
                             onChange={(e) => setContent(e.target.value)}
-                            className="flex-1 resize-none font-mono text-sm"
+                            className="flex-1 resize-none rounded-lg font-mono text-sm leading-6"
                         />
                     </div>
                 </div>
 
-                <DialogFooter>
-                    <Button variant="outline" onClick={onClose} disabled={isSubmitting}>
+                <DialogFooter className="border-t border-border/60 bg-muted/20 px-5 py-4">
+                    <Button className="h-10 rounded-lg" variant="outline" onClick={onClose} disabled={isSubmitting}>
                         Cancel
                     </Button>
-                    <Button onClick={handleCreate} disabled={!content.trim() || isSubmitting}>
+                    <Button className="h-10 rounded-lg" onClick={handleCreate} disabled={!content.trim() || isSubmitting}>
                         {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                        Create Summary
+                        Create summary
                     </Button>
                 </DialogFooter>
             </DialogContent>

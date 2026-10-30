@@ -32,7 +32,8 @@ function HoverCardContent({
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}
         className={cn(
-          "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 w-[640px] origin-(--radix-hover-card-content-transform-origin) rounded-lg border p-0 shadow-xl outline-hidden", // Increased width to 640px, rounded-lg, shadow-xl, p-0 for internal scrollarea
+          "z-[90] w-[min(640px,calc(100vw-2rem))] origin-(--radix-hover-card-content-transform-origin) rounded-xl border border-[hsl(var(--app-border)/0.74)] bg-[hsl(var(--app-panel-strong)/0.98)] p-0 text-popover-foreground shadow-[0_0_0_1px_hsl(var(--foreground)/0.025),0_20px_52px_-26px_hsl(var(--foreground)/0.42)] outline-hidden backdrop-blur-xl",
+          "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-[0.98] data-[state=open]:zoom-in-[0.98] data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 duration-150 [animation-timing-function:cubic-bezier(0.2,0,0,1)] motion-reduce:animate-none",
           className
         )}
         {...props}

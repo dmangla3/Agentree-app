@@ -38,10 +38,10 @@ type InboxTab = 'needs' | 'saved' | 'turn';
 const AGENT_CONFIG: Record<string, { Icon: LucideIcon; label: string; className: string }> = {
     hypothesis: { Icon: Lightbulb, label: 'Hypothesis', className: 'text-amber-600 dark:text-amber-300' },
     doubt: { Icon: ShieldAlert, label: 'Doubt', className: 'text-amber-700 dark:text-amber-300' },
-    meta: { Icon: Brain, label: 'Meta', className: 'text-slate-600 dark:text-slate-300' },
+    meta: { Icon: Brain, label: 'Meta', className: 'text-muted-foreground' },
     association: { Icon: GitBranch, label: 'Connection', className: 'text-emerald-700 dark:text-emerald-300' },
-    memory: { Icon: Brain, label: 'Memory', className: 'text-slate-600 dark:text-slate-300' },
-    kb: { Icon: Search, label: 'Knowledge', className: 'text-slate-600 dark:text-slate-300' },
+    memory: { Icon: Brain, label: 'Memory', className: 'text-muted-foreground' },
+    kb: { Icon: Search, label: 'Knowledge', className: 'text-muted-foreground' },
     risk: { Icon: AlertTriangle, label: 'Risk', className: 'text-red-600 dark:text-red-300' },
     opportunity: { Icon: CheckCircle2, label: 'Opportunity', className: 'text-emerald-700 dark:text-emerald-300' },
 };
@@ -157,12 +157,12 @@ function InsightUsageMeta({ usage }: { usage: BackgroundUsage }) {
                 totalTokens={totalTokens}
             />
             {cost ? (
-                <span className="rounded-lg border border-border/50 bg-muted/30 px-2 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground dark:bg-slate-800/50">
+                <span className="rounded-lg border border-border/50 bg-muted/30 px-2 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
                     {cost}
                 </span>
             ) : null}
             {trigger ? (
-                <span className="rounded-lg border border-border/50 bg-muted/30 px-2 py-0.5 text-[10px] font-medium text-muted-foreground dark:bg-slate-800/50">
+                <span className="rounded-lg border border-border/50 bg-muted/30 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
                     {trigger}
                 </span>
             ) : null}
@@ -172,7 +172,7 @@ function InsightUsageMeta({ usage }: { usage: BackgroundUsage }) {
 
 function AxisBadge({ label, value }: { label: string; value: number | null | undefined }) {
     return (
-        <span className="rounded-full border border-slate-200 bg-white/70 px-2 py-0.5 text-[10px] font-medium tabular-nums text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300">
+        <span className="rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel-strong)/0.58)] px-2 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
             {label} {percent(value)}
         </span>
     );
@@ -182,7 +182,7 @@ function KindPill({ kind }: { kind: string }) {
     const config = AGENT_CONFIG[kind] ?? AGENT_CONFIG.hypothesis;
     const Icon = config.Icon;
     return (
-        <span className={cn('inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white/70 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] dark:border-slate-800 dark:bg-slate-950/60', config.className)}>
+        <span className={cn('inline-flex items-center gap-1.5 rounded-lg border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel-strong)/0.58)] px-2 py-1 text-[10px] font-semibold', config.className)}>
             <Icon className="h-3 w-3" strokeWidth={1.8} />
             {config.label}
         </span>
@@ -193,7 +193,7 @@ function SourceTurnPill({ parentNodeId }: { parentNodeId?: string | null }) {
     const label = shortNodeId(parentNodeId);
     if (!label) return null;
     return (
-        <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-1 font-mono text-[10px] font-medium text-slate-500 dark:bg-slate-900 dark:text-slate-400">
+        <span className="inline-flex items-center rounded-lg bg-[hsl(var(--app-bg-muted))] px-2 py-1 font-mono text-[10px] font-medium text-muted-foreground">
             source {label}
         </span>
     );
@@ -221,36 +221,36 @@ function AttentionItemFrame({
     actions?: ReactNode;
 }) {
     return (
-        <article className="rounded-2xl border border-slate-200/80 bg-white/88 p-3.5 shadow-[0_16px_40px_-34px_rgba(15,23,42,0.45),inset_0_1px_0_rgba(255,255,255,0.72)] dark:border-slate-800/88 dark:bg-slate-950/82 dark:shadow-[0_18px_42px_-34px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.04)]">
+        <article className="rounded-xl border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.84)] p-3.5 shadow-[0_14px_36px_-32px_hsl(var(--foreground)/0.4),inset_0_1px_0_hsl(var(--foreground)/0.035)]">
             <button
                 type="button"
-                className="flex w-full items-start gap-3 text-left"
+                className="flex min-h-10 w-full items-start gap-3 text-left transition-transform duration-150 [transition-timing-function:cubic-bezier(0.2,0,0,1)] active:scale-[0.96] motion-reduce:transition-none"
                 onClick={onToggle}
             >
-                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-amber-200/80 bg-amber-50 text-amber-700 dark:border-amber-400/20 dark:bg-amber-950/24 dark:text-amber-200">
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--app-accent)/0.18)] bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))]">
                     <Brain className="h-4 w-4" strokeWidth={1.8} />
                 </div>
                 <div className="min-w-0 flex-1">
                     <div className="mb-2 flex flex-wrap items-center gap-1.5">
                         <KindPill kind={kind} />
                         {status ? (
-                            <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-500 dark:bg-slate-900 dark:text-slate-400">
+                            <span className="rounded-lg bg-[hsl(var(--app-bg-muted))] px-2 py-1 text-[10px] font-medium text-muted-foreground">
                                 {status}
                             </span>
                         ) : null}
                         <SourceTurnPill parentNodeId={parentNodeId} />
                     </div>
-                    <p className="text-sm font-medium leading-5 text-slate-950 dark:text-slate-50">{title}</p>
+                    <p className="text-pretty text-sm font-medium leading-5 text-foreground">{title}</p>
                     <div className="mt-2">
                         <InsightUsageMeta usage={usage} />
                     </div>
                 </div>
-                <span className="mt-1 shrink-0 text-slate-400">
+                <span className="mt-1 shrink-0 text-muted-foreground">
                     {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                 </span>
             </button>
             {expanded ? (
-                <div className="mt-3 space-y-3 border-t border-slate-100 pt-3 dark:border-slate-800">
+                <div className="mt-3 space-y-3 border-t border-[hsl(var(--app-border)/0.52)] pt-3">
                     {children}
                     {actions ? <div className="flex flex-wrap gap-2">{actions}</div> : null}
                 </div>
@@ -296,20 +296,20 @@ function SurfacedCard({
                 </p>
             ) : null}
             {insight.fullExploration ? (
-                <p className="rounded-xl bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600 dark:bg-slate-900/58 dark:text-slate-300">
+                <p className="rounded-lg bg-[hsl(var(--app-bg-muted)/0.68)] px-3 py-2 text-pretty text-xs leading-5 text-muted-foreground">
                     {insight.fullExploration}
                 </p>
             ) : null}
             <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" className="h-8 text-xs" onClick={onView}>
+                <Button variant="outline" size="sm" className="h-10 rounded-lg text-xs active:scale-[0.96]" onClick={onView}>
                     <Eye className="mr-1.5 h-3.5 w-3.5" />
                     View turn
                 </Button>
-                <Button variant="outline" size="sm" className="h-8 text-xs" onClick={onPromote}>
+                <Button variant="outline" size="sm" className="h-10 rounded-lg text-xs active:scale-[0.96]" onClick={onPromote}>
                     <GitBranch className="mr-1.5 h-3.5 w-3.5" />
                     Promote
                 </Button>
-                <Button variant="ghost" size="sm" className="h-8 text-xs text-slate-500 hover:text-red-600" onClick={onDismiss}>
+                <Button variant="ghost" size="sm" className="h-10 rounded-lg text-xs text-muted-foreground hover:text-destructive active:scale-[0.96]" onClick={onDismiss}>
                     Dismiss
                 </Button>
             </div>
@@ -357,10 +357,10 @@ function CandidateCard({
                 <AxisBadge label="conf" value={candidate.confidence} />
             </div>
             {candidate.surfaceReason ? (
-                <p className="text-xs leading-5 text-slate-500 dark:text-slate-400">{candidate.surfaceReason}</p>
+                <p className="text-pretty text-xs leading-5 text-muted-foreground">{candidate.surfaceReason}</p>
             ) : null}
             {candidate.rationale ? (
-                <p className="rounded-xl bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600 dark:bg-slate-900/58 dark:text-slate-300">
+                <p className="rounded-lg bg-[hsl(var(--app-bg-muted)/0.68)] px-3 py-2 text-pretty text-xs leading-5 text-muted-foreground">
                     {candidate.rationale}
                 </p>
             ) : null}
@@ -370,7 +370,7 @@ function CandidateCard({
                 </p>
             ) : null}
             {candidate.parentNodeId ? (
-                <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => onViewSource?.(candidate.parentNodeId)}>
+                <Button variant="outline" size="sm" className="h-10 rounded-lg text-xs active:scale-[0.96]" onClick={() => onViewSource?.(candidate.parentNodeId)}>
                     <Eye className="mr-1.5 h-3.5 w-3.5" />
                     View turn
                 </Button>
@@ -381,10 +381,10 @@ function CandidateCard({
 
 function EmptyInbox({ label }: { label: string }) {
     return (
-        <div className="flex min-h-56 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300/80 bg-white/52 px-6 text-center dark:border-slate-700/80 dark:bg-slate-950/35">
-            <CircleDot className="h-7 w-7 text-slate-400" strokeWidth={1.7} />
-            <div className="mt-3 text-sm font-semibold text-slate-950 dark:text-slate-50">{label}</div>
-            <p className="mt-2 max-w-[28ch] text-sm leading-6 text-slate-500 dark:text-slate-400">
+        <div className="flex min-h-56 flex-col items-center justify-center rounded-xl border border-dashed border-[hsl(var(--app-border)/0.72)] bg-[hsl(var(--app-panel)/0.42)] px-6 text-center">
+            <CircleDot className="h-7 w-7 text-muted-foreground" strokeWidth={1.7} />
+            <div className="mt-3 text-sm font-semibold text-foreground">{label}</div>
+            <p className="mt-2 max-w-[28ch] text-pretty text-sm leading-5 text-muted-foreground">
                 Background attention stays quiet until something clears the bar.
             </p>
         </div>
@@ -515,26 +515,26 @@ export function InsightPanel({
     );
 
     return (
-        <aside className={cn(
+        <aside data-design-scope="panels" className={cn(
             'flex h-full w-full flex-col overflow-hidden bg-transparent',
             className,
         )}>
-            <header className="border-b border-slate-200/72 bg-white/62 px-4 py-4 dark:border-slate-800/82 dark:bg-slate-950/48">
+            <header className="border-b border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.62)] px-4 py-4">
                 <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                            <div className="flex h-8 w-8 items-center justify-center rounded-xl border border-amber-200/80 bg-amber-50 text-amber-700 dark:border-amber-400/20 dark:bg-amber-950/28 dark:text-amber-200">
+                            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-[hsl(var(--app-accent)/0.18)] bg-[hsl(var(--app-accent-soft))] text-[hsl(var(--app-accent))]">
                                 <Brain className="h-4 w-4" strokeWidth={1.8} />
                             </div>
                             <div>
-                                <div className="text-sm font-semibold text-slate-950 dark:text-slate-50">Attention Inbox</div>
-                                <div className="mt-0.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">Workspace-level observations</div>
+                                <div className="text-sm font-semibold text-foreground">Attention inbox</div>
+                                <div className="mt-0.5 text-[11px] font-medium text-muted-foreground">Workspace observations</div>
                             </div>
                         </div>
                     </div>
                     <button
                         type="button"
-                        className="app-focus-ring flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-500 transition-[background-color,color,transform] hover:bg-slate-100 hover:text-slate-950 active:scale-[0.96] dark:hover:bg-slate-900 dark:hover:text-slate-50"
+                        className="app-focus-ring flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-150 [transition-timing-function:cubic-bezier(0.2,0,0,1)] hover:bg-[hsl(var(--app-bg-muted))] hover:text-foreground active:scale-[0.96] motion-reduce:transition-none"
                         onClick={onToggleVisibility}
                         aria-label="Close Attention Inbox"
                     >
@@ -543,23 +543,23 @@ export function InsightPanel({
                 </div>
 
                 <div className="mt-4 grid grid-cols-[1fr_1.15fr] gap-2">
-                    <div className="rounded-2xl border border-slate-200/78 bg-white/70 p-3 dark:border-slate-800 dark:bg-slate-950/60">
-                        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Items</div>
-                        <div className="mt-1 font-mono text-xl font-semibold tabular-nums text-slate-950 dark:text-slate-50">
+                    <div className="rounded-xl border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong)/0.56)] p-3">
+                        <div className="text-[10px] font-semibold text-muted-foreground">Items</div>
+                        <div className="mt-1 font-mono text-xl font-semibold tabular-nums text-foreground">
                             {insights.length}
                         </div>
-                        <div className="mt-0.5 text-xs text-slate-500">{savedCandidates.length} saved · {archivedCandidates.length} explored</div>
+                        <div className="mt-0.5 text-xs text-muted-foreground">{savedCandidates.length} saved · {archivedCandidates.length} explored</div>
                     </div>
-                    <div className="rounded-2xl border border-slate-200/78 bg-white/70 p-3 dark:border-slate-800 dark:bg-slate-950/60">
-                        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Background usage</div>
-                        <div className="mt-1 font-mono text-xl font-semibold tabular-nums text-slate-950 dark:text-slate-50">
+                    <div className="rounded-xl border border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel-strong)/0.56)] p-3">
+                        <div className="text-[10px] font-semibold text-muted-foreground">Background usage</div>
+                        <div className="mt-1 font-mono text-xl font-semibold tabular-nums text-foreground">
                             {usageSummary.runCount}
                         </div>
-                        <div className="mt-0.5 text-xs text-slate-500">{formatTokenValue(usageSummary.totals.totalTokens) ?? '0'} tokens</div>
+                        <div className="mt-0.5 text-xs text-muted-foreground">{formatTokenValue(usageSummary.totals.totalTokens) ?? '0'} tokens</div>
                     </div>
                 </div>
 
-                <div className="mt-4 grid grid-cols-3 gap-1 rounded-2xl border border-slate-200/72 bg-slate-100/70 p-1 dark:border-slate-800 dark:bg-slate-900/64">
+                <div className="mt-4 grid grid-cols-3 gap-1 rounded-xl border border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-bg-muted)/0.7)] p-1">
                     {[
                         { id: 'needs' as const, label: 'Needs', count: insights.length },
                         { id: 'saved' as const, label: 'Saved', count: savedCandidates.length },
@@ -570,10 +570,10 @@ export function InsightPanel({
                             type="button"
                             disabled={tab.disabled}
                             className={cn(
-                                'app-focus-ring h-9 rounded-xl px-2 text-xs font-semibold transition-[background-color,color,box-shadow,transform] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45',
+                                'app-focus-ring h-10 rounded-lg px-2 text-xs font-semibold transition-[background-color,color,box-shadow,transform] duration-150 [transition-timing-function:cubic-bezier(0.2,0,0,1)] active:scale-[0.96] motion-reduce:transition-none disabled:cursor-not-allowed disabled:opacity-45',
                                 selectedTab === tab.id
-                                    ? 'bg-white text-slate-950 shadow-[0_1px_2px_rgba(15,23,42,0.08),inset_0_0_0_1px_rgba(148,163,184,0.28)] dark:bg-slate-950 dark:text-slate-50'
-                                    : 'text-slate-500 hover:bg-white/52 hover:text-slate-800 dark:hover:bg-slate-950/48 dark:hover:text-slate-100',
+                                    ? 'bg-[hsl(var(--app-panel))] text-[hsl(var(--app-accent))] shadow-[0_1px_2px_hsl(var(--foreground)/0.08),inset_0_0_0_1px_hsl(var(--app-border)/0.62)]'
+                                    : 'text-muted-foreground hover:bg-[hsl(var(--app-panel)/0.58)] hover:text-foreground',
                             )}
                             onClick={() => setActiveTab(tab.id)}
                         >
@@ -585,7 +585,7 @@ export function InsightPanel({
             </header>
 
             <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
-                <div className="mb-3 flex items-center justify-between gap-3 text-xs text-slate-500 dark:text-slate-400">
+                <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
                     <span className="font-medium">
                         Showing {Math.min(activeCount, visibleLimit)} of {activeCount}
                     </span>

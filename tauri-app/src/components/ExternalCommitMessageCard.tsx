@@ -55,12 +55,12 @@ export function ExternalCommitMessageCard({ message, workspaceId }: ExternalComm
   };
 
   return (
-    <div className="rounded-lg border border-emerald-500/30 bg-emerald-50/30 dark:bg-emerald-950/20">
-      <div className="flex items-center gap-2 border-b border-border/50 px-3 py-2">
-        <GitCommitHorizontal size={14} className="text-emerald-600" />
+    <div className="rounded-xl border border-[hsl(var(--app-border)/0.66)] bg-[hsl(var(--app-panel)/0.92)] shadow-[0_12px_28px_-26px_hsl(var(--foreground)/0.3)]">
+      <div className="flex items-center gap-2 border-b border-[hsl(var(--app-border)/0.46)] px-3 py-2.5">
+        <GitCommitHorizontal size={14} className="text-[hsl(var(--app-accent))]" />
         <div className="text-xs font-semibold">External Commit</div>
         {currentHeadSha && commitSha === currentHeadSha && (
-          <div className="bg-emerald-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-sm shadow-sm" title="Checked Out Commit">
+          <div className="rounded-full bg-emerald-500 px-1.5 py-0.5 text-[9px] font-bold text-white" title="Checked Out Commit">
             HEAD
           </div>
         )}
@@ -103,7 +103,7 @@ export function ExternalCommitMessageCard({ message, workspaceId }: ExternalComm
         ) : null}
 
         <div>
-          <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={toggleFiles}>
+          <Button variant="ghost" size="sm" className="h-10 rounded-lg px-2 text-[11px] transition-transform duration-normal ease-out-cubic active:scale-[0.96] motion-reduce:transition-none" onClick={toggleFiles}>
             {expanded ? <ChevronDown size={12} className="mr-1" /> : <ChevronRight size={12} className="mr-1" />}
             <Files size={12} className="mr-1" />
             File changes

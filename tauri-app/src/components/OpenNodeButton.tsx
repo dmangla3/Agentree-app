@@ -67,15 +67,15 @@ export function OpenNodeButton({
       disabled={resolving || !repoPath}
       className={cn(
         compact
-          ? 'h-6 text-[10px] px-2 gap-1'
-          : 'h-7 text-xs px-2.5 gap-1.5',
-        'hover:bg-primary/5 hover:text-primary hover:border-primary/30 transition-colors',
+          ? 'h-8 gap-1 px-2 text-[10px]'
+          : 'h-10 gap-1.5 px-2.5 text-xs',
+        'rounded-lg transition-[background-color,border-color,color,transform] duration-150 ease-out hover:border-primary/30 hover:bg-primary/5 hover:text-primary active:scale-[0.96] motion-reduce:transition-none',
         className
       )}
       title={!repoPath ? 'No repository attached' : 'Open repository or worktree'}
     >
       {resolving ? (
-        <Loader2 size={compact ? 10 : 12} className="animate-spin" />
+        <Loader2 size={compact ? 10 : 12} className="animate-spin motion-reduce:animate-none" />
       ) : (
         <ExternalLink size={compact ? 10 : 12} />
       )}

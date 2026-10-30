@@ -26,8 +26,7 @@ export const GraphThreadLinkNode = memo(({
     disableHoverCard={disableHoverCard}
     heightKey={heightKey}
     className={cn(
-      'border-cyan-200/90 bg-cyan-50/95 text-cyan-950 shadow-[0_8px_20px_-18px_rgba(8,145,178,0.55)]',
-      'dark:border-cyan-900/75 dark:bg-cyan-950/70 dark:text-cyan-50'
+      'border-[hsl(var(--app-graph-agent)/0.3)] bg-[hsl(var(--app-graph-agent)/0.075)] text-foreground shadow-[0_8px_20px_-18px_hsl(var(--foreground)/0.32)]'
     )}
     style={{ width: 200, height: 64 }}
     onMeasureHeight={onMeasureHeight}
@@ -41,18 +40,17 @@ export const GraphThreadLinkNode = memo(({
     <div className="flex h-full items-center gap-2.5">
       <div
         className={cn(
-          'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-cyan-200 bg-white text-cyan-700 shadow-sm',
-          'dark:border-cyan-800 dark:bg-cyan-950 dark:text-cyan-200'
+          'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[hsl(var(--app-graph-agent)/0.24)] bg-[hsl(var(--app-panel)/0.7)] text-[hsl(var(--app-graph-agent))]'
         )}
         title="Open thread"
       >
         <GitBranch size={13} strokeWidth={1.8} />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="text-[9px] font-semibold uppercase tracking-[0.12em] text-cyan-700/80 dark:text-cyan-300/80">
+        <div data-design-typography="soft-label" className="text-[9px] font-medium uppercase tracking-[0.12em] text-[hsl(var(--app-graph-agent))]">
           Thread
         </div>
-        <p className="truncate text-[12px] font-medium leading-snug text-cyan-950 dark:text-cyan-50">
+        <p className="truncate text-[12px] font-medium leading-snug text-foreground">
           {entity.preview || 'Open thread'}
         </p>
       </div>

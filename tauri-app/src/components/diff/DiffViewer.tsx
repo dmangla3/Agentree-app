@@ -7,7 +7,7 @@ import {
 } from '@pierre/diffs';
 import { cn } from '../../lib/utils';
 import { Button } from '../../../@/components/ui/button';
-import { SplitSquareHorizontal, AlignJustify, Copy, Check } from 'lucide-react';
+import { SplitSquareHorizontal, AlignJustify, Copy, Check, WrapText } from 'lucide-react';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -111,6 +111,7 @@ export function DiffViewer({
     maxHeight,
 }: DiffViewerProps) {
     const [splitView, setSplitView] = useState(initialSplitView);
+    const [wrapLines, setWrapLines] = useState(true);
     const [copied, setCopied] = useState<'old' | 'new' | null>(null);
     const [isDarkMode, setIsDarkMode] = useState(getIsDarkMode);
 
@@ -132,10 +133,10 @@ export function DiffViewer({
         expandUnchanged: false,
         collapsedContextThreshold: 3,
         lineDiffType: 'word',
-        overflow: 'scroll',
+        overflow: wrapLines ? 'wrap' : 'scroll',
         themeType: isDarkMode ? 'dark' : 'light',
         unsafeCSS: highlightStyles,
-    }), [highlightStyles, isDarkMode, showLineNumbers, splitView]);
+    }), [highlightStyles, isDarkMode, showLineNumbers, splitView, wrapLines]);
 
     const handleViewModeChange = (newSplitView: boolean) => {
         setSplitView(newSplitView);
@@ -158,8 +159,8 @@ export function DiffViewer({
     if (!hasChanges) {
         return (
             <div className={cn(
-                "flex items-center justify-center p-8 text-muted-foreground",
-                "bg-muted/30 rounded-md border border-border/50",
+                "flex items-center justify-center p-6 text-muted-foreground",
+                "rounded-lg border border-dashed border-[hsl(var(--app-border)/0.58)] bg-muted/20",
                 className
             )}>
                 <span className="text-sm">No differences</span>
@@ -168,11 +169,11 @@ export function DiffViewer({
     }
 
     return (
-        <div className={cn("relative min-w-0 max-w-full overflow-hidden rounded-md border border-border/50", className)}>
+        <div data-design-scope="panels" className={cn("relative min-w-0 max-w-full overflow-hidden rounded-lg bg-[hsl(var(--app-panel))] shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.58)]", className)}>
             {/* Header with controls */}
             {showViewToggle && (
-                <div className="flex min-w-0 items-center justify-between gap-3 px-3 py-2 bg-muted/50 border-b border-border/50">
-                    <div className="flex min-w-0 items-center gap-4 text-xs text-muted-foreground">
+                <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border/50 bg-muted/35 px-2.5 py-1.5">
+                    <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
                         <span className="min-w-0 truncate font-medium">{oldLabel}</span>
                         <span>→</span>
                         <span className="min-w-0 truncate font-medium">{newLabel}</span>
@@ -182,7 +183,7 @@ export function DiffViewer({
                         <Button
                             variant="ghost"
                             size="sm"
-                            className="h-7 px-2 text-xs"
+                            className="h-9 rounded-lg px-2.5 text-xs"
                             onClick={() => handleCopy(oldCode, 'old')}
                             title="Copy old version"
                         >
@@ -192,7 +193,7 @@ export function DiffViewer({
                         <Button
                             variant="ghost"
                             size="sm"
-                            className="h-7 px-2 text-xs"
+                            className="h-9 rounded-lg px-2.5 text-xs"
                             onClick={() => handleCopy(newCode, 'new')}
                             title="Copy new version"
                         >
@@ -206,7 +207,7 @@ export function DiffViewer({
                         <Button
                             variant={splitView ? "secondary" : "ghost"}
                             size="sm"
-                            className="h-7 px-2"
+                            className="h-10 w-10 rounded-lg px-0"
                             onClick={() => handleViewModeChange(true)}
                             title="Side-by-side view"
                         >
@@ -215,11 +216,26 @@ export function DiffViewer({
                         <Button
                             variant={!splitView ? "secondary" : "ghost"}
                             size="sm"
-                            className="h-7 px-2"
+                            className="h-10 w-10 rounded-lg px-0"
                             onClick={() => handleViewModeChange(false)}
                             title="Unified view"
                         >
                             <AlignJustify size={14} />
+                        </Button>
+
+                        <div className="mx-1 h-4 w-px bg-border" />
+
+                        {/* Line wrapping toggle */}
+                        <Button
+                            variant={wrapLines ? "secondary" : "ghost"}
+                            size="sm"
+                            className="h-10 w-10 rounded-lg px-0"
+                            onClick={() => setWrapLines((current) => !current)}
+                            aria-label={wrapLines ? "Disable line wrapping" : "Enable line wrapping"}
+                            aria-pressed={wrapLines}
+                            title={wrapLines ? "Disable line wrapping" : "Enable line wrapping"}
+                        >
+                            <WrapText size={14} />
                         </Button>
                     </div>
                 </div>
@@ -238,7 +254,7 @@ export function DiffViewer({
 
             {/* Language badge */}
             {language && (
-                <div className="absolute bottom-2 right-2 px-2 py-0.5 rounded text-[10px] bg-muted/80 text-muted-foreground border border-border/30">
+                <div className="absolute bottom-2 right-2 rounded-md bg-muted/85 px-2 py-0.5 text-[10px] text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.5)]">
                     {language}
                 </div>
             )}

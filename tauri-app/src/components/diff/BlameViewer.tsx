@@ -24,12 +24,12 @@ export interface BlameViewerProps {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const nodeColorPalette = [
-    { bg: 'bg-blue-50 dark:bg-blue-950/40', border: 'border-blue-200 dark:border-blue-800', text: 'text-blue-700 dark:text-blue-300', hover: 'hover:bg-blue-100 dark:hover:bg-blue-900/50' },
+    { bg: 'bg-[hsl(var(--app-graph-agent)/0.08)]', border: 'border-[hsl(var(--app-graph-agent)/0.22)]', text: 'text-[hsl(var(--app-graph-agent))]', hover: 'hover:bg-[hsl(var(--app-graph-agent)/0.12)]' },
     { bg: 'bg-emerald-50 dark:bg-emerald-950/40', border: 'border-emerald-200 dark:border-emerald-800', text: 'text-emerald-700 dark:text-emerald-300', hover: 'hover:bg-emerald-100 dark:hover:bg-emerald-900/50' },
     { bg: 'bg-violet-50 dark:bg-violet-950/40', border: 'border-violet-200 dark:border-violet-800', text: 'text-violet-700 dark:text-violet-300', hover: 'hover:bg-violet-100 dark:hover:bg-violet-900/50' },
     { bg: 'bg-amber-50 dark:bg-amber-950/40', border: 'border-amber-200 dark:border-amber-800', text: 'text-amber-700 dark:text-amber-300', hover: 'hover:bg-amber-100 dark:hover:bg-amber-900/50' },
     { bg: 'bg-rose-50 dark:bg-rose-950/40', border: 'border-rose-200 dark:border-rose-800', text: 'text-rose-700 dark:text-rose-300', hover: 'hover:bg-rose-100 dark:hover:bg-rose-900/50' },
-    { bg: 'bg-cyan-50 dark:bg-cyan-950/40', border: 'border-cyan-200 dark:border-cyan-800', text: 'text-cyan-700 dark:text-cyan-300', hover: 'hover:bg-cyan-100 dark:hover:bg-cyan-900/50' },
+    { bg: 'bg-zinc-50 dark:bg-zinc-900/50', border: 'border-zinc-200 dark:border-zinc-700', text: 'text-zinc-700 dark:text-zinc-300', hover: 'hover:bg-zinc-100 dark:hover:bg-zinc-800/70' },
     { bg: 'bg-orange-50 dark:bg-orange-950/40', border: 'border-orange-200 dark:border-orange-800', text: 'text-orange-700 dark:text-orange-300', hover: 'hover:bg-orange-100 dark:hover:bg-orange-900/50' },
     { bg: 'bg-pink-50 dark:bg-pink-950/40', border: 'border-pink-200 dark:border-pink-800', text: 'text-pink-700 dark:text-pink-300', hover: 'hover:bg-pink-100 dark:hover:bg-pink-900/50' },
 ];
@@ -102,11 +102,11 @@ export function BlameViewer({
     if (!blameResult.file_exists) {
         return (
             <div className={cn(
-                "flex flex-col items-center justify-center p-8 text-muted-foreground",
-                "bg-muted/30 rounded-md border border-border/50",
+                "flex flex-col items-center justify-center p-6 text-muted-foreground",
+                "rounded-lg border border-dashed border-[hsl(var(--app-border)/0.58)] bg-muted/20",
                 className
             )}>
-                <AlertTriangle className="h-8 w-8 mb-2 text-amber-500" />
+                <AlertTriangle className="mb-2 h-5 w-5 text-[hsl(var(--app-warning))]" />
                 <span className="text-sm font-medium">File does not exist at this node</span>
                 <span className="text-xs mt-1">The file may have been deleted or not yet created</span>
             </div>
@@ -116,8 +116,8 @@ export function BlameViewer({
     if (blameResult.is_binary) {
         return (
             <div className={cn(
-                "flex flex-col items-center justify-center p-8 text-muted-foreground",
-                "bg-muted/30 rounded-md border border-border/50",
+                "flex flex-col items-center justify-center p-6 text-muted-foreground",
+                "rounded-lg border border-dashed border-[hsl(var(--app-border)/0.58)] bg-muted/20",
                 className
             )}>
                 <span className="text-sm">Binary file - blame not available</span>
@@ -126,22 +126,22 @@ export function BlameViewer({
     }
 
     return (
-        <div className={cn("flex flex-col", className)}>
+        <div data-design-scope="panels" className={cn("flex flex-col", className)}>
             {/* Header with stats and legend */}
-            <div className="flex flex-col gap-3 px-3 py-2 bg-muted/30 border-b border-border/50">
+            <div className="flex flex-col gap-2 border-b border-border/50 bg-muted/25 px-3 py-2">
                 {/* Stats row */}
                 <div className="flex items-center gap-4 text-xs">
                     <div className="flex items-center gap-1.5">
                         <span className="text-muted-foreground">Lines:</span>
-                        <span className="font-mono font-medium">{blameResult.total_lines}</span>
+                        <span className="font-mono font-medium tabular-nums">{blameResult.total_lines}</span>
                     </div>
                     <div className="flex items-center gap-1.5">
                         <span className="text-muted-foreground">Contributors:</span>
-                        <span className="font-mono font-medium">{stats.contributors}</span>
+                        <span className="font-mono font-medium tabular-nums">{stats.contributors}</span>
                     </div>
                     <div className="flex items-center gap-1.5">
                         <span className="text-muted-foreground">Modified:</span>
-                        <span className="font-mono font-medium">{stats.modifiedPercent}%</span>
+                        <span className="font-mono font-medium tabular-nums">{stats.modifiedPercent}%</span>
                         <span className="text-muted-foreground/60">({stats.modifiedLines} lines)</span>
                     </div>
                 </div>
@@ -153,7 +153,7 @@ export function BlameViewer({
                             key={nodeId}
                             variant="outline"
                             className={cn(
-                                "text-[10px] cursor-pointer transition-all px-2 py-0.5",
+                                "min-h-10 cursor-pointer rounded-full px-2.5 py-0.5 text-[10px] transition-[background-color,border-color,box-shadow,color,transform] duration-150 ease-out active:scale-[0.96]",
                                 colors.bg,
                                 colors.border,
                                 colors.text,
@@ -274,7 +274,7 @@ function ToolCallInfo({ toolCall, matchType, warnings }: ToolCallInfoProps) {
 
     if (!toolCall) {
         return (
-            <div className={cn("p-2 rounded border", styles.bg, styles.border)}>
+            <div className={cn("rounded-lg border p-2", styles.bg, styles.border)}>
                 <div className={cn("flex items-center gap-1.5 text-[10px] font-medium", styles.header)}>
                     <AlertTriangle className="h-3 w-3" />
                     {styles.label}
@@ -303,7 +303,7 @@ function ToolCallInfo({ toolCall, matchType, warnings }: ToolCallInfoProps) {
     })();
 
     return (
-        <div className={cn("p-2 rounded border", styles.bg, styles.border)}>
+        <div className={cn("rounded-lg border p-2", styles.bg, styles.border)}>
             <div className={cn("flex items-center gap-1.5 text-[10px] font-medium mb-1", styles.header)}>
                 <Settings2 className="h-3 w-3" />
                 Tool Call ({styles.label})
@@ -368,7 +368,7 @@ function BlameLineGroup({
             <HoverCardTrigger asChild>
                 <div
                     className={cn(
-                        "group flex transition-colors border-b border-border/20",
+                        "group flex border-b border-border/20 transition-colors duration-150 ease-out",
                         isHovered && "bg-accent/30"
                     )}
                     onMouseEnter={onHover}
@@ -377,7 +377,7 @@ function BlameLineGroup({
                     {/* Blame gutter */}
                     <div
                         className={cn(
-                            "w-28 shrink-0 px-2 py-0.5 text-[10px] border-r cursor-pointer transition-colors",
+                            "w-28 shrink-0 cursor-pointer border-r px-2 py-0.5 text-[10px] transition-colors duration-150 ease-out",
                             colors.bg,
                             colors.border,
                             colors.text,
@@ -429,11 +429,11 @@ function BlameLineGroup({
                     <div className="flex items-start justify-between">
                         <div className="flex items-center gap-2">
                             {entry.is_base ? (
-                                <div className={cn("p-1.5 rounded", baseColor.bg)}>
+                                <div className={cn("rounded-lg p-1.5", baseColor.bg)}>
                                     <GitBranch className={cn("h-4 w-4", baseColor.text)} />
                                 </div>
                             ) : (
-                                <div className={cn("p-1.5 rounded", colors.bg)}>
+                                <div className={cn("rounded-lg p-1.5", colors.bg)}>
                                     <User className={cn("h-4 w-4", colors.text)} />
                                 </div>
                             )}
@@ -452,7 +452,7 @@ function BlameLineGroup({
                             <Button
                                 variant="ghost"
                                 size="icon"
-                                className="h-6 w-6"
+                                className="h-10 w-10 rounded-lg"
                                 onClick={() => onCopyId(entry.author_node_id)}
                             >
                                 {copiedId === entry.author_node_id ? (
@@ -486,7 +486,7 @@ function BlameLineGroup({
                             <Button
                                 size="sm"
                                 variant="outline"
-                                className="flex-1 text-xs h-7"
+                                className="h-10 flex-1 rounded-lg text-xs"
                                 onClick={() => onNodeClick?.(entry.author_node_id)}
                             >
                                 <Eye className="h-3 w-3 mr-1.5" />
@@ -495,7 +495,7 @@ function BlameLineGroup({
                             <Button
                                 size="sm"
                                 variant="ghost"
-                                className="text-xs h-7 px-2"
+                                className="h-10 w-10 rounded-lg px-0 text-xs"
                                 onClick={() => onCopyId(entry.author_node_id)}
                             >
                                 <ExternalLink className="h-3 w-3" />

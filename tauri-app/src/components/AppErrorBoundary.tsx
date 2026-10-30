@@ -114,17 +114,17 @@ export class AppErrorBoundary extends React.Component<AppErrorBoundaryProps, App
     }
 
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background px-6">
-        <div className="w-full max-w-lg rounded-xl border border-border/50 bg-card p-5 shadow-lg">
-          <h2 className="text-base font-semibold text-foreground">Recovering from a crash</h2>
-          <p className="mt-2 text-sm text-muted-foreground">
-            The app hit a runtime error and is attempting automatic recovery.
+      <div className="flex min-h-[100dvh] items-center justify-center bg-background px-6 antialiased">
+        <div className="w-full max-w-lg rounded-xl border border-border/60 bg-card p-5 shadow-[0_0_0_1px_hsl(var(--foreground)/0.02),0_12px_32px_-18px_hsl(var(--foreground)/0.32)]">
+          <h2 className="text-balance text-base font-semibold text-foreground">Recovering from a crash</h2>
+          <p className="mt-2 text-pretty text-sm text-muted-foreground">
+            Agentree hit a runtime error and is trying to recover.
           </p>
           <p className="mt-1 text-xs text-muted-foreground/90">
             Attempt: {retryCount}
           </p>
           {error?.message ? (
-            <p className="mt-3 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            <p className="mt-3 rounded-lg bg-muted/45 px-3 py-2 font-mono text-xs leading-5 text-muted-foreground">
               {error.message}
             </p>
           ) : null}
@@ -132,14 +132,14 @@ export class AppErrorBoundary extends React.Component<AppErrorBoundaryProps, App
             <button
               type="button"
               onClick={this.handleRetryNow}
-              className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted/50"
+              className="min-h-10 rounded-lg border border-border bg-background px-3 text-xs font-medium text-foreground transition-[background-color,transform] duration-150 ease-out hover:bg-muted/60 active:scale-[0.96] motion-reduce:transition-none"
             >
               Retry now
             </button>
             <button
               type="button"
               onClick={this.handleReloadNow}
-              className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted/50"
+              className="min-h-10 rounded-lg border border-border bg-background px-3 text-xs font-medium text-foreground transition-[background-color,transform] duration-150 ease-out hover:bg-muted/60 active:scale-[0.96] motion-reduce:transition-none"
             >
               Reload app
             </button>

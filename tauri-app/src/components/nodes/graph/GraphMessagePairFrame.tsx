@@ -25,7 +25,7 @@ export const GraphMessagePairFrame = memo(({
         isFocused
           ? 'border-[hsl(var(--app-selection)/0.92)] bg-[hsl(var(--app-accent-soft)/0.14)] shadow-md ring-2 ring-[hsl(var(--app-selection)/0.9)]'
           : 'border-[hsl(var(--app-border)/0.58)] bg-[hsl(var(--app-panel)/0.14)] shadow-[inset_0_1px_0_hsl(var(--foreground)/0.035)]',
-        isSelected && !isFocused && 'border-[#3b82f6] bg-blue-500/[0.06] ring-2 ring-blue-500'
+        isSelected && !isFocused && 'border-[hsl(var(--app-selection)/0.68)] bg-[hsl(var(--app-bg-muted)/0.5)] ring-2 ring-[hsl(var(--app-selection)/0.58)]'
       )}
     />
   );

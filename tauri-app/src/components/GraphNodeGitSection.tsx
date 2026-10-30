@@ -20,7 +20,7 @@ export function GraphNodeGitSection({
   if (!hasMeta && !action) return null;
 
   return (
-    <div className={cn('flex items-start justify-between gap-2 border-t border-border/40 pt-2', className)}>
+    <div className={cn('flex items-start justify-between gap-2 border-t border-[hsl(var(--app-border)/0.52)] pt-2', className)}>
       <GitNodeMeta
         commitSha={commitSha}
         branchPointers={branchPointers}

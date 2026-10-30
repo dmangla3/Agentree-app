@@ -10,7 +10,7 @@ export function BranchPointerBadge({ name, isShipPath = false }: BranchPointerBa
     return (
         <Badge
             variant={isShipPath ? 'default' : 'outline'}
-            className={cn('text-[10px] px-1.5 py-0 h-5', isShipPath && 'bg-emerald-600 hover:bg-emerald-600')}
+            className={cn('h-5 rounded-full px-2 py-0 text-[10px] font-medium', isShipPath && 'bg-emerald-600 hover:bg-emerald-600')}
         >
             {isShipPath ? `ship:${name}` : name}
         </Badge>

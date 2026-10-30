@@ -115,8 +115,8 @@ export function AttachmentPreview({ attachment, onRemove, className, size = 'med
     <div className={cn(
       "attachment-preview relative group flex flex-col items-center justify-center",
       containerSizeClass,
-      "rounded-md border bg-muted/30 dark:bg-muted/20 p-1 overflow-hidden shadow-sm",
-      "transition-all duration-150 ease-in-out hover:shadow-md hover:border-border",
+      "overflow-hidden rounded-xl bg-[hsl(var(--app-panel))] p-1 shadow-[0_8px_24px_-20px_hsl(var(--foreground)/0.35),inset_0_0_0_1px_hsl(var(--app-border)/0.64)]",
+      "transition-[box-shadow,transform] duration-150 ease-out hover:shadow-[0_12px_28px_-20px_hsl(var(--foreground)/0.42),inset_0_0_0_1px_hsl(var(--app-border-strong)/0.58)]",
       status === 'error' && 'border-destructive bg-destructive/10',
       className
     )}>
@@ -125,8 +125,8 @@ export function AttachmentPreview({ attachment, onRemove, className, size = 'med
         <button
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRemove(id); }}
           className={cn(
-            "absolute top-0.5 right-0.5 z-20 rounded-full p-0.5 bg-background/70 dark:bg-foreground/20 text-muted-foreground hover:text-destructive hover:bg-destructive/10",
-            "opacity-50 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity duration-150 ease-in-out"
+            "absolute right-0.5 top-0.5 z-20 flex h-10 w-10 items-center justify-center rounded-lg bg-background/85 text-muted-foreground shadow-[0_6px_18px_-14px_hsl(var(--foreground)/0.5)]",
+            "opacity-50 transition-[background-color,color,opacity,transform] duration-150 ease-out hover:bg-destructive/10 hover:text-destructive active:scale-[0.96] group-hover:opacity-100 focus-visible:opacity-100"
           )}
           aria-label="Remove attachment"
         >
@@ -159,7 +159,7 @@ export function AttachmentPreview({ attachment, onRemove, className, size = 'med
               src={imageSrc}
               alt={`Preview of ${fileName}`}
               loading="lazy"
-              className="max-w-full max-h-full object-contain rounded-sm"
+              className="max-h-full max-w-full rounded-lg object-contain outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
               onError={() => {
                 handleImageError();
                 // If it failed and we haven't tried fetching a fresh one yet, try it
@@ -173,13 +173,13 @@ export function AttachmentPreview({ attachment, onRemove, className, size = 'med
 
           {/* Fallback Icon */}
           {(fileType !== 'image' || !imageSrc || imageLoadError) && (
-            <div className="p-2 flex items-center justify-center opacity-70">
-              {isUrlAttachment && <LinkIcon size={iconSize} className="text-blue-500" />}
+            <div className="flex items-center justify-center p-2 opacity-70">
+              {isUrlAttachment && <LinkIcon size={iconSize} className="text-[hsl(var(--app-accent))]" />}
               {!isUrlAttachment && fileType === 'image' && <ImageIcon size={iconSize} className="text-muted-foreground" />}
               {!isUrlAttachment && fileType === 'pdf' && <FileText size={iconSize} className="text-red-500" />}
-              {!isUrlAttachment && fileType === 'audio' && <Music size={iconSize} className="text-purple-500" />}
-              {!isUrlAttachment && fileType === 'video' && <Video size={iconSize} className="text-orange-500" />}
-              {!isUrlAttachment && fileType === 'text' && <FileText size={iconSize} className="text-green-500" />}
+              {!isUrlAttachment && fileType === 'audio' && <Music size={iconSize} className="text-[hsl(var(--app-accent))]" />}
+              {!isUrlAttachment && fileType === 'video' && <Video size={iconSize} className="text-[hsl(var(--app-accent))]" />}
+              {!isUrlAttachment && fileType === 'text' && <FileText size={iconSize} className="text-[hsl(var(--app-accent))]" />}
               {!isUrlAttachment && fileType === 'other' && !isUrlAttachment && <FileText size={iconSize} className="text-muted-foreground" />}
             </div>
           )}
@@ -196,7 +196,7 @@ export function AttachmentPreview({ attachment, onRemove, className, size = 'med
 
       {/* Local Upload Status Overlay */}
       {isLocalFile && (status === 'uploading' || status === 'error') && (
-        <div className="absolute inset-0 flex items-center justify-center bg-background/80 dark:bg-foreground/70 rounded-md z-10">
+        <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/85">
           {status === 'uploading' && <Loader2 size={size === 'medium' ? 24 : 18} className="text-primary animate-spin" />}
           {status === 'error' && <AlertTriangle size={size === 'medium' ? 24 : 18} className="text-destructive" />}
         </div>

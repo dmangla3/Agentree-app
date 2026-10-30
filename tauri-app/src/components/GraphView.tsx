@@ -861,7 +861,7 @@ function ThreadBandOverlay({
                                 height,
                                 borderRadius: radius,
                                 borderColor: `${accentColor}${isCurrent ? '30' : '18'}`,
-                                background: `linear-gradient(90deg, ${accentColor}${isCurrent ? '14' : '0A'}, transparent 20%, transparent 80%, ${accentColor}08)`,
+                                background: `${accentColor}${isCurrent ? '0D' : '06'}`,
                                 transform: `translate3d(${screenLeft}px, ${screenTop}px, 0)`,
                             }}
                         >
@@ -870,7 +870,7 @@ function ThreadBandOverlay({
                                 style={{
                                     top: edgeInset,
                                     bottom: edgeInset,
-                                    background: `linear-gradient(180deg, transparent, ${accentColor}A8 18%, ${accentColor}A8 82%, transparent)`,
+                                    background: `${accentColor}A8`,
                                 }}
                             />
                             <div
@@ -5346,24 +5346,8 @@ function GraphViewInternal({
         Array.from(nodeSelection.selectedNodeIds).filter((selectedId) => messageMap.has(selectedId))
     ), [messageMap, nodeSelection.selectedNodeIds]);
     const backgroundClass = hideBackground
-        ? 'bg-transparent dark:bg-transparent'
-        : cn(
-            'transition-colors duration-300',
-            [
-                'bg-[radial-gradient(circle_at_top_left,rgba(147,197,253,0.72),transparent_34%),',
-                'radial-gradient(circle_at_bottom_right,rgba(129,140,248,0.32),transparent_32%),',
-                'radial-gradient(circle,rgba(51,65,85,0.18)_1.3px,transparent_1.3px),',
-                'linear-gradient(135deg,#dbeafe_0%,#eff6ff_22%,#ffffff_48%,#eef2ff_100%)]',
-                'bg-[size:auto,auto,20px_20px,auto]'
-            ].join(''),
-            [
-                'dark:bg-[radial-gradient(circle_at_top_left,rgba(96,165,250,0.24),transparent_30%),',
-                'radial-gradient(circle_at_bottom_right,rgba(129,140,248,0.18),transparent_28%),',
-                'radial-gradient(circle,rgba(148,163,184,0.16)_1.2px,transparent_1.2px),',
-                'linear-gradient(135deg,#0f172a_0%,#111827_42%,#020617_100%)]',
-                'dark:bg-[size:auto,auto,20px_20px,auto]'
-            ].join('')
-        );
+        ? 'bg-transparent'
+        : 'bg-[hsl(var(--app-bg-muted)/0.46)] transition-colors duration-300';
     const preparedGraphNodeCacheRef = useRef(new Map<string, {
         source: Node<any>;
         selected: boolean;
@@ -6353,7 +6337,11 @@ function GraphViewInternal({
     // RENDER
     // ─────────────────────────────────────────────────────────────────────────
     return (
-        <div className={cn('h-full w-full relative overflow-hidden flex flex-col', propClassName)}>
+        <div
+            data-design-scope="graph"
+            data-design-part="graph-surface"
+            className={cn('relative flex h-full w-full flex-col overflow-hidden bg-[hsl(var(--app-bg))]', propClassName)}
+        >
             {/* Controls */}
             {!hideControls && (
                 <>
@@ -6490,7 +6478,7 @@ function GraphViewInternal({
             <div className="relative flex-1 overflow-hidden">
                 <div className="relative h-full w-full">
                 {hiddenGraphFilterCount > 0 ? (
-                    <div className="absolute right-4 top-4 z-40 flex items-center gap-2 rounded-full border border-amber-300/80 bg-amber-50/[0.94] px-3 py-2 text-xs text-amber-900 shadow-sm backdrop-blur-md dark:border-amber-700/80 dark:bg-amber-950/[0.88] dark:text-amber-100">
+                    <div className="absolute right-4 top-4 z-40 flex items-center gap-2 rounded-xl border border-amber-300/60 bg-amber-50/[0.94] px-3 py-2 text-xs text-amber-900 shadow-[0_12px_30px_-24px_rgba(15,23,42,0.35)] backdrop-blur-md dark:border-amber-700/55 dark:bg-amber-950/[0.88] dark:text-amber-100">
                         <span className="font-semibold tabular-nums">
                             {hiddenGraphFilterCount} hidden {hiddenGraphFilterCount === 1 ? 'graph filter' : 'graph filters'}
                         </span>
@@ -6499,29 +6487,29 @@ function GraphViewInternal({
                             onClick={() => {
                                 setHiddenSubgraphRootIds(new Set());
                             }}
-                            className="rounded-full bg-amber-100 px-2 py-1 font-medium text-amber-950 transition-colors hover:bg-amber-200 dark:bg-amber-900 dark:text-amber-50 dark:hover:bg-amber-800"
+                            className="rounded-lg bg-amber-100 px-2 py-1 font-medium text-amber-950 transition-[background-color,transform] duration-normal ease-out-cubic hover:bg-amber-200 active:scale-[0.96] motion-reduce:transition-none dark:bg-amber-900 dark:text-amber-50 dark:hover:bg-amber-800"
                         >
                             Restore
                         </button>
                     </div>
                 ) : null}
                 {subgraphRootNodeId && subgraphRootMessage ? (
-                    <div className="absolute left-4 top-4 z-40 flex max-w-[min(720px,calc(100%-2rem))] items-center gap-2 rounded-full border border-slate-200/80 bg-white/[0.92] px-3 py-2 text-xs text-slate-700 shadow-sm backdrop-blur-md dark:border-slate-700/80 dark:bg-slate-950/[0.88] dark:text-slate-200">
-                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-950">
+                    <div className="absolute left-3 top-3 z-40 flex max-w-[min(680px,calc(100%-1.5rem))] items-center gap-2 rounded-lg border border-[hsl(var(--app-border)/0.68)] bg-[hsl(var(--app-panel)/0.96)] px-2.5 py-1.5 text-xs text-muted-foreground shadow-[0_10px_24px_-22px_hsl(var(--foreground)/0.32)]">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[hsl(var(--app-graph-agent)/0.1)] text-[hsl(var(--app-graph-agent))]">
                             <GitBranch className="h-3.5 w-3.5" />
                         </span>
                         <span className="min-w-0 truncate">
-                            <span className="font-semibold text-slate-950 dark:text-slate-50">{subgraphFocusLabel}</span>
-                            <span className="mx-1.5 text-slate-400">/</span>
+                            <span className="font-semibold text-foreground">{subgraphFocusLabel}</span>
+                            <span className="mx-1.5 text-muted-foreground/55">/</span>
                             <span title={subgraphRootLabel}>{subgraphRootLabel}</span>
                         </span>
-                        <span className="shrink-0 rounded-full bg-slate-100 px-2 py-1 font-medium tabular-nums text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                        <span className="shrink-0 rounded-md bg-[hsl(var(--app-bg-muted)/0.72)] px-2 py-1 font-medium tabular-nums text-foreground/76">
                             {subgraphStats.nodes} {subgraphStats.nodes === 1 ? 'node' : 'nodes'}, {subgraphStats.commits} {subgraphStats.commits === 1 ? 'commit' : 'commits'}
                         </span>
                         <button
                             type="button"
                             onClick={() => setSubgraphRootNodeId(null)}
-                            className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-950 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-50"
+                            className="ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-normal ease-out-cubic hover:bg-[hsl(var(--app-bg-muted)/0.72)] hover:text-foreground active:scale-[0.96] motion-reduce:transition-none"
                             aria-label="Exit subgraph view"
                             title="Exit subgraph view"
                         >
@@ -6532,6 +6520,8 @@ function GraphViewInternal({
                 {viewMode === 'branch' ? (
                     <div
                         ref={branchCanvasRef}
+                        data-design-part="graph-canvas"
+                        data-design-background={hideBackground ? 'hidden' : 'visible'}
                         className={cn('agentree-graph-canvas h-full w-full', backgroundClass)}
                         onPointerDownCapture={handleBranchViewportPointerDownCapture}
                         onPointerMoveCapture={handleBranchViewportPointerMoveCapture}
@@ -6789,7 +6779,7 @@ function GraphViewInternal({
                         )}
                     </div>
                 ) : (
-                    <div className="h-full w-full bg-[hsl(var(--app-bg))]">
+                    <div data-design-part="graph-list" className="h-full w-full bg-[hsl(var(--app-bg))]">
                         <ListView
                             projection={workspaceProjection}
                             focusedMessageId={focusedMessageId}
@@ -6924,6 +6914,8 @@ export function GraphView(props: GraphViewInternalProps) {
     if (sendFlowGraphDiagFlags.disableGraphSurface) {
         return (
             <div
+                data-design-scope="graph"
+                data-design-part="graph-surface"
                 data-agentree-diag="graph-surface-disabled"
                 className={cn(
                     'flex h-full w-full items-center justify-center bg-muted/20 text-xs text-muted-foreground',

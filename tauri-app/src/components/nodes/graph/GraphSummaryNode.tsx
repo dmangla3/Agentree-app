@@ -47,16 +47,16 @@ export const GraphSummaryNode = memo(({
       {/* Compact header inline with content */}
       <div className="flex items-start gap-2">
         <div 
-          className="p-1 rounded bg-violet-100 dark:bg-violet-900/50 text-violet-600 dark:text-violet-400 shrink-0 mt-0.5"
+          className="mt-0.5 shrink-0 rounded bg-[hsl(var(--app-graph-summary)/0.11)] p-1 text-[hsl(var(--app-graph-summary))]"
           title="Summary"
         >
           <Layers size={10} />
         </div>
         {isMinimalDetail ? (
-          <div className="mt-2 h-1.5 min-w-0 flex-1 rounded-full bg-violet-200/70 dark:bg-violet-900/60" />
+          <div className="mt-2 h-1.5 min-w-0 flex-1 rounded-full bg-[hsl(var(--app-graph-summary)/0.2)]" />
         ) : (
           <p className={cn(
-            'text-[11px] font-medium text-slate-700 dark:text-slate-300 leading-relaxed italic',
+            'text-[11px] font-medium leading-relaxed text-foreground/80 italic',
             detailLevel === 'compact' ? 'line-clamp-1' : 'line-clamp-3',
           )}>
             {entity.preview}

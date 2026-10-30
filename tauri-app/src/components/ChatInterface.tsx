@@ -814,15 +814,15 @@ export function ChatInterface({ onMarkThreadDone }: ChatInterfaceProps = {}) {
 
   if (!selectedWorkspaceId) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
-        <p>No workspace selected</p>
-        <p className="text-sm">Use the workspace selector in the header to select a project</p>
+      <div data-design-scope="chat" data-design-part="chat-surface" className="flex h-full flex-col items-center justify-center gap-1.5 bg-[hsl(var(--app-bg))] px-6 text-center">
+        <p className="text-sm font-semibold text-foreground">Select a workspace</p>
+        <p className="max-w-sm text-pretty text-xs leading-5 text-muted-foreground">Choose a project from the workspace selector to open its conversation.</p>
       </div>
     );
   }
 
   return (
-    <div className="flex min-w-0 h-full w-full max-w-full flex-col overflow-hidden bg-background text-foreground">
+    <div data-design-scope="chat" data-design-part="chat-surface" className="flex h-full w-full min-w-0 max-w-full flex-col overflow-hidden bg-[hsl(var(--app-bg))] text-foreground">
       <ChatBreadcrumbRail
         projection={projection}
         focusedMessageId={focusedMessageId}
@@ -830,13 +830,22 @@ export function ChatInterface({ onMarkThreadDone }: ChatInterfaceProps = {}) {
       />
 
       <ScrollArea
-        className="flex-1 min-w-0 w-full max-w-full overflow-hidden bg-slate-50 dark:bg-slate-950"
+        data-design-part="chat-timeline-scroll"
+        className="min-w-0 w-full max-w-full flex-1 overflow-hidden bg-[hsl(var(--app-bg-muted)/0.52)]"
         viewportRef={viewportRef}
         onViewportScroll={handleViewportScroll}
       >
         <Profiler id="ChatSurface" onRender={chatProfilerOnRender}>
-          <div className="box-border min-w-0 w-full max-w-full overflow-x-hidden py-12 px-3" onClick={handleBackgroundClick}>
-            {projection.chatItems
+          <div data-design-part="chat-timeline" className="box-border min-w-0 w-full max-w-full overflow-x-hidden px-3 py-5" onClick={handleBackgroundClick}>
+            {projection.chatItems.length === 0 ? (
+              <div className="mx-auto flex min-h-56 max-w-md flex-col items-center justify-center px-6 text-center">
+                <div className="mb-3 h-px w-10 bg-[hsl(var(--app-border-strong)/0.58)]" />
+                <p className="text-sm font-semibold text-foreground">Start this workspace</p>
+                <p className="mt-1 max-w-sm text-pretty text-xs leading-5 text-muted-foreground">
+                  Send a prompt below. Replies, commits, and summaries will stay together in this timeline.
+                </p>
+              </div>
+            ) : projection.chatItems
               .map((item, index) => {
               if (item.type === 'turn') {
                 const turn = projection.turnGroupById.get(item.turnGroupId);
@@ -889,7 +898,7 @@ export function ChatInterface({ onMarkThreadDone }: ChatInterfaceProps = {}) {
 
               const id = (item as any).entityId || (item as any).turnGroupId || `${item.type}:${index}`;
               return (
-                <div key={`${item.type}:${id}`} className="box-border min-w-0 w-full max-w-full px-3 py-3 md:px-6 md:py-4 mb-8 last:mb-0">
+                <div data-design-part="chat-item" key={`${item.type}:${id}`} className="mb-3 box-border min-w-0 w-full max-w-full px-3 py-2 last:mb-0 md:px-6 md:py-3">
                   <ChatNodeDispatcher
                     entityId={(item as any).entityId || (item as any).userEntityId}
                     projection={projection}
@@ -908,7 +917,7 @@ export function ChatInterface({ onMarkThreadDone }: ChatInterfaceProps = {}) {
       <MessageHighlightSelectionPopover workspaceId={selectedWorkspaceId} surfaceRef={viewportRef} />
       <MessageHighlightHoverPopover workspaceId={selectedWorkspaceId} surfaceRef={viewportRef} />
 
-      <div className="relative z-[40] overflow-visible p-4 border-t bg-background">
+      <div data-design-part="chat-composer-shell" className="relative z-[40] overflow-visible border-t border-[hsl(var(--app-border)/0.62)] bg-[hsl(var(--app-panel)/0.96)] p-2.5">
         <GraphDockComposer surface="chat-panel" />
       </div>
 

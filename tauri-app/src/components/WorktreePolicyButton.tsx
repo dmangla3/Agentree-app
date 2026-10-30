@@ -126,7 +126,7 @@ function InfoTip({ label, content }: { label: string; content: string }) {
       <TooltipTrigger asChild>
         <button
           type="button"
-          className="inline-flex size-5 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-150 ease-out hover:bg-muted hover:text-foreground active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none"
           aria-label={label}
         >
           <Info size={13} />
@@ -176,7 +176,7 @@ function PolicyTextareaField({
         placeholder={placeholder}
         disabled={disabled}
         spellCheck={false}
-        className="min-h-[86px] resize-y bg-background/70 font-mono text-xs leading-5"
+        className="min-h-[86px] resize-y rounded-lg bg-background/80 font-mono text-xs leading-5 dark:border-white/15 dark:bg-white/[0.04]"
       />
     </div>
   );
@@ -198,7 +198,7 @@ function PolicySwitchRow({
   info?: string;
 }) {
   return (
-    <div className="flex items-center justify-between gap-4 rounded-md border border-border/70 bg-background/70 px-3 py-2.5">
+    <div className="flex min-h-10 items-center justify-between gap-4 border-y border-border/65 py-2.5 dark:border-white/10">
       <div className="flex min-w-0 items-center gap-1.5">
         <Label htmlFor={id} className="min-w-0 text-xs font-semibold text-foreground">
           {label}
@@ -240,36 +240,30 @@ function RuntimeCachePolicy() {
     sandboxRoot.value ?? 'Actual path is available in the desktop app runtime.';
 
   return (
-    <Collapsible className="rounded-md border border-border/70 bg-background/70">
+    <Collapsible className="border-y border-border/65 dark:border-white/10">
       <CollapsibleTrigger asChild>
         <button
           type="button"
-          className="group flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left"
+          className="group flex min-h-10 w-full items-center justify-between gap-3 px-1 py-2.5 text-left transition-[background-color,transform] duration-150 ease-out hover:bg-muted/40 active:scale-[0.96] motion-reduce:transition-none dark:hover:bg-white/[0.06]"
         >
           <div className="min-w-0">
-            <div className="text-xs font-semibold text-foreground">Advanced</div>
-            <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
-              Runtime storage
-            </div>
+            <div className="text-xs font-semibold text-foreground">Runtime storage</div>
           </div>
           <ChevronDown
             size={16}
-            className="shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180"
+            className="shrink-0 text-muted-foreground transition-transform duration-150 ease-out group-data-[state=open]:rotate-180 motion-reduce:transition-none"
           />
         </button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="border-t border-border/70 px-3 py-3">
+        <div className="border-t border-border/70 py-3 dark:border-white/10">
           <div className="text-xs leading-5 text-muted-foreground">
-            Every permission mode keeps temporary files and build output outside the worktree.
-            Run-specific files are cleared during cleanup; reusable downloads stay in Agentree's
-            shared cache.
+            Temporary output stays outside the worktree. Run files are cleared during cleanup;
+            reusable downloads stay in the shared cache.
           </div>
-          <div className="mt-2 overflow-hidden rounded-md border border-border/60 bg-muted/25 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-            <div className="flex items-start gap-2.5 border-b border-border/50 bg-background/65 px-3 py-2.5">
-              <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border border-border/60 bg-muted/45 text-muted-foreground">
-                <FolderOpen size={14} />
-              </div>
+          <div className="mt-3 border-y border-border/60 dark:border-white/10">
+            <div className="flex items-start gap-2.5 border-b border-border/50 py-2.5 dark:border-white/10">
+              <FolderOpen size={14} className="mt-1 shrink-0 text-muted-foreground" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-3">
                   <div className="text-xs font-semibold leading-5 text-foreground">Root path</div>
@@ -281,10 +275,7 @@ function RuntimeCachePolicy() {
                         : 'Runtime default'}
                   </span>
                 </div>
-                <div
-                  className="mt-1 break-all rounded-[5px] bg-muted/55 px-2 py-1.5 font-mono text-[11px] leading-5 text-foreground/85"
-                  title={rootTitle}
-                >
+                <div className="mt-1 break-all font-mono text-[11px] leading-5 text-foreground/85" title={rootTitle}>
                   {rootLabel}
                 </div>
                 <div className="mt-1.5 text-[11px] leading-4 text-muted-foreground">
@@ -293,7 +284,7 @@ function RuntimeCachePolicy() {
               </div>
             </div>
             <div className="grid grid-cols-1 divide-y divide-border/45 sm:grid-cols-[1fr_1.1fr] sm:divide-x sm:divide-y-0">
-              <div className="px-3 py-2.5">
+              <div className="py-2.5 pr-3">
                 <div className="text-[11px] font-medium leading-4 text-muted-foreground">
                   Agent folder
                 </div>
@@ -301,7 +292,7 @@ function RuntimeCachePolicy() {
                   worktree-id / agent-id
                 </div>
               </div>
-              <div className="px-3 py-2.5">
+              <div className="py-2.5 pl-3">
                 <div className="text-[11px] font-medium leading-4 text-muted-foreground">
                   Overrides
                 </div>
@@ -314,8 +305,8 @@ function RuntimeCachePolicy() {
               </div>
             </div>
           </div>
-          <div className="mt-2 rounded-md border border-border/60 bg-muted/25">
-            <div className="grid grid-cols-[minmax(0,1fr)_minmax(90px,0.45fr)_minmax(70px,0.35fr)] gap-2 border-b border-border/60 px-3 py-2 text-[11px] font-semibold text-muted-foreground">
+          <div className="mt-3 border-y border-border/60 dark:border-white/10">
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(90px,0.45fr)_minmax(70px,0.35fr)] gap-2 border-b border-border/60 py-2 text-[11px] font-semibold text-muted-foreground dark:border-white/10">
               <span>Env var</span>
               <span>Folder</span>
               <span>Scope</span>
@@ -324,7 +315,7 @@ function RuntimeCachePolicy() {
               {runtimeStorageEnvRows.map(([envName, folder, scope]) => (
                 <div
                   key={envName}
-                  className="grid grid-cols-[minmax(0,1fr)_minmax(90px,0.45fr)_minmax(70px,0.35fr)] gap-2 border-b border-border/35 px-3 py-1.5 text-xs last:border-b-0"
+                  className="grid grid-cols-[minmax(0,1fr)_minmax(90px,0.45fr)_minmax(70px,0.35fr)] gap-2 border-b border-border/35 py-1.5 text-xs last:border-b-0 dark:border-white/[0.07]"
                 >
                   <span className="truncate font-mono text-foreground/85" title={envName}>
                     {envName}
@@ -436,7 +427,7 @@ export function WorktreePolicyPanel({
 
   return (
     <TooltipProvider delayDuration={150}>
-        <DialogHeader className="border-b border-border/70 px-5 py-4 pr-12">
+        <DialogHeader className="border-b border-border/60 bg-background px-5 py-4 pr-12 dark:border-white/10 dark:bg-[hsl(var(--app-panel-strong))]">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0 space-y-1">
               <DialogTitle className="text-base leading-6">Worktree policy</DialogTitle>
@@ -447,7 +438,7 @@ export function WorktreePolicyPanel({
             {policy ? <StatusPill source={policy.source} /> : null}
           </div>
           {policy ? (
-            <div className="mt-3 flex min-w-0 items-center gap-2 rounded-md border border-border/70 bg-muted/35 px-2.5 py-2 text-xs">
+            <div className="mt-2 flex min-w-0 items-center gap-2 border-t border-border/60 pt-2 text-xs dark:border-white/10">
               <FileJson size={15} className="shrink-0 text-muted-foreground" />
               <span className="shrink-0 font-medium text-muted-foreground">Config</span>
               <span className="min-w-0 truncate font-mono text-foreground/85" title={policy.configPath}>
@@ -457,7 +448,7 @@ export function WorktreePolicyPanel({
           ) : null}
         </DialogHeader>
 
-        <div className="max-h-[calc(100dvh-10rem)] overflow-y-auto bg-muted/20">
+        <div className="max-h-[calc(100dvh-10rem)] overflow-y-auto bg-background dark:bg-[hsl(var(--app-panel))]">
           {loadState.status === 'loading' ? (
             <div className="p-5">
               <div className="space-y-4">
@@ -468,13 +459,13 @@ export function WorktreePolicyPanel({
             </div>
           ) : loadState.status === 'error' ? (
             <div className="p-5">
-              <div className="flex items-start gap-2 rounded-md border border-destructive/25 bg-destructive/5 px-3 py-2.5 text-sm leading-5 text-destructive">
+              <div className="flex items-start gap-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2.5 text-sm leading-5 text-destructive">
                 <AlertCircle size={16} className="mt-0.5 shrink-0" />
                 <span>{loadState.error}</span>
               </div>
             </div>
           ) : draft && policy ? (
-            <div className="p-5">
+            <div className="px-5 py-4">
               <section className="space-y-4">
                 <div className="grid gap-3">
                   <PolicySwitchRow
@@ -505,7 +496,7 @@ export function WorktreePolicyPanel({
                     disabled={isSaving || !draft.copyEnvFiles}
                     info=".gitignored files are not included in Git worktrees. Add files like .env.local here if agents need them."
                     headerAction={
-                      <div className="flex shrink-0 items-center gap-2 rounded-md border border-border/70 bg-background/70 px-2 py-1">
+                      <div className="flex min-h-8 shrink-0 items-center gap-2 border-l border-border/65 pl-2 dark:border-white/10">
                         <Label
                           htmlFor="copy-env-files"
                           className="text-[11px] font-medium text-muted-foreground"
@@ -533,12 +524,12 @@ export function WorktreePolicyPanel({
                 </div>
                 <RuntimeCachePolicy />
                 {saveError ? (
-                  <div className="flex items-start gap-2 rounded-md border border-destructive/25 bg-destructive/5 px-3 py-2 text-xs leading-5 text-destructive">
+                  <div className="flex items-start gap-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-xs leading-5 text-destructive">
                     <AlertCircle size={15} className="mt-0.5 shrink-0" />
                     <span>{saveError}</span>
                   </div>
                 ) : savedMessage ? (
-                  <div className="flex items-center gap-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs font-medium leading-5 text-emerald-700 dark:text-emerald-300">
+                  <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs font-medium leading-5 text-emerald-700 dark:text-emerald-300">
                     <CheckCircle2 size={15} />
                     <span>{savedMessage}</span>
                   </div>
@@ -550,12 +541,13 @@ export function WorktreePolicyPanel({
           )}
         </div>
 
-        <DialogFooter className="border-t border-border/70 bg-background px-5 py-3 sm:items-center sm:justify-between">
+        <DialogFooter className="border-t border-border/60 bg-background px-5 py-3 dark:border-white/10 dark:bg-[hsl(var(--app-panel-strong))] sm:items-center sm:justify-between">
           <div className="flex items-center gap-2">
             <Button
               type="button"
               variant="ghost"
               size="sm"
+              className="min-h-10 rounded-lg transition-transform duration-150 ease-out active:scale-[0.96] motion-reduce:transition-none"
               onClick={resetToDefaults}
               disabled={!draft || isSaving}
             >
@@ -566,16 +558,18 @@ export function WorktreePolicyPanel({
               type="button"
               variant="ghost"
               size="sm"
+              className="min-h-10 rounded-lg transition-transform duration-150 ease-out active:scale-[0.96] motion-reduce:transition-none"
               onClick={() => loadPolicy()}
               disabled={!repoPath || isSaving}
             >
-              <RefreshCw size={15} className={loadState.status === 'loading' ? 'animate-spin' : undefined} />
+              <RefreshCw size={15} className={loadState.status === 'loading' ? 'animate-spin motion-reduce:animate-none' : undefined} />
               Reload
             </Button>
           </div>
           <Button
             type="button"
             size="sm"
+            className="min-h-10 rounded-lg transition-transform duration-150 ease-out active:scale-[0.96] motion-reduce:transition-none dark:bg-white dark:text-black dark:hover:bg-white/90"
             onClick={canContinueWithDefaultPolicy ? onContinueWithDefaultPolicy : savePolicy}
             disabled={
               !canContinueWithDefaultPolicy &&
@@ -585,7 +579,7 @@ export function WorktreePolicyPanel({
             {canContinueWithDefaultPolicy ? (
               <ArrowRight size={15} />
             ) : isSaving ? (
-              <Loader2 size={15} className="animate-spin" />
+              <Loader2 size={15} className="animate-spin motion-reduce:animate-none" />
             ) : (
               <Save size={15} />
             )}
@@ -618,7 +612,7 @@ export function WorktreePolicyButton({ repoPath, open, onOpenChange }: WorktreeP
           <Settings2 size={18} strokeWidth={2.1} />
         </button>
       </DialogTrigger>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-[860px] gap-0 overflow-hidden rounded-xl border-border/80 p-0 shadow-[0_28px_90px_-46px_hsl(var(--foreground)/0.65)] sm:max-w-[860px]">
+      <DialogContent className="max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-[860px] gap-0 overflow-hidden rounded-xl border-border/70 bg-background p-0 shadow-[0_0_0_1px_hsl(var(--foreground)/0.025),0_24px_72px_-34px_hsl(var(--foreground)/0.58)] dark:border-white/10 dark:bg-[hsl(var(--app-panel))] sm:max-w-[860px]">
         <WorktreePolicyPanel repoPath={repoPath} />
       </DialogContent>
     </Dialog>

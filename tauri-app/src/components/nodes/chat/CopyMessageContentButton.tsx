@@ -38,7 +38,7 @@ export const CopyMessageContentButton = memo(({
       type="button"
       onClick={handleCopy}
       className={cn(
-        "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-border/60 bg-background/80 text-muted-foreground shadow-sm transition-colors",
+        "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-background/80 text-muted-foreground shadow-sm transition-[background-color,color,transform] duration-normal ease-out-cubic active:scale-[0.96]",
         "hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         className
       )}
