@@ -3,7 +3,6 @@ import {
   getGraphThreadVisibilityStorageKey,
   pruneHiddenThreadRootIds,
   readHiddenThreadRootIds,
-  rememberHiddenThreadRootIds,
 } from './graphThreadVisibilityStorage';
 
 const sorted = (ids: Set<string>) => Array.from(ids).sort();
@@ -29,22 +28,6 @@ const installMemoryLocalStorage = () => {
 describe('graph thread visibility storage', () => {
   beforeEach(() => {
     installMemoryLocalStorage();
-  });
-
-  it('stores hidden thread roots per workspace', () => {
-    rememberHiddenThreadRootIds('workspace-a', new Set(['thread-b', 'thread-a']));
-    rememberHiddenThreadRootIds('workspace-b', new Set(['thread-c']));
-
-    expect(sorted(readHiddenThreadRootIds('workspace-a'))).toEqual(['thread-a', 'thread-b']);
-    expect(sorted(readHiddenThreadRootIds('workspace-b'))).toEqual(['thread-c']);
-  });
-
-  it('removes storage when every thread is visible', () => {
-    rememberHiddenThreadRootIds('workspace-a', new Set(['thread-a']));
-    rememberHiddenThreadRootIds('workspace-a', new Set());
-
-    expect(window.localStorage.getItem(getGraphThreadVisibilityStorageKey('workspace-a'))).toBeNull();
-    expect(sorted(readHiddenThreadRootIds('workspace-a'))).toEqual([]);
   });
 
   it('ignores corrupt payloads and non-string ids', () => {

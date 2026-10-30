@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { agentRunManager } from './agentRunManager';
-import { deriveStreamingAppendText, dispatchProviderStreamEvent, resolveProviderAssistantOutput } from './agentRunStreamDispatch';
+import { dispatchProviderStreamEvent, resolveProviderAssistantOutput } from './agentRunStreamDispatch';
 import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
 import { useRunStatusStore } from '../stores/runStatusStore';
 
@@ -101,26 +101,6 @@ describe('resolveProviderAssistantOutput', () => {
 
     expect(result.output).toBe('thethe');
     expect(result.providerItemId).toBe('msg-1');
-  });
-
-  it('derives timeline append text from actor content when projection is throttled', () => {
-    const appended = deriveStreamingAppendText(
-      'I’ll inspect',
-      '',
-      'I’ll inspect the relevant UI',
-    );
-
-    expect(appended).toBe(' the relevant UI');
-  });
-
-  it('falls back to projected content before an actor exists', () => {
-    const appended = deriveStreamingAppendText(
-      null,
-      'I’ll inspect',
-      'I’ll inspect the relevant UI',
-    );
-
-    expect(appended).toBe(' the relevant UI');
   });
 
   it('dispatches thinking and steering provider events into the actor timeline', () => {

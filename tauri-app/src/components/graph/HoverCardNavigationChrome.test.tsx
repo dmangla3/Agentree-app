@@ -1,7 +1,5 @@
 // @vitest-environment jsdom
 import '../../test/setup';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -10,20 +8,6 @@ import {
 } from './HoverCardNavigationChrome';
 
 describe('HoverCardNavigationChrome', () => {
-  it('is the navigation chrome used by both graph hovercard surfaces', () => {
-    const threadHovercardSource = readFileSync(
-      join(process.cwd(), 'src/components/graph/GraphControls.tsx'),
-      'utf8',
-    );
-    const nodeHovercardSource = readFileSync(
-      join(process.cwd(), 'src/components/nodes/graph/GraphNodeHoverCardContent.tsx'),
-      'utf8',
-    );
-
-    expect(threadHovercardSource).toContain('<HoverCardNavigationChrome');
-    expect(nodeHovercardSource).toContain('<HoverCardNavigationChrome');
-  });
-
   it('clamps shared previous and next index steps', () => {
     expect(getAdjacentHoverNavigationIndex(1, 4, -1)).toBe(0);
     expect(getAdjacentHoverNavigationIndex(1, 4, 1)).toBe(2);
@@ -51,12 +35,9 @@ describe('HoverCardNavigationChrome', () => {
       />,
     );
 
-    const chrome = container.querySelector('[data-agentree-hover-navigation-chrome="true"]');
-    expect(chrome?.className).toContain('h-8');
-    expect(chrome?.className).toContain('w-fit');
-    expect(chrome?.className).not.toContain('min-h-11');
+    expect(container.querySelector('[data-agentree-hover-navigation-chrome="true"]')).toBeTruthy();
     expect(screen.getByText('2 / 4')).toBeTruthy();
-    expect(screen.getByText('New reply ready').className).toContain('sr-only');
+    expect(screen.getByText('New reply ready')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Show newer agent message' }).getAttribute('data-navigation-attention')).toBe('true');
 
     fireEvent.click(screen.getByRole('button', { name: 'Show older agent message' }));

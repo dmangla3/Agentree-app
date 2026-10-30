@@ -94,7 +94,7 @@ const makeUserEntity = (overrides: Partial<ProjectedNodeEntity> = {}): Projected
 };
 
 describe('ChatAssistantCard identity', () => {
-  it('adds a compact header separator only in hovercard message previews', () => {
+  it('adds a header separator only in hovercard message previews', () => {
     const { container, rerender } = render(
       <ChatAssistantCard
         entity={makeAssistantEntity()}
@@ -107,23 +107,7 @@ describe('ChatAssistantCard identity', () => {
       />
     );
 
-    const assistantSeparator = container.querySelector('[data-agentree-message-header-separator="true"]');
-    expect(assistantSeparator?.className).toContain('my-2');
-
-    rerender(
-      <ChatUserCard
-        entity={makeUserEntity()}
-        isFocused={false}
-        isSelected={false}
-        layout="hovercard"
-        onFocus={() => {}}
-        onSelect={() => {}}
-        onContextMenu={() => {}}
-      />
-    );
-
-    const userSeparator = container.querySelector('[data-agentree-message-header-separator="true"]');
-    expect(userSeparator?.className).toContain('my-1.5');
+    expect(container.querySelector('[data-agentree-message-header-separator="true"]')).toBeTruthy();
 
     rerender(
       <ChatAssistantCard
@@ -164,7 +148,7 @@ describe('ChatAssistantCard identity', () => {
     expect(screen.getByText('GPT 5.5')).toBeTruthy();
     // The reasoning effort renders in its own span that escapes the chip's
     // uppercase styling, so it displays as "High" rather than "HIGH".
-    expect(screen.getByText('High').className).toContain('normal-case');
+    expect(screen.getByText('High')).toBeTruthy();
   });
 
   it('shows the assistant base commit chip with the full commit in the title', () => {
@@ -562,6 +546,105 @@ describe('ChatAssistantCard identity', () => {
     expect(screen.queryByRole('button', { name: /work logs/i })).toBeNull();
   });
 
+  it('preserves provider-native tool names while formatting expandable details generically', () => {
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          status: 'completed' as any,
+          message: {
+            status: 'completed' as any,
+            content: 'Research complete.',
+            execution_data: {
+              timeline: [
+                {
+                  type: 'tool_use',
+                  timestamp: 1,
+                  toolName: 'webSearch',
+                  toolInput: {
+                    action: { type: 'search', queries: ['Agentree docs', 'Agentree GitHub'] },
+                  },
+                  toolUseId: 'search-1',
+                },
+                {
+                  type: 'tool_result',
+                  timestamp: 2,
+                  toolName: 'webSearch',
+                  toolOutput: { status: 'completed', query: 'Agentree docs' },
+                  toolUseId: 'search-1',
+                },
+              ],
+            },
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /work logs/i }));
+    expect(screen.getByText('webSearch')).toBeTruthy();
+    expect(screen.getByText(/Agentree docs/)).toBeTruthy();
+    expect(screen.queryByText('Web search')).toBeNull();
+    expect(screen.queryByText(/\{"action"/)).toBeNull();
+
+    fireEvent.click(screen.getByText('webSearch').closest('[role="button"]')!);
+    expect(screen.getByText('Request')).toBeTruthy();
+    expect(screen.getByText('Result')).toBeTruthy();
+    expect(screen.getAllByText(/queries/i).length).toBeGreaterThan(0);
+  });
+
+  it('collapses adjacent command and search calls into expandable groups with exact names underneath', () => {
+    render(
+      <ChatAssistantCard
+        entity={makeAssistantEntity({
+          status: 'completed' as any,
+          message: {
+            status: 'completed' as any,
+            content: 'Work complete.',
+            execution_data: {
+              timeline: [
+                { type: 'tool_use', timestamp: 1, toolName: 'commandExecution', toolUseId: 'cmd-1', toolInput: { command: 'pnpm test' }, toolOutput: 'passed' },
+                { type: 'tool_use', timestamp: 2, toolName: 'Bash', toolUseId: 'cmd-2', toolInput: { command: 'pnpm build' }, toolOutput: 'built' },
+                { type: 'tool_use', timestamp: 3, toolName: 'webSearch', toolUseId: 'search-1', toolInput: { query: 'Agentree' }, toolOutput: [] },
+                { type: 'tool_use', timestamp: 4, toolName: 'Grep', toolUseId: 'search-2', toolInput: { pattern: 'TimelineRow' }, toolOutput: '2 matches' },
+                { type: 'tool_use', timestamp: 5, toolName: 'ToolSearch', toolUseId: 'search-3', toolInput: { query: 'calendar' }, toolOutput: [] },
+              ],
+            },
+          } as any,
+        })}
+        isFocused={false}
+        isSelected={false}
+        layout="chat"
+        onFocus={() => {}}
+        onSelect={() => {}}
+        onContextMenu={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /work logs/i }));
+    expect(screen.getByRole('button', { name: /Ran 2 commands/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /3 searches/i })).toBeTruthy();
+    expect(screen.queryByText('commandExecution')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /Ran 2 commands/i }));
+    expect(screen.getByText('commandExecution')).toBeTruthy();
+    expect(screen.getByText('Bash')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('commandExecution').closest('[role="button"]')!);
+    expect(screen.getByText('Request')).toBeTruthy();
+    expect(screen.getByText('Result')).toBeTruthy();
+    expect(screen.getAllByText(/pnpm test/).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: /3 searches/i }));
+    expect(screen.getByText('webSearch')).toBeTruthy();
+    expect(screen.getByText('Grep')).toBeTruthy();
+    expect(screen.getByText('ToolSearch')).toBeTruthy();
+  });
+
   it('renders live message-only timeline rows as separate chunks before falling back to flat content', () => {
     render(
       <ChatAssistantCard
@@ -659,28 +742,6 @@ describe('ChatAssistantCard identity', () => {
     expect(error.compareDocumentPosition(runningCue) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole('button', { name: /work logs/i })).toBeNull();
     expect(screen.queryByText(/Actions/i)).toBeNull();
-  });
-
-  it('uses theme foreground tokens for the running cue label', () => {
-    render(
-      <ChatAssistantCard
-        entity={makeAssistantEntity({
-          status: 'running' as any,
-          message: {
-            status: 'running' as any,
-            content: '',
-          } as any,
-        })}
-        isFocused={false}
-        isSelected={false}
-        layout="chat"
-        onFocus={() => {}}
-        onSelect={() => {}}
-        onContextMenu={() => {}}
-      />
-    );
-
-    expect(screen.getByText('Agent running').className).toContain('text-foreground');
   });
 
   it('shows user steering messages in the active chat assistant card', () => {

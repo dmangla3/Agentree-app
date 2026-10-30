@@ -21,7 +21,3 @@ export const isSteerableAssistantNode = (input: SteerableAssistantNodeInput): bo
   if (clean(input.role) !== 'assistant') return false;
   return isActiveAgentRunStatus(input.runStatus ?? input.status);
 };
-
-export const getSteerableAgentNodeId = (input: SteerableAssistantNodeInput): string | null => (
-  isSteerableAssistantNode(input) ? input.nodeId!.trim() : null
-);

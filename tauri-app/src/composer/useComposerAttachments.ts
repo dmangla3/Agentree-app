@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import axios from 'axios';
 import type { AttachmentMetadata } from '../stores/workspaceStore';
-import { AGENTREE_DATA_PLANE_ENABLED, api } from '../lib/api';
-import { commands } from '../generated/tauri-bindings';
+import { attachmentApplication } from '../application/attachments';
 
 export type ComposerAttachmentStatus = 'pending' | 'uploading' | 'uploaded' | 'error';
 
@@ -118,52 +116,22 @@ export function useComposerAttachments({ workspaceId, onError }: {
         fileToDataUrl(file),
         getImageDimensions(objectUrl),
       ]);
-      const saved = await commands.saveComposerAttachment(
+      const saved = await attachmentApplication.save({
         workspaceId,
         attachmentId,
-        file.name,
+        file,
         dataUrl,
-      );
-
-      let remotePath: string | null = null;
-      let publicUrl: string | null = null;
-      if (AGENTREE_DATA_PLANE_ENABLED) {
-        try {
-          const signedUpload = await api.post<{
-            signedUrl: string;
-            path: string;
-            publicUrl: string | null;
-          }>('/attachments/signed-url', {
-            filename: file.name,
-            contentType: file.type || 'application/octet-stream',
-          });
-          await axios.put(signedUpload.data.signedUrl, file, {
-            headers: { 'Content-Type': file.type || 'application/octet-stream' },
-          });
-          remotePath = signedUpload.data.path;
-          publicUrl = signedUpload.data.publicUrl || null;
-          try {
-            const signedDownload = await api.get<{ signedUrl: string }>('/attachments/signed-download-url', {
-              params: { path: signedUpload.data.path },
-            });
-            publicUrl = signedDownload.data.signedUrl || publicUrl;
-          } catch {
-            // The durable local attachment remains usable when refreshing a cloud URL fails.
-          }
-        } catch {
-          // Cloud mirroring is optional. Keep the local cached attachment.
-        }
-      }
+      });
 
       setAttachments((current) => current.map((attachment) => (
         getComposerAttachmentId(attachment) === attachmentId && 'file' in attachment
           ? {
             ...attachment,
             status: 'uploaded',
-            path: remotePath || saved.path,
-            publicUrl,
-            localPath: saved.path,
-            sizeBytes: saved.size_bytes ?? file.size ?? null,
+            path: saved.remotePath || saved.localPath,
+            publicUrl: saved.publicUrl,
+            localPath: saved.localPath,
+            sizeBytes: saved.sizeBytes ?? file.size ?? null,
             width: dimensions?.width ?? null,
             height: dimensions?.height ?? null,
             error: undefined,

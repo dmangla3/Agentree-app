@@ -55,8 +55,6 @@ export const agentsFromRuntimeModels = (models: readonly RuntimeModel[]): Agent[
     color: model.color,
 }));
 
-export const runtimeAgents: Agent[] = agentsFromRuntimeModels(bootstrapRuntimeModels);
-
 const emptyNativeCatalogCache: RuntimeModelCatalogCache = {
     supported: [],
     opencodeAccessible: null,

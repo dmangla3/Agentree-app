@@ -78,7 +78,7 @@ const EDGE_LEGEND = [
 export type GraphEdgeLegendId = typeof EDGE_LEGEND[number]['id'];
 export type GraphNodeSectionId = 'conversation' | 'commits';
 
-export const getPreviewEdgeTypeForLegendHover = (edgeTypeId: GraphEdgeLegendId): GraphEdgeLegendId | null => (
+const getPreviewEdgeTypeForLegendHover = (edgeTypeId: GraphEdgeLegendId): GraphEdgeLegendId | null => (
   edgeTypeId === 'context-path' || edgeTypeId === 'git-parent' ? edgeTypeId : null
 );
 

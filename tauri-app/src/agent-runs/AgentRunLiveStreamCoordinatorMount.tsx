@@ -20,7 +20,7 @@ import type { AgentRunSnapshot } from './agentRun.types';
 import { finishComposerSendFocus } from '../composer/composerSendFocus';
 import { useToast } from '../components/Toast';
 
-export const buildLandingWarningToast = (warning: {
+const buildLandingWarningToast = (warning: {
   message: string;
   outputCommitSha: string | null;
 }) => {

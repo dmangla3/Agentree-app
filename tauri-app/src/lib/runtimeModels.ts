@@ -55,12 +55,6 @@ export interface RuntimeModel {
   isFree?: boolean | null;
 }
 
-export interface RuntimeModelIdentity {
-  provider: RuntimeProvider;
-  modelId: string;
-  reasoningEffort?: string | null;
-}
-
 // Compact projection for legacy surfaces (graph legend and advanced search).
 // RuntimeModel remains the single catalog source of truth.
 export interface RuntimeCatalogModel {
@@ -75,14 +69,6 @@ export interface RuntimeCatalogModel {
 }
 
 const encodeRuntimeModelKeyPart = (value: string) => encodeURIComponent(value);
-
-const decodeRuntimeModelKeyPart = (value: string): string | null => {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return null;
-  }
-};
 
 export const getRuntimeModelFamilyKey = (
   provider?: string | null,
@@ -102,19 +88,6 @@ export const getRuntimeModelKey = (
   return reasoningEffort
     ? `${familyKey}:${encodeRuntimeModelKeyPart(reasoningEffort)}`
     : familyKey;
-};
-
-export const parseRuntimeModelKey = (key?: string | null): RuntimeModelIdentity | null => {
-  if (!key) return null;
-  const [provider, encodedModelId, encodedReasoningEffort, ...extra] = key.split(':');
-  if (extra.length > 0 || !provider || !encodedModelId) return null;
-  if (provider !== 'codex' && provider !== 'claude' && provider !== 'opencode') return null;
-  const modelId = decodeRuntimeModelKeyPart(encodedModelId);
-  const reasoningEffort = encodedReasoningEffort
-    ? decodeRuntimeModelKeyPart(encodedReasoningEffort)
-    : null;
-  if (!modelId || (encodedReasoningEffort && !reasoningEffort)) return null;
-  return { provider, modelId, reasoningEffort };
 };
 
 const openCodeStatusRank: Record<RuntimeModelStatus, number> = {
@@ -502,11 +475,6 @@ export const runtimeModelsFromNativeCatalog = (
 });
 
 export const defaultRuntimeModelKey = 'codex:gpt-5.5:high';
-
-export const getRuntimeModelByKey = (
-  key?: string | null,
-  catalog: readonly RuntimeModel[] = bootstrapRuntimeModels,
-): RuntimeModel | null => catalog.find((model) => model.key === key) ?? null;
 
 export const getRuntimeModelByProviderAndId = (
   provider?: string | null,

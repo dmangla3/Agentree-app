@@ -7,12 +7,12 @@
       "platforms": {
         "linux-x86_64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-node-22.21.1-linux-x86_64.tar.gz",
-          "sha256": "013749946ebed4cab5c1518bb383a48ed14563cdc6cceed1a1bc408153847c42",
+          "sha256": "4d06d290680210ccca3ccfe8bdedbbf26a4d20e54505a2f51ccb1d9b0db035eb",
           "treeSha256": "377f20bf256c2994d1f2dbbdc53e8951817ba845e95c37acfcaac83a1ec1192e"
         },
         "darwin-aarch64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-node-22.21.1-darwin-aarch64.tar.gz",
-          "sha256": "9b22239b30d07872cd7462f0d4e527e93b6714324342b3c4b3b6c6ac954319a9",
+          "sha256": "cabfc7fb995d2986bb9f023715fd6b6d7697698527c6411ddc6736af533dae29",
           "treeSha256": "34169fcc9422c834fa141ff6fec7d478fa90949216ef7c6aefc08557bfc7814e"
         }
       }
@@ -22,13 +22,13 @@
       "platforms": {
         "linux-x86_64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-claude-sdk-0.3.207-linux-x86_64.tar.gz",
-          "sha256": "d0f25e47968df176d4c98051d5529d900dbfc93ab40ca5cb1f962475201b0f8b",
-          "treeSha256": "150b43c72619824f0d15985f093305da14c1d04a35937828eab4da98b64ed13c"
+          "sha256": "96902c02edf29df9ff447185b78b3276a4101f72bf5e8af3393698920b180600",
+          "treeSha256": "4e44e86c5cef2d67eb114c48a18258e09c298b72a98b7044ac15d0ee0dddc565"
         },
         "darwin-aarch64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-claude-sdk-0.3.207-darwin-aarch64.tar.gz",
-          "sha256": "b58aab455d9d3b4b070ab139328e0a2c50ec921cd2671910f9f0367c9d65bbe2",
-          "treeSha256": "bd02a2a9127652baaaac8bf9e77f6771f389e81025752cc1bce4ef8e3446eb16"
+          "sha256": "bf32d00e66779a2ed1339431ec8e44e813c13890176f14a31a2f73487bab15d6",
+          "treeSha256": "64f05ad84fbc56fa1d9935c35809bc2edfdbe06da1c4c7b81b32407797612380"
         }
       }
     },
@@ -37,12 +37,12 @@
       "platforms": {
         "linux-x86_64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-codex-0.144.1-linux-x86_64.tar.gz",
-          "sha256": "a92e81b23f122951de8624d9b3fffd6146b171e436b672c3ed293a4acdab1d40",
+          "sha256": "59a8780b6c6b1298fc0d093fe323e3b9d912d9944caa4009b77a27891e884e3a",
           "treeSha256": "473a5fc2463d796d154cc9096298134a531e5835302a08acfaa3c8916027a728"
         },
         "darwin-aarch64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-codex-0.144.1-darwin-aarch64.tar.gz",
-          "sha256": "770de8467a8f9af55f8a2122d554f9f5b5af2a0bce575e8e9adcdc8e9151eb71",
+          "sha256": "285bdce189e014c189d8729a98f2a29dda392f5ca3058bc89267a686d936eabe",
           "treeSha256": "8392390ed059874b63c9ad98087d344cd56f8141d9cf48979dbe5c0fd551bf42"
         }
       }
@@ -53,13 +53,13 @@
       "platforms": {
         "linux-x86_64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-opencode-1.18.3-linux-x86_64.tar.gz",
-          "sha256": "47c46cb274ec5b13e546851879c88d652059f13334fb47e50a527565607406ef",
-          "treeSha256": "6a41c7156535dbc0bdad2b51a2b1277604ae67c5b66495ae5aa49fcf75c59577"
+          "sha256": "390ba76ce0d4faa07d133288712cc72bea478a50318a1d217e1bd889301ff9e8",
+          "treeSha256": "ccac95d9cb62673fe852758eca8e489974dc48b8535e7969eb3705d8bddbc588"
         },
         "darwin-aarch64": {
           "url": "https://pub-70435b59648d48a8b3ddf828eda39456.r2.dev/releases/runtime/agentree-runtime-opencode-1.18.3-darwin-aarch64.tar.gz",
-          "sha256": "edaaf2b83f21832a64e4a74678c7a965e1337a79ec259913940a224b74c5bd2d",
-          "treeSha256": "bb89b0552a724d78ab4b6cca416794c6ccf478584e896bcad56cb1fa2f54ade3"
+          "sha256": "8c7c28da5c6cfefcb255f31eb2847a4539b1c1d1f7b71ad71462bbc846cbc86b",
+          "treeSha256": "7a6fb59cf2768887a919d028e0a1a71963b831b7d80ea8a5b7d6c3ff258820fe"
         }
       }
     }

@@ -153,7 +153,6 @@ export function NodeHoverCardContent({
     >
       {headerAccessory ? (
         <div
-          data-agentree-hover-navigation-dock="attached"
           className="absolute right-4 top-px z-20 -translate-y-full"
         >
           {headerAccessory}

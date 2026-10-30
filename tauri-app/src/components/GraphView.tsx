@@ -29,6 +29,7 @@ import { branchKeys } from '../hooks/useBranches';
 import { trackedRefKeys, useTrackedRefs } from '../hooks/useTrackedRefs';
 import { useGitSync } from '../hooks/useGitSync';
 import { getEnabledTrackedGitRefs, getTrackedRefsNeedingSync, useGitRefSnapshot } from '../hooks/useGitRefSnapshot';
+import { useCommitAcceptanceRefresh } from '../hooks/useCommitAcceptance';
 import { localNodeKeys, upsertMessagesIntoLocalNodeCache, useLocalNodes } from '../hooks/useLocalNodes';
 import { useGraphMessages } from '../hooks/useLiveMessages';
 import { useInsights } from '../hooks/useInsights';
@@ -168,6 +169,7 @@ import { graphNodeTypes } from './graph/graphNodeTypes';
 import { hasLayoutAnchoredGraphNodes, resolveAnchoredGraphWindowNodeIds } from './graph/graphRenderWindow';
 import { getGraphEdgeEndpointDotVariant, isInterTurnEndpointEdge, type EdgeEndpointDotVariant } from './graphEdgeEndpointDots';
 import type { WorkspaceThreadNavigationModel } from './navigation/WorkspaceNavigator';
+import { getRotatedActiveThreadRootId } from './navigation/threadNavigationHierarchy';
 
 const GraphMergePanel = React.lazy(() => import('./MergePanel').then((module) => ({ default: module.MergePanel })));
 
@@ -448,22 +450,6 @@ export const buildFocusedThreadRootLookup = ({
     }
 
     return lookup;
-};
-
-export const resolveFocusedThreadRootId = ({
-    focusedMessageId,
-    messages,
-    threadRootIndex,
-    focusedThreadRootLookup,
-}: {
-    focusedMessageId: string | null;
-    messages: Message[];
-    threadRootIndex?: ReturnType<typeof buildThreadRootIndex>;
-    focusedThreadRootLookup?: Map<string, string>;
-}): string | null => {
-    if (!focusedMessageId) return null;
-    const lookup = focusedThreadRootLookup ?? buildFocusedThreadRootLookup({ messages, threadRootIndex });
-    return lookup.get(focusedMessageId) ?? null;
 };
 
 export const resolveLeafNodeFocusThreadRootId = ({
@@ -1224,6 +1210,7 @@ function GraphViewInternal({
     const [viewMode, setViewMode] = useState<ViewMode>('branch');
     const [branchViewActivationNonce, setBranchViewActivationNonce] = useState(0);
     const [executionTimelineOpen, setExecutionTimelineOpen] = useState(false);
+    const [showMergedAgentreeCommits, setShowMergedAgentreeCommits] = useState(false);
     const handleExecutionTimelineOpenChange = useCallback((open: boolean) => {
         setExecutionTimelineOpen(open);
     }, []);
@@ -2021,7 +2008,24 @@ function GraphViewInternal({
         () => getComposerBaseSnapshotGitRefs(enabledTrackedGitRefs),
         [enabledTrackedGitRefs]
     );
-    const { data: gitRefSnapshot } = useGitRefSnapshot(repoPath, composerBaseSnapshotGitRefs);
+    const {
+        data: gitRefSnapshot,
+        refetch: refreshGitRefSnapshot,
+        isFetching: isRefreshingGitRefSnapshot,
+    } = useGitRefSnapshot(repoPath, composerBaseSnapshotGitRefs);
+    const agentCommitShas = useMemo(() => (
+        (localCommitGraph?.commits ?? [])
+            .filter((commit) => Boolean(commit.producedByNodeId))
+            .map((commit) => commit.sha)
+    ), [localCommitGraph?.commits]);
+    useCommitAcceptanceRefresh({
+        workspaceId: selectedWorkspaceId,
+        repoPath,
+        trackedRefs,
+        refSnapshot: gitRefSnapshot,
+        agentCommitShas,
+        enabled: localCommitGraph !== undefined,
+    });
     const trackedRefsNeedingSync = useMemo(
         () => getTrackedRefsNeedingSync(trackedRefs, gitRefSnapshot),
         [trackedRefs, gitRefSnapshot]
@@ -4105,6 +4109,16 @@ function GraphViewInternal({
         handleFocusThread(threadRootId);
     }, [doneThreadRootIds, handleFocusThread, handleThreadDoneChange, threadRootIndex.threadRootIds]);
 
+    const handleRotateThread = useCallback((direction: 'next' | 'previous') => {
+        const threadRootId = getRotatedActiveThreadRootId(
+            threadIndexItems,
+            threadGraphScope.activeThreadRootId,
+            direction,
+        );
+        if (!threadRootId || threadRootId === threadGraphScope.activeThreadRootId) return;
+        handleFocusThread(threadRootId);
+    }, [handleFocusThread, threadGraphScope.activeThreadRootId, threadIndexItems]);
+
     const handleDoneThreadsCollapsedChange = useCallback((collapsed: boolean) => {
         setDoneThreadsCollapsed(collapsed);
         rememberGraphThreadState(selectedWorkspaceId, {
@@ -4229,6 +4243,7 @@ function GraphViewInternal({
         visibleNodeSections,
         insights: graphLayoutInsights,
         showInsightsInGraph,
+        showMergedAgentreeCommits,
         workspaceRepoMap,
         branchPointersByNodeId,
         resetNonce: graphResetNonce,
@@ -4744,6 +4759,8 @@ function GraphViewInternal({
                 handleFocusGraphNavigationNode(latestGraphNodeId, 'latest-node');
             }
         },
+        focusNextThread: () => handleRotateThread('next'),
+        focusPreviousThread: () => handleRotateThread('previous'),
         closeThread: handleCloseCurrentThread,
         reopenLastClosedThread: handleReopenLastClosedThread,
         openSearch: () => {
@@ -6461,6 +6478,10 @@ function GraphViewInternal({
                     <TrackedBranchesPanel
                         workspaceId={selectedWorkspaceId}
                         repoPath={repoPath}
+                        showMergedCommits={showMergedAgentreeCommits}
+                        onShowMergedCommitsChange={setShowMergedAgentreeCommits}
+                        isRefreshingGitState={isRefreshingGitRefSnapshot}
+                        onRefreshGitState={() => { void refreshGitRefSnapshot(); }}
                     />
                 </>
             )}

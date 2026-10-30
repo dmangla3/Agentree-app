@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ACTIVE_STATUSES, TERMINAL_STATUSES } from '@shared/agentStatus';
 import {
-  getSteerableAgentNodeId,
   isActiveAgentRunStatus,
   isSteerableAssistantNode,
 } from './agentRunSteering';
@@ -37,21 +36,5 @@ describe('agent run steering helpers', () => {
       status: 'running',
       runStatus: 'running',
     })).toBe(false);
-  });
-
-  it('prefers live run status over persisted message status', () => {
-    expect(getSteerableAgentNodeId({
-      nodeId: 'assistant-1',
-      role: 'assistant',
-      status: 'completed',
-      runStatus: 'streaming',
-    })).toBe('assistant-1');
-
-    expect(getSteerableAgentNodeId({
-      nodeId: 'assistant-1',
-      role: 'assistant',
-      status: 'running',
-      runStatus: 'completed',
-    })).toBeNull();
   });
 });

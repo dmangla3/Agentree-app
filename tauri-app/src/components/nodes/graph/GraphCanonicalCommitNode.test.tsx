@@ -50,6 +50,22 @@ const makeImportedCommit = (): ProjectedCommitEntity => ({
   } as ProjectedCommitEntity['commit'],
 });
 
+const makeGeneratedCommit = (isMerged: boolean): ProjectedCommitEntity => ({
+  ...makeImportedCommit(),
+  kind: 'generated_commit',
+  ownerKind: 'agentree',
+  placement: 'conversation_sidecar',
+  producedByNodeId: 'assistant-1',
+  visualOwnerNodeId: 'assistant-1',
+  isMerged,
+  commit: {
+    ...makeImportedCommit().commit,
+    source_kind: 'agent',
+    produced_by_node_id: 'assistant-1',
+    is_merged: isMerged,
+  },
+});
+
 describe('GraphCanonicalCommitNode', () => {
   it('uses the same card surface as an agent-created commit for a single imported commit', () => {
     const { container } = render(
@@ -58,5 +74,17 @@ describe('GraphCanonicalCommitNode', () => {
 
     expect(screen.getByText('Import')).toBeTruthy();
     expect(container.querySelector('.agentree-graph-node-card')).not.toBeNull();
+  });
+
+  it('renders merged generated commits with the confident green treatment', () => {
+    const { container } = render(<GraphCanonicalCommitNode commit={makeGeneratedCommit(true)} />);
+    expect(container.querySelector('.agentree-commit-merged')).not.toBeNull();
+    expect(container.querySelector('.agentree-commit-unmerged')).toBeNull();
+  });
+
+  it('renders unmerged generated commits with the muted treatment', () => {
+    const { container } = render(<GraphCanonicalCommitNode commit={makeGeneratedCommit(false)} />);
+    expect(container.querySelector('.agentree-commit-unmerged')).not.toBeNull();
+    expect(container.querySelector('.agentree-commit-merged')).toBeNull();
   });
 });

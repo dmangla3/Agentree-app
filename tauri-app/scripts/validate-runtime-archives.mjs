@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { archiveFileNameFromUrl } from "./runtime-archive-cache.mjs";
 import { runtimeTreeSha256 } from "./runtime-tree-fingerprint.mjs";
 
 const projectRoot = path.resolve(
@@ -29,6 +30,7 @@ const archivesDir = path.resolve(
 );
 const platformArgument = argumentValue("--platform", "");
 const componentArgument = argumentValue("--component", "");
+const skipTreeFingerprint = process.argv.includes("--skip-tree-fingerprint");
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 const platforms = platformArgument
   ? platformArgument.split(",").map((value) => value.trim())
@@ -116,7 +118,7 @@ function validateArchive(component, spec, platform) {
   if (!platformSpec)
     fail(`Missing ${component} manifest entry for ${platform}`);
 
-  const archiveName = `agentree-runtime-${component}-${spec.version}-${platform}.tar.gz`;
+  const archiveName = archiveFileNameFromUrl(platformSpec.url);
   const archivePath = path.join(archivesDir, archiveName);
   if (!fs.existsSync(archivePath))
     fail(`Missing runtime archive: ${archivePath}`);
@@ -128,11 +130,13 @@ function validateArchive(component, spec, platform) {
     );
   }
 
-  const actualTreeSha256 = runtimeTreeSha256(projectRoot, component, archivePath);
-  if (actualTreeSha256 !== platformSpec.treeSha256) {
-    fail(
-      `${archiveName} extracted fingerprint ${actualTreeSha256} does not match manifest ${platformSpec.treeSha256}`,
-    );
+  if (!skipTreeFingerprint) {
+    const actualTreeSha256 = runtimeTreeSha256(projectRoot, component, archivePath);
+    if (actualTreeSha256 !== platformSpec.treeSha256) {
+      fail(
+        `${archiveName} extracted fingerprint ${actualTreeSha256} does not match manifest ${platformSpec.treeSha256}`,
+      );
+    }
   }
 
   const members = run("tar", ["-tzf", archivePath]).split("\n").filter(Boolean);

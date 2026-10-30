@@ -3,7 +3,11 @@ import axios from 'axios';
 import { api } from './api';
 import { agentClient, type GitLocalRefInfo } from './agentClient';
 import type { Message } from '../stores/workspaceStore';
-import { trackedRefKeys } from '../hooks/useTrackedRefs';
+import {
+  readCachedTrackedRefs,
+  trackedRefKeys,
+  writeCachedTrackedRefs,
+} from '../hooks/useTrackedRefs';
 import { branchKeys } from '../hooks/useBranches';
 import { getMessageOutputCommitSha } from './graph/commitAccessors';
 
@@ -30,16 +34,41 @@ const displayNameForRef = (gitRef: string): string => {
 const findRef = (refs: GitLocalRefInfo[], gitRef: string): GitLocalRefInfo | null =>
   refs.find((ref) => ref.git_ref === gitRef) ?? null;
 
+const isDefaultAcceptanceGitRef = (gitRef: string): boolean => (
+  gitRef === 'refs/heads/main' || gitRef === 'refs/heads/master'
+);
+
 const createTrackedRef = async (
   workspaceId: string,
   gitRef: string,
   options?: { lastSeenCommitSha?: string | null }
 ) => {
+  if (agentClient.hasRuntime()) {
+    const current = readCachedTrackedRefs(workspaceId);
+    if (!current.some((ref) => ref.git_ref === gitRef)) {
+      const now = new Date().toISOString();
+      writeCachedTrackedRefs(workspaceId, [
+        ...current,
+        {
+          id: `local:${workspaceId}:${gitRef}`,
+          workspace_id: workspaceId,
+          git_ref: gitRef,
+          display_name: displayNameForRef(gitRef),
+          enabled: true,
+          is_acceptance_branch: isDefaultAcceptanceGitRef(gitRef),
+          last_seen_commit_sha: options?.lastSeenCommitSha ?? null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ]);
+    }
+  }
   try {
     const response = await api.post(`/workspaces/${workspaceId}/tracked-refs`, {
       gitRef,
       displayName: displayNameForRef(gitRef),
       enabled: true,
+      isAcceptanceBranch: isDefaultAcceptanceGitRef(gitRef),
     });
     const refId = response.data?.id;
     if (refId && options?.lastSeenCommitSha) {

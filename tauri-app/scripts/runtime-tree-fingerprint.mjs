@@ -7,6 +7,7 @@ export function runtimeTreeSha256(projectRoot, component, archivePath) {
     [
       'run',
       '--quiet',
+      '--release',
       '--manifest-path',
       path.join(projectRoot, 'src-tauri', 'Cargo.toml'),
       '--example',

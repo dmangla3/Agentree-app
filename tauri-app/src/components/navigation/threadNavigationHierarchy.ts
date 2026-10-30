@@ -57,3 +57,31 @@ export function orderThreadFamiliesNewestFirst(
   for (const item of items) append(item);
   return ordered;
 }
+
+export function orderActiveThreadFamiliesNewestFirst(
+  items: ThreadNavigationItem[],
+): ThreadNavigationItem[] {
+  return orderThreadFamiliesNewestFirst(
+    items.filter((thread) => !thread.done || thread.runningCount > 0),
+  );
+}
+
+export function getRotatedActiveThreadRootId(
+  items: ThreadNavigationItem[],
+  currentThreadRootId: string | null,
+  direction: 'next' | 'previous',
+): string | null {
+  const activeItems = orderActiveThreadFamiliesNewestFirst(items);
+  if (activeItems.length === 0) return null;
+
+  const currentIndex = activeItems.findIndex((thread) => thread.threadRootId === currentThreadRootId);
+  if (currentIndex === -1) {
+    return direction === 'next'
+      ? activeItems[0].threadRootId
+      : activeItems[activeItems.length - 1].threadRootId;
+  }
+
+  const offset = direction === 'next' ? 1 : -1;
+  const nextIndex = (currentIndex + offset + activeItems.length) % activeItems.length;
+  return activeItems[nextIndex].threadRootId;
+}

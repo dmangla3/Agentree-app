@@ -56,6 +56,7 @@ export interface UseGraphLayoutOptions {
     visibleNodeSections: Set<GraphNodeSectionId>;
     insights: Insight[];
     showInsightsInGraph: boolean;
+    showMergedAgentreeCommits?: boolean;
     workspaceRepoMap: Map<string, string | null>;
     branchPointersByNodeId: Map<string, BranchPointer[]>;
     resetNonce?: number;
@@ -252,6 +253,10 @@ const createCommitProjectionFingerprint = (projection: WorkspaceProjection): str
     [
         projection.commitLaneRows.map((row) => [row.type, row.commitSha ?? '', row.groupId ?? '', row.sortTs].join(':')).join(';'),
         projection.layoutDerivedCommitGroups.map((group) => [group.groupId, group.commitShas.join(','), group.expanded ? 1 : 0].join(':')).join(';'),
+        Array.from(projection.commitBySha.values())
+            .map((commit) => `${commit.sha}:${commit.isMerged ? 1 : 0}`)
+            .sort()
+            .join(';'),
     ].join('|')
 );
 
@@ -273,6 +278,7 @@ interface LayoutCacheKey {
     laneStrategy: string;
     insightsFingerprint: string;
     showInsightsInGraph: boolean;
+    showMergedAgentreeCommits: boolean;
     resetNonce: number;
     commitProjectionFingerprint: string;
 }
@@ -321,6 +327,7 @@ const cacheKeysEqual = (a: LayoutCacheKey, b: LayoutCacheKey): boolean => {
         a.laneStrategy === b.laneStrategy &&
         a.insightsFingerprint === b.insightsFingerprint &&
         a.showInsightsInGraph === b.showInsightsInGraph &&
+        a.showMergedAgentreeCommits === b.showMergedAgentreeCommits &&
         a.resetNonce === b.resetNonce &&
         a.commitProjectionFingerprint === b.commitProjectionFingerprint
     );
@@ -389,6 +396,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         visibleNodeSections,
         insights,
         showInsightsInGraph,
+        showMergedAgentreeCommits = false,
         workspaceRepoMap,
         branchPointersByNodeId,
         resetNonce = 0,
@@ -445,6 +453,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
             laneStrategy,
             insightsFingerprint: insights.map((insight) => insight.id).sort().join(','),
             showInsightsInGraph,
+            showMergedAgentreeCommits,
             resetNonce,
             commitProjectionFingerprint: createCommitProjectionFingerprint(projection),
         };
@@ -581,6 +590,8 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
                 hiddenThreadRootIds,
                 onOpenThread,
                 attachedThreadMessages,
+                undefined,
+                showMergedAgentreeCommits,
         );
 
         if (mappedNodes.length === 0) {
@@ -684,7 +695,7 @@ export function useGraphLayout(options: UseGraphLayoutOptions): UseGraphLayoutRe
         return visualResult;
     }, [
         messages, attachedThreadMessages, summaries, projection, measuredNodeHeights, layoutMode, laneStrategy, disabledSummaryIds,
-        focusedMessageId, contextPathMessageIds, composerBaseCommitSha, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, constrainedCommitFiltering, pinnedCommitShas, hiddenThreadRootIds, insights, showInsightsInGraph,
+        focusedMessageId, contextPathMessageIds, composerBaseCommitSha, matchingMessageIds, filterActive, hasNodeTypeFilter, keepAncestors, keepDescendants, constrainedCommitFiltering, pinnedCommitShas, hiddenThreadRootIds, insights, showInsightsInGraph, showMergedAgentreeCommits,
         visibleNodeSections,
         workspaceRepoMap, branchPointersByNodeId, onToggleSummary, onToggleCollapse,
         onFocus, onOpenThread, onSelect, onContextMenu, onMeasureNodeHeight, resetNonce, layoutCacheScopeKey

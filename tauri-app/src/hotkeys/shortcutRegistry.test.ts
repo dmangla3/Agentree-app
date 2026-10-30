@@ -42,6 +42,11 @@ describe('shortcut registry overrides', () => {
     expect(getEffectiveShortcutHotkeys('thread.reopen-last-closed')).toEqual(['Mod+Shift+T']);
   });
 
+  it('registers browser-style thread rotation defaults', () => {
+    expect(getEffectiveShortcutHotkeys('thread.navigate.next')).toEqual(['Control+Tab']);
+    expect(getEffectiveShortcutHotkeys('thread.navigate.previous')).toEqual(['Control+Shift+Tab']);
+  });
+
   it('can reset one shortcut without clearing other overrides', () => {
     setShortcutOverride('search.open', 'Mod+Shift+K' as RegisterableHotkey);
     setShortcutOverride('graph.navigate.latest', 'Mod+End' as RegisterableHotkey);

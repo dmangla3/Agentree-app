@@ -28,11 +28,15 @@ export interface LoginProfileSummary {
 }
 
 export type OpenCodeProviderAccess = 'full' | 'free_only' | 'unavailable' | 'invalid' | 'unconfirmed';
+export type OpenCodeProviderAuthStatus = 'valid' | 'invalid' | 'unknown';
+export type OpenCodeProviderPricedModelAccess = 'available' | 'unavailable' | 'unknown';
 
 export interface OpenCodeProviderCapability {
   id: string;
   name: string;
   access: OpenCodeProviderAccess;
+  authStatus: OpenCodeProviderAuthStatus;
+  pricedModelAccess: OpenCodeProviderPricedModelAccess;
   modelCount: number | null;
   freeModelCount: number | null;
 }
@@ -63,8 +67,12 @@ export const getOpenCodeProviderCapabilities = (
       const capability = raw && typeof raw === 'object' && !Array.isArray(raw)
         ? raw as Record<string, unknown>
         : {};
-      const authStatus = capability.authStatus;
-      const pricedModelAccess = capability.pricedModelAccess;
+      const authStatus: OpenCodeProviderAuthStatus = capability.authStatus === 'valid' || capability.authStatus === 'invalid'
+        ? capability.authStatus
+        : 'unknown';
+      const pricedModelAccess: OpenCodeProviderPricedModelAccess = capability.pricedModelAccess === 'available' || capability.pricedModelAccess === 'unavailable'
+        ? capability.pricedModelAccess
+        : 'unknown';
       let access: OpenCodeProviderAccess = 'unconfirmed';
       const modelCount = typeof capability.modelCount === 'number' ? capability.modelCount : null;
       const freeModelCount = typeof capability.freeModelCount === 'number' ? capability.freeModelCount : null;
@@ -80,23 +88,13 @@ export const getOpenCodeProviderCapabilities = (
         id,
         name: providerName || getOpenCodeProviderLabel(id),
         access,
+        authStatus,
+        pricedModelAccess,
         modelCount,
         freeModelCount,
       };
     })
     .sort((left, right) => left.name.localeCompare(right.name));
-};
-
-export const getOpenCodeProviderSummary = (
-  profile: Pick<LoginProfileSummary, 'provider' | 'config'>,
-): string | null => {
-  const capabilities = getOpenCodeProviderCapabilities(profile);
-  if (!capabilities.length) return null;
-  const reconnectCount = capabilities.filter((capability) => capability.access === 'invalid').length;
-  if (reconnectCount > 0) return `${capabilities.length} tested · ${reconnectCount} invalid`;
-  const unconfirmedCount = capabilities.filter((capability) => capability.access === 'unconfirmed').length;
-  if (unconfirmedCount > 0) return `${capabilities.length} tested · ${unconfirmedCount} not confirmed`;
-  return `${capabilities.length} tested`;
 };
 
 export const getLoginProfileProviderLabel = (provider: LoginProvider) => {
@@ -181,10 +179,3 @@ export const resolveLoginProfileSelection = (input: {
     failureMessage: isReady ? null : `Log in to ${providerLabel} in Managed Accounts.`,
   };
 };
-
-export const hasActiveLoginProfileForProvider = (
-  profiles: Pick<LoginProfileSummary, 'provider' | 'status'>[],
-  provider?: string | null
-) => profiles.some((profile) =>
-  isLoginProfileCompatibleWithProvider(profile, provider) && isLoginProfileActive(profile)
-);

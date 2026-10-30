@@ -3,19 +3,60 @@ import { Loader2, RefreshCw } from 'lucide-react';
 import { Button } from '../../../@/components/ui/button';
 import { Checkbox } from '../../../@/components/ui/checkbox';
 import { Popover, PopoverContent, PopoverTrigger } from '../../../@/components/ui/popover';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../../@/components/ui/tooltip';
 import {
   getOpenCodeProviderCapabilities,
   type LoginProfileSummary,
-  type OpenCodeProviderAccess,
+  type OpenCodeProviderCapability,
 } from '../../lib/loginProfiles';
 import { cn } from '../../lib/utils';
 
-const accessMeta: Record<OpenCodeProviderAccess, { label: string; className: string }> = {
-  full: { label: 'Full access', className: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/35 dark:text-emerald-300' },
-  free_only: { label: 'Free only', className: 'bg-amber-50 text-amber-800 dark:bg-amber-950/35 dark:text-amber-300' },
-  unavailable: { label: 'Unavailable', className: 'bg-red-50 text-red-700 dark:bg-red-950/35 dark:text-red-300' },
-  invalid: { label: 'Invalid', className: 'bg-red-50 text-red-700 dark:bg-red-950/35 dark:text-red-300' },
-  unconfirmed: { label: 'Not confirmed', className: 'bg-muted text-muted-foreground' },
+const successClassName = 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/35 dark:text-emerald-300';
+const warningClassName = 'bg-amber-50 text-amber-800 dark:bg-amber-950/35 dark:text-amber-300';
+const dangerClassName = 'bg-red-50 text-red-700 dark:bg-red-950/35 dark:text-red-300';
+
+const getAccessPresentation = (capability: OpenCodeProviderCapability) => {
+  if (capability.access === 'full') {
+    return {
+      label: 'Paid models available',
+      description: `${capability.name} accepted the credentials and reports that paid model access is available.`,
+      className: successClassName,
+    };
+  }
+  if (capability.access === 'free_only') {
+    const freeModels = capability.freeModelCount === 1 ? '1 free model remains' : `${capability.freeModelCount} free models remain`;
+    return {
+      label: 'Free models only',
+      description: `${capability.name} accepted the credentials, but paid model access is unavailable. ${freeModels} available.`,
+      className: warningClassName,
+    };
+  }
+  if (capability.access === 'unavailable') {
+    return {
+      label: 'No usable models',
+      description: `${capability.name} accepted the credentials, but paid model access is unavailable and no free models are available.`,
+      className: dangerClassName,
+    };
+  }
+  if (capability.access === 'invalid') {
+    return {
+      label: 'Credentials rejected',
+      description: `${capability.name} rejected these credentials. Reconnect the provider, then test it again.`,
+      className: dangerClassName,
+    };
+  }
+  if (capability.authStatus === 'valid') {
+    return {
+      label: 'Paid access unverified',
+      description: `${capability.name} accepted the credentials, but the test could not confirm paid model access. Try again.`,
+      className: warningClassName,
+    };
+  }
+  return {
+    label: 'Test inconclusive',
+    description: `The test could not confirm whether ${capability.name} credentials or models work. Try again; if this repeats, reconnect the provider.`,
+    className: 'bg-muted text-muted-foreground',
+  };
 };
 
 const buttonVariants = {
@@ -94,7 +135,7 @@ export function OpenCodeProviderTestButton({
         <div className="border-b border-[hsl(var(--app-border)/0.62)] px-4 py-3">
           <div className="text-[13px] font-semibold text-foreground">Test providers</div>
           <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
-            Run a live model call on each selected provider to confirm it works.
+            Check credentials and model access for each selected provider.
           </p>
         </div>
         {capabilities.length === 0 ? (
@@ -118,25 +159,40 @@ export function OpenCodeProviderTestButton({
               </label>
             </div>
             {capabilities.map((capability) => {
-              const meta = accessMeta[capability.access] ?? accessMeta.unconfirmed;
+              const presentation = getAccessPresentation(capability);
               return (
-                <label
+                <div
                   key={capability.id}
-                  className="flex cursor-pointer items-center gap-2 px-4 py-2 hover:bg-muted/40"
+                  className="flex min-h-10 items-center gap-2 px-4 hover:bg-muted/40"
                 >
-                  <Checkbox
-                    indicatorMode="check"
-                    aria-label={capability.name}
-                    checked={selected.has(capability.id)}
-                    onCheckedChange={() => toggleProvider(capability.id)}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
-                    {capability.name}
-                  </span>
-                  <span className={cn('shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold', meta.className)}>
-                    {meta.label}
-                  </span>
-                </label>
+                  <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 self-stretch">
+                    <Checkbox
+                      indicatorMode="check"
+                      aria-label={capability.name}
+                      checked={selected.has(capability.id)}
+                      onCheckedChange={() => toggleProvider(capability.id)}
+                    />
+                    <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
+                      {capability.name}
+                    </span>
+                  </label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span
+                        tabIndex={0}
+                        className="flex min-h-10 shrink-0 cursor-help items-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                        aria-label={`${capability.name}: ${presentation.label}`}
+                      >
+                        <span className={cn('rounded-md px-1.5 py-0.5 text-[10px] font-semibold', presentation.className)}>
+                          {presentation.label}
+                        </span>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" align="end" className="max-w-72 text-pretty leading-5">
+                      {presentation.description}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
               );
             })}
           </div>

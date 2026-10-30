@@ -13,6 +13,7 @@ import { useGraphSnapshot } from './useGraphSnapshot';
 import { useLocalNodes, type LocalNodeMessage } from './useLocalNodes';
 import { applyLocalNodeMessages } from './useLiveMessages';
 import { useMessages } from './useMessages';
+import { useModelPricing } from './useModelPricing';
 import { isTerminalAgentStatus, normalizeAgentStatus } from '@shared/agentStatus';
 
 const emptyLocalCommitGraph = { commits: [], commitParents: [], commitObservations: [] };
@@ -124,6 +125,7 @@ export function useTrackingDashboardData(workspace: Workspace | null, range: Tra
   const messagesQuery = useMessages(workspaceId, { enabled: Boolean(workspaceId) });
   const localNodesQuery = useLocalNodes(workspaceId);
   const graphSnapshotQuery = useGraphSnapshot(workspaceId);
+  const modelPricingQuery = useModelPricing();
   const [backgroundAttentionAuditEvents, setBackgroundAttentionAuditEvents] = useState(() => (
     readBackgroundAttentionAuditEvents(workspaceId)
   ));
@@ -192,12 +194,13 @@ export function useTrackingDashboardData(workspace: Workspace | null, range: Tra
     commits,
     backgroundAttentionCandidates: backgroundAttentionCandidatesQuery.data ?? [],
     backgroundAttentionAuditEvents,
-  }), [backgroundAttentionAuditEvents, backgroundAttentionCandidatesQuery.data, commits, metricMessages, range]);
+    pricing: modelPricingQuery.data,
+  }), [backgroundAttentionAuditEvents, backgroundAttentionCandidatesQuery.data, commits, metricMessages, modelPricingQuery.data, range]);
 
   return {
     metrics,
-    isLoading: messagesQuery.isLoading || localNodesQuery.isLoading || graphSnapshotQuery.isLoading || localCommitGraphQuery.isLoading || backgroundAttentionCandidatesQuery.isLoading,
-    isRefreshing: messagesQuery.isFetching || localNodesQuery.isFetching || graphSnapshotQuery.isFetching || localCommitGraphQuery.isFetching || backgroundAttentionCandidatesQuery.isFetching,
+    isLoading: messagesQuery.isLoading || localNodesQuery.isLoading || graphSnapshotQuery.isLoading || localCommitGraphQuery.isLoading || backgroundAttentionCandidatesQuery.isLoading || modelPricingQuery.isLoading,
+    isRefreshing: messagesQuery.isFetching || localNodesQuery.isFetching || graphSnapshotQuery.isFetching || localCommitGraphQuery.isFetching || backgroundAttentionCandidatesQuery.isFetching || modelPricingQuery.isFetching,
     error: messagesQuery.error ?? localNodesQuery.error ?? graphSnapshotQuery.error ?? localCommitGraphQuery.error ?? backgroundAttentionCandidatesQuery.error ?? null,
   };
 }

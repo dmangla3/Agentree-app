@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildComposerAgentTurnTopology,
   buildComposerAgentRuns,
   normalizeComposerAgentRunCounts,
   updateComposerAgentRunCount,
@@ -50,26 +49,6 @@ describe('composer agent run counts', () => {
       { agentId: 'codex-medium', agentName: 'Codex Medium', ordinal: 1, totalForAgent: 2 },
       { agentId: 'codex-medium', agentName: 'Codex Medium', ordinal: 2, totalForAgent: 2 },
       { agentId: 'claude-high', agentName: 'Claude High', ordinal: 1, totalForAgent: 1 },
-    ]);
-  });
-
-  it('plans one sibling user turn per selected agent run', () => {
-    const runs = buildComposerAgentRuns(
-      [agent('codex-medium', 'Codex Medium'), agent('claude-high', 'Claude High')],
-      { 'codex-medium': 1, 'claude-high': 1 }
-    );
-
-    expect(buildComposerAgentTurnTopology(runs, 'parent-node')).toEqual([
-      expect.objectContaining({
-        agentId: 'codex-medium',
-        turnIndex: 0,
-        userParentId: 'parent-node',
-      }),
-      expect.objectContaining({
-        agentId: 'claude-high',
-        turnIndex: 1,
-        userParentId: 'parent-node',
-      }),
     ]);
   });
 });

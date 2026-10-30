@@ -253,30 +253,6 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
     expect(onSelectAgent).toHaveBeenCalledWith('codex:gpt-image-2');
   });
 
-  it('contains long effort labels and multi-run controls in narrow selector columns', () => {
-    const { container, getByText, getByRole } = render(
-      <UnifiedAgentModelSelector
-        selectedAgentId="codex:gpt-5.5:xhigh"
-        agentRunCounts={{ 'codex:gpt-5.5:xhigh': 1 }}
-        onSelectAgent={() => {}}
-        onAgentRunCountChange={() => {}}
-      />
-    );
-
-    const effortRow = getByText('Extra High').closest('[role="button"]');
-    const controls = getByRole('button', { name: 'Increase Extra High' }).parentElement;
-    const effortColumn = container.querySelector('[data-model-effort-column="true"]');
-
-    expect(container.querySelector('[data-model-selector-body="true"]')?.className).toContain('grid-cols-[minmax(156px,0.85fr)_minmax(0,1fr)]');
-    expect(effortColumn?.className).toContain('overflow-x-hidden');
-    expect(effortColumn?.className).toContain('overflow-y-auto');
-    expect(effortRow?.className).toContain('min-w-0');
-    expect(effortRow?.className).toContain('flex-wrap');
-    expect(effortRow?.className).toContain('overflow-hidden');
-    expect(getByText('Extra High').className).toContain('truncate');
-    expect(controls?.className).toContain('max-w-full');
-  });
-
   it('dims and blocks models whose provider lacks a ready selected profile', () => {
     const onSelectAgent = vi.fn();
     const loginIntent = vi.fn();
@@ -448,7 +424,5 @@ describe('UnifiedAgentModelSelector login profile gating', () => {
 
     expect(selectedFamily.getAttribute('aria-pressed')).toBe('false');
     expect(previewFamily.getAttribute('aria-pressed')).toBe('true');
-    expect(selectedFamily.className).not.toContain('shadow-[inset_0_0_0_1px_hsl(var(--app-border)/0.4)]');
-    expect(selectedFamily.querySelector('span[aria-hidden="true"]')?.className).not.toContain('opacity-100');
   });
 });

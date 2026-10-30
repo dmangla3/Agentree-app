@@ -1,8 +1,10 @@
+// @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { QueryClient } from '@tanstack/react-query';
 import { bootstrapWorkspaceInitialGitImport } from './workspaceInitialImport';
 import { api } from './api';
 import { agentClient } from './agentClient';
+import { readCachedTrackedRefs } from '../hooks/useTrackedRefs';
 
 vi.mock('./api', () => ({
   api: {
@@ -36,6 +38,17 @@ const makeQueryClient = () => ({
 describe('bootstrapWorkspaceInitialGitImport', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    const storage = new Map<string, string>();
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: vi.fn((key: string) => storage.get(key) ?? null),
+        setItem: vi.fn((key: string, value: string) => storage.set(key, value)),
+        removeItem: vi.fn((key: string) => storage.delete(key)),
+        clear: vi.fn(() => storage.clear()),
+      },
+    });
+    window.localStorage.clear();
     mockedAgentClient.listLocalRefs.mockResolvedValue([
       { git_ref: 'refs/heads/main', short_name: 'main', commit_sha: 'head-sha' },
     ]);
@@ -116,6 +129,18 @@ describe('bootstrapWorkspaceInitialGitImport', () => {
       },
       'refs/heads/main:head-sha'
     );
+    expect(mockedApi.post).toHaveBeenCalledWith('/workspaces/workspace-1/tracked-refs', {
+      gitRef: 'refs/heads/main',
+      displayName: 'main',
+      enabled: true,
+      isAcceptanceBranch: true,
+    });
+    expect(readCachedTrackedRefs('workspace-1')).toEqual([
+      expect.objectContaining({
+        git_ref: 'refs/heads/main',
+        is_acceptance_branch: true,
+      }),
+    ]);
     expect(mockedApi.post).not.toHaveBeenCalledWith(
       '/workspaces/workspace-1/git-sync/ingest',
       expect.anything()
@@ -134,6 +159,12 @@ describe('bootstrapWorkspaceInitialGitImport', () => {
 
     expect(mockedAgentClient.importLocalCommits).not.toHaveBeenCalled();
     expect(mockedAgentClient.enqueueLocalCommitGraphSync).not.toHaveBeenCalled();
+    expect(mockedApi.post).toHaveBeenCalledWith('/workspaces/workspace-1/tracked-refs', {
+      gitRef: 'refs/heads/main',
+      displayName: 'main',
+      enabled: true,
+      isAcceptanceBranch: true,
+    });
     expect(mockedApi.post).toHaveBeenCalledWith('/workspaces/workspace-1/git-sync/ingest', {
       refs: [
         {

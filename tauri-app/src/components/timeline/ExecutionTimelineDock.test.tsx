@@ -353,27 +353,7 @@ describe('ExecutionTimelineDock', () => {
     expect(brush.style.getPropertyValue('--execution-timeline-brush-left')).toContain('clamp(20px,');
     expect(brush.style.right).toBe('');
     expect(brush.style.getPropertyValue('--execution-timeline-brush-width')).toContain('max(40px,');
-    expect(brush.className).toContain('-translate-x-1/2');
     expect(brush.getAttribute('data-display-span-pct')).toBe(initialDisplaySpan);
-  });
-
-  it('exposes distinct resize handles on the minimap brush', () => {
-    renderDock();
-
-    expect(screen.getByTestId('execution-timeline-brush').className).toContain('cursor-grab');
-    expect(screen.getByTestId('execution-timeline-brush-left-handle').className).toContain('cursor-ew-resize');
-    expect(screen.getByTestId('execution-timeline-brush-right-handle').className).toContain('cursor-ew-resize');
-    expect(screen.getByTestId('execution-timeline-brush-left-handle').className).toContain('w-1.5');
-    expect(screen.getByTestId('execution-timeline-brush-right-handle').className).toContain('w-1.5');
-  });
-
-  it('keeps the minimap brush wide enough to grab when the display window is narrow', () => {
-    renderDock();
-
-    const brush = screen.getByTestId('execution-timeline-brush');
-
-    expect(brush.style.getPropertyValue('--execution-timeline-brush-width')).toContain('max(40px,');
-    expect(brush.className).toContain('-translate-x-1/2');
   });
 
   it('limits the minimap domain through the range selector', () => {

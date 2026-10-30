@@ -9,15 +9,6 @@ export type ThreadDividerRect = {
   height: number;
 };
 
-export type ThreadDividerLine = {
-  id: string;
-  x: number;
-  top: number;
-  bottom: number;
-  leftThreadRootId: string;
-  rightThreadRootId: string;
-};
-
 export type ThreadBand = {
   id: string;
   threadRootId: string;
@@ -30,11 +21,6 @@ export type ThreadBand = {
 
 type NodeLike = Pick<Node<any>, 'id' | 'type' | 'parentId' | 'position' | 'width' | 'height' | 'measured' | 'initialWidth' | 'initialHeight' | 'style' | 'data' | 'hidden'>;
 
-type BuildThreadDividerLineOptions = {
-  padding?: number;
-  minCenterGap?: number;
-};
-
 type BuildThreadBandOptions = {
   padding?: number;
   horizontalPadding?: number;
@@ -42,8 +28,6 @@ type BuildThreadBandOptions = {
   equalVerticalExtent?: boolean;
 };
 
-const DEFAULT_LINE_PADDING = 220;
-const DEFAULT_MIN_CENTER_GAP = 96;
 const DEFAULT_BAND_PADDING = 220;
 const DEFAULT_BAND_HORIZONTAL_PADDING = 72;
 
@@ -200,41 +184,6 @@ export const getThreadDividerRectsFromNodes = (
   }
 
   return turnRects.length > 0 ? turnRects : fallbackRects;
-};
-
-export const buildThreadDividerLines = (
-  rects: ThreadDividerRect[],
-  options: BuildThreadDividerLineOptions = {},
-): ThreadDividerLine[] => {
-  const padding = options.padding ?? DEFAULT_LINE_PADDING;
-  const minCenterGap = options.minCenterGap ?? DEFAULT_MIN_CENTER_GAP;
-  const bands = buildThreadBands(rects, { padding: 0, horizontalPadding: 0, trimOverlaps: false });
-
-  if (bands.length < 2) return [];
-
-  const lines: ThreadDividerLine[] = [];
-  for (let index = 0; index < bands.length - 1; index += 1) {
-    const left = bands[index];
-    const right = bands[index + 1];
-    const leftCenter = (left.left + left.right) / 2;
-    const rightCenter = (right.left + right.right) / 2;
-    if (Math.abs(rightCenter - leftCenter) < minCenterGap) continue;
-
-    const x = left.right <= right.left
-      ? left.right + (right.left - left.right) / 2
-      : leftCenter + (rightCenter - leftCenter) / 2;
-
-    lines.push({
-      id: `${left.threadRootId}->${right.threadRootId}`,
-      x,
-      top: Math.min(left.top, right.top) - padding,
-      bottom: Math.max(left.bottom, right.bottom) + padding,
-      leftThreadRootId: left.threadRootId,
-      rightThreadRootId: right.threadRootId,
-    });
-  }
-
-  return lines;
 };
 
 export const buildThreadBands = (

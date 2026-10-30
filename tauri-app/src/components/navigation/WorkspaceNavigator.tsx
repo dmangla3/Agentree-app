@@ -72,7 +72,7 @@ import {
   type ThreadHoverProjectionInput,
   type ThreadNavigationItem,
 } from '../graph/GraphControls';
-import { orderThreadFamiliesNewestFirst } from './threadNavigationHierarchy';
+import { orderActiveThreadFamiliesNewestFirst, orderThreadFamiliesNewestFirst } from './threadNavigationHierarchy';
 
 export interface WorkspaceThreadNavigationModel {
   workspaceId: string | null;
@@ -487,9 +487,7 @@ function WorkspaceThreadSection({
   onThreadRename: (thread: ThreadNavigationItem) => void;
 }) {
   const activeThreadItems = useMemo(
-    () => orderThreadFamiliesNewestFirst(
-      model?.threadItems.filter((thread) => !thread.done || thread.runningCount > 0) ?? [],
-    ),
+    () => orderActiveThreadFamiliesNewestFirst(model?.threadItems ?? []),
     [model?.threadItems],
   );
   const closedThreadItems = useMemo(

@@ -1,42 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   getEdgeEndpointDotVariant,
-  getEdgeEndpointDotVisuals,
   getGraphEdgeEndpointDotVariant,
   isInterTurnEndpointEdge,
 } from './graphEdgeEndpointDots';
 
 describe('graph edge endpoint dots', () => {
-  it('uses prominent colored visuals for commit-parent endpoint dots', () => {
-    expect(getEdgeEndpointDotVisuals('commit-parent')).toMatchObject({
-      color: '#10b981',
-      sourceRadius: 6,
-      targetRadius: 7,
-    });
-    expect(getEdgeEndpointDotVisuals('commit-parent')).not.toHaveProperty('haloRadius');
-    expect(getEdgeEndpointDotVisuals('commit-parent')).not.toHaveProperty('haloColor');
-  });
-
-  it('uses compact colored visuals for convergence endpoint dots', () => {
-    expect(getEdgeEndpointDotVisuals('convergence')).toMatchObject({
-      color: '#6366f1',
-      sourceRadius: 4,
-      targetRadius: 5,
-    });
-    expect(getEdgeEndpointDotVisuals('convergence')).not.toHaveProperty('haloRadius');
-    expect(getEdgeEndpointDotVisuals('convergence')).not.toHaveProperty('haloColor');
-  });
-
-  it('uses muted colored visuals for conversation endpoint dots', () => {
-    expect(getEdgeEndpointDotVisuals('conversation')).toMatchObject({
-      color: '#64748b',
-      sourceRadius: 5,
-      targetRadius: 6,
-    });
-    expect(getEdgeEndpointDotVisuals('conversation')).not.toHaveProperty('haloRadius');
-    expect(getEdgeEndpointDotVisuals('conversation')).not.toHaveProperty('haloColor');
-  });
-
   it('shows commit-parent dots only for inter-turn commit-parent edges', () => {
     expect(getGraphEdgeEndpointDotVariant({
       edgeLegendType: 'git-parent',

@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  analyticsFailureCategory,
-  bucketCharacterCount,
-  bucketCount,
-  sanitizeAnalyticsEvent,
-} from './analytics';
+import { bucketCount, sanitizeAnalyticsEvent } from './analytics';
 
 describe('privacy-preserving analytics', () => {
   it('drops unknown events and non-allowlisted properties', () => {
@@ -36,18 +31,5 @@ describe('privacy-preserving analytics', () => {
 
   it('reports only coarse count buckets', () => {
     expect([0, 1, 2, 6, 21].map(bucketCount)).toEqual(['0', '1', '2-5', '6-20', '21+']);
-    expect([0, 1, 101, 501, 2001].map(bucketCharacterCount)).toEqual([
-      '0',
-      '1-100',
-      '101-500',
-      '501-2000',
-      '2001+',
-    ]);
-  });
-
-  it('maps errors to predefined categories without sending error text', () => {
-    expect(analyticsFailureCategory(new DOMException('cancelled', 'AbortError'))).toBe('aborted');
-    expect(analyticsFailureCategory(new Error('network timeout at a private URL'))).toBe('network');
-    expect(analyticsFailureCategory(new Error('private workspace failed'))).toBe('unknown');
   });
 });

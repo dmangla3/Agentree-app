@@ -5,8 +5,6 @@ import {
   getLoginProfileProviderLabel,
   getLoginProfileStatusTone,
   getOpenCodeProviderCapabilities,
-  getOpenCodeProviderSummary,
-  hasActiveLoginProfileForProvider,
   isLoginProfileActive,
   isLoginProfileCompatibleWithProvider,
   resolveLoginProfileSelection,
@@ -50,16 +48,6 @@ describe('loginProfiles helpers', () => {
     expect(canCheckLoginProfileReadiness({ status: 'ready' })).toBe(true);
   });
 
-  it('finds active provider availability from ready compatible profiles only', () => {
-    const profiles = [
-      { id: 'c1', provider: 'codex', displayName: 'Codex expired', authType: 'codex_api_key', status: 'expired', isDefault: true },
-      { id: 'a1', provider: 'claude', displayName: 'Claude ready', authType: 'claude_api_key', status: 'ready', isDefault: true },
-    ];
-
-    expect(hasActiveLoginProfileForProvider(profiles, 'codex')).toBe(false);
-    expect(hasActiveLoginProfileForProvider(profiles, 'claude')).toBe(true);
-  });
-
   it('selects a ready compatible profile before a non-ready default', () => {
     const profiles = [
       { id: 'c1', provider: 'codex', displayName: 'Codex expired', authType: 'codex_api_key', status: 'expired', isDefault: true },
@@ -97,11 +85,10 @@ describe('loginProfiles helpers', () => {
     };
 
     expect(getOpenCodeProviderCapabilities(profile)).toEqual([
-      { id: 'deepseek', name: 'DeepSeek', access: 'full', modelCount: 2, freeModelCount: 0 },
-      { id: 'kimi-for-coding', name: 'Kimi For Coding', access: 'unavailable', modelCount: 1, freeModelCount: 0 },
-      { id: 'openai', name: 'OpenAI', access: 'unconfirmed', modelCount: 2, freeModelCount: 0 },
-      { id: 'openrouter', name: 'OpenRouter', access: 'invalid', modelCount: 2, freeModelCount: 1 },
+      { id: 'deepseek', name: 'DeepSeek', access: 'full', authStatus: 'valid', pricedModelAccess: 'available', modelCount: 2, freeModelCount: 0 },
+      { id: 'kimi-for-coding', name: 'Kimi For Coding', access: 'unavailable', authStatus: 'valid', pricedModelAccess: 'unavailable', modelCount: 1, freeModelCount: 0 },
+      { id: 'openai', name: 'OpenAI', access: 'unconfirmed', authStatus: 'unknown', pricedModelAccess: 'unknown', modelCount: 2, freeModelCount: 0 },
+      { id: 'openrouter', name: 'OpenRouter', access: 'invalid', authStatus: 'invalid', pricedModelAccess: 'unknown', modelCount: 2, freeModelCount: 1 },
     ]);
-    expect(getOpenCodeProviderSummary(profile)).toBe('4 tested · 1 invalid');
   });
 });

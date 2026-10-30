@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createTestQueryClient } from '../test/queryTestUtils';
 import { localNodeKeys, type LocalNodeMessage } from './useLocalNodes';
@@ -48,16 +46,5 @@ describe('useHeadlessQuickReply', () => {
     expect(localRows.map((row) => row.nodeId)).toEqual(['user-1', 'assistant-1']);
     expect(localRows.every((row) => row.syncStatus === 'local_only')).toBe(true);
     expect(localRows.every((row) => row.finalizedAt === 1779912000)).toBe(true);
-  });
-
-  it('wires the quick-reply headless sender to local persistence callbacks', () => {
-    const source = readFileSync(join(process.cwd(), 'src/hooks/useHeadlessQuickReply.ts'), 'utf8');
-
-    expect(source).toContain('persistLocalNode:');
-    expect(source).toContain('onMessagesCreated:');
-    expect(source).toContain('materializeHeadlessQuickReplyMessages');
-    expect(source).toContain('input.onMessagesCreated?.(createdMessages)');
-    expect(source).toContain('selectedLoginProfileId: selectedLoginProfile?.id ?? null');
-    expect(source).toContain('markLocalAgentNodeTerminal');
   });
 });

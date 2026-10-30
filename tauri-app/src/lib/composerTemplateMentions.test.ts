@@ -3,7 +3,6 @@ import {
   getActiveTemplateMention,
   getTemplateMentionRanges,
   getTemplateMentionText,
-  promptIncludesOrchestrationTemplate,
 } from './composerTemplateMentions';
 import type { OrchestrationPromptTemplate } from '../orchestration/templates';
 
@@ -46,10 +45,5 @@ describe('composer template mentions', () => {
         template: { id: '@planner' },
       },
     ]);
-  });
-
-  it('identifies orchestration templates in prompt text', () => {
-    expect(promptIncludesOrchestrationTemplate('Use #planner', templates)).toBe(false);
-    expect(promptIncludesOrchestrationTemplate('Use #parallel_planners', templates)).toBe(true);
   });
 });

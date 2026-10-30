@@ -9,7 +9,7 @@ import { ROLE_COLORS } from '../../../lib/visualTokens';
 import { getAgentColorClass } from '../../../lib/graphUtils';
 import { useAgents } from '../../../hooks/useAgents';
 import type { AgentStatus } from '@shared/agentStatus';
-import { buildTimelineRows, getToolSummary, isEmptyToolPayload, summarizeExplorationItems, summarizeFileChangesPayload, ToolPayloadDisplay, type TimelineRow } from '../../ExecutionTimeline';
+import { buildTimelineRows, countTimelineActivities, getToolGroupTitle, getToolSummary, isEmptyToolPayload, summarizeExplorationItems, summarizeFileChangesPayload, ToolPayloadDisplay, type TimelineRow } from '../../ExecutionTimeline';
 import { useUpdateTags } from '../../../hooks/useMessages';
 import { mergeLiveMessage } from '../../../hooks/useLiveMessages';
 import { Badge } from '../../../../@/components/ui/badge';
@@ -334,6 +334,7 @@ function InterleavedToolCard({
       ? row.toolOutput
       : null;
   const duration = row.durationMs ? (row.durationMs < 1000 ? `${row.durationMs}ms` : `${(row.durationMs / 1000).toFixed(1)}s`) : null;
+  const isCompleted = row.completedAtMs != null || (row.toolOutput !== undefined && row.toolOutput !== null);
   const stopCardFocus = (event: React.MouseEvent) => {
     event.stopPropagation();
   };
@@ -365,7 +366,7 @@ function InterleavedToolCard({
           "flex h-4 w-4 shrink-0 items-center justify-center",
           fileChangesPayload && "mt-1"
         )}>
-          {row.isError ? <AlertTriangle size={11} className="text-red-500/80" /> : row.toolOutput !== undefined ? <CheckCircle2 size={11} className="text-emerald-600/80 dark:text-emerald-400/80" /> : <Terminal size={11} className="text-muted-foreground/55" />}
+          {row.isError ? <AlertTriangle size={11} className="text-red-500/80" /> : isCompleted ? <CheckCircle2 size={11} className="text-emerald-600/80 dark:text-emerald-400/80" /> : <Terminal size={11} className="text-muted-foreground/55" />}
         </div>
         <div className="min-w-0 flex-1">
           {fileChangesPayload ? (
@@ -402,11 +403,83 @@ function InterleavedToolCard({
       {allowExpansion && isExpanded ? (
         <div className="mt-1 ml-6 min-w-0 max-w-full space-y-2">
           {!isEmptyToolPayload(row.toolInput) ? (
-            <ToolPayloadDisplay payload={row.toolInput} className="max-h-40 min-w-0 max-w-full" variant="raw" />
+            <ToolPayloadSection label="Request" payload={row.toolInput} />
           ) : null}
           {row.toolOutput !== undefined ? (
-            <ToolPayloadDisplay payload={row.toolOutput} className="max-h-40 min-w-0 max-w-full" variant="raw" />
+            <ToolPayloadSection label="Result" payload={row.toolOutput} />
           ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ToolPayloadSection({ label, payload }: { label: 'Request' | 'Result'; payload: unknown }) {
+  return (
+    <div className="min-w-0 max-w-full">
+      <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/55">{label}</div>
+      <ToolPayloadDisplay payload={payload} className="max-h-40 min-w-0 max-w-full" variant="raw" />
+    </div>
+  );
+}
+
+function InterleavedToolGroupCard({
+  row,
+  allowExpansion = true,
+}: {
+  row: Extract<TimelineRow, { kind: 'tool_group' }>;
+  allowExpansion?: boolean;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const duration = row.durationMs ? (row.durationMs < 1000 ? `${row.durationMs}ms` : `${(row.durationMs / 1000).toFixed(1)}s`) : null;
+  const stopCardFocus = (event: React.MouseEvent) => {
+    event.stopPropagation();
+  };
+
+  return (
+    <div className="min-w-0 max-w-full py-0.5" onClick={stopCardFocus} onMouseDown={stopCardFocus}>
+      <div
+        className={cn(
+          "flex min-h-10 min-w-0 w-full max-w-full items-center gap-2 rounded-md px-1 py-1 text-left",
+          allowExpansion && "transition-[background-color,color,transform] duration-150 hover:bg-muted/30 hover:text-foreground/90 active:scale-[0.99]"
+        )}
+        role={allowExpansion ? 'button' : undefined}
+        tabIndex={allowExpansion ? 0 : undefined}
+        aria-expanded={allowExpansion ? isExpanded : undefined}
+        onClick={allowExpansion ? (event) => {
+          event.stopPropagation();
+          setIsExpanded((value) => !value);
+        } : undefined}
+        onKeyDown={allowExpansion ? (event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          event.stopPropagation();
+          setIsExpanded((value) => !value);
+        } : undefined}
+      >
+        <div className="flex h-4 w-4 shrink-0 items-center justify-center">
+          {row.status === 'error'
+            ? <AlertTriangle size={11} className="text-red-500/80" />
+            : row.status === 'completed'
+              ? <CheckCircle2 size={11} className="text-emerald-600/80 dark:text-emerald-400/80" />
+              : <Terminal size={11} className="text-muted-foreground/55" />}
+        </div>
+        <div className="min-w-0 flex-1 text-[11px] font-medium text-foreground/80 tabular-nums">
+          {getToolGroupTitle(row)}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {duration ? <span className="text-[10px] font-mono text-muted-foreground/45">{duration}</span> : null}
+          {allowExpansion ? (
+            <ChevronDown size={11} className={cn("text-muted-foreground/45 transition-transform duration-150", isExpanded && "rotate-180")} />
+          ) : null}
+        </div>
+      </div>
+
+      {allowExpansion && isExpanded ? (
+        <div className="mt-1 ml-3 min-w-0 max-w-full space-y-1 border-l border-border/50 pl-3">
+          {row.toolCalls.map((call, index) => (
+            <InterleavedToolCard key={call.key || index} row={call} allowExpansion />
+          ))}
         </div>
       ) : null}
     </div>
@@ -475,7 +548,13 @@ function InterleavedExplorationCard({
       {allowExpansion && isExpanded ? (
         <div className="mt-1 ml-6 min-w-0 max-w-full space-y-2">
           {row.toolCalls.map((call, index) => (
-            <ToolPayloadDisplay key={call.key || index} payload={call.toolInput} className="max-h-40 min-w-0 max-w-full" variant="raw" />
+            <div key={call.key || index} className="min-w-0 max-w-full space-y-2 rounded-md border border-border/45 bg-muted/15 p-2">
+              <code className="inline-flex max-w-full rounded border border-amber-200/70 bg-amber-50 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-400">
+                <span className="truncate">{call.toolName}</span>
+              </code>
+              {!isEmptyToolPayload(call.toolInput) ? <ToolPayloadSection label="Request" payload={call.toolInput} /> : null}
+              {call.toolOutput !== undefined ? <ToolPayloadSection label="Result" payload={call.toolOutput} /> : null}
+            </div>
           ))}
         </div>
       ) : null}
@@ -524,6 +603,10 @@ function TimelineRows({
 
         if (row.kind === 'tool') {
           return <InterleavedToolCard key={getTimelineRowReactKey(row, index, `${keyPrefix}-tool`)} row={row} allowExpansion={allowToolExpansion} />;
+        }
+
+        if (row.kind === 'tool_group') {
+          return <InterleavedToolGroupCard key={getTimelineRowReactKey(row, index, `${keyPrefix}-tool-group`)} row={row} allowExpansion={allowToolExpansion} />;
         }
 
         if (row.kind === 'exploration') {
@@ -615,7 +698,7 @@ function WorkLogsPanel({
             Work logs
           </span>
           <span className="rounded-full border border-border/60 bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-            {rows.length}
+            {countTimelineActivities(rows)}
           </span>
         </div>
         <ChevronDown size={13} className={cn("shrink-0 text-muted-foreground/55 transition-transform", isOpen && "rotate-180")} />

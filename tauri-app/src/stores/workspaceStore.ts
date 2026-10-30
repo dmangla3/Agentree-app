@@ -53,6 +53,7 @@ export interface CommitEntity {
   files_changed_count?: number | null;
   total_additions?: number | null;
   total_deletions?: number | null;
+  is_merged?: boolean;
   parents?: Array<{ child_sha?: string; parent_sha: string; parent_index: number }>;
   createdAt?: string;
   updatedAt?: string;
@@ -108,6 +109,7 @@ export interface TrackedGitRef {
   git_ref: string;
   display_name: string;
   enabled: boolean;
+  is_acceptance_branch?: boolean;
   last_seen_commit_sha?: string | null;
   createdAt: string;
   updatedAt: string;

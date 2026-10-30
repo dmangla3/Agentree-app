@@ -15,11 +15,25 @@ vi.mock('./DiffViewer', () => ({
 }));
 
 describe('ToolFileChangesDiff', () => {
+    it('keeps oversized text payloads available behind an explicit full-content control', () => {
+        const longOutput = `${Array.from({ length: 1800 }, (_, index) => `log line ${index}`).join('\n')}\nEND_OF_FULL_PAYLOAD`;
+        render(<ToolPayloadDisplay variant="raw" payload={{ aggregatedOutput: longOutput }} />);
+
+        expect(screen.getByText(/truncated for display/)).toBeTruthy();
+        expect(screen.queryByText(/END_OF_FULL_PAYLOAD/)).toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: /show full payload/i }));
+        expect(screen.getByText(/END_OF_FULL_PAYLOAD/)).toBeTruthy();
+        expect(screen.getByRole('button', { name: /show payload preview/i })).toBeTruthy();
+    });
+
     it('replaces the raw tool payload with the file-change diff UI', () => {
         render(
             <ToolPayloadDisplay
                 variant="raw"
                 payload={{
+                    provider_item_id: 'change-1',
+                    status: null,
                     changes: [{ path: 'src/new.ts', kind: { type: 'add' }, diff: 'export const value = 1;\n' }],
                 }}
             />,
@@ -28,6 +42,10 @@ describe('ToolFileChangesDiff', () => {
         expect(document.querySelector('[data-tool-file-changes-diff]')).toBeTruthy();
         expect(screen.queryByText(/"changes"/)).toBeNull();
         expect(screen.getByTestId('diff-viewer')).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: /show provider payload/i }));
+        expect(screen.getByText(/provider_item_id: change-1/)).toBeTruthy();
+        expect(screen.getByText(/status: null/)).toBeTruthy();
     });
 
     it('renders Codex update hunks with the shared parsed diff viewer', () => {

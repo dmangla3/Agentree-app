@@ -6,7 +6,7 @@
 //
 // Usage:
 //   node scripts/build-runtime-archives.mjs [--platform linux-x86_64,darwin-aarch64]
-//     [--component opencode] [--dry-run]
+//     [--component opencode] [--manifest path] [--output-dir path] [--dry-run]
 //
 // Archives land in src-tauri/target/runtime-archives/.
 
@@ -17,19 +17,44 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import {
-  claudeSdkPnpmAddArgs,
+  lockedRuntimePnpmInstallArgs,
   packagePnpmAddArgs,
   pnpmEnvironmentForRuntimeInstall,
+  pruneNonTargetClaudeNativePackages,
   validateClaudeSdkInstall,
   validateClaudeSdkVersionAlignment,
   validateOpenCodeSdkInstall,
   validateOpenCodeSdkVersionAlignment,
+  validateRuntimePackageVersionAlignment,
 } from './runtime-archive-layout.mjs';
+import {
+  archiveFileName,
+  archiveUrl,
+  packDirectoryDeterministically,
+  runtimeBuildKey,
+  sha256OfFile,
+} from './runtime-archive-cache.mjs';
 import { runtimeTreeSha256 } from './runtime-tree-fingerprint.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const manifestPath = path.join(projectRoot, 'runtime-manifest.json');
-const outputDir = path.join(projectRoot, 'src-tauri', 'target', 'runtime-archives');
+const args = process.argv.slice(2);
+function argumentValue(name, fallback) {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : fallback;
+}
+const manifestPath = path.resolve(argumentValue('--manifest', path.join(projectRoot, 'runtime-manifest.json')));
+const outputDir = path.resolve(
+  argumentValue('--output-dir', path.join(projectRoot, 'src-tauri', 'target', 'runtime-archives'))
+);
+const sharedCacheDir = path.resolve(
+  process.env.AGENTREE_RUNTIME_CACHE_DIR
+    || path.join(os.homedir(), '.cache', 'agentree', 'runtime-archives')
+);
+const recipeFiles = [
+  fileURLToPath(import.meta.url),
+  path.join(projectRoot, 'scripts', 'runtime-archive-cache.mjs'),
+  path.join(projectRoot, 'scripts', 'runtime-archive-layout.mjs'),
+];
 
 const PLATFORMS = {
   'linux-x86_64': {
@@ -52,7 +77,6 @@ const PLATFORMS = {
   },
 };
 
-const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 const platformArgIndex = args.indexOf('--platform');
 const requestedPlatforms =
@@ -85,26 +109,115 @@ function run(command, commandArgs, options = {}) {
   return result.stdout;
 }
 
-function sha256OfFile(filePath) {
+function sha256OfFiles(filePaths) {
   const hash = crypto.createHash('sha256');
-  hash.update(fs.readFileSync(filePath));
+  for (const filePath of filePaths) {
+    hash.update(path.relative(projectRoot, filePath));
+    hash.update('\0');
+    hash.update(fs.readFileSync(filePath));
+    hash.update('\0');
+  }
   return hash.digest('hex');
 }
 
-function archiveName(component, version, platformKey) {
-  return `agentree-runtime-${component}-${version}-${platformKey}.tar.gz`;
+function runtimePackageDir(component) {
+  return path.join(
+    projectRoot,
+    'runtime-packages',
+    component === 'claude-sdk' ? 'claude' : component,
+  );
 }
 
-// tar with a root-content layout: entries land directly at archive root.
-function packDirectory(sourceDir, destinationFile) {
-  fs.mkdirSync(path.dirname(destinationFile), { recursive: true });
-  const temporaryFile = `${destinationFile}.tmp-${process.pid}`;
+function dependencyLockSha256(component) {
+  if (!['claude-sdk', 'opencode'].includes(component)) return null;
+  const packageDir = runtimePackageDir(component);
+  return sha256OfFiles([
+    path.join(packageDir, 'package.json'),
+    path.join(packageDir, 'pnpm-lock.yaml'),
+  ]);
+}
+
+function buildKeyFor(component, spec, platformKey) {
+  return runtimeBuildKey({
+    component,
+    version: spec.version,
+    platform: platformKey,
+    platformConfig: PLATFORMS[platformKey],
+    bundledVersions:
+      component === 'opencode' ? { ripgrep: spec.bundledRipgrepVersion } : {},
+    recipeSha256: sha256OfFiles(recipeFiles),
+    dependencyLockSha256: dependencyLockSha256(component),
+  });
+}
+
+function cachePath(checksum, fileName) {
+  return path.join(sharedCacheDir, 'sha256', checksum, fileName);
+}
+
+function copyAtomically(source, destination) {
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  const temporary = `${destination}.tmp-${process.pid}`;
+  fs.rmSync(temporary, { force: true });
   try {
-    run('tar', ['--no-xattrs', '-czf', temporaryFile, '-C', sourceDir, '.']);
-    fs.renameSync(temporaryFile, destinationFile);
+    try {
+      fs.linkSync(source, temporary);
+    } catch (error) {
+      if (!['EXDEV', 'EPERM', 'EACCES'].includes(error.code)) throw error;
+      fs.copyFileSync(source, temporary);
+    }
+    fs.renameSync(temporary, destination);
   } finally {
-    fs.rmSync(temporaryFile, { force: true });
+    fs.rmSync(temporary, { force: true });
   }
+}
+
+function validChecksum(filePath, expected) {
+  return fs.statSync(filePath, { throwIfNoEntry: false })?.isFile()
+    && sha256OfFile(filePath) === expected;
+}
+
+function hydrateArchive(platformSpec, expectedBuildKey, fileName, destination) {
+  if (
+    platformSpec?.buildKey !== expectedBuildKey
+    || !/^[a-f0-9]{64}$/.test(platformSpec?.sha256 ?? '')
+    || !platformSpec?.url
+  ) {
+    return false;
+  }
+
+  const expectedChecksum = platformSpec.sha256;
+  if (validChecksum(destination, expectedChecksum)) return true;
+  fs.rmSync(destination, { force: true });
+
+  const cached = cachePath(expectedChecksum, fileName);
+  if (validChecksum(cached, expectedChecksum)) {
+    copyAtomically(cached, destination);
+    return true;
+  }
+  fs.rmSync(cached, { force: true });
+
+  const temporary = `${cached}.download-${process.pid}`;
+  fs.mkdirSync(path.dirname(cached), { recursive: true });
+  try {
+    console.log(`Downloading cached ${fileName} ...`);
+    downloadTo(platformSpec.url, temporary);
+    if (!validChecksum(temporary, expectedChecksum)) {
+      throw new Error(`downloaded checksum does not match ${expectedChecksum}`);
+    }
+    fs.renameSync(temporary, cached);
+    copyAtomically(cached, destination);
+    return true;
+  } catch (error) {
+    console.warn(`Remote cache unavailable for ${fileName}; rebuilding: ${error.message}`);
+    return false;
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
+function storeInSharedCache(archivePath, checksum, fileName) {
+  const cached = cachePath(checksum, fileName);
+  if (!validChecksum(cached, checksum)) copyAtomically(archivePath, cached);
 }
 
 function withTempDir(prefix, work) {
@@ -131,6 +244,20 @@ function stageNodeModules(nodeModulesDir, tempDir) {
   return staging;
 }
 
+function installLockedRuntimePackage(component, version, npmOs, npmCpu, tempDir) {
+  const packageDir = runtimePackageDir(component);
+  const runtimePackageJson = JSON.parse(
+    fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8')
+  );
+  validateRuntimePackageVersionAlignment(runtimePackageJson, component, version);
+  fs.copyFileSync(path.join(packageDir, 'package.json'), path.join(tempDir, 'package.json'));
+  fs.copyFileSync(path.join(packageDir, 'pnpm-lock.yaml'), path.join(tempDir, 'pnpm-lock.yaml'));
+  run('pnpm', lockedRuntimePnpmInstallArgs(npmOs, npmCpu), {
+    cwd: tempDir,
+    env: pnpmEnvironmentForRuntimeInstall(),
+  });
+}
+
 function buildNodeArchive(version, platformKey, destination) {
   const dist = PLATFORMS[platformKey].nodeDist;
   withTempDir('agentree-node-', (tempDir) => {
@@ -143,45 +270,19 @@ function buildNodeArchive(version, platformKey, destination) {
     fs.mkdirSync(path.join(staging, 'bin'), { recursive: true });
     fs.copyFileSync(path.join(extracted, 'bin', 'node'), path.join(staging, 'bin', 'node'));
     fs.chmodSync(path.join(staging, 'bin', 'node'), 0o755);
-    packDirectory(staging, destination);
+    packDirectoryDeterministically(staging, destination);
   });
 }
 
 function buildClaudeSdkArchive(version, platformKey, destination) {
   const { npmOs, npmCpu } = PLATFORMS[platformKey];
   withTempDir('agentree-claude-sdk-', (tempDir) => {
-    fs.writeFileSync(
-      path.join(tempDir, 'package.json'),
-      JSON.stringify({ name: 'agentree-claude-runtime', private: true }, null, 2)
-    );
-    run('pnpm', claudeSdkPnpmAddArgs(version, npmOs, npmCpu), {
-      cwd: tempDir,
-      env: pnpmEnvironmentForRuntimeInstall(),
-    });
+    installLockedRuntimePackage('claude-sdk', version, npmOs, npmCpu, tempDir);
+    pruneNonTargetClaudeNativePackages(path.join(tempDir, 'node_modules'), { npmOs, npmCpu });
     validateClaudeSdkInstall(path.join(tempDir, 'node_modules'), { version, npmOs, npmCpu });
     const staging = stageNodeModules(path.join(tempDir, 'node_modules'), tempDir);
-    packDirectory(staging, destination);
+    packDirectoryDeterministically(staging, destination);
   });
-}
-
-function validateClaudeSdkArchive(version, platformKey, archivePath) {
-  const { npmOs, npmCpu } = PLATFORMS[platformKey];
-  withTempDir('agentree-claude-sdk-validate-', (tempDir) => {
-    run('tar', ['-xzf', archivePath, '-C', tempDir]);
-    validateClaudeSdkInstall(path.join(tempDir, 'node_modules'), { version, npmOs, npmCpu });
-  });
-}
-
-function validateBuiltArchive(component, version, platformKey, archivePath) {
-  if (component === 'claude-sdk') {
-    validateClaudeSdkArchive(version, platformKey, archivePath);
-  }
-  if (component === 'opencode') {
-    withTempDir('agentree-opencode-validate-', (tempDir) => {
-      run('tar', ['-xzf', archivePath, '-C', tempDir]);
-      validateOpenCodeSdkInstall(path.join(tempDir, 'node_modules'), version);
-    });
-  }
 }
 
 function buildCodexArchive(version, platformKey, destination) {
@@ -202,7 +303,7 @@ function buildCodexArchive(version, platformKey, destination) {
     }
     // Ship the whole triple dir contents: codex expects its sibling
     // codex-resources/ and codex-path/ helpers next to bin/.
-    packDirectory(vendorRoot, destination);
+    packDirectoryDeterministically(vendorRoot, destination);
   });
 }
 
@@ -228,14 +329,7 @@ function buildOpenCodeArchive(version, platformKey, destination, spec) {
     const ripgrepBinary = path.join(tempDir, ripgrepName, 'rg');
     if (!fs.existsSync(ripgrepBinary)) throw new Error(`ripgrep binary missing from ${ripgrepName}.tar.gz`);
 
-    fs.writeFileSync(
-      path.join(tempDir, 'package.json'),
-      JSON.stringify({ name: 'agentree-opencode-runtime', private: true }, null, 2)
-    );
-    run('pnpm', packagePnpmAddArgs(`@opencode-ai/sdk@${version}`, npmOs, npmCpu), {
-      cwd: tempDir,
-      env: pnpmEnvironmentForRuntimeInstall(),
-    });
+    installLockedRuntimePackage('opencode', version, npmOs, npmCpu, tempDir);
     validateOpenCodeSdkInstall(path.join(tempDir, 'node_modules'), version);
 
     const staging = stageNodeModules(path.join(tempDir, 'node_modules'), tempDir);
@@ -244,7 +338,7 @@ function buildOpenCodeArchive(version, platformKey, destination, spec) {
     fs.copyFileSync(ripgrepBinary, path.join(staging, 'bin', 'rg'));
     fs.chmodSync(path.join(staging, 'bin', 'opencode'), 0o755);
     fs.chmodSync(path.join(staging, 'bin', 'rg'), 0o755);
-    packDirectory(staging, destination);
+    packDirectoryDeterministically(staging, destination);
   });
 }
 
@@ -262,6 +356,7 @@ if (requestedComponents) {
 }
 
 let manifestChanged = false;
+const referencedArchiveNames = new Set();
 for (const [component, spec] of Object.entries(manifest.components)) {
   if (requestedComponents && !requestedComponents.has(component)) continue;
   for (const platformKey of requestedPlatforms) {
@@ -269,46 +364,66 @@ for (const [component, spec] of Object.entries(manifest.components)) {
       throw new Error(`Unknown platform key: ${platformKey}`);
     }
     if (!spec.platforms[platformKey]) continue;
-    const fileName = archiveName(component, spec.version, platformKey);
+    const fileName = archiveFileName(component, spec.version, platformKey);
+    referencedArchiveNames.add(fileName);
     const destination = path.join(outputDir, fileName);
-    const url = `${releaseBase}/${fileName}`;
+    const buildKey = buildKeyFor(component, spec, platformKey);
+    const previousPlatformSpec = spec.platforms[platformKey];
 
     if (dryRun) {
-      console.log(`[dry-run] would build ${fileName} -> ${url}`);
+      const action = previousPlatformSpec?.buildKey === buildKey ? 'reuse' : 'build';
+      console.log(`[dry-run] would ${action} ${fileName} (buildKey ${buildKey})`);
       continue;
     }
 
-    if (fs.existsSync(destination) && spawnSync('tar', ['-tzf', destination]).status !== 0) {
-      console.log(`Discarding invalid archive ${fileName}`);
-      fs.rmSync(destination);
-    }
-    if (fs.existsSync(destination)) {
-      try {
-        validateBuiltArchive(component, spec.version, platformKey, destination);
-      } catch (error) {
-        console.warn(`Discarding invalid cached ${fileName}: ${error.message}`);
-        fs.rmSync(destination);
+    let reused = hydrateArchive(previousPlatformSpec, buildKey, fileName, destination);
+    let treeSha256 = null;
+    if (reused && previousPlatformSpec.treeSha256) {
+      treeSha256 = runtimeTreeSha256(projectRoot, component, destination);
+      if (treeSha256 !== previousPlatformSpec.treeSha256) {
+        console.warn(`Cached ${fileName} has an unexpected extracted fingerprint; rebuilding`);
+        fs.rmSync(destination, { force: true });
+        fs.rmSync(cachePath(previousPlatformSpec.sha256, fileName), { force: true });
+        reused = false;
+        treeSha256 = null;
       }
     }
-    if (!fs.existsSync(destination)) {
+
+    if (!reused) {
       console.log(`Building ${fileName} ...`);
       builders[component](spec.version, platformKey, destination, spec);
     } else {
-      console.log(`Reusing existing ${fileName}`);
+      console.log(`Reusing verified ${fileName}`);
     }
-    validateBuiltArchive(component, spec.version, platformKey, destination);
     const checksum = sha256OfFile(destination);
-    const treeSha256 = runtimeTreeSha256(projectRoot, component, destination);
+    treeSha256 ??= runtimeTreeSha256(projectRoot, component, destination);
+    const url = archiveUrl(releaseBase, fileName, checksum);
+    storeInSharedCache(destination, checksum, fileName);
     if (
       spec.platforms[platformKey].sha256 !== checksum
       || spec.platforms[platformKey].treeSha256 !== treeSha256
       || spec.platforms[platformKey].url !== url
+      || spec.platforms[platformKey].buildKey !== buildKey
     ) {
-      spec.platforms[platformKey] = { url, sha256: checksum, treeSha256 };
+      spec.platforms[platformKey] = { url, sha256: checksum, treeSha256, buildKey };
       manifestChanged = true;
     }
     console.log(`  sha256 ${checksum}`);
     console.log(`  treeSha256 ${treeSha256}`);
+  }
+}
+
+if (!dryRun && !requestedComponents && requestedPlatforms.length === Object.keys(PLATFORMS).length) {
+  for (const entry of fs.readdirSync(outputDir, { withFileTypes: true })) {
+    if (
+      entry.isFile()
+      && entry.name.startsWith('agentree-runtime-')
+      && entry.name.endsWith('.tar.gz')
+      && !referencedArchiveNames.has(entry.name)
+    ) {
+      fs.rmSync(path.join(outputDir, entry.name));
+      console.log(`Removed stale runtime archive ${entry.name}`);
+    }
   }
 }
 

@@ -1,6 +1,7 @@
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -855,6 +856,7 @@ pub struct LocalCommitRow {
     pub files_changed_count: Option<i64>,
     pub total_additions: Option<i64>,
     pub total_deletions: Option<i64>,
+    pub is_merged: bool,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -877,10 +879,31 @@ pub struct LocalCommitObservationRow {
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
+pub struct PendingCommitAcceptanceRow {
+    pub source_sha: String,
+    pub target_sha: String,
+    pub git_ref: String,
+    pub subject: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalCommitGraphSnapshot {
     pub commits: Vec<LocalCommitRow>,
     pub commit_parents: Vec<LocalCommitParentRow>,
     pub commit_observations: Vec<LocalCommitObservationRow>,
+    pub pending_acceptance_candidates: Vec<PendingCommitAcceptanceRow>,
+}
+
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitAcceptanceRefreshResult {
+    pub changed: bool,
+    pub merged_commit_shas: Vec<String>,
+    pub checked_refs: Vec<String>,
+    pub skipped_refs: Vec<String>,
+    pub errors: Vec<String>,
+    pub duration_ms: u64,
 }
 
 #[derive(Serialize, specta::Type)]
@@ -1546,10 +1569,48 @@ impl TelemetryDb {
                 server_ack_at TEXT,
                 PRIMARY KEY (workspace_id, commit_sha, git_ref, source_kind)
             );
+
+            CREATE TABLE IF NOT EXISTS local_commit_patch_ids (
+                workspace_id TEXT NOT NULL,
+                commit_sha TEXT NOT NULL,
+                patch_id TEXT NOT NULL,
+                computed_at INTEGER NOT NULL,
+                PRIMARY KEY (workspace_id, commit_sha)
+            );
+            CREATE INDEX IF NOT EXISTS idx_local_commit_patch_ids_patch
+                ON local_commit_patch_ids(workspace_id, patch_id);
+
+            CREATE TABLE IF NOT EXISTS local_commit_acceptance (
+                workspace_id TEXT NOT NULL,
+                source_sha TEXT NOT NULL,
+                git_ref TEXT NOT NULL,
+                target_sha TEXT NOT NULL,
+                match_kind TEXT NOT NULL,
+                target_tip_sha TEXT NOT NULL,
+                decision TEXT NOT NULL DEFAULT 'accepted',
+                matched_at INTEGER NOT NULL,
+                last_verified_at INTEGER NOT NULL,
+                PRIMARY KEY (workspace_id, source_sha, git_ref)
+            );
+            CREATE INDEX IF NOT EXISTS idx_local_commit_acceptance_target
+                ON local_commit_acceptance(workspace_id, git_ref, target_sha);
+
+            CREATE TABLE IF NOT EXISTS local_commit_acceptance_ref_state (
+                workspace_id TEXT NOT NULL,
+                git_ref TEXT NOT NULL,
+                last_checked_tip_sha TEXT NOT NULL,
+                source_fingerprint TEXT NOT NULL,
+                checked_at INTEGER NOT NULL,
+                PRIMARY KEY (workspace_id, git_ref)
+            );
             "#,
         )
         .map_err(|e| e.to_string())?;
         let _ = conn.execute("ALTER TABLE local_workspaces ADD COLUMN user_id TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE local_commit_acceptance ADD COLUMN decision TEXT NOT NULL DEFAULT 'accepted'",
+            [],
+        );
         let _ = conn.execute(
             "ALTER TABLE local_workspaces ADD COLUMN local_repo_path TEXT",
             [],
@@ -5767,6 +5828,375 @@ impl TelemetryDb {
         Self::list_local_commit_graph_locked(&conn, workspace_id)
     }
 
+    pub fn refresh_local_commit_acceptance(
+        &self,
+        workspace_id: &str,
+        repo_path: &str,
+        accepted_git_refs: Vec<String>,
+    ) -> Result<CommitAcceptanceRefreshResult, String> {
+        let started_at = std::time::Instant::now();
+        let mut accepted_git_refs = accepted_git_refs
+            .into_iter()
+            .map(|git_ref| git_ref.trim().to_string())
+            .filter(|git_ref| !git_ref.is_empty() && git_ref != "HEAD")
+            .collect::<Vec<_>>();
+        accepted_git_refs.sort();
+        accepted_git_refs.dedup();
+        let configured_refs = accepted_git_refs.iter().cloned().collect::<HashSet<_>>();
+
+        let (sources, mut patch_ids, previous_by_ref, previous_decisions, state_by_ref) = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let mut source_stmt = conn
+                .prepare(
+                    r#"
+                    SELECT sha, COALESCE(subject, ''), authored_at
+                    FROM local_commits
+                    WHERE workspace_id = ?1 AND produced_by_node_id IS NOT NULL
+                    ORDER BY sha
+                    "#,
+                )
+                .map_err(|e| e.to_string())?;
+            let sources = source_stmt
+                .query_map(params![workspace_id], |row| {
+                    Ok(crate::commit_acceptance::AcceptanceSource {
+                        sha: row.get(0)?,
+                        subject: row.get(1)?,
+                        authored_at: row.get(2)?,
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+
+            let mut patch_stmt = conn
+                .prepare(
+                    "SELECT commit_sha, patch_id FROM local_commit_patch_ids WHERE workspace_id = ?1",
+                )
+                .map_err(|e| e.to_string())?;
+            let patch_ids = patch_stmt
+                .query_map(params![workspace_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<HashMap<_, _>, _>>()
+                .map_err(|e| e.to_string())?;
+
+            let mut previous_stmt = conn
+                .prepare(
+                    r#"
+                    SELECT git_ref, source_sha, target_sha, match_kind, decision
+                    FROM local_commit_acceptance
+                    WHERE workspace_id = ?1
+                    "#,
+                )
+                .map_err(|e| e.to_string())?;
+            let mut previous_by_ref =
+                HashMap::<String, Vec<crate::commit_acceptance::PreviousAcceptance>>::new();
+            let mut previous_decisions = HashMap::<(String, String, String, String), String>::new();
+            for row in previous_stmt
+                .query_map(params![workspace_id], |row| {
+                    let git_ref = row.get::<_, String>(0)?;
+                    let source_sha = row.get::<_, String>(1)?;
+                    let target_sha = row.get::<_, String>(2)?;
+                    let match_kind = row.get::<_, String>(3)?;
+                    let decision = row.get::<_, String>(4)?;
+                    Ok((
+                        git_ref,
+                        crate::commit_acceptance::PreviousAcceptance {
+                            source_sha,
+                            target_sha,
+                            match_kind,
+                        },
+                        decision,
+                    ))
+                })
+                .map_err(|e| e.to_string())?
+            {
+                let (git_ref, previous, decision) = row.map_err(|e| e.to_string())?;
+                previous_decisions.insert(
+                    (
+                        git_ref.clone(),
+                        previous.source_sha.clone(),
+                        previous.target_sha.clone(),
+                        previous.match_kind.clone(),
+                    ),
+                    decision.clone(),
+                );
+                if decision == "accepted" {
+                    previous_by_ref.entry(git_ref).or_default().push(previous);
+                }
+            }
+
+            let mut state_stmt = conn
+                .prepare(
+                    r#"
+                    SELECT git_ref, last_checked_tip_sha, source_fingerprint
+                    FROM local_commit_acceptance_ref_state
+                    WHERE workspace_id = ?1
+                    "#,
+                )
+                .map_err(|e| e.to_string())?;
+            let state_by_ref = state_stmt
+                .query_map(params![workspace_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        (row.get::<_, String>(1)?, row.get::<_, String>(2)?),
+                    ))
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<HashMap<_, _>, _>>()
+                .map_err(|e| e.to_string())?;
+
+            (
+                sources,
+                patch_ids,
+                previous_by_ref,
+                previous_decisions,
+                state_by_ref,
+            )
+        };
+
+        let mut hasher = Sha256::new();
+        for source in &sources {
+            hasher.update(source.sha.as_bytes());
+            hasher.update([0]);
+        }
+        let source_fingerprint = format!("{:x}", hasher.finalize());
+        let now = unix_timestamp();
+        let mut changed = false;
+
+        {
+            let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            let mut known_ref_stmt = tx
+                .prepare(
+                    r#"
+                    SELECT git_ref FROM local_commit_acceptance_ref_state WHERE workspace_id = ?1
+                    UNION
+                    SELECT git_ref FROM local_commit_acceptance WHERE workspace_id = ?1
+                    "#,
+                )
+                .map_err(|e| e.to_string())?;
+            let known_refs = known_ref_stmt
+                .query_map(params![workspace_id], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            drop(known_ref_stmt);
+            for git_ref in known_refs {
+                if configured_refs.contains(&git_ref) {
+                    continue;
+                }
+                changed |= tx
+                    .execute(
+                        "DELETE FROM local_commit_acceptance WHERE workspace_id = ?1 AND git_ref = ?2",
+                        params![workspace_id, git_ref],
+                    )
+                    .map_err(|e| e.to_string())?
+                    > 0;
+                tx.execute(
+                    "DELETE FROM local_commit_acceptance_ref_state WHERE workspace_id = ?1 AND git_ref = ?2",
+                    params![workspace_id, git_ref],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            tx.commit().map_err(|e| e.to_string())?;
+        }
+
+        let mut checked_refs = Vec::new();
+        let mut skipped_refs = Vec::new();
+        let mut errors = Vec::new();
+        for git_ref in &accepted_git_refs {
+            let tip_sha = match crate::commit_acceptance::resolve_ref_tip(repo_path, git_ref) {
+                Ok(tip_sha) => tip_sha,
+                Err(error) => {
+                    errors.push(format!("{git_ref}: {error}"));
+                    let conn = self.conn.lock().map_err(|e| e.to_string())?;
+                    changed |= conn
+                        .execute(
+                            "DELETE FROM local_commit_acceptance WHERE workspace_id = ?1 AND git_ref = ?2",
+                            params![workspace_id, git_ref],
+                        )
+                        .map_err(|e| e.to_string())?
+                        > 0;
+                    conn.execute(
+                        "DELETE FROM local_commit_acceptance_ref_state WHERE workspace_id = ?1 AND git_ref = ?2",
+                        params![workspace_id, git_ref],
+                    )
+                    .map_err(|e| e.to_string())?;
+                    continue;
+                }
+            };
+            if state_by_ref
+                .get(git_ref)
+                .is_some_and(|(stored_tip, stored_fingerprint)| {
+                    stored_tip == &tip_sha && stored_fingerprint == &source_fingerprint
+                })
+            {
+                skipped_refs.push(git_ref.clone());
+                continue;
+            }
+
+            let detection = match crate::commit_acceptance::detect_commit_acceptance(
+                repo_path,
+                git_ref,
+                &sources,
+                &patch_ids,
+                previous_by_ref
+                    .get(git_ref)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            ) {
+                Ok(detection) => detection,
+                Err(error) => {
+                    errors.push(format!("{git_ref}: {error}"));
+                    continue;
+                }
+            };
+            patch_ids.extend(detection.computed_patch_ids.clone());
+
+            let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            for (commit_sha, patch_id) in &detection.computed_patch_ids {
+                tx.execute(
+                    r#"
+                    INSERT INTO local_commit_patch_ids (workspace_id, commit_sha, patch_id, computed_at)
+                    VALUES (?1, ?2, ?3, ?4)
+                    ON CONFLICT(workspace_id, commit_sha) DO UPDATE SET
+                        patch_id = excluded.patch_id,
+                        computed_at = excluded.computed_at
+                    "#,
+                    params![workspace_id, commit_sha, patch_id, now],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            tx.execute(
+                "DELETE FROM local_commit_acceptance WHERE workspace_id = ?1 AND git_ref = ?2",
+                params![workspace_id, git_ref],
+            )
+            .map_err(|e| e.to_string())?;
+            for acceptance in &detection.matches {
+                let decision = if acceptance.match_kind == "probable" {
+                    previous_decisions
+                        .get(&(
+                            git_ref.clone(),
+                            acceptance.source_sha.clone(),
+                            acceptance.target_sha.clone(),
+                            acceptance.match_kind.clone(),
+                        ))
+                        .cloned()
+                        .unwrap_or_else(|| "pending".to_string())
+                } else {
+                    "accepted".to_string()
+                };
+                tx.execute(
+                    r#"
+                    INSERT INTO local_commit_acceptance (
+                        workspace_id, source_sha, git_ref, target_sha, match_kind,
+                        target_tip_sha, decision, matched_at, last_verified_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+                    "#,
+                    params![
+                        workspace_id,
+                        acceptance.source_sha,
+                        git_ref,
+                        acceptance.target_sha,
+                        acceptance.match_kind,
+                        detection.tip_sha,
+                        decision,
+                        now,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            tx.execute(
+                r#"
+                INSERT INTO local_commit_acceptance_ref_state (
+                    workspace_id, git_ref, last_checked_tip_sha, source_fingerprint, checked_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(workspace_id, git_ref) DO UPDATE SET
+                    last_checked_tip_sha = excluded.last_checked_tip_sha,
+                    source_fingerprint = excluded.source_fingerprint,
+                    checked_at = excluded.checked_at
+                "#,
+                params![
+                    workspace_id,
+                    git_ref,
+                    detection.tip_sha,
+                    source_fingerprint,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            checked_refs.push(git_ref.clone());
+            changed = true;
+        }
+
+        let merged_commit_shas = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                    SELECT DISTINCT source_sha
+                    FROM local_commit_acceptance
+                    WHERE workspace_id = ?1 AND decision = 'accepted'
+                    ORDER BY source_sha
+                    "#,
+                )
+                .map_err(|e| e.to_string())?;
+            let shas = stmt
+                .query_map(params![workspace_id], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            shas
+        };
+
+        Ok(CommitAcceptanceRefreshResult {
+            changed,
+            merged_commit_shas,
+            checked_refs,
+            skipped_refs,
+            errors,
+            duration_ms: started_at.elapsed().as_millis() as u64,
+        })
+    }
+
+    pub fn resolve_local_commit_acceptance(
+        &self,
+        workspace_id: &str,
+        git_ref: &str,
+        source_sha: &str,
+        target_sha: &str,
+        accepted: bool,
+    ) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let updated = conn
+            .execute(
+                r#"
+                UPDATE local_commit_acceptance
+                SET decision = ?5, last_verified_at = ?6
+                WHERE workspace_id = ?1
+                  AND git_ref = ?2
+                  AND source_sha = ?3
+                  AND target_sha = ?4
+                  AND match_kind = 'probable'
+                  AND decision = 'pending'
+                "#,
+                params![
+                    workspace_id,
+                    git_ref,
+                    source_sha,
+                    target_sha,
+                    if accepted { "accepted" } else { "rejected" },
+                    unix_timestamp(),
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(updated > 0)
+    }
+
     fn list_local_commit_graph_locked(
         conn: &Connection,
         workspace_id: &str,
@@ -5776,7 +6206,13 @@ impl TelemetryDb {
                 r#"
                 SELECT sha, subject, author_name, author_email, authored_at, committed_at,
                        source_kind, produced_by_node_id, first_parent_sha, files_changed_count,
-                       total_additions, total_deletions
+                       total_additions, total_deletions,
+                       EXISTS (
+                           SELECT 1 FROM local_commit_acceptance acceptance
+                           WHERE acceptance.workspace_id = local_commits.workspace_id
+                             AND acceptance.source_sha = local_commits.sha
+                             AND acceptance.decision = 'accepted'
+                       )
                 FROM local_commits
                 WHERE workspace_id = ?1
                 ORDER BY COALESCE(committed_at, authored_at, ''), sha
@@ -5798,6 +6234,7 @@ impl TelemetryDb {
                     files_changed_count: row.get(9)?,
                     total_additions: row.get(10)?,
                     total_deletions: row.get(11)?,
+                    is_merged: row.get(12)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -5852,10 +6289,39 @@ impl TelemetryDb {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
 
+        let mut pending_stmt = conn
+            .prepare(
+                r#"
+                SELECT acceptance.source_sha, acceptance.target_sha, acceptance.git_ref, local_commits.subject
+                FROM local_commit_acceptance acceptance
+                JOIN local_commits
+                  ON local_commits.workspace_id = acceptance.workspace_id
+                 AND local_commits.sha = acceptance.source_sha
+                WHERE acceptance.workspace_id = ?1
+                  AND acceptance.match_kind = 'probable'
+                  AND acceptance.decision = 'pending'
+                ORDER BY acceptance.matched_at DESC, acceptance.source_sha
+                "#,
+            )
+            .map_err(|e| e.to_string())?;
+        let pending_acceptance_candidates = pending_stmt
+            .query_map(params![workspace_id], |row| {
+                Ok(PendingCommitAcceptanceRow {
+                    source_sha: row.get(0)?,
+                    target_sha: row.get(1)?,
+                    git_ref: row.get(2)?,
+                    subject: row.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
         Ok(LocalCommitGraphSnapshot {
             commits,
             commit_parents,
             commit_observations,
+            pending_acceptance_candidates,
         })
     }
 
@@ -9389,6 +9855,42 @@ pub fn list_local_commit_graph(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn refresh_local_commit_acceptance(
+    app_handle: AppHandle,
+    workspace_id: String,
+    repo_path: String,
+    accepted_git_refs: Vec<String>,
+) -> Result<CommitAcceptanceRefreshResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app_handle
+            .state::<TelemetryDb>()
+            .refresh_local_commit_acceptance(&workspace_id, &repo_path, accepted_git_refs)
+    })
+    .await
+    .map_err(|error| format!("Commit acceptance refresh task failed: {error}"))?
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn resolve_local_commit_acceptance(
+    telemetry: State<TelemetryDb>,
+    workspace_id: String,
+    git_ref: String,
+    source_sha: String,
+    target_sha: String,
+    accepted: bool,
+) -> Result<bool, String> {
+    telemetry.resolve_local_commit_acceptance(
+        &workspace_id,
+        &git_ref,
+        &source_sha,
+        &target_sha,
+        accepted,
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn repair_local_commit_graph(
     telemetry: State<TelemetryDb>,
     workspace_id: String,
@@ -11576,6 +12078,7 @@ mod tests {
             .expect("list local commit graph");
         assert_eq!(snapshot.commits.len(), 1);
         assert_eq!(snapshot.commits[0].sha, "child-sha");
+        assert!(!snapshot.commits[0].is_merged);
         assert_eq!(
             snapshot.commits[0].produced_by_node_id.as_deref(),
             Some("assistant-1")
@@ -11587,6 +12090,131 @@ mod tests {
             snapshot.commit_observations[0].git_ref.as_deref(),
             Some("agentree/assistant-1")
         );
+    }
+
+    #[test]
+    fn commit_acceptance_refresh_persists_binary_merge_state_and_skips_unchanged_refs() {
+        let (_db_dir, db) = open_test_db();
+        let (repo_dir, shas) = init_test_repo_with_commits(2);
+        let source_sha = shas[1].clone();
+        run_test_git(repo_dir.path(), &["branch", "-M", "main"]);
+        db.import_local_commits(
+            "workspace-1",
+            vec![LocalCommitImport {
+                sha: source_sha.clone(),
+                parents: vec![shas[0].clone()],
+                subject: Some("commit 1".to_string()),
+                author_name: None,
+                author_email: None,
+                authored_at: None,
+                committed_at: None,
+                source_kind: Some("agent".to_string()),
+                produced_by_node_id: Some("assistant-1".to_string()),
+                files_changed_count: None,
+                total_additions: None,
+                total_deletions: None,
+            }],
+            Some("agentree/assistant-1"),
+        )
+        .expect("import generated commit");
+
+        let first = db
+            .refresh_local_commit_acceptance(
+                "workspace-1",
+                repo_dir.path().to_string_lossy().as_ref(),
+                vec!["refs/heads/main".to_string()],
+            )
+            .expect("first acceptance refresh");
+        assert!(first.changed);
+        assert_eq!(first.merged_commit_shas, vec![source_sha.clone()]);
+        assert_eq!(first.checked_refs, vec!["refs/heads/main"]);
+        assert!(
+            db.list_local_commit_graph("workspace-1")
+                .expect("graph after acceptance")
+                .commits[0]
+                .is_merged
+        );
+
+        let second = db
+            .refresh_local_commit_acceptance(
+                "workspace-1",
+                repo_dir.path().to_string_lossy().as_ref(),
+                vec!["refs/heads/main".to_string()],
+            )
+            .expect("unchanged acceptance refresh");
+        assert!(!second.changed);
+        assert_eq!(second.skipped_refs, vec!["refs/heads/main"]);
+
+        db.refresh_local_commit_acceptance(
+            "workspace-1",
+            repo_dir.path().to_string_lossy().as_ref(),
+            Vec::new(),
+        )
+        .expect("disable acceptance branches");
+        assert!(
+            !db.list_local_commit_graph("workspace-1")
+                .expect("graph after disabling acceptance")
+                .commits[0]
+                .is_merged
+        );
+    }
+
+    #[test]
+    fn probable_acceptance_requires_confirmation_before_marking_commit_merged() {
+        let (_db_dir, db) = open_test_db();
+        db.import_local_commits(
+            "workspace-1",
+            vec![LocalCommitImport {
+                sha: "source-sha".to_string(),
+                parents: vec!["parent-sha".to_string()],
+                subject: Some("resolve conflict".to_string()),
+                author_name: None,
+                author_email: None,
+                authored_at: None,
+                committed_at: None,
+                source_kind: Some("agent".to_string()),
+                produced_by_node_id: Some("assistant-1".to_string()),
+                files_changed_count: None,
+                total_additions: None,
+                total_deletions: None,
+            }],
+            Some("agentree/assistant-1"),
+        )
+        .expect("import generated commit");
+        {
+            let conn = db.conn.lock().expect("lock db");
+            conn.execute(
+                r#"
+                INSERT INTO local_commit_acceptance (
+                    workspace_id, source_sha, git_ref, target_sha, match_kind,
+                    target_tip_sha, decision, matched_at, last_verified_at
+                ) VALUES (?1, ?2, ?3, ?4, 'probable', ?4, 'pending', 1, 1)
+                "#,
+                params!["workspace-1", "source-sha", "refs/heads/main", "landed-sha"],
+            )
+            .expect("insert probable match");
+        }
+
+        let pending = db
+            .list_local_commit_graph("workspace-1")
+            .expect("graph with probable match");
+        assert!(!pending.commits[0].is_merged);
+        assert_eq!(pending.pending_acceptance_candidates.len(), 1);
+
+        assert!(db
+            .resolve_local_commit_acceptance(
+                "workspace-1",
+                "refs/heads/main",
+                "source-sha",
+                "landed-sha",
+                true,
+            )
+            .expect("confirm probable match"));
+        let confirmed = db
+            .list_local_commit_graph("workspace-1")
+            .expect("graph after confirmation");
+        assert!(confirmed.commits[0].is_merged);
+        assert!(confirmed.pending_acceptance_candidates.is_empty());
     }
 
     #[test]

@@ -3,7 +3,6 @@ import { ACTIVE_STATUSES } from '@shared/agentStatus';
 import type { ProjectedNodeEntity } from '../domain/workspaceProjection';
 import type { Message } from '../stores/workspaceStore';
 import {
-  canShowHoverQuickReply,
   getHoverReplyMode,
   resolveQuickReplyAgent,
   resolveQuickReplyBase,
@@ -60,25 +59,22 @@ describe('quick reply helpers', () => {
   });
 
   it('hides quick reply for non-message and active non-assistant hover nodes', () => {
-    expect(canShowHoverQuickReply(entity({ kind: 'commit_message' }))).toBe(false);
     expect(getHoverReplyMode(entity({ kind: 'commit_message' }))).toBeNull();
-    expect(canShowHoverQuickReply(entity({ kind: 'thread_link' }))).toBe(false);
     expect(getHoverReplyMode(entity({ kind: 'thread_link' }))).toBeNull();
-    expect(canShowHoverQuickReply(entity({
+    expect(getHoverReplyMode(entity({
       status: 'running' as any,
       message: message({ id: 'user-running', role: 'user', status: 'running' as any }),
-    }))).toBe(false);
-    expect(canShowHoverQuickReply(entity({
-      kind: 'user_message',
-      status: 'completed' as any,
-      message: message({ id: 'user-completed', role: 'user', status: 'completed' as any }),
-    }))).toBe(false);
+    }))).toBeNull();
     expect(getHoverReplyMode(entity({
       kind: 'user_message',
       status: 'completed' as any,
       message: message({ id: 'user-completed', role: 'user', status: 'completed' as any }),
     }))).toBeNull();
-    expect(canShowHoverQuickReply(entity({ status: 'completed' as any }))).toBe(true);
+    expect(getHoverReplyMode(entity({
+      kind: 'user_message',
+      status: 'completed' as any,
+      message: message({ id: 'user-completed', role: 'user', status: 'completed' as any }),
+    }))).toBeNull();
     expect(getHoverReplyMode(entity({ status: 'completed' as any }))).toBe('reply');
   });
 
@@ -89,7 +85,6 @@ describe('quick reply helpers', () => {
         message: message({ id: `assistant-${status}`, role: 'assistant', status: status as any }),
       });
 
-      expect(canShowHoverQuickReply(hoverEntity)).toBe(true);
       expect(getHoverReplyMode(hoverEntity)).toBe('steer');
     }
   });
@@ -102,7 +97,6 @@ describe('quick reply helpers', () => {
 
     expect(getHoverReplyMode(hoverEntity)).toBe('reply');
     expect(getHoverReplyMode(hoverEntity, 'running')).toBe('steer');
-    expect(canShowHoverQuickReply(hoverEntity, 'running')).toBe(true);
   });
 
   it('uses the hovered assistant model before falling back to an assistant ancestor', () => {

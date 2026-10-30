@@ -38,25 +38,3 @@ export const readHiddenThreadRootIds = (
     return new Set();
   }
 };
-
-export const rememberHiddenThreadRootIds = (
-  workspaceId: string | null | undefined,
-  hiddenThreadRootIds: Set<string>,
-): void => {
-  if (!workspaceId || typeof window === 'undefined') return;
-
-  try {
-    const key = getGraphThreadVisibilityStorageKey(workspaceId);
-    if (hiddenThreadRootIds.size === 0) {
-      window.localStorage.removeItem(key);
-      return;
-    }
-
-    window.localStorage.setItem(
-      key,
-      JSON.stringify({ hiddenThreadRootIds: Array.from(hiddenThreadRootIds).sort() }),
-    );
-  } catch {
-    // Thread visibility is a best-effort local preference.
-  }
-};

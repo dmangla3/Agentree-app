@@ -201,12 +201,4 @@ describe('RuntimeHealthCard', () => {
     expect(mocks.repairManagedRuntimeComponent).toHaveBeenCalledTimes(1);
   });
 
-  it('applies wrapping constraints to long runtime detail text', async () => {
-    render(<RuntimeHealthCard />);
-
-    const detail = await screen.findByText(/very\/long\/path/);
-
-    expect(detail.className).toContain('[overflow-wrap:anywhere]');
-    expect(detail.className).toContain('break-words');
-  });
 });

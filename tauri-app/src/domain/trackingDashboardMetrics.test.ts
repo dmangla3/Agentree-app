@@ -3,6 +3,7 @@ import type { CommitEntity, Message } from '../stores/workspaceStore';
 import type { BackgroundAttentionAuditEvent } from '../lib/backgroundAttentionAudit';
 import type { LocalInsightCandidateRecord } from '../lib/agentClient';
 import { buildTrackingDashboardMetrics } from './trackingDashboardMetrics';
+import { parseModelRateTable, type PricingSnapshot } from './modelPricing';
 
 const workspaceId = 'workspace-1';
 const now = new Date('2026-05-23T12:00:00.000Z');
@@ -19,10 +20,28 @@ const message = (input: Partial<Message> & Pick<Message, 'id' | 'createdAt'>): M
   completionTokens: input.completionTokens ?? null,
   totalTokens: input.totalTokens ?? null,
   aiLabel: input.aiLabel ?? null,
+  llmProvider: input.llmProvider ?? null,
+  llmModel: input.llmModel ?? null,
+  agent_id: input.agent_id ?? null,
   status: input.status ?? null,
   output_commit_sha: input.output_commit_sha ?? null,
   execution_data: input.execution_data ?? null,
 });
+
+const pricing: PricingSnapshot = {
+  rates: parseModelRateTable({
+    'anthropic/claude-sonnet-5': {
+      input_cost_per_token: 0.000002,
+      output_cost_per_token: 0.00001,
+      cache_read_input_token_cost: 0.0000002,
+      cache_creation_input_token_cost: 0.0000025,
+    },
+  }),
+  status: 'fresh',
+  source: 'test-rates',
+  fetchedAt: now.toISOString(),
+  knownModels: 1,
+};
 
 const commit = (input: Partial<CommitEntity> & Pick<CommitEntity, 'sha'>): CommitEntity => ({
   sha: input.sha,
@@ -339,6 +358,70 @@ describe('buildTrackingDashboardMetrics', () => {
     });
 
     expect(metrics.recentRuns[0].status).toBe('completed');
+  });
+
+  it('prices cached usage by model, honors provider cost, and exposes unpriced coverage', () => {
+    const metrics = buildTrackingDashboardMetrics({
+      now,
+      range: '7d',
+      commits: [],
+      pricing,
+      messages: [
+        message({
+          id: 'claude-run',
+          createdAt: '2026-05-23T08:00:00.000Z',
+          llmProvider: 'claude',
+          llmModel: 'claude-sonnet-5',
+          execution_data: {
+            usage: {
+              input_tokens: 100,
+              cached_input_tokens: 1_000,
+              cache_creation_input_tokens: 50,
+              output_tokens: 20,
+            },
+          },
+        }),
+        message({
+          id: 'provider-run',
+          createdAt: '2026-05-23T09:00:00.000Z',
+          llmProvider: 'opencode',
+          llmModel: 'future-model',
+          execution_data: {
+            usage: { input_tokens: 200, output_tokens: 30, cost_usd: 0.42 },
+          },
+        }),
+        message({
+          id: 'unpriced-run',
+          createdAt: '2026-05-23T10:00:00.000Z',
+          llmModel: 'unknown-model',
+          totalTokens: 500,
+        }),
+      ],
+    });
+
+    expect(metrics.totals).toMatchObject({
+      uncachedInputTokens: 300,
+      cachedInputTokens: 1_000,
+      cacheCreationInputTokens: 50,
+      outputTokens: 50,
+      estimatedCostUsd: expect.closeTo(0.420725),
+      cacheSavingsUsd: expect.closeTo(0.0018),
+      costEligibleRuns: 3,
+      costKnownRuns: 2,
+      costCoveragePercent: 67,
+      unpricedTokens: 500,
+      providerReportedRuns: 1,
+      modelPricedRuns: 1,
+    });
+    expect(metrics.recentRuns.find((run) => run.nodeId === 'provider-run')).toMatchObject({
+      costUsd: 0.42,
+      costSource: 'providerReported',
+    });
+    expect(metrics.modelUsage).toHaveLength(3);
+    expect(metrics.modelUsage.find((row) => row.model === 'unknown-model')).toMatchObject({
+      unpricedRunCount: 1,
+      costUsd: 0,
+    });
   });
 
   it('deduplicates background attention token usage per run and counts audit outcomes', () => {

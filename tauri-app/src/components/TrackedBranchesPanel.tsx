@@ -1,8 +1,16 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { GitCommitHorizontal, Compass, X, Loader2, ChevronDown, GitBranch, Clock3 } from 'lucide-react';
+import { GitCommitHorizontal, Compass, X, Loader2, ChevronDown, GitBranch, Clock3, GitMerge, RefreshCw, Check } from 'lucide-react';
 import { agentClient } from '../lib/agentClient';
-import { useCreateTrackedRef, useDeleteTrackedRef, useTrackedRefs, trackedRefKeys } from '../hooks/useTrackedRefs';
+import {
+  canBeAcceptanceGitRef,
+  trackedRefCountsAsMerged,
+  trackedRefKeys,
+  useCreateTrackedRef,
+  useDeleteTrackedRef,
+  useTrackedRefs,
+  useUpdateTrackedRef,
+} from '../hooks/useTrackedRefs';
 import { branchKeys, useBranches } from '../hooks/useBranches';
 import { useCurrentHead } from '../hooks/useCurrentHead';
 import { useMessages } from '../hooks/useMessages';
@@ -11,6 +19,7 @@ import { useWorkspaceStore } from '../stores/workspaceStore';
 import { Button } from '../../@/components/ui/button';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../@/components/ui/hover-card';
 import { Popover, PopoverContent, PopoverTrigger } from '../../@/components/ui/popover';
+import { Switch } from '../../@/components/ui/switch';
 import { cn } from '../lib/utils';
 import { useToast } from './Toast';
 import { getBranchPointerCommitSha, getMessageOutputCommitSha } from '../lib/graph/commitAccessors';
@@ -19,6 +28,10 @@ import { sortTrackableRefsByRecentCommit } from '../domain/trackableRefs';
 interface TrackedBranchesPanelProps {
   workspaceId: string | null;
   repoPath: string | null;
+  showMergedCommits: boolean;
+  onShowMergedCommitsChange: (show: boolean) => void;
+  isRefreshingGitState: boolean;
+  onRefreshGitState: () => void;
   className?: string;
 }
 
@@ -41,7 +54,15 @@ const formatCommitAge = (committedAt: string | null | undefined): string => {
   return `${Math.floor(months / 12)}y ago`;
 };
 
-export function TrackedBranchesPanel({ workspaceId, repoPath, className }: TrackedBranchesPanelProps) {
+export function TrackedBranchesPanel({
+  workspaceId,
+  repoPath,
+  showMergedCommits,
+  onShowMergedCommitsChange,
+  isRefreshingGitState,
+  onRefreshGitState,
+  className,
+}: TrackedBranchesPanelProps) {
   const [selectedRef, setSelectedRef] = useState<string>('');
   const [isTrackBranchPickerOpen, setIsTrackBranchPickerOpen] = useState(false);
   const { data: trackedRefs = [] } = useTrackedRefs(workspaceId);
@@ -50,6 +71,7 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
   const { data: messages = [] } = useMessages(workspaceId);
   const createTrackedRef = useCreateTrackedRef();
   const deleteTrackedRef = useDeleteTrackedRef();
+  const updateTrackedRef = useUpdateTrackedRef();
   const {
     composerBaseCommitOverride,
     composerContextPreview,
@@ -58,6 +80,7 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
   const { addToast, removeToast } = useToast();
   const queryClient = useQueryClient();
   const [isImportingCurrentCheckout, setIsImportingCurrentCheckout] = useState(false);
+  const [resolvingCandidateKey, setResolvingCandidateKey] = useState<string | null>(null);
   const isImportingCurrentCheckoutRef = useRef(false);
 
   const { data: localRefs = [] } = useQuery({
@@ -92,6 +115,47 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
     const trackedSet = new Set(trackedRefs.map((ref) => ref.git_ref));
     return sortTrackableRefsByRecentCommit(localRefs.filter((ref) => !trackedSet.has(ref.git_ref)));
   }, [localRefs, trackedRefs]);
+  const acceptanceBranchCount = useMemo(
+    () => trackedRefs.filter((ref) => ref.enabled && trackedRefCountsAsMerged(ref)).length,
+    [trackedRefs]
+  );
+  const pendingAcceptanceCandidates = localCommitGraph?.pendingAcceptanceCandidates ?? [];
+
+  const resolveAcceptanceCandidate = useCallback(async (
+    candidate: typeof pendingAcceptanceCandidates[number],
+    accepted: boolean
+  ) => {
+    if (!workspaceId) return;
+    const candidateKey = `${candidate.gitRef}:${candidate.sourceSha}:${candidate.targetSha}`;
+    setResolvingCandidateKey(candidateKey);
+    try {
+      const changed = await agentClient.resolveLocalCommitAcceptance(
+        workspaceId,
+        candidate.gitRef,
+        candidate.sourceSha,
+        candidate.targetSha,
+        accepted
+      );
+      if (changed) {
+        await queryClient.invalidateQueries({ queryKey: ['local-commit-graph', workspaceId] });
+      }
+      addToast({
+        title: accepted ? 'Commit Marked Merged' : 'Possible Match Dismissed',
+        description: accepted
+          ? 'Agentree will retain this source-to-landed mapping while the landed commit remains reachable.'
+          : 'The generated commit remains unmerged.',
+        variant: accepted ? 'success' : 'info',
+      });
+    } catch (error) {
+      addToast({
+        title: 'Could Not Save Decision',
+        description: error instanceof Error ? error.message : 'The acceptance decision could not be saved.',
+        variant: 'error',
+      });
+    } finally {
+      setResolvingCandidateKey(null);
+    }
+  }, [addToast, pendingAcceptanceCandidates, queryClient, workspaceId]);
 
   const branchPointerByRef = useMemo(() => {
     return new Map(branches.map((branch) => [branch.git_ref, branch]));
@@ -363,6 +427,176 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
           </HoverCardContent>
         </HoverCard>
 
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 gap-1.5 rounded-md bg-emerald-500/8 px-2 text-[10.5px] font-semibold text-emerald-800 shadow-[0_0_0_1px_rgba(16,185,129,0.18),0_1px_2px_rgba(15,23,42,0.05)] transition-[background-color,box-shadow,scale] duration-150 hover:bg-emerald-500/13 hover:shadow-[0_0_0_1px_rgba(16,185,129,0.28),0_2px_4px_rgba(15,23,42,0.07)] active:scale-[0.96] dark:bg-emerald-500/10 dark:text-emerald-300"
+              title="Choose which tracked branches count changes as merged"
+            >
+              <GitMerge size={12} className="shrink-0" />
+              <span>Acceptance</span>
+              <span className="min-w-4 rounded-full bg-emerald-600/12 px-1 font-mono text-[9px] tabular-nums dark:bg-emerald-400/15">
+                {acceptanceBranchCount}
+              </span>
+              {pendingAcceptanceCandidates.length > 0 && (
+                <span
+                  className="min-w-4 rounded-full bg-amber-500/16 px-1 font-mono text-[9px] tabular-nums text-amber-800 dark:text-amber-300"
+                  title={`${pendingAcceptanceCandidates.length} possible ${pendingAcceptanceCandidates.length === 1 ? 'match needs' : 'matches need'} review`}
+                >
+                  {pendingAcceptanceCandidates.length}
+                </span>
+              )}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            sideOffset={7}
+            className="w-[min(23rem,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-border/70 bg-popover/95 p-2 shadow-xl backdrop-blur-xl"
+          >
+            <div className="flex items-start gap-3 px-2 pb-2 pt-1">
+              <div className="min-w-0 flex-1">
+                <div className="text-[12px] font-semibold text-foreground">Acceptance branches</div>
+                <p className="mt-1 text-[10.5px] leading-relaxed text-muted-foreground text-pretty">
+                  A generated commit is merged when Agentree finds it in any enabled branch. Checks run automatically when Git refs move.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-8 shrink-0 rounded-lg text-muted-foreground transition-[background-color,color,transform] hover:text-foreground active:scale-[0.94]"
+                onClick={onRefreshGitState}
+                disabled={isRefreshingGitState || !repoPath}
+                aria-label="Refresh Git acceptance state"
+                title="Refresh Git state now"
+              >
+                <RefreshCw size={13} className={cn(isRefreshingGitState && 'animate-spin')} />
+              </Button>
+            </div>
+            <div className="max-h-[17rem] space-y-1 overflow-y-auto overscroll-contain pr-0.5 custom-scrollbar">
+              {trackedRefs.length === 0 ? (
+                <div className="rounded-lg bg-muted/35 px-3 py-3 text-[11px] text-muted-foreground">
+                  Track main, master, or another integration branch first.
+                </div>
+              ) : trackedRefs.map((ref) => {
+                const canAccept = canBeAcceptanceGitRef(ref.git_ref);
+                const countsAsMerged = ref.enabled && trackedRefCountsAsMerged(ref);
+                const switchId = `acceptance-${ref.id}`;
+                return (
+                  <label
+                    key={ref.id}
+                    htmlFor={switchId}
+                    className={cn(
+                      'flex min-h-11 items-center gap-2.5 rounded-lg px-2.5 py-2 transition-[background-color,color] duration-150',
+                      canAccept ? 'cursor-pointer hover:bg-accent/70' : 'cursor-not-allowed opacity-55'
+                    )}
+                  >
+                    <span className={cn(
+                      'flex size-7 shrink-0 items-center justify-center rounded-md',
+                      countsAsMerged
+                        ? 'bg-emerald-500/12 text-emerald-700 dark:text-emerald-300'
+                        : 'bg-muted/55 text-muted-foreground'
+                    )}>
+                      <GitBranch size={13} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[11.5px] font-semibold text-foreground">{ref.display_name}</span>
+                      <span className="block truncate font-mono text-[9.5px] text-muted-foreground">{ref.git_ref}</span>
+                      {!canAccept && (
+                        <span className="mt-0.5 block text-[9.5px] text-muted-foreground">HEAD follows the checkout; choose a named branch.</span>
+                      )}
+                    </span>
+                    <Switch
+                      id={switchId}
+                      checked={countsAsMerged}
+                      disabled={!workspaceId || !canAccept || updateTrackedRef.isPending}
+                      aria-label={`Count ${ref.display_name} as an acceptance branch`}
+                      onCheckedChange={(checked) => {
+                        if (!workspaceId || !canAccept) return;
+                        updateTrackedRef.mutate({
+                          workspaceId,
+                          refId: ref.id,
+                          isAcceptanceBranch: checked,
+                        });
+                      }}
+                    />
+                  </label>
+                );
+              })}
+            </div>
+            {pendingAcceptanceCandidates.length > 0 && (
+              <div className="mt-2 border-t border-amber-500/20 px-2 pt-2">
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <span className="text-[10.5px] font-semibold text-amber-800 dark:text-amber-300">Possible matches</span>
+                  <span className="rounded-full bg-amber-500/12 px-1.5 font-mono text-[9px] tabular-nums text-amber-800 dark:text-amber-300">
+                    {pendingAcceptanceCandidates.length}
+                  </span>
+                </div>
+                <p className="mb-2 text-[9.5px] leading-relaxed text-muted-foreground">
+                  Content changed while landing. Confirm only if this is the accepted version.
+                </p>
+                <div className="max-h-40 space-y-1.5 overflow-y-auto custom-scrollbar">
+                  {pendingAcceptanceCandidates.map((candidate) => {
+                    const candidateKey = `${candidate.gitRef}:${candidate.sourceSha}:${candidate.targetSha}`;
+                    const isResolving = resolvingCandidateKey === candidateKey;
+                    return (
+                      <div key={candidateKey} className="rounded-lg border border-amber-500/20 bg-amber-500/[0.045] p-2">
+                        <div className="truncate text-[11px] font-semibold text-foreground">
+                          {candidate.subject?.trim() || candidate.sourceSha.slice(0, 8)}
+                        </div>
+                        <div className="mt-0.5 truncate font-mono text-[9px] text-muted-foreground">
+                          {candidate.sourceSha.slice(0, 8)} → {candidate.targetSha.slice(0, 8)} · {candidate.gitRef.replace(/^refs\/(heads|remotes)\//, '')}
+                        </div>
+                        <div className="mt-2 flex justify-end gap-1.5">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 rounded-md px-2 text-[10px] text-muted-foreground"
+                            disabled={Boolean(resolvingCandidateKey)}
+                            onClick={() => void resolveAcceptanceCandidate(candidate, false)}
+                          >
+                            Dismiss
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-7 rounded-md bg-emerald-600 px-2 text-[10px] text-white hover:bg-emerald-700"
+                            disabled={Boolean(resolvingCandidateKey)}
+                            onClick={() => void resolveAcceptanceCandidate(candidate, true)}
+                          >
+                            {isResolving ? <Loader2 size={11} className="mr-1 animate-spin" /> : <Check size={11} className="mr-1" />}
+                            Mark merged
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            <div className="mt-2 border-t border-border/60 px-2 pb-1 pt-2">
+              <label htmlFor="show-merged-agentree-commits" className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-1">
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[11.5px] font-semibold text-foreground">Show merged commits</span>
+                  <span className="mt-0.5 block text-[9.5px] leading-relaxed text-muted-foreground">
+                    Off keeps the graph focused on changes that still need acceptance.
+                  </span>
+                </span>
+                <Switch
+                  id="show-merged-agentree-commits"
+                  checked={showMergedCommits}
+                  aria-label="Show merged Agentree commits"
+                  onCheckedChange={onShowMergedCommitsChange}
+                />
+              </label>
+            </div>
+          </PopoverContent>
+        </Popover>
+
         {trackedRefs.length === 0 && (
           <span className="text-[10.5px] text-muted-foreground/50 italic mr-2">None selected</span>
         )}
@@ -370,12 +604,17 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
         {trackedRefs.map((ref) => {
           const pointerCommitSha = ref.last_seen_commit_sha?.trim() || getBranchPointerCommitSha(branchPointerByRef.get(ref.git_ref));
           const isSelectedForComposer = !!pointerCommitSha && pointerCommitSha === selectedComposerCommitSha;
+          const countsAsMerged = ref.enabled && trackedRefCountsAsMerged(ref);
           return (
             <div
               key={ref.id}
               className={cn(
-                "group flex shrink-0 items-center rounded-full border bg-background px-1.5 py-0.5 text-[10px] font-medium transition-all",
-                isSelectedForComposer ? "border-emerald-500/70 text-emerald-700 bg-emerald-500/10 dark:text-emerald-300" : "border-border/60 text-foreground/80 hover:border-border hover:bg-muted/30"
+                "group flex shrink-0 items-center rounded-full border bg-background px-1.5 py-0.5 text-[10px] font-medium transition-[background-color,border-color,color] duration-150",
+                isSelectedForComposer
+                  ? "border-emerald-500/70 text-emerald-700 bg-emerald-500/10 dark:text-emerald-300"
+                  : countsAsMerged
+                    ? "border-emerald-500/35 bg-emerald-500/5 text-emerald-800 hover:bg-emerald-500/10 dark:text-emerald-300"
+                    : "border-border/60 text-foreground/80 hover:border-border hover:bg-muted/30"
               )}
             >
               <button
@@ -384,6 +623,7 @@ export function TrackedBranchesPanel({ workspaceId, repoPath, className }: Track
                 title={ref.git_ref}
                 onClick={() => focusTrackedRef(ref.git_ref)}
               >
+                {countsAsMerged && <GitMerge size={9} className="mr-1 inline shrink-0" />}
                 {ref.display_name}
               </button>
               <Button

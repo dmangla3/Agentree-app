@@ -74,6 +74,8 @@ export const commands = {
 	localFirstSetNodeCollapsed: (workspaceId: string, currentUserId: string, nodeId: string, collapsed: boolean) => __TAURI_INVOKE<string>("local_first_set_node_collapsed", { workspaceId, currentUserId, nodeId, collapsed }),
 	importLocalCommits: (workspaceId: string, commits: LocalCommitImport[], gitRef: string | null, repoPath: string | null) => __TAURI_INVOKE<number>("import_local_commits", { workspaceId, commits, gitRef, repoPath }),
 	listLocalCommitGraph: (workspaceId: string) => __TAURI_INVOKE<LocalCommitGraphSnapshot>("list_local_commit_graph", { workspaceId }),
+	refreshLocalCommitAcceptance: (workspaceId: string, repoPath: string, acceptedGitRefs: string[]) => __TAURI_INVOKE<CommitAcceptanceRefreshResult>("refresh_local_commit_acceptance", { workspaceId, repoPath, acceptedGitRefs }),
+	resolveLocalCommitAcceptance: (workspaceId: string, gitRef: string, sourceSha: string, targetSha: string, accepted: boolean) => __TAURI_INVOKE<boolean>("resolve_local_commit_acceptance", { workspaceId, gitRef, sourceSha, targetSha, accepted }),
 	repairLocalCommitGraph: (workspaceId: string, repoPath: string, gitRef: string | null) => __TAURI_INVOKE<number>("repair_local_commit_graph", { workspaceId, repoPath, gitRef }),
 	enqueueLocalCommitGraphSync: (workspaceId: string, currentUserId: string, payloadJson: string, mutationId: string | null) => __TAURI_INVOKE<LocalSyncEventRow>("enqueue_local_commit_graph_sync", { workspaceId, currentUserId, payloadJson, mutationId }),
 	getLocalIdentity: () => __TAURI_INVOKE<LocalIdentity>("get_local_identity"),
@@ -412,6 +414,15 @@ export type CodexLoginStart = {
 	deviceCode: string,
 };
 
+export type CommitAcceptanceRefreshResult = {
+	changed: boolean,
+	mergedCommitShas: string[],
+	checkedRefs: string[],
+	skippedRefs: string[],
+	errors: string[],
+	durationMs: number,
+};
+
 /**  User-provided resolution for a conflict. */
 export type ConflictResolution = ConflictResolution_Serialize | ConflictResolution_Deserialize;
 
@@ -586,6 +597,7 @@ export type LocalCommitGraphSnapshot = {
 	commits: LocalCommitRow[],
 	commitParents: LocalCommitParentRow[],
 	commitObservations: LocalCommitObservationRow[],
+	pendingAcceptanceCandidates: PendingCommitAcceptanceRow[],
 };
 
 export type LocalCommitImport = {
@@ -630,6 +642,7 @@ export type LocalCommitRow = {
 	filesChangedCount: number | null,
 	totalAdditions: number | null,
 	totalDeletions: number | null,
+	isMerged: boolean,
 };
 
 export type LocalDeletedNodeRoot = {
@@ -827,6 +840,13 @@ export type MergeReviewIssueOptionInput = {
 export type MergeReviewIssueSelectionInput = {
 	issueId: string,
 	optionId: string,
+};
+
+export type PendingCommitAcceptanceRow = {
+	sourceSha: string,
+	targetSha: string,
+	gitRef: string,
+	subject: string | null,
 };
 
 export type PerfCaptureExportRequest = {

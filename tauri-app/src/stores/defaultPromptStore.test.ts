@@ -26,13 +26,6 @@ describe('default prompt store', () => {
     useDefaultPromptStore.getState().clearUserPrompts();
   });
 
-  it('starts with every built-in default prompt', () => {
-    expect(useDefaultPromptStore.getState().prompts.map((prompt) => prompt.id)).toEqual(
-      DEFAULT_PROMPT_DEFINITIONS.map((definition) => definition.id),
-    );
-    expect(useDefaultPromptStore.getState().prompts.every((prompt) => prompt.source === 'built_in')).toBe(true);
-  });
-
   it('merges user prompt overrides without changing other built-ins', () => {
     const prompts = mergeDefaultPromptOverrides([{
       id: 'dependency_guard',

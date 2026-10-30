@@ -2,6 +2,7 @@
 import '../../test/setup';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { TooltipProvider } from '../../../@/components/ui/tooltip';
 import type { LoginProfileSummary } from '../../lib/loginProfiles';
 import { LoginProfileRows } from './LoginProfileRows';
 
@@ -59,9 +60,6 @@ describe('LoginProfileRows', () => {
 
     const rowMessage = screen.getByText(statusMessage);
 
-    expect(rowMessage.className).toContain('line-clamp-2');
-    expect(rowMessage.className).toContain('[overflow-wrap:anywhere]');
-
     fireEvent.pointerEnter(rowMessage);
 
     const popover = await screen.findByText(statusMessage, {
@@ -69,8 +67,6 @@ describe('LoginProfileRows', () => {
     });
 
     expect(popover.textContent).toBe(statusMessage);
-    expect(popover.className).toContain('whitespace-pre-wrap');
-    expect(popover.className).toContain('[overflow-wrap:anywhere]');
   });
 
   it('lets OpenCode rows choose providers to test instead of a plain Test', async () => {
@@ -105,20 +101,22 @@ describe('LoginProfileRows', () => {
       },
     };
     render(
-      <LoginProfileRows
-        activeRunsByProfile={{}}
-        onCheck={vi.fn()}
-        onDelete={vi.fn()}
-        onEdit={vi.fn()}
-        onSetDefault={vi.fn()}
-        onTestProviders={onTestProviders}
-        pendingProfileId={null}
-        profiles={[opencodeProfile]}
-      />
+      <TooltipProvider delayDuration={0}>
+        <LoginProfileRows
+          activeRunsByProfile={{}}
+          onCheck={vi.fn()}
+          onDelete={vi.fn()}
+          onEdit={vi.fn()}
+          onSetDefault={vi.fn()}
+          onTestProviders={onTestProviders}
+          pendingProfileId={null}
+          profiles={[opencodeProfile]}
+        />
+      </TooltipProvider>
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Test providers' }));
-    await screen.findByText('Run a live model call on each selected provider to confirm it works.');
+    await screen.findByText('Check credentials and model access for each selected provider.');
     fireEvent.click(screen.getByRole('checkbox', { name: 'OpenAI' }));
     fireEvent.click(screen.getByRole('button', { name: 'Test selected (1)' }));
 

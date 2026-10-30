@@ -89,6 +89,7 @@ export interface ProjectedCommitEntity {
   commit: CommitEntity;
   sortTs: number;
   representedThreadRootIds: string[];
+  isMerged?: boolean;
 }
 
 export interface ProjectedCommitLaneRow {
@@ -741,6 +742,7 @@ const buildCommitProjection = (
       commit,
       sortTs: getCommitSortTs(commit),
       representedThreadRootIds: [],
+      isMerged: Boolean(commit.is_merged),
     };
     commitBySha.set(commit.sha, projected);
   }

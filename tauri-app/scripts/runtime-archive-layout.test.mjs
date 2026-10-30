@@ -4,13 +4,15 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
-  claudeSdkPnpmAddArgs,
+  lockedRuntimePnpmInstallArgs,
   packagePnpmAddArgs,
   pnpmEnvironmentForRuntimeInstall,
+  pruneNonTargetClaudeNativePackages,
   validateClaudeSdkInstall,
   validateClaudeSdkVersionAlignment,
   validateOpenCodeSdkInstall,
   validateOpenCodeSdkVersionAlignment,
+  validateRuntimePackageVersionAlignment,
 } from './runtime-archive-layout.mjs';
 
 function sdkFixture(version = '0.3.207') {
@@ -34,23 +36,59 @@ function sdkFixture(version = '0.3.207') {
   return { root, nodeModules, nativeDir };
 }
 
-test('Claude runtime install explicitly adds only the target native dependency', () => {
-  const args = claudeSdkPnpmAddArgs('0.3.207', 'linux', 'x64');
+test('locked runtime installs use the committed cross-platform dependency graph', () => {
+  const args = lockedRuntimePnpmInstallArgs('linux', 'x64');
+  assert.ok(args.includes('--frozen-lockfile'));
   assert.ok(args.includes('--prod'));
-  assert.ok(args.includes('--no-optional'));
+  assert.ok(args.includes('--ignore-workspace'));
+  assert.ok(!args.includes('--no-optional'));
+  assert.ok(!args.includes('--force'));
   assert.ok(args.includes('--os=linux'));
   assert.ok(args.includes('--cpu=x64'));
-  assert.ok(args.includes('@anthropic-ai/claude-agent-sdk@0.3.207'));
-  assert.ok(args.includes('@anthropic-ai/claude-agent-sdk-linux-x64@0.3.207'));
 });
 
-test('runtime SDK installs use a portable hoisted dependency layout', () => {
+test('Claude runtime staging prunes non-target native packages', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentree-runtime-prune-'));
+  const anthropicDir = path.join(root, 'node_modules', '@anthropic-ai');
+  for (const name of [
+    'claude-agent-sdk',
+    'claude-agent-sdk-linux-x64',
+    'claude-agent-sdk-linux-x64-musl',
+    'claude-agent-sdk-darwin-arm64',
+  ]) {
+    fs.mkdirSync(path.join(anthropicDir, name), { recursive: true });
+  }
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  pruneNonTargetClaudeNativePackages(path.join(root, 'node_modules'), {
+    npmOs: 'linux',
+    npmCpu: 'x64',
+  });
+
+  assert.ok(fs.existsSync(path.join(anthropicDir, 'claude-agent-sdk')));
+  assert.ok(fs.existsSync(path.join(anthropicDir, 'claude-agent-sdk-linux-x64')));
+  assert.ok(!fs.existsSync(path.join(anthropicDir, 'claude-agent-sdk-linux-x64-musl')));
+  assert.ok(!fs.existsSync(path.join(anthropicDir, 'claude-agent-sdk-darwin-arm64')));
+});
+
+test('runtime package installs use a portable hoisted dependency layout', () => {
   for (const args of [
-    claudeSdkPnpmAddArgs('0.3.207', 'linux', 'x64'),
-    packagePnpmAddArgs('@opencode-ai/sdk@1.18.3', 'linux', 'x64'),
+    lockedRuntimePnpmInstallArgs('linux', 'x64'),
+    packagePnpmAddArgs('@openai/codex@0.144.1-linux-x64', 'linux', 'x64'),
   ]) {
     assert.ok(args.includes('--config.node-linker=hoisted'));
   }
+});
+
+test('locked runtime packages cannot drift from the manifest', () => {
+  const packageJson = { dependencies: { '@opencode-ai/sdk': '1.18.3' } };
+  assert.doesNotThrow(() =>
+    validateRuntimePackageVersionAlignment(packageJson, 'opencode', '1.18.3')
+  );
+  assert.throws(
+    () => validateRuntimePackageVersionAlignment(packageJson, 'opencode', '1.18.2'),
+    /build lock version drift/
+  );
 });
 
 test('Claude runtime install ignores inherited package-manager optional omission', () => {
@@ -94,6 +132,22 @@ test('Claude runtime layout requires the platform-native executable', (t) => {
     }),
     path.join(fixture.nativeDir, 'claude')
   );
+
+  const unexpectedNativeDir = path.join(
+    fixture.nodeModules,
+    '@anthropic-ai',
+    'claude-agent-sdk-linux-x64-musl',
+  );
+  fs.mkdirSync(unexpectedNativeDir, { recursive: true });
+  assert.throws(
+    () => validateClaudeSdkInstall(fixture.nodeModules, {
+      version: '0.3.207',
+      npmOs: 'linux',
+      npmCpu: 'x64',
+    }),
+    /non-target native packages/,
+  );
+  fs.rmSync(unexpectedNativeDir, { recursive: true, force: true });
 
   fs.rmSync(path.join(fixture.nativeDir, 'claude'));
   assert.throws(

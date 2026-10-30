@@ -12,6 +12,8 @@ export function useGraphViewHotkeys(options: {
   focusPrevious: () => void;
   focusNext: () => void;
   focusLatest: () => void;
+  focusNextThread: () => void;
+  focusPreviousThread: () => void;
   closeThread: () => void;
   reopenLastClosedThread: () => void;
 }) {
@@ -49,6 +51,14 @@ export function useGraphViewHotkeys(options: {
 
   useShortcut('graph.navigate.latest', () => {
     options.focusLatest();
+  });
+
+  useCapturedShortcut('thread.navigate.next', () => {
+    options.focusNextThread();
+  });
+
+  useCapturedShortcut('thread.navigate.previous', () => {
+    options.focusPreviousThread();
   });
 
   useCapturedShortcut('thread.close', () => {

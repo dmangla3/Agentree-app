@@ -18,5 +18,6 @@ export function mapLocalCommitToCommitEntity(commit: LocalCommit, workspaceId: s
     files_changed_count: commit.filesChangedCount ?? null,
     total_additions: commit.totalAdditions ?? null,
     total_deletions: commit.totalDeletions ?? null,
+    is_merged: commit.isMerged ?? false,
   };
 }

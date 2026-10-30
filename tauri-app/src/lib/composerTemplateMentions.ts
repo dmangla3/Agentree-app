@@ -62,10 +62,3 @@ export const getTemplateMentionRanges = (
   }
   return ranges;
 };
-
-export const promptIncludesOrchestrationTemplate = (
-  value: string,
-  templates: OrchestrationPromptTemplate[],
-): boolean => (
-  getTemplateMentionRanges(value, templates).some((range) => range.template.kind === 'orchestration')
-);

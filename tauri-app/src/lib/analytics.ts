@@ -153,23 +153,6 @@ export function bucketCount(value: number): CountBucket {
   return '21+';
 }
 
-export function bucketCharacterCount(value: number): CharacterCountBucket {
-  if (value <= 0) return '0';
-  if (value <= 100) return '1-100';
-  if (value <= 500) return '101-500';
-  if (value <= 2_000) return '501-2000';
-  return '2001+';
-}
-
-export function analyticsFailureCategory(error: unknown): AnalyticsFailureCategory {
-  const name = error instanceof Error ? error.name.toLowerCase() : '';
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error ?? '').toLowerCase();
-  if (name === 'aborterror' || message.includes('aborted') || message.includes('cancelled')) return 'aborted';
-  if (message.includes('network') || message.includes('timeout') || message.includes('timed out')) return 'network';
-  if (name.includes('tauri') || message.includes('invoke') || message.includes('runtime')) return 'runtime';
-  return 'unknown';
-}
-
 export function sanitizeAnalyticsEvent(
   eventName: string,
   properties: Record<string, unknown> = {},

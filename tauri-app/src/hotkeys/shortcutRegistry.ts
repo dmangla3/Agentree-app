@@ -20,6 +20,20 @@ export const SHORTCUTS = {
     description: 'Create a new thread in the selected workspace.',
     scope: 'global',
   },
+  'thread.navigate.next': {
+    id: 'thread.navigate.next',
+    defaultHotkey: 'Control+Tab',
+    label: 'Next thread',
+    description: 'Switch to the next active thread.',
+    scope: 'global',
+  },
+  'thread.navigate.previous': {
+    id: 'thread.navigate.previous',
+    defaultHotkey: 'Control+Shift+Tab',
+    label: 'Previous thread',
+    description: 'Switch to the previous active thread.',
+    scope: 'global',
+  },
   'search.open': {
     id: 'search.open',
     defaultHotkey: 'Mod+K',

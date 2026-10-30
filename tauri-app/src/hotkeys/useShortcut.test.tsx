@@ -74,6 +74,23 @@ describe('useCapturedShortcut', () => {
     expect(callback).toHaveBeenCalledOnce();
   });
 
+  it('captures Control+Tab thread rotation before the browser handles Tab', () => {
+    const callback = vi.fn();
+    renderHook(() => useCapturedShortcut('thread.navigate.next', callback, { platform: 'mac' }));
+    const event = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Tab',
+      code: 'Tab',
+      ctrlKey: true,
+    });
+
+    window.dispatchEvent(event);
+
+    expect(callback).toHaveBeenCalledOnce();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
   it('keeps displayed shortcut labels in sync with overrides', () => {
     const { result } = renderHook(() => useShortcutDisplayLabels('terminal.toggle'));
     const modifier = result.current.startsWith('Cmd') ? 'Cmd' : 'Ctrl';

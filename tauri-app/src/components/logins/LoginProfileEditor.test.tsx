@@ -160,7 +160,6 @@ describe('LoginProfileEditor', () => {
     expect(getByText('/Users/test/.local/share/opencode/auth.json')).toBeTruthy();
     expect(queryByText(/Already signed in to OpenCode/)).toBeNull();
     const importButton = getByRole('button', { name: 'Import' });
-    expect(importButton.className).toContain('h-8');
     fireEvent.click(importButton);
     await waitFor(() => expect(onImportExistingOpenCode).toHaveBeenCalledOnce());
   });

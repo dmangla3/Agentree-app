@@ -37,13 +37,6 @@ export const stopQuickReplyControlEvent = (event: { stopPropagation: () => void 
   event.stopPropagation();
 };
 
-export const canShowHoverQuickReply = (
-  entity: ProjectedNodeEntity | null | undefined,
-  runStatus?: string | null | undefined,
-): boolean => {
-  return getHoverReplyMode(entity, runStatus) !== null;
-};
-
 export const getHoverReplyMode = (
   entity: ProjectedNodeEntity | null | undefined,
   runStatus?: string | null | undefined,

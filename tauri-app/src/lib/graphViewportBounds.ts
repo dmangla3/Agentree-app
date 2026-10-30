@@ -56,17 +56,6 @@ const padGraphNodeBounds = (
   };
 };
 
-export const buildGraphTranslateExtent = (nodes: Node<any>[]): CoordinateExtent | undefined => {
-  const bounds = buildGraphNodeBounds(nodes);
-  if (!bounds) return undefined;
-  const paddedBounds = padGraphNodeBounds(bounds);
-
-  return [
-    [paddedBounds.minX, paddedBounds.minY],
-    [paddedBounds.maxX, paddedBounds.maxY],
-  ];
-};
-
 export const buildFullGraphViewportBoundsModel = (nodes: Node<any>[]): FullGraphViewportBoundsModel | null => {
   const nodeBounds = buildGraphNodeBounds(nodes);
   if (!nodeBounds) return null;
@@ -122,9 +111,3 @@ export const clampGraphViewportToFullGraphBoundsModel = (
   model: FullGraphViewportBoundsModel | null,
   flowSize: { width: number; height: number },
 ): Viewport => clampGraphViewportToBounds(viewport, model?.nodeBounds ?? null, flowSize);
-
-export const clampGraphViewportToNodeBounds = (
-  viewport: Viewport,
-  nodes: Node<any>[],
-  flowSize: { width: number; height: number },
-): Viewport => clampGraphViewportToBounds(viewport, buildGraphNodeBounds(nodes), flowSize);

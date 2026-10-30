@@ -54,29 +54,6 @@ export const getBranchPointerDisplayName = (pointer: BranchPointer | null | unde
     .replace(/^refs\/remotes\//, '');
 };
 
-export const getBranchPointerNamesForCommit = (
-  commitSha: string | null | undefined,
-  pointers: BranchPointer[] | null | undefined
-): string[] => {
-  const normalizedCommitSha = normalizedString(commitSha);
-  if (!normalizedCommitSha) return [];
-
-  const names: string[] = [];
-  const seen = new Set<string>();
-
-  for (const pointer of pointers ?? []) {
-    if (getBranchPointerCommitSha(pointer) !== normalizedCommitSha) continue;
-
-    const name = getBranchPointerDisplayName(pointer);
-    if (!name || seen.has(name)) continue;
-
-    seen.add(name);
-    names.push(name);
-  }
-
-  return names;
-};
-
 export const hasMessageCommitOutput = (message: Message | null | undefined): boolean => (
   getMessageOutputCommitSha(message) !== null
 );

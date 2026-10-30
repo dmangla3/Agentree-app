@@ -12,11 +12,6 @@ export type ComposerAgentRun = {
   totalForAgent: number;
 };
 
-export type ComposerAgentTurnTopology<T extends ComposerAgentRun = ComposerAgentRun> = T & {
-  turnIndex: number;
-  userParentId: string | null;
-};
-
 const clampCount = (count: number) => {
   if (!Number.isFinite(count)) return 0;
   return Math.max(0, Math.min(12, Math.trunc(count)));
@@ -88,14 +83,3 @@ export const buildComposerAgentRuns = (
 
   return runs;
 };
-
-export const buildComposerAgentTurnTopology = <T extends ComposerAgentRun>(
-  runs: T[],
-  parentId: string | null
-): ComposerAgentTurnTopology<T>[] => (
-  runs.map((run, turnIndex) => ({
-    ...run,
-    turnIndex,
-    userParentId: parentId,
-  }))
-);

@@ -2,6 +2,12 @@ import { isTerminalAgentStatus } from '@shared/agentStatus';
 import type { CommitEntity, Message } from '../stores/workspaceStore';
 import type { BackgroundAttentionAuditEvent } from '../lib/backgroundAttentionAudit';
 import type { LocalInsightCandidateRecord } from '../lib/agentClient';
+import {
+  priceModelUsage,
+  unavailablePricingSnapshot,
+  type PricingSnapshot,
+  type UsageCostSource,
+} from './modelPricing';
 
 export type TrackingRange = '7d' | '30d' | 'all';
 
@@ -15,6 +21,10 @@ export interface TrackingBucket {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  inputCostUsd: number;
+  outputCostUsd: number;
+  costUsd: number;
+  cacheSavingsUsd: number;
 }
 
 export interface BackgroundAttentionBucket {
@@ -45,6 +55,23 @@ export interface TrackingRunRow {
   locDeleted: number;
   netLoc: number;
   totalTokens: number;
+  provider: string | null;
+  model: string | null;
+  costUsd: number;
+  costSource: UsageCostSource;
+}
+
+export interface TrackingModelUsageRow {
+  key: string;
+  provider: string | null;
+  model: string;
+  runCount: number;
+  pricedRunCount: number;
+  unpricedRunCount: number;
+  totalTokens: number;
+  costUsd: number;
+  cacheSavingsUsd: number;
+  costShare: number;
 }
 
 export interface BackgroundAttentionTotals {
@@ -84,11 +111,33 @@ export interface TrackingTotals {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  uncachedInputTokens: number;
+  cachedInputTokens: number;
+  cacheCreationInputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
   tokenEligibleRuns: number;
   tokenKnownRuns: number;
   tokenCoveragePercent: number;
   tokensPerCommit: number | null;
   tokensPerLocAdded: number | null;
+  estimatedCostUsd: number;
+  inputCostUsd: number;
+  outputCostUsd: number;
+  cacheSavingsUsd: number;
+  costEligibleRuns: number;
+  costKnownRuns: number;
+  costCoveragePercent: number;
+  unpricedTokens: number;
+  providerReportedRuns: number;
+  modelPricedRuns: number;
+}
+
+export interface TrackingPricingSummary {
+  status: PricingSnapshot['status'];
+  source: string;
+  fetchedAt: string | null;
+  knownModels: number;
 }
 
 export interface TrackingDashboardMetrics {
@@ -98,6 +147,8 @@ export interface TrackingDashboardMetrics {
   totals: TrackingTotals;
   buckets: TrackingBucket[];
   recentRuns: TrackingRunRow[];
+  modelUsage: TrackingModelUsageRow[];
+  pricing: TrackingPricingSummary;
   backgroundAttention: BackgroundAttentionMetrics;
 }
 
@@ -108,6 +159,7 @@ interface BuildTrackingDashboardMetricsInput {
   commits: CommitEntity[];
   backgroundAttentionCandidates?: LocalInsightCandidateRecord[];
   backgroundAttentionAuditEvents?: BackgroundAttentionAuditEvent[];
+  pricing?: PricingSnapshot;
 }
 
 interface TokenUsage {
@@ -115,6 +167,15 @@ interface TokenUsage {
   completionTokens: number;
   totalTokens: number;
   hasUsage: boolean;
+  uncachedInputTokens: number;
+  cachedInputTokens: number;
+  cacheCreationInputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  provider: string | null;
+  model: string | null;
+  providerReportedCostUsd: number | null;
+  hasTokenBreakdown: boolean;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -189,6 +250,36 @@ const extractUsageObject = (message: Message): Record<string, unknown> => {
   return usage && typeof usage === 'object' ? usage as Record<string, unknown> : {};
 };
 
+const cleanString = (value: unknown): string | null => (
+  typeof value === 'string' && value.trim() ? value.trim() : null
+);
+
+const extractAgentIdentity = (agentId: string | null | undefined): { provider: string | null; model: string | null } => {
+  const raw = cleanString(agentId);
+  if (!raw) return { provider: null, model: null };
+  if (raw.startsWith('opencode:')) {
+    const [encodedModel] = raw.slice('opencode:'.length).split(':');
+    try {
+      return { provider: 'opencode', model: cleanString(decodeURIComponent(encodedModel ?? '')) };
+    } catch {
+      return { provider: 'opencode', model: cleanString(encodedModel) };
+    }
+  }
+
+  const [provider, model] = raw.split(':');
+  return {
+    provider: cleanString(provider),
+    model: cleanString(model) ?? (raw.includes(':') ? null : raw),
+  };
+};
+
+const extractExecutionMeta = (message: Message): Record<string, unknown> => {
+  const executionData = message.execution_data;
+  if (!executionData || typeof executionData !== 'object') return {};
+  const meta = (executionData as { meta?: unknown }).meta;
+  return meta && typeof meta === 'object' ? meta as Record<string, unknown> : {};
+};
+
 const extractTerminalStatus = (message: Message): Message['status'] | null => {
   const executionData = message.execution_data;
   if (!executionData || typeof executionData !== 'object') return null;
@@ -200,32 +291,97 @@ const extractTerminalStatus = (message: Message): Message['status'] | null => {
 
 const extractTokenUsage = (message: Message): TokenUsage => {
   const usage = extractUsageObject(message);
-  const promptTokens =
+  const observedInputTokens =
     toFiniteNumber(message.promptTokens) ??
     toFiniteNumber(usage.input_tokens) ??
     toFiniteNumber(usage.prompt_tokens) ??
-    toFiniteNumber(usage.promptTokens) ??
-    0;
-  const completionTokens =
+    toFiniteNumber(usage.promptTokens);
+  const rawInputTokens = observedInputTokens ?? 0;
+  const observedOutputTokens =
     toFiniteNumber(message.completionTokens) ??
     toFiniteNumber(usage.output_tokens) ??
     toFiniteNumber(usage.completion_tokens) ??
-    toFiniteNumber(usage.completionTokens) ??
+    toFiniteNumber(usage.completionTokens);
+  const rawOutputTokens = observedOutputTokens ?? 0;
+  const cachedInputTokens =
+    toFiniteNumber(usage.cached_input_tokens) ??
+    toFiniteNumber(usage.cache_read_input_tokens) ??
+    toFiniteNumber(usage.cachedInputTokens) ??
     0;
+  const cacheCreationInputTokens =
+    toFiniteNumber(usage.cache_creation_input_tokens) ??
+    toFiniteNumber(usage.cacheCreationInputTokens) ??
+    0;
+  const reasoningTokens =
+    toFiniteNumber(usage.reasoning_tokens) ??
+    toFiniteNumber(usage.reasoning_output_tokens) ??
+    toFiniteNumber(usage.reasoningTokens) ??
+    0;
+  const meta = extractExecutionMeta(message);
+  const agentIdentity = extractAgentIdentity(message.agent_id);
+  const provider = cleanString(message.llmProvider)
+    ?? cleanString(meta.provider)
+    ?? cleanString(meta.provider_kind)
+    ?? agentIdentity.provider;
+  const model = cleanString(message.llmModel)
+    ?? cleanString(meta.provider_model)
+    ?? cleanString(meta.llmModel)
+    ?? cleanString(meta.model)
+    ?? agentIdentity.model;
+  const claudeStyleInput = provider?.toLowerCase() === 'claude'
+    || provider?.toLowerCase() === 'anthropic';
+  const uncachedInputTokens = claudeStyleInput
+    ? rawInputTokens
+    : Math.max(0, rawInputTokens - cachedInputTokens - cacheCreationInputTokens);
+  // OpenCode reports reasoning beside output. Codex reports reasoning as a
+  // subset of output, so only the former needs to be folded into billable output.
+  const outputTokens = rawOutputTokens + (usage.reasoning_tokens === undefined ? 0 : reasoningTokens);
+  const promptTokens = uncachedInputTokens + cachedInputTokens + cacheCreationInputTokens;
+  const completionTokens = outputTokens;
   const directTotal =
     toFiniteNumber(message.totalTokens) ??
     toFiniteNumber(usage.total_tokens) ??
     toFiniteNumber(usage.totalTokens);
-  const hasUsage = directTotal !== null || promptTokens > 0 || completionTokens > 0;
-  const totalTokens = directTotal ?? promptTokens + completionTokens;
+  const componentTotal = promptTokens + completionTokens;
+  const hasUsage = directTotal !== null || componentTotal > 0;
+  const totalTokens = directTotal === null ? componentTotal : Math.max(directTotal, componentTotal);
+  const providerReportedCostUsd =
+    toFiniteNumber(usage.cost_usd) ??
+    toFiniteNumber(usage.costUsd) ??
+    toFiniteNumber(meta.opencode_cost_usd) ??
+    null;
 
   return {
     promptTokens,
     completionTokens,
     totalTokens,
     hasUsage,
+    uncachedInputTokens,
+    cachedInputTokens,
+    cacheCreationInputTokens,
+    outputTokens,
+    reasoningTokens,
+    provider,
+    model,
+    providerReportedCostUsd,
+    hasTokenBreakdown: observedInputTokens !== null
+      || observedOutputTokens !== null
+      || cachedInputTokens > 0
+      || cacheCreationInputTokens > 0,
   };
 };
+
+const priceTokenUsage = (pricing: PricingSnapshot, usage: TokenUsage) => priceModelUsage(
+  pricing.rates,
+  usage.hasTokenBreakdown ? usage.model ?? '' : '',
+  {
+    uncachedInputTokens: usage.uncachedInputTokens,
+    cachedInputTokens: usage.cachedInputTokens,
+    cacheCreationTokens: usage.cacheCreationInputTokens,
+    outputTokens: usage.outputTokens,
+  },
+  usage.providerReportedCostUsd,
+);
 
 const createBucket = (key: string): TrackingBucket => ({
   key,
@@ -237,6 +393,10 @@ const createBucket = (key: string): TrackingBucket => ({
   promptTokens: 0,
   completionTokens: 0,
   totalTokens: 0,
+  inputCostUsd: 0,
+  outputCostUsd: 0,
+  costUsd: 0,
+  cacheSavingsUsd: 0,
 });
 
 const createBackgroundAttentionBucket = (key: string): BackgroundAttentionBucket => ({
@@ -428,7 +588,13 @@ const buildBackgroundAttentionMetrics = (
   };
 };
 
-const buildBuckets = (now: Date, startedAt: Date | null, commits: CommitEntity[], messages: Message[]): TrackingBucket[] => {
+const buildBuckets = (
+  now: Date,
+  startedAt: Date | null,
+  commits: CommitEntity[],
+  messages: Message[],
+  pricing: PricingSnapshot,
+): TrackingBucket[] => {
   const bucketMap = new Map<string, TrackingBucket>();
 
   if (startedAt) {
@@ -469,6 +635,11 @@ const buildBuckets = (now: Date, startedAt: Date | null, commits: CommitEntity[]
     bucket.promptTokens += usage.promptTokens;
     bucket.completionTokens += usage.completionTokens;
     bucket.totalTokens += usage.totalTokens;
+    const priced = priceTokenUsage(pricing, usage);
+    bucket.inputCostUsd += priced.inputCostUsd ?? 0;
+    bucket.outputCostUsd += priced.outputCostUsd ?? 0;
+    bucket.costUsd += priced.costUsd;
+    bucket.cacheSavingsUsd += priced.cacheSavingsUsd;
   }
 
   return Array.from(bucketMap.values()).sort((left, right) => left.key.localeCompare(right.key));
@@ -489,6 +660,7 @@ export const buildTrackingDashboardMetrics = ({
   commits,
   backgroundAttentionCandidates = [],
   backgroundAttentionAuditEvents = [],
+  pricing = unavailablePricingSnapshot(),
 }: BuildTrackingDashboardMetricsInput): TrackingDashboardMetrics => {
   const startedAtDate = getRangeStart(now, range);
   const endedAtDate = now;
@@ -523,11 +695,26 @@ export const buildTrackingDashboardMetrics = ({
     promptTokens: 0,
     completionTokens: 0,
     totalTokens: 0,
+    uncachedInputTokens: 0,
+    cachedInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
     tokenEligibleRuns: assistantMessages.length,
     tokenKnownRuns: 0,
     tokenCoveragePercent: 0,
     tokensPerCommit: null,
     tokensPerLocAdded: null,
+    estimatedCostUsd: 0,
+    inputCostUsd: 0,
+    outputCostUsd: 0,
+    cacheSavingsUsd: 0,
+    costEligibleRuns: 0,
+    costKnownRuns: 0,
+    costCoveragePercent: 0,
+    unpricedTokens: 0,
+    providerReportedRuns: 0,
+    modelPricedRuns: 0,
   };
 
   for (const commit of rangeCommits) {
@@ -551,11 +738,30 @@ export const buildTrackingDashboardMetrics = ({
     totals.promptTokens += usage.promptTokens;
     totals.completionTokens += usage.completionTokens;
     totals.totalTokens += usage.totalTokens;
+    totals.uncachedInputTokens += usage.uncachedInputTokens;
+    totals.cachedInputTokens += usage.cachedInputTokens;
+    totals.cacheCreationInputTokens += usage.cacheCreationInputTokens;
+    totals.outputTokens += usage.outputTokens;
+    totals.reasoningTokens += usage.reasoningTokens;
     totals.tokenKnownRuns += 1;
+    totals.costEligibleRuns += 1;
+    const priced = priceTokenUsage(pricing, usage);
+    if (priced.costSource === 'unpriced') {
+      totals.unpricedTokens += usage.totalTokens;
+    } else {
+      totals.costKnownRuns += 1;
+      totals.estimatedCostUsd += priced.costUsd;
+      totals.inputCostUsd += priced.inputCostUsd ?? 0;
+      totals.outputCostUsd += priced.outputCostUsd ?? 0;
+      totals.cacheSavingsUsd += priced.cacheSavingsUsd;
+      if (priced.costSource === 'providerReported') totals.providerReportedRuns += 1;
+      else totals.modelPricedRuns += 1;
+    }
   }
 
   totals.locCoveragePercent = totals.commits > 0 ? Math.round((totals.locKnownCommits / totals.commits) * 100) : 0;
   totals.tokenCoveragePercent = totals.tokenEligibleRuns > 0 ? Math.round((totals.tokenKnownRuns / totals.tokenEligibleRuns) * 100) : 0;
+  totals.costCoveragePercent = totals.costEligibleRuns > 0 ? Math.round((totals.costKnownRuns / totals.costEligibleRuns) * 100) : 0;
   totals.tokensPerCommit = totals.commits > 0 ? Math.round(totals.totalTokens / totals.commits) : null;
   totals.tokensPerLocAdded = totals.locAdded > 0 ? Math.round(totals.totalTokens / totals.locAdded) : null;
 
@@ -582,6 +788,7 @@ export const buildTrackingDashboardMetrics = ({
       locAdded += toFiniteNumber(commit.total_additions) ?? 0;
       locDeleted += toFiniteNumber(commit.total_deletions) ?? 0;
     }
+    const priced = priceTokenUsage(pricing, usage);
     return {
       nodeId: message.id,
       label: previewLabel(message),
@@ -592,16 +799,65 @@ export const buildTrackingDashboardMetrics = ({
       locDeleted,
       netLoc: locAdded - locDeleted,
       totalTokens: usage.hasUsage ? usage.totalTokens : 0,
+      provider: usage.provider,
+      model: usage.model,
+      costUsd: priced.costUsd,
+      costSource: usage.hasUsage ? priced.costSource : 'unpriced',
     };
   });
+
+  const modelUsageMap = new Map<string, TrackingModelUsageRow>();
+  for (const message of assistantMessages) {
+    const usage = extractTokenUsage(message);
+    if (!usage.hasUsage) continue;
+    const model = usage.model ?? 'Unknown model';
+    const provider = usage.provider;
+    const key = `${provider?.toLowerCase() ?? 'unknown'}:${model.toLowerCase()}`;
+    const priced = priceTokenUsage(pricing, usage);
+    const row = modelUsageMap.get(key) ?? {
+      key,
+      provider,
+      model,
+      runCount: 0,
+      pricedRunCount: 0,
+      unpricedRunCount: 0,
+      totalTokens: 0,
+      costUsd: 0,
+      cacheSavingsUsd: 0,
+      costShare: 0,
+    };
+    row.runCount += 1;
+    row.totalTokens += usage.totalTokens;
+    if (priced.costSource === 'unpriced') row.unpricedRunCount += 1;
+    else {
+      row.pricedRunCount += 1;
+      row.costUsd += priced.costUsd;
+      row.cacheSavingsUsd += priced.cacheSavingsUsd;
+    }
+    modelUsageMap.set(key, row);
+  }
+
+  const modelUsage = Array.from(modelUsageMap.values())
+    .map((row) => ({
+      ...row,
+      costShare: totals.estimatedCostUsd > 0 ? row.costUsd / totals.estimatedCostUsd : 0,
+    }))
+    .sort((left, right) => right.costUsd - left.costUsd || right.totalTokens - left.totalTokens);
 
   return {
     range,
     startedAt: startedAtDate?.toISOString() ?? null,
     endedAt: endedAtDate.toISOString(),
     totals,
-    buckets: buildBuckets(now, startedAtDate, rangeCommits, rangeMessages),
+    buckets: buildBuckets(now, startedAtDate, rangeCommits, rangeMessages, pricing),
     recentRuns,
+    modelUsage,
+    pricing: {
+      status: pricing.status,
+      source: pricing.source,
+      fetchedAt: pricing.fetchedAt,
+      knownModels: pricing.knownModels,
+    },
     backgroundAttention: buildBackgroundAttentionMetrics(
       now,
       startedAtDate,

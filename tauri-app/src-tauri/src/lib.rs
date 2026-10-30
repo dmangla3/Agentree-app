@@ -93,6 +93,7 @@ mod auth_callback;
 mod cli_path;
 mod codex_adapter;
 mod command_guards;
+mod commit_acceptance;
 mod composer_attachments;
 mod config;
 mod db;
@@ -172,6 +173,8 @@ fn specta_builder() -> SpectaBuilder<tauri::Wry> {
             db::local_first_set_node_collapsed,
             db::import_local_commits,
             db::list_local_commit_graph,
+            db::refresh_local_commit_acceptance,
+            db::resolve_local_commit_acceptance,
             db::repair_local_commit_graph,
             db::enqueue_local_commit_graph_sync,
             db::get_local_identity,

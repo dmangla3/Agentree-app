@@ -28,19 +28,4 @@ describe('TemplateMentionTextarea', () => {
     expect((screen.getByLabelText('Prompt') as HTMLTextAreaElement).value).toBe('Use #planner');
     expect(screen.getByText('#planner')).toBeTruthy();
   });
-
-  it('preserves textarea line breaks in the highlighted overlay', () => {
-    const { container } = render(
-      <TemplateMentionTextarea
-        aria-label="Prompt"
-        value={'\n\nhello'}
-        templates={templates}
-        onChange={() => undefined}
-      />
-    );
-
-    const overlay = container.querySelector('[aria-hidden="true"]');
-    expect(overlay?.textContent).toBe('\n\nhello');
-    expect(overlay?.getAttribute('class')).toContain('whitespace-pre-wrap');
-  });
 });

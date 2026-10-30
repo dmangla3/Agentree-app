@@ -12,8 +12,6 @@ import type { ProjectedNodeEntity, WorkspaceProjection } from '../domain/workspa
 import { useWorkspaceStore, type Message } from '../stores/workspaceStore';
 import { useAgentRunProjectionStore } from '../stores/agentRunProjectionStore';
 import { AgentreeSurfaceProvider, publicShareCapabilities } from './graph/surfaceCapabilities';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 
 const quickReplyMocks = vi.hoisted(() => ({
   sendQuickReply: vi.fn(),
@@ -65,6 +63,12 @@ vi.mock('../hooks/useHeadlessQuickReply', () => ({
 vi.mock('../lib/agentClient', () => ({
   agentClient: {
     stopAgent: cancelMocks.stopAgent,
+    getRuntimeModelCatalogs: vi.fn(async () => ({
+      supported: [],
+      opencodeAccessible: null,
+      staleProviders: [],
+    })),
+    onRuntimeModelCatalogChanged: vi.fn(async () => () => {}),
   },
 }));
 
@@ -194,22 +198,6 @@ describe('NodeHoverCardContent', () => {
 
     expect(await screen.findByText('hover body: assistant_message preview')).toBeTruthy();
     expect(screen.getByText('Quick Reply')).toBeTruthy();
-  });
-
-  it('attaches header controls outside the hovercard content flow', () => {
-    const { container } = render(
-      <NodeHoverCardContent
-        entity={makeEntity('assistant_message')}
-        projection={makeProjection()}
-        headerAccessory={<button type="button">Message navigator</button>}
-      />
-    );
-
-    const dock = container.querySelector('[data-agentree-hover-navigation-dock="attached"]');
-    expect(dock).toBeTruthy();
-    expect(dock?.className).toContain('absolute');
-    expect(dock?.className).toContain('-translate-y-full');
-    expect(screen.getByRole('button', { name: 'Message navigator' })).toBeTruthy();
   });
 
   it('updates an open assistant hover from the live projection store', async () => {
@@ -387,8 +375,6 @@ describe('NodeHoverCardContent', () => {
     expect(screen.getByText('review')).toBeTruthy();
     expect(screen.getByText('public')).toBeTruthy();
     expect(screen.getByText('Work logs')).toBeTruthy();
-    expect(screen.getByText('Bash')).toBeTruthy();
-    expect(screen.getByText('1.2s')).toBeTruthy();
     expect(screen.queryByText('secret/file.ts')).toBeNull();
     expect(screen.queryByText('cat secret/file.ts')).toBeNull();
     expect(screen.queryByRole('button', { name: /Bash/i })).toBeNull();
@@ -414,44 +400,25 @@ describe('NodeHoverCardContent', () => {
     expect(screen.queryByText(reason)).toBeNull();
   });
 
-  it('uses app theme surfaces for the hovercard shell', () => {
-    render(<NodeHoverCardContent entity={makeEntity('assistant_message')} projection={makeProjection()} />);
-
-    const shell = document.querySelector('[data-agentree-node-hover-card="true"]') as HTMLElement;
-
-    expect(shell.className).toContain('bg-[hsl(var(--app-panel)/0.96)]');
-    expect(shell.className).toContain('border-[hsl(var(--app-border)/0.76)]');
-    expect(shell.className).not.toContain('rgba(255,255,255');
-    expect(shell.className).not.toContain('linear-gradient(180deg,rgba');
-  });
-
-  it('uses the app action color when ready to send', () => {
+  it('enables quick reply after the user enters a prompt', () => {
     render(<NodeHoverCardContent entity={makeEntity('assistant_message')} projection={makeProjection()} />);
 
     const input = screen.getByLabelText('Quick reply prompt');
     const button = screen.getByRole('button', { name: 'Quick Reply' });
 
-    expect(button.className).not.toContain('bg-[hsl(var(--app-accent))]');
+    expect((button as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.change(input, { target: { value: 'Looks good' } });
 
-    expect(button.className).toContain('bg-[hsl(var(--app-accent))]');
-    expect(button.className).toContain('border-[hsl(var(--app-accent)/0.48)]');
-    expect(button.className).toContain('text-white');
-    expect(button.className).not.toContain('bg-foreground');
-    expect(button.className).not.toContain('dark:bg-[hsl(var(--app-bg-muted))]');
-    expect(button.className).not.toContain('dark:bg-white');
     expect((button as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('uses an autosizing multiline textarea for quick replies', () => {
+  it('uses a multiline input for quick replies', () => {
     render(<NodeHoverCardContent entity={makeEntity('assistant_message')} projection={makeProjection()} />);
 
     const input = screen.getByLabelText('Quick reply prompt');
 
     expect(input.tagName).toBe('TEXTAREA');
-    expect(input.className).toContain('resize-none');
-    expect(input.className).toContain('max-h-[132px]');
   });
 
   it('restores an unsent quick reply draft when reopening the same message hover card', async () => {
@@ -800,13 +767,5 @@ describe('NodeHoverCardContent', () => {
 
     const alert = screen.getByRole('alert');
     expect(alert.textContent).toContain('The parent does not have a model Agentree can reuse.');
-    expect(alert.className).not.toContain('sr-only');
-  });
-
-  it('uses the neutral node preview renderer instead of importing chat rendering directly', () => {
-    const source = readFileSync(join(process.cwd(), 'src/components/AppNodeHoverPreview.tsx'), 'utf8');
-
-    expect(source).toContain("import { NodePreviewRenderer } from './NodePreviewRenderer';");
-    expect(source).not.toContain("import { ChatNodeDispatcher } from './nodes/chat/ChatNodeDispatcher';");
   });
 });

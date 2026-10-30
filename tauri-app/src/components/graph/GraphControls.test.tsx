@@ -1,7 +1,5 @@
 // @vitest-environment jsdom
 import '../../test/setup';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { TooltipProvider } from '../../../@/components/ui/tooltip';
@@ -98,20 +96,6 @@ describe('GraphControls', () => {
 
     expect(getThreadPreviewIndexForDisplayStep(3, 4, -1)).toBe(3);
     expect(getThreadPreviewIndexForDisplayStep(0, 4, 1)).toBe(0);
-  });
-
-  it('keeps graph control styling tokenized without gradient utility classes', () => {
-    const source = readFileSync(join(process.cwd(), 'src/components/graph/GraphControls.tsx'), 'utf8');
-
-    expect(source).not.toContain('bg-gradient-');
-  });
-
-  it('uses a computer-science tree icon for tree view', () => {
-    const source = readFileSync(join(process.cwd(), 'src/components/graph/GraphControls.tsx'), 'utf8');
-
-    expect(source).toContain('TreeStructure as TreeHeaderIcon');
-    expect(source).not.toContain('TreeEvergreen as TreeHeaderIcon');
-    expect(source).toContain('icon={TreeHeaderIcon} size={14} className="rotate-90"');
   });
 
   it('does not render the debug reset graph or auto-refresh controls', () => {

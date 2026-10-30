@@ -38,15 +38,6 @@ export const deriveIncrementalText = (previousText: string, nextText: string) =>
   return previous.includes(next) ? '' : next;
 };
 
-export const deriveStreamingAppendText = (
-  actorContent: string | null | undefined,
-  projectedContent: string,
-  nextOutput: string,
-) => deriveIncrementalText(
-  typeof actorContent === 'string' ? actorContent : projectedContent,
-  nextOutput,
-);
-
 export const extractMessageText = (payload: any): string => {
   if (!payload) return '';
   if (typeof payload.content === 'string') return payload.content;

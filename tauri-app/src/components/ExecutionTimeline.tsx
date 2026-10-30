@@ -20,6 +20,9 @@ import { TimelineErrorNotice } from './TimelineErrorNotice';
 
 const MAX_TIMELINE_TEXT_CONTENT_CHARS = 6000;
 const TIMELINE_TEXT_TRUNCATION_NOTICE = '\n\n... [truncated for display]';
+const MAX_TOOL_PAYLOAD_CONTENT_CHARS = 12000;
+const MAX_TOOL_SUMMARY_CHARS = 180;
+const TOOL_PAYLOAD_TRUNCATION_NOTICE = '\n\n... [truncated for display]';
 
 export interface TimelineEvent {
     type: 'thinking' | 'tool_use' | 'tool_result' | 'message' | 'error' | 'user_steer_requested';
@@ -147,7 +150,7 @@ export function ExecutionTimeline({ events, className, isNodeActive = false }: E
                                 variant="outline" 
                                 className="text-[10px] h-5 px-2 bg-background/60 border-border/50 font-medium"
                             >
-                                {rows.length} steps
+                                {countTimelineActivities(rows)} steps
                             </Badge>
                         </div>
                     </button>
@@ -165,7 +168,20 @@ export function ExecutionTimeline({ events, className, isNodeActive = false }: E
     );
 }
 
-type TimelineRow =
+export type TimelineToolRow = {
+    kind: 'tool';
+    key?: string;
+    toolName: string;
+    toolInput?: any;
+    toolOutput?: any;
+    isError?: boolean;
+    durationMs?: number;
+    startedAtMs?: number | null;
+    completedAtMs?: number | null;
+    commandActions?: CommandAction[];
+};
+
+export type TimelineRow =
     | {
           kind: 'message';
           key?: string;
@@ -187,17 +203,14 @@ type TimelineRow =
           key?: string;
           content?: string;
       }
+    | TimelineToolRow
     | {
-          kind: 'tool';
+          kind: 'tool_group';
           key?: string;
-          toolName: string;
-          toolInput?: any;
-          toolOutput?: any;
-          isError?: boolean;
+          activity: 'command' | 'search';
+          status: 'running' | 'completed' | 'error';
           durationMs?: number;
-          startedAtMs?: number | null;
-          completedAtMs?: number | null;
-          commandActions?: CommandAction[];
+          toolCalls: TimelineToolRow[];
       }
     | {
           kind: 'exploration';
@@ -207,6 +220,7 @@ type TimelineRow =
           items: CommandSummaryItem[];
           toolCalls: Array<{
               key: string;
+              toolName: string;
               toolInput?: any;
               toolOutput?: any;
               durationMs?: number;
@@ -311,6 +325,75 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
         );
     }
 
+    if (row.kind === 'tool_group') {
+        const isRunning = row.status === 'running';
+        const isError = row.status === 'error';
+        return (
+            <div className="flex gap-3 group/item" onClick={stopCardFocus} onMouseDown={stopCardFocus}>
+                <div className="flex flex-col items-center">
+                    <div className={cn(
+                        "w-6 h-6 rounded-lg flex items-center justify-center shrink-0",
+                        "border shadow-sm transition-all duration-200",
+                        isError
+                            ? "bg-gradient-to-br from-red-50 to-rose-50 dark:from-red-900/30 dark:to-rose-900/20 border-red-200 dark:border-red-800 text-red-600 dark:text-red-400"
+                            : isRunning
+                                ? "bg-gradient-to-br from-amber-50 to-yellow-50 dark:from-amber-900/30 dark:to-yellow-900/20 border-amber-200 dark:border-amber-800 text-amber-600 dark:text-amber-400"
+                                : "bg-gradient-to-br from-emerald-50 to-green-50 dark:from-emerald-900/30 dark:to-green-900/20 border-emerald-200 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400"
+                    )}>
+                        {isError ? <XCircle size={12} /> : isRunning ? <Terminal size={12} /> : <CheckCircle2 size={12} />}
+                    </div>
+                    {!isLast && (
+                        <div className="w-px flex-1 bg-gradient-to-b from-border via-border/50 to-transparent my-1.5" />
+                    )}
+                </div>
+                <div className="pb-2 w-full min-w-0 pt-0.5">
+                    <button
+                        type="button"
+                        className={cn(
+                            "min-h-10 w-full text-left group rounded-lg px-2 py-1.5 -mx-1 -my-0.5",
+                            "hover:bg-muted/60 hover:shadow-sm active:scale-[0.99]",
+                            "transition-[background-color,box-shadow,transform] duration-150"
+                        )}
+                        onClick={() => setIsDetailsOpen(value => !value)}
+                        aria-expanded={isDetailsOpen}
+                    >
+                        <div className="flex items-center justify-between gap-2">
+                            <div className="text-[11px] font-semibold text-foreground/85 tabular-nums">
+                                {getToolGroupTitle(row)}
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                                {row.durationMs ? (
+                                    <span className="text-[10px] text-muted-foreground/60 tabular-nums">
+                                        {formatDuration(row.durationMs)}
+                                    </span>
+                                ) : null}
+                                <ChevronRight
+                                    size={12}
+                                    className={cn(
+                                        "text-muted-foreground/50 transition-transform duration-150",
+                                        isDetailsOpen && "rotate-90"
+                                    )}
+                                />
+                            </div>
+                        </div>
+                    </button>
+
+                    <Collapsible open={isDetailsOpen} onOpenChange={setIsDetailsOpen}>
+                        <CollapsibleContent className="mt-2 space-y-2 border-l border-border/50 pl-3">
+                            {row.toolCalls.map((call, index) => (
+                                <TimelineRowItem
+                                    key={call.key || index}
+                                    row={call}
+                                    isLast={index === row.toolCalls.length - 1}
+                                />
+                            ))}
+                        </CollapsibleContent>
+                    </Collapsible>
+                </div>
+            </div>
+        );
+    }
+
     if (row.kind === 'exploration') {
         const isRunning = row.status === 'running';
         const isError = row.status === 'error';
@@ -377,7 +460,7 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
                                 <div key={call.key || index} className="rounded-lg border bg-muted/20 p-2">
                                     <div className="mb-1 flex items-center justify-between gap-2">
                                         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/65">
-                                            Command {index + 1}
+                                            {call.toolName}
                                         </span>
                                         {call.durationMs ? (
                                             <span className="text-[10px] text-muted-foreground/60 tabular-nums">
@@ -398,7 +481,11 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
     }
 
     const summary = getToolSummary(row.toolName, row.toolInput) || getToolSummary(row.toolName, row.toolOutput);
-    const status = row.isError ? 'error' : row.toolOutput ? 'completed' : 'running';
+    const status = row.isError
+        ? 'error'
+        : row.completedAtMs != null || (row.toolOutput !== undefined && row.toolOutput !== null)
+            ? 'completed'
+            : 'running';
 
     return (
         <div className="flex gap-3 group/item" onClick={stopCardFocus} onMouseDown={stopCardFocus}>
@@ -504,8 +591,6 @@ function TimelineRowItem({ row, isLast }: { row: TimelineRow; isLast: boolean })
     );
 }
 
-export type { TimelineRow };
-
 export function buildTimelineRows(events: TimelineEvent[]): TimelineRow[] {
     const rows: TimelineRow[] = [];
     const toolRowById = new Map<string, number>();
@@ -584,7 +669,7 @@ export function buildTimelineRows(events: TimelineEvent[]): TimelineRow[] {
                 const nextInput = extractToolInput(event);
                 if (!isEmptyToolPayload(nextInput)) existing.toolInput = nextInput;
                 const nextOutput = extractToolOutput(event);
-                if (nextOutput !== undefined) existing.toolOutput = nextOutput;
+                if (nextOutput !== undefined && nextOutput !== null) existing.toolOutput = nextOutput;
                 existing.isError = existing.isError || extractIsError(event);
                 existing.commandActions = extractCommandActions(event) ?? existing.commandActions;
                 existing.startedAtMs = existing.startedAtMs ?? getTimestampMs(event.timestamp);
@@ -597,7 +682,7 @@ export function buildTimelineRows(events: TimelineEvent[]): TimelineRow[] {
                 key: buildRowKey(toolName || 'tool', event),
                 toolName: toolName || 'tool',
                 toolInput: extractToolInput(event),
-                toolOutput: extractToolOutput(event),
+                toolOutput: extractToolOutput(event) ?? undefined,
                 isError: extractIsError(event),
                 durationMs: event.durationMs ?? event.duration_ms,
                 startedAtMs: getTimestampMs(event.timestamp),
@@ -662,7 +747,7 @@ export function buildTimelineRows(events: TimelineEvent[]): TimelineRow[] {
         }
     }
 
-    return coalesceExplorationRows(rows);
+    return groupRelatedToolRows(coalesceExplorationRows(rows));
 }
 
 function appendTimelineText(existing: string | undefined, addition: string | undefined): string {
@@ -677,11 +762,23 @@ function truncateTimelineText(content: string | undefined): string | undefined {
 }
 
 function extractToolUseId(event: TimelineEvent): string | undefined {
-    return event.toolUseId || event.tool_use_id || (event.id ? String(event.id) : undefined);
+    const providerItem = (event as any).providerItem ?? (event as any).provider_item;
+    return event.toolUseId
+        || event.tool_use_id
+        || (event as any).provider_item_id
+        || (event.id ? String(event.id) : undefined)
+        || (providerItem?.id ? String(providerItem.id) : undefined);
 }
 
 function extractToolName(event: TimelineEvent): string | undefined {
-    return event.toolName || event.tool || (event as any).tool_name || (event as any).name;
+    const providerItem = (event as any).providerItem ?? (event as any).provider_item;
+    return event.toolName
+        || event.tool
+        || (event as any).tool_name
+        || (event as any).name
+        || providerItem?.type
+        || providerItem?.name
+        || providerItem?.tool;
 }
 
 function chooseSpecificToolName(current: string, next: string): string {
@@ -699,13 +796,18 @@ function extractToolInput(event: TimelineEvent): any {
         ?? (event as any).parameters
         ?? providerItem?.input
         ?? providerItem?.arguments
+        ?? providerItem
         ?? undefined;
 }
 
 function extractToolOutput(event: TimelineEvent): any {
     if (event.toolOutput !== undefined) return event.toolOutput;
     if (event.output !== undefined) return event.output;
-    return (event as any).tool_output ?? (event as any).result ?? undefined;
+    const directOutput = (event as any).tool_output ?? (event as any).result ?? undefined;
+    if (directOutput !== undefined) return directOutput;
+    const providerItem = (event as any).providerItem ?? (event as any).provider_item;
+    if (providerItem?.result !== undefined || providerItem?.aggregatedOutput !== undefined) return providerItem;
+    return undefined;
 }
 
 function extractIsError(event: TimelineEvent): boolean {
@@ -729,15 +831,14 @@ function formatDuration(durationMs: number): string {
 }
 
 export function formatToolPayload(payload: any): string {
-    const displayPayload = normalizeToolPayloadForDisplay(payload);
-    if (displayPayload !== payload) return formatToolPayload(displayPayload);
+    const formatted = formatFullToolPayload(payload);
+    if (formatted.length <= MAX_TOOL_PAYLOAD_CONTENT_CHARS) return formatted;
+    return `${formatted.slice(0, MAX_TOOL_PAYLOAD_CONTENT_CHARS).trimEnd()}${TOOL_PAYLOAD_TRUNCATION_NOTICE}`;
+}
+
+function formatFullToolPayload(payload: any): string {
     if (payload === null || payload === undefined) return '';
-    if (typeof payload === 'string') return payload;
-    try {
-        return JSON.stringify(payload, null, 2);
-    } catch {
-        return String(payload);
-    }
+    return formatReadableToolValue(payload, new WeakSet<object>());
 }
 
 export function isEmptyToolPayload(payload: any): boolean {
@@ -752,34 +853,45 @@ function isRecord(value: unknown): value is Record<string, any> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isMcpContentBlock(value: unknown): value is Record<string, any> {
-    return isRecord(value) && typeof value.type === 'string';
+function isProbablyBinaryData(value: string): boolean {
+    if (value.startsWith('data:image/') || value.startsWith('data:audio/') || value.startsWith('data:video/')) return true;
+    if (value.length < 512 || /\s/.test(value)) return false;
+    const sample = value.slice(0, 2048);
+    return /^[A-Za-z0-9+/=_-]+$/.test(sample);
 }
 
-function formatMcpContentBlock(block: Record<string, any>): string {
-    if (block.type === 'text' && typeof block.text === 'string') return block.text;
-    if (typeof block.text === 'string') return block.text;
-    if (typeof block.data === 'string') return `[${block.type}] ${block.data}`;
-    if (typeof block.url === 'string') return `[${block.type}] ${block.url}`;
-    try {
-        return `[${block.type}] ${JSON.stringify(block)}`;
-    } catch {
-        return `[${block.type}]`;
+function formatReadableToolValue(value: unknown, seen: WeakSet<object>): string {
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    if (typeof value === 'string') {
+        if (value === '') return '""';
+        return isProbablyBinaryData(value) ? `[binary data omitted — ${value.length.toLocaleString()} characters]` : value;
     }
-}
+    if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return String(value);
+    if (typeof value !== 'object') return String(value);
+    if (seen.has(value)) return '[circular reference omitted]';
+    seen.add(value);
 
-function normalizeToolPayloadForDisplay(payload: unknown): unknown {
-    if (!isRecord(payload)) return payload;
-    if (!Array.isArray(payload.content)) return payload;
-    if (!payload.content.every(isMcpContentBlock)) return payload;
+    if (Array.isArray(value)) {
+        if (value.length === 0) return '[]';
+        const items = value
+            .map((item) => formatReadableToolValue(item, seen).trim())
+            .filter(Boolean)
+            .map((item) => item.includes('\n') ? `• ${item.replace(/\n/g, '\n  ')}` : `• ${item}`);
+        return items.join('\n');
+    }
 
-    const renderedBlocks = payload.content
-        .map(formatMcpContentBlock)
-        .map((block) => block.trim())
-        .filter(Boolean);
-
-    if (renderedBlocks.length === 0) return payload;
-    return renderedBlocks.join('\n\n');
+    if (Object.keys(value).length === 0) return '{}';
+    const lines: string[] = [];
+    for (const [key, child] of Object.entries(value)) {
+        const formatted = formatReadableToolValue(child, seen).trim();
+        if (formatted.includes('\n') || (typeof child === 'object' && child !== null)) {
+            lines.push(`${key}\n${formatted.split('\n').map((line) => `  ${line}`).join('\n')}`);
+        } else {
+            lines.push(`${key}: ${formatted}`);
+        }
+    }
+    return lines.join('\n\n');
 }
 
 function getChangeKind(change: Record<string, any>): string {
@@ -954,33 +1066,83 @@ export function ToolPayloadDisplay({
     className?: string;
     variant?: 'summary' | 'raw';
 }): ReactNode {
+    const [showProviderPayload, setShowProviderPayload] = useState(false);
     const fileChangesSummary = summarizeFileChangesPayload(payload);
     if (variant === 'summary' && fileChangesSummary) {
         return <FileChangesSummaryView summary={fileChangesSummary} className={className} />;
     }
     if (variant === 'raw' && fileChangesSummary) {
-        return <ToolFileChangesDiff payload={payload} className={className} />;
+        return (
+            <div className="min-w-0 max-w-full">
+                <ToolFileChangesDiff payload={payload} className={className} />
+                <button
+                    type="button"
+                    className="mt-1 min-h-8 rounded-md px-2 text-[10px] font-medium text-muted-foreground transition-[background-color,color,transform] duration-150 hover:bg-muted/50 hover:text-foreground/80 active:scale-[0.98]"
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        setShowProviderPayload((value) => !value);
+                    }}
+                >
+                    {showProviderPayload ? 'Hide provider payload' : 'Show provider payload'}
+                </button>
+                {showProviderPayload ? <ToolPayloadTextView payload={payload} className={className} /> : null}
+            </div>
+        );
     }
 
+    return <ToolPayloadTextView payload={payload} className={className} />;
+}
+
+function ToolPayloadTextView({ payload, className }: { payload: unknown; className?: string }): ReactNode {
+    const [showFullPayload, setShowFullPayload] = useState(false);
+    const fullPayload = formatFullToolPayload(payload);
+    const isTruncated = fullPayload.length > MAX_TOOL_PAYLOAD_CONTENT_CHARS;
+    const displayedPayload = showFullPayload
+        ? fullPayload
+        : isTruncated
+            ? `${fullPayload.slice(0, MAX_TOOL_PAYLOAD_CONTENT_CHARS).trimEnd()}${TOOL_PAYLOAD_TRUNCATION_NOTICE}`
+            : fullPayload;
+
     return (
-        <pre className={cn(
-            "overflow-x-auto whitespace-pre-wrap break-words rounded-lg border bg-muted/40 p-2.5 font-mono text-[10px] text-muted-foreground/80",
-            className,
-        )}>
-            {formatToolPayload(payload)}
-        </pre>
+        <div className="min-w-0 max-w-full">
+            <pre className={cn(
+                "overflow-x-auto whitespace-pre-wrap break-words rounded-lg border bg-muted/40 p-2.5 font-mono text-[10px] text-muted-foreground/80",
+                className,
+            )}>
+                {displayedPayload}
+            </pre>
+            {isTruncated ? (
+                <button
+                    type="button"
+                    className="mt-1 min-h-8 rounded-md px-2 text-[10px] font-medium text-muted-foreground transition-[background-color,color,transform] duration-150 hover:bg-muted/50 hover:text-foreground/80 active:scale-[0.98]"
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        setShowFullPayload((value) => !value);
+                    }}
+                >
+                    {showFullPayload
+                        ? 'Show payload preview'
+                        : `Show full payload (${Math.ceil(fullPayload.length / 1024).toLocaleString()} KB)`}
+                </button>
+            ) : null}
+        </div>
     );
 }
 
 export function getToolSummary(toolName: string, toolInput: any): string {
-    const displayInput = normalizeToolPayloadForDisplay(toolInput);
-    if (displayInput !== toolInput) return getToolSummary(toolName, displayInput);
+    const summary = buildToolSummary(toolName, toolInput).replace(/\s+/g, ' ').trim();
+    if (summary.length <= MAX_TOOL_SUMMARY_CHARS) return summary;
+    return `${summary.slice(0, MAX_TOOL_SUMMARY_CHARS - 1).trimEnd()}…`;
+}
+
+function buildToolSummary(toolName: string, toolInput: any): string {
     if (isEmptyToolPayload(toolInput)) return '';
     const name = toolName?.toLowerCase?.() ?? '';
     const fileChangesSummary = summarizeFileChangesPayload(toolInput);
     if (fileChangesSummary) return formatFileChangesSummaryLabel(fileChangesSummary);
 
     if (typeof toolInput === 'string') return summarizeToolText(name, toolInput);
+    if (!isRecord(toolInput)) return Array.isArray(toolInput) && toolInput.length > 0 ? `${toolInput.length} items` : '';
     if (name === 'commandexecution') {
         const items = getCommandExecutionSummaryItems(toolInput);
         if (items.length > 0) return summarizeCommandItems(items);
@@ -1003,18 +1165,21 @@ export function getToolSummary(toolName: string, toolInput: any): string {
     const agentreeSummary = summarizeAgentreeMcpTool(name, toolInput);
     if (agentreeSummary) return agentreeSummary;
 
-    const knownKey = toolInput.file_path || toolInput.path || toolInput.query || toolInput.url || toolInput.pattern;
-    if (typeof knownKey === 'string') return knownKey;
-
-    try {
-        return JSON.stringify(toolInput);
-    } catch {
-        return String(toolInput);
-    }
+    const knownKey = toolInput.description
+        || toolInput.title
+        || toolInput.file_path
+        || toolInput.path
+        || toolInput.query
+        || toolInput.url
+        || toolInput.pattern
+        || toolInput.skill
+        || toolInput.status;
+    if (typeof knownKey === 'string') return firstNonEmptyLine(knownKey);
+    return formatToolPayload(toolInput);
 }
 
 function summarizeAgentreeMcpTool(toolName: string, input: Record<string, any>): string | null {
-    const name = toolName.replace(/^mcp__/, '').replace(/^agentree[._-]/, '');
+    const name = toolName.replace(/^mcp__/, '').replace(/^agentree(?:__|[._-])/, '');
     const templateId = typeof input.template_id === 'string' ? input.template_id : null;
     const messageLine = typeof input.message === 'string' ? firstNonEmptyLine(input.message) : null;
 
@@ -1194,6 +1359,99 @@ function isStandardCommandExecutionRow(row: Extract<TimelineRow, { kind: 'tool' 
     return Array.isArray(row.commandActions) && row.commandActions.length > 0 && row.commandActions.every(isStandardCommandAction);
 }
 
+function getToolActivity(toolName: string): 'command' | 'search' | null {
+    const tokens = toolName
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .split(/[^A-Za-z0-9]+/)
+        .map((token) => token.toLowerCase())
+        .filter(Boolean);
+
+    if (tokens.some((token) => token === 'search' || token === 'grep' || token === 'glob' || token === 'find')) {
+        return 'search';
+    }
+    if (tokens.some((token) => token === 'command' || token === 'exec' || token === 'execute' || token === 'execution' || token === 'run' || token === 'bash' || token === 'shell')) {
+        return 'command';
+    }
+    return null;
+}
+
+function getToolRowStatus(row: TimelineToolRow): 'running' | 'completed' | 'error' {
+    if (row.isError) return 'error';
+    return row.completedAtMs != null || (row.toolOutput !== undefined && row.toolOutput !== null)
+        ? 'completed'
+        : 'running';
+}
+
+function buildToolGroup(activity: 'command' | 'search', rows: TimelineToolRow[]): Extract<TimelineRow, { kind: 'tool_group' }> {
+    const durationMs = rows.reduce<number | undefined>((total, row) => {
+        if (typeof row.durationMs !== 'number') return total;
+        return (total ?? 0) + row.durationMs;
+    }, undefined);
+    const statuses = rows.map(getToolRowStatus);
+
+    return {
+        kind: 'tool_group',
+        key: rows.map((row) => row.key).filter(Boolean).join('__'),
+        activity,
+        status: statuses.includes('error')
+            ? 'error'
+            : statuses.includes('running')
+                ? 'running'
+                : 'completed',
+        durationMs,
+        toolCalls: rows,
+    };
+}
+
+export function groupRelatedToolRows(rows: TimelineRow[]): TimelineRow[] {
+    const result: TimelineRow[] = [];
+    let pendingActivity: 'command' | 'search' | null = null;
+    let pendingRows: TimelineToolRow[] = [];
+
+    const flush = () => {
+        if (pendingRows.length === 1) {
+            result.push(pendingRows[0]);
+        } else if (pendingActivity && pendingRows.length > 1) {
+            result.push(buildToolGroup(pendingActivity, pendingRows));
+        }
+        pendingActivity = null;
+        pendingRows = [];
+    };
+
+    for (const row of rows) {
+        if (row.kind !== 'tool') {
+            flush();
+            result.push(row);
+            continue;
+        }
+        const activity = getToolActivity(row.toolName);
+        if (!activity) {
+            flush();
+            result.push(row);
+            continue;
+        }
+        if (pendingActivity && pendingActivity !== activity) flush();
+        pendingActivity = activity;
+        pendingRows.push(row);
+    }
+    flush();
+
+    return result;
+}
+
+export function getToolGroupTitle(row: Extract<TimelineRow, { kind: 'tool_group' }>): string {
+    const count = row.toolCalls.length;
+    if (row.activity === 'command') return `Ran ${count} ${count === 1 ? 'command' : 'commands'}`;
+    return `${count} ${count === 1 ? 'search' : 'searches'}`;
+}
+
+export function countTimelineActivities(rows: TimelineRow[]): number {
+    return rows.reduce((count, row) => {
+        if (row.kind === 'tool_group' || row.kind === 'exploration') return count + row.toolCalls.length;
+        return count + 1;
+    }, 0);
+}
+
 function coalesceExplorationRows(rows: TimelineRow[]): TimelineRow[] {
     const result: TimelineRow[] = [];
 
@@ -1240,7 +1498,7 @@ function buildExplorationRow(rows: Extract<TimelineRow, { kind: 'tool' }>[]): Ex
     }, undefined);
     const status = rows.some((row) => row.isError)
         ? 'error'
-        : rows.some((row) => row.toolOutput === undefined)
+        : rows.some((row) => row.completedAtMs == null && (row.toolOutput === undefined || row.toolOutput === null))
             ? 'running'
             : 'completed';
 
@@ -1252,6 +1510,7 @@ function buildExplorationRow(rows: Extract<TimelineRow, { kind: 'tool' }>[]): Ex
         items,
         toolCalls: rows.map((row, index) => ({
             key: row.key ?? `command_${index}`,
+            toolName: row.toolName,
             toolInput: row.toolInput,
             toolOutput: row.toolOutput,
             durationMs: row.durationMs,

@@ -1388,6 +1388,7 @@ export const mapMessagesToGraphElements = (
   onOpenThread: (threadRootId: string) => void = () => { },
   attachedThreadMessages: Message[] = messages,
   commitHistoryVisibility?: 'quiet' | 'complete',
+  showMergedAgentreeCommits: boolean = true,
 ): { nodes: Node<LlmNodeData | SummaryNodeData | Record<string, unknown> | any>[]; edges: Edge[] } => {
   if ((!messages || messages.length === 0) && projection.threadRootIds.length === 0) {
     return { nodes: [], edges: [] };
@@ -1405,9 +1406,14 @@ export const mapMessagesToGraphElements = (
   const producedCommitCountByNodeId = new Map<string, number>();
   const showConversationNodes = visibleNodeSections.has('conversation');
   const showCommitNodes = visibleNodeSections.has('commits');
+  const shouldShowAgentreeCommit = (sha: string | null | undefined): boolean => {
+    const normalizedSha = typeof sha === 'string' ? sha.trim() : '';
+    if (!normalizedSha || showMergedAgentreeCommits) return true;
+    return projection.commitBySha.get(normalizedSha)?.isMerged !== true;
+  };
   messages.forEach((message) => {
     const sha = getMessageOutputCommitSha(message) ?? '';
-    if (!sha) return;
+    if (!sha || !shouldShowAgentreeCommit(sha)) return;
     messageIdByCommitSha.set(sha, message.id);
     const nodeKind = classifyMessageNodeKind(message, messageMap);
     renderedCommitNodeIdBySha.set(
@@ -1960,6 +1966,7 @@ export const mapMessagesToGraphElements = (
     projection.commitBySha.forEach((commit) => {
       const ownerNodeId = commit.producedByNodeId ?? commit.visualOwnerNodeId;
       if (commit.placement !== 'conversation_sidecar' || !ownerNodeId) return;
+      if (!shouldShowAgentreeCommit(commit.sha)) return;
       if (!messageMap.has(ownerNodeId) || !shouldRenderMessageNode(ownerNodeId)) return;
       if (!shouldRenderCanonicalCommitSha(commit.sha) && !matchingMessageIds.has(ownerNodeId)) return;
       renderedCommitNodeIdBySha.set(commit.sha, getAssistantOutputCommitNodeId(ownerNodeId));
@@ -1967,6 +1974,7 @@ export const mapMessagesToGraphElements = (
     if (showCommitNodes) {
       visibleCommitLaneRows.forEach((row) => {
         if (row.type !== 'commit' || !row.commitSha) return;
+        if (!shouldShowAgentreeCommit(row.commitSha)) return;
         if (!shouldRenderCanonicalCommitSha(row.commitSha)) return;
         if (renderedCommitNodeIdBySha.has(row.commitSha)) return;
         renderedCommitNodeIdBySha.set(row.commitSha, row.commitSha);
@@ -2047,7 +2055,7 @@ export const mapMessagesToGraphElements = (
       const nodeKind = classifyMessageNodeKind(msg, messageMap);
       const isCommitNodeKind = nodeKind === 'commit_message';
       const renderMessageNode = shouldRenderMessageNode(msg.id)
-        && (isCommitNodeKind ? showCommitNodes : showConversationNodes);
+        && (isCommitNodeKind ? showCommitNodes && shouldShowAgentreeCommit(getMessageOutputCommitSha(msg)) : showConversationNodes);
 
       if (!renderMessageNode && !(showCommitNodes && nodeKind === 'assistant_message')) return;
 
@@ -2172,7 +2180,9 @@ export const mapMessagesToGraphElements = (
         ? getMessageOutputCommitSha(msg) ?? projectedProducedCommit?.sha ?? null
         : null;
       const shouldRenderSyntheticOutputCommit = Boolean(
-        assistantOutputCommitSha && !hasMaterializedCommitChild(msg.id, assistantOutputCommitSha),
+        assistantOutputCommitSha
+          && shouldShowAgentreeCommit(assistantOutputCommitSha)
+          && !hasMaterializedCommitChild(msg.id, assistantOutputCommitSha),
       );
       if (showCommitNodes && assistantOutputCommitSha && shouldRenderSyntheticOutputCommit) {
         const commitNodeId = getAssistantOutputCommitNodeId(msg.id);
@@ -2502,6 +2512,7 @@ export const mapMessagesToGraphElements = (
 
     if (showCommitNodes) visibleCommitLaneRows.forEach((row) => {
       if (row.type !== 'commit' || !row.commitSha) return;
+      if (!shouldShowAgentreeCommit(row.commitSha)) return;
       if (!shouldRenderCanonicalCommitSha(row.commitSha)) return;
       if (renderedCommitNodeIdBySha.get(row.commitSha) && renderedCommitNodeIdBySha.get(row.commitSha) !== row.commitSha) return;
       const commit = projection.commitBySha.get(row.commitSha);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildThreadBands, buildThreadDividerLines, getThreadDividerRectsFromNodes } from './graphThreadDividers';
+import { buildThreadBands, getThreadDividerRectsFromNodes } from './graphThreadDividers';
 
 describe('graph thread dividers', () => {
   it('uses turn hulls instead of individual conversation nodes when hulls exist', () => {
@@ -67,35 +67,6 @@ describe('graph thread dividers', () => {
         height: 180,
       },
     ]);
-  });
-
-  it('places one vertical divider between horizontally separated thread bands', () => {
-    const lines = buildThreadDividerLines([
-      { id: 'a1', threadRootId: 'thread-a', x: 0, y: 20, width: 200, height: 80 },
-      { id: 'a2', threadRootId: 'thread-a', x: 20, y: 160, width: 200, height: 90 },
-      { id: 'b1', threadRootId: 'thread-b', x: 500, y: 40, width: 200, height: 80 },
-      { id: 'b2', threadRootId: 'thread-b', x: 520, y: 180, width: 200, height: 90 },
-    ], { padding: 100, minCenterGap: 96 });
-
-    expect(lines).toEqual([
-      {
-        id: 'thread-a->thread-b',
-        x: 360,
-        top: -80,
-        bottom: 370,
-        leftThreadRootId: 'thread-a',
-        rightThreadRootId: 'thread-b',
-      },
-    ]);
-  });
-
-  it('skips dividers when thread bands are effectively stacked', () => {
-    const lines = buildThreadDividerLines([
-      { id: 'a1', threadRootId: 'thread-a', x: 0, y: 0, width: 200, height: 80 },
-      { id: 'b1', threadRootId: 'thread-b', x: 30, y: 240, width: 200, height: 80 },
-    ], { minCenterGap: 96 });
-
-    expect(lines).toEqual([]);
   });
 
   it('builds padded thread territory bands from thread rects', () => {

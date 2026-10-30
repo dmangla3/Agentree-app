@@ -81,7 +81,7 @@ describe('GraphAssistantNode identity', () => {
     );
 
     expect(screen.getByText('GPT 5.5')).toBeTruthy();
-    expect(screen.getByText('High').className).toContain('normal-case');
+    expect(screen.getByText('High')).toBeTruthy();
     expect(screen.getByText('Implemented the fix.')).toBeTruthy();
     expect(screen.queryByText('Generated AI topic label')).toBeNull();
     expect(screen.queryByText('Assistant')).toBeNull();

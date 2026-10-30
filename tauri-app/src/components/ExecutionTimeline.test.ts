@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTimelineRows, formatToolPayload, getToolSummary, isEmptyToolPayload, summarizeExplorationItems, summarizeFileChangesPayload } from './ExecutionTimeline';
+import { buildTimelineRows, countTimelineActivities, formatToolPayload, getToolGroupTitle, getToolSummary, isEmptyToolPayload, summarizeExplorationItems, summarizeFileChangesPayload } from './ExecutionTimeline';
 
 describe('summarizeFileChangesPayload', () => {
   it('summarizes file change payloads without exposing raw worktree paths', () => {
@@ -111,7 +111,7 @@ describe('getToolSummary', () => {
     expect(getToolSummary('TodoWrite', 'Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress.')).toBe('Updated todos');
   });
 
-  it('unwraps MCP text tool results before summarizing or formatting payloads', () => {
+  it('preserves MCP result envelopes and their exact field names', () => {
     const payload = {
       _meta: null,
       content: [
@@ -122,10 +122,11 @@ describe('getToolSummary', () => {
       ],
     };
 
-    expect(getToolSummary('get_workspace_graph', payload)).toBe('Workspace Graph Overview');
-    expect(formatToolPayload(payload)).toBe('Workspace Graph Overview\nTotal: 62 nodes | Branch points: 0');
-    expect(formatToolPayload(payload)).not.toContain('"_meta"');
-    expect(formatToolPayload(payload)).not.toContain('"content"');
+    expect(getToolSummary('get_workspace_graph', payload)).toContain('content');
+    expect(formatToolPayload(payload)).toContain('content');
+    expect(formatToolPayload(payload)).toContain('type: text');
+    expect(formatToolPayload(payload)).toContain('text\n');
+    expect(formatToolPayload(payload)).toContain('Workspace Graph Overview');
   });
 
   it('summarizes Agentree thread-control MCP calls', () => {
@@ -139,6 +140,33 @@ describe('getToolSummary', () => {
       assistant_node_ids: ['a', 'b'],
       condition: 'all_done',
     })).toBe('Wait for 2 agents (all_done)');
+  });
+
+  it('preserves unknown provider information through schema-agnostic formatting', () => {
+    const summary = getToolSummary('futureProviderTool', { opaque: { nested: true }, count: 4 });
+
+    expect(summary).toContain('opaque');
+    expect(summary).toContain('nested: true');
+    expect(summary).toContain('count: 4');
+    expect(summary).not.toMatch(/[{}]/);
+  });
+
+  it('formats expanded structured details as readable fields and removes binary payloads', () => {
+    const formatted = formatToolPayload({
+      query: 'Agentree docs',
+      options: { max_results: 3, safe: true },
+      empty: '',
+      nullable: null,
+      image: 'a'.repeat(1000),
+    });
+
+    expect(formatted).toContain('query: Agentree docs');
+    expect(formatted).toContain('max_results: 3');
+    expect(formatted).toContain('empty: ""');
+    expect(formatted).toContain('nullable: null');
+    expect(formatted).toContain('[binary data omitted');
+    expect(formatted).not.toContain('"query"');
+    expect(formatted).not.toContain('a'.repeat(100));
   });
 
   it('keeps MCP server and tool names available on timeline rows', () => {
@@ -167,7 +195,7 @@ describe('getToolSummary', () => {
       kind: 'tool',
       toolName: 'agentree.get_graph_overview',
     }));
-    expect(getToolSummary((rows[0] as any).toolName, (rows[0] as any).toolOutput)).toBe('Workspace Graph Overview');
+    expect(getToolSummary((rows[0] as any).toolName, (rows[0] as any).toolOutput)).toContain('Workspace Graph Overview');
   });
 });
 
@@ -274,6 +302,169 @@ describe('buildTimelineRows', () => {
       toolInput: { file_path: 'tauri-app/src-tauri/src/agents.rs', offset: 10, limit: 3 },
       toolOutput: '10\tlet a = 1;\n11\tlet b = 2;\n12\tlet c = 3;',
     }));
+  });
+
+  it('reads provider-only Codex events and pairs interleaved results by provider id', () => {
+    const rows = buildTimelineRows([
+      {
+        type: 'tool_use',
+        timestamp: 1,
+        provider_item_id: 'exec-1',
+        providerItem: {
+          id: 'exec-1',
+          type: 'commandExecution',
+          command: "/bin/zsh -lc 'npm test'",
+          cwd: '/repo',
+        },
+      } as any,
+      {
+        type: 'tool_use',
+        timestamp: 2,
+        provider_item_id: 'search-1',
+        providerItem: {
+          id: 'search-1',
+          type: 'webSearch',
+          query: 'Agentree docs',
+        },
+      } as any,
+      {
+        type: 'tool_result',
+        timestamp: 3,
+        provider_item_id: 'exec-1',
+        providerItem: {
+          id: 'exec-1',
+          type: 'commandExecution',
+          aggregatedOutput: 'Tests passed',
+        },
+      } as any,
+      {
+        type: 'tool_result',
+        timestamp: 4,
+        provider_item_id: 'search-1',
+        providerItem: {
+          id: 'search-1',
+          type: 'webSearch',
+          result: { query: 'Agentree docs', status: 'completed' },
+        },
+      } as any,
+    ]);
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      kind: 'tool',
+      toolName: 'commandExecution',
+      toolInput: expect.objectContaining({
+        type: 'commandExecution',
+        command: "/bin/zsh -lc 'npm test'",
+        cwd: '/repo',
+      }),
+      toolOutput: expect.objectContaining({
+        type: 'commandExecution',
+        aggregatedOutput: 'Tests passed',
+      }),
+    }));
+    expect(rows[1]).toEqual(expect.objectContaining({
+      kind: 'tool',
+      toolName: 'webSearch',
+      toolInput: expect.objectContaining({ type: 'webSearch', query: 'Agentree docs' }),
+      toolOutput: expect.objectContaining({
+        type: 'webSearch',
+        result: { query: 'Agentree docs', status: 'completed' },
+      }),
+    }));
+  });
+
+  it('groups adjacent command calls without changing their provider-native names or payloads', () => {
+    const rows = buildTimelineRows([
+      { type: 'tool_use', timestamp: 1, toolName: 'commandExecution', toolUseId: 'cmd-1', toolInput: { command: 'pnpm test' } } as any,
+      { type: 'tool_use', timestamp: 2, toolName: 'Bash', toolUseId: 'cmd-2', toolInput: { command: 'pnpm build' } } as any,
+      { type: 'tool_result', timestamp: 3, toolUseId: 'cmd-1', toolOutput: 'passed' } as any,
+      { type: 'tool_result', timestamp: 4, toolUseId: 'cmd-2', toolOutput: 'built' } as any,
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      kind: 'tool_group',
+      activity: 'command',
+      status: 'completed',
+    }));
+    if (rows[0].kind !== 'tool_group') throw new Error('Expected command group');
+    expect(getToolGroupTitle(rows[0])).toBe('Ran 2 commands');
+    expect(rows[0].toolCalls).toEqual([
+      expect.objectContaining({ toolName: 'commandExecution', toolInput: { command: 'pnpm test' }, toolOutput: 'passed' }),
+      expect.objectContaining({ toolName: 'Bash', toolInput: { command: 'pnpm build' }, toolOutput: 'built' }),
+    ]);
+    expect(countTimelineActivities(rows)).toBe(2);
+  });
+
+  it('groups adjacent searches while keeping every distinct provider-native name', () => {
+    const rows = buildTimelineRows([
+      { type: 'tool_use', timestamp: 1, toolName: 'webSearch', toolUseId: 'search-1', toolInput: { query: 'Agentree' }, toolOutput: [] } as any,
+      { type: 'tool_use', timestamp: 2, toolName: 'Grep', toolUseId: 'search-2', toolInput: { pattern: 'TimelineRow' }, toolOutput: '2 matches' } as any,
+      { type: 'tool_use', timestamp: 3, toolName: 'ToolSearch', toolUseId: 'search-3', toolInput: { query: 'calendar' }, toolOutput: [] } as any,
+    ]);
+
+    expect(rows).toHaveLength(1);
+    if (rows[0].kind !== 'tool_group') throw new Error('Expected search group');
+    expect(getToolGroupTitle(rows[0])).toBe('3 searches');
+    expect(rows[0].toolCalls.map((row) => row.toolName)).toEqual(['webSearch', 'Grep', 'ToolSearch']);
+    expect(rows[0].toolCalls.map((row) => row.toolInput)).toEqual([
+      { query: 'Agentree' },
+      { pattern: 'TimelineRow' },
+      { query: 'calendar' },
+    ]);
+  });
+
+  it('does not group across messages or rename unclassified provider tools', () => {
+    const rows = buildTimelineRows([
+      { type: 'tool_use', timestamp: 1, toolName: 'webSearch', toolUseId: 'search-1', toolInput: { query: 'one' } } as any,
+      { type: 'message', timestamp: 2, content: 'Checkpoint' },
+      { type: 'tool_use', timestamp: 3, toolName: 'webSearch', toolUseId: 'search-2', toolInput: { query: 'two' } } as any,
+      { type: 'tool_use', timestamp: 4, toolName: 'mcpToolCall', toolUseId: 'mcp-1', toolInput: { server: 'agentree', tool: 'graph_diff' } } as any,
+      { type: 'tool_use', timestamp: 5, toolName: 'mcpToolCall', toolUseId: 'mcp-2', toolInput: { server: 'agentree', tool: 'graph_get' } } as any,
+    ]);
+
+    expect(rows.map((row) => row.kind)).toEqual(['tool', 'message', 'tool', 'tool', 'tool']);
+    expect(rows.filter((row) => row.kind === 'tool').map((row) => row.toolName)).toEqual([
+      'webSearch',
+      'webSearch',
+      'mcpToolCall',
+      'mcpToolCall',
+    ]);
+  });
+
+  it('preserves legacy provider wrapper tool names verbatim', () => {
+    const rows = buildTimelineRows([{
+      type: 'tool_use',
+      timestamp: 1,
+      name: 'mcpToolCall',
+      input: { from_node_id: 'node-a', to_node_id: 'node-b' },
+      provider_item_id: 'mcp-1',
+      provider_item: {
+        id: 'mcp-1',
+        server: 'agentree',
+        tool: 'graph_diff',
+        type: 'mcpToolCall',
+      },
+    } as any]);
+
+    expect(rows).toEqual([
+      expect.objectContaining({ kind: 'tool', toolName: 'mcpToolCall' }),
+    ]);
+  });
+
+  it('keeps provider tool-use placeholders with null output in the running state', () => {
+    const rows = buildTimelineRows([{
+      type: 'tool_use',
+      timestamp: 1,
+      toolName: 'imageGeneration',
+      toolOutput: null,
+      toolUseId: 'image-1',
+    } as any]);
+
+    expect(rows).toEqual([
+      expect.objectContaining({ kind: 'tool', toolOutput: undefined }),
+    ]);
   });
 
   it('projects user steering events as user-visible steer rows', () => {

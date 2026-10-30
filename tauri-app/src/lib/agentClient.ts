@@ -329,6 +329,7 @@ export interface LocalCommitGraphSnapshot {
         filesChangedCount?: number | null;
         totalAdditions?: number | null;
         totalDeletions?: number | null;
+        isMerged?: boolean;
     }>;
     commitParents: Array<{ childSha: string; parentSha: string; parentIndex: number }>;
     commitObservations: Array<{
@@ -338,6 +339,21 @@ export interface LocalCommitGraphSnapshot {
         firstSeenAt?: string | null;
         lastSeenAt?: string | null;
     }>;
+    pendingAcceptanceCandidates?: Array<{
+        sourceSha: string;
+        targetSha: string;
+        gitRef: string;
+        subject?: string | null;
+    }>;
+}
+
+export interface CommitAcceptanceRefreshResult {
+    changed: boolean;
+    mergedCommitShas: string[];
+    checkedRefs: string[];
+    skippedRefs: string[];
+    errors: string[];
+    durationMs: number;
 }
 
 export type { ConvertSubgraphToThreadResult, ThreadSessionPayload };
@@ -857,8 +873,45 @@ export const agentClient = {
         );
     },
     listLocalCommitGraph: async (workspaceId: string): Promise<LocalCommitGraphSnapshot> => {
-        if (!hasTauriRuntime()) return { commits: [], commitParents: [], commitObservations: [] };
+        if (!hasTauriRuntime()) return { commits: [], commitParents: [], commitObservations: [], pendingAcceptanceCandidates: [] };
         return await tauriCommands.listLocalCommitGraph(workspaceId) as LocalCommitGraphSnapshot;
+    },
+    refreshLocalCommitAcceptance: async (
+        workspaceId: string,
+        repoPath: string,
+        acceptedGitRefs: string[]
+    ): Promise<CommitAcceptanceRefreshResult> => {
+        if (!hasTauriRuntime()) {
+            return {
+                changed: false,
+                mergedCommitShas: [],
+                checkedRefs: [],
+                skippedRefs: [],
+                errors: [],
+                durationMs: 0,
+            };
+        }
+        return await tauriCommands.refreshLocalCommitAcceptance(
+            workspaceId,
+            repoPath,
+            acceptedGitRefs
+        ) as CommitAcceptanceRefreshResult;
+    },
+    resolveLocalCommitAcceptance: async (
+        workspaceId: string,
+        gitRef: string,
+        sourceSha: string,
+        targetSha: string,
+        accepted: boolean
+    ): Promise<boolean> => {
+        if (!hasTauriRuntime()) return false;
+        return await tauriCommands.resolveLocalCommitAcceptance(
+            workspaceId,
+            gitRef,
+            sourceSha,
+            targetSha,
+            accepted
+        );
     },
     repairLocalCommitGraph: async (workspaceId: string, repoPath: string, gitRef?: string | null): Promise<number> => {
         if (!hasTauriRuntime()) return 0;

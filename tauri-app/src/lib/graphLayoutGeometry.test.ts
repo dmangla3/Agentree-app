@@ -648,6 +648,7 @@ const buildMappedGraph = (
   hiddenThreadRootIds: Set<string> = new Set(),
   projectionMessages?: Message[],
   commitHistoryVisibility: 'quiet' | 'complete' | 'surface-default' = 'complete',
+  showMergedAgentreeCommits = true,
 ) => {
   const projection = buildWorkspaceProjection({
     messages: projectionMessages ?? messages,
@@ -686,6 +687,7 @@ const buildMappedGraph = (
     undefined,
     undefined,
     commitHistoryVisibility === 'surface-default' ? undefined : commitHistoryVisibility,
+    showMergedAgentreeCommits,
   );
 };
 
@@ -1544,6 +1546,43 @@ describe('graph layout geometry QA', () => {
     expect(commit.type).toBe('canonical_commit');
     expect((commit.data as any).commit.producedByNodeId).toBe(null);
     expect((commit.data as any).commit.kind).not.toBe('generated_commit');
+  });
+
+  it('hides merged Agentree commits by default while keeping their conversation turn', () => {
+    const messages = buildTurnWithLocalAssistantOutputCommit();
+    const commitGraph = {
+      commits: [{
+        sha: 'localcommit0001',
+        workspace_id: workspaceId,
+        subject: 'Create hello.md',
+        source_kind: 'agent',
+        produced_by_node_id: 'assistant-1',
+        first_parent_sha: 'base0001',
+        committed_at: isoAt(2),
+        authored_at: isoAt(2),
+        is_merged: true,
+      }],
+      commitParents: [{ child_sha: 'localcommit0001', parent_sha: 'base0001', parent_index: 0 }],
+      commitObservations: [],
+    };
+
+    const unmergedOnly = buildMappedGraph(
+      messages,
+      'assistant-1',
+      commitGraph,
+      undefined,
+      undefined,
+      undefined,
+      new Set(),
+      undefined,
+      'complete',
+      false,
+    );
+    const allCommits = buildMappedGraph(messages, 'assistant-1', commitGraph);
+
+    expect(unmergedOnly.nodes.some((node) => node.id === 'assistant-1')).toBe(true);
+    expect(unmergedOnly.nodes.some((node) => node.id === 'commit:assistant-1')).toBe(false);
+    expect(allCommits.nodes.some((node) => node.id === 'commit:assistant-1')).toBe(true);
   });
 
   it('uses imported commit parents as layout edges for individual commit rows', () => {

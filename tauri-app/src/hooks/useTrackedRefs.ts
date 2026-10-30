@@ -14,14 +14,39 @@ const TRACKED_REFS_CACHE_PREFIX = 'agentree.tracked-refs.v1';
 
 const trackedRefsCacheKey = (workspaceId: string) => `${TRACKED_REFS_CACHE_PREFIX}.${workspaceId}`;
 
+export const isDefaultAcceptanceGitRef = (gitRef: string): boolean => (
+  /^refs\/heads\/(main|master)$/.test(gitRef.trim())
+  || /^refs\/remotes\/[^/]+\/(main|master)$/.test(gitRef.trim())
+);
+
+export const canBeAcceptanceGitRef = (gitRef: string): boolean => gitRef.trim() !== 'HEAD';
+
+export const trackedRefCountsAsMerged = (ref: Pick<TrackedGitRef, 'git_ref' | 'is_acceptance_branch'>): boolean => (
+  canBeAcceptanceGitRef(ref.git_ref)
+  && (ref.is_acceptance_branch ?? isDefaultAcceptanceGitRef(ref.git_ref))
+);
+
+const normalizeTrackedRef = (workspaceId: string, value: unknown): TrackedGitRef | null => {
+  if (
+    !value
+    || typeof value !== 'object'
+    || (value as TrackedGitRef).workspace_id !== workspaceId
+    || typeof (value as TrackedGitRef).git_ref !== 'string'
+  ) {
+    return null;
+  }
+  const ref = value as TrackedGitRef;
+  return {
+    ...ref,
+    is_acceptance_branch: trackedRefCountsAsMerged(ref),
+  };
+};
+
 const normalizeTrackedRefs = (workspaceId: string, value: unknown): TrackedGitRef[] => (
   Array.isArray(value)
-    ? value.filter((ref): ref is TrackedGitRef => (
-      ref &&
-      typeof ref === 'object' &&
-      (ref as TrackedGitRef).workspace_id === workspaceId &&
-      typeof (ref as TrackedGitRef).git_ref === 'string'
-    ))
+    ? value
+      .map((ref) => normalizeTrackedRef(workspaceId, ref))
+      .filter((ref): ref is TrackedGitRef => Boolean(ref))
     : []
 );
 
@@ -104,6 +129,7 @@ export const useCreateTrackedRef = () => {
       gitRef: string;
       displayName?: string;
       enabled?: boolean;
+      isAcceptanceBranch?: boolean;
     }) => {
       const { workspaceId, ...body } = input;
       if (agentClient.hasRuntime()) {
@@ -114,6 +140,9 @@ export const useCreateTrackedRef = () => {
           git_ref: input.gitRef,
           display_name: input.displayName?.trim() || displayNameFromGitRef(input.gitRef),
           enabled: input.enabled ?? true,
+          is_acceptance_branch: canBeAcceptanceGitRef(input.gitRef) && (
+            input.isAcceptanceBranch ?? isDefaultAcceptanceGitRef(input.gitRef)
+          ),
           last_seen_commit_sha: null,
           createdAt: now,
           updatedAt: now,
@@ -149,6 +178,7 @@ export const useUpdateTrackedRef = () => {
       refId: string;
       displayName?: string;
       enabled?: boolean;
+      isAcceptanceBranch?: boolean;
       lastSeenCommitSha?: string | null;
     }) => {
       const { workspaceId, refId, ...body } = input;
@@ -160,6 +190,9 @@ export const useUpdateTrackedRef = () => {
           ...existing,
           display_name: input.displayName ?? existing.display_name,
           enabled: input.enabled ?? existing.enabled,
+          is_acceptance_branch: canBeAcceptanceGitRef(existing.git_ref) && (
+            input.isAcceptanceBranch ?? existing.is_acceptance_branch
+          ),
           last_seen_commit_sha: input.lastSeenCommitSha ?? existing.last_seen_commit_sha ?? null,
           updatedAt: new Date().toISOString(),
         };

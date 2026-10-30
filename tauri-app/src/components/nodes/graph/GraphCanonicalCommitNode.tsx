@@ -51,6 +51,9 @@ export const GraphCanonicalCommitNode = memo(({
   const totalDeletions = commit.commit.total_deletions ?? 0;
   const isFullDetail = detailLevel === 'full';
   const isMinimalDetail = detailLevel === 'minimal';
+  const showsMergeState = commit.ownerKind === 'agentree';
+  const isMerged = showsMergeState && Boolean(commit.isMerged);
+  const isUnmerged = showsMergeState && !isMerged;
 
   return (
     <GraphNodeWrapper
@@ -67,7 +70,10 @@ export const GraphCanonicalCommitNode = memo(({
       onSelect={onSelect}
       onContextMenu={onContextMenu}
       className={cn(
-        'bg-emerald-50/90 border-emerald-300/65 dark:bg-emerald-950/25 dark:border-emerald-800/70',
+        isUnmerged
+          ? 'agentree-commit-unmerged border-slate-300/65 bg-emerald-50/35 dark:border-slate-700/75 dark:bg-slate-900/45'
+          : 'bg-emerald-50/90 border-emerald-300/65 dark:bg-emerald-950/25 dark:border-emerald-800/70',
+        isMerged && 'agentree-commit-merged',
         'rounded-l-[2px] rounded-r-[7px] shadow-none',
       )}
       style={{
@@ -77,21 +83,41 @@ export const GraphCanonicalCommitNode = memo(({
       }}
       bodyClassName="px-2.5 py-2"
     >
-      <div className="absolute left-[-2px] top-0 h-full w-[3px] rounded-l-[2px] bg-emerald-500/70 dark:bg-emerald-500/60" />
-      <div className="pointer-events-none absolute inset-y-2 left-[7px] w-px bg-emerald-300/55 dark:bg-emerald-800/70" />
+      <div className={cn(
+        'absolute left-[-2px] top-0 h-full w-[3px] rounded-l-[2px]',
+        isUnmerged ? 'bg-emerald-500/30 dark:bg-emerald-500/25' : 'bg-emerald-500/70 dark:bg-emerald-500/60'
+      )} />
+      <div className={cn(
+        'pointer-events-none absolute inset-y-2 left-[7px] w-px',
+        isUnmerged ? 'bg-slate-300/60 dark:bg-slate-700/70' : 'bg-emerald-300/55 dark:bg-emerald-800/70'
+      )} />
 
       <div className="flex h-full min-h-0 flex-col gap-1.5" title={commit.sha}>
         <div className="flex w-full items-center justify-between gap-1.5">
-          <CircleDot size={7} className="shrink-0 text-emerald-700 dark:text-emerald-400" strokeWidth={2.2} />
-          <span className="min-w-0 truncate text-[8px] font-semibold uppercase tracking-[0.08em] text-emerald-800 dark:text-emerald-300">
+          <CircleDot size={7} className={cn(
+            'shrink-0',
+            isUnmerged ? 'text-emerald-700/45 dark:text-emerald-400/45' : 'text-emerald-700 dark:text-emerald-400'
+          )} strokeWidth={2.2} />
+          <span className={cn(
+            'min-w-0 truncate text-[8px] font-semibold uppercase tracking-[0.08em]',
+            isUnmerged ? 'text-slate-600 dark:text-slate-400' : 'text-emerald-800 dark:text-emerald-300'
+          )}>
             {sourceLabel(commit)}
           </span>
         </div>
 
-        <div className="flex w-full items-center justify-between gap-1 rounded-[5px] border border-emerald-200/65 bg-white/60 px-1.5 py-1 font-mono text-[9px] leading-none text-emerald-900 dark:border-emerald-800/60 dark:bg-emerald-950/55 dark:text-emerald-200">
+        <div className={cn(
+          'flex w-full items-center justify-between gap-1 rounded-[5px] border px-1.5 py-1 font-mono text-[9px] leading-none',
+          isUnmerged
+            ? 'border-slate-200/80 bg-white/45 text-slate-700 dark:border-slate-700/70 dark:bg-slate-900/60 dark:text-slate-300'
+            : 'border-emerald-200/65 bg-white/60 text-emerald-900 dark:border-emerald-800/60 dark:bg-emerald-950/55 dark:text-emerald-200'
+        )}>
           <span className="min-w-0 truncate">{commit.shortSha}</span>
           {isFullDetail && (
-            <CopyCommitShaButton commitSha={commit.sha} className="h-3.5 w-3.5 shrink-0 text-emerald-700/70 dark:text-emerald-300/70" />
+            <CopyCommitShaButton commitSha={commit.sha} className={cn(
+              'h-3.5 w-3.5 shrink-0',
+              isUnmerged ? 'text-slate-500 dark:text-slate-400' : 'text-emerald-700/70 dark:text-emerald-300/70'
+            )} />
           )}
         </div>
 

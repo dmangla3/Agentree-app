@@ -27,13 +27,29 @@ export function packagePnpmAddArgs(spec, pnpmOs, pnpmCpu) {
   return [...pnpmAddBaseArgs(pnpmOs, pnpmCpu), spec];
 }
 
-export function claudeSdkPnpmAddArgs(version, pnpmOs, pnpmCpu) {
+export function lockedRuntimePnpmInstallArgs(pnpmOs, pnpmCpu) {
   return [
-    ...pnpmAddBaseArgs(pnpmOs, pnpmCpu),
-    '--no-optional',
-    `@anthropic-ai/claude-agent-sdk@${version}`,
-    `${claudeNativePackageName(pnpmOs, pnpmCpu)}@${version}`,
+    'install',
+    '--frozen-lockfile',
+    '--prod',
+    '--ignore-scripts',
+    '--ignore-workspace',
+    '--config.node-linker=hoisted',
+    `--os=${pnpmOs}`,
+    `--cpu=${pnpmCpu}`,
   ];
+}
+
+export function pruneNonTargetClaudeNativePackages(
+  nodeModulesDir,
+  { npmOs, npmCpu },
+) {
+  const anthropicDir = path.join(nodeModulesDir, '@anthropic-ai');
+  const targetPackage = claudeNativePackageName(npmOs, npmCpu).split('/').at(-1);
+  for (const entry of fs.readdirSync(anthropicDir)) {
+    if (!entry.startsWith('claude-agent-sdk-') || entry === targetPackage) continue;
+    fs.rmSync(path.join(anthropicDir, entry), { recursive: true, force: true });
+  }
 }
 
 export function validateClaudeSdkVersionAlignment(packageJson, runtimeManifest) {
@@ -54,6 +70,21 @@ export function validateOpenCodeSdkVersionAlignment(packageJson, runtimeManifest
     throw new Error(
       `OpenCode SDK version drift: package.json pins ${dependencyVersion ?? 'nothing'}, ` +
         `but runtime-manifest.json pins ${runtimeVersion ?? 'nothing'}`
+    );
+  }
+}
+
+export function validateRuntimePackageVersionAlignment(runtimePackageJson, component, version) {
+  const dependencyName = {
+    'claude-sdk': '@anthropic-ai/claude-agent-sdk',
+    opencode: '@opencode-ai/sdk',
+  }[component];
+  if (!dependencyName) throw new Error(`Unsupported locked runtime package: ${component}`);
+  const dependencyVersion = runtimePackageJson.dependencies?.[dependencyName];
+  if (dependencyVersion !== version) {
+    throw new Error(
+      `${component} build lock version drift: runtime package pins ${dependencyVersion ?? 'nothing'}, ` +
+        `but runtime-manifest.json pins ${version}`
     );
   }
 }
@@ -109,6 +140,17 @@ export function validateClaudeSdkInstall(nodeModulesDir, { version, npmOs, npmCp
   if (sdkPackage.optionalDependencies?.[nativePackage] !== version) {
     throw new Error(
       `Claude Agent SDK ${version} does not declare the expected ${nativePackage}@${version} optional dependency`
+    );
+  }
+
+  const anthropicDir = path.join(nodeModulesDir, '@anthropic-ai');
+  const targetPackage = nativePackage.split('/').at(-1);
+  const unexpectedNativePackages = fs.readdirSync(anthropicDir).filter((entry) => (
+    entry.startsWith('claude-agent-sdk-') && entry !== targetPackage
+  ));
+  if (unexpectedNativePackages.length > 0) {
+    throw new Error(
+      `Claude runtime contains non-target native packages: ${unexpectedNativePackages.join(', ')}`
     );
   }
 

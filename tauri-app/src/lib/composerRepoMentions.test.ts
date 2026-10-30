@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildRepoMentionSearchIndex,
   extractRepoMentionPaths,
   getMentionedRepoPathSet,
-  getRepoMentionMatches,
 } from './composerRepoMentions';
 
 const files = [
@@ -35,14 +33,5 @@ describe('composer repo mentions', () => {
     expect(getMentionedRepoPathSet('use @src/composer/GraphDockComposer.tsx and @missing/file.ts', pathSet)).toEqual(
       new Set(['src/composer/GraphDockComposer.tsx'])
     );
-  });
-
-  it('returns the best repo mention matches from a prebuilt search index', () => {
-    const index = buildRepoMentionSearchIndex(files);
-
-    expect(getRepoMentionMatches(index, 'chat', 4).map((file) => file.path)).toEqual([
-      'src/composer/GraphDockComposer.tsx',
-      'src/components/ChatInterface.tsx',
-    ]);
   });
 });
