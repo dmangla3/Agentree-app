@@ -1,11 +1,13 @@
 import { memo } from 'react';
-import { CircleDot, Files, FileMinus, FilePlus, GitMerge } from 'lucide-react';
+import { CircleDot } from 'lucide-react';
 import type { ProjectedCommitEntity } from '../../../domain/workspaceProjection';
 import { CopyCommitShaButton } from '../../CopyCommitShaButton';
 import { cn } from '../../../lib/utils';
 import { GraphNodeWrapper } from './GraphNodeWrapper';
 import type { FocusTriggerMetrics } from '../../../types/nodes';
 import type { GraphNodeDetailLevel } from '../../../lib/graphNodeDetailLevel';
+import { getCommitStatsFromRow } from '../../../lib/graph/commitStats';
+import { CommitStatsFooter } from './CommitStatsFooter';
 
 interface GraphCanonicalCommitNodeProps {
   commit: ProjectedCommitEntity;
@@ -45,10 +47,11 @@ export const GraphCanonicalCommitNode = memo(({
   onContextMenu = () => {},
 }: GraphCanonicalCommitNodeProps) => {
   const parentCount = commit.parentShas.length;
-  const isMergeCommit = parentCount > 1;
-  const filesChanged = commit.commit.files_changed_count ?? 0;
-  const totalAdditions = commit.commit.total_additions ?? 0;
-  const totalDeletions = commit.commit.total_deletions ?? 0;
+  const commitStats = getCommitStatsFromRow(commit.commit) ?? {
+    filesChanged: 0,
+    totalAdditions: 0,
+    totalDeletions: 0,
+  };
   const isFullDetail = detailLevel === 'full';
   const isMinimalDetail = detailLevel === 'minimal';
   const showsMergeState = commit.ownerKind === 'agentree';
@@ -132,34 +135,7 @@ export const GraphCanonicalCommitNode = memo(({
           </p>
         )}
 
-        {isFullDetail && (
-        <div className="flex w-full items-center justify-start gap-1.5 border-t border-emerald-300/40 pt-1 text-[8px] leading-none text-zinc-600 dark:border-emerald-800/70 dark:text-zinc-400">
-          {isMergeCommit && (
-            <span className="flex items-center gap-0.5" title={`${parentCount} parents`}>
-              <GitMerge size={8} />
-              {parentCount}
-            </span>
-          )}
-          {filesChanged > 0 && (
-            <span className="flex items-center gap-0.5" title={`${filesChanged} files changed`}>
-              <Files size={8} className="text-emerald-500" />
-              {filesChanged}
-            </span>
-          )}
-          {totalAdditions > 0 && (
-            <span className="flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400" title={`${totalAdditions} added lines`}>
-              <FilePlus size={8} />
-              {totalAdditions}
-            </span>
-          )}
-          {totalDeletions > 0 && (
-            <span className="flex items-center gap-0.5 text-red-500 dark:text-red-400" title={`${totalDeletions} deleted lines`}>
-              <FileMinus size={8} />
-              {totalDeletions}
-            </span>
-          )}
-        </div>
-        )}
+        {isFullDetail && <CommitStatsFooter stats={commitStats} parentCount={parentCount} />}
       </div>
     </GraphNodeWrapper>
   );

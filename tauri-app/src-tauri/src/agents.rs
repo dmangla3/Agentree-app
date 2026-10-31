@@ -892,7 +892,7 @@ fn finalize_run_state_if_ready(
     app_handle: &AppHandle,
     session_id: &str,
     auth_token: &str,
-) -> Option<String> {
+) -> Option<(String, bool)> {
     let run_state_handle = {
         let app_state = app_handle.state::<AgentState>();
         let run_states = app_state.run_states.lock().unwrap();
@@ -931,7 +931,7 @@ fn finalize_run_state_if_ready(
         let _ = telemetry.increment_agent_run_finalize_attempt(session_id);
         let _ =
             telemetry.update_agent_run_phase(session_id, "finalizing", "finalizing_stream", None);
-        match finalize_run_snapshot(app_handle, snapshot, auth_token) {
+        let finalized_successfully = match finalize_run_snapshot(app_handle, snapshot, auth_token) {
             Ok(FinalizeRunSnapshotOutcome::QueuedForRetry {
                 finalize_ack,
                 upload_error,
@@ -955,6 +955,7 @@ fn finalize_run_state_if_ready(
                     session_id,
                     upload_error
                 );
+                true
             }
             Err(err) => {
                 if let Ok(mut run_state) = run_state_handle.lock() {
@@ -982,22 +983,27 @@ fn finalize_run_state_if_ready(
                     session_id,
                     err
                 );
+                false
             }
-        }
+        };
         update_local_session_status(
             app_handle,
             session_id,
             &snapshot.status,
             snapshot.repo_path.as_deref(),
         );
-        return Some(snapshot.status.clone());
+        return Some((snapshot.status.clone(), finalized_successfully));
     }
 
     if let Some(ref status) = terminal_status {
         update_local_session_status(app_handle, session_id, status, None);
     }
 
-    terminal_status
+    let finalized_successfully = run_state_handle
+        .lock()
+        .map(|run_state| run_state.finalized)
+        .unwrap_or(false);
+    terminal_status.map(|status| (status, finalized_successfully))
 }
 
 fn terminate_agent_child(
@@ -3194,10 +3200,18 @@ fn finalize_run_snapshot(
                 )?;
                 commit_created = true;
             } else {
+                // Runtime-owned files are provider-specific. Reuse the native
+                // ledger identity so OpenCode scratch can be omitted without
+                // teaching Git cleanup that every `.omo` path is disposable.
+                let agent_type = app_handle
+                    .state::<crate::db::TelemetryDb>()
+                    .get_agent_run_ledger_by_assistant(&snapshot.node_id)?
+                    .and_then(|ledger| ledger.agent_type);
                 let has_changes = tauri::async_runtime::block_on(
                     crate::git_workspace::agent_worktree_has_changes(
                         repo_path.clone(),
                         snapshot.node_id.clone(),
+                        agent_type.clone(),
                     ),
                 )?;
 
@@ -3221,6 +3235,7 @@ fn finalize_run_snapshot(
                             snapshot.node_id.clone(),
                             commit_message.clone(),
                             snapshot.author_name.clone(),
+                            agent_type,
                         ),
                     )?;
                     let commit_sha = finalize_result.commit_sha.ok_or_else(|| {
@@ -3964,13 +3979,53 @@ fn spawn_agent_internal(
                     thread::sleep(std::time::Duration::from_millis(50));
                 }
 
-                let terminal_status = {
+                let cleanup_repo_path = {
+                    let app_state = app_handle.state::<AgentState>();
+                    let run_state = app_state
+                        .run_states
+                        .lock()
+                        .unwrap()
+                        .get(&session_id_for_wait)
+                        .cloned();
+                    run_state.and_then(|state| state.lock().ok()?.context.repo_path.clone())
+                };
+                // The child has been reaped. Retire the live-process identity
+                // before finalization so its cleanup guard observes reality.
+                // Keep the run state and token until finalization has consumed
+                // them below.
+                {
+                    let app_state = app_handle.state::<AgentState>();
+                    app_state.children.lock().unwrap().remove(&child_id);
+                    app_state
+                        .sessions
+                        .lock()
+                        .unwrap()
+                        .remove(&session_id_for_wait);
+                }
+
+                let finalization = {
                     finalize_run_state_if_ready(
                         &app_handle,
                         &session_id_for_wait,
                         &auth_token_for_wait,
                     )
                 };
+                // A provider_stop event can finalize while the process is still
+                // registered, causing the first cleanup attempt to be rejected.
+                // Retry after reaping; cleanup is ledger-idempotent when the
+                // provider-stop path already succeeded.
+                if finalization
+                    .as_ref()
+                    .is_some_and(|(_, finalized_successfully)| *finalized_successfully)
+                {
+                    cleanup_worktree_after_finalize(
+                        &app_handle,
+                        &session_id_for_wait,
+                        cleanup_repo_path,
+                        "cleanup_after_child_reaped",
+                    );
+                }
+                let terminal_status = finalization.map(|(status, _)| status);
                 if let Some((profile_id, codex_home)) =
                     codex_auth_state_to_persist_for_wait.as_ref()
                 {
@@ -4009,10 +4064,6 @@ fn spawn_agent_internal(
                 }
                 {
                     let app_state = app_handle.state::<AgentState>();
-                    let mut children = app_state.children.lock().unwrap();
-                    children.remove(&child_id);
-                    let mut sessions = app_state.sessions.lock().unwrap();
-                    sessions.remove(&session_id_for_wait);
                     let mut stdins = app_state.stdins.lock().unwrap();
                     stdins.remove(&session_id_for_wait);
                     let mut tokens = app_state.session_tokens.lock().unwrap();

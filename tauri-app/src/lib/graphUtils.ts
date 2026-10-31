@@ -10,6 +10,7 @@ import { getGitParentShas } from './graph/turnUtils';
 import { hasFreshContextBoundary } from './messageContext';
 import { resolveNodeState } from './runStateResolver';
 import { getMessageBaseCommitSha, getMessageOutputCommitSha } from './graph/commitAccessors';
+import { getCommitStatsForMessage } from './graph/commitStats';
 import { getVisibleCommitProjection } from './graphCommitVisibility';
 import { getThreadOriginNodeId } from './graphThreadRoots';
 import { getMessageArtifacts } from './artifacts';
@@ -91,11 +92,6 @@ const getMetricPresence = (value: number | null | undefined): 0 | 1 => (
   typeof value === 'number' && value > 0 ? 1 : 0
 );
 
-const getFilesChanged = (message: Message): Array<{ additions?: number; deletions?: number }> => {
-  const files = (message.execution_data as any)?.files_changed;
-  return Array.isArray(files) ? files : [];
-};
-
 export const hasAssistantOutputPreview = (
   message: Message,
   nodeKind: 'thread_link' | 'user_message' | 'assistant_message' | 'commit_message' = 'assistant_message',
@@ -127,9 +123,9 @@ export const createMessageHeightKey = ({
 }): string => {
   const previewBucket = getPreviewHeightBucket(entity.preview, nodeKind === 'user_message' ? 3 : 2);
   const pointerNames = branchPointers.map((pointer) => pointer.name).sort().join(',');
-  const filesChanged = getFilesChanged(message);
-  const hasAdditions = filesChanged.some((file) => (file.additions || 0) > 0) ? 1 : 0;
-  const hasDeletions = filesChanged.some((file) => (file.deletions || 0) > 0) ? 1 : 0;
+  const commitStats = getCommitStatsForMessage(message);
+  const hasAdditions = commitStats.totalAdditions > 0 ? 1 : 0;
+  const hasDeletions = commitStats.totalDeletions > 0 ? 1 : 0;
   const outputPreview = hasAssistantOutputPreview(message, nodeKind) ? 1 : 0;
 
   return [
@@ -1910,7 +1906,8 @@ export const mapMessagesToGraphElements = (
           : assistantMessage.updatedAt ?? assistantMessage.createdAt ?? null,
         threadRootId: visualParentEntity.threadRootId ?? assistantEntity.threadRootId ?? null,
       };
-      const commitFilesChanged = getFilesChanged(syntheticCommitMessage);
+      const commitStats = getCommitStatsForMessage(syntheticCommitMessage);
+      const changedFilesCount = commitStats.filesChanged || undefined;
       return {
         id: commitNodeId,
         type: 'commit_message',
@@ -1926,7 +1923,7 @@ export const mapMessagesToGraphElements = (
             branchPointers,
             toolCallCount: undefined,
             commitCount: undefined,
-            changedFilesCount: commitFilesChanged.length || undefined,
+            changedFilesCount,
           }),
           onMeasureHeight: onMeasureNodeHeight,
           onFocus,
@@ -1950,7 +1947,7 @@ export const mapMessagesToGraphElements = (
           onToggleCollapse,
           hiddenDescendantCount: hiddenDescendantCounts.get(assistantMessage.id),
           isInsideActiveSummary: false,
-          changedFilesCount: commitFilesChanged.length || undefined,
+          changedFilesCount,
           agentStatus: null,
           isAgentRunning: false,
           agentId: assistantMessage.agent_id ?? null,
@@ -2053,6 +2050,27 @@ export const mapMessagesToGraphElements = (
       const entity = projection.entitiesByMessageId.get(msg.id);
       if (!entity) return;
       const nodeKind = classifyMessageNodeKind(msg, messageMap);
+      const projectedMessageCommit = nodeKind === 'commit_message'
+        ? projection.commitBySha.get(getMessageOutputCommitSha(msg) ?? '') ?? null
+        : null;
+      const nodeMessage = projectedMessageCommit
+        ? {
+            ...msg,
+            commit: {
+              ...(msg.commit || {}),
+              ...projectedMessageCommit.commit,
+            },
+          } as Message
+        : msg;
+      const nodeEntity = projectedMessageCommit
+        ? {
+            ...entity,
+            message: nodeMessage,
+            parentShas: projectedMessageCommit.parentShas.length > 0
+              ? projectedMessageCommit.parentShas
+              : entity.parentShas,
+          } as ProjectedNodeEntity
+        : entity;
       const isCommitNodeKind = nodeKind === 'commit_message';
       const renderMessageNode = shouldRenderMessageNode(msg.id)
         && (isCommitNodeKind ? showCommitNodes && shouldShowAgentreeCommit(getMessageOutputCommitSha(msg)) : showConversationNodes);
@@ -2102,13 +2120,14 @@ export const mapMessagesToGraphElements = (
         : measuredNodeHeights.get(msg.id);
       const height = measuredHeight ?? reservedHeight;
       const branchPointers = branchPointersByNodeId.get(msg.id) ?? [];
-      const toolCallCount = getToolCallCount(msg);
-      const messageCommitCount = getAssistantCommitCount(msg, messages, messageMap);
+      const toolCallCount = getToolCallCount(nodeMessage);
+      const messageCommitCount = getAssistantCommitCount(nodeMessage, messages, messageMap);
       const producedCommitCount = producedCommitCountByNodeId.get(msg.id);
-      const commitCount = Math.max(entity.commitCount ?? 0, messageCommitCount ?? 0, producedCommitCount ?? 0) || undefined;
-      const filesChanged = getFilesChanged(msg);
-      const changedFilesCount = filesChanged.length || undefined;
-      const displayEntity = commitCount !== entity.commitCount ? { ...entity, commitCount } : entity;
+      const commitCount = Math.max(nodeEntity.commitCount ?? 0, messageCommitCount ?? 0, producedCommitCount ?? 0) || undefined;
+      const changedFilesCount = getCommitStatsForMessage(nodeMessage).filesChanged || undefined;
+      const displayEntity = commitCount !== nodeEntity.commitCount
+        ? { ...nodeEntity, commitCount }
+        : nodeEntity;
       if (renderMessageNode) {
         nodes.push({
           id: msg.id,
@@ -2120,7 +2139,7 @@ export const mapMessagesToGraphElements = (
             isSelected: false, // Selection will be updated in applyVisualProperties
             graphNodeHeight: height,
             heightKey: createMessageHeightKey({
-              message: msg,
+              message: nodeMessage,
               entity: displayEntity,
               nodeKind,
               branchPointers,
@@ -2134,7 +2153,7 @@ export const mapMessagesToGraphElements = (
             onOpenThread,
             onSelect,
             onContextMenu,
-            message: msg,
+            message: nodeMessage,
             nodeKind,
             repoPath: workspaceRepoMap.get(msg.workspaceId) ?? null,
             branchPointers,

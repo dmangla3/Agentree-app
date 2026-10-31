@@ -1,11 +1,13 @@
 import { memo } from 'react';
-import { Files, FilePlus, FileMinus, GitBranch, GitMerge, CircleDot } from 'lucide-react';
+import { GitBranch, CircleDot } from 'lucide-react';
 import { GraphNodeWrapper } from './GraphNodeWrapper';
 import { SharedNodeProps } from '../../../types/nodes';
 import { cn } from '../../../lib/utils';
 import type { BranchPointer } from '../../../stores/workspaceStore';
 import { CopyCommitShaButton } from '../../CopyCommitShaButton';
 import { getMessageOutputCommitSha } from '../../../lib/graph/commitAccessors';
+import { getCommitStatsForMessage } from '../../../lib/graph/commitStats';
+import { CommitStatsFooter } from './CommitStatsFooter';
 
 export const GraphCommitNode = memo(({
   nodeId,
@@ -31,11 +33,8 @@ export const GraphCommitNode = memo(({
   const extraBranchCount = Math.max(0, otherBranches.length - 1);
   const isPinnedCommit = hasHead || otherBranches.length > 0;
   const isExternal = !!entity.importedFromRef;
-  const filesChanged = ((entity.message?.execution_data as any)?.files_changed || []) as Array<{ additions?: number; deletions?: number }>;
-  const totalAdditions = filesChanged.reduce((sum, file) => sum + (file.additions || 0), 0);
-  const totalDeletions = filesChanged.reduce((sum, file) => sum + (file.deletions || 0), 0);
+  const commitStats = getCommitStatsForMessage(entity.message);
   const parentCount = entity.parentShas?.length ?? 0;
-  const isMergeCommit = parentCount > 1;
   const sourceLabel = isExternal ? 'Import' : 'Gen';
   const shortSha = (entity.shortSha || outputCommitSha?.slice(0, 8) || 'commit').slice(0, 8);
   const isFullDetail = detailLevel === 'full';
@@ -147,34 +146,7 @@ export const GraphCommitNode = memo(({
           </div>
         )}
 
-        {isFullDetail && (
-        <div className="flex w-full items-center justify-start gap-1.5 border-t border-emerald-300/40 pt-1 text-[8px] leading-none text-zinc-600 dark:border-emerald-800/70 dark:text-zinc-400">
-          {isMergeCommit && (
-            <span className="flex items-center gap-0.5" title={`${parentCount} parents`}>
-              <GitMerge size={8} />
-              {parentCount}
-            </span>
-          )}
-          {filesChanged.length > 0 && (
-            <span className="flex items-center gap-0.5" title={`${filesChanged.length} files changed`}>
-              <Files size={8} className="text-emerald-500" />
-              {filesChanged.length}
-            </span>
-          )}
-          {totalAdditions > 0 && (
-            <span className="flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400" title={`${totalAdditions} added lines`}>
-              <FilePlus size={8} />
-              {totalAdditions}
-            </span>
-          )}
-          {totalDeletions > 0 && (
-            <span className="flex items-center gap-0.5 text-red-500 dark:text-red-400" title={`${totalDeletions} deleted lines`}>
-              <FileMinus size={8} />
-              {totalDeletions}
-            </span>
-          )}
-        </div>
-        )}
+        {isFullDetail && <CommitStatsFooter stats={commitStats} parentCount={parentCount} />}
       </div>
     </GraphNodeWrapper>
   );

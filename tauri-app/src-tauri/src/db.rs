@@ -3041,14 +3041,25 @@ impl TelemetryDb {
         Ok(())
     }
 
-    /// Distinct repo paths that have ever hosted an agent run. Used by the
-    /// startup worktree sweep to know which repositories to reconcile.
-    pub fn list_agent_run_repo_paths(&self) -> Result<Vec<String>, String> {
+    /// Distinct local repositories that can own managed worktrees. Agent-run
+    /// history covers node and merge worktrees; connected workspace paths also
+    /// cover commit terminals opened before the first agent run.
+    pub fn list_managed_worktree_repo_paths(&self) -> Result<Vec<String>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT DISTINCT repo_path FROM agent_run_ledger \
-                 WHERE repo_path IS NOT NULL AND repo_path <> ''",
+                r#"
+                SELECT repo_path
+                FROM agent_run_ledger
+                WHERE repo_path IS NOT NULL AND repo_path <> ''
+                UNION
+                SELECT local_repo_path
+                FROM local_workspaces
+                WHERE deleted_at IS NULL
+                  AND connection_status = 'connected'
+                  AND local_repo_path IS NOT NULL
+                  AND local_repo_path <> ''
+                "#,
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt

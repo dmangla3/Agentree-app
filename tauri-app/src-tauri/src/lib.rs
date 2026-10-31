@@ -470,7 +470,7 @@ pub fn run() {
                     // reconcile_agent_runs_on_startup just reclassified are now dead, so
                     // this must come after it; the clean-worktree guard preserves any
                     // run that crashed mid-edit with unsaved work.
-                    match telemetry.list_agent_run_repo_paths() {
+                    match telemetry.list_managed_worktree_repo_paths() {
                         Ok(repos) => {
                             let mut reclaimed_total = 0usize;
                             for repo in repos {

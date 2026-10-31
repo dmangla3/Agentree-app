@@ -712,14 +712,199 @@ fn agent_run_is_dead(ledger: &crate::db::AgentRunLedgerRow) -> bool {
     )
 }
 
+fn is_managed_run_scratch_file(worktree_path: &str, agent_type: Option<&str>, path: &str) -> bool {
+    if agent_type != Some("opencode") {
+        return false;
+    }
+    let Some(file_name) = path.strip_prefix(".omo/run-continuation/") else {
+        return false;
+    };
+    if file_name.contains('/') || !file_name.starts_with("ses_") || !file_name.ends_with(".json") {
+        return false;
+    }
+    let file_path = Path::new(worktree_path).join(path);
+    if !matches!(fs::symlink_metadata(&file_path), Ok(metadata) if metadata.is_file()) {
+        return false;
+    }
+    let Ok(contents) = fs::read_to_string(file_path) else {
+        return false;
+    };
+    let Ok(record) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return false;
+    };
+    let expected_session_id = file_name.trim_end_matches(".json");
+    record.get("sessionID").and_then(|value| value.as_str()) == Some(expected_session_id)
+        && record
+            .get("updatedAt")
+            .and_then(|value| value.as_str())
+            .is_some()
+        && record
+            .get("sources")
+            .and_then(|value| value.as_object())
+            .is_some()
+}
+
+fn worktree_has_preservable_changes(
+    worktree_path: &str,
+    agent_type: Option<&str>,
+) -> Result<bool, String> {
+    let status = run_git(
+        worktree_path,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
+    let entries = status
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+        .collect::<Vec<_>>();
+    let mut index = 0usize;
+    while index < entries.len() {
+        let entry = entries[index];
+        if entry.len() < 4 {
+            return Ok(true);
+        }
+        let bytes = entry.as_bytes();
+        let index_status = bytes[0] as char;
+        let worktree_status = bytes[1] as char;
+        let path = &entry[3..];
+        let has_second_path =
+            matches!(index_status, 'R' | 'C') || matches!(worktree_status, 'R' | 'C');
+        index += if has_second_path { 2 } else { 1 };
+
+        // Only an untracked, exact continuation record produced by the OpenCode
+        // plugin is disposable. Tracked/staged files and every other `.omo`
+        // path remain user work and keep the worktree alive.
+        if index_status == '?'
+            && worktree_status == '?'
+            && is_managed_run_scratch_file(worktree_path, agent_type, path)
+        {
+            continue;
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn paths_match(left: &Path, right: &Path) -> bool {
+    fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf())
+        == fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf())
+}
+
+fn reconcile_clean_terminal_worktrees_locked(repo_path: &str) -> Result<usize, String> {
+    let root = terminal_worktree_root(repo_path)?;
+    let mut reclaimed = 0usize;
+    for entry in fs::read_dir(&root).map_err(|error| {
+        format!(
+            "Failed to read terminal worktree root {:?}: {}",
+            root, error
+        )
+    })? {
+        let entry =
+            entry.map_err(|error| format!("Failed to read terminal worktree: {}", error))?;
+        let path = entry.path();
+        if !entry
+            .file_type()
+            .map_err(|error| format!("Failed to inspect terminal worktree {:?}: {}", path, error))?
+            .is_dir()
+            || !is_registered_worktree_path(repo_path, &path)?
+        {
+            continue;
+        }
+        let Some(commit_sha) = entry.file_name().to_str().map(ToString::to_string) else {
+            continue;
+        };
+        let worktree_path = path.to_string_lossy().to_string();
+        let is_expected_detached_checkout = run_git(&worktree_path, &["rev-parse", "HEAD"])
+            .map(|head| head.trim() == commit_sha)
+            .unwrap_or(false)
+            && !run_git_success(&worktree_path, &["symbolic-ref", "-q", "HEAD"]);
+        if !is_expected_detached_checkout {
+            continue;
+        }
+        if !terminal_worktree_changed_files(&worktree_path)?.is_empty() {
+            crate::app_log!(
+                "[TERMINAL_WORKTREE] event=startup_reconcile.retained_dirty repo={} commit={} path={}",
+                repo_path,
+                commit_sha,
+                worktree_path
+            );
+            continue;
+        }
+        run_git(
+            repo_path,
+            &["worktree", "remove", "--force", &worktree_path],
+        )?;
+        crate::app_log!(
+            "[TERMINAL_WORKTREE] event=startup_reconcile.removed repo={} commit={} path={}",
+            repo_path,
+            commit_sha,
+            worktree_path
+        );
+        reclaimed += 1;
+    }
+    Ok(reclaimed)
+}
+
+fn reconcile_clean_merge_worktrees_locked(
+    repo_path: &str,
+    merge_branches: &[String],
+) -> Result<usize, String> {
+    let root = merge_root(repo_path)?;
+    let mut reclaimed = 0usize;
+    for branch_name in merge_branches {
+        let Some(node_id) = branch_name.strip_prefix("agentree/merge-") else {
+            continue;
+        };
+        if node_id.is_empty() {
+            continue;
+        }
+        let expected_path = root.join(node_id);
+        let worktrees = list_worktrees_for_branch(repo_path, branch_name)?;
+        if worktrees
+            .iter()
+            .any(|path| !paths_match(Path::new(path), &expected_path))
+        {
+            continue;
+        }
+        let dirty = worktrees.iter().any(|path| {
+            !matches!(run_git(path, &["status", "--porcelain", "--untracked-files=all"]), Ok(status) if status.trim().is_empty())
+        });
+        if dirty {
+            log_agent_worktree_lifecycle(
+                "reconcile.merge_preserve_dirty",
+                repo_path,
+                node_id,
+                &expected_path,
+                &format!("branch={}", branch_name),
+            );
+            continue;
+        }
+        for path in &worktrees {
+            run_git(repo_path, &["worktree", "remove", "--force", path])?;
+        }
+        // Normal merge cleanup uses this same archive before deleting its
+        // scratch branch, so even a crash after commit creation loses no commit.
+        archive_and_delete_node_head(repo_path, branch_name, node_id)?;
+        log_agent_worktree_lifecycle(
+            "reconcile.merge_reclaimed",
+            repo_path,
+            node_id,
+            &expected_path,
+            &format!("branch={}", branch_name),
+        );
+        reclaimed += 1;
+    }
+    Ok(reclaimed)
+}
+
 /// Reclaim scratch `agentree/<node_id>` branches and their worktrees left behind
 /// by agent runs that are no longer live. A pair is removed only when (a) its run
 /// is known dead from the native ledger and (b) the worktree has no uncommitted
 /// changes. Missing ledger rows are preserved because local-first packaged runs
 /// can still have live worktrees without native ledger rows. The branch tip is
 /// archived into `refs/agentree/nodes/<node_id>` before deletion (the same
-/// mechanism as normal cleanup), so no commit is ever lost. Returns the number
-/// of scratch branches reclaimed.
+/// mechanism as normal cleanup), so no commit is ever lost. The same startup
+/// pass removes clean managed terminal and merge worktrees, whose in-memory
+/// owners cannot survive an app restart. Returns the number of paths reclaimed.
 pub fn reconcile_orphaned_agent_worktrees(
     repo_path: &str,
     telemetry: &crate::db::TelemetryDb,
@@ -738,12 +923,19 @@ pub fn reconcile_orphaned_agent_worktrees(
             ],
         )?;
 
-        let mut reclaimed = 0usize;
-        for branch_name in branches_output
+        let branches = branches_output
             .lines()
             .map(|line| line.trim())
             .filter(|line| !line.is_empty())
-        {
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let merge_branches = branches
+            .iter()
+            .filter(|branch| branch.starts_with("agentree/merge-"))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut reclaimed = 0usize;
+        for branch_name in &branches {
             if branch_name == "agentree/base" || branch_name.starts_with("agentree/merge-") {
                 continue;
             }
@@ -775,7 +967,10 @@ pub fn reconcile_orphaned_agent_worktrees(
             // that crashed mid-edit and was reclassified as needs_user_action).
             let worktrees = list_worktrees_for_branch(repo_path, branch_name)?;
             let dirty = worktrees.iter().any(|path| {
-                matches!(run_git(path, &["status", "--porcelain"]), Ok(status) if !status.trim().is_empty())
+                !matches!(
+                    worktree_has_preservable_changes(path, ledger.agent_type.as_deref()),
+                    Ok(false)
+                )
             });
             if dirty {
                 log_agent_worktree_lifecycle(
@@ -814,6 +1009,9 @@ pub fn reconcile_orphaned_agent_worktrees(
             );
             reclaimed += 1;
         }
+
+        reclaimed += reconcile_clean_terminal_worktrees_locked(repo_path)?;
+        reclaimed += reconcile_clean_merge_worktrees_locked(repo_path, &merge_branches)?;
 
         // Drop bookkeeping for any worktree directories that are already gone.
         let _ = run_git(repo_path, &["worktree", "prune"]);
@@ -1072,14 +1270,20 @@ struct WorktreeStagePlan {
     paths_to_unstage: Vec<String>,
 }
 
-fn committable_changed_paths(repo_path: &str, worktree_path: &str) -> Result<Vec<String>, String> {
+fn committable_changed_paths(
+    repo_path: &str,
+    worktree_path: &str,
+    agent_type: Option<&str>,
+) -> Result<Vec<String>, String> {
     let config = crate::worktree_config::load_agent_worktree_config(repo_path)?;
-    stage_plan_with_config(repo_path, worktree_path, &config).map(|plan| plan.committable_paths)
+    stage_plan_with_config(repo_path, worktree_path, agent_type, &config)
+        .map(|plan| plan.committable_paths)
 }
 
 fn stage_plan_with_config(
     repo_path: &str,
     worktree_path: &str,
+    agent_type: Option<&str>,
     config: &AgentWorktreeConfig,
 ) -> Result<WorktreeStagePlan, String> {
     let scaffolding_paths = collect_worktree_scaffolding_paths(repo_path, worktree_path, config)?;
@@ -1121,7 +1325,8 @@ fn stage_plan_with_config(
         index += if original_path.is_some() { 2 } else { 1 };
 
         let path_is_excluded = |path: &str| {
-            scaffolding_paths.contains(path)
+            is_managed_run_scratch_file(worktree_path, agent_type, path)
+                || scaffolding_paths.contains(path)
                 || crate::worktree_config::path_matches_patterns(
                     &commit_exclude_matcher,
                     Path::new(path),
@@ -1168,9 +1373,13 @@ fn stage_plan_with_config(
     Ok(plan)
 }
 
-fn stage_committable_paths(repo_path: &str, worktree_path: &str) -> Result<Vec<String>, String> {
+fn stage_committable_paths(
+    repo_path: &str,
+    worktree_path: &str,
+    agent_type: Option<&str>,
+) -> Result<Vec<String>, String> {
     let config = crate::worktree_config::load_agent_worktree_config(repo_path)?;
-    let plan = stage_plan_with_config(repo_path, worktree_path, &config)?;
+    let plan = stage_plan_with_config(repo_path, worktree_path, agent_type, &config)?;
     if !plan.paths_to_unstage.is_empty() {
         let mut args = vec![
             "reset".to_string(),
@@ -2005,6 +2214,7 @@ pub async fn preview_agent_worktree(
 pub async fn agent_worktree_has_changes(
     repo_path: String,
     node_id: String,
+    agent_type: Option<String>,
 ) -> Result<bool, String> {
     let worktree_path = resolve_agent_worktree_path(&repo_path, &node_id)?;
     let worktree_path_string = worktree_path.to_string_lossy().to_string();
@@ -2015,19 +2225,20 @@ pub async fn agent_worktree_has_changes(
         &worktree_path,
         "",
     );
-    let changed_paths = match committable_changed_paths(&repo_path, &worktree_path_string) {
-        Ok(paths) => paths,
-        Err(err) => {
-            log_agent_worktree_lifecycle(
-                "has_changes.error",
-                &repo_path,
-                &node_id,
-                &worktree_path,
-                &err,
-            );
-            return Err(err);
-        }
-    };
+    let changed_paths =
+        match committable_changed_paths(&repo_path, &worktree_path_string, agent_type.as_deref()) {
+            Ok(paths) => paths,
+            Err(err) => {
+                log_agent_worktree_lifecycle(
+                    "has_changes.error",
+                    &repo_path,
+                    &node_id,
+                    &worktree_path,
+                    &err,
+                );
+                return Err(err);
+            }
+        };
     log_agent_worktree_lifecycle(
         "has_changes.result",
         &repo_path,
@@ -2092,6 +2303,7 @@ pub async fn finalize_agent_worktree(
     node_id: String,
     commit_message: String,
     _author_name: Option<String>,
+    agent_type: Option<String>,
 ) -> Result<FinalizeAgentWorktreeResult, String> {
     let worktree_path = resolve_agent_worktree_path(&repo_path, &node_id)?;
     let worktree_path_string = worktree_path.to_string_lossy().to_string();
@@ -2103,19 +2315,21 @@ pub async fn finalize_agent_worktree(
         "identity_source=git_config",
     );
     with_repo_git_lock(&repo_path, "worktree_finalize", || {
-        let staged_paths = match stage_committable_paths(&repo_path, &worktree_path_string) {
-            Ok(paths) => paths,
-            Err(err) => {
-                log_agent_worktree_lifecycle(
-                    "finalize.add.error",
-                    &repo_path,
-                    &node_id,
-                    &worktree_path,
-                    &err,
-                );
-                return Err(err);
-            }
-        };
+        let staged_paths =
+            match stage_committable_paths(&repo_path, &worktree_path_string, agent_type.as_deref())
+            {
+                Ok(paths) => paths,
+                Err(err) => {
+                    log_agent_worktree_lifecycle(
+                        "finalize.add.error",
+                        &repo_path,
+                        &node_id,
+                        &worktree_path,
+                        &err,
+                    );
+                    return Err(err);
+                }
+            };
         if staged_paths.is_empty() {
             log_agent_worktree_lifecycle(
                 "finalize.no_changes",
@@ -2291,7 +2505,7 @@ pub fn finalize_agent_merge_worktree(
     );
 
     with_repo_git_lock(repo_path, "worktree_finalize_merge", || {
-        stage_committable_paths(repo_path, &worktree_path_string)?;
+        stage_committable_paths(repo_path, &worktree_path_string, None)?;
         let tree_sha = run_git(&worktree_path_string, &["write-tree"])?
             .trim()
             .to_string();
@@ -2470,8 +2684,9 @@ mod tests {
     use super::{
         agent_worktree_head_commit_if_advanced, cleanup_terminal_worktree, copy_env_files,
         finalize_agent_merge_worktree, finalize_agent_worktree, is_agent_worktree_path_for_node,
-        is_env_file, legacy_worktree_root, link_dependencies, prepare_terminal_worktree,
-        read_commit_metadata_range_sync, resolve_git_dir, worktree_root, AgentWorktreeConfig,
+        is_env_file, legacy_worktree_root, link_dependencies, merge_root,
+        prepare_terminal_worktree, read_commit_metadata_range_sync, resolve_git_dir,
+        stable_repo_key, worktree_has_preservable_changes, worktree_root, AgentWorktreeConfig,
         TerminalWorktreeCleanup,
     };
     use std::fs;
@@ -2550,6 +2765,32 @@ mod tests {
             ],
         );
         worktree_path
+    }
+
+    fn record_dead_test_run(
+        telemetry: &crate::db::TelemetryDb,
+        repo_path: &str,
+        worktree_path: &Path,
+        node_id: &str,
+        agent_type: &str,
+    ) {
+        telemetry
+            .upsert_agent_run_ledger(&crate::db::AgentRunLedgerUpsert {
+                run_id: format!("run-{node_id}"),
+                user_node_id: None,
+                assistant_node_id: node_id.to_string(),
+                workspace_id: Some("workspace-test".to_string()),
+                repo_path: Some(repo_path.to_string()),
+                worktree_path: Some(worktree_path.to_string_lossy().to_string()),
+                branch_name: Some(format!("agentree/{node_id}")),
+                parent_commit: None,
+                pid: None,
+                agent_type: Some(agent_type.to_string()),
+                status: "completed".to_string(),
+                phase: "finalized".to_string(),
+                login_profile_id: None,
+            })
+            .expect("record dead test run");
     }
 
     fn clear_repo_excludes(repo_path: &Path) {
@@ -2646,6 +2887,203 @@ mod tests {
             ),
             parent_commit
         );
+    }
+
+    #[test]
+    fn reconcile_reclaims_opencode_worktree_with_only_continuation_scratch() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-opencode-scratch";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        let scratch_dir = worktree_path.join(".omo/run-continuation");
+        fs::create_dir_all(&scratch_dir).expect("create continuation scratch");
+        fs::write(
+            scratch_dir.join("ses_test.json"),
+            r#"{"sessionID":"ses_test","updatedAt":"2026-08-10T00:00:00Z","sources":{}}"#,
+        )
+        .expect("write continuation scratch");
+        let db_dir = tempfile::tempdir().expect("telemetry tempdir");
+        let telemetry = crate::db::TelemetryDb::open(db_dir.path()).expect("open telemetry");
+        record_dead_test_run(&telemetry, &repo_path, &worktree_path, node_id, "opencode");
+
+        let reclaimed = super::reconcile_orphaned_agent_worktrees(&repo_path, &telemetry)
+            .expect("reconcile worktrees");
+
+        assert_eq!(reclaimed, 1);
+        assert!(!worktree_path.exists());
+        assert!(!run_test_git(
+            dir.path(),
+            &["branch", "--list", &format!("agentree/{node_id}")]
+        )
+        .contains(node_id));
+    }
+
+    #[test]
+    fn continuation_scratch_filter_preserves_user_and_non_opencode_changes() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-provider-scratch-filter";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        let scratch_dir = worktree_path.join(".omo/run-continuation");
+        fs::create_dir_all(&scratch_dir).expect("create continuation scratch");
+        fs::write(
+            scratch_dir.join("ses_test.json"),
+            r#"{"sessionID":"ses_test","updatedAt":"2026-08-10T00:00:00Z","sources":{}}"#,
+        )
+        .expect("write continuation scratch");
+
+        assert!(!worktree_has_preservable_changes(
+            &worktree_path.to_string_lossy(),
+            Some("opencode"),
+        )
+        .expect("classify OpenCode scratch"));
+        assert!(
+            worktree_has_preservable_changes(&worktree_path.to_string_lossy(), Some("codex"),)
+                .expect("classify Codex path")
+        );
+
+        fs::write(worktree_path.join(".omo/user-notes.md"), "keep\n")
+            .expect("write user-owned omo file");
+        assert!(worktree_has_preservable_changes(
+            &worktree_path.to_string_lossy(),
+            Some("opencode"),
+        )
+        .expect("classify mixed omo paths"));
+
+        fs::remove_file(worktree_path.join(".omo/user-notes.md")).expect("remove user omo file");
+        fs::write(scratch_dir.join("ses_test.json"), "{}\n")
+            .expect("replace continuation with unknown content");
+        assert!(worktree_has_preservable_changes(
+            &worktree_path.to_string_lossy(),
+            Some("opencode"),
+        )
+        .expect("classify unknown continuation content"));
+
+        run_test_git(
+            dir.path(),
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                &worktree_path.to_string_lossy(),
+            ],
+        );
+    }
+
+    #[test]
+    fn startup_reconcile_removes_clean_managed_terminal_worktree() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let commit_sha = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let terminal =
+            prepare_terminal_worktree(&repo_path, &commit_sha).expect("create terminal worktree");
+        let db_dir = tempfile::tempdir().expect("telemetry tempdir");
+        let telemetry = crate::db::TelemetryDb::open(db_dir.path()).expect("open telemetry");
+
+        let reclaimed = super::reconcile_orphaned_agent_worktrees(&repo_path, &telemetry)
+            .expect("reconcile managed worktrees");
+
+        assert_eq!(reclaimed, 1);
+        assert!(!Path::new(&terminal.worktree_path).exists());
+    }
+
+    #[test]
+    fn startup_reconcile_archives_clean_managed_merge_worktree() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = format!(
+            "startup-clean-merge-{}",
+            stable_repo_key(&repo_path).expect("stable repo key")
+        );
+        let merge_path = merge_root(&repo_path).expect("merge root").join(&node_id);
+        let merge_path_string = merge_path.to_string_lossy().to_string();
+        let merge_branch = format!("agentree/merge-{node_id}");
+        run_test_git(
+            dir.path(),
+            &[
+                "worktree",
+                "add",
+                &merge_path_string,
+                "-B",
+                &merge_branch,
+                &parent_commit,
+            ],
+        );
+        let db_dir = tempfile::tempdir().expect("telemetry tempdir");
+        let telemetry = crate::db::TelemetryDb::open(db_dir.path()).expect("open telemetry");
+
+        let reclaimed = super::reconcile_orphaned_agent_worktrees(&repo_path, &telemetry)
+            .expect("reconcile managed worktrees");
+
+        assert_eq!(reclaimed, 1);
+        assert!(!merge_path.exists());
+        assert_eq!(
+            run_test_git(
+                dir.path(),
+                &["rev-parse", &format!("refs/agentree/nodes/{node_id}")],
+            ),
+            parent_commit
+        );
+        assert!(run_test_git(dir.path(), &["branch", "--list", &merge_branch]).is_empty());
+    }
+
+    #[test]
+    fn startup_reconcile_preserves_dirty_terminal_and_merge_worktrees() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let commit_sha = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let terminal =
+            prepare_terminal_worktree(&repo_path, &commit_sha).expect("create terminal worktree");
+        fs::write(
+            Path::new(&terminal.worktree_path).join("terminal-notes.txt"),
+            "keep\n",
+        )
+        .expect("write terminal change");
+
+        let node_id = format!(
+            "startup-dirty-merge-{}",
+            stable_repo_key(&repo_path).expect("stable repo key")
+        );
+        let merge_path = merge_root(&repo_path).expect("merge root").join(&node_id);
+        let merge_path_string = merge_path.to_string_lossy().to_string();
+        let merge_branch = format!("agentree/merge-{node_id}");
+        run_test_git(
+            dir.path(),
+            &[
+                "worktree",
+                "add",
+                &merge_path_string,
+                "-B",
+                &merge_branch,
+                &commit_sha,
+            ],
+        );
+        fs::write(merge_path.join("merge-resolution.txt"), "keep\n").expect("write merge change");
+        let db_dir = tempfile::tempdir().expect("telemetry tempdir");
+        let telemetry = crate::db::TelemetryDb::open(db_dir.path()).expect("open telemetry");
+
+        let reclaimed = super::reconcile_orphaned_agent_worktrees(&repo_path, &telemetry)
+            .expect("reconcile managed worktrees");
+
+        assert_eq!(reclaimed, 0);
+        assert!(Path::new(&terminal.worktree_path).exists());
+        assert!(merge_path.exists());
+        assert!(!run_test_git(dir.path(), &["branch", "--list", &merge_branch]).is_empty());
+
+        run_test_git(
+            dir.path(),
+            &["worktree", "remove", "--force", &terminal.worktree_path],
+        );
+        run_test_git(
+            dir.path(),
+            &["worktree", "remove", "--force", &merge_path_string],
+        );
+        run_test_git(dir.path(), &["branch", "-D", &merge_branch]);
     }
 
     #[test]
@@ -2837,6 +3275,7 @@ mod tests {
             node_id.to_string(),
             "Assistant output".to_string(),
             Some("GPT Test Model".to_string()),
+            None,
         ))
         .expect("finalize agent worktree");
         let commit_sha = result.commit_sha.expect("commit sha");
@@ -2870,6 +3309,49 @@ mod tests {
     }
 
     #[test]
+    fn finalize_opencode_worktree_omits_owned_continuation_record() {
+        let dir = init_test_repo();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        let parent_commit = run_test_git(dir.path(), &["rev-parse", "HEAD"]);
+        let node_id = "assistant-opencode-scratch";
+        let worktree_path =
+            create_test_agent_worktree(dir.path(), &repo_path, node_id, &parent_commit);
+        let scratch_path = worktree_path.join(".omo/run-continuation/ses_test.json");
+        fs::create_dir_all(scratch_path.parent().expect("scratch parent"))
+            .expect("create scratch directory");
+        fs::write(
+            &scratch_path,
+            r#"{"sessionID":"ses_test","updatedAt":"2026-08-10T00:00:00Z","sources":{}}"#,
+        )
+        .expect("write OpenCode continuation record");
+        fs::write(worktree_path.join("assistant.txt"), "assistant output\n")
+            .expect("write assistant output");
+
+        let result = tauri::async_runtime::block_on(finalize_agent_worktree(
+            repo_path,
+            node_id.to_string(),
+            "Assistant output".to_string(),
+            None,
+            Some("opencode".to_string()),
+        ))
+        .expect("finalize OpenCode worktree");
+        let commit_sha = result.commit_sha.expect("commit sha");
+        let tree_files = run_test_git(
+            &worktree_path,
+            &["ls-tree", "-r", "--name-only", &commit_sha],
+        );
+
+        assert!(tree_files.lines().any(|path| path == "assistant.txt"));
+        assert!(!tree_files
+            .lines()
+            .any(|path| path == ".omo/run-continuation/ses_test.json"));
+        assert!(
+            scratch_path.exists(),
+            "scratch stays available until cleanup"
+        );
+    }
+
+    #[test]
     fn finalize_agent_worktree_unstages_excluded_paths() {
         let dir = init_test_repo();
         let config_path = dir.path().join(".agentree/config.json");
@@ -2896,6 +3378,7 @@ mod tests {
             node_id.to_string(),
             "Assistant output".to_string(),
             Some("Agentree Test".to_string()),
+            None,
         ))
         .expect("finalize agent worktree");
         let commit_sha = result.commit_sha.expect("commit sha");
@@ -2937,6 +3420,7 @@ mod tests {
             node_id.to_string(),
             "Assistant output".to_string(),
             Some("Agentree Test".to_string()),
+            None,
         ))
         .expect("finalize agent worktree");
         let commit_sha = result.commit_sha.expect("commit sha");
@@ -2968,6 +3452,7 @@ mod tests {
             node_id.to_string(),
             "Remove obsolete file".to_string(),
             Some("Agentree Test".to_string()),
+            None,
         ))
         .expect("finalize agent worktree");
         let commit_sha = result.commit_sha.expect("commit sha");
@@ -3000,6 +3485,7 @@ mod tests {
             node_id.to_string(),
             "Mixed changes".to_string(),
             Some("Agentree Test".to_string()),
+            None,
         ))
         .expect("finalize agent worktree");
         let commit_sha = result.commit_sha.expect("commit sha");
@@ -3039,6 +3525,7 @@ mod tests {
             node_id.to_string(),
             "No-op agent turn".to_string(),
             Some("Agentree Test".to_string()),
+            None,
         ))
         .expect("finalize agent worktree");
 
@@ -3104,6 +3591,7 @@ mod tests {
             node_id.to_string(),
             "No-op agent turn".to_string(),
             Some("Agentree Test".to_string()),
+            None,
         ))
         .expect("finalize agent worktree");
 
@@ -3133,6 +3621,7 @@ mod tests {
             node_id.to_string(),
             "No-op agent turn".to_string(),
             Some("Agentree Test".to_string()),
+            None,
         ))
         .expect("finalize agent worktree");
         let commit_sha = result.commit_sha.expect("commit sha");
@@ -3174,6 +3663,7 @@ mod tests {
             node_id.to_string(),
             "Assistant output".to_string(),
             Some("Agentree Test".to_string()),
+            None,
         ))
         .expect("finalize agent worktree");
         let commit_sha = result.commit_sha.expect("commit sha");
@@ -3213,6 +3703,7 @@ mod tests {
             node_id.to_string(),
             "Assistant output".to_string(),
             Some("Agentree Test".to_string()),
+            None,
         ))
         .expect("finalize agent worktree");
         let commit_sha = result.commit_sha.expect("commit sha");
