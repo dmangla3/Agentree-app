@@ -4465,7 +4465,7 @@ mod tests {
 
     #[test]
     fn redacts_openai_key_without_returning_secret() {
-        let hint = redacted_secret_hint("sk-proj-1234567890abcdef");
+        let hint = redacted_secret_hint("sk-proj-FAKE_DO_NOT_USE_cdef");
         assert_eq!(hint, "sk-proj...cdef");
     }
 
@@ -5038,7 +5038,7 @@ mod tests {
                 provider: "codex".to_string(),
                 display_name: "Codex API".to_string(),
                 auth_type: "codex_api_key".to_string(),
-                secret: Some("sk-proj-1234567890abcdef".to_string()),
+                secret: Some("sk-proj-FAKE_DO_NOT_USE_cdef".to_string()),
                 config: Some(serde_json::json!({ "openai_project_id": "old" })),
                 make_default: Some(true),
             },
@@ -5084,7 +5084,7 @@ mod tests {
                 provider: "codex".to_string(),
                 display_name: "Codex Work".to_string(),
                 auth_type: "codex_api_key".to_string(),
-                secret: Some("sk-proj-1234567890abcdef".to_string()),
+                secret: Some("sk-proj-FAKE_DO_NOT_USE_cdef".to_string()),
                 config: Some(serde_json::json!({ "openai_project_id": "project-1" })),
                 make_default: Some(true),
             },
@@ -5151,7 +5151,7 @@ mod tests {
         let env = HashMap::from([
             (
                 "OPENAI_API_KEY".to_string(),
-                "sk-proj-1234567890abcdef".to_string(),
+                "sk-proj-FAKE_DO_NOT_USE_cdef".to_string(),
             ),
             (
                 "ANTHROPIC_API_KEY".to_string(),
@@ -5188,7 +5188,7 @@ mod tests {
         let vault = MemoryVault::new();
         let env = HashMap::from([(
             "OPENAI_API_KEY".to_string(),
-            "sk-proj-1234567890abcdef".to_string(),
+            "sk-proj-FAKE_DO_NOT_USE_cdef".to_string(),
         )]);
 
         let imported = import_discovered_login_profile_with_vault(
@@ -5210,7 +5210,7 @@ mod tests {
         let secret = vault
             .get_secret(&secret_account_id(&imported.id, "primary"))
             .expect("stored secret");
-        assert_eq!(secret, "sk-proj-1234567890abcdef");
+        assert_eq!(secret, "sk-proj-FAKE_DO_NOT_USE_cdef");
     }
 
     #[test]
@@ -5307,7 +5307,7 @@ mod tests {
                 provider: "codex".to_string(),
                 display_name: "Codex API".to_string(),
                 auth_type: "codex_api_key".to_string(),
-                secret: Some("sk-proj-1234567890abcdef".to_string()),
+                secret: Some("sk-proj-FAKE_DO_NOT_USE_cdef".to_string()),
                 config: None,
                 make_default: Some(true),
             },
@@ -5322,7 +5322,7 @@ mod tests {
                 provider: "codex".to_string(),
                 display_name: "Duplicate Codex API".to_string(),
                 auth_type: "codex_api_key".to_string(),
-                secret: Some("sk-proj-1234567890abcdef".to_string()),
+                secret: Some("sk-proj-FAKE_DO_NOT_USE_cdef".to_string()),
                 config: None,
                 make_default: Some(true),
             },
@@ -5926,7 +5926,7 @@ command = "personal-mcp"
             "profile-claude-oauth",
             "claude",
             "claude_oauth",
-            "sk-ant-at01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE",
+            "sk-ant-at01-FAKE_DO_NOT_USE_xxxxxxxxxxxxxxxxxxxxxxxxE",
             serde_json::json!({}),
         )
         .expect("credentials materialize");
@@ -5936,14 +5936,14 @@ command = "personal-mcp"
                 .env
                 .get("CLAUDE_CODE_OAUTH_TOKEN")
                 .map(String::as_str),
-            Some("sk-ant-at01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE")
+            Some("sk-ant-at01-FAKE_DO_NOT_USE_xxxxxxxxxxxxxxxxxxxxxxxxE")
         );
         assert!(materialized.codex_home.is_none());
     }
 
     #[test]
     fn claude_oauth_profile_accepts_current_setup_token_format() {
-        let token = "sk-ant-at01-abcdefghijklmnopqrstuvwxyz0123456789ABCD";
+        let token = "sk-ant-at01-FAKE_DO_NOT_USE_xxxxxxxxxxxxxxxxxxxxxxxx";
         let materialized = materialize_runtime_credentials_for_test(
             "profile-claude-oauth-current",
             "claude",
@@ -5998,17 +5998,17 @@ command = "personal-mcp"
 
     #[test]
     fn extracts_setup_token_from_ansi_decorated_output() {
-        let raw = "\u{1b}[32mYour token:\u{1b}[0m sk-ant-at01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE\r\nStore it somewhere safe.";
+        let raw = "\u{1b}[32mYour token:\u{1b}[0m sk-ant-at01-FAKE_DO_NOT_USE_xxxxxxxxxxxxxxxxxxxxxxxxE\r\nStore it somewhere safe.";
         let token = extract_claude_setup_token(raw).expect("token extracted");
         assert_eq!(
             token,
-            "sk-ant-at01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE"
+            "sk-ant-at01-FAKE_DO_NOT_USE_xxxxxxxxxxxxxxxxxxxxxxxxE"
         );
     }
 
     #[test]
     fn extracts_legacy_oauth_setup_tokens_during_migration() {
-        let token = "sk-ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789ABCD";
+        let token = "sk-ant-oat01-FAKE_DO_NOT_USE_xxxxxxxxxxxxxxxxxxxxxxxx";
         assert_eq!(extract_claude_setup_token(token).as_deref(), Some(token));
     }
 
@@ -6016,19 +6016,19 @@ command = "personal-mcp"
     fn ignores_short_and_non_oauth_claude_token_fragments() {
         assert!(extract_claude_setup_token("sk-ant-at01-tooshort").is_none());
         assert!(extract_claude_setup_token(
-            "sk-ant-api01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE"
+            "sk-ant-api01-FAKE_DO_NOT_USE_xxxxxxxxxxxxxxxxxxxxxxxxE"
         )
         .is_none());
         assert!(extract_claude_setup_token(
-            "sk-ant-attack-abcdefghijklmnopqrstuvwxyz0123456789ABCDE"
+            "sk-ant-attack-FAKE_DO_NOT_USE_xxxxxxxxxxxxxxxxxxxxxxxxE"
         )
         .is_none());
     }
 
     #[test]
     fn redacts_current_and_unknown_claude_tokens_from_diagnostics() {
-        let current = "sk-ant-at01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE";
-        let future = "sk-ant-future01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE";
+        let current = "sk-ant-at01-FAKE_DO_NOT_USE_xxxxxxxxxxxxxxxxxxxxxxxxE";
+        let future = "sk-ant-future01-FAKE_DO_NOT_USE_xxxxxxxxxxxxxxxxxxxxxxxxE";
         let sanitized = redact_claude_tokens(&format!("created {} and then {}", current, future));
 
         assert_eq!(
@@ -6041,7 +6041,7 @@ command = "personal-mcp"
 
     #[test]
     fn claude_login_failure_lines_never_return_tokens() {
-        let token = "sk-ant-at01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE";
+        let token = "sk-ant-at01-FAKE_DO_NOT_USE_xxxxxxxxxxxxxxxxxxxxxxxxE";
         let failure =
             find_claude_login_failure_line(&format!("OAuth error after creating {}", token))
                 .expect("failure line");
@@ -6069,7 +6069,7 @@ command = "personal-mcp"
             &db,
             &vault,
             &profile.id,
-            "sk-ant-api01-abcdefghijklmnopqrstuvwxyz0123456789ABCDE",
+            "sk-ant-api01-FAKE_DO_NOT_USE_xxxxxxxxxxxxxxxxxxxxxxxxE",
         )
         .expect_err("API keys must not be stored as OAuth setup tokens");
 

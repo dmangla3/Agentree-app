@@ -112,7 +112,7 @@ describe('LoginProfileEditor', () => {
   });
 
   it('loads the current isolated auth.json when editing an OpenCode profile', async () => {
-    const onLoadOpenCodeAuth = vi.fn().mockResolvedValue('{"openrouter":{"type":"api","key":"sk-test"}}');
+    const onLoadOpenCodeAuth = vi.fn().mockResolvedValue('{"openrouter":{"type":"api","key":"sk-FAKE_DO_NOT_USE"}}');
     const { getByLabelText, getByText } = render(
       <LoginProfileEditor
         open
@@ -210,7 +210,7 @@ describe('LoginProfileEditor', () => {
         error={null}
         onOpenChange={vi.fn()}
         onSave={onSave}
-        onLoadOpenCodeAuth={vi.fn().mockResolvedValue('{"openrouter":{"type":"api","key":"sk-test"}}')}
+        onLoadOpenCodeAuth={vi.fn().mockResolvedValue('{"openrouter":{"type":"api","key":"sk-FAKE_DO_NOT_USE"}}')}
       />
     );
 
@@ -247,7 +247,7 @@ describe('LoginProfileEditor', () => {
         error={null}
         onOpenChange={vi.fn()}
         onSave={onSave}
-        onLoadOpenCodeAuth={vi.fn().mockResolvedValue('{"openrouter":{"type":"api","key":"sk-test"}}')}
+        onLoadOpenCodeAuth={vi.fn().mockResolvedValue('{"openrouter":{"type":"api","key":"sk-FAKE_DO_NOT_USE"}}')}
       />
     );
 

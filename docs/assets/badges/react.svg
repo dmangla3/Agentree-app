@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="80" height="22" role="img" aria-label="React: 19">
+  <title>React: 19</title>
+  <path fill="#252c37" d="M0 0h50v22H0z"/>
+  <path fill="#61dafb" d="M50 0h30v22H50z"/>
+  <g font-family="Verdana,DejaVu Sans,sans-serif" text-anchor="middle" font-size="11">
+    <text x="25.0" y="15" fill="#ffffff">React</text>
+    <text x="65.0" y="15" fill="#10212b">19</text>
+  </g>
+</svg>

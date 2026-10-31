@@ -1,0 +1,16 @@
+{
+  "name": "agentree",
+  "version": "0.3.4",
+  "private": true,
+  "packageManager": "pnpm@11.15.1",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "pnpm --dir tauri-app run dev",
+    "dev:web": "pnpm --dir tauri-app run dev:web",
+    "build": "pnpm --dir tauri-app run build",
+    "test": "pnpm --dir tauri-app run test:ci",
+    "test:rust": "pnpm --dir tauri-app run test:rust"
+  }
+}

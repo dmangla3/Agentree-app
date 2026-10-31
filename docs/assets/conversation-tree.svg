@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="456" viewBox="0 0 1080 456" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">One conversation. Every path.</title>
+  <desc id="desc">A conceptual Agentree workflow. One authentication question branches into signed tokens and server sessions. Each agent run produces its own Git commit, preserving both approaches.</desc>
+  <defs>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="#27303D"/>
+    </pattern>
+  </defs>
+  <rect x="1" y="1" width="1078" height="454" rx="20" fill="#0D1117" stroke="#30363D" stroke-width="2"/>
+  <rect x="2" y="2" width="1076" height="452" rx="19" fill="url(#dots)" opacity=".55"/>
+  <path d="M2 88H1078" stroke="#30363D"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <rect x="32" y="32" width="24" height="24" rx="7" fill="#FFCF3F"/>
+    <path d="M40 49V40M40 44H48V49" stroke="#5A3900" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="72" y="53" fill="#F0F3F8" font-size="23" font-weight="600">One conversation. Every path.</text>
+    <circle cx="896" cy="45" r="4" fill="#8B949E"/>
+    <text x="909" y="50" fill="#9BA6B4" font-size="15">Conceptual workflow</text>
+    <text x="48" y="135" fill="#8B949E" font-size="13" font-weight="600" letter-spacing="2">START WITH A QUESTION</text>
+    <text x="408" y="135" fill="#8B949E" font-size="13" font-weight="600" letter-spacing="2">EXPLORE TWO APPROACHES</text>
+    <text x="816" y="135" fill="#8B949E" font-size="13" font-weight="600" letter-spacing="2">KEEP BOTH RESULTS</text>
+    <path d="M300 260H334C350 260 358 252 358 236V204C358 188 366 180 382 180H406" stroke="#FF4A9B" stroke-width="3"/>
+    <path d="M300 260H334C350 260 358 268 358 284V316C358 332 366 340 382 340H406" stroke="#FFBC39" stroke-width="3"/>
+    <circle cx="334" cy="260" r="5" fill="#F0F3F8" stroke="#0D1117" stroke-width="3"/>
+    <path d="M716 180H810" stroke="#FF4A9B" stroke-width="3"/>
+    <path d="M716 340H810" stroke="#FFBC39" stroke-width="3"/>
+    <path d="M770 174L776 180L770 186" stroke="#FF4A9B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M770 334L776 340L770 346" stroke="#FFBC39" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="48" y="216" width="252" height="88" rx="12" fill="#161B22" stroke="#444D59"/>
+    <text x="68" y="244" fill="#A7B1BE" font-size="13" font-weight="600" letter-spacing="1.1">YOU</text>
+    <text x="68" y="276" fill="#F0F3F8" font-size="22" font-weight="500">How should auth work?</text>
+    <rect x="406" y="150" width="310" height="92" rx="12" fill="#21131E" stroke="#87405F"/>
+    <rect x="406" y="150" width="4" height="92" rx="2" fill="#FF4A9B"/>
+    <text x="428" y="178" fill="#FF8FC0" font-size="13" font-weight="600" letter-spacing="1.1">APPROACH A</text>
+    <text x="428" y="211" fill="#F0F3F8" font-size="23" font-weight="500">Use signed tokens</text>
+    <text x="428" y="269" fill="#A7B1BE" font-size="16">Its own conversation and worktree</text>
+    <rect x="406" y="310" width="310" height="92" rx="12" fill="#211C12" stroke="#79612E"/>
+    <rect x="406" y="310" width="4" height="92" rx="2" fill="#FFBC39"/>
+    <text x="428" y="338" fill="#FFCF6D" font-size="13" font-weight="600" letter-spacing="1.1">APPROACH B</text>
+    <text x="428" y="371" fill="#F0F3F8" font-size="23" font-weight="500">Try server sessions</text>
+    <rect x="810" y="150" width="222" height="92" rx="12" fill="#161B22" stroke="#444D59"/>
+    <circle cx="836" cy="178" r="5" stroke="#FF8FC0" stroke-width="2"/>
+    <path d="M825 178H831M841 178H847" stroke="#FF8FC0" stroke-width="2" stroke-linecap="round"/>
+    <text x="858" y="183" fill="#A7B1BE" font-size="14">Git commit</text>
+    <text x="831" y="214" fill="#F0F3F8" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="22">a1b2c3d</text>
+    <rect x="810" y="310" width="222" height="92" rx="12" fill="#161B22" stroke="#444D59"/>
+    <circle cx="836" cy="338" r="5" stroke="#FFCF6D" stroke-width="2"/>
+    <path d="M825 338H831M841 338H847" stroke="#FFCF6D" stroke-width="2" stroke-linecap="round"/>
+    <text x="858" y="343" fill="#A7B1BE" font-size="14">Git commit</text>
+    <text x="831" y="374" fill="#F0F3F8" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="22">d4e5f6a</text>
+  </g>
+</svg>

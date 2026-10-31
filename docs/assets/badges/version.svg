@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="127" height="22" role="img" aria-label="snapshot: v0.3.4">
+  <title>snapshot: v0.3.4</title>
+  <path fill="#252c37" d="M0 0h70v22H0z"/>
+  <path fill="#ffbf38" d="M70 0h57v22H70z"/>
+  <g font-family="Verdana,DejaVu Sans,sans-serif" text-anchor="middle" font-size="11">
+    <text x="35.0" y="15" fill="#ffffff">snapshot</text>
+    <text x="98.5" y="15" fill="#161b22">v0.3.4</text>
+  </g>
+</svg>

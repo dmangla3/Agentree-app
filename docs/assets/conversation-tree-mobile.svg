@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="520" viewBox="0 0 480 520" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">One conversation. Every path.</title>
+  <desc id="desc">A conceptual workflow: branch an authentication question into signed tokens and server sessions. Keep each approach in its own worktree, with its own Git commit.</desc>
+  <rect x="1" y="1" width="478" height="518" rx="16" fill="#0D1117" stroke="#30363D" stroke-width="2"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <rect x="28" y="28" width="8" height="8" rx="2" fill="#FFCF3F"/>
+    <text x="47" y="37" fill="#9BA6B4" font-size="13" font-weight="600" letter-spacing="1.3">CONCEPTUAL WORKFLOW</text>
+    <text x="28" y="79" fill="#F0F3F8" font-size="27" font-weight="600">One conversation. Every path.</text>
+    <path d="M1 103H479" stroke="#30363D"/>
+    <rect x="28" y="128" width="424" height="72" rx="10" fill="#161B22" stroke="#444D59"/>
+    <text x="46" y="153" fill="#A7B1BE" font-size="12" font-weight="600" letter-spacing="1.1">YOU</text>
+    <text x="46" y="181" fill="#F0F3F8" font-size="22" font-weight="500">How should auth work?</text>
+    <path d="M240 200V216C240 228 234 234 222 234H146C134 234 128 240 128 252V266" stroke="#FF4A9B" stroke-width="3"/>
+    <path d="M240 200V216C240 228 246 234 258 234H334C346 234 352 240 352 252V266" stroke="#FFBC39" stroke-width="3"/>
+    <circle cx="240" cy="216" r="5" fill="#F0F3F8" stroke="#0D1117" stroke-width="3"/>
+    <rect x="28" y="266" width="200" height="90" rx="10" fill="#21131E" stroke="#87405F"/>
+    <rect x="28" y="266" width="4" height="90" rx="2" fill="#FF4A9B"/>
+    <text x="46" y="294" fill="#FF8FC0" font-size="12" font-weight="600" letter-spacing="1">APPROACH A</text>
+    <text x="46" y="327" fill="#F0F3F8" font-size="21" font-weight="500">Signed tokens</text>
+    <rect x="252" y="266" width="200" height="90" rx="10" fill="#211C12" stroke="#79612E"/>
+    <rect x="252" y="266" width="4" height="90" rx="2" fill="#FFBC39"/>
+    <text x="270" y="294" fill="#FFCF6D" font-size="12" font-weight="600" letter-spacing="1">APPROACH B</text>
+    <text x="270" y="327" fill="#F0F3F8" font-size="21" font-weight="500">Server sessions</text>
+    <path d="M128 356V392" stroke="#FF4A9B" stroke-width="3"/>
+    <path d="M352 356V392" stroke="#FFBC39" stroke-width="3"/>
+    <path d="M122 377L128 383L134 377" stroke="#FF4A9B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M346 377L352 383L358 377" stroke="#FFBC39" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="28" y="392" width="200" height="70" rx="10" fill="#161B22" stroke="#444D59"/>
+    <text x="46" y="417" fill="#A7B1BE" font-size="13">Git commit</text>
+    <text x="46" y="443" fill="#F0F3F8" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="21">a1b2c3d</text>
+    <rect x="252" y="392" width="200" height="70" rx="10" fill="#161B22" stroke="#444D59"/>
+    <text x="270" y="417" fill="#A7B1BE" font-size="13">Git commit</text>
+    <text x="270" y="443" fill="#F0F3F8" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="21">d4e5f6a</text>
+    <text x="240" y="495" text-anchor="middle" fill="#A7B1BE" font-size="16">Separate worktrees. Both paths preserved.</text>
+  </g>
+</svg>

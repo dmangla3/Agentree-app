@@ -1,3 +1,10 @@
 # Agentree desktop app
 
-App-only historical source snapshot. See the publication README and docs/history.md at the tip of this repository for setup and reconstruction details.
+See [the project README](../README.md) for setup, scope, and export provenance.
+
+Install dependencies here with `pnpm install --frozen-lockfile`.
+`pnpm run dev` starts Tauri without a secrets-manager dependency.
+`pnpm run build` compiles the frontend; `pnpm run tauri:build:prod` packages the desktop app.
+
+Source environment-variable references remain configurable by the developer.
+No environment files or credentials are included.

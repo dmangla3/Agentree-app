@@ -78,7 +78,7 @@ run_scrubbed() {
 echo "==> Claude adapter smoke (scrubbed env, managed runtime only)"
 cp "$adapter_resource" "$sdk_dir/"
 set +e
-claude_out="$(run_scrubbed CLAUDE_CODE_OAUTH_TOKEN=sk-ant-smoke-invalid \
+claude_out="$(run_scrubbed CLAUDE_CODE_OAUTH_TOKEN=sk-ant-FAKE_DO_NOT_USE \
   "$node_bin" "$sdk_dir/claude-agent-sdk-adapter.mjs" --permission-mode bypassPermissions hi 2>&1)"
 set -e
 echo "$claude_out" | tail -2

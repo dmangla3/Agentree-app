@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="162" height="22" role="img" aria-label="website: agentree.app">
+  <title>website: agentree.app</title>
+  <path fill="#252c37" d="M0 0h64v22H0z"/>
+  <path fill="#ff4a9b" d="M64 0h98v22H64z"/>
+  <g font-family="Verdana,DejaVu Sans,sans-serif" text-anchor="middle" font-size="11">
+    <text x="32.0" y="15" fill="#ffffff">website</text>
+    <text x="113.0" y="15" fill="#111827">agentree.app</text>
+  </g>
+</svg>

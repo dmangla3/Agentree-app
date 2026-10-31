@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="174" height="22" role="img" aria-label="platform: macOS | Linux">
+  <title>platform: macOS | Linux</title>
+  <path fill="#252c37" d="M0 0h70v22H0z"/>
+  <path fill="#8b949e" d="M70 0h104v22H70z"/>
+  <g font-family="Verdana,DejaVu Sans,sans-serif" text-anchor="middle" font-size="11">
+    <text x="35.0" y="15" fill="#ffffff">platform</text>
+    <text x="122.0" y="15" fill="#0d1117">macOS | Linux</text>
+  </g>
+</svg>

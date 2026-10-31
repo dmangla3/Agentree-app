@@ -111,12 +111,12 @@ test('DeepSeek direct check derives credentials and priced access from balance',
     fs.mkdirSync(path.join(dataHome, 'opencode'));
     fs.writeFileSync(
       path.join(dataHome, 'opencode', 'auth.json'),
-      JSON.stringify({ deepseek: { type: 'api', key: 'sk-test' } }),
+      JSON.stringify({ deepseek: { type: 'api', key: 'sk-FAKE_DO_NOT_USE' } }),
     );
     const capability = await directProviderCapability('deepseek', {
       env: { XDG_DATA_HOME: dataHome },
       fetchImpl: async (_url, request) => {
-        assert.equal(request.headers.Authorization, 'Bearer sk-test');
+        assert.equal(request.headers.Authorization, 'Bearer sk-FAKE_DO_NOT_USE');
         return { status: 200, json: async () => ({ is_available: false }) };
       },
       now: () => 456,
@@ -140,13 +140,13 @@ test('OpenAI identity check validates API credentials without claiming balance',
     fs.mkdirSync(path.join(dataHome, 'opencode'));
     fs.writeFileSync(
       path.join(dataHome, 'opencode', 'auth.json'),
-      JSON.stringify({ openai: { type: 'api', key: 'sk-test' } }),
+      JSON.stringify({ openai: { type: 'api', key: 'sk-FAKE_DO_NOT_USE' } }),
     );
     const capability = await directProviderCapability('openai', {
       env: { XDG_DATA_HOME: dataHome },
       fetchImpl: async (url, request) => {
         assert.equal(url, 'https://api.openai.com/v1/me');
-        assert.equal(request.headers.Authorization, 'Bearer sk-test');
+        assert.equal(request.headers.Authorization, 'Bearer sk-FAKE_DO_NOT_USE');
         return { status: 200, json: async () => ({ id: 'user-test' }) };
       },
       now: () => 789,
@@ -179,7 +179,7 @@ test('API-key inference probes send one-token requests without tools or agent co
     fs.mkdirSync(path.join(dataHome, 'opencode'));
     fs.writeFileSync(
       path.join(dataHome, 'opencode', 'auth.json'),
-      JSON.stringify({ groq: { type: 'api', key: 'gsk-test' } }),
+      JSON.stringify({ groq: { type: 'api', key: 'gsk-FAKE_DO_NOT_USE' } }),
     );
     const classification = await directInferenceProbe(
       { providerID: 'groq', modelID: 'llama-3.1-8b-instant' },
@@ -187,7 +187,7 @@ test('API-key inference probes send one-token requests without tools or agent co
         env: { XDG_DATA_HOME: dataHome },
         fetchImpl: async (url, request) => {
           assert.equal(url, 'https://api.groq.com/openai/v1/chat/completions');
-          assert.equal(request.headers.Authorization, 'Bearer gsk-test');
+          assert.equal(request.headers.Authorization, 'Bearer gsk-FAKE_DO_NOT_USE');
           assert.deepEqual(JSON.parse(request.body), {
             model: 'llama-3.1-8b-instant',
             messages: [{ role: 'user', content: 'OK' }],
