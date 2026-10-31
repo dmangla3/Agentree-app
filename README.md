@@ -21,6 +21,7 @@
   <a href="https://agentree.app"><img src="docs/assets/badges/website.svg" alt="Website: agentree.app" /></a>
   <a href="#project-status"><img src="docs/assets/badges/version.svg" alt="Source snapshot: v0.3.4" /></a>
   <a href="#quick-start"><img src="docs/assets/badges/platform.svg" alt="Platforms: macOS and Linux" /></a>
+  <a href="LICENSE"><img src="docs/assets/badges/license.svg" alt="License: Apache 2.0" /></a>
 </p>
 
 <p align="center">
@@ -146,6 +147,6 @@ Keep changes focused and run the checks relevant to your change. Use pnpm and pr
 
 ## License
 
-The license for original Agentree code is **pending the owner's selection**. A project license must be added before this snapshot is published as open source.
+Agentree is licensed under the [Apache License, Version 2.0](LICENSE).
 
 Vendored dependencies retain their own terms. See [third-party notices](THIRD_PARTY_NOTICES.md).
